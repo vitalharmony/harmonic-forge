@@ -397,12 +397,31 @@ def _once(fetch):
     return lambda: cache[0] if cache else (cache.append(fetch()) or cache[0])
 
 
-def _spec_body(repo: str, spec_comment) -> str:
-    """The referenced Lane 3 spec's body, or `fail()`."""
-    spec = run("gh", "api", f"repos/{repo}/issues/comments/{spec_comment}", "--jq", ".body")
+def _spec_body(repo: str, spec_comment, issue: int) -> str:
+    """The referenced Lane 3 spec's body, or `fail()`. The comment must be on
+    this repo's `issue` and carry the Lane 3 spec marker (a `kind=spec`
+    footer or a `Lane 3 Test Spec` heading): a `--spec-comment` naming any
+    other comment would let its footer decide which cases are live
+    (harmonic-forge#1115 sticky-wicket PATCH 2)."""
+    spec = run("gh", "api", f"repos/{repo}/issues/comments/{spec_comment}",
+               "--jq", "{body: .body, issue_url: .issue_url}")
     if spec.returncode:
         fail("cannot fetch referenced Lane 3 spec")
-    return spec.stdout
+    try:
+        data = json.loads(spec.stdout)
+        body, issue_url = data.get("body") or "", data.get("issue_url") or ""
+    except (ValueError, AttributeError):
+        fail(f"cannot read referenced Lane 3 spec comment {spec_comment}")
+    want = f"/repos/{repo}/issues/{issue}".lower()
+    if not issue_url.lower().rstrip("/").endswith(want):
+        fail(f"--spec-comment {spec_comment} is not a comment on {repo}#{issue} "
+             f"(it belongs to {issue_url or 'an unknown issue'}) -- name this issue's Lane 3 spec "
+             "(harmonic-forge#1115)")
+    import _auto_ae  # noqa: PLC0415
+    if not _auto_ae._is_spec({"body": body}):
+        fail(f"--spec-comment {spec_comment} carries no Lane 3 spec marker (a `kind=spec` footer "
+             "or a `Lane 3 Test Spec` heading) -- name this issue's Lane 3 spec (harmonic-forge#1115)")
+    return body
 
 
 def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
@@ -1040,11 +1059,16 @@ def _field_sets(text: str, label: str) -> list[frozenset[str]]:
     return [parse_external_calls(line, label) for line in lines if pattern.search(line)]
 
 
-def sweep_case_external_calls(sweep_body: str) -> dict[str, list[frozenset[str]]]:
+def sweep_case_external_calls(sweep_body: str, tier_p: bool = False) -> dict[str, list[frozenset[str]]]:
     """{case id: the `External calls:` sets in that case's block}, a block
-    running from its `TC<n>` entry to the next one. A Tier P sweep's `P<n>`
-    entries are read as the TC entries they canonicalize to."""
-    body, _ = _canonicalize_tier_p(sweep_body or "", sweep=True)
+    running from its `TC<n>` entry to the next one. Only when the spec is
+    Tier P (`spec_is_tier_p`, the detection `validate_sweep` uses) are the
+    sweep's `P<n>` entries read as the TC entries they canonicalize to; in
+    any other sweep a line-leading `P<n>` is ordinary text (harmonic-forge#1115
+    sticky-wicket PATCH 3)."""
+    body = sweep_body or ""
+    if tier_p:
+        body, _ = _canonicalize_tier_p(body, sweep=True)
     section, _ = _case_section(body)
     starts = list(SWEEP_TC_ENTRY_SUFFIXED.finditer(section))
     found: dict[str, list[frozenset[str]]] = {}
@@ -1056,15 +1080,21 @@ def sweep_case_external_calls(sweep_body: str) -> dict[str, list[frozenset[str]]
 
 
 def spec_live_ids(spec_body: str) -> set[str]:
-    """The spec's live case ids, canonicalized onto sweep TC numbers."""
+    """The spec's live case ids, canonicalized onto sweep TC numbers. Refuses
+    when they cannot be known (`footer_live_case_ids`)."""
     return _canonical_live_ids(footer_live_case_ids(spec_body))
 
 
-def sweep_external_calls(sweep_body: str, live_ids: set[str]) -> frozenset[str]:
+def spec_is_tier_p(spec_body: str) -> bool:
+    """The Tier P detection `validate_sweep` routes on."""
+    return bool(_tier_p_ids(spec_body))
+
+
+def sweep_external_calls(sweep_body: str, live_ids: set[str], tier_p: bool = False) -> frozenset[str]:
     """The union of the LIVE cases' `External calls:` sets (AC9's comparison).
     `live_ids` are canonical (`spec_live_ids`); a non-live case's line is
     never part of the union (harmonic-forge#1115 reforge pass 1)."""
-    return frozenset().union(*(s for case, sets in sweep_case_external_calls(sweep_body).items()
+    return frozenset().union(*(s for case, sets in sweep_case_external_calls(sweep_body, tier_p).items()
                                if _canonical_case_id(case) in live_ids for s in sets))
 
 
@@ -1118,15 +1148,16 @@ def _latest_sweep_calls(repo: str, issue: int, sha: str, spec_comment: int | Non
         fail(f"a sweep is posted on {sha[:12]}, so this AE's `{AE_CALLS_LABEL}:` field is compared "
              "with its live cases' calls -- pass --spec-comment <id> naming the Lane 3 spec whose "
              "`classes=` footer says which cases are live (harmonic-forge#1115)")
-    return sweep_external_calls(body, spec_live_ids(_spec_body(repo, spec_comment)))
+    spec = _spec_body(repo, spec_comment, issue)
+    return sweep_external_calls(body, spec_live_ids(spec), spec_is_tier_p(spec))
 
 
 def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str,
-                                     live_ids: set[str]) -> None:
+                                     live_ids: set[str], tier_p: bool = False) -> None:
     """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
     the sweep is checked against the newest AE on its own SHA, and refused
     when there is none."""
-    swept = sweep_external_calls(sweep_body, live_ids)
+    swept = sweep_external_calls(sweep_body, live_ids, tier_p)
     ae_body = _newest_on_sha(repo, issue, sha, "ae")
     if ae_body is None:
         fail(f"no AE is posted on {sha[:12]} -- the AE goes first and its `{AE_CALLS_LABEL}:` "
@@ -1146,12 +1177,24 @@ def _canonical_live_ids(live) -> set[str]:
 
 def footer_live_case_ids(spec_body: str) -> set[str]:
     """The case ids a spec's `classes=` footer marks `live`, as written
-    (`1`, `P2`); `_canonical_live_ids` maps them onto sweep TC numbers."""
+    (`1`, `P2`); `_canonical_live_ids` maps them onto sweep TC numbers.
+
+    The one live-id resolver (harmonic-forge#1115 sticky-wicket PATCH 1):
+    an empty set only ever means "the footer marks no case live". When the
+    live ids are unknown -- no `eras` reader, or no `classes=` case map on
+    the last non-blank line (missing, misplaced, `absent` or empty) -- it
+    refuses through `fail()` rather than read as "no live cases"."""
+    if _eras is None:
+        fail("cannot tell which Lane 3 cases are live: the telemetry `eras` module that reads a "
+             "spec's `classes=` footer is not importable (harmonic-forge#1115)")
     lines = [line.strip() for line in (spec_body or "").splitlines() if line.strip()]
     footer = lines[-1] if lines and lines[-1].startswith("<!--") else ""
-    if _eras is None:
-        return set()
-    return {case for case, cls in _eras.parse_case_map(footer, "classes").items() if cls == "live"}
+    classes = _eras.parse_case_map(footer, "classes")
+    if not classes:
+        fail("cannot tell which Lane 3 cases are live: the referenced spec's last non-blank line "
+             "is not a footer carrying a `classes=` case map (e.g. `classes=1:live,2:ac`) -- "
+             "post the spec with its footer and pass that comment (harmonic-forge#1115)")
+    return {case for case, cls in classes.items() if cls == "live"}
 
 
 #: Only a LEADING outcome word, bold stripped: readiness text may say a check
@@ -3208,7 +3251,7 @@ def main() -> None:
         # a validation failure alone.
         ae_body = regular_body(args.ae_file)
         sweep_body = regular_body(args.sweep_file)
-        spec_once = _once(lambda: _spec_body(repo, args.spec_comment))
+        spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
         # harmonic-forge#1017: every fast-stage validator runs and refuses once.
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
@@ -3227,7 +3270,8 @@ def main() -> None:
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
             lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
-                ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()))),
+                ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()),
+                                              spec_is_tier_p(spec_once()))),
             *(_publish_checks(repo, args.issue, "ae", sha, args.branch, ack_overlap=args.ack_overlap,
                               ack_no_pr_required=args.ack_no_pr_required,
                               grant_on_main=grant_on_main(ae_body, sha))
@@ -3314,11 +3358,11 @@ def main() -> None:
         steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha))
     steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
-        spec_once = _once(lambda: _spec_body(repo, args.spec_comment))
+        spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
         steps.append(lambda: validate_sweep(body, spec_once(), repo, args.issue))
         # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(
-            repo, args.issue, sha, body, spec_live_ids(spec_once())))
+            repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),

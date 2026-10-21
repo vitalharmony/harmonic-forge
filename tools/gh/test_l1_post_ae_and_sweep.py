@@ -10,6 +10,8 @@ wrong.
 """
 import importlib.util
 import subprocess
+import json
+import re
 import sys
 from pathlib import Path
 from unittest import mock
@@ -68,7 +70,10 @@ AE_BODY = ("## AE — F1\n\n**Authorized:** the spec in issuecomment-77, "
            "against `feat/x` @ `abc1234`.\n**External calls authorized:** none\n"
            "**Next:** Lane 3 executes and "
            "reports.\n\nApproved, execute against the spec.")
-SPEC_BODY = "### Test Cases\n1. Does the thing.\n2. Does the other thing."
+# F1115 PATCH 1/2: a Lane 3 spec heading and its `classes=` footer, so the
+# live-id resolver can tell which cases are live (here: none).
+SPEC_BODY = ("## Lane 3 Test Spec — F1\n\n### Test Cases\n1. Does the thing.\n"
+             "2. Does the other thing.\n\n<!-- l1-post v1; kind=spec; classes=1:ac,2:ac -->")
 SWEEP_BODY = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases "
               "executable as written.\n**Blockers:** none.\n**Next:** Lane 3 "
               "executes.\n\nWrite tier: R\n\n1. TC1 -- ready\n2. TC2 -- ready")
@@ -99,7 +104,10 @@ def _fake_run(*args, **kwargs):
     elif "rev-parse" in joined:
         result.stdout = FAKE_SHA
     elif "issues/comments/" in joined and "--jq" in joined:
-        result.stdout = SPEC_BODY
+        # F1115 PATCH 2: `_spec_body` reads the comment's body and issue_url.
+        repo = re.search(r"repos/([^/]+/[^/]+)/issues/comments/", joined).group(1)
+        result.stdout = json.dumps({"body": SPEC_BODY,
+                                    "issue_url": f"https://api.github.com/repos/{repo}/issues/1"})
     elif "ls-remote" in joined:
         result.stdout = f"{FAKE_SHA}\trefs/heads/fix/1-thing"
     elif "merge-base" in joined:
@@ -419,6 +427,9 @@ TIER_P_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases exe
                 "  External calls: llm:anthropic\n")
 
 
+_REAL_SPEC_BODY = post._spec_body
+
+
 def _ae(calls: str | None) -> str:
     """AE_BODY with its `External calls authorized:` field set, or removed."""
     line = "**External calls authorized:** none\n"
@@ -445,8 +456,12 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def _spec(self, repo: str, comment, issue: int) -> str:
+        """The spec `_spec_body` returns; a test may route it through the real one."""
+        return self.spec
+
     def _run(self, ae_body: str, sweep_body: str):
-        with patch.object(post, "_spec_body", side_effect=lambda repo, comment: self.spec):
+        with patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)):
             super()._run(ae_body, sweep_body)
 
     def _standalone(self, kind: str, body: str, spec_comment: bool = True) -> None:
@@ -456,7 +471,7 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         if spec_comment:
             argv += ["--spec-comment", "999"]
         with patch.object(post, "run", side_effect=_fake_run), \
-             patch.object(post, "_spec_body", side_effect=lambda repo, comment: self.spec), \
+             patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)), \
              patch.object(post, "comment_body",
                           side_effect=lambda r, i, b: (self.posted.append(b) or ("u", len(self.posted)))), \
              patch.object(post, "write_receipt"), \
@@ -570,6 +585,72 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
     def test_a_tier_p_sweep_with_its_line_posts(self) -> None:
         self.spec = TIER_P_SPEC
         self._run(_ae("llm:anthropic"), TIER_P_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    # Sticky-wicket PATCH 1 (F1115 survivor 1): unknown live ids refuse, on every path.
+    def _every_path_refuses(self, *needles: str) -> None:
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP), *needles)
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic; paid-api:tavily")), *needles)
+        self.thread.clear()
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), *needles)
+
+    def test_a_spec_without_a_classes_footer_refuses_on_every_path(self) -> None:
+        self.spec = LIVE_SPEC.rsplit("\n\n", 1)[0]
+        self._every_path_refuses("cannot tell which Lane 3 cases are live", "classes=")
+
+    def test_a_misplaced_classes_footer_refuses_on_every_path(self) -> None:
+        self.spec = LIVE_SPEC + "\n\nAddendum: TC1 also covers the retry."
+        self._every_path_refuses("cannot tell which Lane 3 cases are live", "classes=")
+
+    def test_a_missing_eras_reader_refuses_on_every_path(self) -> None:
+        with patch.object(post, "_eras", None):
+            self._every_path_refuses("cannot tell which Lane 3 cases are live", "eras")
+
+    # Sticky-wicket PATCH 2 (F1115 survivor 2): --spec-comment must be this issue's spec.
+    def _via_real_spec_body(self, payload: dict) -> None:
+        real = _REAL_SPEC_BODY
+
+        def fetch(repo, comment, issue):
+            reply = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+            with patch.object(post, "run", return_value=reply):
+                return real(repo, comment, issue)
+        self._spec = fetch
+
+    def test_a_spec_comment_from_another_issue_refuses_on_every_path(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/2"})
+        self._every_path_refuses("--spec-comment 999 is not a comment on vitalharmony/harmonic-forge#1")
+
+    def test_a_spec_comment_from_another_repo_is_refused(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/hrse/issues/1"})
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP),
+                      "is not a comment on")
+
+    def test_a_spec_comment_without_the_spec_marker_refuses_on_every_path(self) -> None:
+        body = LIVE_SPEC.replace("## Lane 3 Test Spec — F1", "## Notes").replace("kind=spec", "kind=discussion")
+        self._via_real_spec_body({"body": body, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/1"})
+        self._every_path_refuses("--spec-comment 999 carries no Lane 3 spec marker")
+
+    def test_this_issues_spec_comment_is_accepted(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/1"})
+        self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    # Sticky-wicket PATCH 3 (F1115 survivor 3): only a Tier P spec canonicalizes P<n>.
+    def test_a_non_tier_p_sweep_with_a_leading_p1_sub_bullet_attributes_calls_correctly(self) -> None:
+        sweep = LIVE_SWEEP.replace("  External calls: llm:anthropic; paid-api:tavily\n",
+                                   "  External calls: llm:anthropic\n").replace(
+            "- TC2: ready, offline fixtures\n",
+            "- TC2: ready, offline fixtures\n  - P1 of the runbook: replay the cached fixture\n"
+            "  External calls: paid-api:serp\n")
+        self.assertEqual(post.sweep_case_external_calls(sweep),
+                         {"1": [frozenset({"llm:anthropic"})], "2": [frozenset({"paid-api:serp"})]})
+        self._run(_ae("llm:anthropic"), sweep)
         self.assertEqual(len(self.posted), 2)
 
     # Kill check 5: no prose path on either field line.

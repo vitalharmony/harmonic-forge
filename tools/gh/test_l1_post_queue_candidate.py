@@ -10,6 +10,7 @@ never derived from `LANE`), and the AC5' integration assertion that
 `main()` actually calls it on every successful post -- not merely that
 the function exists.
 """
+import json
 import sys
 import unittest
 import unittest.mock
@@ -111,7 +112,9 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "validate_ae_external_calls"), \
              unittest.mock.patch.object(L, "validate_sticky_wicket"), \
              unittest.mock.patch.object(L, "run", return_value=unittest.mock.Mock(
-                 returncode=0, stdout="## Lane 3 Test Spec")), \
+                 returncode=0, stdout=json.dumps({  # F1115 PATCH 2: body + issue_url
+                     "body": "## Lane 3 Test Spec\n\n<!-- l1-post v1; kind=spec; classes=1:ac -->",
+                     "issue_url": "https://api.github.com/repos/vitalharmony/hrse/issues/1921"}))), \
              unittest.mock.patch.object(
                  L, "post_kind", side_effect=[("https://example/ae", 1),
                                               ("https://example/sweep", 2)]), \

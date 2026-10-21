@@ -169,7 +169,11 @@ class ValidatorOrderTests(unittest.TestCase):
                    mock.patch.object(l1_post, "resolve_repo", side_effect=lambda value, *a, **k: value),
                    mock.patch.object(l1_post, "grant_on_main", return_value=False),
                    mock.patch.object(l1_post, "post_kind", return_value=("https://example/1", 1)),
-                   mock.patch.object(l1_post, "record_queue_candidate")]
+                   mock.patch.object(l1_post, "record_queue_candidate"),
+                   # F1115 PATCH 1: the live-id resolver reads a real footer; the
+                   # validator order, not the spec, is under test here.
+                   mock.patch.object(l1_post, "spec_live_ids", return_value=set()),
+                   mock.patch.object(l1_post, "spec_is_tier_p", return_value=False)]
         for name in {n for names in ORDER.values() for n in names}:
             patches.append(mock.patch.object(
                 l1_post, name, side_effect=lambda *a, _n=name, **k: calls.append(_n) or "spec"))

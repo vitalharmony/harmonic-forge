@@ -532,6 +532,8 @@ SPEC_TIER_P = (
     "| P3 | ac | Dry run again | the P1 command | 0 re-anchor |\n\n"
     "### Preconditions for Lane 1's sweep\n1. CI green.\n2. backup verified before P2.\n"
     "3. grant minted.\n4. runner installed.\n"
+    # F1115 PATCH 1: a spec's `classes=` footer is how its live cases are known.
+    "\n<!-- l1-post v1; kind=spec; classes=P1:ac,P2:ac,P3:ac -->\n"
 )
 HEAD_P = "## Gate-readiness sweep — H1896\n\nWrite tier: P\n\n"
 
@@ -585,7 +587,7 @@ class TierPCaseIdTests(unittest.TestCase):
         self.assertFalse(self._ok(sweep, spec))
 
     def test_an_incidental_test_case_heading_keeps_tier_p_detection(self):
-        spec = SPEC_TIER_P + "\n### Test case prerequisites\n1. backup\n2. grant\n"
+        spec = SPEC_TIER_P.replace("\n<!--", "\n### Test case prerequisites\n1. backup\n2. grant\n\n<!--")
         self.assertEqual(L._tier_p_ids(spec), {"1", "2", "3"})
         self.assertFalse(self._ok(HEAD_P + "### Per-case readiness\n1. ready\n2. ready\n", spec))
 
