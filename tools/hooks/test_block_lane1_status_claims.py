@@ -1069,7 +1069,7 @@ class TestF1116SameCommandVariables(_F1116Fixture):
 
     def test_ac1_export_and_quoted_operand_resolve(self):
         self.assertAllowed('export w={SCRATCH}; cd "$w" && echo x > f')
-        self.assertAllowed('export w="{SCRATCH}" && cd "${w}" && echo x > f')
+        self.assertAllowed('export w={SCRATCH} && cd ${w} && echo x >> f')
 
     def test_ac1_tilde_home_and_suffix_resolve(self):
         self.assertAllowed("w=~/scratch; cd $w/sub && echo > f")
@@ -1080,17 +1080,25 @@ class TestF1116SameCommandVariables(_F1116Fixture):
         self.assertAllowed("b={SCRATCH}; w=$b/sub; cd ${w} && echo > f")
         self.assertAllowed("b={SCRATCH}; w=${b}/sub; cd $w && echo > f")
 
-    def test_ac1_allowlist_map(self):
-        self.assertEqual(m.allowlisted_variable_cd("w=/a/b && cd $w && x"),
-                         {"w": "/a/b"})
+    def test_ac1_allowlist_single_parse(self):
+        parsed = m.allowlisted_variable_cd("w=/a/b && cd $w/x && echo y > f")
+        self.assertEqual(parsed.variables, {"w": "/a/b"})
+        self.assertEqual(parsed.cd_index, 1)
+        self.assertEqual(parsed.target, "/a/b/x")
+        self.assertEqual(parsed.segments,
+                         [["w=/a/b"], ["cd", "$w/x"], ["echo", "y", ">", "f"]])
         self.assertIsNone(m.allowlisted_variable_cd("cd $w && x"))
         self.assertIsNone(m.allowlisted_variable_cd("w=/a; cd /a && x"))
 
-    def test_ac1_directory_change_is_backward_compatible(self):
+    def test_ac1_directory_change_never_substitutes(self):
         self.assertEqual(m.directory_change(["cd", "$w"]), (None, False))
-        self.assertEqual(m.directory_change(["cd", "$w/x"], {"w": "/a"}), ("/a/x", True))
-        self.assertEqual(m.directory_change(["cd", "${w}"], {"w": "/a"}), ("/a", True))
-        self.assertEqual(m.directory_change(["cd", "$v"], {"w": "/a"}), (None, False))
+        self.assertEqual(m.directory_change(["cd", "${w}/x"]), (None, False))
+
+    def test_reforge_dir_word_count_is_over_tokens(self):
+        self.assertEqual(m._allowlist_dir_word_count(
+            [["w=/a"], ["cd", "$w"], ["time", "cd", "/b"]]), 2)
+        self.assertEqual(m._allowlist_dir_word_count(
+            [["w=/a"], ["cd", "$w"], ["echo", "cd$IFS/b"]]), 1)
 
     def test_ac1_every_other_shape_stays_unresolved(self):
         for command in (
@@ -1112,6 +1120,16 @@ class TestF1116SameCommandVariables(_F1116Fixture):
             "mkdir -p {SCRATCH}; w={SCRATCH}; cd $w && echo > f",
             "w={SCRATCH}; true; cd $w && echo > f",
             "w={SCRATCH} true; cd $w && echo > f",
+            # canonical alphabet (sticky-wicket REFORGE): `"` only as a
+            # whole `"$name"` token, so quoted values and `"${name}"` refuse
+            'export w="{SCRATCH}" && cd "${w}" && echo x > f',
+            'w="{SCRATCH}"; cd $w && echo > f',
+            'w={SCRATCH}; cd "$w/sub" && echo > f',
+            "w={SCRATCH};\tcd $w && echo > f",
+            "export\tw={SCRATCH}; cd $w && echo > f",
+            "w={SCRATCH}; cd $w && echo x>f",
+            "w={SCRATCH}>x; cd $w && echo > f",
+            "w={SCRATCH}; cd $w > f && echo > f",
             # name and value rules
             "PWD={SCRATCH}; cd $PWD && echo > f",
             "w={SCRATCH}; w={SCRATCH}; cd $w && echo > f",
@@ -1187,9 +1205,10 @@ class TestF1116Lane2(_F1116Fixture):
 
 class TestF1116CorpusRegression(_F1116Fixture):
     """harmonic-forge#1116 AC5 — the synthetic regression corpus, re-measured
-    under the allow-list: 50 of 68 resolve (ceiling 60)."""
+    under the canonical-alphabet allow-list: 32 of 68 resolve (ceiling 60).
+    Double-quoted VALUEs and `"${name}"` operands refuse since the REFORGE."""
 
-    RESOLVED = 50
+    RESOLVED = 32
 
     def test_ac5_corpus(self):
         import json
@@ -1299,10 +1318,51 @@ class TestF1116AttackShapes(_F1116Fixture):
                 self.assertIsNone(m.allowlisted_variable_cd(command))
 
     def test_name_lowercase_still_resolves(self):
-        self.assertEqual(m.allowlisted_variable_cd("w=/tmp/x; cd $w && echo x > out.txt"),
-                         {"w": "/tmp/x"})
+        self.assertEqual(
+            m.allowlisted_variable_cd("w=/tmp/x; cd $w && echo x > out.txt").variables,
+            {"w": "/tmp/x"})
         result = m.decision("w=/tmp/x; cd $w && echo x > out.txt", self.main)
         self.assertFalse(_is_denied(result))
+
+    # Reforge pass 2 survivors and the pre-existing `cd$IFS` slip: each
+    # must deny with cwd = the protected checkout.
+    def test_p3_s1_formfeed_after_export(self):
+        for ws in ("\f", "\v", "\t"):
+            with self.subTest(ws=ws):
+                command = f"export{ws}w={{SCRATCH}}; cd $w && echo x > README.md"
+                self.assertIsNone(m.allowlisted_variable_cd(self.fill(command)))
+                self.assertDenied(command)
+
+    def test_p3_s2_quote_concatenated_cd_after_the_cd(self):
+        for command in (
+            "w={SCRATCH}; cd $w && builtin c''d {MAIN} && echo x > tracked.md",
+            "w={SCRATCH}; cd $w && eval c''d {MAIN} && echo x > tracked.md",
+            'w={SCRATCH}; cd $w && builtin "c"d {MAIN} && echo x > tracked.md',
+            "w={SCRATCH}; cd $w && builtin c\\d {MAIN} && echo x > tracked.md",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(m.allowlisted_variable_cd(self.fill(command)))
+                self.assertDenied(command)
+
+    def test_p3_cd_ifs_path(self):
+        self.assertDenied("w={SCRATCH}; cd $w && cd$IFS{MAIN} && echo x > tracked.md")
+        self.assertDenied("w={SCRATCH}; cd$IFS$w && echo x > tracked.md")
+
+    def test_reforge_gate_rejects_backtick_redirect_target(self):
+        self.assertDenied("w={SCRATCH}; cd $w && echo x > `printf {MAIN}/tracked.md`")
+
+    def test_reforge_dispatch_word_after_the_cd(self):
+        for word in ("source", "builtin", "command", "eval", "exec", "env",
+                     "xargs", "bash", "sh", "time", "coproc"):
+            with self.subTest(word=word):
+                command = f"w={{SCRATCH}}; cd $w && {word} s.sh && echo x > tracked.md"
+                self.assertIsNone(m.allowlisted_variable_cd(self.fill(command)))
+                self.assertDenied(command)
+
+    def test_reforge_no_dollar_after_the_cd(self):
+        self.assertDenied("w={SCRATCH}; cd $w && echo x > $HOME/proj/tracked.md")
+        self.assertIsNone(m.allowlisted_variable_cd("w=/a; cd $w && echo x > ~/f"))
+        self.assertIsNone(m.allowlisted_variable_cd("w=/a; cd $w && echo x > ~-/f"))
 
     def test_first_ac6_a_mktemp_lookalike(self):
         self.assertDenied("t=$(mktemp -d >&2; echo {MAIN}); cd $t && echo > tracked.md")

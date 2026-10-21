@@ -1,5 +1,5 @@
 {
- "_comment": "harmonic-forge#1116 AC5: synthetic regression corpus built from the issue's measured distribution (58 literal / 6 mktemp / 2 chained / 1 literal parse-miss / 1 outer-shell). Not a replay of the measured commands. {MAIN} is a git checkout on main with tracked.md; {SCRATCH} is an untracked dir; HOME is pinned to their common parent, so ~/proj and ~/scratch name them. Reforged to the AC1 allow-list (2026-10-21): pushd rows, mktemp rows (AC3 dropped) and the newline-joined row now refuse as unresolved, as on origin/main. Sticky-wicket PATCH (2026-10-21): assigned and cd names must match [a-z][a-z0-9_]*, so the resolving rows (0-57, 64, 65) use lowercase names; an uppercase spelling of any of them now refuses as unresolved.",
+ "_comment": "harmonic-forge#1116 AC5: synthetic regression corpus built from the issue's measured distribution (58 literal / 6 mktemp / 2 chained / 1 literal parse-miss / 1 outer-shell). Not a replay of the measured commands. {MAIN} is a git checkout on main with tracked.md; {SCRATCH} is an untracked dir; HOME is pinned to their common parent, so ~/proj and ~/scratch name them. Reforged to the AC1 allow-list (2026-10-21): pushd rows, mktemp rows (AC3 dropped) and the newline-joined row now refuse as unresolved, as on origin/main. Sticky-wicket PATCH (2026-10-21): assigned and cd names must match [a-z][a-z0-9_]*, so the resolving rows (0-57, 64, 65) use lowercase names; an uppercase spelling of any of them now refuses as unresolved. Sticky-wicket REFORGE 2 (2026-10-21, canonical alphabet): a `\"` is legal only as a whole `\"$name\"` token, so rows with a double-quoted VALUE or a `\"${name}\"` operand now refuse as unresolved, as on origin/main (rows 3, 8, 13, 18, 23, 28, 33, 38, 40, 41, 42, 43, 45, 46, 47, 48, 50, 51).",
  "rows": [
   {
    "shape": "literal-assignment",
@@ -19,7 +19,7 @@
   {
    "shape": "literal-assignment",
    "command": "w={SCRATCH}; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -44,7 +44,7 @@
   {
    "shape": "literal-assignment",
    "command": "export w={SCRATCH}; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -69,7 +69,7 @@
   {
    "shape": "literal-assignment",
    "command": "w=~/scratch; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -94,7 +94,7 @@
   {
    "shape": "literal-assignment",
    "command": "export w=~/scratch; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -119,7 +119,7 @@
   {
    "shape": "literal-assignment",
    "command": "w=$HOME/scratch; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -144,7 +144,7 @@
   {
    "shape": "literal-assignment",
    "command": "export w=$HOME/scratch; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -169,7 +169,7 @@
   {
    "shape": "literal-assignment",
    "command": "w=${HOME}/scratch; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -194,7 +194,7 @@
   {
    "shape": "literal-assignment",
    "command": "export w=${HOME}/scratch; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -204,22 +204,22 @@
   {
    "shape": "literal-assignment",
    "command": "w=\"{SCRATCH}\"; cd $w && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "w=\"{SCRATCH}\"; cd \"$w\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "w=\"{SCRATCH}\"; cd ${w} && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "w=\"{SCRATCH}\"; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -229,22 +229,22 @@
   {
    "shape": "literal-assignment",
    "command": "export w=\"{SCRATCH}\"; cd $w && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "export w=\"{SCRATCH}\"; cd \"$w\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "export w=\"{SCRATCH}\"; cd ${w} && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "export w=\"{SCRATCH}\"; cd \"${w}\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -254,12 +254,12 @@
   {
    "shape": "literal-assignment",
    "command": "w=\"$HOME/scratch\"; cd $w && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
    "command": "w=\"$HOME/scratch\"; cd \"$w\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",

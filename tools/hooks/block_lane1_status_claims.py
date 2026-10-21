@@ -103,6 +103,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 from shell_parse import (  # noqa: E402  (harmonic-forge#167)
@@ -1110,145 +1111,191 @@ def protected_write_denial(
     return None
 
 
-# harmonic-forge#1116 (reforged to an allow-list after two preclose passes
-# found ten deny-list bypasses): a variable `cd` operand resolves only for ONE
-# exact raw-text shape. Everything else stays unresolvable, as before.
-ALLOWLIST_FORBIDDEN = re.compile(r"[\n\r|()`\\<]|\$\(|(?<!&)&(?!&)|&&&")
-# Positive name pattern (sticky-wicket PATCH): lowercase, no leading `_`. Every
-# bash special/dynamic/readonly variable is uppercase or `_`, so none can match
-# and nothing is enumerated. `$HOME` is accepted only in the VALUE grammar's
-# explicit branch below.
+# harmonic-forge#1116 (allow-list, then sticky-wicket REFORGE 2026-10-21): a
+# variable `cd` operand resolves only for ONE exact shape, decided over a
+# canonical alphabet in which splitting on single spaces IS bash's
+# tokenization. Nothing quotes, escapes, globs or expands in that alphabet
+# except `$name`/`${name}`, so the guard's tokens equal bash's by
+# construction (no `\f`, `c''d`, `"c"d`, `$'..'`, `$IFS` spelling can
+# differ). Everything else stays unresolvable, as on origin/main.
+ALLOWLIST_ALPHABET = re.compile(r'[A-Za-z0-9 ._/~@+=$;&{}">-]*')
 ALLOWLIST_NAME = r"[a-z][a-z0-9_]*"
+# A `"` is legal only as the whole token `"$name"`.
+ALLOWLIST_QUOTED_TOKEN = re.compile(rf'"\$({ALLOWLIST_NAME})"')
+ALLOWLIST_BRACED = re.compile(rf"\$\{{(?:{ALLOWLIST_NAME}|HOME)\}}")
 SHELL_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 ALLOWLIST_PATH_CHARS = r"[A-Za-z0-9._/@+-]"
-ALLOWLIST_ASSIGNMENT = re.compile(
-    rf"(?:export\s+)?(?P<name>{ALLOWLIST_NAME})=(?P<value>\S*)")
 ALLOWLIST_VALUE = re.compile(
     rf"(?:(?P<abs>/{ALLOWLIST_PATH_CHARS}*)"
     rf"|(?P<tilde>~)(?P<tsuffix>/{ALLOWLIST_PATH_CHARS}*)?"
     rf"|\$(?:(?P<home>HOME)|\{{(?P<bhome>HOME)\}}"
     rf"|(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
     rf"(?P<vsuffix>/{ALLOWLIST_PATH_CHARS}*)?)")
-ALLOWLIST_CD = re.compile(
-    rf"cd\s+(?P<q>\"?)\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
-    rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?(?P=q)")
-ALLOWLIST_DIR_WORD = re.compile(r"(?:^|[\s;&\"'])(?:cd|pushd|popd)(?=$|[\s;&\"'])")
-ALLOWLIST_COMPOUND_WORD = re.compile(
-    r"(?:^|[\s;&])(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|"
-    r"select|function|coproc|time)(?=$|[\s;&])")
+ALLOWLIST_OPERAND = re.compile(
+    rf"\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
+    rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?")
+ALLOWLIST_COMMAND_WORD = re.compile(r"[a-z][a-z0-9._-]*")
+# Words that run their arguments as a command (or run a script in this shell):
+# in the canonical alphabet no expansion can manufacture a command word, so
+# blocking these as the first word of a post-cd segment is complete.
+ALLOWLIST_DISPATCH_WORDS = frozenset({
+    "cd", "pushd", "popd", "builtin", "command", "eval", "exec", "source",
+    ".", "env", "xargs", "bash", "sh", "time", "coproc",
+})
+ALLOWLIST_DIR_WORDS = frozenset({"cd", "pushd", "popd"})
 VARIABLE_OPERAND = re.compile(rf"\$(?:(?P<var>{SHELL_NAME})|\{{(?P<bvar>{SHELL_NAME})\}})")
 
 
-def _allowlist_split(command: str) -> tuple[list[str], list[str]] | None:
-    """Split on `&&`/`;` outside quotes: `(segments, separators)`, or None
-    for unbalanced quotes or an empty segment."""
-    segments: list[str] = []
+class AllowlistedCd(NamedTuple):
+    """The one parse of an AC1 command: the assigned names, the index of the
+    `cd` segment in the `;`/`&&` chain, and the directory it resolves to."""
+    variables: dict[str, str]
+    cd_index: int
+    target: str
+    segments: list[list[str]]
+
+
+def _allowlist_tokens(command: str) -> tuple[list[list[str]], list[str]] | None:
+    """Character gate, then the single parse: `(segments, separators)`.
+
+    `segments` are lists of tokens split on single spaces; a `"$name"` token
+    is unquoted to `$name`. None when any character is outside the canonical
+    alphabet, a `"` is not exactly a whole `"$name"` token, a `{`/`}` is not
+    part of `${name}`, an `&` is not part of `&&`, or a segment is empty.
+    """
+    if not ALLOWLIST_ALPHABET.fullmatch(command):
+        return None
+    if re.search(r"[{}]", ALLOWLIST_BRACED.sub("", command)):
+        return None
+    parts = re.split(r"(;|&&)", command)
+    segments: list[list[str]] = []
     separators: list[str] = []
-    current: list[str] = []
-    quote = ""
-    index = 0
-    while index < len(command):
-        char = command[index]
-        if quote:
-            if char == quote:
-                quote = ""
-            current.append(char)
-            index += 1
+    for index, part in enumerate(parts):
+        if index % 2:
+            separators.append(part)
             continue
-        if char in "'\"":
-            quote = char
-            current.append(char)
-            index += 1
-            continue
-        if char == ";" or command.startswith("&&", index):
-            separators.append(";" if char == ";" else "&&")
-            segments.append("".join(current).strip())
-            current = []
-            index += 1 if char == ";" else 2
-            continue
-        current.append(char)
-        index += 1
-    if quote:
-        return None
-    segments.append("".join(current).strip())
-    if any(not segment for segment in segments):
-        return None
+        if "&" in part:
+            return None
+        tokens = [token for token in part.split(" ") if token]
+        if not tokens:
+            return None
+        unquoted: list[str] = []
+        for token in tokens:
+            if '"' in token:
+                quoted = ALLOWLIST_QUOTED_TOKEN.fullmatch(token)
+                if quoted is None:
+                    return None
+                token = "$" + quoted.group(1)
+            unquoted.append(token)
+        segments.append(unquoted)
     return segments, separators
 
 
-def allowlisted_variable_cd(command: str) -> dict[str, str] | None:
-    """`{NAME: path}` when `command` is exactly the AC1 shape, else None.
+def _allowlist_dir_word_count(segments: list[list[str]]) -> int:
+    """Directory-changing words, counted over the parsed tokens."""
+    return sum(token in ALLOWLIST_DIR_WORDS
+               for tokens in segments for token in tokens)
 
-    The whole raw command must be one flat chain of simple segments joined by
-    `&&`/`;`; every segment before the single `cd` is `NAME=VALUE` or
-    `export NAME=VALUE` with a literal absolute VALUE (`/...`, `~/...`,
-    `$HOME/...` or an earlier `$NAME/...`); the `cd` operand is an unescaped
-    `$NAME`, `"$NAME"` or `${NAME}` plus an optional literal suffix; there is
-    no other directory change; every separator after the `cd` is `&&`; and no
-    assigned NAME appears after the `cd`. No partial maps: anything else is
-    None, and the operand stays unresolvable exactly as before
-    (harmonic-forge#1116 AC1, fail closed).
+
+def _allowlist_post_cd_ok(tokens: list[str], names: set[str]) -> bool:
+    """A segment after the `cd`: literal, non-dispatching first word, no `$`
+    or `~` anywhere, `>`/`>>` only as standalone redirection tokens followed
+    by a word, and no assigned NAME as an identifier."""
+    if not ALLOWLIST_COMMAND_WORD.fullmatch(tokens[0]):
+        return False
+    if tokens[0] in ALLOWLIST_DISPATCH_WORDS:
+        return False
+    for position, token in enumerate(tokens):
+        if "$" in token or "~" in token:
+            return False
+        if ">" in token:
+            if token not in (">", ">>") or position == 0:
+                return False
+            following = tokens[position + 1] if position + 1 < len(tokens) else ""
+            if not following or ">" in following:
+                return False
+        for name in names:
+            if re.search(rf"(?<![A-Za-z0-9_]){name}(?![A-Za-z0-9_])", token):
+                return False
+    return True
+
+
+def allowlisted_variable_cd(command: str) -> AllowlistedCd | None:
+    """The single parse of `command` when it is exactly the AC1 shape, else
+    None (harmonic-forge#1116, fail closed; no partial maps).
+
+    Character gate first (`_allowlist_tokens`). Then over its tokens: every
+    segment before the single `cd` is `name=VALUE` or `export name=VALUE`
+    (lowercase names, each assigned once, VALUE `/...`, `~/...`, `$HOME/...`
+    or an earlier `$name/...`); the `cd` segment is exactly `cd` plus
+    `$name`, `"$name"` or `${name}` with an optional literal suffix; there is
+    exactly one directory word; every separator after the `cd` is `&&`; and
+    every later segment passes `_allowlist_post_cd_ok`. `>` and `>>` are legal
+    only there, as standalone tokens, never in the assignment or `cd` part.
+    `decision()` uses `cd_index` and `target` from this result and never
+    re-derives them.
     """
-    if ALLOWLIST_FORBIDDEN.search(command):
+    parsed = _allowlist_tokens(command)
+    if parsed is None:
         return None
-    unbraced = re.sub(rf"\$\{{(?:{ALLOWLIST_NAME}|HOME)\}}", "", command)
-    if "{" in unbraced or "}" in unbraced:
+    segments, separators = parsed
+    if _allowlist_dir_word_count(segments) != 1:
         return None
-    if ALLOWLIST_COMPOUND_WORD.search(command):
-        return None
-    if len(ALLOWLIST_DIR_WORD.findall(command)) != 1:
-        return None
-    split = _allowlist_split(command)
-    if split is None:
-        return None
-    segments, separators = split
-    cd_index = next((i for i, segment in enumerate(segments)
-                     if ALLOWLIST_CD.fullmatch(segment)), None)
+    cd_index = next((i for i, tokens in enumerate(segments)
+                     if tokens[0] == "cd"), None)
     if cd_index is None or cd_index == 0:
+        return None
+    cd_tokens = segments[cd_index]
+    if len(cd_tokens) != 2:
         return None
     if any(separator != "&&" for separator in separators[cd_index:]):
         return None
+    before = segments[:cd_index]
+    if any(">" in token for tokens in before for token in tokens):
+        return None
     home = os.path.expanduser("~")
     variables: dict[str, str] = {}
-    for segment in segments[:cd_index]:
-        match = ALLOWLIST_ASSIGNMENT.fullmatch(segment)
+    for tokens in before:
+        if tokens[0] == "export":
+            tokens = tokens[1:]
+        if len(tokens) != 1:
+            return None
+        match = re.fullmatch(rf"(?P<name>{ALLOWLIST_NAME})=(?P<value>.*)", tokens[0])
         if match is None:
             return None
         name, value = match.group("name"), match.group("value")
         if name in variables:
             return None
-        quoted = len(value) >= 2 and value[0] == value[-1] == '"'
-        if quoted:
-            value = value[1:-1]
-        if '"' in value or "'" in value:
+        parsed_value = ALLOWLIST_VALUE.fullmatch(value)
+        if parsed_value is None:
             return None
-        parsed = ALLOWLIST_VALUE.fullmatch(value)
-        if parsed is None:
-            return None
-        if parsed.group("abs") is not None:
-            resolved = parsed.group("abs")
-        elif parsed.group("tilde") is not None:
-            if quoted:
-                return None
-            resolved = home + (parsed.group("tsuffix") or "")
+        if parsed_value.group("abs") is not None:
+            resolved = parsed_value.group("abs")
+        elif parsed_value.group("tilde") is not None:
+            resolved = home + (parsed_value.group("tsuffix") or "")
         else:
-            if parsed.group("home") or parsed.group("bhome"):
+            if parsed_value.group("home") or parsed_value.group("bhome"):
                 base: str | None = home
             else:
-                base = variables.get(parsed.group("var") or parsed.group("bvar"))
+                base = variables.get(parsed_value.group("var")
+                                     or parsed_value.group("bvar"))
             if base is None:
                 return None
-            resolved = base + (parsed.group("vsuffix") or "")
+            resolved = base + (parsed_value.group("vsuffix") or "")
         variables[name] = resolved
-    cd = ALLOWLIST_CD.fullmatch(segments[cd_index])
-    assert cd is not None
-    if (cd.group("var") or cd.group("bvar")) not in variables:
+    operand = ALLOWLIST_OPERAND.fullmatch(cd_tokens[1])
+    if operand is None:
         return None
-    rest = " ".join(segments[cd_index + 1:])
-    for name in variables:
-        if re.search(rf"(?<![A-Za-z0-9_]){name}(?![A-Za-z0-9_])", rest):
-            return None
-    return variables
+    name = operand.group("var") or operand.group("bvar")
+    if name not in variables:
+        return None
+    names = set(variables)
+    if not all(_allowlist_post_cd_ok(tokens, names)
+               for tokens in segments[cd_index + 1:]):
+        return None
+    return AllowlistedCd(variables, cd_index,
+                         variables[name] + (operand.group("suffix") or ""),
+                         segments)
 
 
 def unresolved_variable(segment: list[str]) -> str | None:
@@ -1268,9 +1315,7 @@ def unresolved_variable(segment: list[str]) -> str | None:
     return match.group("var") or match.group("bvar")
 
 
-def directory_change(segment: list[str],
-                     variables: dict[str, str] | None = None,
-                     ) -> tuple[str | None, bool] | None:
+def directory_change(segment: list[str]) -> tuple[str | None, bool] | None:
     """`(target, resolvable)` when `segment` changes directory, else None.
 
     `resolvable` is False when the change is real but its destination cannot be
@@ -1278,11 +1323,9 @@ def directory_change(segment: list[str],
     or any operand carrying `$`/backtick. The caller must not silently keep
     using the old cwd in that case: a relative write target resolved against a
     directory the command has already left is a guess, and the guess fails
-    open (harmonic-forge#529).
-
-    `variables` is `allowlisted_variable_cd`'s map, and only that
-    (harmonic-forge#1116): a `$NAME`/`${NAME}` operand, plus a literal suffix,
-    is substituted from it. The raw-text shape was already proven there.
+    open (harmonic-forge#529). A same-command variable operand is resolved
+    only by `decision()`, from `allowlisted_variable_cd`'s single parse
+    (harmonic-forge#1116), never here.
     """
     index = 0
     while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
@@ -1294,14 +1337,6 @@ def directory_change(segment: list[str],
     if not operands:
         return (None, False)
     target = operands[0]
-    if variables:
-        match = re.fullmatch(
-            rf"\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
-            rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?", target)
-        if match is not None:
-            name = match.group("var") or match.group("bvar")
-            if name in variables:
-                return (variables[name] + (match.group("suffix") or ""), True)
     if DYNAMIC_TOKEN.search(target):
         return (None, False)
     return (target, True)
@@ -1402,10 +1437,20 @@ def decision(command: object, cwd: Path) -> dict:
     # later segment looks ordinary.
     cwd_unresolved = False
     # harmonic-forge#1116: the one allow-listed variable `cd` shape, or None.
-    variables = allowlisted_variable_cd(command)
+    # Its single parse names the cd segment and its directory; the guard's
+    # own tokenizer must agree on the segment count and that the segment is
+    # that `cd`, or nothing is resolved (fail closed).
+    allowed = allowlisted_variable_cd(command)
+    if allowed is not None and (
+            len(segments) != len(allowed.segments)
+            or segments[allowed.cd_index][:1] != ["cd"]):
+        allowed = None
     unresolved_name: str | None = None
-    for segment in segments:
-        change = directory_change(segment, variables)
+    for position, segment in enumerate(segments):
+        if allowed is not None and position == allowed.cd_index:
+            effective_cwd = Path(allowed.target)
+            continue
+        change = directory_change(segment)
         if change is not None:
             target, resolvable = change
             if not resolvable or target is None:
