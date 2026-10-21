@@ -105,6 +105,11 @@ def boundary_argv(writable: Path, transcripts: Path | None = None, *,
     for tool in TOOLCHAIN:
         argv += _ro(tool)
     if profile == "agent":
+        if CLAUDE_HOME.exists():
+            # bwrap cannot create a mount point inside the read-only CLAUDE_HOME
+            # bind, so both must exist on the host first (harmonic-forge#1132).
+            for point in (CLAUDE_STATE, TRANSCRIPTS):
+                point.mkdir(mode=0o700, parents=True, exist_ok=True)
         argv += _ro(CLAUDE_HOME) + _ro(CLAUDE_JSON) + _ro(CLAUDE_INSTALL) + _ro(RUNNER_GH)
         if TRUSTED_LINK.is_symlink():
             argv += _ro(TRUSTED_LINK.resolve())
