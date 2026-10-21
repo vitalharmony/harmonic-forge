@@ -210,6 +210,15 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(_is_denied(result))
         self.assertIn("--repo", result["systemMessage"])
 
+    def test_a3_a_raw_l3f_token_post_with_no_repo_is_denied(self):
+        """harmonic-forge#1108 (a3): a `## L3P`/`## L3F` token is a possible
+        gate report, so a raw post of one must name its repo."""
+        for body in ("## L3F — H1\n\nTC3 failed.\n", "## L3P — H1\n"):
+            with self.subTest(body=body):
+                result = self._no_repo_file_post(body)
+                self.assertTrue(_is_denied(result))
+                self.assertIn("--repo", result["systemMessage"])
+
     def test_a_non_gate_comment_with_no_repo_is_allowed(self):
         self.assertFalse(_is_denied(self._no_repo_file_post(NON_GATE_BODY)))
 

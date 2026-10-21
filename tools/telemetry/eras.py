@@ -56,7 +56,7 @@ if str(_GH) not in sys.path:
 
 import gate_ci  # noqa: E402
 
-EXTRACTOR_VERSION = "threads-4"
+EXTRACTOR_VERSION = "threads-5"
 #: `post_lane_discussion.py` stamps `posted-by=LANE-unset` when LANE is unset.
 _POSTED_BY = re.compile(r"posted-by=LANE(\d|-unset)\b", re.I)
 #: A comment's own footer stands on a line of its own; the last one is l1_post's.

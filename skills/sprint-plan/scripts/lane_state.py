@@ -37,8 +37,19 @@ the tool-call level.
 from __future__ import annotations
 
 import re
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import NamedTuple
+
+# harmonic-forge#1108: one gate-result recognizer. Stripping and the gate
+# heading come from `tools/gh` (the same modules `gate_ci` reads), so a comment
+# this module scores is one `gate_ci` checks. Mirrors `gate_ci.py`'s own
+# `sys.path` insert; `gate_ci` never imports this module, so there is no cycle.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools" / "gh"))
+import markdown_strip  # noqa: E402
+import gate_ci  # noqa: E402
+from gate_ci import GATE_HEADING, GATE_TOKEN  # noqa: E402
 
 #: `L` + lane digit + one letter, per `harmonic-forge/rules/lane-shorthand.md`
 #: — the canonical table (`3-lane-protocol.md` R-0206 points there and keeps
@@ -62,17 +73,14 @@ _LANE_TOKEN = re.compile(r"^##\s+L(?P<lane>[123])(?P<code>[PDSFB])\b", re.M)
 #: protocol working, and it routes to remediation, never back a lane.
 _PLAN_POSTED = {("2", "P"), ("2", "S")}
 _LANE2_DONE = {("2", "D")}
-_GATE_PASSED = {("3", "P")}
-_GATE_FAILED = {("3", "F")}
 _SPEC_POSTED = {("3", "S")}
 
-#: Lane 3's gate verdict, as actually posted — a heading, not an `L3P`/`L3F`
-#: token. Non-greedy up to the first PASS/FAIL so a FAIL whose parenthetical
-#: reads "(migration executed successfully; ...)" is still a FAIL.
-_GATE_RESULT = re.compile(r"^##\s+Lane 3 Gate Results\b[^\n]*?\b(PASS|FAIL)\b", re.M)
-#: The same heading with neither verdict in it: a gate comment this module
-#: cannot score. Unrecognized, never silently skipped.
-_GATE_HEADING = re.compile(r"^##\s+Lane 3 Gate Results\b", re.M)
+#: Lane 3's gate verdict has NO recognizer in this module (harmonic-forge#1108
+#: pass-1 sticky-wicket): `gate.pass`/`gate.fail` come from
+#: `gate_ci.verdict_of` alone, and the gate heading is `gate_ci.GATE_HEADING`
+#: itself. A second recognizer for one fact is the drift that issue removed;
+#: `test_one_gate_recognizer.py` greps this file so it cannot come back.
+_GATE_HEADING = GATE_HEADING
 
 #: hrse#1590: the footer is the AUTHORITY, not one of two equal signals.
 #: `l1_post.py` stamps it on every artifact it posts and refuses to post
@@ -116,6 +124,9 @@ _SPEC_HEADING = re.compile(r"^#{1,4}\s*Lane 3 Test Spec\b", re.M | re.I)
 #: another comment is not mistaken for one (`milestone_summary_analysis.py`
 #: strips fences before its `## Dependencies` search for the same reason).
 _HANDOFF_HEADING = re.compile(r"^##\s+Handoff\b", re.M)
+#: No longer read here (harmonic-forge#1108 strips with
+#: `markdown_strip.visible_text`); kept because `tools/telemetry/eras.py`
+#: imports it, and that reader is outside #1108's scope.
 _FENCE = re.compile(r"```.*?```", re.S)
 
 #: hrse#1589: Plan-First is DECLARED by `l1_post.py`, not inferred from prose.
@@ -370,8 +381,9 @@ _KIND_KEY = {"handoff": KEY_HANDOFF, "discussion": KEY_DISCUSSION,
              "spec": KEY_SPEC_POSTED, "rework": KEY_REWORK}
 
 _TOKEN_KEY = {("2", "P"): KEY_PLAN_POSTED, ("2", "S"): KEY_PLAN_POSTED,
-              ("2", "D"): KEY_L2_DONE, ("3", "P"): KEY_GATE_PASS,
-              ("3", "F"): KEY_GATE_FAIL, ("3", "S"): KEY_SPEC_POSTED}
+              ("2", "D"): KEY_L2_DONE, ("3", "S"): KEY_SPEC_POSTED}
+#: Lane 3 verdict tokens: scored by `gate_ci.verdict_of`, never from here.
+_GATE_VERDICT_TOKENS = {("3", "P"), ("3", "F")}
 
 
 def _validated(kind: str, body: str) -> bool:
@@ -397,7 +409,7 @@ def _scan_comment(comment: dict) -> list[Transition]:
     #: heading for exactly this reason; the fix is applying that everywhere a
     #: marker is read, footers included. A footer inside a fence is quoted
     #: evidence too, and `l1_post.py` never emits one there.
-    body = _FENCE.sub("", raw)
+    body = markdown_strip.visible_text(raw)
     ident = str(comment.get("id") or "")
     at = str(comment.get("createdAt") or comment.get("created_at") or "")
 
@@ -425,31 +437,34 @@ def _scan_comment(comment: dict) -> list[Transition]:
     # exactly the metric hrse#1194 is being built to compute.
     if key != KEY_SPEC_POSTED and _SPEC_HEADING.search(body):
         out.append(made(KEY_SPEC_POSTED, "heading:spec"))
-    gate = _GATE_RESULT.search(body)
-    # harmonic-forge#473: a `kind=gate-result` footer UPGRADES this
-    # transition rather than adding one. The verdict is only in the heading —
-    # a footer cannot carry PASS/FAIL — so the footer's contribution is
-    # provenance and attestation, not a second, verdict-less transition. This
-    # is the one artifact where footer-as-authority and
-    # heading-as-cross-check are the same object.
+    # harmonic-forge#1108: the verdict is `gate_ci.verdict_of`'s, exactly.
+    # PASS -> gate.pass, FAIL -> gate.fail; BLOCKED, CONFLICT or None is
+    # neither, matching gate_ci's fail-toward-more-checks rule.
+    # A `kind=gate-result` footer UPGRADES the transition (harmonic-forge#473):
+    # provenance and attestation, never a second, verdict-less transition.
     attested = kind == "gate-result"
     provenance = "footer:gate-result" if attested else "heading:gate-result"
     validated = _validated(kind, body) if attested else False
-    if gate:
-        out.append(made(KEY_GATE_PASS if gate.group(1) == "PASS" else KEY_GATE_FAIL,
-                        provenance, validated))
-    elif _GATE_HEADING.search(body):
-        # A gate comment naming no verdict. BLOCKED is a legitimate third
-        # outcome and this module still cannot score it, so it stays
-        # `unknown` — attested or not. An attested unreadable artifact is
-        # still unreadable, and marking it `validated` would say the
-        # opposite.
+    # `verdict_of` reads the whole body when there is no gate heading, so it
+    # is only asked about a recognized gate comment (harmonic-forge#1108
+    # pass 2): a `Result: PASS` in an L2D is not a gate.
+    is_gate = bool(GATE_HEADING.search(body) or GATE_TOKEN.search(body))
+    verdict = gate_ci.verdict_of(raw) if is_gate else None
+    if verdict == "PASS":
+        out.append(made(KEY_GATE_PASS, provenance, validated))
+    elif verdict == "FAIL":
+        out.append(made(KEY_GATE_FAIL, provenance, validated))
+    elif is_gate:
+        # A gate comment with no scorable verdict (BLOCKED, CONFLICT, none):
+        # `unknown` — attested or not.
         out.append(made(KEY_UNKNOWN, provenance))
     token = _LANE_TOKEN.search(body)
     if token:
         pair = (token.group("lane"), token.group("code"))
         spelling = f"token:L{pair[0]}{pair[1]}"
-        if pair in _TOKEN_KEY:
+        if pair in _GATE_VERDICT_TOKENS:
+            pass  # scored above, through gate_ci
+        elif pair in _TOKEN_KEY:
             out.append(made(_TOKEN_KEY[pair], spelling))
         elif pair[1] == "B":
             out.append(made(KEY_BLOCKED_LANE, spelling))
@@ -501,7 +516,7 @@ class _Markers:
         self.plan_first: bool | None = None
         self.timeline: list[Transition] = []
         for index, comment in enumerate(comments):
-            body = _FENCE.sub("", comment.get("body") or "")
+            body = markdown_strip.visible_text(comment.get("body") or "")
             found = _scan_comment(comment)
             self.timeline.extend(found)
             # The `elif` hrse#1584 wrote, restated for a scan that now emits
