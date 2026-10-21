@@ -397,8 +397,8 @@ def _fresh_entry(raw_key: str, now: datetime, expires: datetime, actions,
 def _prune(state: dict, now: datetime) -> dict:
     """Drop entries expired more than `PRUNE_GRACE_HOURS` ago (AC1).
 
-    Called only from `authorize()`/`top_up()`, inside the `_locked_state` lock
-    they already hold -- never from `_save()`, never as a separate sweep
+    Called only from `authorize()`/`top_up()`/`prune_now()` (harmonic-forge#1124),
+    inside the `_locked_state` lock they already hold -- never from `_save()`, never as a separate sweep
     (AC2). A live entry is never a candidate: liveness is checked first and
     unconditionally, so AC3 holds regardless of how the grace window is
     tuned. An entry whose `expires_at` cannot be parsed is kept rather than
@@ -499,6 +499,7 @@ def top_up(
             key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
             fresh.append(key)
         _save(state, state_path)
+    _archive_imc_hook_records(now, actual_path)
     return fresh
 
 
@@ -528,6 +529,89 @@ def authorize(
         for raw_key in keys:
             key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
         _save(state, state_path)
+    _archive_imc_hook_records(now, actual_path)
+
+
+def _archive_imc_hook_records(now: datetime, actual_path: Path) -> None:
+    """harmonic-forge#1124 AC4: archive expired, receipt-less IMC hook records
+    in the `imc/` directory beside THIS state file -- never the default IMC
+    store, so a test's temp state path cannot reach the real one. Run after
+    the locked section; any error is swallowed (pruning is best effort)."""
+    try:
+        gh_dir = str(Path(__file__).resolve().parent.parent / "gh")
+        if gh_dir not in sys.path:
+            sys.path.insert(0, gh_dir)
+        import imc_waiver  # noqa: PLC0415
+        imc_waiver.archive_expired_hook_records(now, imc_dir=actual_path.parent / "imc")
+    except Exception:
+        pass
+
+
+#: harmonic-forge#1124: the real state file, named once so a test process can
+#: never prune it through a default argument.
+_REAL_STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
+
+
+def prune_now(state_path: Path | None = None, now: datetime | None = None) -> int:
+    """AC5 (harmonic-forge#1124): prune off the BATCH line -- `_load`,
+    `_prune`, `_save` (only if changed) under `_locked_state`. Returns the
+    number of entries dropped; a busy lock skips one prune (returns 0)."""
+    actual_path = STATE_PATH if state_path is None else state_path
+    under_test = "unittest" in sys.modules or os.environ.get("HARMONIC_FORGE_TESTING") == "1"
+    try:
+        if under_test and actual_path.resolve() == _REAL_STATE_PATH.resolve():
+            return 0
+    except OSError:
+        return 0
+    moment = now or _now()
+    dropped = 0
+    try:
+        with _locked_state(actual_path):
+            state = _load(actual_path)
+            kept = _prune(state, moment)
+            dropped = len(state) - len(kept)
+            if dropped:
+                _save(kept, actual_path)
+    except StateLockTimeout:
+        return 0
+    _archive_imc_hook_records(moment, actual_path)
+    return dropped
+
+
+def closed_keys(command: str) -> list[tuple[str, str, int]]:
+    """harmonic-forge#1124 AC2: `(key, repo, number)` for every vitalharmony
+    issue-close segment in `command` (`classify_issue_close`'s grammar). No
+    lock, no network: the caller confirms the close landed."""
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return []
+    found: list[tuple[str, str, int]] = []
+    for raw in segments:
+        info = classify_issue_close(strip_invocation_prefix(raw))
+        if info is None:
+            continue
+        repo, number = info
+        if not repo or not number or not str(repo).lower().startswith("vitalharmony/"):
+            continue
+        key = issue_key(repo, number)
+        if key:
+            found.append((key, repo, int(number)))
+    return found
+
+
+def has_close_or_merge(command: str) -> bool:
+    """Whether any segment is an issue close or a PR merge -- the commands
+    after which `batch_consume.py` prunes (harmonic-forge#1124 AC5)."""
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return False
+    for raw in segments:
+        tokens = strip_invocation_prefix(raw)
+        if classify_issue_close(tokens) is not None or classify_pr_merge(tokens) is not None:
+            return True
+    return False
 
 
 def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None) -> None:

@@ -91,8 +91,10 @@ class RecordTests(unittest.TestCase):
         self.assertFalse(self.receipt_exists())
 
     def test_refuses_with_an_expired_hook_record(self) -> None:
-        self.hook_record(self.now - timedelta(hours=12, minutes=1))
+        # Grant first: since harmonic-forge#1124 a BATCH authorize archives an
+        # expired, receipt-less hook record beside its state file.
         self.grant()
+        self.hook_record(self.now - timedelta(hours=12, minutes=1))
         with self.assertRaises(SystemExit) as refused:
             self.record()
         self.assertIn("expired", str(refused.exception))
@@ -579,6 +581,123 @@ class StateDirTests(unittest.TestCase):
     def test_default_state_dir_resolves_home_at_call_time(self) -> None:
         with tempfile.TemporaryDirectory() as home, patch.dict("os.environ", {"HOME": home}):
             self.assertEqual(imc_waiver.state_dir(), Path(home) / ".claude" / "state" / "imc")
+
+
+
+class StateRunner:
+    """Answers `gh api repos/<repo>/issues/<N> --jq .state` from `states`."""
+
+    def __init__(self, states: dict[int, str]) -> None:
+        self.states = states
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **_kw):
+        self.calls.append(list(argv))
+        number = int(argv[2].rsplit("/", 1)[1])
+        return subprocess.CompletedProcess(argv, 0, self.states.get(number, "open") + "\n", "")
+
+
+class RetireTests(unittest.TestCase):
+    """harmonic-forge#1124 AC1/AC4/AC6. Every path is a temp dir."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.state = self.tmp / "imc"
+        self.state.mkdir()
+        patcher = patch.object(imc_waiver, "IMC_STATE_DIR", self.state)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+
+    def files(self, key: str = KEY, granted: datetime | None = None) -> None:
+        (self.state / f"{key}.json").write_text(json.dumps(
+            {"key": key, "granted_at": imc_waiver._iso(granted or self.now)}))
+        (self.state / f"{key}.waiver.json").write_text(json.dumps(
+            {"key": key, "status": "recorded", "comment_url": URL}))
+
+    def test_retire_refuses_open_issue(self) -> None:
+        self.files()
+        with self.assertRaises(SystemExit):
+            imc_waiver.retire(KEY, reason="closed", now=self.now, runner=StateRunner({892: "open"}))
+        self.assertTrue((self.state / f"{KEY}.json").exists())
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_retire_archives_never_deletes(self) -> None:
+        self.files()
+        moved = imc_waiver.retire(KEY, reason="closed", now=self.now,
+                                  runner=StateRunner({892: "closed"}))
+        stamp = imc_waiver._stamp(self.now)
+        archive = self.state / "archive"
+        hook = archive / f"{KEY}.hook.{stamp}.json"
+        receipt = archive / f"{KEY}.waiver.{stamp}.json"
+        self.assertEqual(sorted(moved), sorted([hook, receipt]))
+        self.assertEqual(json.loads(hook.read_text())["key"], KEY)
+        data = json.loads(receipt.read_text())
+        self.assertEqual(data["comment_url"], URL)
+        self.assertEqual(data["status"], "recorded")
+        self.assertEqual(data["retired_at"], imc_waiver._iso(self.now))
+        self.assertEqual(data["retire_reason"], "closed")
+        self.assertFalse((self.state / f"{KEY}.json").exists())
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+        self.assertFalse((self.state / f"{KEY}.end.lock").exists())
+
+    def test_retire_same_second_never_overwrites(self) -> None:
+        self.files()
+        imc_waiver.retire(KEY, reason="closed", known_closed=True, now=self.now)
+        self.files()
+        imc_waiver.retire(KEY, reason="closed", known_closed=True, now=self.now)
+        self.assertEqual(len(list((self.state / "archive").glob("*.json"))), 4)
+
+    def test_retire_refuses_an_interrupted_end(self) -> None:
+        self.files()
+        (self.state / f"{KEY}.waiver.json").write_text(json.dumps({"status": "ending"}))
+        with self.assertRaises(SystemExit):
+            imc_waiver.retire(KEY, reason="closed", known_closed=True, now=self.now)
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_nonblocking_retire_skips_held_lock(self) -> None:
+        import fcntl
+        self.files()
+        with open(self.state / f"{KEY}.end.lock", "a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            got = imc_waiver.retire(KEY, reason="closed", known_closed=True, now=self.now,
+                                    blocking=False)
+        self.assertEqual(got, [])
+        self.assertTrue((self.state / f"{KEY}.json").exists())
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_archive_expired_hook_records_helper(self) -> None:
+        old = self.now - timedelta(hours=imc_waiver.TTL_HOURS + 1)
+        (self.state / "F1.json").write_text(json.dumps({"granted_at": imc_waiver._iso(old)}))
+        (self.state / "F2.json").write_text(json.dumps({"granted_at": imc_waiver._iso(self.now)}))
+        self.files("F3", granted=old)
+        (self.state / "F4.json").write_text(json.dumps({"granted_at": "garbage"}))
+        moved = imc_waiver.archive_expired_hook_records(self.now, imc_dir=self.state)
+        self.assertEqual([p.name for p in moved], [f"F1.hook.{imc_waiver._stamp(self.now)}.json"])
+        for live in ("F2.json", "F3.json", "F3.waiver.json", "F4.json"):
+            self.assertTrue((self.state / live).exists(), live)
+
+    def test_all_closed_reads_named_issues_only(self) -> None:
+        self.files("F900")
+        self.files("F901")
+        (self.state / "F902.json").write_text(json.dumps({"granted_at": imc_waiver._iso(self.now)}))
+        runner = StateRunner({900: "closed", 901: "open", 902: "closed"})
+        out = __import__("io").StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(imc_waiver.retire_all_closed(runner=runner), 0)
+        self.assertEqual(len(runner.calls), 3)
+        for argv in runner.calls:
+            self.assertEqual(argv[:2], ["gh", "api"])
+            self.assertRegex(argv[2], r"^repos/vitalharmony/harmonic-forge/issues/\d+$")
+            self.assertNotIn("search", " ".join(argv))
+        text = out.getvalue()
+        self.assertIn("retired F900:", text)
+        self.assertIn("kept F901: open", text)
+        self.assertIn("retired F902:", text)
+        self.assertTrue((self.state / "F901.waiver.json").exists())
+        self.assertFalse((self.state / "F900.waiver.json").exists())
+        self.assertFalse((self.state / "F902.json").exists())
 
 
 if __name__ == "__main__":

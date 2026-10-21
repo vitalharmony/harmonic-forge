@@ -1145,6 +1145,31 @@ def _issue_is_open(repo: str, issue: int) -> bool:
     return state != "closed"
 
 
+def _retire_imc(repo: str, issue: int) -> None:
+    """harmonic-forge#1124 AC3: the belt's backstop for an IMC waiver whose
+    close the hook missed. The state comes from this cycle's `_issue_meta`
+    read, so no extra API call; never interrupts the cycle."""
+    try:
+        import imc_waiver  # noqa: PLC0415
+        key = imc_waiver.issue_key(repo, issue)
+        if key:
+            imc_waiver.retire(key, reason="closed", known_closed=True, blocking=False)
+    except BaseException as exc:  # SystemExit too: the belt keeps cycling
+        print(f"[watch_lane_posts] imc retire failed for {repo}#{issue} (non-fatal): {exc}",
+              file=sys.stderr)
+
+
+def _prune_batch(batch_state_path: Path | None) -> None:
+    """harmonic-forge#1124 AC5: one BATCH prune per belt cycle. Through
+    `imc_waiver.prune_batch`, so the belt still imports nothing from
+    `tools/hooks` itself (`test_the_belt_does_not_import_batch_auth`)."""
+    try:
+        import imc_waiver  # noqa: PLC0415
+        imc_waiver.prune_batch(batch_state_path)
+    except Exception as exc:
+        print(f"[watch_lane_posts] batch prune failed (non-fatal): {exc}", file=sys.stderr)
+
+
 def discover_queue(repo: str, lane: str,
                    candidates_for_repo: set[int],
                    store_read_at: "dt.datetime | None" = None,
@@ -1214,6 +1239,8 @@ def discover_queue(repo: str, lane: str,
             # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
             # after the store was read.
             belt_candidates.retire_candidate(repo, issue, read_before=read_before)
+            if state == "closed":
+                _retire_imc(repo, issue)
             continue
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
@@ -2057,6 +2084,7 @@ def queue_cycle(
     ok_repos: set[str] = set()
     fresh_ids: dict[tuple[str, int], int | None] = {}
     checked_pairs: set[tuple[str, int]] = set()
+    _prune_batch(batch_state_path)
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
         checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}

@@ -67,7 +67,43 @@ def main() -> None:
         batch_auth.consume(command)
     except Exception:
         # Fail open, loudly to nobody: a bookkeeping miss is one extra prompt.
+        pass
+
+    _retire_closed_imc(command)
+
+    try:
+        if batch_auth.has_close_or_merge(command):
+            batch_auth.prune_now()  # harmonic-forge#1124 AC5
+    except Exception:
+        pass
+
+
+def _retire_closed_imc(command: str) -> None:
+    """harmonic-forge#1124 AC2: retire the IMC waiver of an issue this command
+    closed. The shell match decides only WHEN to look; `action_landed`'s REST
+    read decides whether the close happened. A key with no IMC file costs no
+    API call. Any failure is one stderr line; the hook never fails."""
+    try:
+        closed = batch_auth.closed_keys(command)
+        if not closed:
+            return
+        gh_dir = str(Path(__file__).resolve().parent.parent / "gh")
+        if gh_dir not in sys.path:
+            sys.path.insert(0, gh_dir)
+        import imc_waiver  # noqa: PLC0415
+    except Exception as exc:
+        print(f"[batch-consume] imc retire failed (non-fatal): {exc}", file=sys.stderr)
         return
+    for key, repo, number in closed:
+        try:
+            if not (imc_waiver.hook_record_path(key).exists()
+                    or imc_waiver.receipt_path(key).exists()):
+                continue
+            if batch_auth.action_landed("close", repo, number) is True:
+                imc_waiver.retire(key, reason="closed", known_closed=True, blocking=False)
+        except BaseException as exc:  # SystemExit too: the hook never fails
+            print(f"[batch-consume] imc retire failed for {key} (non-fatal): {exc}",
+                  file=sys.stderr)
 
 
 if __name__ == "__main__":

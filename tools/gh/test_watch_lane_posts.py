@@ -4234,5 +4234,54 @@ class OfferStateTest(unittest.TestCase):
         self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 3600).get((self.REPO, 1530)))
 
 
+
+class ImcBeltLifecycleTests(unittest.TestCase):
+    """harmonic-forge#1124 AC3 and AC5 (belt half). Temp stores only."""
+
+    def setUp(self):
+        import imc_waiver
+        import batch_auth
+        self.imc, self.ba = imc_waiver, batch_auth
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.store = self.tmp / "imc"
+        self.store.mkdir()
+        archive_root = self.tmp / "telemetry"
+        archive_root.mkdir()
+        (archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
+        for patcher in (patch.object(imc_waiver, "IMC_STATE_DIR", self.store),
+                        patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE":
+                                                str(archive_root)})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_belt_cycle_retires_closed_imc_key(self):
+        (self.store / "F900.json").write_text(json.dumps({"key": "F900"}))
+        (self.store / "F900.waiver.json").write_text(json.dumps({"status": "recorded"}))
+        with patch("watch_lane_posts._issue_meta", return_value=("closed", set())), \
+                patch("belt_candidates.retire_candidate"), \
+                patch.object(self.imc.subprocess, "run") as imc_run, \
+                patch("watch_lane_posts.gh_as") as gh:
+            discover_queue("vitalharmony/harmonic-forge", "l1", {900})
+        imc_run.assert_not_called()
+        gh.assert_not_called()
+        self.assertFalse((self.store / "F900.waiver.json").exists())
+        self.assertTrue(list((self.store / "archive").glob("F900.waiver.*.json")))
+
+    def test_entry_8_days_expired_pruned_without_batch_line(self):
+        state_path = self.tmp / "batch-authorized.json"
+        self.ba.authorize(["F10", "F11"], state_path=state_path)
+        now = dt.datetime.now(dt.timezone.utc)
+        state = self.ba._load(state_path)
+        state["F10"]["expires_at"] = (now - dt.timedelta(days=8)).isoformat()
+        state["F11"]["expires_at"] = (now - dt.timedelta(days=6)).isoformat()
+        self.ba._save(state, state_path)
+        watch_lane_posts.queue_cycle(["vitalharmony/harmonic-forge"], "l1", {},
+                                     "2026-10-21T00:00:00Z", batch_state_path=state_path)
+        state = self.ba._load(state_path)
+        self.assertNotIn("F10", state)
+        self.assertIn("F11", state)
+
+
 if __name__ == "__main__":
     unittest.main()

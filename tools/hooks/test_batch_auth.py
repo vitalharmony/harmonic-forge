@@ -1994,5 +1994,132 @@ class MixedCaseRepoTests(unittest.TestCase):
             self.assertIsNotNone(match)
 
 
+
+class ImcLifecycleTests(unittest.TestCase):
+    """harmonic-forge#1124 AC2/AC4/AC5 (hook half). Every path is a temp dir:
+    `imc_waiver.IMC_STATE_DIR` and `ba.STATE_PATH` are patched."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import imc_waiver
+        import batch_consume
+        self.imc, self.consume_hook = imc_waiver, batch_consume
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        root = Path(self.tmpdir.name)
+        self.state_path = root / "batch-authorized.json"
+        self.store = root / "imc"
+        self.store.mkdir()
+        archive_root = root / "telemetry"
+        archive_root.mkdir()
+        (archive_root / ".hf-telemetry-test-root").write_text("t", encoding="utf-8")
+        for patcher in (mock.patch.object(imc_waiver, "IMC_STATE_DIR", self.store),
+                        mock.patch.object(ba, "STATE_PATH", self.state_path),
+                        mock.patch.object(ba, "_pr_carriers", lambda repo, number: None),
+                        mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE":
+                                                     str(archive_root)})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.now = datetime.now(timezone.utc)
+
+    def files(self, key="F900", granted=None, receipt=True, where=None):
+        where = where or self.store
+        where.mkdir(parents=True, exist_ok=True)
+        (where / f"{key}.json").write_text(json.dumps(
+            {"key": key, "granted_at": self.imc._iso(granted or self.now)}))
+        if receipt:
+            (where / f"{key}.waiver.json").write_text(json.dumps(
+                {"key": key, "status": "recorded"}))
+
+    def run_hook(self, command):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+        err = __import__("io").StringIO()
+        with mock.patch("sys.stdin", __import__("io").StringIO(payload)), \
+                mock.patch("sys.stderr", err):
+            self.consume_hook.main()
+        return err.getvalue()
+
+    def live(self, key="F900"):
+        return (self.store / f"{key}.waiver.json").exists()
+
+    def test_close_payload_retires_receipt(self):
+        for command in ("gh issue close 900 --repo vitalharmony/harmonic-forge",
+                        "gh api repos/vitalharmony/harmonic-forge/issues/900 -X PATCH "
+                        "-f state=closed"):
+            with self.subTest(command=command):
+                self.files()
+                with mock.patch.object(ba, "action_landed", return_value=True) as landed:
+                    self.run_hook(command)
+                landed.assert_called_with("close", "vitalharmony/harmonic-forge", 900)
+                self.assertFalse(self.live())
+                self.assertFalse((self.store / "F900.json").exists())
+                self.assertTrue(list((self.store / "archive").glob("F900.waiver.*.json")))
+
+    def test_ordinary_close_costs_no_api_call(self):
+        with mock.patch.object(ba, "action_landed") as landed:
+            self.run_hook("gh issue close 901 --repo vitalharmony/harmonic-forge")
+        landed.assert_not_called()
+
+    def test_failed_close_retires_nothing(self):
+        for answer in (False, None):
+            with self.subTest(answer=answer):
+                self.files()
+                with mock.patch.object(ba, "action_landed", return_value=answer):
+                    self.run_hook("gh issue close 900 --repo vitalharmony/harmonic-forge")
+                self.assertTrue(self.live())
+
+    def test_retire_error_never_fails_hook(self):
+        self.files()
+        with mock.patch.object(ba, "action_landed", return_value=True), \
+                mock.patch.object(self.imc, "retire", side_effect=RuntimeError("boom")):
+            err = self.run_hook("gh issue close 900 --repo vitalharmony/harmonic-forge")
+        lines = [line for line in err.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, err)
+        self.assertIn("F900", lines[0])
+        self.assertTrue(self.live())
+
+    def test_prune_keeps_hook_record_with_receipt(self):
+        self.files(granted=self.now - timedelta(hours=13))
+        ba.prune_now(state_path=self.state_path)
+        self.assertTrue((self.store / "F900.json").exists())
+        self.assertTrue(self.live())
+
+    def test_prune_archives_expired_orphan_hook_record(self):
+        self.files("F901", granted=self.now - timedelta(hours=13), receipt=False)
+        self.files("F902", granted=self.now - timedelta(hours=1), receipt=False)
+        for prune in (lambda: ba.authorize(["F1"], state_path=self.state_path),
+                      lambda: ba.top_up(["F1"], state_path=self.state_path),
+                      lambda: ba.prune_now(state_path=self.state_path)):
+            with self.subTest(prune=prune):
+                self.files("F901", granted=self.now - timedelta(hours=13), receipt=False)
+                prune()
+                self.assertFalse((self.store / "F901.json").exists())
+                self.assertTrue(list((self.store / "archive").glob("F901.hook.*.json")))
+                self.assertTrue((self.store / "F902.json").exists())
+
+    def test_authorize_never_touches_real_imc_dir(self):
+        sentinel = Path(self.tmpdir.name) / "sentinel"
+        self.files("F903", granted=self.now - timedelta(hours=13), receipt=False,
+                   where=sentinel)
+        other = Path(self.tmpdir.name) / "elsewhere" / "batch-authorized.json"
+        other.parent.mkdir()
+        with mock.patch.object(self.imc, "IMC_STATE_DIR", sentinel):
+            ba.authorize(["F1"], state_path=other)
+        self.assertTrue((sentinel / "F903.json").exists())
+        self.assertFalse((sentinel / "archive").exists())
+
+    def test_entry_8_days_expired_pruned_without_batch_line(self):
+        ba.authorize(["F10", "F11"], state_path=self.state_path)
+        state = ba._load(self.state_path)
+        state["F10"]["expires_at"] = (self.now - timedelta(days=8)).isoformat()
+        state["F11"]["expires_at"] = (self.now - timedelta(days=6)).isoformat()
+        ba._save(state, self.state_path)
+        with mock.patch.object(ba, "action_landed", return_value=False):
+            self.run_hook("gh pr merge 5 --repo vitalharmony/harmonic-forge --squash")
+        state = ba._load(self.state_path)
+        self.assertNotIn("F10", state)
+        self.assertIn("F11", state)
+
+
 if __name__ == "__main__":
     unittest.main()
