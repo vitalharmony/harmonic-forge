@@ -289,6 +289,11 @@ class Pipeline(unittest.TestCase):
         self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")
         self.assertEqual({i["run_id"] for i in state["items"]}, {state["run_id"]})
 
+    def test_the_run_saves_its_invocation_id_beside_its_run_id(self):
+        # Sticky-wicket patch 2: the report ties itself to the run that ended.
+        self.drive(INVOCATION_ID="inv-123")
+        self.assertEqual(te_run.queue_state.load(self.queue).get("invocation_id"), "inv-123")
+
     def test_a_run_that_works_nothing_still_replaces_the_run_id(self):
         state = te_run.queue_state.load(self.queue)
         state["run_id"] = "run-20200101T000000Z"
@@ -1436,9 +1441,9 @@ class Unit(unittest.TestCase):
         self.assertIn("%h/.npm-global/bin", parts)
         self.assertLess(parts.index("%h/.npm-global/bin"), parts.index("/usr/local/bin"))
 
-    def test_finished_run_renders_report_and_notifies_once(self):
-        # AC13: the unit's own ExecStopPost line, run as systemd would (%h
-        # expanded, $$ unescaped), renders <run-id>.md and notifies once.
+    def stop_post(self, saved: dict, invocation: str, exit_status: str = "0") -> tuple[Path, Path]:
+        """The unit's own ExecStopPost line, run as systemd would (%h expanded,
+        $$ unescaped), over a queue holding `saved`; (home, data dir)."""
         unit = (Path(te_run.__file__).resolve().parent / "systemd"
                 / "forge-te-runner.service").read_text()
         lines = [l.split("=", 1)[1] for l in unit.splitlines() if l.startswith("ExecStopPost=")]
@@ -1448,8 +1453,7 @@ class Unit(unittest.TestCase):
         (home / "harmonic-forge").symlink_to(Path(te_run.__file__).resolve().parents[2])
         data = home / ".local" / "share" / "te-runner"
         data.mkdir(parents=True)
-        te_run.queue_state.save(data / "queue.json", {"run_id": "20261021T000000Z-abcd",
-                                                       "items": []})
+        te_run.queue_state.save(data / "queue.json", {**saved, "items": []})
         (data / "ntfy-topic").write_text("topic\n")
         fake = home / "bin"
         fake.mkdir()
@@ -1459,11 +1463,30 @@ class Unit(unittest.TestCase):
             .replace("/usr/bin/python3", sys.executable)
         argv = shlex.split(command)
         done = subprocess.run(argv, env={**os.environ, "HOME": str(home),
-                                         "PATH": f"{fake}:{os.environ['PATH']}"},
+                                         "PATH": f"{fake}:{os.environ['PATH']}",
+                                         "INVOCATION_ID": invocation, "EXIT_STATUS": exit_status},
                               capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
+        return home, data
+
+    def test_finished_run_renders_report_and_notifies_once(self):
+        # AC13: the ExecStopPost line renders <run-id>.md and notifies once.
+        home, data = self.stop_post({"run_id": "20261021T000000Z-abcd",
+                                     "invocation_id": "inv-n"}, "inv-n")
         self.assertTrue((data / "reports" / "20261021T000000Z-abcd.md").is_file())
         self.assertEqual(len((home / "curl.log").read_text().splitlines()), 1)
+
+    def test_run_that_ended_before_it_started_never_reports_the_last_run(self):
+        # Sticky-wicket patch 2: run N+1 exits before _run_queue saves a new
+        # run id (an empty budget, a held queue lock). Its ExecStopPost must
+        # not render or notify run N's report as this run's result.
+        home, data = self.stop_post({"run_id": "20261021T000000Z-abcd",
+                                     "invocation_id": "inv-n"}, "inv-n-plus-1", "2")
+        self.assertFalse((data / "reports" / "20261021T000000Z-abcd.md").exists())
+        [report] = list((data / "reports").glob("*.md"))
+        self.assertIn("run ended before it started: exit 2", report.read_text())
+        [sent] = (home / "curl.log").read_text().splitlines()
+        self.assertIn("run ended before it started: exit 2", sent)
 
 
 if __name__ == "__main__":

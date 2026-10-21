@@ -12,6 +12,6 @@ EnvironmentFile=%h/.config/te-runner/runner.env
 ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/runner/te_run.py run --queue %h/.local/share/te-runner/queue.json --max-budget-usd ${TE_RUNNER_BUDGET_USD}
 # Whatever the run's outcome, render its report and send the one-line
 # notification (harmonic-forge#1112 AC13); the alert unit stays for failures.
-ExecStopPost=/bin/sh -c 'report=$$(/usr/bin/python3 %h/harmonic-forge/tools/runner/report.py render --queue %h/.local/share/te-runner/queue.json --out %h/.local/share/te-runner/reports) && /usr/bin/python3 %h/harmonic-forge/tools/runner/report.py notify --report "$$report"'
+ExecStopPost=/bin/sh -c 'report=$$(/usr/bin/python3 %h/harmonic-forge/tools/runner/report.py render --queue %h/.local/share/te-runner/queue.json --out %h/.local/share/te-runner/reports --invocation-id "$$INVOCATION_ID" --exit-status "$$EXIT_STATUS") && /usr/bin/python3 %h/harmonic-forge/tools/runner/report.py notify --report "$$report"'
 StandardOutput=append:%h/Harmonic_Projects/logs/forge-te-runner.log
 StandardError=append:%h/Harmonic_Projects/logs/forge-te-runner.log

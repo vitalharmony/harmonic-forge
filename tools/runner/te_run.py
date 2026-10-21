@@ -821,6 +821,10 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     # or the report would re-propose that run's work.
     run_id = new_run_id()
     state["run_id"] = run_id
+    # The unit's invocation beside the run id: ExecStopPost's report checks it,
+    # so a later run that ends before this point never re-reports this one
+    # (harmonic-forge#1112 sticky-wicket patch 2).
+    state["invocation_id"] = os.environ.get("INVOCATION_ID", "")
     before = {item["id"]: (item["status"], item["note"]) for item in state["items"]}
     reconcile(state)  # queue_state.recover is imported unmodified, so its changes are
     for item in state["items"]:  # detected and stamped here rather than inside it
