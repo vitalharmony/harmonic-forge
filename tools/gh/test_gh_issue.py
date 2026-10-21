@@ -851,6 +851,70 @@ class TestFindRetiredCitations(unittest.TestCase):
                      if v == _GEMINI_CLI_RETIRED and not k.endswith("/")}
         self.assertLessEqual(file_keys, set(self.GEMINI_CLI_DELETED_PATHS))
 
+    #: harmonic-forge#1113 reforge pass 1: the boundary matrix. Every path
+    #: key (13 deleted files plus the tools/gemini/ directory key) and every
+    #: command fragment, under every prefix, wrapper and quoting form.
+    _PATH_PREFIXES = ("", "~/harmonic-forge/", "harmonic-forge/", "./",
+                      "../", "/home/x/harmonic-forge/")
+    _PATH_WRAPS = ("{}", "cat {}", "ls {}/", '"{}"', "'{}'", "{}:12",
+                   "{}, then", "({})", "{}; echo")
+    _FRAGMENT_MUST_FLAG = (
+        "lane3 --agent gemini", "lane3 --agent=gemini", 'lane3 --agent "gemini"',
+        "lane3 --agent='gemini'", "lane3 --agent 'gemini'", "lane3 --agent gemini; x",
+        "--caller gemini", '--caller "gemini"', "--caller='gemini'",
+        "--families 3", "--families=3", '--families "3"', "--families '3'",
+        "--families 3 --mode verify", "LANE_CLI=gemini lane3",
+        'LANE_CLI="gemini" lane3', "LANE_CLI='gemini' lane3",
+    )
+    _MUST_NOT_FLAG = (
+        "GEMINI.md.template", "harmonic-forge/GEMINI.md.template",
+        "tools/gemini-other/", "tools/gemini-other/x.py", "tools/geminix",
+        "tools/lane/policies/gemini-lane1.toml.bak",
+        "tools/lane/gemini-probe-deny.tomlx",
+        "--agent gemini-embedding-001", '--agent "gemini-embedding-001"',
+        "--agent geminix", "--agent gemini.x", "--caller gemini-2.5-pro",
+        "--families 3.5", "--families 30", '--families "30"', "--families 2",
+        "LANE_CLI=geminix", "gemini", "Gemini API", "gemini-2.5-pro",
+        "gemini-embedding-001", "GEMINI_API_KEY", "docs/old_board_sync.py",
+        "xtools/gemini/x", "Estimate: 3", "Priority field", "my L2P",
+    )
+
+    def _path_keys(self):
+        from retired_artifacts import RETIRED_ARTIFACTS, _GEMINI_CLI_RETIRED
+        keys = [k for k, v in RETIRED_ARTIFACTS.items() if v == _GEMINI_CLI_RETIRED]
+        return keys + [p for p in self.GEMINI_CLI_DELETED_PATHS if p not in keys]
+
+    def _must_flag_rows(self):
+        rows = []
+        for key in self._path_keys():
+            forms = [key]
+            if key.endswith("/"):
+                forms += [key.rstrip("/"), key + "lane3-context/README.md"]
+            for form in forms:
+                for prefix in self._PATH_PREFIXES:
+                    for wrap in self._PATH_WRAPS:
+                        rows.append(wrap.format(prefix + form))
+        return rows + list(self._FRAGMENT_MUST_FLAG)
+
+    def test_boundary_matrix_must_flag(self):
+        for span in self._must_flag_rows():
+            with self.subTest(span=span):
+                hits = gh_issue.find_retired_citations(f"See `{span}`.")
+                self.assertTrue(hits)
+                self.assertTrue(all("harmonic-forge#1113" in n for _, n in hits))
+
+    def test_boundary_matrix_must_not_flag(self):
+        for span in self._MUST_NOT_FLAG:
+            with self.subTest(span=span):
+                self.assertEqual(
+                    gh_issue.find_retired_citations(f"See `{span}`."), [])
+
+    def test_boundary_matrix_row_counts(self):
+        """Non-vacuity: the matrix never silently shrinks."""
+        self.assertEqual(len(self._path_keys()), 14)  # 13 deleted paths + dir key
+        self.assertGreaterEqual(len(self._must_flag_rows()), 800)
+        self.assertGreaterEqual(len(self._MUST_NOT_FLAG), 25)
+
     def test_gemini_model_api_spans_not_flagged(self):
         for body in ("`gemini-embedding-001`", "`genai.Client(model=\"gemini-2.5-flash\")`",
                      "`GEMINI_API_KEY`", "`gemini`"):

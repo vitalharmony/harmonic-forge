@@ -49,8 +49,8 @@ RETIRED_ARTIFACTS: dict[str, str] = {
     # harmonic-forge#1113: the Gemini CLI as a lane agent and cross-family
     # family. Command-shaped and full-path keys only (never the bare word),
     # so HRSE2's Gemini model API is never flagged.
-    # Path-shaped keys match anywhere in a span after a left boundary, so
-    # "tools/gemini/" also covers every file beneath it.
+    # Path-shaped keys match anywhere in a span between boundaries, so
+    # "tools/gemini/" (with or without its slash) covers every file beneath it.
     "tools/gemini/": _GEMINI_CLI_RETIRED,
     "tools/gemini/install-lane3-context-extension": _GEMINI_CLI_RETIRED,
     "tools/gemini/lane3-context/lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
@@ -67,12 +67,16 @@ RETIRED_ARTIFACTS: dict[str, str] = {
 }
 
 # Command-fragment patterns (harmonic-forge#1113): regexes searched anywhere
-# inside a backtick span, accepting a space or "=" between flag and value, so
-# `lane3 --agent=gemini; echo done` is flagged. Never the bare word "gemini",
-# which would flag HRSE2's Gemini model API.
+# inside a backtick span, accepting a space or "=" between flag and value and
+# an optionally shell-quoted value (`--agent "gemini"`, `LANE_CLI='gemini'`),
+# so `lane3 --agent=gemini; echo done` is flagged. The value needs a right
+# boundary (never "-", "." or alphanumeric), so `--agent gemini-embedding-001`
+# and `--families 3.5` are not. Never the bare word "gemini", which would
+# flag HRSE2's Gemini model API.
+_VALUE_END = r"(?![\w.-])"
 RETIRED_COMMAND_FRAGMENTS: dict[re.Pattern[str], str] = {
-    re.compile(r"--agent[=\s]+gemini\b"): _GEMINI_CLI_RETIRED,
-    re.compile(r"--caller[=\s]+gemini\b"): _GEMINI_CLI_RETIRED,
-    re.compile(r"--families[=\s]+3\b"): _GEMINI_CLI_RETIRED,
-    re.compile(r"\bLANE_CLI=gemini\b"): _GEMINI_CLI_RETIRED,
+    re.compile(r"--agent[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
+    re.compile(r"--caller[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
+    re.compile(r"--families[=\s]+[\"']?3" + _VALUE_END): _GEMINI_CLI_RETIRED,
+    re.compile(r"\bLANE_CLI=[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
 }

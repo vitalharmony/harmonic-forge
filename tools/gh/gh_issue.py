@@ -48,6 +48,21 @@ def _is_path_key(key: str) -> bool:
     return "/" in key or key.endswith(_PATH_KEY_SUFFIXES)
 
 
+#: harmonic-forge#1113 reforge pass 1. A path key's left boundary is the span
+#: start, whitespace, a quote, "(", "=", or a "/" ending a directory prefix
+#: (`~/harmonic-forge/GEMINI.md`); its right boundary is the span end,
+#: whitespace, a quote, ")", ",", ";", ":" or "/" (a directory descendant).
+#: "." and "-" are never boundaries, so `GEMINI.md.template` and
+#: `tools/gemini-other/` are not flagged.
+_PATH_LEFT = r"(?:(?<=[\s\"'(=/])|^)"
+_PATH_RIGHT = r"(?=$|[\s\"'),;:/])"
+
+
+def _path_key_pattern(key: str) -> re.Pattern[str]:
+    # A directory key ("tools/gemini/") matches with or without its slash.
+    return re.compile(_PATH_LEFT + re.escape(key.rstrip("/")) + _PATH_RIGHT)
+
+
 def find_retired_citations(body: str) -> list[tuple[str, str]]:
     """(name, replacement-note) for each backtick-quoted retired artifact.
 
@@ -64,8 +79,10 @@ def find_retired_citations(body: str) -> list[tuple[str, str]]:
     requirement is that the retired name *occurs* in the span, not that
     the span equals it.
     - Path-shaped keys (containing "/" or ending in .py/.md/.toml/.json)
-      match anywhere in the span after a left boundary, so descendants,
-      `cat GEMINI.md` and paths inside commands are flagged.
+      match anywhere in the span between a left and a right boundary
+      (`_PATH_LEFT`/`_PATH_RIGHT`), so prefixed paths, descendants,
+      `cat GEMINI.md` and quoted paths are flagged, and longer names
+      sharing a prefix (`GEMINI.md.template`) are not.
     - Word keys (`Estimate`, `Priority`, `L2P`, ...) still need the whole
       span to equal the key -- the #379 false-positive guard.
     - `RETIRED_COMMAND_FRAGMENTS` are regexes searched in the span, so
@@ -80,7 +97,7 @@ def find_retired_citations(body: str) -> list[tuple[str, str]]:
     for span in _BACKTICK_SPAN.findall(body):
         for key, note in RETIRED_ARTIFACTS.items():
             if _is_path_key(key):
-                if re.search(r"(?<![\w./-])" + re.escape(key), span):
+                if _path_key_pattern(key).search(span):
                     add(key, note)
             elif span == key:
                 add(key, note)
