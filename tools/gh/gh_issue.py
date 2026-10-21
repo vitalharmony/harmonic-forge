@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 import handoff_owed  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
+import _caller_path  # noqa: E402
 
 _BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
 
@@ -732,6 +733,7 @@ def main() -> int:
              "why none of them owns this work. Never skips the search.",
     )
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'body_file')  # harmonic-forge#1117 AC2
     if args.no_prior_owner is not None and not args.no_prior_owner.strip():
         parser.error("--no-prior-owner needs a non-empty reason (R-0397).")
 

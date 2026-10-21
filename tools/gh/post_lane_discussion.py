@@ -51,6 +51,7 @@ import check_lane3_ready
 # harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
 # poster checks with the same one and the two cannot drift.
 from _auto_ae import declared_tier
+import _caller_path  # noqa: E402
 
 
 def require_write_tier(body: str) -> None:
@@ -513,6 +514,7 @@ def main() -> None:
         help="harmonic-forge#893: a JSON object mapping each case id a gate report ran to "
              "pass, fail or blocked. Without it a gate report posts with results=absent.")
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'file')  # harmonic-forge#1117 AC2
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
     # Preclose finding: the reason is written INSIDE the HTML-comment footer,

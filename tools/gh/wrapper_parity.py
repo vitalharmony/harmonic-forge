@@ -14,6 +14,13 @@ The third was total: `--milestone` became *required* for any repo with
 milestones (harmonic-forge#283), and the wrapper had no way to pass it, so
 every hrse filing through the sanctioned path failed.
 
+**Superseded for `tools/gh/` wrappers by `--shape` (harmonic-forge#1117).**
+Those wrappers no longer re-declare flags: each forwards `$usage_args`
+verbatim and the script's argparse owns its surface, so there is nothing to
+compare. `--shape` asserts that form instead -- no `flag` lines in a
+`tools/gh/` wrapper's `usage`. The per-flag comparison below stays for
+wrappers over other scripts (HRSE2's `worktree-gc`).
+
 Design notes
 ------------
 **Flags are read from the script's own `--help` usage block, not by
@@ -104,6 +111,7 @@ _LONG_FLAG = re.compile(r"--[A-Za-z][\w-]*")
 
 # `flag "--name <value>"` inside a mise task's `usage = '''...'''` block.
 _MISE_FLAG = re.compile(r"""^\s*flag\s+"(--[\w-]+)""", re.M)
+_MISE_ARG = re.compile(r"""^\s*arg\s+"\[?args\]?\"""", re.M)
 
 # A literal `python3 <path>.py` (or `<interpreter-path>/python3 <path>.py`,
 # e.g. `backend/.venv/bin/python scripts/x.py`) invocation inside a task's
@@ -283,6 +291,31 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
     return found
 
 
+def shape_violations(mise_toml: Path, exempt: set[str]) -> list[str]:
+    """harmonic-forge#1117 AC4: every discovered wrapper over a `tools/gh/`
+    script forwards the caller's arguments verbatim. A `flag` line in its
+    `usage` re-declares part of the script's surface, which is the drift
+    class this replaced; a declared `arg` that `run` never expands as
+    `$usage_args` drops the caller's arguments. `exempt` names tasks with a
+    recorded reason to keep their shape."""
+    problems = []
+    for name, script in discover_wrapper_tasks(mise_toml):
+        if name in exempt or script.parent.name != "gh" or script.parent.parent.name != "tools":
+            continue
+        entry = _task_entry(mise_toml, name)
+        usage = entry.get("usage", "")
+        usage = usage if isinstance(usage, str) else ""
+        run = entry.get("run", "")
+        run = _COMMENT_LINE.sub("", run) if isinstance(run, str) else ""
+        flags = _MISE_FLAG.findall(usage)
+        if flags:
+            problems.append(f"{name}: usage re-declares {', '.join(flags)}; "
+                            f"forward $usage_args verbatim instead")
+        elif _MISE_ARG.search(usage) and "$usage_args" not in run:
+            problems.append(f"{name}: declares an arg but run never expands $usage_args")
+    return problems
+
+
 def normalize(flag: str) -> str:
     """`repo` and `--repo` mean the same thing.
 
@@ -328,7 +361,28 @@ def main() -> int:
                          "'reports clean while structurally unable to see the drift' failure "
                          "this file exists to catch, one layer up. A consumer's wrapper-parity "
                          "task should always pass its own curated task list here.")
+    ap.add_argument("--shape", action="store_true",
+                    help="Check that every discovered wrapper over a tools/gh/ script forwards "
+                         "its arguments verbatim: no usage `flag` lines, and $usage_args "
+                         "expanded in run (harmonic-forge#1117 AC4).")
+    ap.add_argument("--exempt", default="",
+                    help="With --shape: comma-separated task names whose shape is a recorded "
+                         "decision, e.g. 'l2-run'.")
     args = ap.parse_args()
+
+    if args.shape:
+        exempt = {t.strip() for t in args.exempt.split(",") if t.strip()}
+        try:
+            problems = shape_violations(args.mise_toml, exempt)
+        except ParityError as exc:
+            print(f"[wrapper-parity] ERROR: {exc}", file=sys.stderr)
+            return 2
+        for problem in problems:
+            print(f"[wrapper-parity] {problem}", file=sys.stderr)
+        if problems:
+            return 1
+        print("[wrapper-parity] tools/gh wrappers forward verbatim: OK")
+        return 0
 
     if args.discover:
         try:
