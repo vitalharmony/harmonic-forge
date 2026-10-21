@@ -459,6 +459,73 @@ class ExternalCallsCrossCheck(LeadOnBothHalves):
         self.assertEqual(self.posted, [])
 
 
+class StandaloneExternalCallsThroughMain(LeadOnBothHalves):
+    """harmonic-forge#1115 pass 1 survivors 2-4 and 6: the R-0208 order posts
+    the AE first and the sweep after it. Both checks run through main()
+    against a fake thread, never a stub of the thread readers."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for name, kw in (("apply_project_identity", {}),
+                         ("project_for_path", {"return_value": mock.Mock(repo="vitalharmony/harmonic-forge")})):
+            patcher = mock.patch.object(post, name, **kw)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        _SWEEP_CALLS_PATCH.stop()
+        self.addCleanup(_SWEEP_CALLS_PATCH.start)
+        self.thread: list[dict] = []
+        import check_lane3_ready
+        patcher = mock.patch.object(check_lane3_ready, "fetch_comments",
+                                    side_effect=lambda repo, issue: self.thread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _standalone(self, kind: str, body: str) -> None:
+        self.ae_file.write_text(body)
+        argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
+                "--kind", kind, "--sha", FAKE_SHA, "--branch", "x", "--file", str(self.ae_file)]
+        if kind == "sweep":
+            argv += ["--spec-comment", "999"]
+        with patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "_spec_body", return_value=LIVE_SPEC), \
+             patch.object(post, "comment_body",
+                          side_effect=lambda r, i, b: (self.posted.append(b) or ("u", len(self.posted)))), \
+             patch.object(post, "write_receipt"), \
+             patch.object(sys, "argv", argv):
+            post.main()
+
+    def _on_thread(self, body: str, kind: str, sha: str = FAKE_SHA) -> None:
+        self.thread.append({"id": len(self.thread) + 1,
+                            "body": body + f"\n<!-- l1-post v1; kind={kind}; sha={sha} -->"})
+
+    def test_a_standalone_ae_omitting_a_swept_call_is_refused(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        with self.assertRaises(SystemExit) as ctx:
+            self._standalone("ae", AE_BODY)
+        self.assertIn("Gemini generate", str(ctx.exception))
+        self.assertEqual(self.posted, [])
+
+    def test_a_sweep_naming_a_call_the_posted_ae_omits_is_refused(self) -> None:
+        self._on_thread(AE_BODY.replace("against `feat/x`", "with Gemini generate, against `feat/x`"), "ae")
+        with self.assertRaises(SystemExit) as ctx:
+            self._standalone("sweep", LIVE_SWEEP)
+        self.assertIn("Voyage embed", str(ctx.exception))
+        self.assertEqual(self.posted, [])
+
+    def test_a_sweep_whose_calls_the_posted_ae_names_posts(self) -> None:
+        self._on_thread(AE_BODY.replace(
+            "against `feat/x`", "with Gemini generate and Voyage embed, against `feat/x`"), "ae")
+        self._standalone("sweep", LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_a_sweep_is_checked_against_the_ae_on_its_own_sha(self) -> None:
+        self._on_thread(AE_BODY.replace(
+            "against `feat/x`", "with Gemini generate and Voyage embed, against `feat/x`"), "ae", "b" * 40)
+        with self.assertRaises(SystemExit):
+            self._standalone("sweep", LIVE_SWEEP)
+        self.assertEqual(self.posted, [])
+
+
 class ExternalCallsParsing(unittest.TestCase):
     """harmonic-forge#1115 pass 1: how an `External calls:` value and an
     AE's Authorized line are read."""
