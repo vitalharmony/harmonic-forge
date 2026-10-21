@@ -1208,6 +1208,13 @@ class TestF1116AttackShapes(_F1116Fixture):
         self.assertUnresolved(
             'W={MAIN}; [ -n "$X" ] && W=/safe; cd $W && echo > tracked.md', "W")
 
+    def test_pass1_s1_quote_split_name_is_unresolved(self):
+        # Preclose pass 1, survivor 1: the shell dequotes W""X to WX.
+        self.assertUnresolved(
+            'WX={SCRATCH}; declare W""X={MAIN}; cd $WX && echo x > tracked.md', "WX")
+        self.assertUnresolved(
+            'WX={SCRATCH}; read W""X <<< {MAIN}; cd $WX && echo x > tracked.md', "WX")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1160,6 +1160,9 @@ RAW_OPERATORS = ("&&", "||", ";;&", ";;", ";&", "|&", ";", "&", "|", "\n", "(", 
 #: it put it in a subshell.
 ASSIGNMENT_BEFORE = {"^", ";", "\n"}
 ASSIGNMENT_AFTER = {"$", ";", "\n", "&&", "||"}
+#: A word (or the part before its `=`) made only of name characters and
+#: quotes/backslashes: once dequoted, it may spell any name.
+QUOTED_NAME = re.compile(r"^(?=.*[A-Za-z0-9_])[A-Za-z0-9_'\"\\]+$")
 MKTEMP_SUBSTITUTION = re.compile(r'^(?P<q>"?)\$\((?P<body>[^()$`;&|<>\n"\'\\]*)\)(?P=q)$')
 MKTEMP_FLAGS = {"-d", "--directory", "-t", "-q"}
 MKTEMP_TEMPLATE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1375,6 +1378,13 @@ def same_command_assignments(command: str, segments: list[list[str]]) -> dict[st
     words = _raw_shell_words(text)
     if words is None or _bare_occurrences(text, "IFS"):
         return None
+    for word in words:
+        # A quote or backslash inside a name-shaped word (`W""X=`, `read W""X`)
+        # is dequoted by the shell into a name the bare-occurrence scan
+        # never sees (preclose pass 1, survivor 1).
+        head = word["word"].split("=", 1)[0]
+        if QUOTED_NAME.match(head) and re.search(r"['\"\\]", head):
+            return None
     for segment in segments:
         index = 0
         while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
