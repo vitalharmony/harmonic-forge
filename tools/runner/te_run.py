@@ -78,12 +78,14 @@ import acceptance  # noqa: E402
 import deny_check  # noqa: E402
 import preclose_driver  # noqa: E402
 import preflight  # noqa: E402
+import provision  # noqa: E402
 import sandbox  # noqa: E402
 import queue_state  # noqa: E402
 import te_queue  # noqa: E402
 import verdict  # noqa: E402
 
 SOURCE = HERE.parent.parent
+provision_clone = provision.provision_clone
 SETTINGS = HERE / "te-runner.settings.json"
 PRECLOSE_DRIVER = HERE / "preclose_driver.py"
 WORKTREE_ROOT = Path.home() / "Harmonic_Projects" / ".worktrees"
@@ -559,6 +561,10 @@ def check_sha(sha: str, env: dict[str, str], evidence: Path | None, name: str = 
         git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(tree))
         git("checkout", "-q", "--detach", sha, cwd=tree)
         git("remote", "set-url", "origin", UPSTREAM_URL, cwd=tree)
+        try:
+            provision.provision_clone(tree, source_objects())  # harmonic-forge#1127
+        except provision.ProvisionError as exc:
+            raise Abort(f"cannot provision the check tree for {sha[:12]}: {exc}") from exc
         return {"sha": sha, **run_steps(tree, env, evidence, name)}
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -784,6 +790,13 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(clone))
     git("checkout", "-q", "-b", branch, base, cwd=clone)
     git("remote", "set-url", "origin", UPSTREAM_URL, cwd=clone)  # AC3
+    try:
+        provision.provision_clone(clone, source_objects())  # harmonic-forge#1127
+    except provision.ProvisionError as exc:
+        # The fixed clone path Blocks every later run while it exists, and no
+        # agent work exists yet.
+        shutil.rmtree(clone, ignore_errors=True)
+        raise Blocked(f"cannot provision {clone}: {exc}") from exc
     log("clone", f"{clone} on {branch} from {base[:12]}")
     # Kept after the item (AC7): never a temporary directory.
     scratch = run_dir / str(issue)
@@ -963,6 +976,7 @@ def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
         git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(clone))
         git("checkout", "-q", "--detach", base, cwd=clone)
         git("remote", "set-url", "origin", UPSTREAM_URL, cwd=clone)
+        provision.provision_clone(clone, source_objects())  # harmonic-forge#1127
         commands = preflight.verification_commands(issues) + list(preflight.PROBE_COMMANDS)
         return preflight.permission_probe(commands, clone, scratch / "probe-transcripts",
                                           agent_env, SETTINGS, (source_objects(),))

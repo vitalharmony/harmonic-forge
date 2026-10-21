@@ -55,6 +55,7 @@ import preclose_check  # noqa: E402
 import preclose_passes  # noqa: E402
 sys.path.insert(0, str(HERE))
 import acceptance  # noqa: E402
+import provision  # noqa: E402
 import sandbox  # noqa: E402
 
 PRECLOSE = GH_TOOLS / "preclose_check.py"
@@ -157,18 +158,29 @@ def planned_lenses(stdout: str) -> list[str]:
     return lenses
 
 
-def export_head(source: Path, head: str, dest: Path) -> None:
+def export_head(source: Path, head: str, dest: Path, *, provision_links: bool = True) -> None:
     """A git repository at the head (harmonic-forge#1112 AC14): a `git clone
     --shared --no-checkout` of SOURCE, the head checked out detached, and
     `origin` set to GitHub as the agent's clone is (AC3). No worktree is added
     to the source repo and no agent checkout is read; objects are borrowed
-    through alternates, so each boundary names SOURCE's object store."""
+    through alternates, so each boundary names SOURCE's object store.
+
+    The export is link-provisioned like every runner clone (harmonic-forge#1127);
+    `provision_links=False` is only for a source that is not a forge checkout
+    (the preflight rehearsal's one-file fixture), which has nothing to link."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         raise DriverError(f"cannot export {head[:12]}: {dest} already exists")
     git(source, "clone", "-q", "--shared", "--no-checkout", str(source), str(dest))
     git(dest, "checkout", "-q", "--detach", head)
     git(dest, "remote", "set-url", "origin", UPSTREAM_URL)
+    if not provision_links:
+        return
+    try:
+        provision.provision_clone(dest, source_objects(source))  # harmonic-forge#1127
+    except provision.ProvisionError as exc:
+        shutil.rmtree(dest, ignore_errors=True)  # an existing dest refuses every retry
+        raise DriverError(f"cannot provision the export of {head[:12]}: {exc}") from exc
 
 
 def source_objects(source: Path) -> Path:

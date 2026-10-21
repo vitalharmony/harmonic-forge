@@ -213,6 +213,7 @@ class AddTimeChecks(Check):
                 mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle), \
                 mock.patch.object(te_queue, "add_context", return_value=(src, base, {})), \
                 mock.patch.object(driver, "passes_held", return_value=0), \
+                mock.patch.object(driver.provision, "provision_clone"), \
                 mock.patch.object(te_run, "item_preconditions", return_value=[]), \
                 mock.patch.object(driver, "issue_body", return_value=body):
             return te_queue.add(self.queue, [key])
