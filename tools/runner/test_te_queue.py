@@ -201,6 +201,7 @@ class AddTimeChecks(Check):
         base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
                               capture_output=True, text=True).stdout.strip()
         import preclose_driver as driver  # noqa: PLC0415 -- the module preflight calls
+        import te_run  # noqa: PLC0415 -- its item_preconditions are preflight's too
         seams = self.seams
         with mock.patch.object(te_queue, "labels", return_value=seams["labels"]), \
                 mock.patch.object(te_queue, "tier", return_value=seams["tier"]), \
@@ -209,6 +210,7 @@ class AddTimeChecks(Check):
                 mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle), \
                 mock.patch.object(te_queue, "add_context", return_value=(src, base, {})), \
                 mock.patch.object(driver, "passes_held", return_value=0), \
+                mock.patch.object(te_run, "item_preconditions", return_value=[]), \
                 mock.patch.object(driver, "issue_body", return_value=body):
             return te_queue.add(self.queue, [key])
 

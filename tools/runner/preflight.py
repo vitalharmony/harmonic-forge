@@ -29,7 +29,8 @@ e. rehearsal (AC15): one refuter call (`claude -p --json-schema
    assumption, whose label must start `Red-team provenance: cross-family (`.
 f. per item (AC12): `item_failures`, the pipeline's own read-only
    preconditions: `te_queue` eligibility, the kill-bundle snapshot and pin
-   check, and `preclose_driver.read_only_preconditions`.
+   check, `preclose_driver.read_only_preconditions` and
+   `te_run.item_preconditions`.
 
 `preflight.json` in the run dir records every check's outcome.
 """
@@ -241,8 +242,9 @@ def codex_parity(scratch: Path, env: dict) -> list[str]:
 def item_failures(issue: int, source: Path, base: str, scratch: Path, env: dict) -> list[str]:
     """Every read-only per-item precondition the pipeline checks before it
     spends (harmonic-forge#1112 AC12), by calling the pipeline's own functions:
-    `te_queue` eligibility, the kill-bundle snapshot and pin check, and
-    `preclose_driver.read_only_preconditions`. Every refusal is listed, each
+    `te_queue` eligibility, the kill-bundle snapshot and pin check,
+    `preclose_driver.read_only_preconditions` and `te_run.item_preconditions`
+    (work_item's own guards). Every refusal is listed, each
     prefixed with the item; a raising check is a refusal, never a stop.
     `te_queue.py add` runs this too (AC15)."""
     failures: list[str] = []
@@ -261,8 +263,12 @@ def item_failures(issue: int, source: Path, base: str, scratch: Path, env: dict)
                                                     scratch / "driver", env)
         return preclose_driver.read_only_preconditions(ctx)
 
+    def guards() -> list[str]:
+        import te_run  # noqa: PLC0415 -- te_run imports this module
+        return te_run.item_preconditions(issue, env, source)
+
     for name, check in (("eligibility", eligibility), ("kill bundle", bundle),
-                        ("preclose driver", driver)):
+                        ("preclose driver", driver), ("item preconditions", guards)):
         try:
             found = check()
         except Exception as exc:  # noqa: BLE001 -- one check never hides another

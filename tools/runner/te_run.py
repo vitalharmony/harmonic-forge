@@ -697,6 +697,56 @@ def emit_event(issue: int, head: str, extra: dict, cost: object) -> None:
         log("telemetry", f"not written: {exc}")
 
 
+# --- the per-item guards (harmonic-forge#1112 sticky-wicket patch 4) ---------------
+#
+# Every guard work_item checks before it spends, as one list: work_item calls
+# `item_preconditions` first and the preflight (`preflight.item_failures`) calls
+# the same function per queued item, so a guard added here is a preflight
+# failure with no change to the preflight. Each guard raises Blocked.
+
+def _guard_reuse(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    # Every trace an earlier run of this issue leaves counts: its checkout, a
+    # local branch, the pinned head ref. A re-queued issue whose clone was
+    # deleted must not run the agent again.
+    branch = f"fix/{issue}-te-runner"
+    clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
+    if clone.exists() or any(not run(["git", "rev-parse", "--verify", "--quiet", ref],
+                                     cwd=source).returncode
+                             for ref in (f"refs/heads/{branch}", f"refs/te-runner/{issue}")):
+        raise Blocked(f"branch {branch}, refs/te-runner/{issue} or checkout {clone} "
+                      "already exists; never reused")
+
+
+def _guard_fork_branch(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    branch = f"fix/{issue}-te-runner"
+    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
+                 cwd=source, env=env)
+    if remote.returncode:
+        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
+    if remote.stdout.strip():
+        raise Blocked(f"branch {branch} already exists on the runner fork; never reused")
+
+
+def _guard_bundle_pin(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    if not te_queue.DIGEST_RE.search(te_queue.handoff(issue) or ""):
+        raise Blocked("the handoff pins no kill-bundle-sha256")
+
+
+ITEM_GUARDS = (_guard_reuse, _guard_fork_branch, _guard_bundle_pin)
+
+
+def item_preconditions(issue: int, env: dict[str, str] | None = None,
+                       source: Path | None = None) -> list[str]:
+    """Every guard in ITEM_GUARDS, each refusal collected, never only the first."""
+    problems = []
+    for guard in ITEM_GUARDS:
+        try:
+            guard(issue, env, Path(source or SOURCE))
+        except Blocked as exc:
+            problems.append(str(exc))
+    return problems
+
+
 def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, str],
               agent_env: dict[str, str], run_dir: Path) -> dict:
     issue = te_queue.issue_number(item["id"])
@@ -707,22 +757,11 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         facts = {"eligible": failure[0] != "ineligible",
                  "deny_hits": [failure[1]] if failure[0] == "deny-path" else []}
         return {"facts": facts, "verdict": verdict.reduce(facts), "ac_titles": titles}
+    problems = item_preconditions(issue, env)
+    if problems:
+        raise Blocked("; ".join(problems))
     branch = f"fix/{issue}-te-runner"
     clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
-    # Every trace an earlier run of this issue leaves counts: its checkout, a
-    # local branch, the pinned head ref, or the branch on the runner's fork. A
-    # re-queued issue whose clone was deleted must not run the agent again.
-    if clone.exists() or any(not run(["git", "rev-parse", "--verify", "--quiet", ref],
-                                     cwd=SOURCE).returncode
-                             for ref in (f"refs/heads/{branch}", f"refs/te-runner/{issue}")):
-        raise Blocked(f"branch {branch}, refs/te-runner/{issue} or checkout {clone} "
-                      "already exists; never reused")
-    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
-                 cwd=SOURCE, env=env)
-    if remote.returncode:
-        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
-    if remote.stdout.strip():
-        raise Blocked(f"branch {branch} already exists on the runner fork; never reused")
     git("fetch", "-q", "origin", "main")
     base = git("rev-parse", "origin/main")
     # A standalone clone, not a linked worktree: its .git lives inside the
@@ -736,7 +775,7 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     scratch.mkdir(parents=True, exist_ok=True)
     handoff = te_queue.handoff(issue) or ""
     pinned = te_queue.DIGEST_RE.search(handoff)
-    if not pinned:
+    if not pinned:  # item_preconditions checked it; the handoff changed since
         raise Blocked("the handoff pins no kill-bundle-sha256")
     pin = pinned.group(1)
     bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it

@@ -150,7 +150,11 @@ class ItemChecks(Base):
         commit(self.src, "base")
         self.base = sh("git", "rev-parse", "HEAD", cwd=self.src)
         self.seams = {"first_failure": None, "bundle_pin": "a" * 64,
-                      "snapshot_bundle": self.tmp / "snap", "body": ISSUE_BODY}
+                      "snapshot_bundle": self.tmp / "snap", "body": ISSUE_BODY,
+                      "handoff": f"the handoff\nkill-bundle-sha256: {'a' * 64}\n"}
+        self.fork = self.tmp / "fork.git"
+        sh("git", "init", "-q", "--bare", "-b", "main", str(self.fork), cwd=self.tmp)
+        (self.tmp / "wt").mkdir()
 
     def failures(self, **override) -> list[str]:
         seams = {**self.seams, **override}
@@ -165,7 +169,11 @@ class ItemChecks(Base):
                                   **seam(seams["snapshot_bundle"])), \
                 mock.patch.object(preflight.preclose_driver, "passes_held", return_value=0), \
                 mock.patch.object(preflight.preclose_driver, "issue_body",
-                                  return_value=seams["body"]):
+                                  return_value=seams["body"]), \
+                mock.patch.object(preflight.te_queue, "handoff", return_value=seams["handoff"]), \
+                mock.patch.object(te_run, "SOURCE", self.src), \
+                mock.patch.object(te_run, "WORKTREE_ROOT", self.tmp / "wt"), \
+                mock.patch.object(te_run, "FORK_URL", str(self.fork)):
             return preflight.item_failures(7, self.src, self.base, self.tmp / "item", {})
 
     def test_clean_item_has_no_failures(self):
@@ -196,6 +204,29 @@ class ItemChecks(Base):
         self.assertTrue(any("kill bundle" in f and "no longer matches" in f for f in failures),
                         failures)
 
+
+    def test_reused_branch_is_reported_before_any_spend(self):
+        # Sticky-wicket patch 4: work_item's branch, checkout, pinned-ref and
+        # fork-branch guards run in the preflight too.
+        sh("git", "branch", "fix/7-te-runner", cwd=self.src)
+        sh("git", "update-ref", "refs/te-runner/7", "HEAD", cwd=self.src)
+        sh("git", "push", "-q", str(self.fork), "HEAD:refs/heads/fix/7-te-runner", cwd=self.src)
+        failures = self.failures()
+        self.assertTrue(any("item preconditions" in f and "never reused" in f
+                            for f in failures), failures)
+        self.assertTrue(any("already exists on the runner fork" in f for f in failures),
+                        failures)
+
+    def test_new_blocked_in_item_preconditions_is_reported(self):
+        # The AC12 pattern: a Blocked added to te_run.item_preconditions
+        # reaches the preflight with no change to the preflight's code.
+        def new_guard(issue, env, source):
+            raise te_run.Blocked("a brand-new block")
+        guards = (*te_run.ITEM_GUARDS, new_guard)
+        with mock.patch.object(te_run, "ITEM_GUARDS", guards):
+            failures = self.failures()
+        self.assertTrue(any("item preconditions" in f and "a brand-new block" in f
+                            for f in failures), failures)
 
     def test_headless_plan_refusal_is_reported(self):
         # Sticky-wicket patch 3: with no head the plan step still runs plan's
