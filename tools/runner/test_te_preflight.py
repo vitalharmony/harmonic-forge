@@ -155,6 +155,10 @@ class ItemChecks(Base):
         self.fork = self.tmp / "fork.git"
         sh("git", "init", "-q", "--bare", "-b", "main", str(self.fork), cwd=self.tmp)
         (self.tmp / "wt").mkdir()
+        self.origin = self.tmp / "origin.git"
+        sh("git", "init", "-q", "--bare", "-b", "main", str(self.origin), cwd=self.tmp)
+        sh("git", "remote", "add", "origin", str(self.origin), cwd=self.src)
+        sh("git", "push", "-q", "origin", "main", cwd=self.src)
 
     def failures(self, **override) -> list[str]:
         seams = {**self.seams, **override}
@@ -216,6 +220,22 @@ class ItemChecks(Base):
                             for f in failures), failures)
         self.assertTrue(any("already exists on the runner fork" in f for f in failures),
                         failures)
+
+    def test_failing_origin_fetch_is_listed_with_the_others(self):
+        # Post-verdict gap 3: the origin fetch work_item needs is a
+        # precondition; its failure is listed beside every other refusal.
+        sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
+        sh("git", "branch", "fix/7-te-runner", cwd=self.src)
+        failures = self.failures()
+        self.assertTrue(any("item preconditions" in f and "fetch origin main failed" in f
+                            for f in failures), failures)
+        self.assertTrue(any("item preconditions" in f and "never reused" in f
+                            for f in failures), failures)
+
+    def test_failing_origin_fetch_raises_driver_error(self):
+        sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
+        with self.assertRaises(preflight.preclose_driver.DriverError):
+            te_run._guard_origin_fetch(7, {}, self.src)
 
     def test_new_blocked_in_item_preconditions_is_reported(self):
         # The AC12 pattern: a Blocked added to te_run.item_preconditions

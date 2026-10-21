@@ -736,7 +736,16 @@ def _guard_bundle_pin(issue: int, env: dict[str, str] | None, source: Path) -> N
         raise Blocked("the handoff pins no kill-bundle-sha256")
 
 
-ITEM_GUARDS = (_guard_reuse, _guard_fork_branch, _guard_bundle_pin)
+def _guard_origin_fetch(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    # work_item bases the item on a fresh origin/main; a fetch that cannot run
+    # is a refusal before spend, never a mid-item stop (post-verdict gap 3).
+    fetched = run(["git", "fetch", "-q", "origin", "main"], cwd=source, env=env)
+    if fetched.returncode:
+        raise preclose_driver.DriverError(
+            f"git fetch origin main failed: {fetched.stderr.strip()[:200]}")
+
+
+ITEM_GUARDS = (_guard_reuse, _guard_fork_branch, _guard_bundle_pin, _guard_origin_fetch)
 
 
 def item_preconditions(issue: int, env: dict[str, str] | None = None,
@@ -746,7 +755,7 @@ def item_preconditions(issue: int, env: dict[str, str] | None = None,
     for guard in ITEM_GUARDS:
         try:
             guard(issue, env, Path(source or SOURCE))
-        except Blocked as exc:
+        except (Blocked, preclose_driver.DriverError) as exc:
             problems.append(str(exc))
     return problems
 
