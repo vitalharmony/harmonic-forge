@@ -21,12 +21,37 @@ module name.
 
 Single source of truth for both `mise run test` and CI: they invoke this
 script rather than each spelling out discovery, so the two cannot drift.
+
+Temp-file containment (harmonic-forge#1114): `/tmp` is a tmpfs with a fixed
+inode cap, and bare `tempfile.mkdtemp()` calls across the suite (and in the
+subprocesses tests spawn) leaked 20-35k directories a day into it until the
+cap was hit and every write on the machine failed. `main()` therefore runs
+the whole suite inside `contained_tempdir()`: one per-run root under the real
+temp dir, with `TMPDIR`/`TMP`/`TEMP` (inherited by subprocesses) and
+`tempfile.tempdir` (the in-process cache) pointed at it before any test
+module is imported, and removed in a `finally` whatever the outcome. Fixing
+each test file instead was rejected: the next test written leaks again.
+
+Every gating runner goes through this choke point: `mise run test`,
+`mise run check` / `ci-check`, CI, and the te-runner oracle's
+`mise run check`; `tools/gh/run_lane1_transport_tests.py` wraps its own run
+in the same `contained_tempdir()`. Accepted gaps, not covered:
+- the developer-only mise tasks `manifest-test` and `preclose-test`, which
+  call `python3 -m unittest` directly and are not part of check/ci-check/CI;
+- running a single test file directly (`python3 tools/gh/test_x.py`);
+- `tools/hooks/test_user_prompt_tasklist.py`'s empty-env test, whose whole
+  point is a subprocess env holding only PATH (it runs `bash -c` and
+  writes no temp file);
+- non-goal: a run killed by SIGKILL can still leave its per-run root behind.
+  The system's 2-day `/tmp` aging (`/etc/tmpfiles.d/tmp.conf`) is the
+  backstop; no new mechanism.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,6 +91,36 @@ def _loaded_modules(suite: unittest.TestSuite) -> set[str]:
         else:
             modules.add(type(item).__module__.rsplit(".", 1)[-1])
     return modules
+
+
+TMP_ENV_VARS = ("TMPDIR", "TMP", "TEMP")
+
+
+@contextlib.contextmanager
+def contained_tempdir(prefix: str = "hf-test-run-"):
+    """harmonic-forge#1114: contain every temp file a test run creates.
+
+    Creates one root under the current temp dir, points `TMPDIR`/`TMP`/`TEMP`
+    and `tempfile.tempdir` at it, and on exit restores all of them and removes
+    the root. Enter it before any test module is imported: several modules
+    cache `tempfile.gettempdir()` at import time.
+    """
+    root = tempfile.mkdtemp(prefix=prefix)
+    old_env = {name: os.environ.get(name) for name in TMP_ENV_VARS}
+    old_cache = tempfile.tempdir
+    for name in TMP_ENV_VARS:
+        os.environ[name] = root
+    tempfile.tempdir = root
+    try:
+        yield Path(root)
+    finally:
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        tempfile.tempdir = old_cache
+        shutil.rmtree(root, ignore_errors=True)
 
 
 @contextlib.contextmanager
@@ -169,25 +224,35 @@ def build_suite() -> unittest.TestSuite:
 
 
 def main() -> int:
+    # harmonic-forge#1114: first statement, so the redirect precedes every
+    # test-module import in build_suite() (module-level gettempdir() calls).
+    with contained_tempdir() as root:
+        return _run(root)
+
+
+def _run(root: Path) -> int:
     # harmonic-forge#826: hooks under test now archive what they prune. A test
     # run must never write into the operator's real telemetry archive, so the
     # whole run gets a throwaway root unless a test sets its own.
-    archive_tmp = tempfile.TemporaryDirectory(prefix="hf-telemetry-test-")
-    (Path(archive_tmp.name) / ".hf-telemetry-test-root").write_text("test archive root\n", encoding="utf-8")
-    os.environ.setdefault("HARMONIC_FORGE_TELEMETRY_ARCHIVE", archive_tmp.name)
+    # harmonic-forge#1114: a subdirectory of the per-run root, so it is removed
+    # with it and no top-level `hf-telemetry-test-*` entry can escape.
+    archive_root = root / "hf-telemetry-test"
+    archive_root.mkdir()
+    (archive_root / ".hf-telemetry-test-root").write_text("test archive root\n", encoding="utf-8")
+    os.environ.setdefault("HARMONIC_FORGE_TELEMETRY_ARCHIVE", str(archive_root))
     # harmonic-forge#865: inherited by any writer a test spawns, which cannot
     # see this process's redirect or its loaded `unittest`.
     os.environ["HARMONIC_FORGE_TESTING"] = "1"
     # ... and failures go to a throwaway state dir, never the real failure log.
     # Forced, not setdefault: XDG_STATE_HOME is commonly already exported.
-    os.environ["XDG_STATE_HOME"] = str(Path(archive_tmp.name) / "state")
+    os.environ["XDG_STATE_HOME"] = str(archive_root / "state")
     # harmonic-forge#892: and every emitted event to a throwaway store. Forced,
     # not setdefault: before this, any test reaching `telemetry/emit.py` wrote
     # the operator's real store.
-    os.environ["HARMONIC_FORGE_TELEMETRY_STORE"] = str(Path(archive_tmp.name) / "store")
+    os.environ["HARMONIC_FORGE_TELEMETRY_STORE"] = str(archive_root / "store")
     # harmonic-forge#1076: a suite calling a guarded tool's main() must neither
     # be refused nor write the session's real preflight receipts.
-    os.environ["PREFLIGHT_RECEIPT_DIR"] = str(Path(archive_tmp.name) / "preflight")
+    os.environ["PREFLIGHT_RECEIPT_DIR"] = str(archive_root / "preflight")
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
     files = _test_files()
     if not files:

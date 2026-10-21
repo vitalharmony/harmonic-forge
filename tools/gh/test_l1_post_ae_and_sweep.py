@@ -11,6 +11,7 @@ wrong.
 import importlib.util
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
@@ -150,7 +151,7 @@ class ArgValidationTests(unittest.TestCase):
 
 class MainIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path("/tmp/claude-1000-l1-post-test")
+        self.tmp = Path(tempfile.gettempdir()) / "claude-1000-l1-post-test"  # harmonic-forge#1114
         self.tmp.mkdir(exist_ok=True)
         self.ae_file = self.tmp / "ae.md"
         self.sweep_file = self.tmp / "sweep.md"
@@ -339,7 +340,7 @@ class LeadOnBothHalves(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.tmp = Path("/tmp/claude-1000-l1-post-lead-test")
+        self.tmp = Path(tempfile.gettempdir()) / "claude-1000-l1-post-lead-test"  # harmonic-forge#1114
         self.tmp.mkdir(exist_ok=True)
         self.ae_file = self.tmp / "ae.md"
         self.sweep_file = self.tmp / "sweep.md"

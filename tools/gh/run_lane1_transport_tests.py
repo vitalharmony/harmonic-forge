@@ -13,10 +13,16 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 GH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
-from run_tests import hermetic_identity_probe, redirected_belt_candidates_dir  # noqa: E402
+from run_tests import contained_tempdir, hermetic_identity_probe, redirected_belt_candidates_dir  # noqa: E402
 
 
 def main() -> int:
+    # harmonic-forge#1114: every temp file this run creates stays in one root.
+    with contained_tempdir(prefix="lane1-transport-run-"):
+        return _run()
+
+
+def _run() -> int:
     # harmonic-forge#865: inherited by any writer a test spawns as a subprocess.
     os.environ["HARMONIC_FORGE_TESTING"] = "1"
     loader = unittest.TestLoader()

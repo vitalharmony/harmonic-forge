@@ -307,7 +307,9 @@ class TmuxLanesScopeTests(unittest.TestCase):
         bin_dir = _stub_path(self.tmp_path, tmux="exit 1")
         script = ("set -euo pipefail\nsession=s; advisor_session=a\n" + match.group(0)
                   + "\nset_window_titles\necho reached-after")
-        run = subprocess.run(["bash", "-c", script], env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(self.tmp_path)},
+        run = subprocess.run(["bash", "-c", script], env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(self.tmp_path),
+                                  # harmonic-forge#1114: keep the run's temp root.
+                                  **{k: v for k, v in os.environ.items() if k in ("TMPDIR", "TMP", "TEMP")}},
                              capture_output=True, text=True)
         assert run.returncode == 0 and "reached-after" in run.stdout, run.stderr
 

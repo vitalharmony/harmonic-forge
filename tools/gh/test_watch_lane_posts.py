@@ -274,7 +274,10 @@ class DiscoverFromWorktreeTests(unittest.TestCase):
         subprocess.run(["git", "-C", tmp, "commit", "-q", "--allow-empty", "-m", "x"],
                        check=True, env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                                        "PATH": __import__("os").environ.get("PATH", "")})
+                                        "PATH": __import__("os").environ.get("PATH", ""),
+                                        # harmonic-forge#1114: keep the run's temp root.
+                                        **{k: v for k, v in __import__("os").environ.items()
+                                           if k in ("TMPDIR", "TMP", "TEMP")}})
         return tmp
 
     def test_h_prefix_overrides_worktree_repo(self):
@@ -317,7 +320,10 @@ class ResolveWorktreeReasonTests(unittest.TestCase):
         subprocess.run(["git", "-C", tmp, "commit", "-q", "--allow-empty", "-m", "x"],
                        check=True, env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                                        "PATH": __import__("os").environ.get("PATH", "")})
+                                        "PATH": __import__("os").environ.get("PATH", ""),
+                                        # harmonic-forge#1114: keep the run's temp root.
+                                        **{k: v for k, v in __import__("os").environ.items()
+                                           if k in ("TMPDIR", "TMP", "TEMP")}})
         return tmp
 
     def test_resolved_pair_reports_resolved(self):
@@ -360,7 +366,10 @@ class ReportResolutionTests(unittest.TestCase):
         subprocess.run(["git", "-C", tmp, "commit", "-q", "--allow-empty", "-m", "x"],
                        check=True, env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                                        "PATH": __import__("os").environ.get("PATH", "")})
+                                        "PATH": __import__("os").environ.get("PATH", ""),
+                                        # harmonic-forge#1114: keep the run's temp root.
+                                        **{k: v for k, v in __import__("os").environ.items()
+                                           if k in ("TMPDIR", "TMP", "TEMP")}})
         subprocess.run(["git", "-C", tmp, "checkout", "-q", "--detach"], check=True)
         return tmp
 
