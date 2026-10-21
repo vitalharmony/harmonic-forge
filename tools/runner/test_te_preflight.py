@@ -178,6 +178,11 @@ class ItemChecks(Base):
         self.fork = self.tmp / "fork.git"
         sh("git", "init", "-q", "--bare", "-b", "main", str(self.fork), cwd=self.tmp)
         (self.tmp / "wt").mkdir()
+        # The fixture repo has no sync_rules.py; linking has its own tests (#1127).
+        import provision  # noqa: PLC0415
+        patcher = mock.patch.object(provision, "provision_clone")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.origin = self.tmp / "origin.git"
         sh("git", "init", "-q", "--bare", "-b", "main", str(self.origin), cwd=self.tmp)
         sh("git", "remote", "add", "origin", str(self.origin), cwd=self.src)

@@ -164,6 +164,12 @@ class Driver(unittest.TestCase):
         sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
            "-m", "head: secret rationale in the commit message", cwd=src)
         self.src, self.head = src, sh("git", "rev-parse", "HEAD", cwd=src).strip()
+        # The fixture repo has no sync_rules.py; linking has its own tests (#1127).
+        self.provisioned = []
+        patcher = mock.patch.object(preclose_driver.provision, "provision_clone",
+                                    lambda path, objects: self.provisioned.append(path))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
         for name, text in (("claude", FAKE_CLAUDE), ("gh", FAKE_GH)):
@@ -233,6 +239,15 @@ class Driver(unittest.TestCase):
         self.assertTrue((dest / ".git" / "objects" / "info" / "alternates").is_file())
         self.assertEqual(subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=dest)
                          .returncode, 1)  # detached
+        self.assertEqual(self.provisioned, [dest])  # harmonic-forge#1127
+
+    def test_export_head_dest_removed_on_provision_error(self):
+        dest = self.tmp / "export" / "head"
+        with mock.patch.object(preclose_driver.provision, "provision_clone",
+                               side_effect=preclose_driver.provision.ProvisionError("no")):
+            with self.assertRaises(preclose_driver.DriverError):
+                preclose_driver.export_head(self.src, self.head, dest)
+        self.assertFalse(dest.exists())
 
     def logged(self, kind: str) -> list[list]:
         if not self.log.exists():

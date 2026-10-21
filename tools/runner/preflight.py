@@ -302,7 +302,7 @@ def rehearsal(scratch: Path, env: dict) -> list[str]:
     failures: list[str] = []
     try:
         tree = root / "head"
-        preclose_driver.export_head(source, "HEAD", tree)
+        preclose_driver.export_head(source, "HEAD", tree, provision_links=False)  # not a forge tree
         objects = (preclose_driver.source_objects(source),)
     except preclose_driver.DriverError as exc:
         return [f"rehearsal: cannot export the fixture: {exc}"]

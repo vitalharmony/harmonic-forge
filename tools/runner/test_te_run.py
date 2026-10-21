@@ -6,6 +6,7 @@ and prints canned stream-json; stub `gh` and `mise` stand in on PATH; the
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shlex
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -188,6 +190,10 @@ class Pipeline(unittest.TestCase):
                 (pd, "RUNNER_KEY", key), (pd, "RUNNER_GH", self.tmp / "runner-gh")):
             self.enter(mock.patch.object(target, name, value))
         self.enter(mock.patch.object(te_run.deny_check, "boundary", return_value=[]))
+        # The fixture repo has no sync_rules.py; linking has its own tests (#1127).
+        self.provisioned = []
+        self.enter(mock.patch.object(te_run.provision, "provision_clone",
+                                     lambda path, objects: self.provisioned.append(path)))
         # Run evidence and the base-check cache stay in the fixture (#1112).
         self.enter(mock.patch.object(te_run, "RUNS_ROOT", self.tmp / "runs"))
         self.enter(mock.patch.object(te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"))
@@ -1550,6 +1556,152 @@ class Unit(unittest.TestCase):
         self.assertIn("run ended before it started: exit 2", report.read_text())
         [sent] = (home / "curl.log").read_text().splitlines()
         self.assertIn("run ended before it started: exit 2", sent)
+
+
+# --- harmonic-forge#1127: every clone gets its platform links ---------------------------
+
+def _scratch(case: unittest.TestCase) -> Path:
+    base = Path.home() / ".cache" / "te-runner-test-scratch"
+    base.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=base))
+    case.addCleanup(shutil.rmtree, tmp, True)
+    return tmp
+
+
+def _clone_repo(tmp: Path) -> Path:
+    """A `--shared` clone of this repo's HEAD, as the runner makes one."""
+    clone = tmp / "clone"
+    head = sh("git", "rev-parse", "HEAD", cwd=te_run.SOURCE).strip()
+    sh("git", "clone", "-q", "--shared", "--no-checkout", str(te_run.SOURCE), str(clone),
+       cwd=tmp)
+    sh("git", "checkout", "-q", "--detach", head, cwd=clone)
+    return clone
+
+
+class ProvisionClone(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("bwrap"), "real bwrap is not installed")
+    def test_links_a_fresh_forge_clone(self):
+        clone = _clone_repo(_scratch(self))
+        with mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}):
+            te_run.provision.provision_clone(clone, te_run.source_objects())
+        report = subprocess.run(
+            ["python3", "tools/onboard/platform_link_report.py", "--project", "."],
+            cwd=clone, capture_output=True, text=True)
+        self.assertEqual(report.returncode, 0, report.stdout + report.stderr)
+        self.assertEqual(sh("git", "config", "core.hooksPath", cwd=clone).strip(), ".githooks")
+
+    def test_every_clone_site_provisions(self):
+        missing, sites = [], 0
+        for path in sorted(te_run.HERE.glob("*.py")):
+            if path.name.startswith("test_"):
+                continue
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(path.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                clone_line, provision_lines = None, []
+                for node in ast.walk(fn):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    name = (node.func.id if isinstance(node.func, ast.Name)
+                            else getattr(node.func, "attr", ""))
+                    if name == "git" and any(isinstance(a, ast.Constant) and a.value == "clone"
+                                             for a in node.args):
+                        clone_line = min(clone_line or node.lineno, node.lineno)
+                    elif name == "provision_clone":
+                        provision_lines.append(node.lineno)
+                if clone_line is None:
+                    continue
+                sites += 1
+                if not any(line > clone_line for line in provision_lines):
+                    missing.append(f"{path.stem}.{fn.name}")
+        self.assertGreaterEqual(sites, 4)
+        self.assertEqual(missing, [])
+
+    @unittest.skipUnless(shutil.which("bwrap") and shutil.which("mise"),
+                         "real bwrap or mise missing")
+    def test_check_sha_on_unchanged_head_has_no_link_failure(self):
+        tmp = _scratch(self)
+        head = sh("git", "rev-parse", "HEAD", cwd=te_run.SOURCE).strip()
+        step = next(s for s in te_run.CHECK_STEPS if s[0] == "platform_link_report")
+        with mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}), \
+                mock.patch.object(te_run, "CHECK_TREE_ROOT", tmp / "trees"), \
+                mock.patch.object(te_run, "CHECK_STEPS", (step,)):
+            result = te_run.check_sha(head, dict(os.environ), None)
+        self.assertEqual(result["step_failures"], [])
+
+    def test_failed_provision_is_a_step_failure_not_abort(self):
+        tmp = _scratch(self)
+        head = sh("git", "rev-parse", "HEAD", cwd=te_run.SOURCE).strip()
+
+        def fail(path, objects):
+            raise te_run.provision.ProvisionError("verify exited 1")
+
+        with mock.patch.object(te_run, "CHECK_TREE_ROOT", tmp / "trees"), \
+                mock.patch.object(te_run, "BASE_CHECK_ROOT", tmp / "base"), \
+                mock.patch.object(te_run.provision, "provision_clone", fail):
+            result = te_run.check_sha(head, dict(os.environ), None)
+            cached = te_run.base_check(head, dict(os.environ))
+        self.assertEqual(result["step_failures"], ["provision_clone: verify exited 1"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(cached["step_failures"], ["provision_clone: verify exited 1"])
+        self.assertFalse((tmp / "base" / head / "result.json").exists())
+
+    def test_both_linker_calls_go_through_the_boundary(self):
+        path = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, path, True)
+        sh("git", "init", "-q", cwd=path)
+        (path / "sync_rules.py").write_text("")
+        wrapped = []
+
+        def wrap(argv, writable, transcripts=None, **kw):
+            wrapped.append((list(argv), Path(writable), kw.get("inputs")))
+            return ["true"]
+
+        with mock.patch.object(te_run.provision.sandbox, "wrap", wrap):
+            te_run.provision.provision_clone(path, Path("/objects"))
+        self.assertEqual([w[0] for w in wrapped],
+                         [["python3", "sync_rules.py", "--project", "."],
+                          ["python3", "sync_rules.py", "--verify", "--project", "."]])
+        self.assertTrue(all(w[1] == path and w[2] == (Path("/objects"),) for w in wrapped))
+
+    def test_failed_verify_raises(self):
+        path = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, path, True)
+        sh("git", "init", "-q", cwd=path)
+        (path / "sync_rules.py").write_text("")
+        with mock.patch.object(te_run.provision.sandbox, "wrap",
+                               lambda argv, *a, **k: ["false"]):
+            with self.assertRaises(te_run.provision.ProvisionError):
+                te_run.provision.provision_clone(path, Path("/objects"))
+
+    def test_hung_linker_raises(self):
+        path = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, path, True)
+        sh("git", "init", "-q", cwd=path)
+        (path / "sync_rules.py").write_text("")
+        with mock.patch.object(te_run.provision.sandbox, "wrap",
+                               lambda argv, *a, **k: ["sleep", "30"]), \
+                mock.patch.object(te_run.provision, "LINK_TIMEOUT", 0.2):
+            with self.assertRaisesRegex(te_run.provision.ProvisionError, "timed out"):
+                te_run.provision.provision_clone(path, Path("/objects"))
+
+
+@pipeline_only
+class ProvisionCleanup(Pipeline):
+    def test_item_clone_removed_on_provision_error(self):
+        def fail_item(path, objects):
+            if path.name.endswith("r-impl"):
+                raise te_run.provision.ProvisionError("verify failed")
+
+        clone = self.tmp / "wt" / "harmonic-forge-7r-impl"
+        with mock.patch.object(te_run.provision, "provision_clone", fail_item):
+            self.assertEqual(self.drive(), 3)
+        self.assertEqual(self.item()["status"], "blocked")
+        self.assertFalse(clone.exists())
+        self.assertEqual(self.observed(), [])
 
 
 if __name__ == "__main__":
