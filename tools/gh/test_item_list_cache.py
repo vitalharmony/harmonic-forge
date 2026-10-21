@@ -18,7 +18,7 @@ import tempfile
 class ItemListCacheTests(unittest.TestCase):
     def setUp(self):
         self._orig_dir = cache._CACHE_DIR
-        cache._CACHE_DIR = Path("/tmp") / "item_list_cache_test"
+        cache._CACHE_DIR = Path(tempfile.gettempdir()) / "item_list_cache_test"  # harmonic-forge#1114
         shutil.rmtree(cache._CACHE_DIR, ignore_errors=True)
 
     def tearDown(self):
