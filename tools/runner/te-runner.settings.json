@@ -13,7 +13,22 @@
       "Bash(git log:*)",
       "Bash(git show:*)",
       "Bash(python3:*)",
-      "Bash(mise run:*)"
+      "Bash(mise run:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(touch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git restore:*)",
+      "Bash(git stash:*)",
+      "Bash(git mv:*)",
+      "Bash(git rm:*)",
+      "Bash(git reset:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git branch:*)",
+      "Bash(mise tasks:*)"
     ],
     "deny": [
       "Bash(gh pr merge:*)",
@@ -23,6 +38,11 @@
       "Bash(gh api:*)",
       "Bash(git push:*)",
       "Bash(git remote:*)",
+      "Bash(bash:*)",
+      "Bash(sh:*)",
+      "Bash(env:*)",
+      "Bash(eval:*)",
+      "Bash(xargs:*)",
       "Edit(./**/tools/hooks/**)",
       "Edit(./**/.claude/**)",
       "Edit(./**/.codex/**)",
@@ -63,6 +83,8 @@
       "Edit(./**/usercustomize.*)",
       "Edit(./**/usercustomize/**)",
       "Edit(./**/*.pth)",
+      "Edit(./**/.mise/tasks/**)",
+      "Edit(./**/mise-tasks/**)",
       "Edit(~/.local/share/te-runner/kill-bundles/**)"
     ]
   }

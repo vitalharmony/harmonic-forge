@@ -14,7 +14,7 @@
 ### F7 — https://github.com/vitalharmony/harmonic-forge/pull/101
 - Acceptance criteria: The widget returns 2.; Nothing else changes.
 - Diff: 2 files changed, 10 insertions(+)
-- Kill checks: AC1 base 1 / head 0; AC2 base 1 / head 0
+- Kill checks: AC1 base 1 / head 0; AC2 base 1 / head 0. Check: new failures none; base failures none
 - Preclose survivors: none
 - Provenance: Red-team provenance: cross-family (codex / gpt-6.1-sol) — 3 of 3 confirmed
 - CI: pending — approve workflows, as of 2026-10-20T11:00:00Z, not authoritative: re-read live at BATCH time
@@ -25,7 +25,7 @@
 
 ## Set aside
 
-1. F8 (kill-check-fail): AC1 passed on the base. Decision: whether Lane 1's oracle or the agent's change is wrong. Recommendation: Lane 1 reviews the kill-check results before any re-run.
+1. F8 (kill-check-fail): AC1 passed on the base. All reasons: none recorded. Check: new failures none; base failures none. Decision: whether Lane 1's oracle or the agent's change is wrong. Recommendation: Lane 1 reviews the kill-check results before any re-run.
 2. F9 (blocked): see the item's note in the queue file. Decision: why the run could not proceed (the queue file's note). Recommendation: fix the named cause before re-queuing; never retried automatically.
 
 ## Merge

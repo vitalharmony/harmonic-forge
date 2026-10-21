@@ -12,7 +12,10 @@ the spec exists to prevent.
 SET_ASIDE_REASONS>|None, "detail": str}`. No I/O, no model call, no network,
 no clock.
 
-Clauses run in a fixed order and the first hit wins:
+Clauses run in a fixed order and the first hit wins `reason` and `detail`;
+`reasons` lists every clause that hit, in that order, each as
+`{"reason", "detail"}` (harmonic-forge#1112 AC8). A fact gap still stops the
+walk at its clause:
 
     ineligible, deny-path, tool-refusal, budget, self-flag, check-fail,
     kill-check-fail, preclose-survivor
@@ -197,19 +200,27 @@ def one_line(text: str) -> str:
     return line if len(line) <= DETAIL_LIMIT else line[:DETAIL_LIMIT - 1] + "…"
 
 
-def _set_aside(reason: str, detail: str) -> dict:
-    return {"state": "set-aside", "reason": reason, "detail": one_line(detail)}
+def _set_aside(reason: str, detail: str, reasons: list[dict] | None = None) -> dict:
+    line = one_line(detail)
+    return {"state": "set-aside", "reason": reason, "detail": line,
+            "reasons": reasons if reasons is not None else [{"reason": reason, "detail": line}]}
 
 
 def reduce(facts: object) -> dict:
     """The verdict for one item. Pure; see the module docstring."""
     if not isinstance(facts, dict):
         return _set_aside(PRECEDENCE[0], "facts missing or not an object")
+    hits: list[dict] = []
     for reason in PRECEDENCE:
         try:
             hit = _CLAUSES[reason](facts)
         except _Gap as gap:
-            return _set_aside(reason, f"fact gap: {gap}")
+            # A fact gap still returns at once: the harness is incomplete, and
+            # the clauses after it read facts it never wrote (harmonic-forge#1112).
+            hits.append({"reason": reason, "detail": one_line(f"fact gap: {gap}")})
+            return _set_aside(hits[0]["reason"], hits[0]["detail"], hits)
         if hit:
-            return _set_aside(reason, hit)
-    return {"state": "green", "reason": None, "detail": "all clauses passed"}
+            hits.append({"reason": reason, "detail": one_line(hit)})
+    if hits:
+        return _set_aside(hits[0]["reason"], hits[0]["detail"], hits)
+    return {"state": "green", "reason": None, "detail": "all clauses passed", "reasons": []}

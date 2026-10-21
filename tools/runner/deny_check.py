@@ -14,7 +14,9 @@ harness-side check of the final diff (which does not trust the agent: a
     deny_check.py boundary                     # the fork boundary: exit 0 only when it holds
 
 `diff` uses `--no-renames`, so both sides of a rename and every deletion
-appear, and any added or changed symlink is a hit. `paths` refuses (exit 2)
+appear, and any added or changed symlink is a hit, as is any added module or
+package that shadows a stdlib or test-runner name (`shadows`, harmonic-forge#1112).
+`paths` refuses (exit 2)
 a spelling git never emits. Output is JSON `{"hits": [path...]}`.
 
 Edit rules are rendered without Write twins: Claude Code consults `Edit(path)`
@@ -40,11 +42,22 @@ from preclose_check import HIGH_BLAST_PATTERNS  # noqa: E402
 UPSTREAM = "vitalharmony/harmonic-forge"
 RUNNER_LOGIN = "vitalharmony-runner"
 STRIPPED = ("GH_TOKEN", "GITHUB_TOKEN")
+#: `bash`, `sh`, `env`, `eval` and `xargs` would carry a denied command past
+#: this list, so they are denied by name, never allowed (harmonic-forge#1112 AC5).
 DENY_BASH = ("gh pr merge", "gh issue close", "gh issue edit", "gh label", "gh api",
-             "git push", "git remote")
+             "git push", "git remote", "bash", "sh", "env", "eval", "xargs")
 ALLOW = ("Read", "Glob", "Grep", "Edit", "Write", "Bash(git add:*)", "Bash(git commit:*)",
          "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
-         "Bash(python3:*)", "Bash(mise run:*)")
+         "Bash(python3:*)", "Bash(mise run:*)",
+         "Bash(mkdir:*)", "Bash(rm:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(touch:*)",
+         "Bash(git checkout:*)", "Bash(git switch:*)", "Bash(git restore:*)",
+         "Bash(git stash:*)", "Bash(git mv:*)", "Bash(git rm:*)", "Bash(git reset:*)",
+         "Bash(git rev-parse:*)", "Bash(git branch:*)", "Bash(mise tasks:*)")
+#: Top-level module names an added file must never take, anywhere in the tree:
+#: the oracle runs without `PYTHONSAFEPATH` (harmonic-forge#1112 AC2, pitch
+#: change C), so a head-authored `unittest.py` would otherwise shadow the runner.
+SHADOW_NAMES = frozenset(sys.stdlib_module_names) | {"pytest", "unittest", "_pytest", "conftest"}
+MODULE_SUFFIXES = (".py", ".pyc", ".pyo", ".pyw", ".so", ".pyd")
 
 
 class DenyError(Exception):
@@ -108,6 +121,19 @@ def glob_regex(glob: str) -> re.Pattern[str] | None:
     return re.compile(out + "$")
 
 
+def shadows(path: str) -> bool:
+    """True when an added `path` is a module, or sits in a package directory,
+    whose top-level name is a stdlib, `pytest`, `unittest`, `_pytest` or
+    `conftest` name. Any directory of the path counts, not only the repo root
+    or `tools/run_tests.py`'s `TEST_DIRS`: a test can put any directory on
+    `sys.path`, so the narrower rule is the one that can be bypassed."""
+    parts = path.removeprefix("./").split("/")
+    name = parts[-1]
+    if name.endswith(MODULE_SUFFIXES) and name.split(".", 1)[0] in SHADOW_NAMES:
+        return True
+    return any(part in SHADOW_NAMES for part in parts[:-1])
+
+
 def git(*args: str) -> str:
     result = subprocess.run(["git", *args], capture_output=True, text=True)
     if result.returncode:
@@ -122,10 +148,11 @@ def diff_hits(base: str, head: str) -> list[str]:
     for meta, path in zip(fields[0::2], fields[1::2]):
         if not meta:
             continue
-        _old_mode, new_mode, _old, _new, _status = meta.lstrip(":").split(" ")
+        _old_mode, new_mode, _old, _new, status = meta.lstrip(":").split(" ")
         # Any added or changed symlink is a hit, wherever it points: the runner
         # has no use for one, and resolving targets is how it was bypassed.
-        if denied(path, patterns) or new_mode == "120000":
+        if denied(path, patterns) or new_mode == "120000" \
+                or (status.startswith("A") and shadows(path)):
             hits.append(path)
     return sorted(set(hits))
 

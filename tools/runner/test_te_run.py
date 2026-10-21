@@ -96,7 +96,7 @@ FAKE_GH = textwrap.dedent("""\
                           "statusCheckRollup": [{"conclusion": "SUCCESS"}]}))
 """)
 
-FAKE_MISE = "#!/bin/sh\nexit ${FAKE_MISE_RC:-0}\n"
+FAKE_MISE = "#!/bin/sh\nprintf '%b' \"${FAKE_MISE_OUT:-}\"\nexit ${FAKE_MISE_RC:-0}\n"
 
 
 def private_scratch_root(case: unittest.TestCase) -> str:
@@ -181,6 +181,11 @@ class Pipeline(unittest.TestCase):
                 (pd, "RUNNER_KEY", key), (pd, "RUNNER_GH", self.tmp / "runner-gh")):
             self.enter(mock.patch.object(target, name, value))
         self.enter(mock.patch.object(te_run.deny_check, "boundary", return_value=[]))
+        # Run evidence and the base-check cache stay in the fixture (#1112).
+        self.enter(mock.patch.object(te_run, "RUNS_ROOT", self.tmp / "runs"))
+        self.enter(mock.patch.object(te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"))
+        self.preflight = mock.MagicMock(return_value={"failures": [], "reported": []})
+        self.enter(mock.patch.object(te_run, "run_preflight", self.preflight))
         self.enter(mock.patch.object(tq, "first_failure", return_value=None))
         self.enter(mock.patch.object(tq, "gh_json", return_value={"body": ISSUE}))
         self.digest = tq.kill_runner.bundle_digest(bundle)
@@ -325,11 +330,11 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(agent), 1)
         call = agent[0]
         self.assertEqual(call[call.index("--chdir") + 1], clone)
-        # The writable bind is the last mount, after every read-only one.
-        self.assertEqual(call[call.index("--chdir") - 3:call.index("--chdir")],
-                         ["--bind", clone, clone])
-        self.assertEqual(call[call.index("--chdir") - 6:call.index("--chdir") - 3],
-                         ["--ro-bind"] + [str(te_run.source_objects())] * 2)
+        # The writable bind is the last mount, after every read-only one; only
+        # the mise env follows it (harmonic-forge#1112).
+        at = call.index("--setenv")
+        self.assertEqual(call[at - 3:at], ["--bind", clone, clone])
+        self.assertEqual(call[at - 6:at - 3], ["--ro-bind"] + [str(te_run.source_objects())] * 2)
 
     def test_boundary_is_an_allowlist_over_an_empty_home(self):
         self.drive()
@@ -941,46 +946,69 @@ for _name in [n for n in vars(Pipeline) if n.startswith("test_")]:
     setattr(RealPipeline, _name, unittest.skip("covered under the stub bwrap")(lambda self: None))
 
 
-class SafePath(unittest.TestCase):
-    """Operator ruling on this issue: a head that shadows the test runner must
-    still fail the kill oracle."""
+def shadow_repo(case: unittest.TestCase) -> tuple[Path, str, str, Path]:
+    """A repo whose head fixes `widget`, and a bundle whose check imports the
+    repo (`import widget`) by path, `python3 -m unittest tests/test_widget.py`:
+    the form F1008's checks use, which `-t .` discovery would not exercise."""
+    tmp = Path(tempfile.mkdtemp())
+    case.addCleanup(shutil.rmtree, tmp, True)
+    src = tmp / "src"
+    src.mkdir()
+    sh("git", "init", "-q", "-b", "main", cwd=src)
+    (src / "widget.py").write_text("def widget():\n    return 1\n")
+    commit(src, "base")
+    base = sh("git", "rev-parse", "HEAD", cwd=src)
+    (src / "widget.py").write_text("def widget():\n    return 2\n")
+    commit(src, "head")
+    head = sh("git", "rev-parse", "HEAD", cwd=src)
+    bundle = tmp / "bundle"
+    (bundle / "files" / "tests").mkdir(parents=True)
+    (bundle / "files" / "tests" / "__init__.py").write_text("")
+    (bundle / "files" / "tests" / "test_widget.py").write_text(
+        "import unittest\nimport widget\n\n\nclass W(unittest.TestCase):\n"
+        "    def test_two(self):\n        self.assertEqual(widget.widget(), 2)\n")
+    (bundle / "checks.json").write_text(json.dumps(
+        [{"ac": "AC1", "test": ["python3", "-m", "unittest", "tests/test_widget.py"]}]))
+    return src, base, head, bundle
 
-    def test_head_shadowing_unittest_still_fails_the_kill_check(self):
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        src = tmp / "src"
-        src.mkdir()
-        sh("git", "init", "-q", "-b", "main", cwd=src)
-        (src / "widget.py").write_text("def widget():\n    return 1\n")
-        commit(src, "base")
-        base = sh("git", "rev-parse", "HEAD", cwd=src)
-        (src / "unittest.py").write_text("raise SystemExit(0)\n")  # no fix, only a shadow
-        commit(src, "head")
-        head = sh("git", "rev-parse", "HEAD", cwd=src)
-        bundle = tmp / "bundle"
-        (bundle / "files" / "tests").mkdir(parents=True)
-        (bundle / "files" / "tests" / "__init__.py").write_text("")
-        (bundle / "files" / "tests" / "test_widget.py").write_text(
-            "import unittest\nimport widget\n\n\nclass W(unittest.TestCase):\n"
-            "    def test_two(self):\n        self.assertEqual(widget.widget(), 2)\n")
-        (bundle / "checks.json").write_text(json.dumps(
-            [{"ac": "AC1", "test": ["python3", "-m", "unittest", "discover", "-s", "tests",
-                                    "-t", "."]}]))
-        env = {**os.environ, "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
+
+class OracleImports(unittest.TestCase):
+    """harmonic-forge#1112 AC2: no oracle process runs with PYTHONSAFEPATH, so a
+    check that imports the repo works; shadowing is the deny check's."""
+
+    def test_oracle_env_never_carries_pythonsafepath(self):
+        env = te_run.oracle_env({"PYTHONSAFEPATH": "1", "PATH": "/usr/bin"})
+        self.assertNotIn("PYTHONSAFEPATH", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_unittest_path_check_imports_the_repo(self):
+        src, base, head, bundle = shadow_repo(self)
+        env = {**os.environ, "HRSE_SCRATCH_ROOT": private_scratch_root(self),
+               "PYTHONSAFEPATH": "1"}  # inherited: oracle_env must drop it
         digest = te_run.te_queue.kill_runner.bundle_digest(bundle)
         with mock.patch.object(te_run, "SOURCE", src):
             kill = te_run.kill_facts(7, base, head, env, bundle, digest)
             self.assertEqual(te_run.kill_facts(7, base, head, env, bundle, "0" * 64), [],
                              "a bundle other than the pinned one must not count")
-        self.assertEqual(len(kill), 1)
-        self.assertNotEqual(kill[0]["head_rc"], 0, "the head's unittest.py shadowed the oracle")
+        self.assertEqual(kill, [{"ac": "AC1", "base_rc": 1, "head_rc": 0}])
+
+    def test_shadowing_head_is_a_deny_hit(self):
+        src, base, _head, _bundle = shadow_repo(self)
+        (src / "unittest.py").write_text("raise SystemExit(0)\n")
+        commit(src, "shadow")
+        head = sh("git", "rev-parse", "HEAD", cwd=src)
+        cwd = os.getcwd()
+        os.chdir(src)
+        self.addCleanup(os.chdir, cwd)
+        with mock.patch.object(te_run, "SOURCE", src):
+            self.assertEqual(te_run.deny_hits(base, head), ["unittest.py"])
 
 
 @unittest.skipUnless(shutil.which("bwrap"), "real bwrap is not installed")
 class RealKillReceipt(unittest.TestCase):
-    """The real kill_check.py path (operator ruling: python3 -P on every oracle
-    run). A head that only adds a unittest.py shadow, with a wrong fix, must
-    not earn a passing receipt."""
+    """The real kill_check.py path. A head that adds a `unittest.py` shadow is
+    the deny check's to refuse (harmonic-forge#1112 AC2), not the oracle's:
+    see `OracleImports.test_shadowing_head_is_a_deny_hit`."""
 
     def receipt(self, fix: str, shadow: bool) -> tuple[bool, dict]:
         tmp = Path(tempfile.mkdtemp())
@@ -1027,13 +1055,6 @@ class RealKillReceipt(unittest.TestCase):
         self.assertTrue(passed, receipt)
         self.assertEqual(receipt["status"], "pass", receipt)
 
-    def test_shadowing_head_never_earns_a_kill_check_receipt(self):
-        passed, receipt = self.receipt("3", shadow=True)
-        self.assertFalse(passed, "the unittest.py shadow earned a passing kill_check receipt")
-        # Failed for the right reason: the real test ran at the head and failed
-        # (the shadow did not mask it), not because kill_check.py refused to run.
-        self.assertEqual(receipt["status"], "fail", receipt)
-        self.assertEqual([c["verdict"] for c in receipt["checks"]], ["broken-test"], receipt)
 
 
 class KillCheckChecks(unittest.TestCase):
@@ -1093,6 +1114,176 @@ class KillCheckChecks(unittest.TestCase):
         sh("git", "apply", "--check", check["patch"], cwd=src)  # applies to the head
         sh("git", "apply", check["patch"], cwd=src)
         self.assertIn("return 1", (src / "widget.py").read_text())
+
+
+def pipeline_only(cls):
+    """A Pipeline subclass that runs only its own tests, never Pipeline's again."""
+    for name in [n for n in vars(Pipeline) if n.startswith("test_")]:
+        if name not in vars(cls):
+            setattr(cls, name, None)
+    return cls
+
+
+@unittest.skipUnless(shutil.which("bwrap") and shutil.which("mise"), "real bwrap or mise missing")
+class MiseEnv(unittest.TestCase):
+    """harmonic-forge#1112 AC1: mise must trust a fresh clone inside the boundary."""
+
+    def test_check_runs_past_config_loading_in_a_fresh_clone(self):
+        base = Path.home() / ".cache" / "te-runner-test-scratch"
+        base.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(dir=base))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = tmp / "src"
+        src.mkdir()
+        sh("git", "init", "-q", "-b", "main", cwd=src)
+        (src / "mise.toml").write_text('[tasks.check]\nrun = "echo MISE-CHECK-RAN"\n')
+        commit(src, "base")
+        clone = tmp / "clone"
+        sh("git", "clone", "-q", "--shared", str(src), str(clone), cwd=tmp)
+        with mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}):
+            argv = te_run.sandbox.wrap(["mise", "run", "check"], clone,
+                                       inputs=(src / ".git" / "objects",))
+        done = subprocess.run(argv, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("MISE-CHECK-RAN", done.stdout)
+
+
+@pipeline_only
+class CloneOrigin(Pipeline):
+    def test_origin_is_the_github_url(self):
+        self.drive()
+        clone = self.tmp / "wt" / "harmonic-forge-7r-impl"
+        self.assertEqual(sh("git", "remote", "get-url", "origin", cwd=clone),
+                         "https://github.com/vitalharmony/harmonic-forge.git")
+        # Objects are still borrowed from SOURCE through alternates.
+        self.assertTrue((clone / ".git" / "objects" / "info" / "alternates").is_file())
+
+
+@pipeline_only
+class BaseRelative(Pipeline):
+    """harmonic-forge#1112 AC4 and pitch changes A/B."""
+
+    def test_a_failure_on_base_too_is_not_a_check_fail(self):
+        out = "FAIL: test_host (test_lane.Host.test_host)\\nRan 5 tests in 0.1s\\n"
+        self.drive(FAKE_MISE_RC="1", FAKE_MISE_OUT=out)
+        item = self.item()
+        self.assertEqual(item["facts"]["check_rc"], 0, item["facts"])
+        self.assertEqual(item["facts"]["check_base_failures"],
+                         ["test_host (test_lane.Host.test_host)"])
+        self.assertEqual(item["facts"]["check_new_failures"], [])
+        self.assertEqual(item["verdict"]["state"], "green", item["verdict"])
+        cached = list((self.tmp / "base-check").glob("*/result.json"))
+        self.assertEqual(len(cached), 1)
+
+    def test_head_crash_before_tests_on_failing_base_is_a_fail(self):
+        base = {"sha": "b", "rc": 1, "failures": ["task check"], "module_errors": [], "ran": 0}
+        head = te_run.parse_check("mise ERROR failed to parse mise.toml\n")
+        rc, new, _base = te_run.judge_check({"rc": 1, **head}, base)
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(new)
+
+    def test_module_level_error_on_head_always_counts_as_new(self):
+        test_id = "test_x (unittest.loader._FailedTest.test_x)"
+        base = {"failures": [test_id], "module_errors": [test_id], "ran": 3}
+        head = {"rc": 1, **te_run.parse_check(f"ERROR: {test_id}\nRan 3 tests in 0.1s\n")}
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(test_id, new)
+
+    def test_head_running_fewer_tests_than_base_fails(self):
+        base = {"failures": [], "module_errors": [], "ran": 10}
+        rc, new, _base = te_run.judge_check({"rc": 0, **te_run.parse_check("Ran 4 tests in 1s")},
+                                            base)
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(new)
+
+    def test_a_new_failure_on_the_head_is_a_check_fail(self):
+        base = {"failures": ["a (m.C.a)"], "module_errors": [], "ran": 2}
+        head = {"rc": 1, **te_run.parse_check("FAIL: a (m.C.a)\nFAIL: b (m.C.b)\n"
+                                                 "[check] ERROR task failed\nRan 2 tests in 1s")}
+        rc, new, base_failures = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(new, ["b (m.C.b)", "task check"])
+        self.assertEqual(base_failures, ["a (m.C.a)"])
+
+
+class Settings(unittest.TestCase):
+    def settings(self) -> dict:
+        return json.loads(te_run.SETTINGS.read_text())["permissions"]
+
+    def test_allow_list_has_the_required_commands(self):
+        allow = self.settings()["allow"]
+        for cmd in ("mkdir", "rm", "cp", "mv", "touch", "git checkout", "git switch",
+                    "git restore", "git stash", "git mv", "git rm", "git reset", "git rev-parse",
+                    "git branch", "mise tasks", "mise run"):
+            self.assertIn(f"Bash({cmd}:*)", allow)
+        for cmd in ("bash", "sh", "env", "eval", "xargs"):
+            self.assertFalse([a for a in allow if a.startswith(f"Bash({cmd}")], cmd)
+            self.assertIn(f"Bash({cmd}:*)", self.settings()["deny"])
+
+    def test_mise_task_dirs_are_write_denied(self):
+        deny = self.settings()["deny"]
+        self.assertIn("Edit(./**/.mise/tasks/**)", deny)
+        self.assertIn("Edit(./**/mise-tasks/**)", deny)
+        for path in (".mise/tasks/check", "tools/mise-tasks/x.sh"):
+            self.assertTrue(te_run.deny_check.denied(path), path)
+
+
+class Prompt(unittest.TestCase):
+    def test_prompt_names_harness_owned_steps_and_refusal_policy(self):
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF")
+        for phrase in ("`mkdir`", "`git checkout`", "`mise tasks`",
+                       "A refusal is never a reason to stop",
+                       "commit what exists",
+                       "The harness runs the kill checks, `mise run check`, the deny check and "
+                       "the preclose check",
+                       "cannot see them",
+                       "`os.environ`", "never as a command prefix",
+                       "`pytest` is not installed", "`python3 -m unittest`",
+                       "`python3 tools/run_tests.py`",
+                       "deployed or live measurement", "not a reason to self-flag",
+                       te_run.SELF_FLAG, "BODY", "HANDOFF"):
+            self.assertIn(phrase, text)
+        self.assertNotIn("following the Lane 1 handoff below exactly", text)
+
+
+@pipeline_only
+class Evidence(Pipeline):
+    """harmonic-forge#1112 AC7."""
+
+    def test_item_artifacts_survive_the_item(self):
+        self.drive()
+        state = te_run.queue_state.load(self.queue)
+        item_dir = self.tmp / "runs" / state["run_id"] / "7"
+        for name in ("stream.jsonl", "stream.jsonl.stderr", "check.stdout", "check.stderr",
+                     "kill_runner.stdout", "kill_runner.stderr", "bundle/checks.json"):
+            self.assertTrue((item_dir / name).is_file(), name)
+        self.assertTrue((item_dir / "transcripts").is_dir())
+
+    def test_only_the_newest_runs_are_kept(self):
+        runs = self.tmp / "runs"
+        for n in range(12):
+            (runs / f"run-20200101T0000{n:02d}Z-00").mkdir(parents=True)
+        self.drive()
+        kept = sorted(p.name for p in runs.iterdir())
+        self.assertEqual(len(kept), te_run.KEEP_RUNS)
+        self.assertEqual(kept[-1], te_run.queue_state.load(self.queue)["run_id"])
+
+    def test_failed_preflight_aborts_before_any_item(self):
+        self.preflight.return_value = {"failures": ["x"], "reported": []}
+        self.assertEqual(self.drive(), 3)
+        self.assertEqual(self.item()["status"], "pending")
+        self.assertEqual(self.observed(), [])
+
+
+class Unit(unittest.TestCase):
+    def test_npm_global_precedes_usr_local(self):
+        unit = (Path(te_run.__file__).resolve().parent / "systemd"
+                / "forge-te-runner.service").read_text()
+        [line] = [l for l in unit.splitlines() if l.startswith("Environment=PATH=")]
+        parts = line.split("=", 2)[2].split(":")
+        self.assertIn("%h/.npm-global/bin", parts)
+        self.assertLess(parts.index("%h/.npm-global/bin"), parts.index("/usr/local/bin"))
 
 
 if __name__ == "__main__":

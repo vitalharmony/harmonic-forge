@@ -214,6 +214,35 @@ class Diff(unittest.TestCase):
             self.assertEqual((rc, json.loads(out)["hits"]), (3, [spelling]), spelling)
 
 
+class Shadowing(Diff):
+    """harmonic-forge#1112 AC2 and pitch change C: the oracle runs without
+    PYTHONSAFEPATH, so an added module or package that shadows a stdlib or
+    test-runner name is a deny hit wherever it sits."""
+
+    def added(self, rel: str) -> tuple[int, list]:
+        (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo / rel).write_text("raise SystemExit(0)\n")
+        return self.check(self.commit())
+
+    def test_added_stdlib_named_module_is_a_hit(self):
+        self.assertEqual(self.added("unittest.py"), (3, ["unittest.py"]))
+
+    def test_added_test_runner_package_is_a_hit(self):
+        self.assertEqual(self.added("pytest/__init__.py"), (3, ["pytest/__init__.py"]))
+
+    def test_stdlib_named_module_in_any_dir_is_a_hit(self):
+        # Neither the repo root nor any tools/run_tests.py TEST_DIRS entry.
+        self.assertEqual(self.added("docs/deep/json.py"), (3, ["docs/deep/json.py"]))
+        self.assertIn("docs/other/logging/x.py", self.added("docs/other/logging/x.py")[1])
+
+    def test_ordinary_added_module_is_not_a_hit(self):
+        self.assertEqual(self.added("tools/telemetry/widget.py"), (0, []))
+
+
+for _name in [n for n in vars(Diff) if n.startswith("test_")]:
+    setattr(Shadowing, _name, None)  # Diff's own tests run once, in Diff
+
+
 class MalformedManifest(unittest.TestCase):
     def test_malformed_manifest_exits_two(self):
         for bad in ({"groups": [{"why": "x", "globs": [], "regexes": ["("]}]},

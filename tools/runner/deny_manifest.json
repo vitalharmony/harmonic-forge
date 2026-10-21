@@ -164,6 +164,17 @@
       ]
     },
     {
+      "why": "harmonic-forge#1112 change D: mise task files, which `mise run:*` would run as the agent's own code",
+      "globs": [
+        "./**/.mise/tasks/**",
+        "./**/mise-tasks/**"
+      ],
+      "regexes": [
+        "(^|/)\\.mise/tasks/",
+        "(^|/)mise-tasks/"
+      ]
+    },
+    {
       "why": "G4: Lane 1's kill-check bundles",
       "globs": [
         "~/.local/share/te-runner/kill-bundles/**"
