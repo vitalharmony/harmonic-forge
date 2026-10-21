@@ -1081,14 +1081,19 @@ class PrecloseFindingRegressionTests(unittest.TestCase):
     a nested path or a relative apply_patch target."""
 
     def setUp(self):
-        self.worktree = Path(tempfile.mkdtemp(prefix="hrse2-888888-impl-",
-                                              dir="/tmp"))
-        # WORKTREE_ISSUE_RE needs the EXACT name; tempfile's suffix breaks
-        # that, so build the real path by hand and clean it up ourselves.
-        shutil.rmtree(self.worktree, ignore_errors=True)
-        self.worktree = Path("/tmp/hrse2-888888-impl")
-        (self.worktree / "backend" / "app").mkdir(parents=True, exist_ok=True)
-        self.addCleanup(shutil.rmtree, self.worktree, ignore_errors=True)
+        # harmonic-forge#1114: never a fixed /tmp path (it escaped the per-run
+        # root and the cleanup deleted any pre-existing /tmp/hrse2-888888-impl).
+        # WORKTREE_ISSUE_RE is anchored to its worktree roots, not the basename
+        # alone, so anchor it to this private parent for the test.
+        parent = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, parent, True)
+        self.worktree = parent / "hrse2-888888-impl"
+        (self.worktree / "backend" / "app").mkdir(parents=True)
+        root = re.escape(os.path.realpath(parent))
+        rx = patch.object(m, "WORKTREE_ISSUE_RE", re.compile(
+            r"^" + root + r"/hrse2-(?P<number>\d+)-impl$"))
+        rx.start()
+        self.addCleanup(rx.stop)
         subprocess.run(["git", "init", "-q"], cwd=self.worktree, check=True)
         subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=self.worktree, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=self.worktree, check=True)

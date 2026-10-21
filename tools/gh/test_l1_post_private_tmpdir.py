@@ -21,16 +21,26 @@ def _fn(name: str) -> ast.FunctionDef:
                 if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
+def _system_temp_root() -> str:
+    # harmonic-forge#1114: the real tmpfs root, not the contained per-run root.
+    return real_tmpdir()
+
+
+def _assert_outside(root: Path, system: str) -> None:
+    """Raise AssertionError if root is, or is under, the temp root ``system``."""
+    ref = Path(system).resolve()
+    resolved = root.resolve()
+    assert ref != resolved, f"{root} is the temp root {ref}"
+    assert ref not in resolved.parents, f"{root} is under the temp root {ref}"
+
+
 class PrivateCheckTmpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root, self.env = L._private_check_tmp()
         self.addCleanup(shutil.rmtree, self.root, True)
 
     def test_root_is_outside_the_system_temp_root(self) -> None:
-        # harmonic-forge#1114: the real tmpfs root, not the contained per-run root.
-        system = Path(real_tmpdir()).resolve()
-        self.assertNotIn(system, self.root.resolve().parents)
-        self.assertNotEqual(system, self.root.resolve())
+        _assert_outside(self.root, _system_temp_root())
 
     def test_env_points_every_temp_variable_at_the_private_root(self) -> None:
         for name in ("TMPDIR", "TMP", "TEMP"):
@@ -62,8 +72,11 @@ class RealTmpdirReferenceTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {REAL_TMPDIR_ENV: real}), \
                     mock.patch.object(tempfile, "tempdir", str(contained)):
                 root, _ = L._private_check_tmp(Path(real) / "l1-post-check")
-                self.assertIn(Path(real).resolve(), root.resolve().parents)
-                self.assertIn(Path(real_tmpdir()).resolve(), root.resolve().parents)
+                self.addCleanup(shutil.rmtree, root, True)
+                # The recorded real root catches it; the contained root does not.
+                with self.assertRaises(AssertionError):
+                    _assert_outside(root, _system_temp_root())
+                _assert_outside(root, tempfile.gettempdir())
 
     def test_falls_back_to_gettempdir_when_unset(self) -> None:
         import os
