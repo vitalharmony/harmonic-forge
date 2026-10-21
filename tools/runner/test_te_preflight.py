@@ -197,7 +197,7 @@ class ItemChecks(Base):
                 mock.patch.object(preflight.preclose_driver, "passes_held", return_value=0), \
                 mock.patch.object(preflight.preclose_driver, "issue_body",
                                   return_value=seams["body"]), \
-                mock.patch.object(preflight.te_queue, "handoff", return_value=seams["handoff"]), \
+                mock.patch.object(preflight.te_queue, "handoff", **seam(seams["handoff"])), \
                 mock.patch.object(te_run, "SOURCE", self.src), \
                 mock.patch.object(te_run, "WORKTREE_ROOT", self.tmp / "wt"), \
                 mock.patch.object(te_run, "FORK_URL", str(self.fork)):
@@ -253,6 +253,20 @@ class ItemChecks(Base):
         self.assertTrue(any("item preconditions" in f and "fetch origin main failed" in f
                             for f in failures), failures)
         self.assertTrue(any("item preconditions" in f and "never reused" in f
+                            for f in failures), failures)
+
+    def test_handoff_queue_error_is_listed_and_later_guards_still_run(self):
+        # Cross-family finding 2: _guard_bundle_pin's handoff() can raise
+        # QueueError; it is one refusal, and the guards before and after it
+        # still report theirs.
+        sh("git", "branch", "fix/7-te-runner", cwd=self.src)
+        sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
+        failures = self.failures(handoff=preflight.te_queue.QueueError("handoff unreadable"))
+        self.assertTrue(any("item preconditions" in f and "handoff unreadable" in f
+                            for f in failures), failures)
+        self.assertTrue(any("item preconditions" in f and "never reused" in f
+                            for f in failures), failures)
+        self.assertTrue(any("item preconditions" in f and "fetch origin main failed" in f
                             for f in failures), failures)
 
     def test_failing_origin_fetch_raises_driver_error(self):

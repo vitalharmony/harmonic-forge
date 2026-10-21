@@ -755,7 +755,9 @@ def item_preconditions(issue: int, env: dict[str, str] | None = None,
     for guard in ITEM_GUARDS:
         try:
             guard(issue, env, Path(source or SOURCE))
-        except (Blocked, preclose_driver.DriverError) as exc:
+        except (Blocked, preclose_driver.DriverError, te_queue.QueueError) as exc:
+            # QueueError: _guard_bundle_pin reads the handoff (cross-family
+            # finding 2); one guard's refusal never hides another's.
             problems.append(str(exc))
     return problems
 
