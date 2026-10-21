@@ -1026,7 +1026,8 @@ def footer_live_case_ids(spec_body: str) -> set[str]:
     return {case for case, cls in _eras.parse_case_map(footer, "classes").items() if cls == "live"}
 
 
-_AE_AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized\**:?\**[^\n]*$")
+#: The field label itself: `Authorized-by:` is not the Authorized field.
+_AE_AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized[^\S\n]*\**[^\S\n]*:[^\n]*$")
 
 
 def validate_ae_external_calls(ae_body: str, calls: list[str]) -> None:
