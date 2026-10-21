@@ -27,32 +27,6 @@
 # by how the session was started. That is the same mechanism 3-lane-protocol.md
 # already describes for LANE. This file does not claim to enforce more than
 # that, because it cannot.
-#
-## Gemini's env prefix -- why the two unsets are mandatory, not hygiene
-#
-# Standing operator directive (harmonic-forge#318): the Gemini CLI always uses
-# the OAuth path; GOOGLE_API_KEY/GEMINI_API_KEY exist for programmatic use
-# elsewhere and must never be the CLI's auth path. That is NOT the default and
-# it fails SILENTLY -- with both keys present (the operator's normal shell
-# state) Gemini CLI prints "Both GOOGLE_API_KEY and GEMINI_API_KEY are set.
-# Using GOOGLE_API_KEY" and runs on the API-key identity and quota, with no
-# error and correct-looking output. The unsets are the only thing enforcing the
-# directive.
-#
-# They are process-scoped (`env -u`), never touching the operator's interactive
-# shell. But note the real scope: `env` execs the CLI, so the stripped
-# environment is inherited by the ENTIRE session subtree. GEMINI_API_KEY in
-# particular is a live HRSE2 backend variable read via os.getenv(), so a backend
-# started from inside a Gemini lane session sees it absent and may report itself
-# unconfigured. That is the intended trade, but a phantom "unconfigured" finding
-# from inside a Gemini lane session should be checked against this before being
-# believed.
-#
-# GOOGLE_CLOUD_PROJECT is required because the active account is
-# Workspace-managed; Google's Code Assist path demands a project id for
-# Workspace identities. Without it every invocation dies with
-# ProjectIdRequiredError before any tool call. `hrse-497421` is a project id,
-# not a credential. Override by exporting GOOGLE_CLOUD_PROJECT before launching.
 
 _lane_launch_die() {
   echo "${_lane_name:-lane launcher}: $*" >&2
@@ -73,7 +47,7 @@ registry_assert_integrity
 ## Agent resolution -- `--agent` and LANE_CLI are mutually exclusive (AC3)
 #
 # ADR-007 § 3 rejects defining a precedence: "the operator who set LANE_CLI in a
-# shell profile and then typed --agent gemini gets a session that ignores half
+# shell profile and then typed --agent codex gets a session that ignores half
 # of what they said and reports nothing. Refusing costs one error message and
 # removes a class of confusion entirely."
 if [ -n "$lane_agent_requested" ] && [ -n "${LANE_CLI:-}" ]; then
@@ -346,15 +320,16 @@ unset _lane_system_prompt_flag
 
 # 4. The lane's policy file, if the registry declares one for this agent+lane.
 #
-#    hrse#362 AC5, corrected against live behavior: the Gemini CLI does NOT fail
-#    closed on a missing or invalid --admin-policy file -- verified live
+#    hrse#362 AC5, corrected against live behavior: a CLI need not fail
+#    closed on a missing or invalid policy file -- a since-retired CLI
+#    (harmonic-forge#1113) did not; verified live
 #    2026-08-28, both a nonexistent path and syntactically broken TOML print
 #    only a stderr warning (`[ADMIN] Policy file error in ...`) and the session
 #    starts anyway, completely unprotected under --yolo. A caller not watching
 #    stderr -- exactly this launcher's own non-interactive shape -- would never
 #    notice. So fail-closed is enforced HERE, at the one place that can still
 #    refuse to launch at all. Carried forward from harmonic-forge#362 as a
-#    registry-declared precondition rather than a Gemini special case (NC8).
+#    registry-declared precondition rather than an agent special case (NC8).
 _lane_policy_file="$(registry_lookup AGENT_LANE_POLICY "$_lane_agent:$LANE")"
 if [ -n "$_lane_policy_file" ]; then
   _lane_policy_flag="$(registry_lookup AGENT_POLICY_FLAG "$_lane_agent")"
@@ -464,7 +439,7 @@ unset _lane_sandbox
 #     private temp root -- one of those add-dirs -- because
 #     AGENT_SESSION_FLAGS removes `/tmp` and `$TMPDIR` as writable roots; a
 #     TMPDIR left at `/tmp` would make every `mktemp` in the session fail.
-#     Claude and Gemini keep the caller's TMPDIR untouched.
+#     Claude keeps the caller's TMPDIR untouched.
 _lane_add_dir="$(registry_lookup AGENT_LANE_ADD_DIR "$_lane_agent:$LANE")"
 _lane_add_dirs=()
 read -ra _lane_add_dirs <<<"$_lane_add_dir"

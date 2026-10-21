@@ -11,10 +11,10 @@ safeguards) live in `universal-claude.md` instead.* Combine with
 
 ## Current lane assignment (harmonic-forge#113)
 
-**Gemini was eliminated as a lane tool on 2026-08-31.** Lane 1 is Claude Code;
-Lanes 2 and 3 accept Claude Code or Codex. `3-lane-protocol.md`'s R-0193/R-0194
-are retained as the record of what its policies did and why, not as current
-assignment — read them as history.
+**The Gemini CLI is retired (harmonic-forge#1113)**, after its elimination
+as a lane tool on 2026-08-31: it cannot authenticate, and no launcher, policy
+or cross-family call can select it. Lane 1 is Claude Code; Lanes 2 and 3
+accept Claude Code or Codex.
 
 As of this writing, Lane 1 is filled by Claude Code. **Lane 2 and Lane 3
 both accept either Claude Code or Codex** — confirmed live, hrse#327,
@@ -22,7 +22,7 @@ both accept either Claude Code or Codex** — confirmed live, hrse#327,
 (`AI_AGENT=claude-code_*`), not Codex, updated from the prior single-tool
 note (which said "both filled by Codex," now stale). The `LANE_CLI`
 mechanism (harmonic-forge#179, moved to the shared
-`tools/lane/_cli_launch.sh` in harmonic-forge#318, which added Gemini)
+`tools/lane/_cli_launch.sh` in harmonic-forge#318)
 already distinguishes the agent CLIs correctly for both, and
 `LANE` itself propagates through either tool's subprocess tree by its own
 mechanism (harmonic-forge#142/#148) — this is deliberate dual-CLI

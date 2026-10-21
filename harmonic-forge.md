@@ -41,9 +41,9 @@ PR. Full agent-readable version: `3-lane-protocol.md`.
 ```
 
 Lanes are defined by role, not by vendor. The reference implementations
-have been Claude Code, Codex, and (historically) Devin — see
-harmonic-forge#317 for the current effort to make Claude, Codex, and
-Gemini interchangeable across all three lanes.
+have been Claude Code, Codex, and (historically) Devin and the Gemini CLI
+(retired, harmonic-forge#1113) — see harmonic-forge#317 for the effort to
+make the agents interchangeable across all three lanes.
 
 **Lane 3 is local by design.** Whichever agent fills Lane 3 runs on the
 developer's own machine, with local `gh` CLI access to GitHub — there is no
@@ -98,7 +98,6 @@ harmonic-forge/
 │   └── pre-commit                  # rejects direct commits to main (harmonic-forge#52); every
 │                                    # clone must run `git config core.hooksPath .githooks`
 ├── .gitignore
-├── prompts/                        # Gemini Gem / external-tool prompt templates
 ├── rules/
 │   ├── universal-lane1.md          # role-general Lane 1 directives (all projects)
 │   ├── universal-claude.md         # Claude-Code-CLI mechanics for Lane 1 (all projects)

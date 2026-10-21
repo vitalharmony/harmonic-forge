@@ -20,6 +20,11 @@ issue that correctly states one, flagging "Devin" in the issue whose
 whole point was scrubbing Devin references).
 """
 
+_GEMINI_CLI_RETIRED = (
+    "Gemini CLI retired (harmonic-forge#1113) -- it cannot authenticate by "
+    "OAuth or API key; lanes and cross-family calls are Claude Code and Codex only"
+)
+
 RETIRED_ARTIFACTS: dict[str, str] = {
     "board_sync.py": "retired (hrse#839) -- docs/PRIORITIES.md no longer drives the boards; board fields are edited on the board directly",
     "board_drift_check.py": "retired alongside board_sync.py (hrse#839) -- its Priority-field read has no input now that Priority is retired",
@@ -38,4 +43,22 @@ RETIRED_ARTIFACTS: dict[str, str] = {
            "marks rather than reproduces it (harmonic-forge#609)",
     ".devin/hooks.v1.json": "retired with the Devin scrub (harmonic-forge#317)",
     "scripts/gate_devin_exec.py": "retired with the Devin scrub (harmonic-forge#317)",
+    # harmonic-forge#1113: the Gemini CLI as a lane agent and cross-family
+    # family. Command-shaped and full-path keys only (never the bare word),
+    # so HRSE2's Gemini model API is never flagged.
+    "--agent gemini": _GEMINI_CLI_RETIRED,
+    "--caller gemini": _GEMINI_CLI_RETIRED,
+    "--families 3": _GEMINI_CLI_RETIRED,
+    "tools/gemini/": _GEMINI_CLI_RETIRED,
+    "tools/gemini/install-lane3-context-extension": _GEMINI_CLI_RETIRED,
+    "tools/gemini/lane3-context/lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
+    "GEMINI.md": _GEMINI_CLI_RETIRED,
+    "tools/lane/gemini-read-only-deny.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/gemini-probe-deny.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/gemini-lane1.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/gemini-lane2.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/gemini-lane3.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/canary/run_canary.py": _GEMINI_CLI_RETIRED,
+    "prompts/gemini-gem-harmonic-architect-co-pilot.md": _GEMINI_CLI_RETIRED,
+    "prompts/gemini-gem-harmonic-forge.md": _GEMINI_CLI_RETIRED,
 }

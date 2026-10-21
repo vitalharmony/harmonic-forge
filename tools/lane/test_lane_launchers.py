@@ -69,9 +69,6 @@ class _FixtureTree:
         # this tree's HOME differs from capture_cell's default, so HRSE2's
         # copy is written here too.
         bc.write_codex_hooks(self.home / "Harmonic_Projects" / "HRSE2")
-        extension_record = self.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
-        extension_record.parent.mkdir(parents=True)
-        extension_record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
         self.lane2 = self.root / "proj-lane2"
         self.lane3 = self.root / "proj-lane3"
         self.lane_dir = LANE_DIR
@@ -246,15 +243,14 @@ class NineCombinations(unittest.TestCase):
     LANE_AGENT, GH_CONFIG_DIR and flag set.  TC9: and names the real agent."""
 
     EXPECTED_CWD = {"1": "proj", "2": "proj-lane2", "3": "proj-lane3"}
-    EXPECTED_DISPLAY = {"claude": "Claude Code", "codex": "Codex",
-                        "gemini": "Gemini"}
+    EXPECTED_DISPLAY = {"claude": "Claude Code", "codex": "Codex"}
     EXPECTED_WHY_PREFIX = {"1": "Lane 1", "2": "Lane 2 (implementer)",
                            "3": "Lane 3 (gate)"}
 
     def test_all_nine_combinations_launch_correctly(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
-                for agent in ("claude", "codex", "gemini"):
+                for agent in ("claude", "codex"):
                     with self.subTest(lane=lane, agent=agent):
                         cell = tree.run(lane, [], **{"LANE_CLI": agent})
                         self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -273,7 +269,7 @@ class NineCombinations(unittest.TestCase):
         """TC9 -- AC7.  Every launcher said 'Claude Code' unconditionally."""
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
-                for agent in ("claude", "codex", "gemini"):
+                for agent in ("claude", "codex"):
                     with self.subTest(lane=lane, agent=agent):
                         cell = tree.run(lane, [], **{"LANE_CLI": agent})
                         self.assertEqual(
@@ -284,7 +280,7 @@ class NineCombinations(unittest.TestCase):
     def test_agent_flag_selects_the_agent(self):
         """AC1 -- `--agent` is the canonical interface, not just LANE_CLI."""
         with _FixtureTree() as tree:
-            for agent in ("claude", "codex", "gemini"):
+            for agent in ("claude", "codex"):
                 with self.subTest(agent=agent):
                     cell = tree.run("1", ["--agent", agent])
                     self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -341,10 +337,25 @@ class ClosedRegistry(unittest.TestCase):
                     self.assertFalse(cell["launched"])
                     self.assertNotEqual(cell["returncode"], 0)
 
+    def test_gemini_is_not_selectable(self):
+        """harmonic-forge#1113 AC1/AC6: the Gemini CLI is retired, so neither
+        `--agent gemini` nor `LANE_CLI=gemini` launches, at any lane -- the
+        registry's closed-list refusal, never an exec attempt."""
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for how, args, env in (("--agent", ["--agent", "gemini"], {}),
+                                       ("LANE_CLI", [], {"LANE_CLI": "gemini"})):
+                    with self.subTest(lane=lane, how=how):
+                        cell = tree.run(lane, args, **env)
+                        self.assertFalse(cell["launched"], cell.get("stderr"))
+                        self.assertNotEqual(cell["returncode"], 0)
+        source = (LANE_DIR / "_agent_registry.sh").read_text()
+        self.assertNotIn("[gemini", source)
+
     def test_agent_and_lane_cli_together_is_an_error(self):
         """TC3 -- AC3.  Neither wins; ADR-007 § 3 rejects a precedence rule."""
         with _FixtureTree() as tree:
-            cell = tree.run("1", ["--agent", "gemini"], LANE_CLI="codex")
+            cell = tree.run("1", ["--agent", "claude"], LANE_CLI="codex")
             self.assertFalse(cell["launched"])
             self.assertNotEqual(cell["returncode"], 0)
             self.assertIn("mutually exclusive", cell["stderr"])
@@ -404,16 +415,11 @@ class RegistryIntegrity(unittest.TestCase):
         (dest / "policies").mkdir()
         for policy in (LANE_DIR / "policies").glob("*.toml"):
             (dest / "policies" / policy.name).write_text(policy.read_text())
-        copied_extension = dest.parent / "gemini" / "lane3-context"
-        copied_extension.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(LANE_DIR.parent / "gemini" / "lane3-context", copied_extension)
         return dest
 
     def _run_with_broken_registry(self, mutate) -> dict:
         with _FixtureTree() as tree:
             lane_dir = self._copy_lane_dir(tree.root / "lanedir")
-            extension_record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
-            extension_record.write_text(json.dumps({"source": str(lane_dir.parent / "gemini" / "lane3-context"), "type": "link"}))
             mutate(lane_dir / "_agent_registry.sh")
             return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
                                    env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
@@ -478,8 +484,6 @@ class RegistryIntegrity(unittest.TestCase):
 
         with _FixtureTree() as tree:
             lane_dir = self._copy_lane_dir(tree.root / "lanedir")
-            extension_record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
-            extension_record.write_text(json.dumps({"source": str(lane_dir.parent / "gemini" / "lane3-context"), "type": "link"}))
             registry = lane_dir / "_agent_registry.sh"
             drop_from_required_and_entry(registry)
             self.assertNotIn("AGENT_LAUNCH_REFUSED_ENV\n)", registry.read_text())
@@ -499,10 +503,10 @@ class RegistryIntegrity(unittest.TestCase):
         self.assertNotIn(":-", body)
 
     def test_every_agent_declares_a_policy_slot_for_every_lane(self):
-        """NC7: gemini:3 is declared EMPTY, not omitted, so harmonic-forge#326
+        """NC7: an empty slot is declared EMPTY, not omitted, so a later issue
         fills a declared field rather than reopening the launcher."""
         source = (LANE_DIR / "_agent_registry.sh").read_text()
-        for agent in ("claude", "codex", "gemini"):
+        for agent in ("claude", "codex"):
             for lane in ("1", "2", "3"):
                 with self.subTest(agent=agent, lane=lane):
                     self.assertIn(f"[{agent}:{lane}]", source)
@@ -526,7 +530,7 @@ class LaneEnvironment(unittest.TestCase):
         cannot alter its parent's, so the values every hook subprocess reads
         are fixed by how the session was started."""
         with _FixtureTree() as tree:
-            cell = tree.run("2", ["--", "LANE=1", "LANE_AGENT=gemini"],
+            cell = tree.run("2", ["--", "LANE=1", "LANE_AGENT=claude"],
                             LANE_CLI="codex")
             self.assertTrue(cell["launched"], cell.get("stderr"))
             self.assertEqual(cell["env"]["LANE"], "2")
@@ -551,67 +555,6 @@ class SafetyFlagsUnremovable(unittest.TestCase):
     the flag, so the two cannot drift -- that derivation is what is tested
     here, not a hand-maintained second list."""
 
-    def test_declared_policy_flag_cannot_be_supplied_by_passthrough(self):
-        with _FixtureTree() as tree:
-            for lane in ("1", "2"):  # the lanes gemini declares a policy for
-                with self.subTest(lane=lane):
-                    cell = tree.run(lane, ["--admin-policy", "/dev/null"],
-                                    LANE_CLI="gemini")
-                    self.assertFalse(cell["launched"])
-                    self.assertIn("cannot be set, removed, or contradicted",
-                                  cell["stderr"])
-
-    def test_gemini_lane3_refuses_missing_redirected_or_dangling_context_extension(self):
-        """H1414: a fresh gate may start only with the canonical extension."""
-        with _FixtureTree() as tree:
-            record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
-            for state in ("missing", "redirected", "dangling"):
-                with self.subTest(state=state):
-                    if record.exists():
-                        record.unlink()
-                    if state == "redirected":
-                        foreign = tree.root / "foreign-extension"
-                        foreign.mkdir(exist_ok=True)
-                        (foreign / "gemini-extension.json").write_text("{}")
-                        (foreign / "lane3_context_mcp.py").write_text("")
-                        record.write_text(json.dumps({"source": str(foreign), "type": "link"}))
-                    elif state == "dangling":
-                        record.write_text(json.dumps({"source": str(tree.root / "missing-extension"), "type": "link"}))
-
-                    cell = tree.run("3", [], LANE_CLI="gemini")
-                    self.assertFalse(cell["launched"], cell.get("stderr"))
-                    self.assertIn("REFUSING TO START", cell["stderr"])
-
-                    record.write_text(json.dumps({"source": str(LANE_DIR.parent / "gemini" / "lane3-context"), "type": "link"}))
-
-    def test_declared_policy_flag_cannot_be_contradicted_in_equals_form(self):
-        with _FixtureTree() as tree:
-            cell = tree.run("1", ["--admin-policy=/dev/null"],
-                            LANE_CLI="gemini")
-            self.assertFalse(cell["launched"])
-            self.assertNotEqual(cell["returncode"], 0)
-
-    def test_declared_policy_flag_is_denied_even_after_a_double_dash(self):
-        """`--` forwards args verbatim, so it must NOT be a bypass for AC4 --
-        the deny scan runs over the passthrough array, not over the raw
-        command line."""
-        with _FixtureTree() as tree:
-            cell = tree.run("2", ["--", "--admin-policy", "/dev/null"],
-                            LANE_CLI="gemini")
-            self.assertFalse(cell["launched"])
-            self.assertNotEqual(cell["returncode"], 0)
-
-    def test_policy_flag_is_actually_injected_where_declared(self):
-        with _FixtureTree() as tree:
-            for lane, expected in (("1", "gemini-lane1.toml"),
-                                   ("2", "gemini-lane2.toml")):
-                with self.subTest(lane=lane):
-                    cell = tree.run(lane, [], LANE_CLI="gemini")
-                    args = _agent_args(cell)
-                    self.assertIn("--admin-policy", args)
-                    self.assertTrue(
-                        args[args.index("--admin-policy") + 1].endswith(expected))
-
     def test_lane3_launch_flags_match_the_committed_closed_list(self):
         """The amendment gate (harmonic-forge#322 required change 9).
 
@@ -620,24 +563,22 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         `--sandbox read-only` had been dropped (five live-verified escalation
         paths on codex-cli 0.150.1) and Claude got no new flag.
 
-        harmonic-forge#326 is amendment 1: it filled the declared-empty
-        `AGENT_LANE_POLICY[gemini:3]` slot, and THIS TEST FAILED until
-        `--admin-policy` was added to lane3_safety_additions.txt -- which is
-        exactly the gate working. So the assertion generalizes rather than
+        harmonic-forge#326 was amendment 1: it filled a declared-empty
+        `AGENT_LANE_POLICY` slot for an agent since retired
+        (harmonic-forge#1113), and THIS TEST FAILED until its flag was added
+        to lane3_safety_additions.txt -- which is exactly the gate working. So the assertion generalizes rather than
         relaxes: whatever a Lane 3 launch adds beyond the pre-#322 baseline must
         appear on the committed list, and nothing else may.
 
         Note on why this test carries the gate rather than the AC8 comparator:
         `baseline_capture.compare()` only inspects Claude and Codex cells
-        (`AC8_AGENTS`), so a Gemini Lane 3 change passes `--compare` untouched.
-        For Gemini -- the only agent the list currently applies to -- this test
-        IS the enforcement. Verified: filling the registry slot failed here and
-        passed `--compare`.
+        (`AC8_AGENTS`), so this test, not `--compare`, is the enforcement for
+        any Lane 3 flag the list declares.
         """
         additions = set(bc._load_lane3_additions(ADDITIONS))
         baseline = json.loads(BASELINE.read_text())["cells"]
         with _FixtureTree() as tree:
-            for agent in ("claude", "codex", "gemini"):
+            for agent in ("claude", "codex"):
                 with self.subTest(agent=agent):
                     cell = tree.run("3", [], LANE_CLI=agent)
                     self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -656,29 +597,8 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                         f"which is not on lane3_safety_additions.txt -- amend "
                         f"that list in its own issue, or drop the flag")
 
-    def test_gemini_lane3_policy_is_injected_and_unremovable(self):
-        """harmonic-forge#326 AC4, the property #326's tier depends on.
-
-        The launcher supplies the Lane 3 policy, and a passthrough
-        `--admin-policy` is rejected outright rather than winning by
-        last-flag-wins. Both halves asserted -- injection alone would be a
-        policy that is advisory, not a boundary (ADR-007 § 9)."""
-        with _FixtureTree() as tree:
-            cell = tree.run("3", [], LANE_CLI="gemini")
-            self.assertTrue(cell["launched"], cell.get("stderr"))
-            args = _agent_args(cell)
-            self.assertIn("--admin-policy", args)
-            self.assertTrue(
-                args[args.index("--admin-policy") + 1].endswith("gemini-lane3.toml"))
-
-            denied = tree.run("3", ["--admin-policy", "/dev/null"],
-                              LANE_CLI="gemini")
-            self.assertFalse(denied["launched"])
-            self.assertIn("cannot be set, removed, or contradicted",
-                          denied["stderr"])
-
-    def test_claude_lane3_carries_no_gemini_or_codex_flag(self):
-        """Claude Lane 3 gets neither Gemini's policy flag nor Codex's sandbox
+    def test_claude_lane3_carries_no_codex_flag(self):
+        """Claude Lane 3 gets no `--admin-policy` and not Codex's sandbox
         (unchanged by harmonic-forge#644, which only touches Codex). Its own
         policy, `--settings`, arrived with harmonic-forge#878 -- see
         ClaudeLane3Settings."""
@@ -823,12 +743,12 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                     args = _agent_args(tree.run(lane, ["--agent", "codex", "--", "resume", "--last"]))
                     self.assertEqual(args[args.index("--sandbox") + 1], "danger-full-access")
 
-    def test_claude_and_gemini_are_not_affected_by_the_codex_sandbox_denials(self):
+    def test_claude_is_not_affected_by_the_codex_sandbox_denials(self):
         """The new deny tokens belong to the codex row only: each Codex-refused
-        form still launches for Claude and Gemini (F840 preclose: an empty
+        form still launches for Claude (F840 preclose: an empty
         passthrough never exercised the deny loop)."""
         with _FixtureTree() as tree:
-            for agent in ("claude", "gemini"):
+            for agent in ("claude",):
                 for lane in ("1", "2", "3"):
                     with self.subTest(agent=agent, lane=lane):
                         cell = tree.run(lane, ["--agent", agent])
@@ -871,75 +791,75 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             self.assertIn("/tmp", values)
             self.assertTrue(any(v.endswith("Harmonic_Projects/testplan") for v in values))
 
-    def test_deny_mechanism_is_registry_generic_not_gemini_specific(self):
-        """NC7.  Fill the declared-empty gemini:3 slot and the deny follows,
-        with no launcher change -- which is exactly what harmonic-forge#326
-        needs to be true."""
+    @staticmethod
+    def _toml_policy_lane_dir(tree, lane: str) -> Path:
+        """A copied lane dir whose registry declares a `toml`-checked policy
+        for codex at LANE -- the shape the retired agent rows used
+        (harmonic-forge#1113), now exercised through an agent that exists."""
+        lane_dir = tree.root / "lanedir"
+        lane_dir.mkdir()
+        for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
+                     "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh",
+                     "_lane_refresh.sh", "_lane_identity.sh"):
+            (lane_dir / name).write_text((LANE_DIR / name).read_text())
+        registry = (LANE_DIR / "_agent_registry.sh").read_text()
+        for old, new in (
+                ('declare -A AGENT_POLICY_FLAG=(\n  [claude]="--settings"\n  [codex]=""',
+                 'declare -A AGENT_POLICY_FLAG=(\n  [claude]="--settings"\n  [codex]="--test-policy"'),
+                ('declare -A AGENT_POLICY_CHECK=(\n  [claude]="json-immutable"\n  [codex]="none"',
+                 'declare -A AGENT_POLICY_CHECK=(\n  [claude]="json-immutable"\n  [codex]="toml"'),
+                (f'[codex:{lane}]=""', f'[codex:{lane}]="codex-lane{lane}.toml"')):
+            assert old in registry, old
+            registry = registry.replace(old, new, 1)
+        (lane_dir / "_agent_registry.sh").write_text(registry)
+        (lane_dir / "policies").mkdir()
+        # A Codex launch verifies its hook registration via ../hooks.
+        (tree.root / "hooks").symlink_to(LANE_DIR.parent / "hooks")
+        return lane_dir
+
+    def test_deny_mechanism_is_registry_generic(self):
+        """NC7.  Fill a declared-empty slot and the deny follows, with no
+        launcher change."""
         with _FixtureTree() as tree:
-            lane_dir = tree.root / "lanedir"
-            lane_dir.mkdir()
-            for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
-                (lane_dir / name).write_text((LANE_DIR / name).read_text())
-            registry = (LANE_DIR / "_agent_registry.sh").read_text().replace(
-                '  [gemini:3]=""', '  [gemini:3]="gemini-lane3.toml"')
-            (lane_dir / "_agent_registry.sh").write_text(registry)
-            (lane_dir / "policies").mkdir()
-            for policy in (LANE_DIR / "policies").glob("*.toml"):
-                (lane_dir / "policies" / policy.name).write_text(
-                    policy.read_text())
-            copied_extension = lane_dir.parent / "gemini" / "lane3-context"
-            copied_extension.parent.mkdir(parents=True)
-            shutil.copytree(LANE_DIR.parent / "gemini" / "lane3-context", copied_extension)
-            extension_record = tree.home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
-            extension_record.write_text(json.dumps({"source": str(copied_extension), "type": "link"}))
-            (lane_dir / "policies" / "gemini-lane3.toml").write_text(
+            lane_dir = self._toml_policy_lane_dir(tree, "3")
+            (lane_dir / "policies" / "codex-lane3.toml").write_text(
                 '[[rules]]\nname = "placeholder"\n')
 
             injected = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
-                                       [], env_overrides={"LANE_CLI": "gemini", "HOME": str(tree.home)})
+                                       [], env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
             self.assertTrue(injected["launched"], injected.get("stderr"))
-            self.assertIn("--admin-policy", _agent_args(injected))
+            args = _agent_args(injected)
+            self.assertIn("--test-policy", args)
+            self.assertTrue(args[args.index("--test-policy") + 1].endswith("codex-lane3.toml"))
 
-            denied = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
-                                     ["--admin-policy", "/dev/null"],
-                                     env_overrides={"LANE_CLI": "gemini", "HOME": str(tree.home)})
-            self.assertFalse(denied["launched"])
-            self.assertIn("cannot be set, removed, or contradicted",
-                          denied["stderr"])
+            for passthrough in (["--test-policy", "/dev/null"], ["--test-policy=/dev/null"],
+                                ["--", "--test-policy", "/dev/null"]):
+                with self.subTest(passthrough=passthrough):
+                    denied = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
+                                             passthrough,
+                                             env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
+                    self.assertFalse(denied["launched"])
+                    self.assertNotEqual(denied["returncode"], 0)
 
     def test_missing_policy_file_refuses_to_launch(self):
         """NC8 -- harmonic-forge#362's fail-closed guard, carried forward as a
-        registry-declared precondition.  The Gemini CLI itself does NOT fail
-        closed: verified live 2026-08-28, a nonexistent --admin-policy path
-        prints only a stderr warning and the session starts completely
-        unprotected under --yolo."""
+        registry-declared precondition.  A CLI need not fail closed on its
+        own: a since-retired CLI, verified live 2026-08-28, printed only a
+        stderr warning for a nonexistent policy path and started unprotected."""
         with _FixtureTree() as tree:
-            lane_dir = tree.root / "lanedir"
-            lane_dir.mkdir()
-            for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                         "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
-                (lane_dir / name).write_text((LANE_DIR / name).read_text())
-            (lane_dir / "policies").mkdir()  # deliberately empty
+            lane_dir = self._toml_policy_lane_dir(tree, "1")  # policies/ left empty
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
-                                   env_overrides={"LANE_CLI": "gemini"})
+                                   env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
             self.assertFalse(cell["launched"])
             self.assertIn("policy file missing", cell["stderr"])
 
     def test_invalid_policy_toml_refuses_to_launch(self):
         with _FixtureTree() as tree:
-            lane_dir = tree.root / "lanedir"
-            lane_dir.mkdir()
-            for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
-                         "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                         "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
-                (lane_dir / name).write_text((LANE_DIR / name).read_text())
-            (lane_dir / "policies").mkdir()
-            (lane_dir / "policies" / "gemini-lane1.toml").write_text(
+            lane_dir = self._toml_policy_lane_dir(tree, "1")
+            (lane_dir / "policies" / "codex-lane1.toml").write_text(
                 "this is [ not valid toml\n")
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
-                                   env_overrides={"LANE_CLI": "gemini"})
+                                   env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
             self.assertFalse(cell["launched"])
             self.assertIn("not valid TOML", cell["stderr"])
 
@@ -1506,10 +1426,10 @@ class LaunchDefaultModelAndEffort(unittest.TestCase):
                     self.assertEqual(
                         _flag_values(_agent_args(cell), "--effort"), [value])
 
-    def test_codex_and_gemini_get_no_model_or_effort_and_are_not_refused(self):
+    def test_codex_gets_no_model_or_effort_and_is_not_refused(self):
         """TC7 / AC5: the refusal and injection are claude-only declarations."""
         with _FixtureTree() as tree:
-            for agent in ("codex", "gemini"):
+            for agent in ("codex",):
                 with self.subTest(agent=agent):
                     cell = tree.run("2", [], LANE_CLI=agent,
                                     LANE_DEFAULT_MODEL="opus",
@@ -1550,7 +1470,7 @@ class CodexSessionFlags(unittest.TestCase):
     def test_other_agents_get_no_session_flag(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
-                for agent in ("claude", "gemini"):
+                for agent in ("claude",):
                     with self.subTest(lane=lane, agent=agent):
                         cell = tree.run(lane, ["--agent", agent])
                         self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -1630,11 +1550,11 @@ class CodexLaneTmp(unittest.TestCase):
                         self.assertEqual(
                             (cell["extra_env"]["GIT_CEILING_DIRECTORIES"] or "").split(":")[0], tmpdir)
 
-    def test_claude_and_gemini_are_unchanged_and_keep_the_callers_tmpdir(self):
+    def test_claude_is_unchanged_and_keeps_the_callers_tmpdir(self):
         """TC7: no key, no add-dir, and TMPDIR is not overridden."""
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
-                for agent in ("claude", "gemini"):
+                for agent in ("claude",):
                     with self.subTest(lane=lane, agent=agent):
                         cell = self._run(tree, lane, ["--agent", agent])
                         self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -1760,17 +1680,16 @@ class VersionFloors(unittest.TestCase):
 
     def test_installed_versions_are_accepted(self):
         with _FixtureTree() as tree:
-            for agent in ("claude", "codex", "gemini"):
+            for agent in ("claude", "codex"):
                 with self.subTest(agent=agent):
                     cell = tree.run("1", [], LANE_CLI=agent)
                     self.assertTrue(cell["launched"], cell.get("stderr"))
 
     def test_a_version_below_the_floor_is_rejected(self):
         below = {"claude": "2.0.999 (Claude Code)",
-                 "codex": "codex-cli 0.156.9",
-                 "gemini": "0.55.9"}
+                 "codex": "codex-cli 0.156.9"}
         with _FixtureTree(versions=below) as tree:
-            for agent in ("claude", "codex", "gemini"):
+            for agent in ("claude", "codex"):
                 with self.subTest(agent=agent):
                     cell = tree.run("1", [], LANE_CLI=agent)
                     self.assertFalse(cell["launched"])
@@ -1780,10 +1699,9 @@ class VersionFloors(unittest.TestCase):
         """The floor is MINOR, not patch, precisely so a routine CLI upgrade
         does not become a false alarm -- two of the three CLIs moved between
         this issue's handoff and its implementation."""
-        newer = {"claude": "9.9.9 (Claude Code)", "codex": "codex-cli 9.9.9",
-                 "gemini": "9.9.9"}
+        newer = {"claude": "9.9.9 (Claude Code)", "codex": "codex-cli 9.9.9"}
         with _FixtureTree(versions=newer) as tree:
-            for agent in ("claude", "codex", "gemini"):
+            for agent in ("claude", "codex"):
                 with self.subTest(agent=agent):
                     cell = tree.run("1", [], LANE_CLI=agent)
                     self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -1799,7 +1717,7 @@ class VersionFloors(unittest.TestCase):
         genuinely too-old CLI; the qualified patch version keeps the parity
         suite's claim (harmonic-forge#325) precise."""
         source = (LANE_DIR / "_agent_registry.sh").read_text()
-        for version in ("2.1.250", "0.157.0", "0.56.0"):
+        for version in ("2.1.250", "0.157.0"):
             with self.subTest(version=version):
                 self.assertIn(version, source)
 
@@ -2042,7 +1960,7 @@ class LaneCleanupWrapper(unittest.TestCase):
 class DeferredToolsLaunchPrompt(unittest.TestCase):
     """harmonic-forge#765: every Claude lane's launch prompt tells the session
     to load deferred MCP tools with ToolSearch before calling one unavailable
-    (hrse#1392's root cause); Codex and Gemini launches are unchanged."""
+    (hrse#1392's root cause); Codex launches are unchanged."""
 
     # The whole sentence, head to tail: a substring of only its tail would
     # still pass if the leading clause were cut (preclose finding).
@@ -2054,7 +1972,7 @@ class DeferredToolsLaunchPrompt(unittest.TestCase):
     def test_every_claude_lane_carries_the_sentence(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
-                for agent in ("claude", "codex", "gemini"):
+                for agent in ("claude", "codex"):
                     with self.subTest(lane=lane, agent=agent):
                         cell = tree.run(lane, ["--agent", agent])
                         self.assertTrue(cell["launched"], cell.get("stderr"))

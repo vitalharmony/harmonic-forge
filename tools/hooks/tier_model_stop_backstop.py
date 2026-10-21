@@ -37,8 +37,7 @@ control to the operator, which is the opposite of what a report is for. Output
 is a `systemMessage` only. Lane 3 is skipped (AC7). Deliberately names no
 override.
 
-Claude Code only. Codex and Gemini lanes do not run this hook and are not
-covered.
+Claude Code only. Codex lanes do not run this hook and are not covered.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 # Agent Foundation — harmonic-forge
 
-Vendor-neutral directives for any agent (Claude Code, Codex, Gemini CLI, or
-a human) working **inside this repo**. `CLAUDE.md`, `AGENTS.md` and
-`GEMINI.md` at the repo root are thin entrypoints that load this file; the
+Vendor-neutral directives for any agent (Claude Code, Codex, or a human)
+working **inside this repo**. `CLAUDE.md` and `AGENTS.md` at the repo root
+are thin entrypoints that load this file; the
 content lives here once (harmonic-forge#321).
 
 ## What this repo is
@@ -64,7 +64,7 @@ forge work driven by a named product carries that product's venture instead.
 `lane1`/`lane2`/`lane3` (`tools/lane/`, on `$PATH`). They set `LANE`, `cd`
 into the correct worktree, and build the per-CLI launch command via
 `tools/lane/_cli_launch.sh`. Select the agent with `LANE_CLI`
-(`claude` default, `codex`, `gemini`).
+(`claude` default, `codex`).
 
 **The maker is never the grader.** This holds even inside a single lane:
 under the Tooling Exception a single implementer writes the tooling in one

@@ -46,8 +46,8 @@
 #
 # Per agent x lane, keyed "<agent>:<lane>":
 #   AGENT_LANE_POLICY        policy filename under tools/lane/policies/, or ""
-#                            for a DECLARED-EMPTY slot (NC7 -- harmonic-forge#326
-#                            fills gemini:3 rather than reopening the launcher)
+#                            for a DECLARED-EMPTY slot (NC7 -- a later issue
+#                            fills a slot rather than reopening the launcher)
 #
 ## Version floors are MINOR, not patch (AC9)
 #
@@ -64,7 +64,6 @@
 declare -A AGENT_DISPLAY=(
   [claude]="Claude Code"
   [codex]="Codex"
-  [gemini]="Gemini"
 )
 
 # codex floor 0.157 (harmonic-forge#754): the launcher now injects
@@ -75,24 +74,17 @@ declare -A AGENT_DISPLAY=(
 declare -A AGENT_VERSION_MIN=(
   [claude]="2.1"
   [codex]="0.157"
-  [gemini]="0.56"
 )
 
 declare -A AGENT_VERSION_QUALIFIED=(
   [claude]="2.1.250"
   [codex]="0.157.0"
-  [gemini]="0.56.0"
 )
 
-# Gemini's two unsets are load-bearing, not hygiene -- see _cli_launch.sh's
-# header and 3-lane-protocol.md § Per-CLI launch wiring for the full reasoning
-# (standing operator directive from harmonic-forge#318; the API-key path fails
-# silently and produces identical-looking output). The pager/editor vars fix a
-# PTY-only hang found in harmonic-forge#366.
+# Per-agent `env ...` prefix for the launch command; empty means none.
 declare -A AGENT_ENV_PREFIX=(
   [claude]=""
   [codex]=""
-  [gemini]="env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=@hrse-497421@ GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true"
 )
 
 # harmonic-forge#179: flag injection broke Codex's own argument parsing, so
@@ -103,17 +95,14 @@ declare -A AGENT_ENV_PREFIX=(
 declare -A AGENT_DEFAULT_FLAG=(
   [claude]="--permission-mode"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_DEFAULT_FLAG_ENV=(
   [claude]="LANE_PERMISSION_MODE"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_DEFAULT_FLAG_VALUE=(
   [claude]="auto"
   [codex]=""
-  [gemini]=""
 )
 
 # harmonic-forge#665: a lane's model comes from the launch, never from whatever
@@ -125,41 +114,34 @@ declare -A AGENT_DEFAULT_FLAG_VALUE=(
 # NOT `LANE_MODEL`: both tier hooks read a set LANE_MODEL as "skip the check"
 # (tier_model_trigger_check.py, model_tier_gate.py), so feeding it into --model
 # would switch escalation off on every lane. Effort has no fallback, so an unset
-# LANE_DEFAULT_EFFORT injects nothing. Codex/Gemini: empty, per #179 above.
+# LANE_DEFAULT_EFFORT injects nothing. Codex: empty, per #179 above.
 declare -A AGENT_MODEL_FLAG=(
   [claude]="--model"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_MODEL_FLAG_ENV=(
   [claude]="LANE_DEFAULT_MODEL"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_MODEL_FLAG_VALUE=(
   [claude]="sonnet"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_EFFORT_FLAG=(
   [claude]="--effort"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_EFFORT_FLAG_ENV=(
   [claude]="LANE_DEFAULT_EFFORT"
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_EFFORT_FLAG_VALUE=(
   [claude]=""
   [codex]=""
-  [gemini]=""
 )
 declare -A AGENT_EFFORT_LEVELS=(
   [claude]="low medium high xhigh max"
   [codex]=""
-  [gemini]=""
 )
 
 # Refused rather than warned about. CLAUDE_CODE_EFFORT_LEVEL outranks skill
@@ -174,29 +156,17 @@ declare -A AGENT_EFFORT_LEVELS=(
 declare -A AGENT_LAUNCH_REFUSED_ENV=(
   [claude]="CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL"
   [codex]=""
-  [gemini]=""
 )
 
-# Gemini's admin tier is the only mechanism proven live (harmonic-forge#326's
-# canary) to survive --yolo and remove denied tools from the model's tool list
-# entirely. The CLI does NOT fail closed on a missing or invalid policy file --
-# verified live 2026-08-28, both a nonexistent path and broken TOML print only a
-# stderr warning and the session starts completely unprotected. So `toml` here
-# is a launcher-enforced precondition, not a restatement of CLI behavior.
 # hrse#1703 AC6: reaches the chat surface a comment-time validator cannot
 # see, the same way AGENT_DEFAULT_FLAG already reaches `--permission-mode`.
 # Claude Code's `--append-system-prompt` is a verified, documented flag --
 # it appends to (does not replace) the base system prompt. Codex gets none,
 # same as AGENT_DEFAULT_FLAG above and for the identical reason
 # (harmonic-forge#179: flag injection broke Codex's own argument parsing).
-# Gemini also gets none here, but for a DIFFERENT reason than Codex's, worth
-# keeping distinct: no equivalent flag was verified live for this issue, not
-# a design decision that one shouldn't exist. A partial answer stated is the
-# AC's own bar -- don't let an empty string here read as "checked, N/A".
 declare -A AGENT_SYSTEM_PROMPT_FLAG=(
   [claude]="--append-system-prompt"
   [codex]=""
-  [gemini]=""
 )
 
 # AGENT_SESSION_FLAGS / AGENT_SESSION_DENIED -- harmonic-forge#754.
@@ -247,7 +217,6 @@ declare -A AGENT_SYSTEM_PROMPT_FLAG=(
 declare -A AGENT_SESSION_FLAGS=(
   [claude]=""
   [codex]="--no-daemon -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true"
-  [gemini]=""
 )
 # harmonic-forge#878: `--settings` is denied at EVERY Claude lane, not only at
 # Lane 3 where the policy slot already derives it. It is single-valued, so a
@@ -257,18 +226,15 @@ declare -A AGENT_SESSION_FLAGS=(
 declare -A AGENT_SESSION_DENIED=(
   [claude]="--settings"
   [codex]="--no-daemon --remote -c --config -p --profile --full-auto --approve-for-me -s"
-  [gemini]=""
 )
 
 declare -A AGENT_POLICY_FLAG=(
   [claude]="--settings"
   [codex]=""
-  [gemini]="--admin-policy"
 )
 declare -A AGENT_POLICY_CHECK=(
   [claude]="json-immutable"
   [codex]="none"
-  [gemini]="toml"
 )
 # harmonic-forge#878 sticky-wicket PATCH: a policy that WIDENS (an allow rule)
 # must be unwritable by the agent's own uid, or any session can widen it before
@@ -280,7 +246,6 @@ declare -A AGENT_POLICY_CHECK=(
 declare -A AGENT_POLICY_REQUIRED_OWNER=(
   [claude]="0"
   [codex]=""
-  [gemini]=""
 )
 
 # AGENT_NAME_FLAG -- harmonic-forge#1014. The flag that sets the session's
@@ -290,7 +255,6 @@ declare -A AGENT_POLICY_REQUIRED_OWNER=(
 declare -A AGENT_NAME_FLAG=(
   [claude]="--name"
   [codex]=""
-  [gemini]=""
 )
 
 # Every agent x lane slot is declared, including the empty ones. An absent key
@@ -308,15 +272,6 @@ declare -A AGENT_LANE_POLICY=(
   # empty: they gain nothing.
   [claude:1]="" [claude:2]="" [claude:3]="/usr/local/share/hrse-gate/claude-lane3.json"
   [codex:1]=""  [codex:2]=""  [codex:3]=""
-  [gemini:1]="gemini-lane1.toml"
-  [gemini:2]="gemini-lane2.toml"
-  # Filled by harmonic-forge#326, exactly as harmonic-forge#322 NC7 designed:
-  # this slot was declared empty rather than omitted so #326 could fill a field
-  # instead of reopening the launcher. It did -- no change to _cli_launch.sh was
-  # needed, and #322's own
-  # test_deny_mechanism_is_registry_generic_not_gemini_specific had already
-  # proven this exact path injects the policy AND makes the flag un-removable.
-  [gemini:3]="gemini-lane3.toml"
 )
 
 # AGENT_LANE_ADD_DIR / AGENT_LANE_SANDBOX -- harmonic-forge#644, #840.
@@ -340,7 +295,7 @@ declare -A AGENT_LANE_POLICY=(
 # ("cannot be used multiple times"), so a caller-supplied one cannot be
 # "inject unless given" without risking a silent override to
 # `danger-full-access`; it goes on the deny list instead, the same mechanism
-# that makes `--admin-policy` un-removable for `gemini:3`.
+# that makes a declared policy flag un-removable (registry_lane_denied_tokens).
 #
 # harmonic-forge#756: each slot is a SPACE-SEPARATED LIST of paths relative to
 # $HOME (empty still means "none"); `_cli_launch.sh` step 4b `mkdir -p`s each
@@ -358,12 +313,10 @@ declare -A AGENT_LANE_ADD_DIR=(
   [codex:1]=".cache/codex-lane-tmp/lane1 .claude/state/preclose"
   [codex:2]="Harmonic_Projects/.worktrees .cache/codex-lane-tmp/lane2 .cache/cymagraph"
   [codex:3]="Harmonic_Projects/testplan .cache/codex-lane-tmp/lane3 .cache/cymagraph"
-  [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
 )
 declare -A AGENT_LANE_SANDBOX=(
   [claude:1]="" [claude:2]="" [claude:3]=""
   [codex:1]="danger-full-access"  [codex:2]="danger-full-access"  [codex:3]="danger-full-access"
-  [gemini:1]=""  [gemini:2]=""  [gemini:3]=""
 )
 
 # AGENT_QUEUE_SANDBOX -- harmonic-forge#840, operator rulings on its preclose
@@ -377,15 +330,15 @@ declare -A AGENT_LANE_SANDBOX=(
 # such word counts, not only the first: top-level flags may precede the
 # subcommand, and a false positive only adds a sandbox.
 declare -A AGENT_QUEUE_SANDBOX=(
-  [claude]="" [codex]="workspace-write" [gemini]=""
+  [claude]="" [codex]="workspace-write"
 )
 declare -A AGENT_NONINTERACTIVE_WORDS=(
-  [claude]="" [codex]="exec e review" [gemini]=""
+  [claude]="" [codex]="exec e review"
 )
 
 # The agents this registry knows. `--agent` is CLOSED against this list: an
 # unrecognized value is a hard error, never an exec attempt (ADR-007 § 3).
-LANE_AGENTS=(claude codex gemini)
+LANE_AGENTS=(claude codex)
 
 # Attributes every registered agent must define. A missing or absent-key
 # attribute is a hard failure at launch, not a `:-` default -- see NC5.
@@ -478,11 +431,11 @@ registry_is_agent() {
 # LANE_CLI IS CLOSED TOO, and that is a deliberate tightening beyond AC8's
 # literal wording -- enumerated in lane3_safety_additions.txt's companion note
 # and in this issue's completion report. Before this change, a LANE_CLI that
-# matched no branch (`/usr/local/bin/gemini`, say) fell through to bare
+# matched no branch (`/usr/local/bin/someother`, say) fell through to bare
 # passthrough and silently received NO policy injection and NO version floor. An
 # agent-selection path that bypasses the registry is precisely the "reads as
 # enforced but isn't" failure this issue exists to remove, so it errors.
-# `claude`, `claude-api`, `claude-pro`, `codex` and `gemini` -- every form in
+# `claude`, `claude-api`, `claude-pro` and `codex` -- every form in
 # actual use -- resolve unchanged.
 registry_agent_for_command() {
   local command="$1" agent

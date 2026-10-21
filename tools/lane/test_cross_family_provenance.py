@@ -126,7 +126,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_model_family(self):
         cases = {"gpt-6-sol": "codex", "codex-mini": "codex", "claude-opus-5-5": "claude",
-                 "opus": "claude", "claude-fable-5-1": "claude", "gemini-3": "gemini",
+                 "opus": "claude", "claude-fable-5-1": "claude", "gemini-3": None,  # family retired, harmonic-forge#1113
                  "mystery": None, None: None}
         for model, family in cases.items():
             with self.subTest(model=model):

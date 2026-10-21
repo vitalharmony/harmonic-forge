@@ -14,7 +14,7 @@
 # `--no-daemon` (harmonic-forge#754): Codex >= 0.157 otherwise runs tool
 # commands in a shared app-server daemon that never saw LANE.
 #
-# Which agent runs is chosen with `--agent claude|codex|gemini` against the
+# Which agent runs is chosen with `--agent claude|codex` against the
 # closed registry in tools/lane/_agent_registry.sh; native CLI arguments follow,
 # optionally after a bare `--`. LANE_CLI is retained for aliases such as
 # claude-api, and the two are mutually exclusive (ADR-007 § 3). The launch

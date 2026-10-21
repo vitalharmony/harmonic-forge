@@ -8,7 +8,7 @@
 # Sets LANE=1 and LANE_AGENT, and inhibits system sleep/idle for the
 # session's lifetime.
 #
-# Which agent runs is chosen with `--agent claude|codex|gemini` against the
+# Which agent runs is chosen with `--agent claude|codex` against the
 # closed registry in tools/lane/_agent_registry.sh; native CLI arguments follow,
 # optionally after a bare `--`. LANE_CLI is retained for aliases such as
 # claude-api, and the two are mutually exclusive (ADR-007 § 3). The launch
@@ -47,8 +47,8 @@ lane_refresh branch
 export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
 # Operator ruling 2026-09-26: lane1 always reminds -- the dev backend (:8002)
 # and frontend (:5173) run from this main checkout, and a fast-forward here
-# can move code out from under them. Printed for every --agent (Codex/Gemini
-# have no SessionStart hook, so this terminal line is their only carrier).
+# can move code out from under them. Printed for every --agent (Codex
+# has no SessionStart hook, so this terminal line is its only carrier).
 echo "lane1: after the session starts, run \`mise run restart --no-bump --no-git\` ($LANE_REFRESH_STATUS: $LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
 
 # harmonic-forge#1014: the session name and pinned pane title, from the repo.

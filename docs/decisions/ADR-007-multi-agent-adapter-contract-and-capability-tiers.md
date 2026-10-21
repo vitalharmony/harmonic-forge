@@ -676,3 +676,20 @@ it is refused. Every form in actual use — `claude`, `claude-api`, `claude-pro`
   `.gemini/commands/`) are harmonic-forge#324's synchronizer problem.
   Contract item 4 requires canonical context, not a particular mechanism for
   distributing it.
+
+## Superseded in part (harmonic-forge#1113): Gemini CLI retired
+
+**Date:** 2026-10-21. The Gemini CLI is retired: it cannot authenticate by
+either route (OAuth: `IneligibleTierError … UNSUPPORTED_CLIENT`; API key: HTTP
+400 `API_KEY_INVALID`, reproduced with Gemini CLI 0.63.0). Every Gemini
+element this ADR describes is superseded and was removed from the platform:
+the `gemini` registry entry and its `--agent gemini`/`LANE_CLI=gemini`
+selection (now refused by the closed registry), the Gemini lane policies and
+their canary, the `lane3-context` extension, and the Gemini cross-family
+family (`cross_family_call.sh --caller gemini` and `--families 3` exit
+non-zero with a named "Gemini CLI retired" refusal; `--families 2` is the
+whole set). The body above is left unrewritten as the record of the decision
+at the time. The contract itself, the capability-tier model and the
+launcher-as-enforcement-point principle are unaffected and still govern Claude
+Code and Codex. HRSE2's product use of the Gemini model API is not the CLI and
+is out of this note's scope.

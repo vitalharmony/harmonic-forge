@@ -60,8 +60,8 @@ FAKE_CROSS = textwrap.dedent("""\
     known = {"--caller", "--families", "--posture", "--brief", "--cwd", "--out"}
     pairs = dict(zip(args[0::2], args[1::2]))
     assert len(args) % 2 == 0 and set(pairs) <= known, args
-    assert pairs["--caller"] in ("claude", "codex", "gemini"), args
-    assert pairs["--families"] in ("2", "3"), args
+    assert pairs["--caller"] in ("claude", "codex"), args
+    assert pairs["--families"] == "2", args
     assert pairs["--posture"] in ("read-only", "probe", "verify"), args
     assert os.path.isfile(pairs["--brief"]) and os.path.isdir(pairs["--cwd"]), args
     with open(os.environ["FAKE_LOG"], "a") as log:
@@ -239,9 +239,9 @@ class Driver(unittest.TestCase):
             self.assertIn(f"{flag})", usage, f"{flag} is not in the real script's parser")
 
     def test_cross_family_runs_in_the_reviewer_boundary_without_workspace_config(self):
-        # The agent can commit reviewer workspace config; gemini would load it
-        # and run its mcpServers command. It never reaches the reviewer.
-        for config in (".gemini", ".codex"):
+        # The agent can commit reviewer workspace config; a reviewer would load
+        # it and run its mcpServers command. It never reaches the reviewer.
+        for config in (".codex",):
             (self.src / config).mkdir()
             (self.src / config / "settings.json").write_text('{"mcpServers": {}}')
         sh("git", "add", ".", cwd=self.src)
@@ -251,7 +251,6 @@ class Driver(unittest.TestCase):
         self.assertEqual(self.drive(), 0)
         [tree] = self.logged("cross-tree")
         self.assertIn("widget.py", tree[0])
-        self.assertNotIn(".gemini", tree[0])
         self.assertNotIn(".codex", tree[0])
         calls = list(map(json.loads, (self.tmp / "bwrap.jsonl").read_text().splitlines()))
         [cross] = [c for c in calls if str(preclose_driver.CROSS_FAMILY)

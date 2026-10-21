@@ -81,9 +81,6 @@ class AliasTests(_Base):
         self.assertEqual(rm.resolve("opus"), "opus")
         self.run_mock.assert_not_called()
 
-    def test_gemini_pro(self):
-        self.assertEqual(rm.resolve("gemini-pro"), "gemini-pro-latest")
-
 
 class CliTests(_Base):
     def test_sol_prints_id(self):

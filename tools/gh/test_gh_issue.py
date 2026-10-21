@@ -792,6 +792,21 @@ class TestFindRetiredCitations(unittest.TestCase):
         self.assertEqual(hits[0][0], "board_sync.py")
         self.assertIn("hrse#839", hits[0][1])
 
+    def test_retired_gemini_cli_path_is_flagged(self):
+        """harmonic-forge#1113 AC4: a body naming the deleted extension
+        directory is flagged as the retired Gemini CLI."""
+        hits = gh_issue.find_retired_citations(
+            "Reinstall the extension under `tools/gemini/` for Lane 3."
+        )
+        self.assertEqual([h[0] for h in hits], ["tools/gemini/"])
+        self.assertIn("harmonic-forge#1113", hits[0][1])
+
+    def test_gemini_model_api_prose_is_not_flagged(self):
+        """The HRSE2 Gemini model API is out of scope: the bare word, even
+        backtick-quoted, is never a key."""
+        self.assertEqual(gh_issue.find_retired_citations(
+            "HRSE2 embeds with the `gemini` model API (`GEMINI_API_KEY`)."), [])
+
     def test_bare_word_does_not_match(self):
         # Same name, no backticks -- must not fire.
         hits = gh_issue.find_retired_citations(

@@ -31,7 +31,7 @@ Resolution order (AC4):
 4. The effective settings `model`: project `.claude/settings.local.json`,
    project `.claude/settings.json`, then `~/.claude/settings.json`.
 
-Returns None when nothing resolves. Claude Code only: Codex and Gemini lanes
+Returns None when nothing resolves. Claude Code only: Codex lanes
 carry their model differently and are not covered by this module.
 """
 

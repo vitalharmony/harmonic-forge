@@ -19,8 +19,7 @@ silent-and-total failure this issue exists to prevent, and would be invisible
 in a flags-only diff. Each cell records:
 
   * `argv`     -- the full `systemd-inhibit ...` command line, which carries
-                  the `--why` string (AC7) and the `env -u ...` delta prefix
-                  the Gemini branch injects, as well as the agent's own flags
+                  the `--why` string (AC7) and the agent's own flags
   * `cwd`      -- the directory the launcher `cd`-ed into before exec
   * `env`      -- LANE, LANE_AGENT, GH_CONFIG_DIR as the child actually sees them
 
@@ -28,7 +27,7 @@ How it captures without launching
 ---------------------------------
 The launchers end in `exec systemd-inhibit ... "${cli_args[@]}"`. A stub
 `systemd-inhibit` placed first on PATH records its own argv/cwd/env as JSON and
-exits 0, so the real agent CLI is never reached. Stub `claude`/`codex`/`gemini`
+exits 0, so the real agent CLI is never reached. Stub `claude`/`codex`
 binaries answer `--version` for the registry's version floor (AC9) and nothing
 else.
 
@@ -50,9 +49,7 @@ Usage
         --compare tools/lane/baseline_launch_tuples.json
 
 `--compare` is the AC8 assertion: it diffs the captured tuples against a
-committed fixture and exits non-zero on any Claude or Codex difference. Gemini
-cells are captured and reported but are not part of the AC8 identity claim --
-the Gemini path is deliberately moved by this issue.
+committed fixture and exits non-zero on any Claude or Codex difference.
 """
 
 from __future__ import annotations
@@ -67,7 +64,7 @@ import tempfile
 from pathlib import Path
 
 LANES = ("1", "2", "3")
-AGENTS = ("claude", "codex", "gemini")
+AGENTS = ("claude", "codex")
 
 # The four argument shapes harmonic-forge#363 exercised. Named so a diff points
 # at a shape rather than at an index.
@@ -115,7 +112,6 @@ exit 0
 STUB_VERSIONS = {
     "claude": "2.1.250 (Claude Code)",
     "codex": "codex-cli 0.157.0",
-    "gemini": "0.56.0",
 }
 
 
@@ -289,10 +285,6 @@ def capture_all(lane_dir: Path) -> dict:
         # this pass locally while failing on CI (harmonic-forge#783).
         home = root / "home"
         write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
-        # Lane 3 Gemini refuses to start without this record (same as the test fixture).
-        record = home / ".gemini" / "extensions" / "lane3-context" / ".gemini-extension-install.json"
-        record.parent.mkdir(parents=True)
-        record.write_text(json.dumps({"source": str(lane_dir.parent / "gemini" / "lane3-context"), "type": "link"}))
         for lane in LANES:
             for agent in AGENTS:
                 for shape, args in ARG_SHAPES.items():
@@ -338,7 +330,7 @@ DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why",
 # _agent_registry.sh. Duplicated here deliberately and minimally: the point of
 # the check is to assert the shell's output independently, so reading the value
 # out of the file under test would make the assertion circular.
-AGENT_DISPLAY = {"claude": "Claude Code", "codex": "Codex", "gemini": "Gemini"}
+AGENT_DISPLAY = {"claude": "Claude Code", "codex": "Codex"}
 
 
 def _load_lane3_additions(path: Path) -> list[str]:

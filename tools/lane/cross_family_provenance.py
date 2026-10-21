@@ -75,8 +75,6 @@ def model_family(model: object) -> str | None:
     m = model.casefold()
     if m.startswith("gpt-") or m.startswith("codex"):
         return "codex"
-    if m.startswith("gemini"):
-        return "gemini"
     if any(token in m for token in ("claude", "opus", "fable", "sonnet", "haiku")):
         return "claude"
     return None

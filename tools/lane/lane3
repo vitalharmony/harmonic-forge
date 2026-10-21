@@ -8,7 +8,7 @@
 # Sets LANE=3 and LANE_AGENT, and inhibits system sleep/idle for the
 # session's lifetime.
 #
-# Which agent runs is chosen with `--agent claude|codex|gemini` against the
+# Which agent runs is chosen with `--agent claude|codex` against the
 # closed registry in tools/lane/_agent_registry.sh; native CLI arguments follow,
 # optionally after a bare `--`. LANE_CLI is retained for aliases such as
 # claude-api, and the two are mutually exclusive (ADR-007 § 3). The launch
@@ -230,31 +230,6 @@ lane_identity 3
 
 # shellcheck source=_cli_launch.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_cli_launch.sh"
-
-# H1414: Gemini's fresh Lane 3 path receives its filtered issue/diff context
-# through the system-installed lane3-context extension. Do not merely launch a
-# session that looks gated but lacks its only approved context capability.
-if [ "$LANE_AGENT" = "gemini" ]; then
-  extension_record="${HOME}/.gemini/extensions/lane3-context/.gemini-extension-install.json"
-  extension_source="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../gemini/lane3-context"
-  extension_registered="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("source", ""))' "$extension_record" 2>/dev/null || true)"
-  extension_expected="$(readlink -f "$extension_source" 2>/dev/null || true)"
-  extension_registered_real="$(readlink -f "$extension_registered" 2>/dev/null || true)"
-  if [ ! -f "$extension_record" ] || [ -z "$extension_registered_real" ] || \
-     [ ! -d "$extension_registered_real" ] || \
-     [ ! -f "$extension_registered_real/gemini-extension.json" ] || \
-     [ ! -f "$extension_registered_real/lane3_context_mcp.py" ] || \
-     [ -z "$extension_expected" ] || [ ! -d "$extension_expected" ] || \
-     [ "$extension_registered_real" != "$extension_expected" ]; then
-    cat >&2 <<EOF
-lane3: REFUSING TO START -- Gemini Lane 3 context extension is not installed from this platform checkout.
-
-Install it once with:
-  $(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../gemini/install-lane3-context-extension
-EOF
-    exit 1
-  fi
-fi
 
 # shellcheck source=_lane_cleanup.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_cleanup.sh"

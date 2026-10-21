@@ -11,8 +11,6 @@ Providers:
 - claude: the family alias itself (`opus` ...). Claude Code resolves the alias
   to the latest model (`claude -p --model opus` reports `claude-opus-5-5`,
   verified 2026-10-07). `haiku` is unexercised in forge; kept for symmetry.
-- gemini: Google's hot-swapped `-latest` aliases. `gemini-flash-latest` is
-  unexercised in forge; `gemini-pro-latest` is what `cross_family_call.sh` uses.
 - codex: Codex's own catalog, `codex debug models`. A family's latest is the
   `visibility == "list"` entry with no `upgrade`, lowest `priority`. The answer
   is the newest model the LOCAL `codex` binary knows about: offline, the
@@ -70,8 +68,6 @@ def list_codex() -> tuple[dict, ...]:
 # returns [{"id", "family", "rank"}] and the lowest rank in a family wins.
 PROVIDERS: dict[str, dict | None] = {
     "claude": {"aliases": {f: f for f in ("opus", "sonnet", "haiku", "fable")}},
-    "gemini": {"aliases": {"gemini-pro": "gemini-pro-latest",
-                           "gemini-flash": "gemini-flash-latest"}},
     "codex": {"lister": list_codex},
     # Adding a provider: replace this stub with one of the two shapes above,
     # e.g. {"aliases": {"newfam": "newfam-latest"}} or {"lister": list_newprov},
@@ -83,7 +79,6 @@ PROVIDERS: dict[str, dict | None] = {
 FAMILIES: dict[str, str] = {
     "opus": "claude", "sonnet": "claude", "haiku": "claude", "fable": "claude",
     "sol": "codex", "terra": "codex", "luna": "codex", "astra": "codex",
-    "gemini-pro": "gemini", "gemini-flash": "gemini",
 }
 
 

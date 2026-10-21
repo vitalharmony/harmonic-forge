@@ -75,7 +75,7 @@ class ApplyPatchTests(unittest.TestCase):
             "*** Update File: /tmp/some-worktree/x.md\n@@\n-old\n+new\n"
             "*** End Patch"
         )
-        for host in (None, "codex", "claude", "CODEX", "gemini"):
+        for host in (None, "codex", "claude", "CODEX", "other"):
             with self.subTest(host=host):
                 output = run_guard(apply_patch_payload(body), host=host)
                 payload = json.loads(output)["hookSpecificOutput"]

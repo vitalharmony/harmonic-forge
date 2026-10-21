@@ -165,8 +165,8 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(args[-4:], ["--name", f"lane{lane}", "-p", "hi"])
                 self.assertIn(f"lane{lane}: session label 'lane{lane}'", cell["stderr"])
 
-    def test_codex_and_gemini_get_no_name(self):
-        for agent in ("codex", "gemini"):
+    def test_codex_gets_no_name(self):
+        for agent in ("codex",):
             with self.subTest(agent=agent):
                 cell = self.tree.run("2", [], LANE_CLI=agent)
                 self.assertTrue(cell["launched"], cell.get("stderr"))
@@ -221,7 +221,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self._tmux_calls(), [])
 
     def test_each_wrapper_pins_only_immediately_before_launch(self):
-        # Post-verdict finding: lane3 refuses a Gemini launch after
+        # Post-verdict finding: a wrapper may refuse a launch after
         # _cli_launch.sh returns, so the pin lives in each wrapper, last.
         for name in ("lane1", "lane2", "lane3"):
             with self.subTest(wrapper=name):
