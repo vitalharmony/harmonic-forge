@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import l1_post as L  # noqa: E402
+import check_lane3_ready as _lane3  # noqa: E402
 
 REPO, ISSUE = "vitalharmony/harmonic-forge", 1115
 SHA_A, SHA_B = "a" * 40, "b" * 40
@@ -22,7 +23,8 @@ NEEDLE = "first real run of this tool in this session"
 R4L3 = "## Ready for Lane 3 — F1115\n\n**Target:** the dry-run gate\n**Verified:** every kill check\n**Next:** Lane 3 to spec the gate\n"
 REWORK = "## Rework — F1115\n\n**Finding:** the branch needs a rebase onto main\n**Next:** Lane 2 to rebase the branch\n"
 NO_NEXT = "## Rework — F1115\n\n**Finding:** the branch needs a rebase onto main\n"
-AE = "## AE — F1115\n\n**Authorized:** the approved Lane 3 spec at this SHA\n**Next:** Lane 3 to run the gate\n"
+AE = ("## AE — F1115\n\n**Authorized:** the approved Lane 3 spec at this SHA\n"
+      "**External calls authorized:** none\n**Next:** Lane 3 to run the gate\n")
 OVERLAP = "active sibling branch 'feat/9-x' overlaps target files: tools/gh/l1_post.py"
 NO_PR = "no open PR exists for 'fix/1115-x' against main"
 
@@ -46,6 +48,7 @@ class Harness(unittest.TestCase):
         self.grant = False
         self.cheap = True  # stub cheap_static_checks; False runs the real one
         self.spec = None  # a spec body: run the real validate_sweep against it
+        self.thread: list[dict] = []  # the fake issue thread (AC9's cross-check)
 
     def body(self, text: str, name: str = "body.md") -> Path:
         path = self.dir / name
@@ -83,7 +86,8 @@ class Harness(unittest.TestCase):
             mock.patch.object(L, "validate_auto_ae"),
             *([mock.patch.object(L, "validate_sweep"), mock.patch.object(L, "_spec_body", return_value="")]
               if self.spec is None else [mock.patch.object(L, "_spec_body", return_value=self.spec)]),
-            mock.patch.object(L, "_latest_sweep_calls", return_value=[]),
+            # harmonic-forge#1115 AC9: the thread the AE/sweep cross-check reads.
+            mock.patch.object(_lane3, "fetch_comments", side_effect=lambda repo, issue: self.thread),
             mock.patch.object(L, "grant_on_main", side_effect=lambda *a: self.grant),
             mock.patch.object(L, "refresh_main", side_effect=lambda: self.order.append("fetch") or "f" * 40),
             mock.patch.object(L, "world_checks", side_effect=self._world),
@@ -255,21 +259,21 @@ class DryRunTests(Harness):
         self.posted.assert_not_called()
 
     def test_dry_run_lists_external_call_refusals_with_the_rest(self):
-        """AC9: both External-calls refusals arrive in the one numbered list."""
+        """AC9: every External-calls refusal arrives in the one numbered list."""
         self.overlap = True
         self.spec = ("## Lane 3 Test Spec — F1115\n\n### Cases\n| TC1 | live | x | y | z |\n"
                      "| TC2 | live | x | y | z |\n\n"
                      "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=1:live,2:live -->")
         sweep = ("## Gate-readiness sweep — F1115\n\n**Readiness:** ready\n**Blockers:** none\n"
                  "**Next:** Lane 3 to run\n\nWrite tier: W\n\n### Per-case readiness\n"
-                 "- TC1: ready. External calls: Gemini generate\n- TC2: ready, live UI\n")
+                 "- TC1: ready.\n  External calls: llm:gemini\n- TC2: ready, live UI\n")
         code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "ae-and-sweep", "--sha", SHA_A,
                                    "--branch", "fix/1115-x", "--ae-file", self.body(AE, "ae.md"),
                                    "--sweep-file", self.body(sweep, "sweep.md"),
                                    "--spec-comment", "5", "--dry-run")
         self.assertIn("3 problems", code)
         self.assertIn("TC2 carry no `External calls:` line", code)
-        self.assertIn("external call(s): Gemini generate", code)
+        self.assertIn("not authorized: llm:gemini", code)
         self.assertIn(OVERLAP, code)
         self.posted.assert_not_called()
         self.assertEqual(self.receipts(), [])
@@ -283,6 +287,85 @@ class DryRunTests(Harness):
         code, _, _ = self.run_main(*argv, real_post_kind=True)
         self.assertIn(OVERLAP, code)
 
+
+#: harmonic-forge#1115 AC10: one row per `_post_digest` input -- (field,
+#: kind, base flags, changed flags, body file to rewrite). Flags are a dict,
+#: `True` for a switch; a changed flag replaces its base value.
+DIGEST_ROWS = [
+    ("issue", "ready-for-l3", {}, {"--issue": ISSUE + 1}, None),
+    ("sha", "ready-for-l3", {}, {"--sha": SHA_B}, None),
+    ("branch", "ready-for-l3", {}, {"--branch": "fix/1115-y"}, None),
+    ("file", "ready-for-l3", {}, {}, "body.md"),
+    ("ae_file", "ae-and-sweep", {}, {}, "ae.md"),
+    ("sweep_file", "ae-and-sweep", {}, {}, "sweep.md"),
+    ("spec_comment", "ae-and-sweep", {}, {"--spec-comment": 6}, None),
+    ("prod_run", "ae", {}, {"--prod-run": "count-label=Person"}, None),
+    ("from_sha", "carry-forward", {}, {"--from-sha": "c" * 40}, None),
+    ("pass_comment", "carry-forward", {}, {"--pass-comment": 8}, None),
+    ("ack_overlap", "ready-for-l3", {}, {"--ack-overlap": "reviewed"}, None),
+    ("ack_no_pr_required", "ready-for-l3", {}, {"--ack-no-pr-required": "no CI here"}, None),
+    ("milestone_ack", "rework", {}, {"--milestone-ack": "outside the release, operator ruling"}, None),
+    ("plan_first", "handoff", {"--plan-first": "false"}, {"--plan-first": "true"}, None),
+    ("mutates_live", "handoff", {"--plan-first": "false"}, {"--mutates-live": True}, None),
+    ("cross_repo", "handoff", {"--plan-first": "false"}, {"--cross-repo": True}, None),
+]
+
+
+class ReceiptDigestFieldTests(Harness):
+    """harmonic-forge#1115 AC10: every receipt-digest input, changed alone
+    after a clean dry run, stops the receipt matching. The body validators
+    are not under test here, so `_collect` runs nothing; the digest, the
+    receipt and the gate are main()'s own."""
+
+    def _argv(self, kind: str, *flag_sets: dict) -> list:
+        flags = {"--repo": REPO, "--issue": ISSUE, "--kind": kind, "--sha": SHA_A,
+                 "--branch": "fix/1115-x"}
+        if kind == "ae-and-sweep":
+            flags.update({"--ae-file": self.dir / "ae.md", "--sweep-file": self.dir / "sweep.md",
+                          "--spec-comment": 5})
+        else:
+            flags["--file"] = self.dir / "body.md"
+        if kind == "carry-forward":
+            flags.update({"--from-sha": "d" * 40, "--pass-comment": 7})
+        for extra in flag_sets:
+            flags.update(extra)
+        argv: list = []
+        for flag, value in flags.items():
+            argv += [flag] if value is True else [flag, value]
+        return argv
+
+    def test_the_rows_cover_every_digest_input(self):
+        """A field added to `_post_digest` needs a row here."""
+        import argparse  # noqa: PLC0415
+        seen: dict = {}
+        with mock.patch.object(L.json, "dumps", side_effect=lambda fields, **k: seen.update(fields) or "{}"):
+            L._post_digest(argparse.Namespace(**{k: None for k in (
+                "issue", "kind", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
+                "from_sha", "pass_comment", "ack_overlap", "ack_no_pr_required", "milestone_ack",
+                "plan_first", "mutates_live", "cross_repo")}), REPO, SHA_A)
+        self.assertEqual(set(seen) - {"repo", "kind"}, {row[0] for row in DIGEST_ROWS})
+
+    def test_each_digest_field_invalidates_the_receipt(self):
+        for name, kind, base, changed, body in DIGEST_ROWS:
+            with self.subTest(field=name), mock.patch.object(L, "_collect"), \
+                    mock.patch.object(L, "_carry_forward"), mock.patch.object(L, "refuse_carry_forward"), \
+                    mock.patch.dict(os.environ, {"LANE": "1"}):
+                for file in ("body.md", "ae.md", "sweep.md"):
+                    self.body(f"{file} contents\n", file)
+                base_argv = self._argv(kind, base)
+                self.assertIsNone(self.run_main(*base_argv, "--dry-run")[0], name)
+                if body:
+                    self.body(f"{body} changed\n", body)
+                    changed_argv = base_argv
+                else:
+                    changed_argv = self._argv(kind, base, changed)
+                    self.assertNotEqual(changed_argv, base_argv)
+                code = self.run_main(*changed_argv)[0]
+                self.assertIn(NEEDLE, code or "", f"{name}: the changed post matched the old receipt")
+                if body:
+                    self.body(f"{body} contents\n", body)
+                code = self.run_main(*base_argv)[0]
+                self.assertNotIn(NEEDLE, code or "", f"{name}: the unchanged post must still match")
 
 if __name__ == "__main__":
     unittest.main()

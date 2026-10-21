@@ -36,9 +36,10 @@ import unittest.mock as _ci_mock  # noqa: E402
 _CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
 
 
-# harmonic-forge#1115 AC9: a standalone AE reads the latest sweep's external
-# calls from the thread; never a real `gh api` call from a test.
-_SWEEP_CALLS_PATCH = _ci_mock.patch.object(post, "_latest_sweep_calls", return_value=[])
+# harmonic-forge#1115 AC9: a standalone AE or sweep reads the thread for the
+# other half; an empty fake thread, never a real `gh api` call from a test.
+import check_lane3_ready as _lane3_ready  # noqa: E402
+_SWEEP_CALLS_PATCH = _ci_mock.patch.object(_lane3_ready, "fetch_comments", return_value=[])
 
 # harmonic-forge#1115: these tests check the AE/sweep logic, not the dry-run
 # preflight gate (test_l1_post_dry_run.py owns that). With no session id the
@@ -64,7 +65,8 @@ def tearDownModule():  # noqa: N802
 # its own summary block, so these fixtures carry one. They are the shape a
 # real post must have, which is the point of using them here.
 AE_BODY = ("## AE — F1\n\n**Authorized:** the spec in issuecomment-77, "
-           "against `feat/x` @ `abc1234`.\n**Next:** Lane 3 executes and "
+           "against `feat/x` @ `abc1234`.\n**External calls authorized:** none\n"
+           "**Next:** Lane 3 executes and "
            "reports.\n\nApproved, execute against the spec.")
 SPEC_BODY = "### Test Cases\n1. Does the thing.\n2. Does the other thing."
 SWEEP_BODY = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases "
@@ -403,66 +405,31 @@ LIVE_SPEC = ("## Lane 3 Test Spec — F1\n\n### Cases\n| TC1 | live | x | y | z 
 LIVE_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases executable.\n"
               "**Blockers:** none.\n**Next:** Lane 3 executes.\n\nWrite tier: W\n\n"
               "### Per-case readiness\n"
-              "- TC1: ready, live UI run. External calls: Gemini generate, Voyage embed\n"
+              "- TC1: ready, live UI run.\n"
+              "  External calls: llm:anthropic; paid-api:tavily\n"
               "- TC2: ready, offline fixtures\n")
+TIER_P_SPEC = ("## Lane 3 Test Spec — F1\n\nWrite tier: P\n\n### Cases\n"
+               "| P1 | ac | x | y | z |\n| P2 | live | x | y | z |\n\n"
+               "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=P1:ac,P2:live -->")
+TIER_P_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases executable.\n"
+                "**Blockers:** none.\n**Next:** Lane 3 executes.\n\nWrite tier: P\n\n"
+                "### Per-case readiness\n"
+                "- P1: ready, offline fixtures\n"
+                "- P2: ready, live run.\n"
+                "  External calls: llm:anthropic\n")
 
 
-class ExternalCallsCrossCheck(LeadOnBothHalves):
-    """harmonic-forge#1115 AC9: the AE authorizes every external call the
-    sweep's live cases name; H2452's AE did not, and Lane 3 stopped."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        # As MainIntegrationTests: the fake repo has no registered identity or checkout.
-        for name, kw in (("apply_project_identity", {}),
-                         ("project_for_path", {"return_value": mock.Mock(repo="vitalharmony/harmonic-forge")})):
-            patcher = mock.patch.object(post, name, **kw)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-    def _run(self, ae_body: str, sweep_body: str):
-        with patch.object(post, "_spec_body", return_value=LIVE_SPEC):
-            super()._run(ae_body, sweep_body)
-
-    def test_ae_missing_a_swept_external_call_is_refused(self) -> None:
-        ae = AE_BODY.replace("against `feat/x`", "with Gemini generate, against `feat/x`")
-        with self.assertRaises(SystemExit) as ctx:
-            self._run(ae, LIVE_SWEEP)
-        self.assertIn("Voyage embed", str(ctx.exception))
-        self.assertNotIn("Gemini generate --", str(ctx.exception))
-        self.assertEqual(self.posted, [], "nothing may post when the AE omits a swept call")
-
-    def test_ae_naming_every_swept_external_call_posts(self) -> None:
-        ae = AE_BODY.replace("against `feat/x`",
-                             "with External calls Gemini generate and Voyage embed, against `feat/x`")
-        self._run(ae, LIVE_SWEEP)
-        self.assertEqual(len(self.posted), 2)
-
-    def test_a_standalone_ae_is_checked_against_the_latest_sweep_on_its_sha(self) -> None:
-        comments = [
-            {"id": 1, "body": LIVE_SWEEP.replace("Voyage embed", "Old call")
-             + f"\n<!-- l1-post v1; kind=sweep; sha={'b' * 40} -->"},
-            {"id": 2, "body": LIVE_SWEEP + f"\n<!-- l1-post v1; kind=sweep; sha={FAKE_SHA} -->"},
-        ]
-        _SWEEP_CALLS_PATCH.stop()
-        self.addCleanup(_SWEEP_CALLS_PATCH.start)
-        import check_lane3_ready
-        with patch.object(check_lane3_ready, "fetch_comments", return_value=comments):
-            self.assertEqual(post._latest_sweep_calls("o/r", 1, FAKE_SHA), ["Gemini generate", "Voyage embed"])
-            self.assertEqual(post._latest_sweep_calls("o/r", 1, "c" * 40), [])
-
-    def test_a_live_case_with_no_external_calls_line_is_refused(self) -> None:
-        sweep = LIVE_SWEEP.replace(" External calls: Gemini generate, Voyage embed", "")
-        with self.assertRaises(SystemExit) as ctx:
-            self._run(AE_BODY, sweep)
-        self.assertIn("TC1 carry no `External calls:` line", str(ctx.exception))
-        self.assertEqual(self.posted, [])
+def _ae(calls: str | None) -> str:
+    """AE_BODY with its `External calls authorized:` field set, or removed."""
+    line = "**External calls authorized:** none\n"
+    return AE_BODY.replace(line, "" if calls is None else f"**External calls authorized:** {calls}\n")
 
 
-class StandaloneExternalCallsThroughMain(LeadOnBothHalves):
-    """harmonic-forge#1115 pass 1 survivors 2-4 and 6: the R-0208 order posts
-    the AE first and the sweep after it. Both checks run through main()
-    against a fake thread, never a stub of the thread readers."""
+class ExternalCallsThroughMain(LeadOnBothHalves):
+    """harmonic-forge#1115 AC9 (reforged): the AE's structured field equals
+    the sweep's live-case call union, checked on both sides. Every case
+    drives main() over a fake comment thread; no `_latest_*` reader is
+    stubbed."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -471,14 +438,16 @@ class StandaloneExternalCallsThroughMain(LeadOnBothHalves):
             patcher = mock.patch.object(post, name, **kw)
             patcher.start()
             self.addCleanup(patcher.stop)
-        _SWEEP_CALLS_PATCH.stop()
-        self.addCleanup(_SWEEP_CALLS_PATCH.start)
         self.thread: list[dict] = []
-        import check_lane3_ready
-        patcher = mock.patch.object(check_lane3_ready, "fetch_comments",
+        self.spec = LIVE_SPEC
+        patcher = mock.patch.object(_lane3_ready, "fetch_comments",
                                     side_effect=lambda repo, issue: self.thread)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def _run(self, ae_body: str, sweep_body: str):
+        with patch.object(post, "_spec_body", side_effect=lambda repo, comment: self.spec):
+            super()._run(ae_body, sweep_body)
 
     def _standalone(self, kind: str, body: str) -> None:
         self.ae_file.write_text(body)
@@ -487,7 +456,7 @@ class StandaloneExternalCallsThroughMain(LeadOnBothHalves):
         if kind == "sweep":
             argv += ["--spec-comment", "999"]
         with patch.object(post, "run", side_effect=_fake_run), \
-             patch.object(post, "_spec_body", return_value=LIVE_SPEC), \
+             patch.object(post, "_spec_body", side_effect=lambda repo, comment: self.spec), \
              patch.object(post, "comment_body",
                           side_effect=lambda r, i, b: (self.posted.append(b) or ("u", len(self.posted)))), \
              patch.object(post, "write_receipt"), \
@@ -498,69 +467,136 @@ class StandaloneExternalCallsThroughMain(LeadOnBothHalves):
         self.thread.append({"id": len(self.thread) + 1,
                             "body": body + f"\n<!-- l1-post v1; kind={kind}; sha={sha} -->"})
 
-    def test_a_standalone_ae_omitting_a_swept_call_is_refused(self) -> None:
+    def _refused(self, call, *needles: str) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            call()
+        for needle in needles:
+            self.assertIn(needle, str(ctx.exception))
+        self.assertEqual(self.posted, [], "nothing may post on an AC9 refusal")
+
+    # Kill check 1: the field is required.
+    def test_a_standalone_ae_without_the_field_is_refused(self) -> None:
+        self._refused(lambda: self._standalone("ae", _ae(None)), "External calls authorized")
+
+    def test_an_ae_and_sweep_without_the_field_is_refused(self) -> None:
+        self._refused(lambda: self._run(_ae(None), LIVE_SWEEP), "External calls authorized")
+
+    def test_a_standalone_ae_with_none_and_no_sweep_posts(self) -> None:
+        self._standalone("ae", _ae("none"))
+        self.assertEqual(len(self.posted), 1)
+
+    # Kill check 2: equality, never containment.
+    def test_an_ae_authorizing_a_subset_is_refused(self) -> None:
+        self._refused(lambda: self._run(_ae("llm:anthropic"), LIVE_SWEEP), "paid-api:tavily")
+
+    def test_an_ae_authorizing_a_superset_is_refused(self) -> None:
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily; message:gmail-draft"),
+                                        LIVE_SWEEP), "message:gmail-draft")
+
+    def test_an_ae_equal_to_the_sweep_posts_both(self) -> None:
+        self._run(_ae("paid-api:tavily; LLM:Anthropic ; llm:anthropic"), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_a_standalone_ae_subset_of_the_newest_sweep_on_its_sha_is_refused(self) -> None:
+        self._on_thread(LIVE_SWEEP.replace("; paid-api:tavily", ""), "sweep")
         self._on_thread(LIVE_SWEEP, "sweep")
-        with self.assertRaises(SystemExit) as ctx:
-            self._standalone("ae", AE_BODY)
-        self.assertIn("Gemini generate", str(ctx.exception))
-        self.assertEqual(self.posted, [])
+        self._on_thread(LIVE_SWEEP.replace("paid-api:tavily", "message:slack"), "sweep", "b" * 40)
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic")), "paid-api:tavily")
 
-    def test_a_sweep_naming_a_call_the_posted_ae_omits_is_refused(self) -> None:
-        self._on_thread(AE_BODY.replace("against `feat/x`", "with Gemini generate, against `feat/x`"), "ae")
-        with self.assertRaises(SystemExit) as ctx:
-            self._standalone("sweep", LIVE_SWEEP)
-        self.assertIn("Voyage embed", str(ctx.exception))
-        self.assertEqual(self.posted, [])
+    def test_a_standalone_ae_equal_to_the_newest_sweep_on_its_sha_posts(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
+        self.assertEqual(len(self.posted), 1)
 
-    def test_a_sweep_whose_calls_the_posted_ae_names_posts(self) -> None:
-        self._on_thread(AE_BODY.replace(
-            "against `feat/x`", "with Gemini generate and Voyage embed, against `feat/x`"), "ae")
+    # Kill check 3: the sweep side runs against the newest AE on the SHA.
+    def test_a_sweep_naming_a_call_the_newest_ae_lacks_is_refused(self) -> None:
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._on_thread(_ae("llm:anthropic"), "ae")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), "paid-api:tavily")
+
+    def test_a_sweep_with_no_ae_on_its_sha_is_refused(self) -> None:
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae", "b" * 40)
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), "no AE is posted")
+
+    def test_a_sweep_equal_to_the_newest_ae_posts(self) -> None:
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
         self._standalone("sweep", LIVE_SWEEP)
         self.assertEqual(len(self.posted), 1)
 
-    def test_a_sweep_is_checked_against_the_ae_on_its_own_sha(self) -> None:
-        self._on_thread(AE_BODY.replace(
-            "against `feat/x`", "with Gemini generate and Voyage embed, against `feat/x`"), "ae", "b" * 40)
-        with self.assertRaises(SystemExit):
-            self._standalone("sweep", LIVE_SWEEP)
-        self.assertEqual(self.posted, [])
+    def test_a_live_case_with_no_external_calls_line_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace("  External calls: llm:anthropic; paid-api:tavily\n", "")
+        self._refused(lambda: self._run(_ae("none"), sweep), "TC1 carry no `External calls:` line")
 
+    def test_a_live_case_with_two_external_calls_lines_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace("- TC2:", "  External calls: none\n- TC2:")
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), sweep), "more than one")
 
-class ExternalCallsParsing(unittest.TestCase):
-    """harmonic-forge#1115 pass 1: how an `External calls:` value and an
-    AE's Authorized line are read."""
+    # Kill check 4: Tier P live ids are canonicalized like footer ids.
+    def test_a_tier_p_live_case_with_no_external_calls_line_is_refused(self) -> None:
+        self.spec = TIER_P_SPEC
+        sweep = TIER_P_SWEEP.replace("  External calls: llm:anthropic\n", "")
+        self._refused(lambda: self._run(_ae("none"), sweep), "TC2 carry no `External calls:` line")
 
-    def test_none_followed_by_prose_names_no_calls(self) -> None:
-        # Survivor 1: trailing prose after `none` is not a call list.
-        for line in ("External calls: none (offline fixtures)",
-                     "External calls: none. Offline fixtures, no network",
-                     "External calls: none - offline"):
+    def test_a_tier_p_sweep_with_its_line_posts(self) -> None:
+        self.spec = TIER_P_SPEC
+        self._run(_ae("llm:anthropic"), TIER_P_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    # Kill check 5: no prose path on either field line.
+    def test_prose_on_the_ae_field_line_is_refused(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        for value in ("llm:anthropic; paid-api:tavily, but not message calls",
+                      "llm:anthropic; paid-api:tavily (offline otherwise)",
+                      "LLM calls and the paid API",
+                      "none besides llm:anthropic; paid-api:tavily",
+                      "llm:anthropic, paid-api:tavily",
+                      "`llm:anthropic`; `paid-api:tavily`",
+                      ""):
+            with self.subTest(value=value):
+                self.posted.clear()
+                # the grammar refusal itself, not a set mismatch downstream of it
+                self._refused(lambda: self._standalone("ae", _ae(value)), "entries must be")
+
+    def test_prose_on_a_sweep_field_line_is_refused(self) -> None:
+        for line in ("  External calls: none (offline fixtures)",
+                     "  External calls: Gemini generate",
+                     "  External calls: none besides llm:anthropic",
+                     "  External calls: llm:anthropic; paid-api:tavily; excluding message:x calls"):
             with self.subTest(line=line):
-                self.assertEqual(post._external_calls(line), [])
+                sweep = LIVE_SWEEP.replace("  External calls: llm:anthropic; paid-api:tavily", line)
+                self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), sweep),
+                              "External calls")
 
-    def test_a_call_named_none_something_is_still_a_call(self) -> None:
-        self.assertEqual(post._external_calls("External calls: nonesuch API"), ["nonesuch API"])
+    def test_an_inline_field_on_the_case_line_is_refused(self) -> None:
+        sweep = LIVE_SWEEP.replace("live UI run.\n  External calls:", "live UI run. External calls:")
+        self._refused(lambda: self._run(_ae("llm:anthropic; paid-api:tavily"), sweep),
+                      "must be a line of its own")
 
-    def test_a_negated_call_is_not_authorized(self) -> None:
-        # Survivor 5: a line that denies the call does not authorize it.
-        ae = "**Authorized:** the approved spec; no LLM calls, no paid API"
-        with self.assertRaises(SystemExit) as ctx:
-            post.validate_ae_external_calls(ae, ["LLM", "paid API"])
-        self.assertIn("LLM", str(ctx.exception))
+    def test_the_prose_authorized_line_is_never_read(self) -> None:
+        ae = _ae("llm:anthropic; paid-api:tavily").replace(
+            "the spec in", "no LLM calls and no paid API; the spec in")
+        self._run(ae, LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
 
-    def test_a_call_inside_another_word_is_not_authorized(self) -> None:
-        with self.assertRaises(SystemExit):
-            post.validate_ae_external_calls("**Authorized:** the SLLMX fixtures", ["LLM"])
 
-    def test_a_named_call_is_authorized(self) -> None:
-        post.validate_ae_external_calls(
-            "**Authorized:** TC1 with one LLM call and the paid API, against `x`", ["LLM", "paid API"])
+class ExternalCallsGrammar(unittest.TestCase):
+    """harmonic-forge#1115 AC9: the one parser both sides use."""
 
-    def test_a_label_other_than_authorized_does_not_count(self) -> None:
-        # Survivor 8: `Authorized-by:` is not the Authorized field.
-        ae = "**Authorized:** the spec.\nAuthorized-by: Gemini generate"
-        with self.assertRaises(SystemExit):
-            post.validate_ae_external_calls(ae, ["Gemini generate"])
+    def test_tokens_are_trimmed_lowercased_and_deduplicated(self) -> None:
+        self.assertEqual(post.parse_external_calls(" - **External calls:** LLM:Anthropic ;llm:anthropic"),
+                         frozenset({"llm:anthropic"}))
+        self.assertEqual(post.parse_external_calls("External calls: NONE"), frozenset())
+
+    def test_anything_outside_the_vocabulary_is_refused(self) -> None:
+        for line in ("External calls: llm", "External calls: llm:", "External calls: api:x",
+                     "External calls: llm:anthropic;", "External calls: llm:open_ai",
+                     "External calls: no", "External calls: none; llm:anthropic"):
+            with self.subTest(line=line), self.assertRaises(SystemExit):
+                post.parse_external_calls(line)
+
+    def test_the_prose_parsers_are_gone(self) -> None:
+        for name in ("_NEGATION", "_authorizes", "_external_calls", "_AE_AUTHORIZED_LINE"):
+            self.assertFalse(hasattr(post, name), name)
 
 
 class ProdRunFooterTests(MainIntegrationTests):

@@ -976,112 +976,160 @@ def _validate_sweep_against_footer(body: str, expected: set[str], live: set[str]
     if claimed:
         fail(f"sweep states a test outcome (`pass`/`fail`) for TC{', TC'.join(claimed)}, but a "
              "gate-readiness sweep is posted BEFORE the gate runs. Describe readiness instead.")
-    # harmonic-forge#1115 AC9: a live case names its external calls before the
-    # gate, `none` or the exact calls, so the AE can authorize each one.
-    want_live = {case.lower() for case in live}
-    unnamed = sorted({number for number, text in entries
-                      if number.lower() in want_live and _external_calls(text) is None},
-                     key=_case_sort_key)
+    # harmonic-forge#1115 AC9 (reforged): a live case carries exactly one
+    # structured `External calls:` line; malformed lines refuse inside the parse.
+    per_case = sweep_case_external_calls(body)
+    want_live = _canonical_live_ids(live)
+    repeated_calls = sorted((n for n, sets in per_case.items() if len(sets) > 1), key=_case_sort_key)
+    if repeated_calls:
+        fail(f"sweep case(s) TC{', TC'.join(repeated_calls)} carry more than one `External calls:` "
+             "line -- exactly one per case (harmonic-forge#1115)")
+    unnamed = sorted((n for n in named if n in want_live and not per_case.get(n)), key=_case_sort_key)
     if unnamed:
         fail(f"sweep live case(s) TC{', TC'.join(unnamed)} carry no `External calls:` line -- "
-             "name `External calls: none` or the exact calls (LLM, paid API, outbound "
-             "message) on each live case's line (harmonic-forge#1115)")
+             "add one line `External calls: none` or `External calls: <c1>; <c2>` with tokens "
+             "`llm:<provider>`, `paid-api:<name>`, `message:<channel>` (harmonic-forge#1115)")
 
 
-_EXTERNAL_CALLS = re.compile(r"External calls\**[ \t]*:\**[ \t]*([^\n]*)", re.I)
+# harmonic-forge#1115 AC9 (reforged, sticky-wicket 2): external calls are a
+# structured field in a closed grammar, never read from prose. One parser
+# serves the sweep's per-case `External calls:` line and the AE's
+# `External calls authorized:` field; the two sets must be equal.
+EXTERNAL_CALL_TOKEN = re.compile(r"(?:llm|paid-api|message):[a-z0-9-]+")
+SWEEP_CALLS_LABEL = "External calls"
+AE_CALLS_LABEL = "External calls authorized"
 
 
-def _external_calls(text: str) -> list[str] | None:
-    """harmonic-forge#1115 AC9: the calls an `External calls:` entry names --
-    `[]` for `none`, None when the line is absent or names nothing."""
-    match = _EXTERNAL_CALLS.search(text)
+def _field_label(label: str) -> str:
+    return r"[ \t]+".join(map(re.escape, label.split()))
+
+
+def parse_external_calls(line: str, label: str = SWEEP_CALLS_LABEL) -> frozenset[str]:
+    """The calls one field line names: `<label>: none` or `<label>: <c1>; <c2>`,
+    each entry a closed-vocabulary token, trimmed and lowercased. The line
+    holds the field and nothing else (an optional list marker and bold on
+    the label aside); any other text refuses."""
+    match = re.fullmatch(
+        rf"[ \t]*(?:[-*][ \t]+)?\**[ \t]*{_field_label(label)}[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(.*?)[ \t]*",
+        line, re.I)
     if not match:
-        return None
-    value = match.group(1).replace("*", "").replace("`", "").strip().rstrip(".;")
-    # `none` then prose (`none (offline fixtures)`, `none. No network`) names
-    # no calls; `nonesuch API` is still a call.
-    if re.match(r"none(?!\w)", value, re.I):
-        return []
-    calls = [call.strip() for call in value.split(",") if call.strip()]
-    return calls or None
+        fail(f"`{label}:` must be a line of its own, `{label}: none` or `{label}: <c1>; <c2>`, "
+             f"with nothing else on it; got {line.strip()!r} (harmonic-forge#1115)")
+    value = match.group(1).lower()
+    if value == "none":
+        return frozenset()
+    entries = [entry.strip() for entry in value.split(";")]
+    bad = [entry for entry in entries if not EXTERNAL_CALL_TOKEN.fullmatch(entry)]
+    if bad:
+        fail(f"`{label}:` entries must be `none` or `;`-separated tokens `llm:<provider>`, "
+             f"`paid-api:<name>`, `message:<channel>` ([a-z0-9-]+); refused: "
+             f"{', '.join(repr(entry) for entry in bad)} (harmonic-forge#1115)")
+    return frozenset(entries)
 
 
-def sweep_external_calls(sweep_body: str) -> list[str]:
-    """Every external call any case line of a sweep names (AC9's AE cross-check)."""
-    section, _ = _case_section(sweep_body or "")
-    calls: list[str] = []
-    for _, text in SWEEP_TC_ENTRY_SUFFIXED.findall(section):
-        for call in _external_calls(text) or []:
-            if call.lower() not in (c.lower() for c in calls):
-                calls.append(call)
-    return calls
+def _field_sets(text: str, label: str) -> list[frozenset[str]]:
+    """Every `<label>:` occurrence in `text`, each parsed from its whole line."""
+    lines = text.splitlines()
+    pattern = re.compile(rf"{_field_label(label)}[ \t]*\**[ \t]*:", re.I)
+    return [parse_external_calls(line, label) for line in lines if pattern.search(line)]
+
+
+def sweep_case_external_calls(sweep_body: str) -> dict[str, list[frozenset[str]]]:
+    """{case id: the `External calls:` sets in that case's block}, a block
+    running from its `TC<n>` entry to the next one. A Tier P sweep's `P<n>`
+    entries are read as the TC entries they canonicalize to."""
+    body, _ = _canonicalize_tier_p(sweep_body or "", sweep=True)
+    section, _ = _case_section(body)
+    starts = list(SWEEP_TC_ENTRY_SUFFIXED.finditer(section))
+    found: dict[str, list[frozenset[str]]] = {}
+    for index, entry in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(section)
+        found.setdefault(entry.group(1).lower(), []).extend(
+            _field_sets(section[entry.start():end], SWEEP_CALLS_LABEL))
+    return found
+
+
+def sweep_external_calls(sweep_body: str) -> frozenset[str]:
+    """The union of every case's `External calls:` set (AC9's comparison)."""
+    return frozenset().union(*(s for sets in sweep_case_external_calls(sweep_body).values() for s in sets))
+
+
+def ae_external_calls(ae_body: str) -> frozenset[str]:
+    """The AE's one required `External calls authorized:` set. The prose
+    **Authorized:** line is for humans and is never read for calls."""
+    sets = _field_sets(ae_body, AE_CALLS_LABEL)
+    if len(sets) != 1:
+        fail(f"AE needs exactly one `{AE_CALLS_LABEL}: none | <c1>; <c2>` line "
+             f"(found {len(sets)}) -- tokens `llm:<provider>`, `paid-api:<name>`, "
+             "`message:<channel>` (harmonic-forge#1115)")
+    return sets[0]
+
+
+def validate_external_calls_match(authorized: frozenset[str], swept: frozenset[str]) -> None:
+    """Exact set equality, reported in both directions."""
+    if authorized == swept:
+        return
+    missing, extra = sorted(swept - authorized), sorted(authorized - swept)
+    fail("AE `External calls authorized:` must equal the sweep's live-case `External calls:` "
+         f"union exactly -- not authorized: {', '.join(missing) or 'none'}; authorized but not "
+         f"swept: {', '.join(extra) or 'none'} (harmonic-forge#1115)")
+
+
+def validate_ae_external_calls(ae_body: str, swept: frozenset[str] | None) -> None:
+    """harmonic-forge#1115 AC9, the AE side: the field is required; when a
+    sweep is on the SHA its union must equal the field's set."""
+    authorized = ae_external_calls(ae_body)
+    if swept is not None:
+        validate_external_calls_match(authorized, swept)
+
+
+def _newest_on_sha(repo: str, issue: int, sha: str, kind: str) -> str | None:
+    """The body of the newest `kind=` comment on `sha`, or None."""
+    import check_lane3_ready  # noqa: PLC0415
+    comments = check_lane3_ready.fetch_comments(repo, issue)
+    found = [c for c in comments if (m := check_lane3_ready.FOOTER_KIND.search(c.get("body", "")))
+             and m.group(1).lower() == kind
+             and check_lane3_ready.same_sha(check_lane3_ready.footer_sha(c), sha)]
+    return max(found, key=lambda c: c["id"]).get("body", "") if found else None
+
+
+def _latest_sweep_calls(repo: str, issue: int, sha: str) -> frozenset[str] | None:
+    """The newest sweep's call union on `sha`, for a standalone AE; None when
+    no sweep is on that SHA."""
+    body = _newest_on_sha(repo, issue, sha, "sweep")
+    return None if body is None else sweep_external_calls(body)
+
+
+def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str) -> None:
+    """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
+    the sweep is checked against the newest AE on its own SHA, and refused
+    when there is none."""
+    swept = sweep_external_calls(sweep_body)
+    ae_body = _newest_on_sha(repo, issue, sha, "ae")
+    if ae_body is None:
+        fail(f"no AE is posted on {sha[:12]} -- the AE goes first and its `{AE_CALLS_LABEL}:` "
+             "field must equal this sweep's external calls (R-0208, harmonic-forge#1115)")
+    validate_external_calls_match(ae_external_calls(ae_body), swept)
+
+
+def _canonical_case_id(case: str) -> str:
+    """`P2`, `TC2` and `2` are one case: the footer and Tier P branches
+    compare live ids against the sweep's canonical TC numbers."""
+    return re.sub(r"(?i)^(?:tc|p)[- ]?", "", case.strip()).lower()
+
+
+def _canonical_live_ids(live) -> set[str]:
+    return {_canonical_case_id(case) for case in live}
 
 
 def footer_live_case_ids(spec_body: str) -> set[str]:
-    """The case ids a spec's `classes=` footer marks `live`."""
+    """The case ids a spec's `classes=` footer marks `live`, as written
+    (`1`, `P2`); `_canonical_live_ids` maps them onto sweep TC numbers."""
     lines = [line.strip() for line in (spec_body or "").splitlines() if line.strip()]
     footer = lines[-1] if lines and lines[-1].startswith("<!--") else ""
     if _eras is None:
         return set()
     return {case for case, cls in _eras.parse_case_map(footer, "classes").items() if cls == "live"}
-
-
-#: The field label itself: `Authorized-by:` is not the Authorized field.
-_AE_AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized[^\S\n]*\**[^\S\n]*:[^\n]*$")
-
-
-_NEGATION = re.compile(r"\b(?:no|not|without|never)\b(?:\W+\w+){0,2}\W*$", re.I)
-
-
-def _authorizes(authorized: str, call: str) -> bool:
-    """The call is named as a whole word and not negated just before it
-    (`no LLM calls` does not authorize `LLM`)."""
-    for match in re.finditer(rf"(?<!\w){re.escape(call)}(?!\w)", authorized, re.I):
-        if not _NEGATION.search(authorized[:match.start()]):
-            return True
-    return False
-
-
-def validate_ae_external_calls(ae_body: str, calls: list[str]) -> None:
-    """harmonic-forge#1115 AC9: the AE's **Authorized:** line names every
-    external call its sweep's live cases list."""
-    authorized = " ".join(_AE_AUTHORIZED_LINE.findall(ae_body))
-    missing = [call for call in calls if not _authorizes(authorized, call)]
-    if missing:
-        fail("AE's Authorized: line does not name the sweep's external call(s): "
-             + ", ".join(missing) + " -- authorize each one by name (harmonic-forge#1115)")
-
-
-def _latest_sweep_calls(repo: str, issue: int, sha: str) -> list[str]:
-    """The external calls named by the latest sweep posted on `sha`, for a
-    standalone AE; [] when no sweep is on that SHA."""
-    import check_lane3_ready  # noqa: PLC0415
-    comments = check_lane3_ready.fetch_comments(repo, issue)
-    sweeps = [c for c in comments if (m := check_lane3_ready.FOOTER_KIND.search(c.get("body", "")))
-              and m.group(1).lower() == "sweep"
-              and check_lane3_ready.same_sha(check_lane3_ready.footer_sha(c), sha)]
-    if not sweeps:
-        return []
-    return sweep_external_calls(max(sweeps, key=lambda c: c["id"]).get("body", ""))
-
-
-def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str) -> None:
-    """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
-    when the AE was checked there was no sweep yet. The sweep is checked
-    against the newest AE on its own SHA instead."""
-    calls = sweep_external_calls(sweep_body)
-    if not calls:
-        return
-    import check_lane3_ready  # noqa: PLC0415
-    comments = check_lane3_ready.fetch_comments(repo, issue)
-    aes = [c for c in comments if (m := check_lane3_ready.FOOTER_KIND.search(c.get("body", "")))
-           and m.group(1).lower() == "ae"
-           and check_lane3_ready.same_sha(check_lane3_ready.footer_sha(c), sha)]
-    if not aes:
-        fail(f"sweep names external call(s) {', '.join(calls)} but no AE is posted on "
-             f"{sha[:12]} -- the AE goes first and must authorize each one (R-0208, "
-             "harmonic-forge#1115)")
-    validate_ae_external_calls(max(aes, key=lambda c: c["id"]).get("body", ""), calls)
 
 
 #: Only a LEADING outcome word, bold stripped: readiness text may say a check
@@ -1117,7 +1165,7 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
     tier_p_ids = _tier_p_ids(spec_body)
     if tier_p_ids:
         body, _ = _canonicalize_tier_p(body, sweep=True)
-        _validate_sweep_against_footer(body, tier_p_ids)
+        _validate_sweep_against_footer(body, tier_p_ids, footer_live_case_ids(spec_body))
         return
     footer_ids = footer_case_ids(spec_body)
     if footer_ids:
@@ -3240,7 +3288,7 @@ def main() -> None:
     steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
         steps.append(lambda: validate_sweep(body, _spec_body(repo, args.spec_comment), repo, args.issue))
-        # harmonic-forge#1115 AC9: the AE already posted names this sweep's calls.
+        # harmonic-forge#1115 AC9: equals the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(repo, args.issue, sha, body))
     if args.kind == "ae":
         steps += [
@@ -3248,7 +3296,7 @@ def main() -> None:
             lambda: validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required),
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
-            # harmonic-forge#1115 AC9: the latest sweep on this SHA names its calls.
+            # harmonic-forge#1115 AC9: the field is required; equals the newest sweep on this SHA.
             lambda: validate_ae_external_calls(body, _latest_sweep_calls(repo, args.issue, sha)),
         ]
     if args.dry_run:

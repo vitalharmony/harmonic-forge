@@ -2182,15 +2182,15 @@ id = "R-0335"
 file = "rules/testing-gate.md"
 anchor = "gate-readiness-sweep"
 statement = "A gate-readiness sweep leads with Readiness/Blockers/Next in bold-labelled lines above any evidence section or details block; readiness, not a verdict, because the sweep is pre-execution."
-text_sha = "e4f1cb49c3e28a63"
+text_sha = "6f9774c7a46e05c9"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-post --kind ae", "l1-post --kind ae-and-sweep"], wired_in = "hrse" }]
 
 [[rule]]
 id = "R-0336"
 file = "rules/testing-gate.md"
 anchor = "gate-readiness-sweep"
-statement = "An AE leads with Authorized (which spec, which branch and SHA) and Next, above any evidence; it reports no finding and is not asked for one."
-text_sha = "44e4b01f0db6ef67"
+statement = "An AE leads with Authorized (which spec, which branch and SHA) and Next, above any evidence; it reports no finding and is not asked for one. Its external calls are a structured `External calls authorized:` field equal to the sweep's live-case `External calls:` union, never read from prose."
+text_sha = "260e57a27f38755b"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-post --kind ae", "l1-post --kind ae-and-sweep"], wired_in = "hrse" }]
 
 [[rule]]
@@ -2436,7 +2436,7 @@ id = "R-0366"
 file = "rules/testing-gate.md"
 anchor = "gate-readiness-sweep"
 statement = "A partial AE carries the other cases forward: the sweep still lists every spec case, a case not being run reads 'carried forward, not re-run' with its evidence link and unchanged SHA, the AE names only the cases it authorizes, and Lane 3 executes only those cases."
-text_sha = "d0cca63bd103382e"
+text_sha = "b257b65e828c643f"
 hooks = []
 
 [[rule]]

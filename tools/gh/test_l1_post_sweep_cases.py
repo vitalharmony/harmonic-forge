@@ -466,24 +466,26 @@ class FooterCaseIdsTests(unittest.TestCase):
                 self._validate(self._sweep(ids + ["10"]), spec)
 
     def test_live_case_without_external_calls_is_refused(self):
-        """harmonic-forge#1115 AC9: a `live` case names its external calls."""
+        """harmonic-forge#1115 AC9: a `live` case carries one structured
+        `External calls:` line; an `ac` case needs none."""
         spec = ("## Lane 3 Test Spec — O40\n\n### Cases\n| TC1 | live | x | y | z |\n"
                 "| TC2 | ac | x | y | z |\n\n"
                 "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=1:live,2:ac -->")
         with self.assertRaises(SystemExit) as caught:
             self._validate(self._sweep(["1", "2"]), spec)
         self.assertIn("TC1 carry no `External calls:` line", str(caught.exception))
-        for named in ("none", "Gemini generate, outbound Gmail draft"):
+        for named in ("none", "llm:gemini; message:gmail-draft"):
             with self.subTest(named=named):
                 sweep = self._sweep(["1", "2"]).replace(
-                    "- TC1: ready — offline fixtures", f"- TC1: ready — External calls: {named}")
+                    "- TC1: ready — offline fixtures",
+                    f"- TC1: ready — offline fixtures\n  External calls: {named}")
                 self._validate(sweep, spec)
         self.assertEqual(L.sweep_external_calls(self._sweep(["1"]).replace(
-            "offline fixtures", "External calls: Gemini generate, outbound Gmail draft")),
-            ["Gemini generate", "outbound Gmail draft"])
-        # an `ac` case needs no line, and an empty value names nothing
+            "offline fixtures", "offline fixtures\n  External calls: llm:gemini; message:gmail-draft")),
+            frozenset({"llm:gemini", "message:gmail-draft"}))
+        # an empty value names nothing and is refused
         empty = self._sweep(["1", "2"]).replace("- TC1: ready — offline fixtures",
-                                                 "- TC1: ready — External calls:")
+                                                 "- TC1: ready — offline fixtures\n  External calls:")
         with self.assertRaises(SystemExit):
             self._validate(empty, spec)
 

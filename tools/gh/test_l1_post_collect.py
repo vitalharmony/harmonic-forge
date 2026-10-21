@@ -138,12 +138,13 @@ ORDER = {
                 "validate_sticky_wicket", "validate_lead"],
     "rework": ["validate_milestone_current", "validate_sticky_wicket", "validate_lead"],
     "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
-    "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep"],
+    "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep",
+              "validate_sweep_against_posted_ae"],  # harmonic-forge#1115 AC9
     "ae": ["validate_sticky_wicket", "validate_lead", "validate_ae", "validate_grant_ae",
-           "validate_auto_ae"],
+           "validate_auto_ae", "_latest_sweep_calls", "validate_ae_external_calls"],
     "ae-and-sweep": ["validate_sticky_wicket", "validate_ae", "validate_grant_ae",
                      "validate_auto_ae", "validate_lead", "validate_lead", "_spec_body",
-                     "validate_sweep"],
+                     "validate_sweep", "validate_ae_external_calls"],
 }
 
 
