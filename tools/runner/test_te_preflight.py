@@ -239,6 +239,14 @@ class ItemChecks(Base):
         self.assertTrue(any("preclose driver" in f and "plan refused" in f
                             and "IMC hook record" in f for f in failures), failures)
 
+    def test_headless_plan_refuses_a_dirty_worktree(self):
+        # Post-verdict gap 2: the interactive plan refuses uncommitted or
+        # untracked paths; the headless plan refuses them too.
+        (self.src / "stray.py").write_text("x = 1\n")
+        failures = self.failures()
+        self.assertTrue(any("preclose driver" in f and "plan refused" in f
+                            and "uncommitted/untracked" in f for f in failures), failures)
+
     def test_headless_plan_that_cannot_run_is_a_failure(self):
         # A step that cannot run is listed as a failure, never passed.
         pc = preflight.preclose_driver.preclose_check

@@ -207,10 +207,11 @@ def _step_passes(ctx: dict) -> None:
                           "a third never runs")
 
 
-def plan_refusals_without_head(repo: str, issue: int) -> None:
+def plan_refusals_without_head(repo: str, issue: int, source: Path) -> None:
     """The subset of `preclose_check.plan`'s refusals that needs no head: the
-    receipt dir is writable, no IMC waiver receipt is unconfirmed, and no live
-    IMC hook record lacks its receipt. Raises DriverError naming the refusal,
+    receipt dir is writable, no IMC waiver receipt is unconfirmed, no live
+    IMC hook record lacks its receipt, and `source` has no uncommitted or
+    untracked path (the interactive plan's dirty-tree refusal). Raises DriverError naming the refusal,
     or naming that the plan could not be checked (harmonic-forge#1112
     sticky-wicket patch 3). The full plan, which needs a kill-check receipt at
     the head and writes a planned receipt, runs once the head exists."""
@@ -226,6 +227,15 @@ def plan_refusals_without_head(repo: str, issue: int) -> None:
             raise DriverError(f"plan refused: {repo}#{issue} holds a live IMC hook record "
                               f"(granted {unmatched.get('granted_at')}) but no matching "
                               "waiver receipt")
+        status = call(["git", "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
+                      cwd=source)
+        if status.returncode:
+            raise DriverError(f"plan not checked before spend: `git status` failed in {source} "
+                              f"(exit {status.returncode})")
+        dirty = [entry[3:] for entry in status.stdout.split("\0") if len(entry) > 3]
+        if dirty:
+            raise DriverError(f"plan refused: {len(dirty)} uncommitted/untracked path(s) in "
+                              f"{source}: {', '.join(dirty[:5])}")
     except DriverError:
         raise
     except SystemExit as exc:
@@ -239,7 +249,7 @@ def _step_plan(ctx: dict) -> None:
     # silently: its head-independent refusals run, and one that cannot run is
     # listed as a failure (harmonic-forge#1112 sticky-wicket patch 3).
     if "head" not in ctx:
-        plan_refusals_without_head(ctx["repo"], ctx["issue"])
+        plan_refusals_without_head(ctx["repo"], ctx["issue"], ctx["source"])
         return
     if ctx["errors"]:
         return
