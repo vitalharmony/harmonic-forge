@@ -37,8 +37,9 @@ R-0229's human pass.
 its issue closes. The close hook (`batch_consume.py`), the belt's closed
 detection (`watch_lane_posts.py`) and `retire --all-closed` each archive both
 files once the issue's REST state reads `closed`; nothing is posted and
-nothing is deleted. An expired hook record with no receipt is archived when
-BATCH prunes (`archive_expired_hook_records`).
+nothing is deleted. An expired hook record with no receipt is left in place:
+`live_hook_record()` already reads it as absent, so it imposes nothing. A
+`<K>.end.lock` is never unlinked -- flock on that file is `end`'s exclusion.
 
 Run:
     python3 tools/gh/imc_waiver.py record --key F892
@@ -624,72 +625,6 @@ def retire(key: str, *, reason: str, known_closed: bool = False,
             dest = _archive_target(f"{key}.waiver.{_stamp(moment)}.json")
             os.replace(live, dest)
             moved.append(dest)
-        # Unlinking a held flock's file is safe on Linux; retire leaves no
-        # lock litter behind.
-        _end_lock_path(key).unlink(missing_ok=True)
-    return moved
-
-
-def _before_archive_move(path: Path, dest: Path) -> None:
-    """Test hook point: runs under the key's lock, after the re-check and
-    before the move. A no-op in production."""
-
-
-def archive_expired_hook_records(now: datetime, imc_dir: Path) -> list[Path]:
-    """harmonic-forge#1124 AC4: archive each expired hook record in `imc_dir`
-    that has no receipt. `imc_dir` is explicit, never `state_dir()`, so a
-    BATCH test's temp state path can never reach the real store. A record
-    with an unparseable `granted_at` is kept (fail toward retention).
-
-    The hook writer takes no lock, so the expiry judgment is re-made under
-    the key's `_end_lock` (skipped when busy) and verified after the move:
-    if the archived bytes differ from what was judged expired, or a receipt
-    appeared, the file goes back to `<K>.json` (unless a new one exists, in
-    which case the archived copy is kept and named on stderr)."""
-    moved: list[Path] = []
-    archive = imc_dir / "archive"
-    for path in sorted(imc_dir.glob("*.json")):
-        if path.name.count(".") != 1:
-            continue  # `<K>.waiver.json` and friends: not a hook record
-        key = path.name[:-len(".json")]
-        receipt = imc_dir / f"{key}.waiver.json"
-        if receipt.exists():
-            continue
-        record = read_json(path)
-        expiry = hook_record_expiry(record) if record is not None else None
-        if expiry is None or expiry > now:
-            continue
-        with _end_lock(key, blocking=False, base=imc_dir) as held:
-            if not held:
-                continue
-            try:
-                judged = path.read_bytes()
-            except FileNotFoundError:
-                judged = None
-            if judged is not None and not receipt.exists():
-                try:
-                    record = json.loads(judged)
-                except ValueError:
-                    record = None
-                expiry = hook_record_expiry(record) if isinstance(record, dict) else None
-                if expiry is not None and expiry <= now:
-                    archive.mkdir(parents=True, exist_ok=True)
-                    dest = archive / f"{key}.hook.{_stamp(now)}.json"
-                    suffix = 1
-                    while dest.exists():
-                        dest = archive / f"{key}.hook.{_stamp(now)}.{suffix}.json"
-                        suffix += 1
-                    _before_archive_move(path, dest)
-                    os.replace(path, dest)
-                    if dest.read_bytes() == judged and not receipt.exists():
-                        moved.append(dest)
-                    elif not path.exists():
-                        os.replace(dest, path)
-                    else:
-                        print(f"imc-waiver: {key}'s hook record changed during archive and a "
-                              f"new {path.name} exists; kept the moved copy at {dest}.",
-                              file=sys.stderr)
-        _end_lock_path(key, imc_dir).unlink(missing_ok=True)
     return moved
 
 

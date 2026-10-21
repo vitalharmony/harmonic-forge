@@ -69,7 +69,7 @@ def main() -> None:
         # Fail open, loudly to nobody: a bookkeeping miss is one extra prompt.
         pass
 
-    _retire_closed_imc(command)
+    _retire_closed_imc(command, payload.get("cwd"))
 
     try:
         if batch_auth.has_close_or_merge(command):
@@ -78,13 +78,14 @@ def main() -> None:
         pass
 
 
-def _retire_closed_imc(command: str) -> None:
+def _retire_closed_imc(command: str, cwd: str | None = None) -> None:
     """harmonic-forge#1124 AC2: retire the IMC waiver of an issue this command
     closed. The shell match decides only WHEN to look; `action_landed`'s REST
     read decides whether the close happened. A key with no IMC file costs no
-    API call. Any failure is one stderr line; the hook never fails."""
+    API call. A bare `gh issue close N` takes its repo from the payload's
+    `cwd`. Any failure is one stderr line; the hook never fails."""
     try:
-        closed = batch_auth.closed_keys(command)
+        closed = batch_auth.closed_keys(command, cwd)
         if not closed:
             return
         gh_dir = str(Path(__file__).resolve().parent.parent / "gh")

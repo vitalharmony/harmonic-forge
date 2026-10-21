@@ -499,7 +499,6 @@ def top_up(
             key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
             fresh.append(key)
         _save(state, state_path)
-    _archive_imc_hook_records(now, actual_path)
     return fresh
 
 
@@ -529,22 +528,6 @@ def authorize(
         for raw_key in keys:
             key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
         _save(state, state_path)
-    _archive_imc_hook_records(now, actual_path)
-
-
-def _archive_imc_hook_records(now: datetime, actual_path: Path) -> None:
-    """harmonic-forge#1124 AC4: archive expired, receipt-less IMC hook records
-    in the `imc/` directory beside THIS state file -- never the default IMC
-    store, so a test's temp state path cannot reach the real one. Run after
-    the locked section; any error is swallowed (pruning is best effort)."""
-    try:
-        gh_dir = str(Path(__file__).resolve().parent.parent / "gh")
-        if gh_dir not in sys.path:
-            sys.path.insert(0, gh_dir)
-        import imc_waiver  # noqa: PLC0415
-        imc_waiver.archive_expired_hook_records(now, imc_dir=actual_path.parent / "imc")
-    except Exception:
-        pass
 
 
 #: harmonic-forge#1124: the real state file, named once so a test process can
@@ -574,24 +557,55 @@ def prune_now(state_path: Path | None = None, now: datetime | None = None) -> in
                 _save(kept, actual_path)
     except StateLockTimeout:
         return 0
-    _archive_imc_hook_records(moment, actual_path)
     return dropped
 
 
-def closed_keys(command: str) -> list[tuple[str, str, int]]:
+_ORIGIN_SLUG = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$",
+                          re.IGNORECASE)
+
+
+def cwd_repo(cwd: str | None, runner=subprocess.run) -> str | None:
+    """`owner/repo` of the checkout at `cwd`, from `git remote get-url origin`
+    (the repo a bare `gh issue close N` acts on), parsed as
+    `check_receipt.repo_slug` parses remotes. None when unresolvable."""
+    if not cwd:
+        return None
+    try:
+        found = runner(["git", "-C", cwd, "remote", "get-url", "origin"],
+                       capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(found, "returncode", 1) != 0:
+        return None
+    match = _ORIGIN_SLUG.search((found.stdout or "").strip())
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def closed_keys(command: str, cwd: str | None = None,
+                runner=subprocess.run) -> list[tuple[str, str, int]]:
     """harmonic-forge#1124 AC2: `(key, repo, number)` for every vitalharmony
-    issue-close segment in `command` (`classify_issue_close`'s grammar). No
-    lock, no network: the caller confirms the close landed."""
+    issue-close segment in `command` (`classify_issue_close`'s grammar). A
+    bare `gh issue close N` resolves its repo from `cwd`'s origin, as gh
+    does; unresolvable still skips. No lock, no network: the caller confirms
+    the close landed."""
     try:
         segments = command_segments(command)
     except ValueError:
         return []
     found: list[tuple[str, str, int]] = []
+    resolved: list[str | None] = []
     for raw in segments:
-        info = classify_issue_close(strip_invocation_prefix(raw))
+        tokens = strip_invocation_prefix(raw)
+        info = classify_issue_close(tokens)
         if info is None:
             continue
         repo, number = info
+        # `-R` is a repo `_repo_flag` does not read: never guess past it.
+        named = any(t == "-R" or t.startswith("-R") for t in tokens)
+        if not repo and number and not named and tokens[1:3] == ["issue", "close"]:
+            if not resolved:
+                resolved.append(cwd_repo(cwd, runner))
+            repo = resolved[0]
         if not repo or not number or not str(repo).lower().startswith("vitalharmony/"):
             continue
         key = issue_key(repo, number)

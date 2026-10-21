@@ -91,8 +91,6 @@ class RecordTests(unittest.TestCase):
         self.assertFalse(self.receipt_exists())
 
     def test_refuses_with_an_expired_hook_record(self) -> None:
-        # Grant first: since harmonic-forge#1124 a BATCH authorize archives an
-        # expired, receipt-less hook record beside its state file.
         self.grant()
         self.hook_record(self.now - timedelta(hours=12, minutes=1))
         with self.assertRaises(SystemExit) as refused:
@@ -640,7 +638,28 @@ class RetireTests(unittest.TestCase):
         self.assertEqual(data["retire_reason"], "closed")
         self.assertFalse((self.state / f"{KEY}.json").exists())
         self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
-        self.assertFalse((self.state / f"{KEY}.end.lock").exists())
+        # flock on this file is `end`'s exclusion: retire never unlinks it.
+        self.assertTrue((self.state / f"{KEY}.end.lock").exists())
+
+    def test_end_holders_still_serialize_after_retire(self) -> None:
+        """Pass 2 #2: an `end` that opened the lock file while retire held it
+        must still exclude a later holder once retire is done."""
+        import fcntl
+        self.files()
+        early: list = []
+        real_write = imc_waiver.write_json_atomic
+
+        def opened_mid_retire(path, data):
+            early.append(open(self.state / f"{KEY}.end.lock", "a+"))
+            return real_write(path, data)
+        with patch.object(imc_waiver, "write_json_atomic", side_effect=opened_mid_retire):
+            imc_waiver.retire(KEY, reason="closed", known_closed=True, now=self.now)
+        self.assertEqual(len(early), 1)
+        first = early[0]
+        self.addCleanup(first.close)
+        fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with imc_waiver._end_lock(KEY, blocking=False) as second:
+            self.assertFalse(second, "two `end` holders on one key at once")
 
     def test_retire_same_second_never_overwrites(self) -> None:
         self.files()
@@ -675,40 +694,14 @@ class RetireTests(unittest.TestCase):
         self.assertTrue((self.state / f"{KEY}.json").exists())
         self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
 
-    def test_archive_expired_hook_records_helper(self) -> None:
+    def test_expired_orphan_hook_record_stays_and_reads_absent(self) -> None:
+        """AC4 as amended: an expired, receipt-less hook record is left where
+        it is; `live_hook_record()` already treats it as absent."""
         old = self.now - timedelta(hours=imc_waiver.TTL_HOURS + 1)
         (self.state / "F1.json").write_text(json.dumps({"granted_at": imc_waiver._iso(old)}))
-        (self.state / "F2.json").write_text(json.dumps({"granted_at": imc_waiver._iso(self.now)}))
-        self.files("F3", granted=old)
-        (self.state / "F4.json").write_text(json.dumps({"granted_at": "garbage"}))
-        moved = imc_waiver.archive_expired_hook_records(self.now, imc_dir=self.state)
-        self.assertEqual([p.name for p in moved], [f"F1.hook.{imc_waiver._stamp(self.now)}.json"])
-        for live in ("F2.json", "F3.json", "F3.waiver.json", "F4.json"):
-            self.assertTrue((self.state / live).exists(), live)
-
-    def _race(self, during) -> list:
-        old = self.now - timedelta(hours=imc_waiver.TTL_HOURS + 1)
-        (self.state / "F1.json").write_text(json.dumps({"granted_at": imc_waiver._iso(old)}))
-        with patch.object(imc_waiver, "_before_archive_move", side_effect=during):
-            return imc_waiver.archive_expired_hook_records(self.now, imc_dir=self.state)
-
-    def test_archive_restores_a_record_reissued_before_the_move(self) -> None:
-        fresh = json.dumps({"granted_at": imc_waiver._iso(self.now)})
-        moved = self._race(lambda path, dest: path.write_text(fresh))
-        self.assertEqual(moved, [])
-        self.assertEqual((self.state / "F1.json").read_text(), fresh)
-        self.assertEqual(list((self.state / "archive").glob("*.json")), [])
-        self.assertFalse((self.state / "F1.end.lock").exists())
-
-    def test_archive_restores_a_record_whose_receipt_appears_before_the_move(self) -> None:
-        def receipt(path, dest):
-            (self.state / "F1.waiver.json").write_text(json.dumps({"status": "pending"}))
-        moved = self._race(receipt)
-        self.assertEqual(moved, [])
+        self.assertIsNone(imc_waiver.live_hook_record("F1", now=self.now))
         self.assertTrue((self.state / "F1.json").exists())
-        self.assertTrue((self.state / "F1.waiver.json").exists())
-        self.assertEqual(list((self.state / "archive").glob("*.json")), [])
-        self.assertFalse((self.state / "F1.end.lock").exists())
+        self.assertFalse(hasattr(imc_waiver, "archive_expired_hook_records"))
 
     def test_all_closed_reads_named_issues_only(self) -> None:
         self.files("F900")

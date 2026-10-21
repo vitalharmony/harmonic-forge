@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import subprocess
 import sys
 import json
 import tempfile
@@ -2031,8 +2032,11 @@ class ImcLifecycleTests(unittest.TestCase):
             (where / f"{key}.waiver.json").write_text(json.dumps(
                 {"key": key, "status": "recorded"}))
 
-    def run_hook(self, command):
-        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    def run_hook(self, command, cwd=None):
+        body = {"tool_name": "Bash", "tool_input": {"command": command}}
+        if cwd is not None:
+            body["cwd"] = str(cwd)
+        payload = json.dumps(body)
         err = __import__("io").StringIO()
         with mock.patch("sys.stdin", __import__("io").StringIO(payload)), \
                 mock.patch("sys.stderr", err):
@@ -2084,18 +2088,58 @@ class ImcLifecycleTests(unittest.TestCase):
         self.assertTrue((self.store / "F900.json").exists())
         self.assertTrue(self.live())
 
-    def test_prune_archives_expired_orphan_hook_record(self):
-        self.files("F901", granted=self.now - timedelta(hours=13), receipt=False)
-        self.files("F902", granted=self.now - timedelta(hours=1), receipt=False)
+    def test_prune_leaves_expired_orphan_hook_record_in_place(self):
+        """AC4 as amended (sticky-wicket REFORGE): nothing moves a hook
+        record; an expired one is inert through `live_hook_record()`."""
         for prune in (lambda: ba.authorize(["F1"], state_path=self.state_path),
                       lambda: ba.top_up(["F1"], state_path=self.state_path),
                       lambda: ba.prune_now(state_path=self.state_path)):
             with self.subTest(prune=prune):
                 self.files("F901", granted=self.now - timedelta(hours=13), receipt=False)
                 prune()
-                self.assertFalse((self.store / "F901.json").exists())
-                self.assertTrue(list((self.store / "archive").glob("F901.hook.*.json")))
-                self.assertTrue((self.store / "F902.json").exists())
+                self.assertTrue((self.store / "F901.json").exists())
+                self.assertFalse((self.store / "archive").exists())
+                self.assertIsNone(self.imc.live_hook_record("F901"))
+
+    def checkout(self, name, origin):
+        path = Path(self.tmpdir.name) / name
+        path.mkdir()
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        if origin:
+            subprocess.run(["git", "-C", str(path), "remote", "add", "origin", origin],
+                           check=True)
+        return path
+
+    def test_bare_close_resolves_repo_from_vitalharmony_cwd(self):
+        for index, origin in enumerate(("git@github.com:vitalharmony/harmonic-forge.git",
+                                        "https://github.com/vitalharmony/harmonic-forge")):
+            with self.subTest(origin=origin):
+                forge = self.checkout(f"forge-{index}", origin)
+                self.files()
+                with mock.patch.object(ba, "action_landed", return_value=True) as landed:
+                    self.run_hook("gh issue close 900", cwd=forge)
+                landed.assert_called_with("close", "vitalharmony/harmonic-forge", 900)
+                self.assertFalse(self.live())
+
+    def test_bare_close_from_other_or_unresolvable_cwd_retires_nothing(self):
+        cwds = {"other": self.checkout("other", "git@github.com:someone/harmonic-forge.git"),
+                "no-origin": self.checkout("bare", None),
+                "not-git": Path(self.tmpdir.name)}
+        for label, cwd in list(cwds.items()) + [("no-cwd", None)]:
+            with self.subTest(cwd=label):
+                self.files()
+                with mock.patch.object(ba, "action_landed", return_value=True) as landed:
+                    self.run_hook("gh issue close 900", cwd=cwd)
+                landed.assert_not_called()
+                self.assertTrue(self.live())
+
+    def test_short_repo_flag_is_never_guessed_from_cwd(self):
+        forge = self.checkout("forge", "git@github.com:vitalharmony/harmonic-forge.git")
+        self.files()
+        with mock.patch.object(ba, "action_landed", return_value=True) as landed:
+            self.run_hook("gh issue close -R vitalharmony/hrse 900", cwd=forge)
+        landed.assert_not_called()
+        self.assertTrue(self.live())
 
     def test_authorize_never_touches_real_imc_dir(self):
         sentinel = Path(self.tmpdir.name) / "sentinel"
