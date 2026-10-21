@@ -1165,6 +1165,8 @@ ASSIGNMENT_AFTER = {"$", ";", "\n", "&&", "||"}
 QUOTED_NAME = re.compile(r"^(?=.*[A-Za-z0-9_])[A-Za-z0-9_'\"\\]+$")
 #: Raw operators after which the next word is a command word.
 COMMAND_POSITION = {"^", ";", "\n", "&&", "||", "|", "|&", "&", "("}
+#: `name ()` -- a POSIX function definition, wherever it appears.
+FUNCTION_DEFINITION = re.compile(r"[^\s;&|()<>]\s*\(\s*\)")
 MKTEMP_SUBSTITUTION = re.compile(r'^(?P<q>"?)\$\((?P<body>[^()$`;&|<>\n"\'\\]*)\)(?P=q)$')
 MKTEMP_FLAGS = {"-d", "--directory", "-t", "-q"}
 MKTEMP_TEMPLATE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1384,6 +1386,11 @@ def same_command_assignments(command: str, segments: list[list[str]]) -> dict[st
     text = mask_heredoc_bodies(command)
     words = _raw_shell_words(text)
     if words is None or _bare_occurrences(text, "IFS"):
+        return None
+    if FUNCTION_DEFINITION.search(text) or any(w["word"] == "function" for w in words):
+        # A same-command function can shadow any command, `mktemp` included,
+        # and change what a trusted substitution prints (preclose pass 1,
+        # survivor 4).
         return None
     for word in words:
         if (word["before"] in COMMAND_POSITION and DYNAMIC_TOKEN.search(word["word"])

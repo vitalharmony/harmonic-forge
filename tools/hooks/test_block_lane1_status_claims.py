@@ -1229,6 +1229,13 @@ class TestF1116AttackShapes(_F1116Fixture):
         self.assertUnresolved(
             "W={SCRATCH}; d=declare; $d W={MAIN}; cd $W && echo x > tracked.md", "W")
 
+    def test_pass1_s4_function_override_is_unresolved(self):
+        # Preclose pass 1, survivor 4: a shell function shadows mktemp.
+        self.assertUnresolved(
+            "mktemp() { echo {MAIN}; }; T=$(mktemp -d); cd $T && echo x > tracked.md", "T")
+        self.assertUnresolved(
+            "function mktemp { echo {MAIN}; }; T=$(mktemp -d); cd $T && echo x > tracked.md", "T")
+
 
 if __name__ == "__main__":
     unittest.main()
