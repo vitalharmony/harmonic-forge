@@ -94,6 +94,14 @@ def _loaded_modules(suite: unittest.TestSuite) -> set[str]:
 
 
 TMP_ENV_VARS = ("TMPDIR", "TMP", "TEMP")
+# harmonic-forge#1114: the real system temp dir, recorded before the redirect,
+# for tests whose assertion is that something is NOT under the system tmpfs.
+REAL_TMPDIR_ENV = "HF_REAL_TMPDIR"
+
+
+def real_tmpdir() -> str:
+    """The real system temp dir: the recorded one in a contained run, else gettempdir()."""
+    return os.environ.get(REAL_TMPDIR_ENV) or tempfile.gettempdir()
 
 
 @contextlib.contextmanager
@@ -105,9 +113,11 @@ def contained_tempdir(prefix: str = "hf-test-run-"):
     the root. Enter it before any test module is imported: several modules
     cache `tempfile.gettempdir()` at import time.
     """
+    real = real_tmpdir()
     root = tempfile.mkdtemp(prefix=prefix)
-    old_env = {name: os.environ.get(name) for name in TMP_ENV_VARS}
+    old_env = {name: os.environ.get(name) for name in (*TMP_ENV_VARS, REAL_TMPDIR_ENV)}
     old_cache = tempfile.tempdir
+    os.environ[REAL_TMPDIR_ENV] = real
     for name in TMP_ENV_VARS:
         os.environ[name] = root
     tempfile.tempdir = root

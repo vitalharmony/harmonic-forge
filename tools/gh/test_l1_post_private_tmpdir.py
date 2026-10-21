@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import l1_post as L  # noqa: E402
+from run_tests import REAL_TMPDIR_ENV, real_tmpdir  # noqa: E402
 
 SOURCE = Path(L.__file__).read_text(encoding="utf-8")
 
@@ -25,7 +27,8 @@ class PrivateCheckTmpTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
 
     def test_root_is_outside_the_system_temp_root(self) -> None:
-        system = Path(tempfile.gettempdir()).resolve()
+        # harmonic-forge#1114: the real tmpfs root, not the contained per-run root.
+        system = Path(real_tmpdir()).resolve()
         self.assertNotIn(system, self.root.resolve().parents)
         self.assertNotEqual(system, self.root.resolve())
 
@@ -37,6 +40,37 @@ class PrivateCheckTmpTests(unittest.TestCase):
         other, _ = L._private_check_tmp()
         self.addCleanup(shutil.rmtree, other, True)
         self.assertNotEqual(other, self.root)
+
+
+class RealTmpdirReferenceTests(unittest.TestCase):
+    """harmonic-forge#1114: under a contained run gettempdir() is the per-run root."""
+
+    def test_reference_is_the_recorded_real_root_not_the_contained_one(self) -> None:
+        import os
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as real, tempfile.TemporaryDirectory() as contained:
+            with mock.patch.dict(os.environ, {REAL_TMPDIR_ENV: real}), \
+                    mock.patch.object(tempfile, "tempdir", contained):
+                self.assertEqual(real_tmpdir(), real)
+
+    def test_a_check_root_under_the_real_root_is_caught_in_a_contained_run(self) -> None:
+        import os
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as real:
+            contained = Path(real) / "hf-test-run-x"
+            contained.mkdir()
+            with mock.patch.dict(os.environ, {REAL_TMPDIR_ENV: real}), \
+                    mock.patch.object(tempfile, "tempdir", str(contained)):
+                root, _ = L._private_check_tmp(Path(real) / "l1-post-check")
+                self.assertIn(Path(real).resolve(), root.resolve().parents)
+                self.assertIn(Path(real_tmpdir()).resolve(), root.resolve().parents)
+
+    def test_falls_back_to_gettempdir_when_unset(self) -> None:
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ):
+            os.environ.pop(REAL_TMPDIR_ENV, None)
+            self.assertEqual(real_tmpdir(), tempfile.gettempdir())
 
 
 class StrayGitBehaviorTests(unittest.TestCase):
