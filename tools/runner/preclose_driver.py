@@ -209,7 +209,7 @@ def _step_passes(ctx: dict) -> None:
 
 def plan_refusals_without_head(repo: str, issue: int, source: Path) -> None:
     """The subset of `preclose_check.plan`'s refusals that needs no head: the
-    receipt dir is writable, no IMC waiver receipt is unconfirmed, no live
+    receipt dir is writable, `source`'s origin is `repo`, no IMC waiver receipt is unconfirmed, no live
     IMC hook record lacks its receipt, and `source` has no uncommitted or
     untracked path (the interactive plan's dirty-tree refusal). Raises DriverError naming the refusal,
     or naming that the plan could not be checked (harmonic-forge#1112
@@ -227,6 +227,18 @@ def plan_refusals_without_head(repo: str, issue: int, source: Path) -> None:
             raise DriverError(f"plan refused: {repo}#{issue} holds a live IMC hook record "
                               f"(granted {unmatched.get('granted_at')}) but no matching "
                               "waiver receipt")
+        # The interactive plan's origin/repo identity check (cross-family
+        # finding 3): the raw configured URL, as `_require_repo_and_head` reads it.
+        url = call(["git", "config", "--get", "remote.origin.url"], cwd=source)
+        try:
+            actual = (preclose_check.normalize_repo(url.stdout.strip())
+                      if not url.returncode and url.stdout.strip() else None)
+        except SystemExit:
+            actual = None
+        if actual != preclose_check.normalize_repo(repo):
+            reason = (f"{source}'s origin is {actual}" if actual
+                      else f"{source} has no recognized `origin` remote to compare against")
+            raise DriverError(f"plan refused: --repo says {repo} but {reason}")
         status = call(["git", "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
                       cwd=source)
         if status.returncode:

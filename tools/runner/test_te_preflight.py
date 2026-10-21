@@ -182,6 +182,10 @@ class ItemChecks(Base):
         sh("git", "init", "-q", "--bare", "-b", "main", str(self.origin), cwd=self.tmp)
         sh("git", "remote", "add", "origin", str(self.origin), cwd=self.src)
         sh("git", "push", "-q", "origin", "main", cwd=self.src)
+        # origin reads as the upstream, as a real source checkout's does, and
+        # fetches from the local bare repo.
+        sh("git", "config", f"url.{self.origin}.insteadOf", te_run.UPSTREAM_URL, cwd=self.src)
+        sh("git", "config", "remote.origin.url", te_run.UPSTREAM_URL, cwd=self.src)
 
     def failures(self, **override) -> list[str]:
         seams = {**self.seams, **override}
@@ -268,6 +272,17 @@ class ItemChecks(Base):
                             for f in failures), failures)
         self.assertTrue(any("item preconditions" in f and "fetch origin main failed" in f
                             for f in failures), failures)
+
+    def test_headless_plan_refuses_a_foreign_origin(self):
+        # Cross-family finding 3: the interactive plan's origin/repo identity
+        # check needs no head, so the headless plan refuses it too.
+        sh("git", "config", "remote.origin.url",
+           "https://github.com/vitalharmony/hrse.git", cwd=self.src)
+        sh("git", "config", f"url.{self.origin}.insteadOf",
+           "https://github.com/vitalharmony/hrse.git", "--add", cwd=self.src)
+        failures = self.failures()
+        self.assertTrue(any("preclose driver" in f and "plan refused" in f
+                            and "vitalharmony/hrse" in f for f in failures), failures)
 
     def test_failing_origin_fetch_raises_driver_error(self):
         sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)

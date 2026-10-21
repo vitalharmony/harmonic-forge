@@ -196,7 +196,10 @@ class AddTimeChecks(Check):
             src.mkdir()
             for argv in (["git", "init", "-q", "-b", "main"],
                          ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
-                          "--allow-empty", "-m", "base"]):
+                          "--allow-empty", "-m", "base"],
+                         # origin reads as the upstream, as a real source checkout's does
+                         ["git", "remote", "add", "origin",
+                          "https://github.com/vitalharmony/harmonic-forge.git"]):
                 subprocess.run(argv, cwd=src, check=True, capture_output=True)
         base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
                               capture_output=True, text=True).stdout.strip()
