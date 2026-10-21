@@ -125,5 +125,36 @@ class SharedCorpusPropertyTests(unittest.TestCase):
         self.assertIn("gate.pass", keys("## L3P — H1\n"))
 
 
+#: The sticky-wicket survivor bodies (harmonic-forge#1108 pass 1).
+AGREEMENT_CORPUS = CORPUS + [
+    "##\nL3P — H1\n",
+    "## Lane 3 Gate Results — BLOCKED (PASS once CI is green)\n",
+    "## Lane 3 Gate Results — BLOCKED\n\nCI not green.\n\n"
+    "## Lane 3 Gate Results — PASS\n",
+]
+
+
+class OneRecognizerTests(unittest.TestCase):
+    def test_e_lane_state_scores_exactly_what_gate_ci_reads(self):
+        """lane_state has no lane-3 verdict of its own: gate.pass iff
+        verdict_of is PASS, gate.fail iff FAIL, on every corpus body."""
+        for body in AGREEMENT_CORPUS:
+            with self.subTest(body=body):
+                got, verdict = keys(body), gate_ci.verdict_of(body)
+                self.assertEqual("gate.pass" in got, verdict == "PASS")
+                self.assertEqual("gate.fail" in got, verdict == "FAIL")
+
+    def test_f_lane_state_carries_no_l3_verdict_regex(self):
+        """Guard: no regex literal in lane_state.py names PASS or the gate
+        heading — the only recognizer is gate_ci's."""
+        src = LANE_STATE.read_text()
+        code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+        regexy = [ln for ln in code
+                  if "re.compile" in ln or ' = r"' in ln or " = r'" in ln
+                  or ln.lstrip().startswith(('r"', "r'"))]
+        bad = [ln for ln in regexy if "PASS" in ln or "Gate Results" in ln]
+        self.assertEqual(bad, [])
+
+
 if __name__ == "__main__":
     unittest.main()
