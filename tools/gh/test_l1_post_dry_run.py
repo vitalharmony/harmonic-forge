@@ -198,7 +198,10 @@ class DryRunTests(Harness):
         self.addCleanup(os.chdir, cwd)
         relative = ("--repo", REPO, "--issue", ISSUE, "--kind", "ready-for-l3", "--sha", SHA_A,
                     "--branch", "fix/1115-x", "--file", body.name, "--dry-run")
-        with mock.patch.dict(os.environ, {"L1_POST_ENTRY": "mise run l1-post"}):
+        # A wrapper run: mise exports the caller's directory, which l1_post
+        # resolves the relative --file against (harmonic-forge#1117 AC2).
+        with mock.patch.dict(os.environ, {"L1_POST_ENTRY": "mise run l1-post",
+                                          "MISE_ORIGINAL_CWD": str(self.dir)}):
             self.assertIsNone(self.run_main(*relative)[0])
         os.chdir(cwd)
         reordered = ("--file", str(body.resolve()), "--branch", "fix/1115-x", "--sha", SHA_A,

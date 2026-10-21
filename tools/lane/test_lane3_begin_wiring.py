@@ -30,14 +30,20 @@ class Lane3BeginWiringTests(unittest.TestCase):
         self.assertIn("tools/gh/check_lane3_ready.py", _run_body())
 
     def test_it_runs_before_the_marker_is_written(self) -> None:
-        """A refusal must leave no marker: the check has to come first, and
-        `set -e` has to make its failure stop the task."""
+        """A refusal must leave no marker: `set -e` stops the task on the
+        check's failure, and the marker is written only by an EXIT trap gated
+        on a clean exit. The check is the last line, because mise appends
+        arguments given after `--` there (harmonic-forge#1117)."""
         body = _run_body()
         self.assertIn("set -e", body)
-        self.assertLess(body.index("check_lane3_ready.py"), body.index('touch "$git_dir/LANE3_ACTIVE"'))
+        trap = next(line for line in body.splitlines() if line.startswith("trap "))
+        self.assertIn("[ $? -eq 0 ] && touch", trap)
+        self.assertTrue(trap.rstrip().endswith("EXIT"))
+        self.assertIn("check_lane3_ready.py", body.strip().splitlines()[-1])
 
     def test_the_issue_flag_is_passed_through(self) -> None:
-        self.assertIn('--issue "$usage_issue"', _run_body())
+        # harmonic-forge#1117: every argument is forwarded verbatim.
+        self.assertIn("check_lane3_ready.py $usage_args", _run_body())
 
 
 STUB = """import json, os, sys
