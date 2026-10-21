@@ -659,11 +659,19 @@ class RetireTests(unittest.TestCase):
     def test_nonblocking_retire_skips_held_lock(self) -> None:
         import fcntl
         self.files()
+        import threading
+        got: list = []
         with open(self.state / f"{KEY}.end.lock", "a+") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
-            got = imc_waiver.retire(KEY, reason="closed", known_closed=True, now=self.now,
-                                    blocking=False)
-        self.assertEqual(got, [])
+            worker = threading.Thread(target=lambda: got.append(imc_waiver.retire(
+                KEY, reason="closed", known_closed=True, now=self.now, blocking=False)))
+            worker.start()
+            worker.join(2)
+            finished = not worker.is_alive()
+            # Assert after releasing the lock, so a blocking retire cannot hang the suite.
+        worker.join(5)
+        self.assertTrue(finished, "retire(blocking=False) waited on a held lock")
+        self.assertEqual(got, [[]])
         self.assertTrue((self.state / f"{KEY}.json").exists())
         self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
 
