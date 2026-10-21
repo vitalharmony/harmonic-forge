@@ -369,7 +369,8 @@ set -e
 # l2-run keeps its shape: its command follows a second `--`, and a verbatim
 # arg drops that separator (live on mise 2026.10.7), so receipt_runner.py
 # could not tell its own flags from the command's.
-python3 tools/gh/wrapper_parity.py --mise-toml mise.toml --shape --exempt l2-run
+python3 tools/gh/wrapper_parity.py --mise-toml mise.toml --shape --exempt l2-run \
+  --expect gh-new-issue,post-comment,lane-comment,l1-issue,l1-post,l2-post,l2-snapshot,l2-resolve-lock,lane3-begin
 """
 
 [tasks.lane3-begin]

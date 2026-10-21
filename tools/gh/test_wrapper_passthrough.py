@@ -169,6 +169,16 @@ class Shape(unittest.TestCase):
         self.assertTrue(any(p.startswith("l2-snapshot: usage re-declares --issue")
                             for p in problems), problems)
 
+    def test_shape_expect_names_a_missing_task(self):
+        # A wrapper that drops out of discovery is a loud failure (exit 2),
+        # never "nothing to check".
+        done = subprocess.run([sys.executable, str(HERE / "wrapper_parity.py"),
+                               "--mise-toml", str(REPO / "mise.toml"), "--shape",
+                               "--exempt", "l2-run", "--expect", "l1-post,no-such-task"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("no-such-task", done.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

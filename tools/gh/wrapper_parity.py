@@ -354,7 +354,7 @@ def main() -> int:
                          "literal path, one per line as 'task<TAB>script', instead of checking "
                          "a single --task (harmonic-forge#368 AC1).")
     ap.add_argument("--expect", default="",
-                    help="With --discover: comma-separated task names that MUST be found with "
+                    help="With --discover or --shape: comma-separated task names that MUST be found with "
                          "a resolvable script, or this exits 2 and reports which are missing "
                          "(harmonic-forge#368 preclose finding). Without this, a broken or "
                          "empty discovery silently exits 0 having found nothing -- exactly the "
@@ -372,7 +372,14 @@ def main() -> int:
 
     if args.shape:
         exempt = {t.strip() for t in args.exempt.split(",") if t.strip()}
+        expect = {t.strip() for t in args.expect.split(",") if t.strip()}
         try:
+            found = {name for name, _ in discover_wrapper_tasks(args.mise_toml)}
+            if expect - found:
+                print(f"[wrapper-parity] ERROR: --expect named tasks not discovered with a "
+                      f"resolvable script: {', '.join(sorted(expect - found))}",
+                      file=sys.stderr)
+                return 2
             problems = shape_violations(args.mise_toml, exempt)
         except ParityError as exc:
             print(f"[wrapper-parity] ERROR: {exc}", file=sys.stderr)
