@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import re
@@ -97,6 +98,44 @@ class IssueForBranchTests(unittest.TestCase):
         with mock.patch.object(c, "RECEIPT_ROOT", Path("/nonexistent/does/not/exist")):
             with self.assertRaises(SystemExit):
                 c.issue_for_branch("fix/1-x")
+
+
+class MarkActiveTests(unittest.TestCase):
+    """harmonic-forge#1117 preclose survivor: `mise run lane3-begin -- --help`
+    used to exit 0 through an EXIT trap that then wrote LANE3_ACTIVE with no
+    check run. The check owns the marker now and writes it only on a pass."""
+
+    def _main(self, comments, argv):
+        with mock.patch.object(c, "current_branch", return_value="fix/1-x"), \
+             mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "issue_for_branch", return_value=1), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value=DEFAULT_SHA), \
+             mock.patch.object(c, "mark_active") as mark:
+            try:
+                c.main(argv)
+            except SystemExit:
+                pass
+        return mark
+
+    def test_pass_marks(self):
+        mark = self._main([_comment(1, "ae", "2026-08-15T09:00:00Z"),
+                           _comment(2, "sweep", "2026-08-15T10:00:00Z")], ["--mark-active"])
+        mark.assert_called_once_with()
+
+    def test_refusal_and_help_do_not_mark(self):
+        mark = self._main([_comment(1, "sweep", "2026-08-15T10:00:00Z")], ["--mark-active"])
+        mark.assert_not_called()
+        mark = self._main([], ["--mark-active", "--help"])
+        mark.assert_not_called()
+
+    def test_real_help_writes_no_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            done = subprocess.run([sys.executable, str(Path(c.__file__)), "--mark-active", "--help"],
+                                  cwd=tmp, capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((Path(tmp) / ".git" / "LANE3_ACTIVE").exists())
 
 
 class MainReadinessTests(unittest.TestCase):

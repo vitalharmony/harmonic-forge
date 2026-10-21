@@ -96,6 +96,7 @@ def main() -> int:
     group.add_argument("--body", type=str, help="Comment body as a literal string (written to a tempfile internally)")
     args = parser.parse_args()
     _caller_path.resolve_args(args, 'file')  # harmonic-forge#1117 AC2
+    _caller_path.refuse_repo_override(parser, 'post-comment')
     # harmonic-forge#266, moved here from the wrapper by harmonic-forge#1117
     # (operator ruling): a body passed as a shell argument is corrupted by
     # backticks, printf specifiers and dropped apostrophes, so the mise task

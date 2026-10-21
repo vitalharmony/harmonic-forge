@@ -30,25 +30,31 @@ class Lane3BeginWiringTests(unittest.TestCase):
         self.assertIn("tools/gh/check_lane3_ready.py", _run_body())
 
     def test_it_runs_before_the_marker_is_written(self) -> None:
-        """A refusal must leave no marker: `set -e` stops the task on the
-        check's failure, and the marker is written only by an EXIT trap gated
-        on a clean exit. The check is the last line, because mise appends
-        arguments given after `--` there (harmonic-forge#1117)."""
+        """A refusal must leave no marker. The check writes it itself, only on
+        a pass (`--mark-active`); the task has no EXIT trap, which also fired
+        on `-- --help` (harmonic-forge#1117 preclose survivor). The check is
+        the last line, because mise appends arguments given after `--`
+        there."""
         body = _run_body()
         self.assertIn("set -e", body)
-        trap = next(line for line in body.splitlines() if line.startswith("trap "))
-        self.assertIn("[ $? -eq 0 ] && touch", trap)
-        self.assertTrue(trap.rstrip().endswith("EXIT"))
-        self.assertIn("check_lane3_ready.py", body.strip().splitlines()[-1])
+        self.assertFalse([line for line in body.splitlines() if line.startswith("trap ")])
+        self.assertNotIn("touch", body)
+        last = body.strip().splitlines()[-1]
+        self.assertIn("check_lane3_ready.py --mark-active", last)
 
     def test_the_issue_flag_is_passed_through(self) -> None:
         # harmonic-forge#1117: every argument is forwarded verbatim.
-        self.assertIn("check_lane3_ready.py $usage_args", _run_body())
+        self.assertIn("check_lane3_ready.py --mark-active $usage_args", _run_body())
 
 
-STUB = """import json, os, sys
+STUB = """import json, os, subprocess, sys
 open(os.environ["STUB_ARGV"], "w").write(json.dumps(sys.argv[1:]))
-sys.exit(int(os.environ["STUB_EXIT"]))
+code = int(os.environ["STUB_EXIT"])
+if code == 0 and "--mark-active" in sys.argv:
+    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                             capture_output=True, text=True).stdout.strip()
+    open(os.path.join(git_dir, "LANE3_ACTIVE"), "w").close()
+sys.exit(code)
 """
 
 
@@ -96,7 +102,7 @@ class Lane3BeginEndToEndTests(unittest.TestCase):
     def test_the_issue_flag_reaches_the_check_and_success_marks(self):
         code, argv, marked = self._run(0)
         self.assertEqual(code, 0)
-        self.assertEqual(argv, ["--issue", "792"])
+        self.assertEqual(argv, ["--mark-active", "--issue", "792"])
         self.assertTrue(marked)
 
 

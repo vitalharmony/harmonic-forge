@@ -416,6 +416,16 @@ def tier_w_availability() -> str | None:
     return entry.get("text") if entry else None
 
 
+def mark_active() -> None:
+    """Touch `LANE3_ACTIVE` in this worktree's git dir, unlocking gate-checkout
+    (harmonic-forge#138). Called only after every readiness check passed, so
+    `--help` or a refusal never leaves a marker (harmonic-forge#1117)."""
+    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+    (Path(git_dir) / "LANE3_ACTIVE").touch()
+    print(f"lane3-begin: {Path.cwd()} marked Lane 3-active", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -446,6 +456,14 @@ def main(argv: list[str] | None = None) -> None:
             "declares this production run in its l1-post footer: "
             "script=scripts/1-<name>.py[,apply] or count-label=<Label>. The sweep's "
             "tier never grants one. HRSE2's scripts/gate_production_run.py passes it."
+        ),
+    )
+    parser.add_argument(
+        "--mark-active", action="store_true",
+        help=(
+            "harmonic-forge#1117: on a passed readiness check only, touch "
+            "<git-dir>/LANE3_ACTIVE (mise run lane3-begin passes this). --help, "
+            "a usage error or a refusal exits before the marker is written."
         ),
     )
     parser.add_argument(
@@ -494,6 +512,8 @@ def main(argv: list[str] | None = None) -> None:
         if reason is not None:
             fail(f"{repo}#{issue}: {reason}")
         prod_run = _prod_run.declared(authority.get("body", ""))
+    if args.mark_active:
+        mark_active()
     if args.json:
         print(json.dumps({
             "repo": repo,

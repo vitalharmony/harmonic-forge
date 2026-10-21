@@ -734,6 +734,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     _caller_path.resolve_args(args, 'body_file')  # harmonic-forge#1117 AC2
+    _caller_path.refuse_repo_override(parser, 'gh-new-issue')
     if args.no_prior_owner is not None and not args.no_prior_owner.strip():
         parser.error("--no-prior-owner needs a non-empty reason (R-0397).")
 

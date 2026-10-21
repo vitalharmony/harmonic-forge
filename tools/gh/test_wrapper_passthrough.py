@@ -9,6 +9,7 @@ drift did in production: mise rejects the argument before the script runs.
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import os
 import re
@@ -106,34 +107,91 @@ class Passthrough(unittest.TestCase):
 
 
 class CallerPath(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k, None) for k in ("HF_CALLER_CWD", "MISE_ORIGINAL_CWD")}
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for k, v in self._saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
     def test_relative_file_resolves_against_caller(self):
         # AC2: a relative path is read from where the caller ran mise.
         with tempfile.TemporaryDirectory() as caller:
-            os.environ["MISE_ORIGINAL_CWD"] = caller
-            try:
-                self.assertEqual(_caller_path.caller_path(Path("body.md")),
-                                 Path(caller) / "body.md")
-                self.assertEqual(_caller_path.caller_path("body.md"),
-                                 str(Path(caller) / "body.md"))
-            finally:
-                del os.environ["MISE_ORIGINAL_CWD"]
+            os.environ["HF_CALLER_CWD"] = caller
+            self.assertEqual(_caller_path.caller_path(Path("body.md")), Path(caller) / "body.md")
+            self.assertEqual(_caller_path.caller_path("body.md"), str(Path(caller) / "body.md"))
 
-    def test_unchanged_outside_mise_and_for_absolute_or_stdin(self):
-        env = os.environ.pop("MISE_ORIGINAL_CWD", None)
+    def test_unchanged_without_the_variable_and_for_absolute_or_stdin(self):
+        self.assertEqual(_caller_path.caller_path(Path("body.md")), Path("body.md"))
+        os.environ["HF_CALLER_CWD"] = "/caller"
+        for value in ("/abs/body.md", "-", None, Path("/abs")):
+            self.assertEqual(_caller_path.caller_path(value), value)
+
+    def test_inherited_mise_original_cwd_is_ignored(self):
+        # Preclose survivor: every process inside any mise task inherits
+        # MISE_ORIGINAL_CWD, so it must never decide where a file is read.
+        os.environ["MISE_ORIGINAL_CWD"] = "/some/subdir"
+        args = argparse.Namespace(file="body.md")
+        _caller_path.resolve_args(args, "file")
+        self.assertEqual(args.file, "body.md")
+
+    def test_resolve_args_consumes_the_variable(self):
+        # One-shot: a child the script starts must not inherit it.
+        os.environ["HF_CALLER_CWD"] = "/caller"
+        args = argparse.Namespace(file="body.md", files=["a", "/b"])
+        _caller_path.resolve_args(args, "file", "files")
+        self.assertEqual(args.file, "/caller/body.md")
+        self.assertEqual(args.files, ["/caller/a", "/b"])
+        self.assertNotIn("HF_CALLER_CWD", os.environ)
+
+
+class RepoOverride(unittest.TestCase):
+    """Preclose survivor: a wrapper pins --repo "$GH_REPO" first, and argparse
+    keeps the last value, so a caller's own --repo silently retargeted the
+    write. The script refuses it under the wrapper."""
+
+    def _refused(self, task_env, argv):
+        parser = argparse.ArgumentParser()
+        saved = os.environ.pop("MISE_TASK_NAME", None)
         try:
-            self.assertEqual(_caller_path.caller_path(Path("body.md")), Path("body.md"))
+            if task_env:
+                os.environ["MISE_TASK_NAME"] = task_env
+            with self.assertRaises(SystemExit) as caught:
+                _caller_path.refuse_repo_override(parser, "post-comment", argv)
+                raise SystemExit(0)
+            return caught.exception.code != 0
         finally:
-            if env is not None:
-                os.environ["MISE_ORIGINAL_CWD"] = env
-        os.environ["MISE_ORIGINAL_CWD"] = "/caller"
-        try:
-            for value in ("/abs/body.md", "-", None, Path("/abs")):
-                self.assertEqual(_caller_path.caller_path(value), value)
-        finally:
-            if env is None:
-                del os.environ["MISE_ORIGINAL_CWD"]
-            else:
-                os.environ["MISE_ORIGINAL_CWD"] = env
+            os.environ.pop("MISE_TASK_NAME", None)
+            if saved is not None:
+                os.environ["MISE_TASK_NAME"] = saved
+
+    def test_second_repo_refused_under_the_wrapper(self):
+        for argv in (["--repo", "a/b", "--issue", "1", "--repo", "c/d"],
+                     ["--repo", "a/b", "--repo=c/d"],
+                     ["--repo", "a/b", "--rep", "c/d"]):
+            with self.subTest(argv=argv):
+                self.assertTrue(self._refused("post-comment", argv))
+
+    def test_single_repo_and_direct_calls_allowed(self):
+        self.assertFalse(self._refused("post-comment", ["--repo", "a/b", "--issue", "1"]))
+        self.assertFalse(self._refused(None, ["--repo", "a/b", "--repo", "c/d"]))
+
+    def test_pinned_scripts_call_the_refusal(self):
+        for script, task in (("post_comment.py", "post-comment"), ("gh_issue.py", "gh-new-issue")):
+            with self.subTest(script=script):
+                self.assertIn(f"refuse_repo_override(parser, {task!r})", (HERE / script).read_text())
+        self.assertIn("refuse_repo_override(parser, task)", (HERE / "l2_post.py").read_text())
+
+    def test_wrapper_sets_the_one_shot_variable(self):
+        text = (REPO / "mise.toml").read_text()
+        for script in ("gh_issue", "post_comment", "post_lane_discussion", "post_lane1_issue",
+                       "l1_post", "l2_post"):
+            with self.subTest(script=script):
+                self.assertRegex(text, r"""eval HF_CALLER_CWD='"\$MISE_ORIGINAL_CWD"' python3 \S*tools/gh/"""
+                                 + script + r"\.py")
 
     def test_every_script_resolves_its_file_flags(self):
         expected = {
