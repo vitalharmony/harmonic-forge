@@ -865,6 +865,8 @@ class TestFindRetiredCitations(unittest.TestCase):
         "--families 3", "--families=3", '--families "3"', "--families '3'",
         "--families 3 --mode verify", "LANE_CLI=gemini lane3",
         'LANE_CLI="gemini" lane3', "LANE_CLI='gemini' lane3",
+        "(lane3 --agent gemini)", "lane3  --agent  gemini", "LANE_CLI gemini",
+        "x;--families 3",
     )
     _MUST_NOT_FLAG = (
         "GEMINI.md.template", "harmonic-forge/GEMINI.md.template",
@@ -888,6 +890,12 @@ class TestFindRetiredCitations(unittest.TestCase):
         # Second post-verdict check: a closing quote is not a boundary.
         '--agent "gemini"/other', "--caller 'gemini'+other",
         'LANE_CLI="gemini"/other', '--families "3".5',
+        # Third post-verdict check: the flag name is a whole token, and the
+        # separator is exactly one "=" or a whitespace run.
+        "lane3 --other--agent gemini", "tool --other--caller gemini",
+        "tool --x--families 3", "X_LANE_CLI=gemini", "x-LANE_CLI gemini",
+        "tool --families==3", "lane3 --agent =gemini", "lane3 --agent= gemini",
+        "LANE_CLI==gemini", "--agentx gemini", "LANE_CLIX=gemini",
     )
 
     def _path_keys(self):

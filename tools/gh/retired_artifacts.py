@@ -77,13 +77,19 @@ RETIRED_ARTIFACTS: dict[str, str] = {
 # which would flag HRSE2's Gemini model API.
 
 
+def _name(n: str) -> str:
+    # A whole token (nothing word-like or "-" before it), then exactly one
+    # "=" or a whitespace run: `--other--agent`, `X_LANE_CLI` and `==` don't.
+    return rf"(?<![\w-]){re.escape(n)}(?:=|\s+)"
+
+
 def _value(v: str) -> str:
     return rf"""(?:"{v}"|'{v}'|{v})(?=\s|$|[;&|)<>])"""
 
 
 RETIRED_COMMAND_FRAGMENTS: dict[re.Pattern[str], str] = {
-    re.compile(r"--agent[=\s]+" + _value("gemini")): _GEMINI_CLI_RETIRED,
-    re.compile(r"--caller[=\s]+" + _value("gemini")): _GEMINI_CLI_RETIRED,
-    re.compile(r"--families[=\s]+" + _value("3")): _GEMINI_CLI_RETIRED,
-    re.compile(r"\bLANE_CLI[=\s]+" + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("--agent") + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("--caller") + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("--families") + _value("3")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("LANE_CLI") + _value("gemini")): _GEMINI_CLI_RETIRED,
 }
