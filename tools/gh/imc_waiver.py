@@ -33,9 +33,19 @@ the key's BATCH merge grant, archives the hook record, and posts and refetches
 `## IMC ended — <KEY>`. The issue is then a normal Tooling Exception owing
 R-0229's human pass.
 
+`retire` (harmonic-forge#1124) is the normal finish: the waiver retires when
+its issue closes. The close hook (`batch_consume.py`), the belt's closed
+detection (`watch_lane_posts.py`) and `retire --all-closed` each archive both
+files once the issue's REST state reads `closed`; nothing is posted and
+nothing is deleted. An expired hook record with no receipt is left in place:
+`live_hook_record()` already reads it as absent, so it imposes nothing. A
+`<K>.end.lock` is never unlinked -- flock on that file is `end`'s exclusion.
+
 Run:
     python3 tools/gh/imc_waiver.py record --key F892
     python3 tools/gh/imc_waiver.py end --key F892 --reason "sticky-wicket PATCH"
+    python3 tools/gh/imc_waiver.py retire --key F892 --reason closed
+    python3 tools/gh/imc_waiver.py retire --all-closed
 """
 from __future__ import annotations
 
@@ -401,15 +411,27 @@ def _pending_end(key: str) -> Path | None:
     return None
 
 
+def _end_lock_path(key: str, base: Path | None = None) -> Path:
+    return (base if base is not None else state_dir()) / f"{key}.end.lock"
+
+
 @contextlib.contextmanager
-def _end_lock(key: str):
+def _end_lock(key: str, blocking: bool = True, base: Path | None = None):
     """One `end` per key at a time (pass 2, second-run): overlapping runs
-    would each post. Blocks until the holder finishes."""
-    state_dir().mkdir(parents=True, exist_ok=True)
-    with open(state_dir() / f"{key}.end.lock", "a+") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    would each post. Blocks until the holder finishes, unless `blocking` is
+    false: then it yields False at once when another holder has it
+    (harmonic-forge#1124 -- a hook or belt must never stall behind an `end`
+    that is posting). Yields True when held."""
+    lock = _end_lock_path(key, base)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a+") as handle:
         try:
-            yield
+            fcntl.flock(handle, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -511,6 +533,142 @@ def end(key: str, *, reason: str, now: datetime | None = None,
         return final
 
 
+#: harmonic-forge#1124: the real store, named once for the test guard below.
+REAL_STATE_DIR = Path.home() / STATE_RELPATH
+
+
+def _refuses_real_store() -> bool:
+    """A test process (unittest imported, or HARMONIC_FORGE_TESTING=1) never
+    moves files in the operator's real IMC store -- the same guard
+    `belt_candidates._refuses_real_store` applies (harmonic-forge#865)."""
+    under_test = "unittest" in sys.modules or os.environ.get("HARMONIC_FORGE_TESTING") == "1"
+    if not under_test:
+        return False
+    try:
+        return state_dir().resolve() == REAL_STATE_DIR.resolve()
+    except OSError:
+        return True
+
+
+def issue_state(repo: str, issue: int, runner=subprocess.run) -> str | None:
+    """`open`/`closed` from one named-issue REST read, or None on any failure.
+    Read under the repo's own account (`slot_env`, harmonic-forge#804)."""
+    try:
+        from hook_identity import slot_env  # noqa: PLC0415
+        found = runner(["gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".state"],
+                       capture_output=True, text=True, check=False, timeout=30,
+                       env=slot_env(repo))
+    except Exception:
+        return None
+    if getattr(found, "returncode", 1) != 0:
+        return None
+    state = (found.stdout or "").strip().lower()
+    return state if state in ("open", "closed") else None
+
+
+def _archive_target(name: str) -> Path:
+    """`archive/<name>`, or `<name>` with `.1`, `.2` ... before `.json` when a
+    file of that name is already archived (same second). Never overwrites."""
+    target = archive_dir() / name
+    stem = name[:-len(".json")] if name.endswith(".json") else name
+    suffix = 1
+    while target.exists():
+        target = archive_dir() / f"{stem}.{suffix}.json"
+        suffix += 1
+    return target
+
+
+def retire(key: str, *, reason: str, known_closed: bool = False,
+           now: datetime | None = None, runner=subprocess.run,
+           blocking: bool = True) -> list[Path]:
+    """harmonic-forge#1124: archive the hook record and the receipt of a key
+    whose issue is closed. Returns the archived paths ([] when there was
+    nothing to retire, or -- with `blocking=False` -- when an `end` holds the
+    key's lock). Refuses (SystemExit) unless the issue reads `closed`, or the
+    caller already read that (`known_closed`). Never deletes, never posts,
+    never writes `status: ending` (`_pending_end` would resume it)."""
+    key = key.strip().upper()
+    target = key_target(key)
+    if target is None:
+        raise SystemExit(f"imc-waiver: {key} is not a repo-prefixed issue key.")
+    repo, issue = target
+    if _refuses_real_store():
+        return []  # a test never reads or moves the real store
+    hook, live = hook_record_path(key), receipt_path(key)
+    if not hook.exists() and not live.exists():
+        return []
+    if not known_closed:
+        state = issue_state(repo, issue, runner)
+        if state != "closed":
+            raise SystemExit(f"imc-waiver: {repo}#{issue} is not closed (state: "
+                             f"{state or 'unreadable'}); retire refuses and moves nothing.")
+    moment = now or _now()
+    moved: list[Path] = []
+    with _end_lock(key, blocking=blocking) as held:
+        if not held:
+            return []
+        if live.exists():
+            data = read_json(live)
+            if data is not None and data.get("status") == "ending":
+                raise SystemExit(f"imc-waiver: {key}'s receipt is mid-`end` (status ending); "
+                                 f"finish it with `imc_waiver.py end --key {key}`.")
+        archive_dir().mkdir(parents=True, exist_ok=True)
+        if hook.exists():
+            dest = _archive_target(f"{key}.hook.{_stamp(moment)}.json")
+            os.replace(hook, dest)
+            moved.append(dest)
+        if live.exists():
+            data = read_json(live)
+            if data is not None:
+                write_json_atomic(live, {**data, "retired_at": _iso(moment),
+                                         "retire_reason": reason})
+            dest = _archive_target(f"{key}.waiver.{_stamp(moment)}.json")
+            os.replace(live, dest)
+            moved.append(dest)
+    return moved
+
+
+def prune_batch(batch_state_path: Path | None = None) -> int:
+    """`batch_auth.prune_now()` for a caller that must not import the hook
+    module itself (the belt, harmonic-forge#1124 AC5)."""
+    import batch_auth  # noqa: PLC0415
+    return batch_auth.prune_now(state_path=batch_state_path)
+
+
+def _stored_keys() -> list[str]:
+    keys: set[str] = set()
+    for path in state_dir().glob("*.json"):
+        name = path.name
+        if name.endswith(".waiver.json"):
+            keys.add(name[:-len(".waiver.json")])
+        elif name.count(".") == 1:
+            keys.add(name[:-len(".json")])
+    return sorted(k.upper() for k in keys)
+
+
+def retire_all_closed(runner=subprocess.run) -> int:
+    """AC6: one named-issue REST read per stored key (never a list or search);
+    retire each closed one and name every key's outcome."""
+    for key in _stored_keys():
+        target = key_target(key)
+        if target is None:
+            print(f"kept {key}: not a repo-prefixed issue key")
+            continue
+        state = issue_state(target[0], target[1], runner)
+        if state == "closed":
+            try:
+                paths = retire(key, reason="closed", known_closed=True, runner=runner)
+            except SystemExit as exc:
+                print(f"kept {key}: {exc}")
+                continue
+            print(f"retired {key}: {', '.join(str(p) for p in paths)}")
+        elif state == "open":
+            print(f"kept {key}: open")
+        else:
+            print(f"kept {key}: state unreadable")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Record an IMC waiver on its issue (R-0384).")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -519,12 +677,24 @@ def main() -> int:
     fin = sub.add_parser("end", help="end the waiver at an IMC stop (harmonic-forge#1042)")
     fin.add_argument("--key", required=True, help="the IMC key, e.g. F892")
     fin.add_argument("--reason", required=True, help="why the waiver ends")
+    ret = sub.add_parser("retire", help="archive a closed issue's waiver (harmonic-forge#1124)")
+    which = ret.add_mutually_exclusive_group(required=True)
+    which.add_argument("--key", help="the IMC key, e.g. F892")
+    which.add_argument("--all-closed", action="store_true",
+                       help="retire every stored key whose issue is closed")
+    ret.add_argument("--reason", default="closed", help="why the waiver retires")
     args = parser.parse_args()
+    if args.command == "retire" and args.all_closed:
+        return retire_all_closed()
     target = key_target(args.key)
     if target is None:
         raise SystemExit(f"imc-waiver: {args.key} is not a repo-prefixed issue key.")
     from manifest_identity import apply_project_identity  # noqa: PLC0415
     apply_project_identity(target[0])  # harmonic-forge#804
+    if args.command == "retire":
+        for path in retire(args.key, reason=args.reason):
+            print(path)
+        return 0
     if args.command == "end":
         ended = end(args.key, reason=args.reason)
         print(f"imc-waiver: ended {ended.get('key', args.key.upper())} -- "

@@ -397,8 +397,8 @@ def _fresh_entry(raw_key: str, now: datetime, expires: datetime, actions,
 def _prune(state: dict, now: datetime) -> dict:
     """Drop entries expired more than `PRUNE_GRACE_HOURS` ago (AC1).
 
-    Called only from `authorize()`/`top_up()`, inside the `_locked_state` lock
-    they already hold -- never from `_save()`, never as a separate sweep
+    Called only from `authorize()`/`top_up()`/`prune_now()` (harmonic-forge#1124),
+    inside the `_locked_state` lock they already hold -- never from `_save()`, never as a separate sweep
     (AC2). A live entry is never a candidate: liveness is checked first and
     unconditionally, so AC3 holds regardless of how the grace window is
     tuned. An entry whose `expires_at` cannot be parsed is kept rather than
@@ -528,6 +528,104 @@ def authorize(
         for raw_key in keys:
             key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
         _save(state, state_path)
+
+
+#: harmonic-forge#1124: the real state file, named once so a test process can
+#: never prune it through a default argument.
+_REAL_STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
+
+
+def prune_now(state_path: Path | None = None, now: datetime | None = None) -> int:
+    """AC5 (harmonic-forge#1124): prune off the BATCH line -- `_load`,
+    `_prune`, `_save` (only if changed) under `_locked_state`. Returns the
+    number of entries dropped; a busy lock skips one prune (returns 0)."""
+    actual_path = STATE_PATH if state_path is None else state_path
+    under_test = "unittest" in sys.modules or os.environ.get("HARMONIC_FORGE_TESTING") == "1"
+    try:
+        if under_test and actual_path.resolve() == _REAL_STATE_PATH.resolve():
+            return 0
+    except OSError:
+        return 0
+    moment = now or _now()
+    dropped = 0
+    try:
+        with _locked_state(actual_path):
+            state = _load(actual_path)
+            kept = _prune(state, moment)
+            dropped = len(state) - len(kept)
+            if dropped:
+                _save(kept, actual_path)
+    except StateLockTimeout:
+        return 0
+    return dropped
+
+
+_ORIGIN_SLUG = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$",
+                          re.IGNORECASE)
+
+
+def cwd_repo(cwd: str | None, runner=subprocess.run) -> str | None:
+    """`owner/repo` of the checkout at `cwd`, from `git remote get-url origin`
+    (the repo a bare `gh issue close N` acts on), parsed as
+    `check_receipt.repo_slug` parses remotes. None when unresolvable."""
+    if not cwd:
+        return None
+    try:
+        found = runner(["git", "-C", cwd, "remote", "get-url", "origin"],
+                       capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(found, "returncode", 1) != 0:
+        return None
+    match = _ORIGIN_SLUG.search((found.stdout or "").strip())
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def closed_keys(command: str, cwd: str | None = None,
+                runner=subprocess.run) -> list[tuple[str, str, int]]:
+    """harmonic-forge#1124 AC2: `(key, repo, number)` for every vitalharmony
+    issue-close segment in `command` (`classify_issue_close`'s grammar). A
+    bare `gh issue close N` resolves its repo from `cwd`'s origin, as gh
+    does; unresolvable still skips. No lock, no network: the caller confirms
+    the close landed."""
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return []
+    found: list[tuple[str, str, int]] = []
+    resolved: list[str | None] = []
+    for raw in segments:
+        tokens = strip_invocation_prefix(raw)
+        info = classify_issue_close(tokens)
+        if info is None:
+            continue
+        repo, number = info
+        # `-R` is a repo `_repo_flag` does not read: never guess past it.
+        named = any(t == "-R" or t.startswith("-R") for t in tokens)
+        if not repo and number and not named and tokens[1:3] == ["issue", "close"]:
+            if not resolved:
+                resolved.append(cwd_repo(cwd, runner))
+            repo = resolved[0]
+        if not repo or not number or not str(repo).lower().startswith("vitalharmony/"):
+            continue
+        key = issue_key(repo, number)
+        if key:
+            found.append((key, repo, int(number)))
+    return found
+
+
+def has_close_or_merge(command: str) -> bool:
+    """Whether any segment is an issue close or a PR merge -- the commands
+    after which `batch_consume.py` prunes (harmonic-forge#1124 AC5)."""
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        return False
+    for raw in segments:
+        tokens = strip_invocation_prefix(raw)
+        if classify_issue_close(tokens) is not None or classify_pr_merge(tokens) is not None:
+            return True
+    return False
 
 
 def link_pr(key: str, repo: str, pr_number: int, state_path: Path | None = None) -> None:
