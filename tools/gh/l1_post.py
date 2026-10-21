@@ -1030,11 +1030,23 @@ def footer_live_case_ids(spec_body: str) -> set[str]:
 _AE_AUTHORIZED_LINE = re.compile(r"(?im)^[^\S\n]*\**[^\S\n]*Authorized[^\S\n]*\**[^\S\n]*:[^\n]*$")
 
 
+_NEGATION = re.compile(r"\b(?:no|not|without|never)\b(?:\W+\w+){0,2}\W*$", re.I)
+
+
+def _authorizes(authorized: str, call: str) -> bool:
+    """The call is named as a whole word and not negated just before it
+    (`no LLM calls` does not authorize `LLM`)."""
+    for match in re.finditer(rf"(?<!\w){re.escape(call)}(?!\w)", authorized, re.I):
+        if not _NEGATION.search(authorized[:match.start()]):
+            return True
+    return False
+
+
 def validate_ae_external_calls(ae_body: str, calls: list[str]) -> None:
     """harmonic-forge#1115 AC9: the AE's **Authorized:** line names every
     external call its sweep's live cases list."""
-    authorized = " ".join(_AE_AUTHORIZED_LINE.findall(ae_body)).lower()
-    missing = [call for call in calls if call.lower() not in authorized]
+    authorized = " ".join(_AE_AUTHORIZED_LINE.findall(ae_body))
+    missing = [call for call in calls if not _authorizes(authorized, call)]
     if missing:
         fail("AE's Authorized: line does not name the sweep's external call(s): "
              + ", ".join(missing) + " -- authorize each one by name (harmonic-forge#1115)")
