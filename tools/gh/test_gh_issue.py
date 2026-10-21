@@ -792,6 +792,215 @@ class TestFindRetiredCitations(unittest.TestCase):
         self.assertEqual(hits[0][0], "board_sync.py")
         self.assertIn("hrse#839", hits[0][1])
 
+    def test_retired_gemini_cli_path_is_flagged(self):
+        """harmonic-forge#1113 AC4: a body naming the deleted extension
+        directory is flagged as the retired Gemini CLI."""
+        hits = gh_issue.find_retired_citations(
+            "Reinstall the extension under `tools/gemini/` for Lane 3."
+        )
+        self.assertEqual([h[0] for h in hits], ["tools/gemini/"])
+        self.assertIn("harmonic-forge#1113", hits[0][1])
+
+    #: harmonic-forge#1113 AC4. A permanent literal list -- never computed
+    #: from git, so it cannot go vacuous after merge (preclose pass 2).
+    GEMINI_CLI_DELETED_PATHS = (
+        "GEMINI.md",
+        "prompts/gemini-gem-harmonic-architect-co-pilot.md",
+        "prompts/gemini-gem-harmonic-forge.md",
+        "tools/gemini/install-lane3-context-extension",
+        "tools/gemini/lane3-context/gemini-extension.json",
+        "tools/gemini/lane3-context/lane3_context_mcp.py",
+        "tools/lane/gemini-probe-deny.toml",
+        "tools/lane/gemini-read-only-deny.toml",
+        "tools/lane/policies/canary/run_canary.py",
+        "tools/lane/policies/gemini-lane1.toml",
+        "tools/lane/policies/gemini-lane2.toml",
+        "tools/lane/policies/gemini-lane3.toml",
+        "tools/lane/test_lane3_context_mcp.py",
+    )
+    GEMINI_CLI_DESCENDANT = "tools/gemini/lane3-context/README.md"
+    #: Command forms executed against the matcher in preclose passes 1 and 2.
+    GEMINI_CLI_COMMAND_FORMS = (
+        "lane3 --agent gemini",
+        "LANE_CLI=gemini lane3",
+        "cross_family_call.sh --caller gemini --families 2",
+        "cross_family_call.sh --families 3 --mode verify",
+        "lane3 --agent=gemini",
+        "lane3 --agent gemini; echo done",
+        "cat GEMINI.md",
+        "cat tools/gemini/lane3-context/gemini-extension.json",
+    )
+
+    def test_gemini_cli_coverage_tuple_is_flagged(self):
+        """harmonic-forge#1113 AC4: every deleted path, a descendant, and
+        every executed command form is flagged. Never skips."""
+        spans = (self.GEMINI_CLI_DELETED_PATHS + (self.GEMINI_CLI_DESCENDANT,)
+                 + self.GEMINI_CLI_COMMAND_FORMS)
+        for span in spans:
+            with self.subTest(span=span):
+                hits = gh_issue.find_retired_citations(f"See `{span}`.")
+                self.assertTrue(hits)
+                self.assertTrue(all("harmonic-forge#1113" in n for _, n in hits))
+
+    def test_gemini_cli_coverage_tuple_names_every_deleted_path(self):
+        """The literal tuple is the full deletion set: 13 paths, and every
+        Gemini CLI file key in retired_artifacts.py is in it."""
+        from retired_artifacts import RETIRED_ARTIFACTS, _GEMINI_CLI_RETIRED
+        self.assertEqual(len(set(self.GEMINI_CLI_DELETED_PATHS)), 13)
+        file_keys = {k for k, v in RETIRED_ARTIFACTS.items()
+                     if v == _GEMINI_CLI_RETIRED and not k.endswith("/")}
+        self.assertLessEqual(file_keys, set(self.GEMINI_CLI_DELETED_PATHS))
+
+    #: harmonic-forge#1113 reforge pass 1: the boundary matrix. Every path
+    #: key (13 deleted files plus the tools/gemini/ directory key) and every
+    #: command fragment, under every prefix, wrapper and quoting form.
+    _PATH_PREFIXES = ("", "~/harmonic-forge/", "harmonic-forge/", "./",
+                      "../", "/home/x/harmonic-forge/")
+    _PATH_WRAPS = ("{}", "cat {}", "ls {}/", '"{}"', "'{}'", "{}:12",
+                   "{}, then", "({})", "{}; echo")
+    _FRAGMENT_MUST_FLAG = (
+        "lane3 --agent gemini", "lane3 --agent=gemini", 'lane3 --agent "gemini"',
+        "lane3 --agent='gemini'", "lane3 --agent 'gemini'", "lane3 --agent gemini; x",
+        "--caller gemini", '--caller "gemini"', "--caller='gemini'",
+        "--families 3", "--families=3", '--families "3"', "--families '3'",
+        "--families 3 --mode verify", "LANE_CLI=gemini lane3",
+        'LANE_CLI="gemini" lane3', "LANE_CLI='gemini' lane3",
+        "(lane3 --agent gemini)", "lane3  --agent  gemini", "LANE_CLI gemini",
+        "x;--families 3",
+    )
+    _MUST_NOT_FLAG = (
+        "GEMINI.md.template", "harmonic-forge/GEMINI.md.template",
+        "tools/gemini-other/", "tools/gemini-other/x.py", "tools/geminix",
+        "tools/lane/policies/gemini-lane1.toml.bak",
+        "tools/lane/gemini-probe-deny.tomlx",
+        "--agent gemini-embedding-001", '--agent "gemini-embedding-001"',
+        "--agent geminix", "--agent gemini.x", "--caller gemini-2.5-pro",
+        "--families 3.5", "--families 30", '--families "30"', "--families 2",
+        "LANE_CLI=geminix", "gemini", "Gemini API", "gemini-2.5-pro",
+        "gemini-embedding-001", "GEMINI_API_KEY", "docs/old_board_sync.py",
+        "xtools/gemini/x", "Estimate: 3", "Priority field", "my L2P",
+        # Post-verdict check: the value is exactly gemini/3, never a
+        # compound value or a quoted string merely starting with it.
+        "LANE_CLI gemini/other", "LANE_CLI gemini+other",
+        'LANE_CLI "gemini other"', "--agent gemini/other",
+        "--agent gemini+other", '--agent "gemini other"',
+        "--caller gemini/other", "--caller gemini+other",
+        '--caller "gemini other"', "--families 3/4", "--families 3+4",
+        '--families "3 4"',
+        # Second post-verdict check: a closing quote is not a boundary.
+        '--agent "gemini"/other', "--caller 'gemini'+other",
+        'LANE_CLI="gemini"/other', '--families "3".5',
+        # Third post-verdict check: the flag name is a whole token, and the
+        # separator is exactly one "=" or a whitespace run.
+        "lane3 --other--agent gemini", "tool --other--caller gemini",
+        "tool --x--families 3", "X_LANE_CLI=gemini", "x-LANE_CLI gemini",
+        "tool --families==3", "lane3 --agent =gemini", "lane3 --agent= gemini",
+        "LANE_CLI==gemini", "--agentx gemini", "LANE_CLIX=gemini",
+    )
+
+    def _path_keys(self):
+        from retired_artifacts import RETIRED_ARTIFACTS, _GEMINI_CLI_RETIRED
+        keys = [k for k, v in RETIRED_ARTIFACTS.items() if v == _GEMINI_CLI_RETIRED]
+        return keys + [p for p in self.GEMINI_CLI_DELETED_PATHS if p not in keys]
+
+    def _must_flag_rows(self):
+        rows = []
+        for key in self._path_keys():
+            forms = [key]
+            if key.endswith("/"):
+                forms += [key.rstrip("/"), key + "lane3-context/README.md"]
+            for form in forms:
+                for prefix in self._PATH_PREFIXES:
+                    for wrap in self._PATH_WRAPS:
+                        rows.append(wrap.format(prefix + form))
+        return rows + list(self._FRAGMENT_MUST_FLAG)
+
+    def test_boundary_matrix_must_flag(self):
+        for span in self._must_flag_rows():
+            with self.subTest(span=span):
+                hits = gh_issue.find_retired_citations(f"See `{span}`.")
+                self.assertTrue(hits)
+                self.assertTrue(all("harmonic-forge#1113" in n for _, n in hits))
+
+    def test_boundary_matrix_must_not_flag(self):
+        for span in self._MUST_NOT_FLAG:
+            with self.subTest(span=span):
+                self.assertEqual(
+                    gh_issue.find_retired_citations(f"See `{span}`."), [])
+
+    def test_boundary_matrix_row_counts(self):
+        """Non-vacuity: the matrix never silently shrinks."""
+        self.assertEqual(len(self._path_keys()), 14)  # 13 deleted paths + dir key
+        self.assertGreaterEqual(len(self._must_flag_rows()), 800)
+        self.assertGreaterEqual(len(self._MUST_NOT_FLAG), 25)
+
+    #: harmonic-forge#1113 AC4 as amended (operator ruling 2026-10-21): the
+    #: citation grammar is the oracle. One row per grammar form; every row
+    #: must flag inside a backtick span.
+    AC4_GRAMMAR_ROWS = (
+        ("a-whole-path", "GEMINI.md"),
+        ("a-whole-path-nested", "tools/lane/policies/gemini-lane2.toml"),
+        ("a-trailing-after-home-forge", "~/harmonic-forge/GEMINI.md"),
+        ("a-trailing-after-forge", "harmonic-forge/tools/lane/gemini-probe-deny.toml"),
+        ("a-trailing-after-abs", "/srv/x/prompts/gemini-gem-harmonic-forge.md"),
+        ("b-descendant", "tools/gemini/lane3-context/README.md"),
+        ("b-descendant-prefixed", "~/harmonic-forge/tools/gemini/x/y.json"),
+    ) + tuple(
+        (f"c-{flag}-{sep_name}", f"{flag}{sep}{q}{value}{q}")
+        for flag, value in (("--agent", "gemini"), ("--caller", "gemini"),
+                            ("LANE_CLI", "gemini"), ("--families", "3"))
+        for sep_name, sep, q in (("space", " ", ""), ("eq", "=", ""),
+                                 ("space-dq", " ", '"'), ("eq-sq", "=", "'"))
+    )
+    #: Declared exclusions: out of scope, NOT asserted either way. Recorded
+    #: so the contract is visible rather than silently untested.
+    AC4_DECLARED_EXCLUSIONS = (
+        ("no-space-shell-operator", "cat<GEMINI.md"),
+        ("quoted-flag", '"--agent" gemini'),
+        ("substitution", "$(echo --agent) gemini"),
+        ("glob", "tools/gemini*/x"),
+        ("url", "https://github.com/vitalharmony/harmonic-forge/blob/main/GEMINI.md"),
+        ("citation-outside-backticks", "see tools/gemini/ in prose"),
+        ("basename-false-positive", "docs/board_sync.py"),
+    )
+
+    def test_ac4_grammar_rows_flag(self):
+        for name, span in self.AC4_GRAMMAR_ROWS:
+            with self.subTest(form=name, span=span):
+                hits = gh_issue.find_retired_citations(f"See `{span}`.")
+                self.assertTrue(hits)
+                self.assertTrue(all("harmonic-forge#1113" in n for _, n in hits))
+
+    def test_ac4_declared_exclusions_recorded(self):
+        """Exclusions are a documented list, deliberately unasserted."""
+        names = {n for n, _ in self.AC4_DECLARED_EXCLUSIONS}
+        self.assertEqual(names, {
+            "no-space-shell-operator", "quoted-flag", "substitution", "glob",
+            "url", "citation-outside-backticks", "basename-false-positive"})
+        self.assertEqual(len(self.AC4_GRAMMAR_ROWS), 23)
+
+    def test_gemini_model_api_spans_not_flagged(self):
+        for body in ("`gemini-embedding-001`", "`genai.Client(model=\"gemini-2.5-flash\")`",
+                     "`GEMINI_API_KEY`", "`gemini`"):
+            with self.subTest(body=body):
+                self.assertEqual(gh_issue.find_retired_citations(body), [])
+
+    def test_path_key_needs_left_boundary(self):
+        self.assertEqual(gh_issue.find_retired_citations(
+            "`docs/old_board_sync.py` and `xtools/gemini/x`"), [])
+
+    def test_bare_gemini_and_gemini_api_not_flagged(self):
+        for body in ("gemini", "`gemini`", "Gemini API", "`Gemini API`",
+                     "`--families 2`", "`--agent codex`"):
+            with self.subTest(body=body):
+                self.assertEqual(gh_issue.find_retired_citations(body), [])
+
+    def test_gemini_model_api_prose_is_not_flagged(self):
+        """The HRSE2 Gemini model API is out of scope: the bare word, even
+        backtick-quoted, is never a key."""
+        self.assertEqual(gh_issue.find_retired_citations(
+            "HRSE2 embeds with the `gemini` model API (`GEMINI_API_KEY`)."), [])
+
     def test_bare_word_does_not_match(self):
         # Same name, no backticks -- must not fire.
         hits = gh_issue.find_retired_citations(

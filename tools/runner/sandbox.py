@@ -17,7 +17,7 @@ ruling, issue comment 6284219941): nothing is visible unless named here.
     `~/.claude/state` and `~/.claude/projects` bound to a private transcripts
     directory; the claude install; the runner's gh config; the trusted checkout
     read-only (the operator's hooks run from it).
-  - `reviewer`: the gemini and codex installs and credentials. `~/.codex` is
+  - `reviewer`: the codex install and credentials. `~/.codex` is
     writable: codex records its sessions there.
 
 Probes on this host (issue comments 6283139358, 6283189924) showed writes outside
@@ -54,7 +54,7 @@ TRANSCRIPTS = CLAUDE_HOME / "projects"
 RUNNER_GH = HOME / ".config" / "te-runner" / "gh"
 #: The `~/harmonic-forge` link the operator's hooks name the trusted checkout by.
 TRUSTED_LINK = HOME / "harmonic-forge"
-REVIEWER_RO = (HOME / ".npm-global", HOME / ".gemini")
+REVIEWER_RO = (HOME / ".npm-global",)
 REVIEWER_RW = (HOME / ".codex",)
 PROFILES = ("oracle", "agent", "reviewer")
 BWRAP = "bwrap"

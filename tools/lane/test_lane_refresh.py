@@ -121,7 +121,7 @@ class Lane1BranchMode(unittest.TestCase):
     def test_restart_reminder_prints_for_every_agent(self):
         """TC11."""
         with _FixtureTree() as tree:
-            for agent in ("claude", "codex", "gemini"):
+            for agent in ("claude", "codex"):
                 with self.subTest(agent=agent):
                     cell = _run(tree, "1", agent=agent)
                     self.assertTrue(cell["launched"], cell.get("stderr"))

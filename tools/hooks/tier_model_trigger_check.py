@@ -41,8 +41,7 @@ too, so `vitalharmony/hrse#1830 queued-for-l2` is checked like a trigger.
 Fails open only on this hook's own internal exceptions (logged to stderr),
 never on a failed Tier read.
 
-Claude Code only. Codex and Gemini lanes do not run this hook and are not
-covered.
+Claude Code only. Codex lanes do not run this hook and are not covered.
 """
 
 from __future__ import annotations

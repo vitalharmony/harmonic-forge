@@ -274,10 +274,10 @@ def run_pass(args: argparse.Namespace, env: dict[str, str], progress: dict | Non
                       "--evidence", ".", "--out", str(brief)], env=env)
         if built.returncode:
             raise DriverError(f"cross-family brief refused: {built.stderr.strip()[-300:]}")
-        # The reviewers' own workspace config in the head (`.gemini/`, `.codex/`)
+        # The reviewers' own workspace config in the head (`.codex/`)
         # is the agent's to write: it is removed from the export, and the call
         # runs inside the reviewer boundary, writable = this run's scratch.
-        for config in (".gemini", ".codex"):
+        for config in (".codex",):
             if (tree / config).is_symlink() or (tree / config).is_file():
                 (tree / config).unlink()
             else:

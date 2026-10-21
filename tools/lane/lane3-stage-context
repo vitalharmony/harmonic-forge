@@ -4,17 +4,15 @@
 #
 # WHY THIS EXISTS
 #
-# The Gemini Lane 3 policy (tools/lane/policies/gemini-lane3.toml) denies
-# `run_shell_command` whole-tool, because an argument-scoped allowlist on it is
-# not a boundary: harmonic-forge#412 reproduced arbitrary file writes through an
-# allowlisted prefix two ways -- redirection (never denied, only downgraded to
-# ASK_USER, and that downgrade is off under `--yolo`) and a native write flag on
-# an allowlisted binary (`git diff --output=<path>`, which contains no shell
-# metacharacter at all and no pattern can catch).
+# It was built for a Lane 3 agent whose policy denied the shell whole-tool
+# (an argument-scoped allowlist on a shell is not a boundary: harmonic-forge#412
+# reproduced arbitrary file writes through an allowlisted prefix, by
+# redirection and by `git diff --output=<path>`). That agent's CLI is retired
+# (harmonic-forge#1113); the staging itself stays useful to any Lane 3 agent.
 #
-# So a Gemini Lane 3 session cannot run `git diff` or `gh api` for itself. It
+# A shell-less Lane 3 session cannot run `git diff` or `gh api` for itself. It
 # does not need to: everything it is entitled to read is fixed before the
-# session opens, and reading a file is the one capability the policy allows.
+# session opens, and reading a file is the one capability such a policy allows.
 # That is strictly better for a gate anyway -- the context is a committed
 # artifact a human can inspect, rather than whatever the session happened to
 # fetch.
@@ -151,4 +149,4 @@ fi
 } > "$out/MANIFEST.txt"
 
 echo "lane3-stage-context: staged $(wc -c < "$out/issue-$issue.md") bytes of issue context and $(wc -c < "$out/diff.patch") bytes of diff" >&2
-echo "lane3-stage-context: done -- now run \`lane3 --agent gemini\`" >&2
+echo "lane3-stage-context: done -- now run \`lane3\`" >&2

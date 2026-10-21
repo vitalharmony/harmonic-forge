@@ -39,7 +39,7 @@ SCRIPT = Path(__file__).resolve().parent / "cross_family_call.sh"
 
 
 def make_stub_path(tmpdir: str) -> str:
-    """A PATH whose `codex`/`claude`/`gemini` are inert stubs.
+    """A PATH whose `codex`/`claude` are inert stubs.
 
     Required, not tidiness: a `--posture` that clears every guard falls
     through to the dispatch loop and really does exec the sibling CLI. Without
@@ -50,7 +50,7 @@ def make_stub_path(tmpdir: str) -> str:
     """
     stub_dir = Path(tmpdir) / "stubbin"
     stub_dir.mkdir(exist_ok=True)
-    for name in ("codex", "claude", "gemini"):
+    for name in ("codex", "claude"):
         stub = stub_dir / name
         stub.write_text(
             '#!/usr/bin/env bash\n'
@@ -153,16 +153,45 @@ class TestVerifyPostureGuards(unittest.TestCase):
                             "--cwd", self.tmp.name, path=self.path)
         self.assertNotIn("Codex-only", result.stderr)
 
-    def test_verify_rejects_three_families(self):
-        """TC: `--families 3` adds gemini, which has no verify implementation.
-        It must exit non-zero rather than silently hand Gemini a posture whose
-        guarantees live only in the Codex branch."""
-        result = run_script("--caller", "claude", "--families", "3",
-                            "--posture", "verify", "--brief", str(self.brief),
-                            "--cwd", self.tmp.name)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("unavailable for Gemini", result.stderr)
-        self.assertIn("gemini", result.stderr)
+    def test_three_families_refused_gemini_cli_retired(self):
+        """harmonic-forge#1113 AC2: `--families 3` named the retired Gemini
+        CLI. It is refused by name before any call, never aliased to 2."""
+        for caller in ("claude", "codex"):
+            with self.subTest(caller=caller):
+                result = run_script("--caller", caller, "--families", "3",
+                                    "--posture", "read-only", "--brief", str(self.brief),
+                                    "--cwd", self.tmp.name, path=self.path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Gemini CLI retired", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_gemini_caller_refused_gemini_cli_retired(self):
+        """harmonic-forge#1113 AC2: `--caller gemini` is refused by name."""
+        result = run_script("--caller", "gemini", "--families", "2",
+                            "--posture", "read-only", "--brief", str(self.brief),
+                            "--cwd", self.tmp.name, path=self.path)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Gemini CLI retired", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_gemini_refusal_precedes_every_other_check(self):
+        """The refusal runs before brief/posture validation, so no call is
+        ever attempted, even with an otherwise-invalid invocation."""
+        result = run_script("--caller", "gemini", "--families", "3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Gemini CLI retired", result.stderr)
+
+    def test_two_families_resolves_to_exactly_one_sibling(self):
+        """harmonic-forge#1113 AC2: `--families 2` is unchanged for claude
+        and codex callers -- one envelope, for the caller's sibling."""
+        for caller, target in (("claude", "codex"), ("codex", "claude")):
+            with self.subTest(caller=caller):
+                result = run_script("--caller", caller, "--families", "2",
+                                    "--posture", "read-only", "--brief", str(self.brief),
+                                    "--cwd", self.tmp.name, path=self.path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rows = [json.loads(ln) for ln in result.stdout.splitlines() if ln.startswith("{")]
+                self.assertEqual([r["target_family"] for r in rows], [target])
 
     def test_verify_permits_codex_caller(self):
         """F774 ruling: Codex's verify reviewer is restricted Claude."""
@@ -201,13 +230,6 @@ class TestVerifyPostureGuards(unittest.TestCase):
         self.assertEqual(envelope["target_family"], "claude")
         # harmonic-forge#939: the model the run's own init event reports.
         self.assertEqual(envelope.get("verify_model"), "claude-opus-6")
-
-    def test_verify_rejects_gemini_caller(self):
-        result = run_script("--caller", "gemini", "--families", "2",
-                            "--posture", "verify", "--brief", str(self.brief),
-                            "--cwd", self.tmp.name)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("unavailable for Gemini", result.stderr)
 
     def test_existing_postures_still_accepted(self):
         """#448 must not narrow the two postures that already worked."""
@@ -533,133 +555,6 @@ class TestAC7FrozenReplay(unittest.TestCase):
         self.assertEqual(env["report"]["assumptions"][0]["verdict"], "uncheckable")
 
 
-class TestAC2GeminiAuthMechanism(unittest.TestCase):
-    """harmonic-forge#462: `invoke_gemini` must not unset the API keys, and
-    must force `gemini-api-key` auth via a throwaway HOME rather than the
-    operator's real `~/.gemini/settings.json` (which pins the discontinued
-    `oauth-personal` tier)."""
-
-    def test_no_unconditional_key_unset_remains(self) -> None:
-        source = SCRIPT.read_text()
-        self.assertNotIn("-u GOOGLE_API_KEY", source)
-        self.assertNotIn("-u GEMINI_API_KEY", source)
-
-    def test_gemini_invocation_gets_its_own_throwaway_home_selecting_the_key_auth_type(self) -> None:
-        """A stub `gemini` records the HOME it was actually invoked with and
-        that HOME's settings.json content, so this proves the mechanism --
-        not just that the source text mentions it."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            stub_dir = Path(tmpdir) / "stubbin"
-            stub_dir.mkdir()
-            capture = Path(tmpdir) / "capture.json"
-            for name in ("codex", "claude"):
-                stub = stub_dir / name
-                stub.write_text(
-                    '#!/usr/bin/env bash\n'
-                    'echo \'{"type":"item.completed","item":{"type":"agent_message",'
-                    '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n'
-                )
-                stub.chmod(0o755)
-            gemini_stub = stub_dir / "gemini"
-            gemini_stub.write_text(
-                '#!/usr/bin/env bash\n'
-                f'settings=$(cat "$HOME/.gemini/settings.json" 2>/dev/null || echo "MISSING")\n'
-                f'printf \'{{"home":"%s","settings":%s,"gemini_key":"%s","google_key":"%s"}}\' '
-                f'"$HOME" "$settings" "${{GEMINI_API_KEY:-UNSET}}" "${{GOOGLE_API_KEY:-UNSET}}" '
-                f'> "{capture}"\n'
-                'echo \'{"summary": "stub"}\'\n'
-            )
-            gemini_stub.chmod(0o755)
-            brief = Path(tmpdir) / "brief.md"
-            brief.write_text("cold brief\n")
-            cwd = Path(tmpdir) / "scratch"
-            cwd.mkdir()
-
-            # preclose-inspection finding: never capture a REAL secret into a
-            # file, even one meant to be discarded -- both keys are
-            # overridden to dummy values before the script ever runs, so
-            # whatever the stub writes to disk is a fixture, not a live
-            # credential. `GEMINI_CLI_HOME` is also stripped from the test's
-            # own environment so a real one (if ever set on a dev machine)
-            # can't mask the fix's own `-u GEMINI_CLI_HOME` from mattering.
-            env = dict(os.environ)
-            env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
-            env["GEMINI_API_KEY"] = "test-gemini-key"
-            env["GOOGLE_API_KEY"] = "test-google-key"
-            env.pop("GEMINI_CLI_HOME", None)
-            real_home = env.get("HOME", "")
-            subprocess.run(
-                ["bash", str(SCRIPT), "--caller", "claude", "--families", "3",
-                 "--posture", "read-only", "--brief", str(brief), "--cwd", str(cwd)],
-                capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env,
-            )
-
-            self.assertTrue(capture.exists(), "gemini stub never ran")
-            captured = json.loads(capture.read_text())
-            self.assertNotEqual(captured["home"], real_home,
-                                 "gemini must run under a throwaway HOME, not the operator's real one")
-            self.assertEqual(
-                captured["settings"],
-                {"security": {"auth": {"selectedType": "gemini-api-key"}}},
-            )
-            self.assertEqual(captured["gemini_key"], "test-gemini-key",
-                              "GEMINI_API_KEY must reach the gemini process, not be unset")
-            self.assertEqual(captured["google_key"], "test-google-key",
-                              "GOOGLE_API_KEY must also reach the gemini process, not be unset")
-
-    def test_a_real_gemini_cli_home_does_not_defeat_the_throwaway_home(self) -> None:
-        """preclose-inspection finding: Gemini's own config-root resolution
-        checks GEMINI_CLI_HOME before HOME, so `env HOME=...` alone does not
-        force the throwaway settings if the caller's environment happens to
-        export GEMINI_CLI_HOME -- it must be explicitly unset."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            stub_dir = Path(tmpdir) / "stubbin"
-            stub_dir.mkdir()
-            capture = Path(tmpdir) / "capture.json"
-            for name in ("codex", "claude"):
-                stub = stub_dir / name
-                stub.write_text(
-                    '#!/usr/bin/env bash\n'
-                    'echo \'{"type":"item.completed","item":{"type":"agent_message",'
-                    '"text":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}}\'\n'
-                )
-                stub.chmod(0o755)
-            gemini_stub = stub_dir / "gemini"
-            # Mirrors the installed CLI's own precedence: GEMINI_CLI_HOME
-            # wins over HOME if the fix fails to strip it.
-            gemini_stub.write_text(
-                '#!/usr/bin/env bash\n'
-                'resolved_home="${GEMINI_CLI_HOME:-$HOME}"\n'
-                f'printf \'{{"resolved_home":"%s","gemini_cli_home_seen":"%s"}}\' '
-                '"$resolved_home" "${GEMINI_CLI_HOME:-UNSET}" '
-                f'> "{capture}"\n'
-                'echo \'{"summary": "stub"}\'\n'
-            )
-            gemini_stub.chmod(0o755)
-            brief = Path(tmpdir) / "brief.md"
-            brief.write_text("cold brief\n")
-            cwd = Path(tmpdir) / "scratch"
-            cwd.mkdir()
-
-            fake_real_gemini_cli_home = str(Path(tmpdir) / "operators-real-gemini-home")
-            env = dict(os.environ)
-            env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
-            env["GEMINI_CLI_HOME"] = fake_real_gemini_cli_home
-            subprocess.run(
-                ["bash", str(SCRIPT), "--caller", "claude", "--families", "3",
-                 "--posture", "read-only", "--brief", str(brief), "--cwd", str(cwd)],
-                capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env,
-            )
-
-            self.assertTrue(capture.exists(), "gemini stub never ran")
-            captured = json.loads(capture.read_text())
-            self.assertEqual(captured["gemini_cli_home_seen"], "UNSET",
-                              "GEMINI_CLI_HOME must be stripped before invoking gemini")
-            self.assertNotEqual(captured["resolved_home"], fake_real_gemini_cli_home,
-                                 "a caller-set GEMINI_CLI_HOME must not survive into the gemini process")
-
-
-
 class TestOversizedNativeStream(unittest.TestCase):
     """harmonic-forge#466 — payloads reach `jq` through files, never argv.
 
@@ -741,24 +636,10 @@ class TestOversizedNativeStream(unittest.TestCase):
         self.assertEqual(env["exit_code"], 0)
         self.assertEqual(env["report"], {"findings": [{"title": "small"}]})
 
-    def test_a_single_object_family_still_yields_the_object_not_an_array(self):
-        """`--slurpfile` reads a file into an ARRAY, so the single-object
-        families need the `[0]` index. Without it `native` would silently
-        become a one-element list — valid JSON, wrong shape, and invisible to
-        any test that only checked the envelope's keys."""
-        # harmonic-forge#857 (sticky-wicket PATCH): Claude now has one
-        # extractor for both postures, by event type, so its native value is
-        # the slurped event list (like Codex); Gemini stays the single object.
-        env = emit_envelope("gemini", "read-only", 0,
-                            json.dumps({"response": json.dumps({"findings": []})}))
-        self.assertIsInstance(env["native"], dict)
-        self.assertIn("response", env["native"])
-
     def test_a_malformed_native_stream_still_produces_an_envelope(self):
-        """The `|| null` fallback the Codex branch already had, now on all
-        three. Losing the envelope entirely is the worse failure: the caller
+        """The `|| null` fallback on every family. Losing the envelope entirely is the worse failure: the caller
         learns nothing, which is exactly this issue's complaint."""
-        env = emit_envelope("gemini", "read-only", 0, "this is not json at all\n")
+        env = emit_envelope("codex", "read-only", 0, "this is not json at all\n")
         self.assertIsNone(env["native"])
         self.assertEqual(env["status"], "invalid-report")
 
@@ -820,7 +701,7 @@ def parse_envelopes(stdout: str) -> list[dict]:
     return out
 
 
-def make_failing_envelope_path(tmpdir: str, families=("codex", "claude", "gemini")) -> str:
+def make_failing_envelope_path(tmpdir: str, families=("codex", "claude")) -> str:
     """A PATH whose sibling CLIs work but whose `jq` fails on the ENVELOPE step.
 
     Forcing the failure through `jq -n` rather than through an oversized
@@ -845,7 +726,7 @@ def make_failing_envelope_path(tmpdir: str, families=("codex", "claude", "gemini
         f'exec {real_jq} "$@"\n'
     )
     (stub_dir / "jq").chmod(0o755)
-    for name in ("codex", "claude", "gemini"):
+    for name in ("codex", "claude"):
         stub = stub_dir / name
         if name in families:
             stub.write_text(
@@ -895,7 +776,7 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         err = self._run().stderr
         self.assertIn("FAILED to build the result envelope", err)
         self.assertIn("read-only", err)
-        self.assertRegex(err, r"family:\s+(codex|claude|gemini)")
+        self.assertRegex(err, r"family:\s+(codex|claude)")
         self.assertIn("envelope construction exited", err)
 
     def test_the_underlying_error_is_carried_not_replaced(self):
@@ -936,245 +817,6 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         self.assertEqual(sorted(env),
                          ["caller_family", "exit_code", "family", "native", "posture", "report",
                           "status", "target_family"])
-
-    def test_one_family_failing_does_not_abort_the_others(self):
-        """TC4. Before this, `set -e` killed the loop at the first failure:
-        later families never ran, earlier ones had already printed, and
-        nothing in the output said a family was missing."""
-        result = run_script("--caller", "claude", "--families", "3",
-                            "--posture", "read-only", "--brief", str(self.brief),
-                            path=self.path)
-        self.assertNotEqual(result.returncode, 0)
-        envelopes = parse_envelopes(result.stdout)
-        # `--families 3` resolves to TWO targets: the caller is excluded from
-        # its own review. Asserted against the resolved target list rather
-        # than the flag's number, which is the same distinction
-        # harmonic-forge#448 draws for the verify guard.
-        self.assertEqual(len(envelopes), 2, "a failing family dropped the whole run")
-        self.assertTrue(all(e["status"] == "envelope-error" for e in envelopes))
-        self.assertEqual(len({e["family"] for e in envelopes}), 2)
-
-
-class TestProbePolicyBoundary(unittest.TestCase):
-    """harmonic-forge#432 — `probe` posture's Gemini branch was unbounded.
-
-    Measured live 2026-09-06 (gemini 0.57.0), the reach was asymmetric in a
-    way the flag name does not suggest: under `--yolo`, `run_shell_command`
-    read an absolute path outside `--cwd` on the first attempt, while
-    `write_file` to the same path was refused by Gemini's own workspace
-    bound. The shell tool was the entire hole.
-
-    These are the structural assertions. The behavioural proof is a live
-    Gemini call and belongs to Lane 3's gate; what is checkable here is that
-    the policy exists, denies exactly one tool, and is actually passed.
-    """
-
-    POLICY = SCRIPT.parent / "gemini-probe-deny.toml"
-    SOURCE = SCRIPT.read_text()
-
-    def test_the_probe_policy_file_exists(self) -> None:
-        self.assertTrue(self.POLICY.is_file(), f"missing: {self.POLICY}")
-
-    def test_it_denies_run_shell_command(self) -> None:
-        import tomllib
-        rules = tomllib.loads(self.POLICY.read_text())["rule"]
-        denied = {r["toolName"] for r in rules if r["decision"] == "deny"}
-        self.assertIn("run_shell_command", denied)
-
-    def test_it_does_not_deny_writes(self) -> None:
-        """The distinction that keeps `probe` a probe. Reusing the
-        `read-only` deny policy here would remove the capability this
-        posture exists to grant — Codex's own probe branch runs
-        `--sandbox workspace-write` — and quietly turn `probe` into
-        `read-only`. Gemini's file tools are workspace-bounded already."""
-        import tomllib
-        rules = tomllib.loads(self.POLICY.read_text())["rule"]
-        denied = set()
-        for rule in rules:
-            if rule["decision"] == "deny":
-                name = rule["toolName"]
-                denied |= set(name) if isinstance(name, list) else {name}
-        self.assertNotIn("write_file", denied)
-        self.assertNotIn("replace", denied)
-        self.assertEqual(denied, {"run_shell_command"},
-                         "probe's policy must deny exactly the one tool that escapes --cwd")
-
-    def test_probe_posture_passes_the_policy_alongside_yolo(self) -> None:
-        """`--yolo` without a policy is the defect. Both must be present."""
-        branch = self.SOURCE[self.SOURCE.index("invoke_gemini() {"):]
-        branch = branch[:branch.index("\n}")]
-        self.assertIn('mode_args=(--yolo --admin-policy "$probe_policy")', branch)
-        self.assertNotIn("mode_args=(--yolo)", branch)
-
-    def test_read_only_posture_still_gets_its_own_policy(self) -> None:
-        branch = self.SOURCE[self.SOURCE.index("invoke_gemini() {"):]
-        branch = branch[:branch.index("\n}")]
-        self.assertIn('mode_args=(--admin-policy "$readonly_policy")', branch)
-
-
-class TestFailsClosedOnMissingPolicy(unittest.TestCase):
-    """The guard `_cli_launch.sh` provides for every other Gemini entry
-    point and this script never had, because it shells out to `gemini`
-    directly. The CLI does not fail closed on its own: verified live
-    2026-08-28 and recorded in `_cli_launch.sh`, a bad `--admin-policy`
-    prints a stderr warning and the session runs unprotected under
-    `--yolo`. So this check is the only thing between a deleted file and an
-    unbounded session."""
-
-    def _run_with_policies_hidden(self, hide: list[str]):
-        """Copy the tool dir, remove the named policies, run from the copy.
-
-        The script resolves its policies relative to its own location, so a
-        copy is how a missing file is simulated without touching the real
-        checkout.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = Path(tmp) / "lane"
-            shutil.copytree(SCRIPT.parent, dest)
-            for name in hide:
-                (dest / name).unlink()
-            return subprocess.run(
-                ["bash", str(dest / SCRIPT.name),
-                 "--caller", "claude", "--families", "2",
-                 "--posture", "read-only", "--brief", str(dest / SCRIPT.name)],
-                capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                env={**os.environ, "PATH": make_stub_path(tmp)},
-            )
-
-    def test_a_missing_probe_policy_refuses_to_run(self) -> None:
-        result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("admin policy file missing", result.stderr)
-        self.assertIn("gemini-probe-deny.toml", result.stderr)
-
-    def test_a_missing_read_only_policy_refuses_to_run(self) -> None:
-        result = self._run_with_policies_hidden(["gemini-read-only-deny.toml"])
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("admin policy file missing", result.stderr)
-
-    def test_the_refusal_explains_why_the_cli_cannot_be_trusted_to(self) -> None:
-        """A bare 'file missing' would read as a broken install. The reason
-        it is fatal — the CLI runs unprotected rather than failing — is the
-        part a reader needs."""
-        result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
-        self.assertIn("does NOT fail closed", result.stderr)
-
-    def test_it_checks_every_posture_not_just_the_one_being_run(self) -> None:
-        """The run above is `--posture read-only`, and the missing file is
-        `probe`'s. A per-invocation check would have passed it: a policy
-        file absent from the checkout is a broken install, and finding out
-        only on the run that happens to need it is how this stays hidden."""
-        result = self._run_with_policies_hidden(["gemini-probe-deny.toml"])
-        self.assertEqual(result.returncode, 2)
-
-
-class TestGeminiModelPin(unittest.TestCase):
-    """harmonic-forge#482 — the pinned model was deprecated and every Gemini
-    posture failed before any posture logic ran."""
-
-    SOURCE = SCRIPT.read_text()
-
-    @staticmethod
-    def _executable(source: str) -> str:
-        """Comment lines stripped.
-
-        The naive `assertNotIn("gemini-2.5-pro", source)` fails on this
-        change's own comment, which names the dead model to explain why the
-        pin moved — an absence assertion satisfied by its own documentation,
-        which is hrse#1441's recorded failure shape. What matters is that no
-        *executable* line still passes it to the CLI.
-        """
-        return "\n".join(line for line in source.splitlines()
-                          if not line.lstrip().startswith("#"))
-
-    def test_the_dead_model_is_not_passed_to_the_cli(self) -> None:
-        self.assertNotIn("gemini-2.5-pro", self._executable(self.SOURCE))
-
-    def test_the_dead_model_is_still_named_in_the_reasoning(self) -> None:
-        """And the comment SHOULD keep naming it — the next reader needs to
-        know which pin died and why an alias replaced it. Asserted so a
-        later cleanup does not strip the reasoning to make the check above
-        look tidier."""
-        self.assertIn("gemini-2.5-pro", self.SOURCE)
-
-    def test_the_model_is_a_named_variable_not_a_call_site_literal(self) -> None:
-        """It was hardcoded inside `invoke_gemini`'s command since
-        harmonic-forge#366, which is why nothing referenced it and no test
-        could have caught its retirement."""
-        self.assertIn('GEMINI_MODEL="${CROSS_FAMILY_GEMINI_MODEL:-', self.SOURCE)
-        self.assertIn('-m "$GEMINI_MODEL"', self.SOURCE)
-
-    def test_the_default_is_a_floating_alias(self) -> None:
-        """A concrete pin is what broke; another concrete pin schedules the
-        same outage. Both live candidates carried the same clock —
-        `gemini-2.5-flash` and `gemini-3.1-pro-preview`, the latter a preview.
-        """
-        match = re.search(r'GEMINI_MODEL="\$\{CROSS_FAMILY_GEMINI_MODEL:-([^}]+)\}"',
-                          self.SOURCE)
-        self.assertIsNotNone(match)
-        self.assertTrue(match.group(1).endswith("-latest"),
-                        f"expected a floating alias, got {match.group(1)!r}")
-
-    def test_it_keeps_the_pro_tier(self) -> None:
-        """Substituting flash would silently downgrade every posture's
-        reviewer. `verify` is Codex-only and unaffected: it resolves the
-        latest Sol (harmonic-forge#939), and its operator override survives."""
-        self.assertIn("gemini-pro-latest", self.SOURCE)
-        self.assertIn('VERIFY_MODEL="$CROSS_FAMILY_VERIFY_MODEL"', self.SOURCE)
-
-
-@unittest.skipUnless(os.environ.get("CROSS_FAMILY_LIVE") == "1",
-                     "live: set CROSS_FAMILY_LIVE=1 (spends an API call)")
-class TestGeminiModelAnswersLive(unittest.TestCase):
-    """The check that would have caught harmonic-forge#482, and the shape of
-    it is the finding.
-
-    A `GET .../models/<name>` on the dead model returns **HTTP 200**, and it
-    is present in the `models` list — measured 2026-09-06. Only
-    `:generateContent` returns 404. So an availability check written the
-    obvious way, against the catalogue, would have reported the deprecated
-    model as healthy.
-    """
-
-    def _key(self) -> str:
-        env = Path.home() / "Harmonic_Projects/HRSE2/backend/.env"
-        for line in env.read_text().splitlines():
-            if line.startswith("GEMINI_API_KEY"):
-                return line.partition("=")[2].strip().strip("'\"")
-        self.skipTest("no GEMINI_API_KEY available")
-
-    def _model(self) -> str:
-        return re.search(
-            r'GEMINI_MODEL="\$\{CROSS_FAMILY_GEMINI_MODEL:-([^}]+)\}"',
-            SCRIPT.read_text()).group(1)
-
-    def test_the_pinned_model_actually_generates(self) -> None:
-        import urllib.request
-        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-               f"{self._model()}:generateContent?key={self._key()}")
-        body = json.dumps({"contents": [{"parts": [{"text": "Reply: OK"}]}]}).encode()
-        req = urllib.request.Request(url, data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as response:
-            self.assertEqual(response.status, 200)
-
-    def test_a_catalogue_check_would_not_have_caught_this(self) -> None:
-        """The negative control, and the reason the test above posts rather
-        than gets: the retired model is still listed and still answers a
-        GET."""
-        import urllib.error, urllib.request
-        key = self._key()
-        with urllib.request.urlopen(
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.5-pro?key={key}", timeout=60) as response:
-            self.assertEqual(response.status, 200, "GET still says the model is fine")
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen(urllib.request.Request(
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.5-pro:generateContent?key={key}",
-                data=json.dumps({"contents": [{"parts": [{"text": "x"}]}]}).encode(),
-                headers={"Content-Type": "application/json"}), timeout=60)
-        self.assertEqual(ctx.exception.code, 404)
 
 
 class TestCodexGitRepoCheck(unittest.TestCase):
@@ -1414,14 +1056,14 @@ class TestStderrIsCapturedNotDiscarded(unittest.TestCase):
 
     def test_no_invoke_function_swallows_stderr(self) -> None:
         """One discarded line was the entire diagnosis of this issue."""
-        for name in ("invoke_claude", "invoke_codex", "invoke_gemini"):
+        for name in ("invoke_claude", "invoke_codex"):
             with self.subTest(function=name):
                 body = self.SOURCE[self.SOURCE.index(f"{name}() {{"):]
                 body = body[:body.index("\n}")]
                 self.assertNotIn("2>/dev/null", body)
 
     def test_the_dispatch_loop_captures_it_for_every_family(self) -> None:
-        for name in ("invoke_claude", "invoke_codex", "invoke_gemini"):
+        for name in ("invoke_claude", "invoke_codex"):
             with self.subTest(family=name):
                 self.assertIn(f'{name} "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err"',
                               self.SOURCE)
@@ -1562,7 +1204,6 @@ class StdinPromptTests(unittest.TestCase):
         # `claude -p --output-format json` prints one object (verified live,
         # harmonic-forge#857 AC4), which the read-only branch must parse.
         "claude": 'echo \'{"type":"result","subtype":"success","result":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
-        "gemini": 'echo \'{"response":"{\\"summary\\":\\"stub\\",\\"findings\\":[]}"}\'\n',
     }
 
     def setUp(self) -> None:
@@ -1587,9 +1228,7 @@ class StdinPromptTests(unittest.TestCase):
         self.cwd.mkdir()
 
     def _run(self, caller: str, families: str, family: str) -> dict:
-        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-                   GEMINI_API_KEY="test-key")
-        env.pop("GEMINI_CLI_HOME", None)
+        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}")
         out = Path(self.tmp.name) / f"{family}-envelope.json"
         result = subprocess.run(
             ["bash", str(SCRIPT), "--caller", caller, "--families", families,
@@ -1618,8 +1257,6 @@ class StdinPromptTests(unittest.TestCase):
     def test_claude_prompt_on_stdin(self) -> None:
         self._assert_prompt_on_stdin("claude", self._run("codex", "2", "claude"))
 
-    def test_gemini_prompt_on_stdin(self) -> None:
-        self._assert_prompt_on_stdin("gemini", self._run("claude", "3", "gemini"))
 
 
 class ClaudeExtractorByTypeTests(unittest.TestCase):
@@ -1667,7 +1304,7 @@ class PromptFileHygieneTests(unittest.TestCase):
         self.cwd.mkdir()
 
     def _stub(self, body: str) -> None:
-        for name in ("codex", "claude", "gemini"):
+        for name in ("codex", "claude"):
             stub = self.stub_dir / name
             stub.write_text("#!/usr/bin/env bash\n" + body)
             stub.chmod(0o755)
@@ -1730,9 +1367,6 @@ class VerifyPostureStdinTests(StdinPromptTests):
 
     def test_codex_prompt_on_stdin(self) -> None:
         self.skipTest("verify posture routes Codex callers to Claude only")
-
-    def test_gemini_prompt_on_stdin(self) -> None:
-        self.skipTest("verify is unavailable for Gemini")
 
     def test_claude_prompt_on_stdin(self) -> None:
         envelope = self._run_verify()
@@ -1813,29 +1447,6 @@ class DegradedBriefFailsClosedTests(PromptFileHygieneTests):
         self.assertIn("empty at dispatch", result.stderr)
         self.assertNotIn('"status":"ok"', result.stdout.replace(" ", ""))
 
-    def test_a_brief_made_unreadable_after_preflight_fails_closed(self) -> None:
-        # --families 3: the first reviewer's stub makes the brief unreadable,
-        # so the SECOND family's prompt assembly (not the preflight) must stop.
-        if os.geteuid() == 0:
-            self.skipTest("root can read mode-000 files")
-        brief = self.brief
-        for name in ("codex", "claude", "gemini"):
-            stub = self.stub_dir / name
-            stub.write_text("#!/usr/bin/env bash\n" + f'chmod 000 "{brief}"\n' + self.OK_STUB)
-            stub.chmod(0o755)
-        self.addCleanup(brief.chmod, 0o644)
-        env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-                   TMPDIR=str(self.tmpdir), GEMINI_API_KEY="x")
-        result = subprocess.run(
-            ["bash", str(SCRIPT), "--caller", "claude", "--families", "3", "--posture", "read-only",
-             "--brief", str(brief), "--cwd", str(self.cwd)],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("readable, non-empty file", result.stderr)  # not the preflight
-        # The failed read stops it, not the empty-text backstop behind it.
-        self.assertNotIn("empty at dispatch", result.stderr)
-        ok_rows = [ln for ln in result.stdout.splitlines() if '"status":"ok"' in ln.replace(" ", "")]
-        self.assertLessEqual(len(ok_rows), 1)  # only the first family ran
 
 
 class SignalForwardingTests(PromptFileHygieneTests):
@@ -1850,7 +1461,7 @@ class SignalForwardingTests(PromptFileHygieneTests):
 
     def _start(self, families: str) -> subprocess.Popen:
         env = dict(os.environ, PATH=f"{self.stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-                   TMPDIR=str(self.tmpdir), GEMINI_API_KEY="x")
+                   TMPDIR=str(self.tmpdir))
         return subprocess.Popen(
             ["bash", str(SCRIPT), "--caller", "claude", "--families", families, "--posture", "read-only",
              "--brief", str(self.brief), "--cwd", str(self.cwd)],
@@ -1873,28 +1484,6 @@ class SignalForwardingTests(PromptFileHygieneTests):
         with self.assertRaises(ProcessLookupError):
             os.kill(reviewer, 0)
         self.assertEqual(self._leaked(), [])
-
-    def test_no_per_run_temp_file_survives_a_term_mid_families(self) -> None:
-        marker = self.root / "second.started"
-        # codex (first family) returns at once; gemini (second) blocks.
-        (self.stub_dir / "codex").write_text(
-            "#!/usr/bin/env bash\n" + DegradedBriefFailsClosedTests.OK_STUB)
-        (self.stub_dir / "codex").chmod(0o755)
-        (self.stub_dir / "gemini").write_text(
-            f'#!/usr/bin/env bash\ntouch "{marker}"\ncat >/dev/null\nsleep 60\n')
-        (self.stub_dir / "gemini").chmod(0o755)
-        (self.stub_dir / "claude").write_text("#!/usr/bin/env bash\nexit 0\n")
-        (self.stub_dir / "claude").chmod(0o755)
-        proc = self._start("3")
-        for _ in range(200):
-            if marker.exists():
-                break
-            time.sleep(0.05)
-        proc.terminate()
-        proc.wait(timeout=10)
-        time.sleep(0.3)
-        survivors = [p for p in self.tmpdir.rglob("*") if p.is_file()]
-        self.assertEqual(survivors, [])
 
     def test_envelope_temp_files_live_in_the_scratch_dir(self) -> None:
         # harmonic-forge#857 post-verdict: emit_envelope's own temp files are

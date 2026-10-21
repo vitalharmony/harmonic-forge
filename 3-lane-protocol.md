@@ -22,9 +22,9 @@ is retained below as a historical example where it clarifies intent —
 Devin is retired from active use as of 2026-08 (see harmonic-forge#317's
 multi-agent parity epic). Codex is a current live example for either
 Lane 2 or Lane 3 per issue (see the operator's own project rules file,
-e.g. `.windsurfrules`, for the exact trigger phrasing); Claude and Gemini
-are the two tools #317 is qualifying for the same role, with Gemini's
-qualification tracked capability-by-capability. Claude Code is Lane 1's
+e.g. `.windsurfrules`, for the exact trigger phrasing); Claude is qualified
+for the same role (the Gemini CLI is retired, harmonic-forge#1113). Claude
+Code is Lane 1's
 reference/default implementation — this platform's own authoring tool —
 but is not fixed by name; an operator may assign a different tool to
 Lane 1 via that tool's own equivalent mechanism (see § Lane 1 below).
@@ -247,7 +247,7 @@ under pressure more than once. Any tool assigned to Lane 3 should get an
 equivalent hard restriction (a permission/sandbox profile denying
 write/edit/commit/push tools for that session) wherever the tool supports
 one, not just an instruction file it's trusted to follow — see
-harmonic-forge#317's capability-tier work for Gemini's version of this.*
+harmonic-forge#317's capability-tier work.*
 <!-- /R-0161 -->
 
 <!-- R-0162 -->
@@ -556,13 +556,13 @@ running session could do to change it even if asked to.
 #### Per-CLI launch wiring — `laneN --agent`
 
 <!-- R-0184 -->
-**`--agent claude|codex|gemini` is the canonical interface** (ADR-007 § 3,
+**`--agent claude|codex` is the canonical interface** (ADR-007 § 3,
 implemented in harmonic-forge#322). Native CLI arguments follow, optionally
 after a bare `--`:
 
 ```bash
 lane2 --agent codex                    # start Lane 2 under Codex
-lane1 --agent gemini -- -p "a prompt"  # native args after --
+lane1 --agent claude -- -p "a prompt"  # native args after --
 lane3 --ack-stale "gating PR #123"     # Lane 3 only; see below
 ```
 
@@ -575,7 +575,6 @@ slot, an operator-facing display name, a default flag. An unrecognized
 | agent | what the launcher injects | why |
 |---|---|---|
 | `claude` (default) | `--permission-mode auto` (override with `LANE_PERMISSION_MODE`, or pass `--permission-mode` explicitly); `--model sonnet` (override with `LANE_DEFAULT_MODEL`, or pass `--model`); `--effort <level>` only when `LANE_DEFAULT_EFFORT` is set (or pass `--effort`). Refuses to launch while `CLAUDE_CODE_EFFORT_LEVEL` or `ANTHROPIC_MODEL` is set. `LANE_MODEL` is a tier-hook bypass and is never read here | harmonic-forge#179, #665 |
-| `gemini` | `env -u GOOGLE_API_KEY -u GEMINI_API_KEY GOOGLE_CLOUD_PROJECT=hrse-497421 …`, plus `--admin-policy` at Lanes 1 and 2 | harmonic-forge#318, #362 |
 | `codex` | `--no-daemon` at every lane, before any subcommand (a top-level flag); a passthrough `--no-daemon` or `--remote` is refused | Codex >= 0.157 otherwise runs tool commands in a shared app-server daemon with no `LANE`, disabling every LANE-keyed guard (harmonic-forge#754). Earlier flag injection broke Codex's argument parsing only because it was placed after the subcommand (harmonic-forge#179) |
 
 <!-- R-0185 -->
@@ -588,7 +587,7 @@ process-environment inheritance, not `readonly`, which does not survive
 and resolves to its agent by prefix against the same closed list. **Passing
 both `--agent` and `LANE_CLI` is an error, not a precedence question**
 (ADR-007 § 3: an operator who set `LANE_CLI` in a shell profile and then
-typed `--agent gemini` would otherwise get a session that ignores half of
+typed `--agent codex` would otherwise get a session that ignores half of
 what they said and reports nothing). A `LANE_CLI` matching no registered
 agent is likewise refused rather than execed: before harmonic-forge#322 it
 fell through to bare passthrough and silently received no policy injection
@@ -597,9 +596,8 @@ and no version floor.
 
 <!-- R-0186 -->
 **Minimum versions** (AC9) are floored at the *minor*, not the patch:
-`claude >= 2.1`, `codex >= 0.157`, `gemini >= 0.56`, recorded against the
-exact patch versions each was qualified at (`2.1.250` / `0.157.0` /
-`0.56.0`). The Codex floor moved from 0.150 to 0.157 in harmonic-forge#754:
+`claude >= 2.1`, `codex >= 0.157`, recorded against the
+exact patch versions each was qualified at (`2.1.250` / `0.157.0`). The Codex floor moved from 0.150 to 0.157 in harmonic-forge#754:
 the launcher's `--no-daemon` injection is verified only there. A patch-pinned floor would false-alarm on every routine `npm -g`
 update while duplicating the parity suite's own version bookkeeping
 (harmonic-forge#325); ADR-007 already handles version-specific qualification
@@ -674,37 +672,15 @@ alias, a shell history, or muscle memory.
 <!-- /R-0189 -->
 
 <!-- R-0190 -->
-**The two Gemini unsets are load-bearing, not hygiene.** Standing operator
-directive: the Gemini CLI always uses the OAuth path; `GOOGLE_API_KEY` and
-`GEMINI_API_KEY` exist for programmatic use elsewhere. That is not the
-default and it fails *silently* — with both keys present (the operator's
-normal shell state) Gemini CLI prints `Both GOOGLE_API_KEY and
-GEMINI_API_KEY are set. Using GOOGLE_API_KEY` and runs on the API-key
-identity and quota, with no error and correct-looking output. The unsets
-are process-scoped and never touch the operator's interactive shell — but
-they are inherited by the session's entire subprocess tree, so a service
-started from inside a Gemini lane session also sees `GEMINI_API_KEY` absent
-(it is a live HRSE2 backend variable). A self-reported "unconfigured" from
-inside such a session is expected, not a defect.
-
-`GOOGLE_CLOUD_PROJECT` is required because the active account is
-Workspace-managed; Workspace identities must name a GCP project for
-Google's Code Assist path, and personal `@gmail.com` accounts need not.
-Without it, every invocation dies with `ProjectIdRequiredError` before any
-tool call. `hrse-497421` is a project id, not a credential — it is
-committed deliberately. Export `GOOGLE_CLOUD_PROJECT` yourself to override.
+**Retired (harmonic-forge#1113).** This rule governed the Gemini CLI's
+launch environment. The Gemini CLI is no longer a lane agent: it cannot
+authenticate by OAuth or API key, and `laneN --agent gemini` is refused by
+the closed registry.
 <!-- /R-0190 -->
 
 <!-- R-0191 -->
-Two traps that cost a full diagnosis cycle in harmonic-forge#318:
-
-1. While `~/.gemini/settings.json` pins
-   `security.auth.selectedType = "oauth-personal"`, a `GEMINI_API_KEY` in
-   the environment is ignored entirely. Its presence is not evidence auth
-   works; its absence is not evidence anything is broken.
-2. **A passing `gemini -p` is not evidence the OAuth path works** unless
-   the keys were explicitly unset for that run — the API-key path produces
-   identical-looking output.
+**Retired (harmonic-forge#1113).** This rule recorded two Gemini CLI auth
+diagnosis traps; the CLI is retired.
 <!-- /R-0191 -->
 
 #### The adapter contract — what "supported" means
@@ -717,8 +693,7 @@ are operative here:
 
 1. **The enforcement point is the launcher, not the repo.** An agent
    started outside `laneN` carries no lane enforcement at all — Codex's
-   `--sandbox read-only` and Gemini's `--admin-policy` both arrive as
-   launch flags. A repo-tracked policy file is reviewable, not active.
+   `--sandbox` and Claude's `--settings` both arrive as launch flags. A repo-tracked policy file is reviewable, not active.
 2. **Directive prose is never enforcement.** A rule in a directive file
    tells an agent what not to do; a hook or a policy prevents it. The same
    corpus is a hard boundary under Claude Code and nothing at all under an
@@ -729,79 +704,32 @@ are operative here:
 <!-- /R-0192 -->
 
 <!-- R-0193 -->
-**Historical (Gemini eliminated 2026-08-31, harmonic-forge#496); retained for the guard-equivalence record.** Gemini was approved for Lane 1, partially for Lane 2, and for
-Lane 3 tier 1 (static review) only** (harmonic-forge#318/#362/#326). #362 landed an admin-tier policy
-(`tools/lane/policies/gemini-lane1.toml`/`gemini-lane2.toml`, wired through
-`_cli_launch.sh`'s `gemini*` branch) that structurally denies `write_file`/
-`replace` for Lane 1 (role boundary — Lane 1 never edits files) and
-`activate_skill`/`invoke_agent` for both lanes — proven live, not merely
-schema-valid, by `tools/lane/policies/canary/run_canary.py`. **Lane 2's
-`run_shell_command` is deliberately left fully open** — an `argsPattern`/
-`commandPrefix` deny-list on an otherwise-unconstrained shell was found live
-(harmonic-forge#362's pitch-inspection) to leave the tool visible and be
-bypassable via one level of shell-wrapper indirection, the identical class
-of gap `block_irreversible_ops.py`'s own docstring already concedes and
-rules out chasing for Claude. **`gh issue close`/`gh pr merge` are therefore
-still demonstrably reachable from a Gemini Lane 2 session** — `batch_auth.py`
-fails *open* there exactly as before, and this is recorded, not silently
-assumed fixed. See ADR-007 § 7/§ 8 for the full guard-equivalence matrix and
-acceptance-tier detail, which must be updated in the same change that adds
-any new hook. Both policies are now **un-removable via a passthrough `--admin-policy`**
-(harmonic-forge#322 AC4): the launcher rejects the flag outright at any lane
-whose registry slot declares a policy, rather than appending `"$@"` after it
-and letting last-flag-wins decide. That closes the launcher-side half of the
-dependency F326 carries — it does not make the policy a boundary the model
-cannot reason past, which is a separate claim this platform deliberately does
-not make (ADR-007 § 9).
+**Retired (harmonic-forge#1113).** Gemini was approved for Lane 1, partially
+for Lane 2, and for Lane 3 tier 1 until its elimination as a lane tool on
+2026-08-31 (harmonic-forge#496); its CLI, policies and canary were removed in
+harmonic-forge#1113. ADR-007 § 7/§ 8 keeps the guard-equivalence record, and
+the obligation that matrix carries stands: it is updated in the same change
+that adds any new hook.
 <!-- /R-0193 -->
 
-#### Gemini Lane 3 — tier 1 (static review) only
+#### Gemini Lane 3 — retired
 
 <!-- R-0194 -->
-**Historical — Gemini was eliminated 2026-08-31.**
-`tools/lane/policies/gemini-lane3.toml` (harmonic-forge#326), armed by
-`AGENT_LANE_POLICY[gemini:3]`. **Tier 1 is static review: no test execution,
-no live services, no migrations** — tiers 2–4 are harmonic-forge#327's and
-remain blocked.
-
-It denies **whole-tool** the seven tools verified live to be both registered in
-a headless session and capable of mutation, egress, or nesting:
-`run_shell_command`, `write_file`, `replace`, `web_fetch`, `google_web_search`,
-`activate_skill`, `invoke_agent`. It carries **no argument-scoped rule at all**,
-which is the substantive difference from the Lane 1 policy above and the
-lesson of harmonic-forge#412: a `commandPrefix` allowlist on
-`run_shell_command` is not a boundary, because redirection is only downgraded
-to `ASK_USER` (and that downgrade is off under `--yolo`), and a native write
-flag such as `git diff --output=<path>` contains no shell metacharacter for any
-pattern to catch.
+**Retired (harmonic-forge#1113).** The Gemini Lane 3 tier-1 policy is
+deleted. Its lesson stands on its own (harmonic-forge#412): an
+argument-scoped allowlist on a shell tool is not a boundary.
 <!-- /R-0194 -->
 
 <!-- R-0195 -->
-**A Gemini Lane 3 session fetches only its bounded context through the
-system-installed `lane3-context` MCP extension (harmonic-forge#1414).** The
-normal launcher remains the sole operation:
-
-```bash
-LANE_CLI=gemini lane3
-```
-
-After receiving `Test H<N>` or `Test F<N>`, Gemini calls the sole permitted
-tool, `lane3-context.fetch_context`. It accepts only that typed issue id,
-requires the prefix to match the active Lane 3 worktree's canonical remote,
-then returns `fetch_lane1_context.py`'s Lane-1-only output plus the fixed
-`origin/main...HEAD` diff and target SHA. It accepts no command, URL, path,
-ref, target SHA, or raw GitHub endpoint. Shell, raw network/GitHub, writes,
-and every other MCP tool remain denied. This is Tier 1 context only; it grants
-none of harmonic-forge#327's executable-test, service, browser, or migration
-authority.
+**Retired (harmonic-forge#1113).** The `lane3-context` MCP extension that
+fed a Gemini Lane 3 session is deleted.
 <!-- /R-0195 -->
 
 <!-- R-0196 -->
-**The tier is qualified only by a passing run of
-`tools/lane/policies/canary/run_canary.py`, executed by Lane 3** — not by the
-author of the policy. Re-run it on every Gemini CLI upgrade; ADR-007's reading
-rule is that a cell is qualified against a version, and an upgrade invalidates
-it until the suite is re-run.
+**Retired in part (harmonic-forge#1113).** The Gemini policy canary is
+deleted. The principle stands for any future capability tier: it is qualified
+only by a passing run executed by Lane 3, not by the policy's author, and
+re-run on every CLI upgrade.
 <!-- /R-0196 -->
 
 ### Session lifetime — restart at the batch boundary
@@ -2062,8 +1990,8 @@ because a token was replaced out of band.
 **Tool choice per lane is a per-collaborator decision, not a platform mandate.**
 Kyle, Greg, Ajit, and future collaborators each pick whichever tool they
 run for Lane 2/Lane 3 on their own machine — Claude Code and Codex are the
-current known examples, with Gemini's qualification tracked by
-harmonic-forge#317; not an exhaustive list. What's non-negotiable
+current known examples (the Gemini CLI is retired, harmonic-forge#1113);
+not an exhaustive list. What's non-negotiable
 regardless of tool choice is the protocol
 itself (see the note under the lane diagram above): independent-eyes
 gating, no lane closes/merges on its own (two named exceptions: R-0351 and R-0415),

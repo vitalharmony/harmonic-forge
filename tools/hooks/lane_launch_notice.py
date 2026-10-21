@@ -3,9 +3,7 @@
 (harmonic-forge#761).
 
 Claude-sessions-only, deliberately: Codex has no SessionStart event
-(`.codex/hooks.json` carries no such hook), and Gemini has none either (its
-context is carried by the `lane3-context` extension instead). For those two
-CLIs, the launcher's own terminal line (`lane1`/`lane2`/`lane3`, printed
+(`.codex/hooks.json` carries no such hook). For that CLI, the launcher's own terminal line (`lane1`/`lane2`/`lane3`, printed
 before the session starts) and the exported `LANE_REFRESH_*` environment are
 the only carriers -- this hook is the Claude-specific third one, not a
 replacement for either.

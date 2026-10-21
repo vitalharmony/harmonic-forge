@@ -535,7 +535,7 @@ def check_directives(project: Project) -> Check:
 def check_entrypoint(project: Project) -> Check:
     if project.checkout is None:
         return Check("entrypoint", SKIP, "no checkout")
-    present = [n for n in ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
+    present = [n for n in ("CLAUDE.md", "AGENTS.md")
                if (project.checkout / n).is_file()]
     if "CLAUDE.md" not in present:
         return Check("entrypoint", FAIL, "no CLAUDE.md")

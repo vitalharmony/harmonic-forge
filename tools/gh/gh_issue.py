@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
+from retired_artifacts import RETIRED_ARTIFACTS, RETIRED_COMMAND_FRAGMENTS  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
@@ -41,24 +41,69 @@ from manifest_identity import apply_project_identity  # noqa: E402
 _BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
 
 
+_PATH_KEY_SUFFIXES = (".py", ".md", ".toml", ".json")
+
+
+def _is_path_key(key: str) -> bool:
+    return "/" in key or key.endswith(_PATH_KEY_SUFFIXES)
+
+
+#: harmonic-forge#1113 reforge pass 1. A path key's left boundary is the span
+#: start, whitespace, a quote, "(", "=", or a "/" ending a directory prefix
+#: (`~/harmonic-forge/GEMINI.md`); its right boundary is the span end,
+#: whitespace, a quote, ")", ",", ";", ":" or "/" (a directory descendant).
+#: "." and "-" are never boundaries, so `GEMINI.md.template` and
+#: `tools/gemini-other/` are not flagged.
+_PATH_LEFT = r"(?:(?<=[\s\"'(=/])|^)"
+_PATH_RIGHT = r"(?=$|[\s\"'),;:/])"
+
+
+def _path_key_pattern(key: str) -> re.Pattern[str]:
+    # A directory key ("tools/gemini/") matches with or without its slash.
+    return re.compile(_PATH_LEFT + re.escape(key.rstrip("/")) + _PATH_RIGHT)
+
+
 def find_retired_citations(body: str) -> list[tuple[str, str]]:
     """(name, replacement-note) for each backtick-quoted retired artifact.
 
-    harmonic-forge#379. Whole-string match only, scoped to backtick-quoted
-    spans -- never a bare word. That scope is deliberate, not an
-    afterthought: the backlog-premise audit this check is drawn from found
-    bare-word matching responsible for its worst false positives (flagging
-    "Estimate" in every issue that correctly states one per
-    `.claude/rules/planning.md`, flagging "Devin" in the issue whose whole
-    point was scrubbing Devin references). A normal issue's free-text
-    "Estimate: N points" line is never backtick-quoted, so it is excluded
-    by construction, not by a special case.
+    harmonic-forge#379. Scoped to backtick-quoted spans -- never a bare
+    word. That scope is deliberate, not an afterthought: the
+    backlog-premise audit this check is drawn from found bare-word matching
+    responsible for its worst false positives (flagging "Estimate" in every
+    issue that correctly states one per `.claude/rules/planning.md`,
+    flagging "Devin" in the issue whose whole point was scrubbing Devin
+    references). A normal issue's free-text "Estimate: N points" line is
+    never backtick-quoted, so it is excluded by construction.
+
+    Inside a span (harmonic-forge#1113, sticky-wicket reforge): the
+    requirement is that the retired name *occurs* in the span, not that
+    the span equals it.
+    - Path-shaped keys (containing "/" or ending in .py/.md/.toml/.json)
+      match anywhere in the span between a left and a right boundary
+      (`_PATH_LEFT`/`_PATH_RIGHT`), so prefixed paths, descendants,
+      `cat GEMINI.md` and quoted paths are flagged, and longer names
+      sharing a prefix (`GEMINI.md.template`) are not.
+    - Word keys (`Estimate`, `Priority`, `L2P`, ...) still need the whole
+      span to equal the key -- the #379 false-positive guard.
+    - `RETIRED_COMMAND_FRAGMENTS` are regexes searched in the span, so
+      `=` versus space and shell punctuation do not matter.
     """
     seen: list[tuple[str, str]] = []
-    for match in _BACKTICK_SPAN.findall(body):
-        note = RETIRED_ARTIFACTS.get(match)
-        if note is not None and (match, note) not in seen:
-            seen.append((match, note))
+
+    def add(name: str, note: str) -> None:
+        if (name, note) not in seen:
+            seen.append((name, note))
+
+    for span in _BACKTICK_SPAN.findall(body):
+        for key, note in RETIRED_ARTIFACTS.items():
+            if _is_path_key(key):
+                if _path_key_pattern(key).search(span):
+                    add(key, note)
+            elif span == key:
+                add(key, note)
+        for pattern, note in RETIRED_COMMAND_FRAGMENTS.items():
+            if pattern.search(span):
+                add(pattern.pattern, note)
     return seen
 from item_list_cache import BOARD_ITEM_SCAN_LIMIT  # noqa: E402
 

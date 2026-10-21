@@ -12,13 +12,21 @@ should point here rather than re-deriving or duplicating the list — a
 second copy is the exact dual-source-of-truth failure hrse#839 was filed
 for.
 
-Keys are matched whole-string against a backtick-quoted span in an issue
-body (see `find_retired_citations()` in `gh_issue.py`) -- never a bare
-word, since the audit that produced this list found bare-word matching
+Keys are matched only inside a backtick-quoted span in an issue body (see
+`find_retired_citations()` in `gh_issue.py`): a path-shaped key anywhere
+in the span after a left boundary, a word key against the whole span --
+never a bare word, since the audit that produced this list found bare-word matching
 responsible for its worst false positives (flagging "Estimate" in every
 issue that correctly states one, flagging "Devin" in the issue whose
 whole point was scrubbing Devin references).
 """
+
+import re
+
+_GEMINI_CLI_RETIRED = (
+    "Gemini CLI retired (harmonic-forge#1113) -- it cannot authenticate by "
+    "OAuth or API key; lanes and cross-family calls are Claude Code and Codex only"
+)
 
 RETIRED_ARTIFACTS: dict[str, str] = {
     "board_sync.py": "retired (hrse#839) -- docs/PRIORITIES.md no longer drives the boards; board fields are edited on the board directly",
@@ -38,4 +46,50 @@ RETIRED_ARTIFACTS: dict[str, str] = {
            "marks rather than reproduces it (harmonic-forge#609)",
     ".devin/hooks.v1.json": "retired with the Devin scrub (harmonic-forge#317)",
     "scripts/gate_devin_exec.py": "retired with the Devin scrub (harmonic-forge#317)",
+    # harmonic-forge#1113: the Gemini CLI as a lane agent and cross-family
+    # family. Command-shaped and full-path keys only (never the bare word),
+    # so HRSE2's Gemini model API is never flagged.
+    # Path-shaped keys match anywhere in a span between boundaries, so
+    # "tools/gemini/" (with or without its slash) covers every file beneath it.
+    "tools/gemini/": _GEMINI_CLI_RETIRED,
+    "tools/gemini/install-lane3-context-extension": _GEMINI_CLI_RETIRED,
+    "tools/gemini/lane3-context/lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
+    "GEMINI.md": _GEMINI_CLI_RETIRED,
+    "tools/lane/gemini-read-only-deny.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/gemini-probe-deny.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/gemini-lane1.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/gemini-lane2.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/gemini-lane3.toml": _GEMINI_CLI_RETIRED,
+    "tools/lane/policies/canary/run_canary.py": _GEMINI_CLI_RETIRED,
+    "tools/lane/test_lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
+    "prompts/gemini-gem-harmonic-architect-co-pilot.md": _GEMINI_CLI_RETIRED,
+    "prompts/gemini-gem-harmonic-forge.md": _GEMINI_CLI_RETIRED,
+}
+
+# Command-fragment patterns (harmonic-forge#1113): regexes searched anywhere
+# inside a backtick span, accepting a space or "=" between flag and value and
+# an optionally shell-quoted value (`--agent "gemini"`, `LANE_CLI='gemini'`),
+# so `lane3 --agent=gemini; echo done` is flagged. The value is exactly
+# gemini/3, quoted or not, and ends at end-of-span, whitespace or a shell
+# operator (after the closing quote, if any). So `--agent
+# gemini-embedding-001`, `--families 3.5`, `LANE_CLI gemini/other` and
+# `--caller "gemini other"` are not flagged. Never the bare word "gemini",
+# which would flag HRSE2's Gemini model API.
+
+
+def _name(n: str) -> str:
+    # A whole token (nothing word-like or "-" before it), then exactly one
+    # "=" or a whitespace run: `--other--agent`, `X_LANE_CLI` and `==` don't.
+    return rf"(?<![\w-]){re.escape(n)}(?:=|\s+)"
+
+
+def _value(v: str) -> str:
+    return rf"""(?:"{v}"|'{v}'|{v})(?=\s|$|[;&|)<>])"""
+
+
+RETIRED_COMMAND_FRAGMENTS: dict[re.Pattern[str], str] = {
+    re.compile(_name("--agent") + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("--caller") + _value("gemini")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("--families") + _value("3")): _GEMINI_CLI_RETIRED,
+    re.compile(_name("LANE_CLI") + _value("gemini")): _GEMINI_CLI_RETIRED,
 }

@@ -1208,7 +1208,7 @@ id = "R-0141"
 file = "3-lane-protocol.md"
 anchor = "Lanes are roles, not fixed tools"
 statement = "The protocol's requirements (independent-eyes gating, no lane closes/merges on its own [two named exceptions: R-0351 and R-0415], HITL-gate language) are tool-agnostic and apply identically regardless of which tool fills a lane."
-text_sha = "ef351eb6e3a9e883"
+text_sha = "e599dcd94f71910f"
 hooks = []
 excepted_by = ["R-0351", "R-0415"]
 
@@ -1373,7 +1373,7 @@ id = "R-0161"
 file = "3-lane-protocol.md"
 anchor = "Lane 3 — Control Gate"
 statement = "Any tool assigned to Lane 3 must meet every Lane 3 requirement via its own equivalent mechanism, and should carry a hard permission/sandbox restriction rather than prose alone."
-text_sha = "077f84dc39f4d480"
+text_sha = "c21e8d2ce6174aa3"
 hooks = []
 
 [[rule]]
@@ -1562,8 +1562,8 @@ hooks = []
 id = "R-0184"
 file = "3-lane-protocol.md"
 anchor = "Per-CLI launch wiring — laneN --agent"
-statement = "--agent claude|codex|gemini is the canonical launcher interface, resolved against a closed registry; an unrecognized value is a hard error that execs nothing."
-text_sha = "b1ee9ce78b220956"
+statement = "--agent claude|codex is the canonical launcher interface, resolved against a closed registry; an unrecognized value is a hard error that execs nothing."
+text_sha = "f1cf226aaa6babe0"
 hooks = []
 
 [[rule]]
@@ -1571,7 +1571,7 @@ id = "R-0185"
 file = "3-lane-protocol.md"
 anchor = "Per-CLI launch wiring — laneN --agent"
 statement = "LANE_CLI is retained for aliases only, and passing both --agent and LANE_CLI is an error rather than a precedence question."
-text_sha = "8c62388685f84a6d"
+text_sha = "0369eb4074687dd7"
 hooks = []
 
 [[rule]]
@@ -1579,7 +1579,7 @@ id = "R-0186"
 file = "3-lane-protocol.md"
 anchor = "Per-CLI launch wiring — laneN --agent"
 statement = "Agent minimum versions are floored at the minor, not the patch."
-text_sha = "9c1d9b82f8b64a81"
+text_sha = "6f766203cf478a91"
 hooks = []
 
 [[rule]]
@@ -1610,16 +1610,16 @@ hooks = []
 id = "R-0190"
 file = "3-lane-protocol.md"
 anchor = "lane3 repairs and records — and lane3-provision"
-statement = "The Gemini launcher's GOOGLE_API_KEY/GEMINI_API_KEY unsets are load-bearing, and GOOGLE_CLOUD_PROJECT is required for the Workspace-managed account."
-text_sha = "4f4ee008ef5b6edc"
+statement = "Retired (harmonic-forge#1113): the Gemini CLI launch-environment rule no longer applies; the Gemini CLI is not a lane agent."
+text_sha = "2860df5136e10b04"
 hooks = []
 
 [[rule]]
 id = "R-0191"
 file = "3-lane-protocol.md"
 anchor = "lane3 repairs and records — and lane3-provision"
-statement = "A passing gemini -p is not evidence the OAuth path works unless the keys were explicitly unset for that run."
-text_sha = "6ab062eb74c58a21"
+statement = "Retired (harmonic-forge#1113): the Gemini CLI auth-diagnosis traps no longer apply; the CLI is retired."
+text_sha = "285967f99ed853ea"
 hooks = []
 
 [[rule]]
@@ -1627,40 +1627,40 @@ id = "R-0192"
 file = "3-lane-protocol.md"
 anchor = "The adapter contract — what \"supported\" means"
 statement = "Which agent may fill which lane is governed by ADR-007, not by whether the launcher will start it: enforcement is the launcher not the repo, directive prose is never enforcement, and capability tiers are per-capability against a specific CLI version."
-text_sha = "9c8a4a822858eee1"
+text_sha = "6c76477e1fe610c7"
 hooks = []
 
 [[rule]]
 id = "R-0193"
 file = "3-lane-protocol.md"
 anchor = "The adapter contract — what \"supported\" means"
-statement = "Gemini is approved for Lane 1, partially for Lane 2, and Lane 3 tier 1 only; gh issue close/gh pr merge remain demonstrably reachable from a Gemini Lane 2 session, and ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook."
-text_sha = "5fedf268c35c2d19"
+statement = "Retired (harmonic-forge#1113): Gemini's lane approvals and policies are removed; ADR-007's guard-equivalence matrix must still be updated in the same change that adds any new hook."
+text_sha = "f6f7f382e8df671e"
 hooks = []
-folded_obligations = ["ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook.", "Both Gemini lane policies are un-removable via a passthrough `--admin-policy`."]
+folded_obligations = ["ADR-007's guard-equivalence matrix must be updated in the same change that adds any new hook."]
 
 [[rule]]
 id = "R-0194"
 file = "3-lane-protocol.md"
-anchor = "Gemini Lane 3 — tier 1 (static review) only"
-statement = "Gemini Lane 3 tier 1 is static review only, denied whole-tool with no argument-scoped rule, because an argument allowlist on run_shell_command is not a boundary."
-text_sha = "53f6e3832852d7f3"
+anchor = "Gemini Lane 3 — retired"
+statement = "Retired (harmonic-forge#1113): the Gemini Lane 3 tier-1 policy is deleted; an argument-scoped allowlist on a shell tool is not a boundary."
+text_sha = "3e5a6679cb83c401"
 hooks = []
 
 [[rule]]
 id = "R-0195"
 file = "3-lane-protocol.md"
-anchor = "Gemini Lane 3 — tier 1 (static review) only"
-statement = "A Gemini Lane 3 session fetches only its bounded context through the lane3-context MCP extension, which accepts only a typed issue id."
-text_sha = "d453a808e0cccca9"
+anchor = "Gemini Lane 3 — retired"
+statement = "Retired (harmonic-forge#1113): the lane3-context MCP extension is deleted."
+text_sha = "4bed16d308444d46"
 hooks = []
 
 [[rule]]
 id = "R-0196"
 file = "3-lane-protocol.md"
-anchor = "Gemini Lane 3 — tier 1 (static review) only"
-statement = "A capability tier is qualified only by a passing canary run executed by Lane 3, not by the policy's author, and re-run on every CLI upgrade."
-text_sha = "8e64a9e00899d039"
+anchor = "Gemini Lane 3 — retired"
+statement = "A capability tier is qualified only by a passing run executed by Lane 3, not by the policy's author, and re-run on every CLI upgrade (the Gemini canary itself is retired, harmonic-forge#1113)."
+text_sha = "2ba26fbc17cbd9e3"
 hooks = []
 
 [[rule]]
@@ -2132,7 +2132,7 @@ id = "R-0252"
 file = "3-lane-protocol.md"
 anchor = "Team Topology"
 statement = "Tool choice per lane is a per-collaborator decision; what is non-negotiable regardless of tool is the protocol itself. Two named exceptions: R-0351 and R-0415."
-text_sha = "e9b793876cfa27d9"
+text_sha = "e041bf5d8d559689"
 hooks = []
 restates = "R-0141"
 excepted_by = ["R-0351", "R-0415"]

@@ -34,17 +34,10 @@
 #     unchanged.  Tightening Lane 3's Claude posture is real work with its own
 #     blast radius and gets its own issue.
 #
-# AMENDMENT 1 — harmonic-forge#326, 2026-08-28.  The expected first amendment,
-# and it landed exactly as #322 predicted: #326 filled the declared-empty
-# `AGENT_LANE_POLICY[gemini:3]` slot and changed no launcher code at all.
-#
-# `--admin-policy` is permitted in a Gemini Lane 3 launch tuple because the
-# launcher now supplies it (tools/lane/policies/gemini-lane3.toml).  Supplying
-# it is what makes it un-removable: #322 AC4's deny scan derives its list from
-# the same `AGENT_LANE_POLICY` declaration, so a passthrough `--admin-policy`
-# is now rejected outright at Lane 3, which is the property #326's own AC4
-# depends on.
---admin-policy
+# AMENDMENT 1 — harmonic-forge#326, 2026-08-28; withdrawn by
+# harmonic-forge#1113.  It permitted `--admin-policy` in a Lane 3 launch tuple
+# for an agent whose CLI has since been retired; no remaining agent declares
+# that flag, so the token is no longer listed.
 
 # AMENDMENT 2 -- hrse#1703, 2026-09-08.  Claude gains `--append-system-prompt`
 # at every lane, Lane 3 included (see `_agent_registry.sh`'s

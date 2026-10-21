@@ -1,32 +1,16 @@
 #!/usr/bin/env bash
 # tools/lane/cross_family_call.sh -- cross-family headless call helper
-# (harmonic-forge#366). Any of Claude/Codex/Gemini invokes one or two
-# sibling CLIs headlessly with a cold, self-contained brief and gets back
-# one normalized JSON-lines envelope per family on stdout.
+# (harmonic-forge#366). Claude or Codex invokes its sibling CLI headlessly
+# with a cold, self-contained brief and gets back one normalized JSON-lines
+# envelope on stdout (two families since harmonic-forge#1113).
 #
 # Read ADR-007's "Cross-family headless calls" section before changing a
 # posture mapping. Two rules are load-bearing and must never move to a
 # call site:
-#
-#   1. Family order is fixed by the caller (never selectable, Gemini never
-#      second) -- see `order=(...)` below.
-#   2. `read-only` posture's Gemini boundary is an admin-tier deny policy
-#      (`gemini-read-only-deny.toml`, sibling of this file), not
-#      `--approval-mode plan`. Plan mode was the original design; live
-#      reproduction on #366 showed the model can still call write_file and
-#      narrate a false success while doing so. `--admin-policy` removes
-#      denied tools from the model's tool list entirely (proven live,
-#      #326) -- that removal, not the model's own report text, is what
-#      TC2/TC6 verify.
-#
-# `probe` posture is the only posture that ever passes Gemini `--yolo`; it
-# requires `--cwd` naming an isolated scratch directory the caller is
-# responsible for creating and removing (never this repo's own worktree).
-# `--cwd` is NOT a security boundary on its own -- measured live 2026-09-06,
-# `--yolo` read an absolute path outside it via `run_shell_command` on the
-# first try. It is bounded by `gemini-probe-deny.toml` (harmonic-forge#432),
-# which denies that one tool; Gemini's file tools enforce the workspace
-# bound themselves, even under `--yolo`.
+#   1. Family order is fixed by the caller (never selectable) -- see
+#      `order=(...)` below.
+#   2. `read-only`, `probe` and `verify` postures map to per-family
+#      boundaries inside `invoke_claude`/`invoke_codex`, never at a call site.
 #
 # `verify` posture is deterministic for Codex and, under the operator's F774
 # ruling, Claude with an even narrower read-tools-only boundary.
@@ -41,11 +25,11 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: cross_family_call.sh --caller claude|codex|gemini --families 2|3 \
+Usage: cross_family_call.sh --caller claude|codex --families 2 \
          --posture read-only|probe|verify --brief PATH [--cwd PATH] [--out PATH]
 
   --caller    which CLI is making this call (determines target order)
-  --families  2 (caller's primary sibling only) or 3 (both siblings)
+  --families  2 (the caller's sibling; the only value, harmonic-forge#1113)
   --posture   read-only (centralized deny boundary), probe (--yolo,
               requires --cwd), or verify (Codex or restricted Claude,
               requires --cwd)
@@ -86,13 +70,19 @@ abort_preflight() {
   exit 2
 }
 
+# harmonic-forge#1113: the Gemini CLI is retired (it cannot authenticate by
+# OAuth or API key). Refused by name, before any other validation, so a caller
+# never believes it got a three-family review when it got two.
+if [ "$caller" = gemini ] || [ "$families" = 3 ]; then
+  abort_preflight "Gemini CLI retired (harmonic-forge#1113): --caller gemini and --families 3 are no longer supported; use --families 2"
+fi
 case "$caller" in
-  claude|codex|gemini) ;;
-  *) abort_preflight "--caller must be claude, codex, or gemini" ;;
+  claude|codex) ;;
+  *) abort_preflight "--caller must be claude or codex" ;;
 esac
 case "$families" in
-  2|3) ;;
-  *) abort_preflight "--families must be 2 or 3" ;;
+  2) ;;
+  *) abort_preflight "--families must be 2" ;;
 esac
 case "$posture" in
   read-only|probe|verify) ;;
@@ -108,66 +98,15 @@ if [ "$posture" = probe ] || [ "$posture" = verify ]; then
 fi
 
 # Locked caller-order table (harmonic-forge#366, operator 2026-08-22).
-# Never selectable by the caller; Gemini is never in the second slot.
+# Never selectable by the caller. Two families remain (harmonic-forge#1113),
+# so each caller has exactly one sibling.
 case "$caller" in
-  claude) order=(codex gemini) ;;
-  codex)  order=(claude gemini) ;;
-  gemini) order=(claude codex) ;;
+  claude) order=(codex) ;;
+  codex)  order=(claude) ;;
 esac
 targets=("${order[0]}")
-if [ "$families" = 3 ]; then
-  targets+=("${order[1]}")
-fi
-
-# `verify` is implemented for Codex and Claude. Gemini has no equivalent
-# constrained stream contract, so it remains refused.
-# rather than on `--caller`/`--families` separately (harmonic-forge#448).
-# `invoke_claude` takes no posture argument at all and `invoke_gemini` maps
-# every non-`probe` posture to its read-only admin policy, so an unguarded
-# `verify` would not fail -- it would silently run one of those two under a
-# posture whose guarantees (`--ignore-user-config`, no MCP grant, pinned
-# model) exist only in the Codex branch. Silently ignoring an unimplementable
-# security posture is the failure mode worth being loud about, so this exits
-# non-zero and names the offending family.
-if [ "$posture" = verify ]; then
-  if [ "$caller" = gemini ]; then
-    abort_preflight "--posture verify is unavailable for Gemini callers"
-  fi
-  for family in "${targets[@]}"; do
-    if [ "$family" = gemini ]; then
-      echo "cross_family_call: --posture verify is unavailable for Gemini; --caller $caller --families $families resolves to target '$family'" >&2
-      abort_preflight "--posture verify is unavailable for Gemini"
-    fi
-  done
-fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly_policy="$script_dir/gemini-read-only-deny.toml"
-probe_policy="$script_dir/gemini-probe-deny.toml"
-
-# harmonic-forge#432: fail closed on a missing policy file, HERE, because
-# `_cli_launch.sh`'s guard does not reach this script -- it shells out to
-# `gemini` directly. And the Gemini CLI does not fail closed on its own:
-# verified live 2026-08-28 and recorded in `_cli_launch.sh`, a bad
-# `--admin-policy` prints a stderr warning and "the session starts anyway,
-# completely unprotected under `--yolo`."
-#
-# So a deleted or renamed policy file would silently restore exactly the
-# unbounded `probe` this issue exists to close, and nothing would say so.
-# Checked for every posture rather than only the one about to run: a policy
-# file missing from the checkout is a broken install, not a per-invocation
-# condition, and finding out only on the run that happens to need it is how
-# this class of gap stays hidden.
-for policy_file in "$readonly_policy" "$probe_policy"; do
-  if [ ! -f "$policy_file" ]; then
-    echo "cross_family_call: admin policy file missing: $policy_file" >&2
-    echo "  Refusing to run. The Gemini CLI does NOT fail closed on a missing" >&2
-    echo "  --admin-policy -- it warns on stderr and runs unprotected, so this" >&2
-    echo "  check is the only thing standing between a missing file and an" >&2
-    echo "  unbounded session (harmonic-forge#432)." >&2
-    abort_preflight "admin policy file missing: $policy_file"
-  fi
-done
 
 # Set here, not inherited from `~/.codex/config.toml` -- `verify` passes
 # `--ignore-user-config`, so without an explicit `-m` the reviewer would fall
@@ -187,32 +126,6 @@ elif [ "$posture" = verify ] && [ "$caller" != codex ]; then
 else
   VERIFY_MODEL=gpt-6-sol
 fi
-
-# harmonic-forge#482. The previous pin, `gemini-2.5-pro`, was hardcoded at the
-# call site since harmonic-forge#366 and now fails every Gemini invocation:
-#
-#     ModelNotFoundError: This model models/gemini-2.5-pro is no longer
-#     available to new users
-#
-# **A floating alias, deliberately, and this is the substantive choice in this
-# issue.** A concrete pin is what broke; pinning another concrete version
-# schedules the identical outage for whenever that one retires. Two concrete
-# candidates were live-checked and both carry that same clock:
-# `gemini-2.5-flash` (the issue's own suggestion) and `gemini-3.1-pro-preview`
-# — a *preview*, which is a deprecation notice with extra steps.
-#
-# The determinism argument for a concrete pin is real, and it is why
-# `VERIFY_MODEL` above was pinned until the operator chose the latest Sol
-# (harmonic-forge#939). It does not apply here: `verify` is
-# Codex-only and reproducible by design, while `read-only`/`probe` are
-# ADVISORY — they surface findings a human reads, and nothing compares two
-# runs for equality. Capability matters more than repeatability for an
-# adversarial reviewer, so the alias keeps the PRO tier the original chose
-# rather than silently downgrading every posture to flash.
-#
-# Overridable, same shape as VERIFY_MODEL, so a caller who does need a fixed
-# version can have one without editing this file.
-GEMINI_MODEL="${CROSS_FAMILY_GEMINI_MODEL:-gemini-pro-latest}"
 
 # Appended to every brief, for every family, regardless of what the caller
 # wrote (harmonic-forge#366 correction: a Codex probe brief with no explicit
@@ -309,10 +222,6 @@ You are a READ-ONLY reviewer. Return only the required JSON report, including
 an "assumptions" array with one verdict object for every asserted assumption
 in the brief, in the same order.
 EOF
-
-#: Gemini's `-p` is appended to stdin's input (`gemini --help`), and headless
-#: mode needs a `-p`; the brief itself arrives on stdin (harmonic-forge#857).
-GEMINI_STDIN_INSTRUCTION="Carry out the instructions above, from stdin, exactly."
 
 prompt_text() {
   local posture="$1" brief="$2" family="${3:-}" brief_text
@@ -451,83 +360,6 @@ invoke_codex() {
     --sandbox "$sandbox" --json - <"$prompt_file"
 }
 
-invoke_gemini() {
-  local posture="$1" brief="$2" cwd="$3"
-  local mode_args=()
-  if [ "$posture" = probe ]; then
-    # harmonic-forge#432: `--yolo` alone let this posture read any absolute
-    # path on disk via `run_shell_command`, measured live -- `--cwd` bounded
-    # nothing. The probe-tier policy denies that one tool and nothing else,
-    # which lands the Gemini branch on the same effective boundary
-    # `invoke_codex`'s probe branch already has from `--sandbox
-    # workspace-write`: writes allowed, but only inside the workspace.
-    # See `gemini-probe-deny.toml` for the three measurements.
-    mode_args=(--yolo --admin-policy "$probe_policy")
-  else
-    mode_args=(--admin-policy "$readonly_policy")
-  fi
-  (
-    if [ -n "$cwd" ]; then cd "$cwd"; fi
-    # harmonic-forge#462: `~/.gemini/settings.json` pins
-    # `selectedType: "oauth-personal"` (the operator's interactive login),
-    # and Gemini honors that pin -- and any cached
-    # `~/.gemini/oauth_creds.json` -- over a `GEMINI_API_KEY` env var even
-    # when one is present. oauth-personal is also the auth tier Google has
-    # discontinued for this client (`IneligibleTierError`), so every
-    # invocation using the real HOME dies there before `GEMINI_API_KEY` is
-    # ever consulted. A throwaway HOME carrying only
-    # `selectedType: "gemini-api-key"` is the only way to force the key
-    # path without touching the operator's real global settings --
-    # confirmed live: without it, `API key not valid` is never reached at
-    # all, the process dies on the auth-tier error first. Scoped to this
-    # subshell's own trap so it never leaks into a caller that also
-    # invokes Codex or Claude in the same `cross_family_call.sh` run.
-    #
-    # Two follow-on findings from preclose-inspection on this same issue,
-    # both against Gemini's OWN config-root resolution
-    # (`homedir()` in the installed CLI bundle), which checks
-    # `GEMINI_CLI_HOME` before falling back to `$HOME`:
-    #
-    #   1. If the caller's environment exports `GEMINI_CLI_HOME`, `env
-    #      HOME=...` alone does not override it -- Gemini resolves back to
-    #      the operator's real `~/.gemini/`, silently defeating this whole
-    #      mechanism. `GEMINI_CLI_HOME` is unset explicitly so the
-    #      throwaway `HOME` is the only candidate `homedir()` can return.
-    #   2. Gemini's dotenv fallback (`<homedir>/.gemini/.env`, then
-    #      `<homedir>/.env`) resolves via the same `homedir()` -- so once a
-    #      working key exists, an operator who supplies it via
-    #      `~/.gemini/.env` (the vendor-documented location that keeps the
-    #      secret out of the process environment, rather than exporting it)
-    #      would find it invisible here, a silent regression versus the
-    #      pre-fix behavior. `GEMINI_API_KEY`/`GOOGLE_API_KEY` are passed
-    #      through explicitly from the real environment (if set) precisely
-    #      so the exported-var path keeps working even though the dotenv
-    #      path cannot be reached from an isolated HOME.
-    gemini_authtype_home="$(mktemp -d)"
-    trap 'rm -rf "$gemini_authtype_home"' EXIT
-    mkdir -p "$gemini_authtype_home/.gemini"
-    cat >"$gemini_authtype_home/.gemini/settings.json" <<'SETTINGS'
-{"security":{"auth":{"selectedType":"gemini-api-key"}}}
-SETTINGS
-    # If the operator supplies the key via Gemini's documented dotenv path
-    # rather than exporting it, that file lives under the REAL home and
-    # would otherwise be invisible from the throwaway one -- copy it in
-    # (not symlink: keeps the throwaway dir self-contained after the real
-    # HOME's file changes mid-run).
-    if [ -f "$HOME/.gemini/.env" ]; then
-      cp "$HOME/.gemini/.env" "$gemini_authtype_home/.gemini/.env"
-    fi
-    env -u GEMINI_CLI_HOME \
-      "HOME=$gemini_authtype_home" \
-      ${GEMINI_API_KEY:+"GEMINI_API_KEY=$GEMINI_API_KEY"} \
-      ${GOOGLE_API_KEY:+"GOOGLE_API_KEY=$GOOGLE_API_KEY"} \
-      "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-hrse-497421}" \
-      GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_EDITOR=true \
-      gemini --skip-trust "${mode_args[@]}" -m "$GEMINI_MODEL" \
-        -p "$GEMINI_STDIN_INSTRUCTION" -o json <"$prompt_file"
-  )
-}
-
 # harmonic-forge#467: the minimum escaping the failure envelope needs, so it
 # can be built without `jq` -- see the dispatch loop for why depending on `jq`
 # there would defeat the fix. Backslash first, then quote, or the quote's own
@@ -578,10 +410,9 @@ emit_envelope() {
   native_norm="$(mktemp -p "$tmp_dir")"; text_file="$(mktemp -p "$tmp_dir")"
   unfenced_file="$(mktemp -p "$tmp_dir")"; report_file="$(mktemp -p "$tmp_dir")"
   report_tmp="$(mktemp -p "$tmp_dir")"
+  report_tmp="$(mktemp -p "$tmp_dir")"
   # Cleanup is local to this function and restores nothing, because
-  # `emit_envelope` is never called from a trap-bearing subshell -- the only
-  # existing trap belongs to the Gemini home dir (line 314) and is scoped to
-  # its own subshell.
+  # `emit_envelope` is never called from a trap-bearing subshell.
   trap 'rm -f "$native_norm" "$text_file" "$unfenced_file" "$report_file" "$report_tmp"' RETURN
 
   # One normalized native VALUE per family, written to disk. `jq -s '.[0]'`
@@ -602,10 +433,6 @@ emit_envelope() {
     codex)
       jq -s '.' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
       jq -rs '[.[] | select(.type=="item.completed" and .item.type=="agent_message")] | last | .item.text // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
-      ;;
-    gemini)
-      jq -s '.[0]' "$native_file" >"$native_norm" 2>/dev/null || printf 'null\n' >"$native_norm"
-      jq -r '.response // empty' "$native_file" >"$text_file" 2>/dev/null || : >"$text_file"
       ;;
   esac
 
@@ -703,7 +530,7 @@ emit_envelope() {
 # a caller that drops the status.
 #
 # The loop also no longer dies on the first bad family. Aborting mid-loop was
-# its own defect: with `--families 3` the remaining target never ran, the
+# its own defect: with more than one target the remaining one never ran, the
 # earlier one's envelope had already been printed, and nothing in the output
 # said a family was missing.
 overall_status=0
@@ -744,15 +571,14 @@ for family in "${targets[@]}"; do
   # passthrough would put that noise in every envelope. It is surfaced only on
   # a non-zero exit -- see `emit_envelope`.
   #
-  # Applied to all three families, not only Codex. The redirect belongs at the
-  # one dispatch site rather than in three functions, and the hole it closes
+  # Applied to every family, not only Codex. The redirect belongs at the
+  # one dispatch site rather than in each function, and the hole it closes
   # is identical in each -- the same reason `verify` is fixed alongside
   # `probe` above.
   tmp_err="$(mktemp -p "$scratch")"
   # harmonic-forge#857: the prompt goes to the CLI on stdin from this file,
   # which every `invoke_*` reads as `$prompt_file` from this scope (their
-  # call shape is unchanged). Created and removed here, outside `invoke_gemini`'s subshell, whose own
-  # EXIT trap restores the API-key HOME.
+  # call shape is unchanged).
   prompt_file="$(mktemp -p "$scratch")"
   prompt_text "$posture" "$brief" "$family" >"$prompt_file"
   exit_code=0
@@ -761,7 +587,6 @@ for family in "${targets[@]}"; do
   case "$family" in
     claude) invoke_claude "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
     codex)  invoke_codex "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
-    gemini) invoke_gemini "$posture" "$brief" "$cwd" >"$tmp_out" 2>"$tmp_err" & ;;
   esac
   reviewer_pid=$!
   wait "$reviewer_pid" || exit_code=$?
