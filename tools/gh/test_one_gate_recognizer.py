@@ -155,6 +155,12 @@ class OneRecognizerTests(unittest.TestCase):
         bad = [ln for ln in regexy if "PASS" in ln or "Gate Results" in ln]
         self.assertEqual(bad, [])
 
+    def test_g_eras_extractor_version_bumped_for_new_scoring(self):
+        """eras.py's docstring: parsing changes bump EXTRACTOR_VERSION, so
+        rows scored by the old lane-3 recognizer are not mixed with new."""
+        src = (HERE / ".." / "telemetry" / "eras.py").resolve().read_text()
+        self.assertIn('EXTRACTOR_VERSION = "threads-5"', src)
+
 
 if __name__ == "__main__":
     unittest.main()
