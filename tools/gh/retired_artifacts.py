@@ -46,9 +46,8 @@ RETIRED_ARTIFACTS: dict[str, str] = {
     # harmonic-forge#1113: the Gemini CLI as a lane agent and cross-family
     # family. Command-shaped and full-path keys only (never the bare word),
     # so HRSE2's Gemini model API is never flagged.
-    "--agent gemini": _GEMINI_CLI_RETIRED,
-    "--caller gemini": _GEMINI_CLI_RETIRED,
-    "--families 3": _GEMINI_CLI_RETIRED,
+    # A key ending in "/" is a directory key: it also flags any span that
+    # starts with it, so every file the deletion removed is covered.
     "tools/gemini/": _GEMINI_CLI_RETIRED,
     "tools/gemini/install-lane3-context-extension": _GEMINI_CLI_RETIRED,
     "tools/gemini/lane3-context/lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
@@ -59,6 +58,18 @@ RETIRED_ARTIFACTS: dict[str, str] = {
     "tools/lane/policies/gemini-lane2.toml": _GEMINI_CLI_RETIRED,
     "tools/lane/policies/gemini-lane3.toml": _GEMINI_CLI_RETIRED,
     "tools/lane/policies/canary/run_canary.py": _GEMINI_CLI_RETIRED,
+    "tools/lane/test_lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
     "prompts/gemini-gem-harmonic-architect-co-pilot.md": _GEMINI_CLI_RETIRED,
     "prompts/gemini-gem-harmonic-forge.md": _GEMINI_CLI_RETIRED,
+}
+
+# Command-fragment keys (harmonic-forge#1113): matched as a contiguous run of
+# whitespace-separated tokens anywhere inside a backtick span, so
+# `lane3 --agent gemini` is flagged. A small explicit set -- never the bare
+# word "gemini", which would flag HRSE2's Gemini model API.
+RETIRED_COMMAND_FRAGMENTS: dict[str, str] = {
+    "--agent gemini": _GEMINI_CLI_RETIRED,
+    "--caller gemini": _GEMINI_CLI_RETIRED,
+    "--families 3": _GEMINI_CLI_RETIRED,
+    "LANE_CLI=gemini": _GEMINI_CLI_RETIRED,
 }

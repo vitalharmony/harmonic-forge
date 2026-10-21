@@ -801,6 +801,48 @@ class TestFindRetiredCitations(unittest.TestCase):
         self.assertEqual([h[0] for h in hits], ["tools/gemini/"])
         self.assertIn("harmonic-forge#1113", hits[0][1])
 
+    def test_every_path_head_deletes_is_flagged(self):
+        """harmonic-forge#1113 AC4: every file this branch deletes, computed
+        from git, is flagged when cited."""
+        import subprocess
+        def git(*a):
+            return subprocess.run(["git", *a], capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        try:
+            base = git("merge-base", "HEAD", "origin/main")
+            deleted = git("diff", "--diff-filter=D", "--name-only", base,
+                          "HEAD").split()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            self.skipTest("git merge-base with origin/main unavailable")
+        if not deleted:
+            self.skipTest("HEAD deletes nothing relative to origin/main")
+        for path in deleted:
+            with self.subTest(path=path):
+                self.assertTrue(gh_issue.find_retired_citations(f"See `{path}`."))
+
+    def test_directory_key_flags_descendant(self):
+        hits = gh_issue.find_retired_citations(
+            "Edit `tools/gemini/lane3-context/gemini-extension.json`.")
+        self.assertEqual([h[0] for h in hits], ["tools/gemini/"])
+
+    def test_command_fragments_flagged_inside_larger_span(self):
+        cases = {
+            "`lane3 --agent gemini`": "--agent gemini",
+            "`LANE_CLI=gemini lane3`": "LANE_CLI=gemini",
+            "`cross_family_call.sh --caller gemini --families 2`": "--caller gemini",
+            "`cross_family_call.sh --families 3 --mode verify`": "--families 3",
+        }
+        for body, key in cases.items():
+            with self.subTest(body=body):
+                self.assertIn(key, [h[0] for h in
+                                    gh_issue.find_retired_citations(body)])
+
+    def test_bare_gemini_and_gemini_api_not_flagged(self):
+        for body in ("gemini", "`gemini`", "Gemini API", "`Gemini API`",
+                     "`--families 2`", "`--agent codex`"):
+            with self.subTest(body=body):
+                self.assertEqual(gh_issue.find_retired_citations(body), [])
+
     def test_gemini_model_api_prose_is_not_flagged(self):
         """The HRSE2 Gemini model API is out of scope: the bare word, even
         backtick-quoted, is never a key."""

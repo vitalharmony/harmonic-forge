@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
+from retired_artifacts import RETIRED_ARTIFACTS, RETIRED_COMMAND_FRAGMENTS  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
@@ -53,12 +53,32 @@ def find_retired_citations(body: str) -> list[tuple[str, str]]:
     point was scrubbing Devin references). A normal issue's free-text
     "Estimate: N points" line is never backtick-quoted, so it is excluded
     by construction, not by a special case.
+
+    Two narrow extensions (harmonic-forge#1113): a directory key (ending in
+    "/") also flags a span that starts with it, and a command-fragment key
+    in `RETIRED_COMMAND_FRAGMENTS` flags a span containing its tokens as a
+    contiguous run.
     """
     seen: list[tuple[str, str]] = []
+
+    def add(name: str, note: str) -> None:
+        if (name, note) not in seen:
+            seen.append((name, note))
+
     for match in _BACKTICK_SPAN.findall(body):
         note = RETIRED_ARTIFACTS.get(match)
-        if note is not None and (match, note) not in seen:
-            seen.append((match, note))
+        if note is not None:
+            add(match, note)
+            continue
+        for key, key_note in RETIRED_ARTIFACTS.items():
+            if key.endswith("/") and match.startswith(key):
+                add(key, key_note)
+        tokens = match.split()
+        for frag, frag_note in RETIRED_COMMAND_FRAGMENTS.items():
+            ft = frag.split()
+            if any(tokens[i:i + len(ft)] == ft
+                   for i in range(len(tokens) - len(ft) + 1)):
+                add(frag, frag_note)
     return seen
 from item_list_cache import BOARD_ITEM_SCAN_LIMIT  # noqa: E402
 
