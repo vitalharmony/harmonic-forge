@@ -23,7 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_ci  # noqa: E402
 
 
-def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_runs=(),
+_READABLE = object()
+
+
+def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bare_runs=(),
             message="ordinary commit\n"):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
@@ -36,6 +39,15 @@ def fake_gh(checks=(), pulls=(), required=None, fail=(), main_tip=None, bare_run
     `.commit.sha`, for `sha_is_current_main_tip`'s own call. `None` means the
     endpoint fails, matching every other unset fixture's fail-closed default.
     """
+    if required is _READABLE:
+        # harmonic-forge#1103: the PASS gate now refuses an unreadable required
+        # set, so the default models a READABLE protection naming every check
+        # the fixture carries (`verify` when it carries none) -- the "consider
+        # every check" behaviour these tests were written against. Pass
+        # `required=None` for a protection naming no contexts (an empty
+        # required set); `fail=("/protection",)` for an unreadable one.
+        required = {c["name"] for c in checks} or {"verify"}
+
     def run(cmd):
         url = next((a for a in cmd if a.startswith("repos/")), "")
         for marker in fail:
@@ -194,6 +206,99 @@ class PassRequiresGreenCiTests(unittest.TestCase):
         ok, msg = gate_ci.check_gate_result("o/r", PASS_BODY, run=fake_runs())
         self.assertFalse(ok)
         self.assertIn("not completed", msg)
+
+    def test_unreadable_required_checks_refuses_a_pass(self):
+        """harmonic-forge#1103 AC1. `required_checks` returning None used to
+        fall through to `ci_conclusion(required=None)`, which judged only the
+        runs it saw, so a head whose required check had not reported read
+        green. The PASS gate must refuse with a named reason instead."""
+        with mock.patch.object(gate_ci, "required_checks", return_value=None):
+            ok, msg = gate_ci.check_gate_result(
+                "o/r", PASS_BODY, run=fake_runs(check("lint")))
+        self.assertFalse(ok, msg)
+        self.assertIn("cannot read o/r's required checks; retry", msg)
+
+    def test_an_unreadable_protection_endpoint_refuses_a_pass(self):
+        """AC1 through the real `required_checks`: protection read fails."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(checks=[check("verify")], fail=("/protection",)))
+        self.assertFalse(ok, msg)
+        self.assertIn("required checks; retry", msg)
+
+    def test_an_unprotected_branch_judges_its_observed_checks(self):
+        """harmonic-forge#1103 preclose survivor 1: GitHub's 404 "Branch not
+        protected" is a permanent repo state, not an unreadable read. A PASS
+        with green observed checks is allowed; a red observed check still
+        refuses."""
+        def unprotected(checks):
+            inner = fake_gh(checks=checks)
+
+            def run(cmd):
+                if any("/protection" in a for a in cmd):
+                    return 1, "gh: Branch not protected (HTTP 404)\n"
+                return inner(cmd)
+            return run
+        self.assertEqual(gate_ci.required_checks("o/r", run=unprotected([])), set())
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=unprotected([check("verify"), check("lint")]))
+        self.assertTrue(ok, msg)
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=unprotected([check("verify"), check("lint", conclusion="failure")]))
+        self.assertFalse(ok, msg)
+        self.assertIn("RED", msg)
+
+    def test_an_unprotected_branch_requires_verify(self):
+        """harmonic-forge#1103 reforge fix 1: an empty required set fails
+        closed onto DEFAULT_REQUIRED_CHECKS. Lint green with verify absent
+        must not PASS; verify green does."""
+        def unprotected(checks):
+            inner = fake_gh(checks=checks)
+
+            def run(cmd):
+                if any("/protection" in a for a in cmd):
+                    return 1, "gh: Branch not protected (HTTP 404)\n"
+                return inner(cmd)
+            return run
+        ok, msg = gate_ci.check_gate_result("o/r", PASS_BODY, run=unprotected([check("lint")]))
+        self.assertFalse(ok, msg)
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=unprotected([check("lint"), check("verify")]))
+        self.assertTrue(ok, msg)
+
+    def test_a_non_404_branch_not_protected_failure_is_unreadable(self):
+        """harmonic-forge#1103 preclose pass 3: the phrase without GitHub's
+        404 is not proof of an unprotected branch; None, and PASS refuses."""
+        def broken(checks):
+            inner = fake_gh(checks=checks)
+
+            def run(cmd):
+                if any("/protection" in a for a in cmd):
+                    return 1, "gh: Branch not protected lookup failed (HTTP 500)\n"
+                return inner(cmd)
+            return run
+        self.assertIsNone(gate_ci.required_checks("o/r", run=broken([])))
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=broken([check("verify"), check("lint")]))
+        self.assertFalse(ok, msg)
+
+    def test_an_empty_protection_read_is_unreadable(self):
+        """harmonic-forge#1103 preclose pass 2: exit 0 with empty stdout is
+        unparseable, so None, and the PASS gate refuses."""
+        def empty(checks):
+            inner = fake_gh(checks=checks)
+
+            def run(cmd):
+                if any("/protection" in a for a in cmd):
+                    return 0, ""
+                return inner(cmd)
+            return run
+        self.assertIsNone(gate_ci.required_checks("o/r", run=empty([])))
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=empty([check("verify"), check("lint")]))
+        self.assertFalse(ok, msg)
+        self.assertIn("required checks; retry", msg)
 
     def test_an_unreadable_api_refuses_a_pass(self):
         """Fail closed. An unreachable API is not evidence of health."""
@@ -777,6 +882,67 @@ class ReadsActionsNotCheckRuns(unittest.TestCase):
     def test_a_sha_with_no_workflow_runs_is_absent(self) -> None:
         state, _ = gate_ci.ci_conclusion("o/r", self.SHA, run=fake_gh(checks=[]))
         self.assertEqual(state, "absent")
+
+
+
+class VisibleTextVerdictTests(unittest.TestCase):
+    """harmonic-forge#1103 reforge: `verdict_of` and `looks_like_a_gate_report`
+    read only the visible text (`markdown_strip.visible_text`)."""
+
+    PRIOR = "```\n## Lane 3 Gate Results — H1 — FAIL\n**Verdict:** FAIL\n```\n"
+    REAL = "## Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n"
+
+    def test_a_fenced_fail_above_a_real_pass_reads_pass(self):
+        self.assertEqual(gate_ci.verdict_of(self.PRIOR + "\n" + self.REAL), "PASS")
+
+    def test_a_fenced_pass_alone_has_no_verdict(self):
+        body = "```\n" + self.REAL + "```\n"
+        self.assertIsNone(gate_ci.verdict_of(body))
+        self.assertFalse(gate_ci.looks_like_a_gate_report(body))
+
+    def test_a_tilde_fenced_pass_alone_has_no_verdict(self):
+        body = "~~~\n" + self.REAL + "~~~\n"
+        self.assertIsNone(gate_ci.verdict_of(body))
+
+
+class RegressionFixTests(unittest.TestCase):
+    """harmonic-forge#1103 reforge regressions: a fenced gate heading must
+    still RUN the CI check, and the authorizing read judges one snapshot with
+    every visible check before `absent`."""
+
+    REAL = "## Lane 3 Gate Results — H1 — PASS\n**Verdict:** PASS\n**Head-SHA:** " + "a" * 40 + "\n"
+
+    def _assert_runs_and_refuses(self, body):
+        for checks in ([check("verify", "failure")], []):
+            ok, msg = gate_ci.check_gate_result("o/r", body, run=fake_gh(checks=checks))
+            self.assertNotIn("not a gate report", msg)
+            self.assertFalse(ok, msg)
+
+    def test_a_tilde_fenced_pass_runs_the_ci_check(self):
+        self._assert_runs_and_refuses("~~~\n" + self.REAL + "~~~\n")
+
+    def test_a_four_backtick_fence_around_a_fence_runs_the_ci_check(self):
+        self._assert_runs_and_refuses("````\n```\n" + self.REAL + "```\n````\n")
+
+    def test_unprotected_verify_missing_lint_red_is_red_not_absent(self):
+        state, detail = gate_ci.authorizing_conclusion(
+            "o/r", "a" * 40, set(), run=fake_gh(checks=[check("lint", "failure")]))
+        self.assertEqual(state, "red", detail)
+
+    def test_one_snapshot_of_check_runs(self):
+        inner = fake_gh(checks=[check("lint"), check("verify")])
+        calls = []
+
+        def run(cmd):
+            url = next((a for a in cmd if a.startswith("repos/")), "")
+            if "/actions/runs?" in url:
+                calls.append(url)
+                if len(calls) > 1:
+                    return 0, ""
+            return inner(cmd)
+        state, detail = gate_ci.authorizing_conclusion("o/r", "a" * 40, set(), run=run)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(state, "green", detail)
 
 
 if __name__ == "__main__":

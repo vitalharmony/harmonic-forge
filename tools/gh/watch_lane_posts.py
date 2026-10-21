@@ -227,6 +227,7 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: `lane_state.py`'s, imported rather than restated -- a second regex is how
 #: two readers of one heading drift apart.
 import gate_ci  # noqa: E402
+import markdown_strip  # noqa: E402
 import staleness_ff  # noqa: E402
 
 from belt_mechanics import (  # noqa: E402
@@ -572,7 +573,7 @@ def _queue_owes(lane: str, kind: str, body: str) -> str:
 #: Any `Lane 3 Gate Results` heading the posting tool accepts (`#{1,4}`, no
 #: verdict required -- `post_lane_discussion.py`), so a markerless gate report
 #: is still recognized as one.
-_GATE_RESULT_HEADING = re.compile(r"^#{1,4}[ \t]*Lane 3 Gate Results\b", re.IGNORECASE)
+_GATE_RESULT_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+Lane 3 Gate Results\b", re.IGNORECASE)
 
 
 def _gate_result_owes_review(body: str) -> bool:
@@ -592,14 +593,15 @@ def _gate_result_owes_review(body: str) -> bool:
 def _is_gate_report(detail: str, body: str) -> bool:
     """Is this comment a Lane 3 gate report? One answer for both channels
     (sticky-wicket PATCH, epoch 2 pass 2): a `kind=gate-result` footer, or a
-    `Lane 3 Gate Results` heading as the detail or as the body's first
-    unquoted line, whatever the footer's kind. 74 of 98 real gate reports carry
+    `Lane 3 Gate Results` heading as the detail or on ANY visible line of the
+    body (matching `gate_ci.looks_like_a_gate_report`, #1103 reforge fix 5),
+    whatever the footer's kind. 74 of 98 real gate reports carry
     no gate-result footer (`post_lane_discussion.py`), and
     `mise run lane-comment` stamps `kind=discussion` by default."""
     if detail == "gate-result" or _GATE_RESULT_HEADING.match(detail):
         return True
-    first = _strip_quoted(body).strip().split("\n", 1)[0]
-    return bool(_GATE_RESULT_HEADING.match(first))
+    return any(_GATE_RESULT_HEADING.match(line)
+               for line in _strip_quoted(body).splitlines())
 
 
 def _fail_owed_to_l1(self_lane: str | None, detail: str, body: str) -> bool:
@@ -768,19 +770,18 @@ def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
 #: (`l1_post.py`, `l2_post.py`) ever emits its real marker inside a fence,
 #: so stripping fenced content before the marker search cannot hide a
 #: genuine one -- only a quoted one.
-_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+#: Both wrappers delegate to the one shared reader,
+#: `markdown_strip.visible_text` (harmonic-forge#1103 reforge): fenced and
+#: indented code blocks and `>` quote lines, per CommonMark.
 
 
 def _strip_fenced_blocks(body: str) -> str:
-    return _FENCED_BLOCK_RE.sub("", body)
-
-
-_QUOTE_LINE_RE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
+    return markdown_strip.visible_text(body)
 
 
 def _strip_quoted(body: str) -> str:
-    """`body` without fenced blocks or `>` quote lines."""
-    return _QUOTE_LINE_RE.sub("", _strip_fenced_blocks(body))
+    """`body` without code blocks or `>` quote lines."""
+    return markdown_strip.visible_text(body)
 
 
 def _own_marker(body: str) -> str | None:

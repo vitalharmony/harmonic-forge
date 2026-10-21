@@ -186,9 +186,32 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(_is_denied(result))
         self.assertIn("--repo", result["systemMessage"])
 
-    def test_a_fail_with_no_repo_still_posts(self):
+    def test_a_fail_with_no_repo_is_denied(self):
+        """harmonic-forge#1103: any possible gate report with no --repo is
+        refused -- the verdict cannot be trusted when it cannot be checked."""
         cmd = f'gh issue comment 9 --body "{FAIL_BODY}"'
-        self.assertFalse(_is_denied(self._decide(cmd, check=refuse_check)))
+        self.assertTrue(_is_denied(self._decide(cmd, check=ok_check)))
+
+    def _no_repo_file_post(self, body: str) -> dict:
+        body_file = self.cwd / "body.md"
+        body_file.write_text(body, encoding="utf-8")
+        return self._decide(f"gh issue comment 9 --body-file {body_file}", check=ok_check)
+
+    def test_a_tilde_fenced_pass_with_no_repo_is_denied(self):
+        """harmonic-forge#1103: a fenced PASS has verdict None; deciding on
+        the verdict let it through unchecked."""
+        result = self._no_repo_file_post("~~~\n" + PASS_BODY + "~~~\n")
+        self.assertTrue(_is_denied(result))
+        self.assertIn("--repo", result["systemMessage"])
+
+    def test_a_four_backtick_fence_wrapping_a_fence_with_no_repo_is_denied(self):
+        body = "````\n```\n" + PASS_BODY + "```\n````\n"
+        result = self._no_repo_file_post(body)
+        self.assertTrue(_is_denied(result))
+        self.assertIn("--repo", result["systemMessage"])
+
+    def test_a_non_gate_comment_with_no_repo_is_allowed(self):
+        self.assertFalse(_is_denied(self._no_repo_file_post(NON_GATE_BODY)))
 
     def test_an_unrelated_command_is_allowed(self):
         result = self._decide("git status", check=refuse_check)

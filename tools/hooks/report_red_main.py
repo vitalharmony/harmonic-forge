@@ -75,8 +75,8 @@ extra logic needed here to enforce it.
 ## An unprotected branch does not fall back to "every check is required"
 (preclose-inspection finding)
 
-`gate_ci.required_checks()` returns `None` when a branch has no protection
-rule at all -- true today for 3 of the 4 `REPO_PREFIXES` repos (verified
+`gate_ci.required_checks()` returns an empty set when a branch has no
+protection rule at all (`None` only when the read fails; harmonic-forge#1103) -- true today for 3 of the 4 `REPO_PREFIXES` repos (verified
 live: only `vitalharmony/hrse` has one). `gate_ci`'s own docstring calls the
 unscoped-scan fallback "the stricter direction," which is correct for a GATE
 (refusing a PASS on ambiguous input is safe) and wrong for a REPORTER: an
@@ -87,7 +87,7 @@ reads as a red `main`; the repo's actual code CI never even ran on that
 commit.
 
 So this module never leaves `required` unscoped: `DEFAULT_REQUIRED_CHECKS =
-{"verify"}` is used whenever `required_checks()` returns `None`. Empirically
+{"verify"}` is used whenever `required_checks()` returns `None` or an empty set. Empirically
 the house's one canonical CI job name -- confirmed live present on `main`'s
 recent history in `vitalharmony/hrse` (the one repo with real branch
 protection, whose contexts list is exactly `["verify"]`) and
@@ -157,10 +157,10 @@ import gate_ci  # noqa: E402
 
 STATE_PATH = Path.home() / ".claude" / "state" / "main-ci-status.json"
 
-#: Used whenever `gate_ci.required_checks()` returns `None` (no branch
+#: Used whenever `gate_ci.required_checks()` returns `None` or an empty set (no branch
 #: protection configured) -- see the module docstring's "unprotected branch"
 #: section for why an unscoped scan is the wrong fallback for a reporter.
-DEFAULT_REQUIRED_CHECKS = {"verify"}
+DEFAULT_REQUIRED_CHECKS = set(gate_ci.DEFAULT_REQUIRED_CHECKS)
 
 
 def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:

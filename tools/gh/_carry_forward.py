@@ -255,7 +255,7 @@ def check_ci(repo: str, sha: str, run=None) -> list[Refusal]:
         # F1036 epoch 2 survivor 2: never fall back to the observed runs; an
         # unreadable required set cannot show every required check reported.
         return [Refusal(f"cannot read {repo}'s required checks (retry)", wait=True)]
-    state, detail = gate_ci.ci_conclusion(repo, sha, run=run, required=required)
+    state, detail = gate_ci.authorizing_conclusion(repo, sha, required, run=run)
     if state == "green":
         return []
     if state == "unknown":

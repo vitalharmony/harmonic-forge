@@ -332,18 +332,17 @@ def decision(command: object, cwd: Path, check=None, round_check=None) -> dict:
             # Every token on its own line, so a quoted body's heading starts
             # a line the way `looks_like_a_gate_report` requires.
             body = "\n".join(token for seg in segments for token in seg) + "\n" + command
-        if not gate_ci.looks_like_a_gate_report(body):
+        if not gate_ci.may_be_a_gate_report(body):
             continue
         if repo is None:
-            # harmonic-forge#792 preclose finding: skipping here let a PASS
-            # through both checks. A FAIL/BLOCKED still posts freely.
-            if gate_ci.verdict_of(body) == "PASS":
-                return denial(
-                    "[GATE] REFUSED: a PASS gate report must name its repo with "
-                    "--repo/-R so CI and round approval can be checked "
-                    "(harmonic-forge#792)."
-                )
-            continue
+            # harmonic-forge#792/#1103: a body that may be a gate report and
+            # cannot be checked is refused, not allowed -- deciding on
+            # verdict_of let a fenced PASS (verdict None) through.
+            return denial(
+                "[GATE] REFUSED: a possible gate report must name its repo with "
+                "--repo/-R so CI and round approval can be checked "
+                "(harmonic-forge#792, harmonic-forge#1103)."
+            )
         ok, message = check(repo, body)
         if not ok:
             return denial(
