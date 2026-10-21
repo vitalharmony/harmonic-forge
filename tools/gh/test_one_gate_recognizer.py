@@ -82,6 +82,12 @@ class LaneStateRecognitionTests(unittest.TestCase):
         """(c) AC1: stripped with `markdown_strip.visible_text`."""
         self.assertFalse(scored("quoted:\n\n~~~\n## Lane 3 Gate Results — PASS\n~~~\n"))
 
+    def test_c3_a_tilde_fenced_spec_heading_is_not_scored(self):
+        """AC1 on the markers lane_state still reads itself: a quoted spec is
+        stripped by `markdown_strip.visible_text`, not a backtick-only regex."""
+        self.assertNotIn("spec.posted",
+                         keys("quoted:\n\n~~~\n## Lane 3 Test Spec — H1\n~~~\n"))
+
     def test_c2_a_blockquoted_l3p_is_not_scored(self):
         """(c2) Not scored, and the quote is removed by the shared stripper
         `gate_ci` reads, not by an accident of `lane_state`'s own regex."""
