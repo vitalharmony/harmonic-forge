@@ -1228,6 +1228,16 @@ class BaseRelative(Pipeline):
         self.assertEqual(new, ["b (m.C.b)"])
         self.assertEqual(base_failures, ["a (m.C.a)"])
 
+    def test_head_test_step_exiting_abnormally_is_a_fail(self):
+        # Sticky-wicket patch 5: the base exits 1 with test_old failing; the
+        # head exits 2 with the same failure listed and as many tests run. An
+        # exit other than 0 or 1 is a crash, never a matching failure set.
+        base = checked("FAIL: test_old (m.C.test_old)\nRan 2 tests in 1s\n", 1)
+        head = checked("FAIL: test_old (m.C.test_old)\nRan 2 tests in 1s\n", 2)
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("test step exited 2", new)
+
     def test_head_breaking_a_later_step_fails_on_a_failing_base(self):
         # Sticky-wicket kill check: the base fails one unittest, the head breaks
         # check_cross_registry. Every step runs, so the head must fail.

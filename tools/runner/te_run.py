@@ -611,6 +611,10 @@ def judge_check(head: dict, base: dict) -> tuple[int, list[str], list[str]]:
     # before the tests, never an empty difference.
     if head["test_rc"] and not head["failures"]:
         new.append(f"{TEST_STEP} exited {head['test_rc']} naming no failing test")
+    # Sticky-wicket patch 5, the pass-1 reforge's crash rule applied to the
+    # head: a test step exiting other than 0 or 1 crashed, whatever it listed.
+    if head["test_rc"] not in (0, 1):
+        new.append(f"test step exited {head['test_rc']}")
     if head["ran"] < (base.get("ran") or 0):
         new.append(f"head ran {head['ran']} tests, base ran {base.get('ran')}")
     # Every other step is absolute: a failure on the base never masks the head.
