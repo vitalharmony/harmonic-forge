@@ -56,6 +56,8 @@ FAKE_CLAUDE = textwrap.dedent("""\
         hook = Path(".git/hooks/pre-push")
         hook.write_text("#!/bin/sh\\ntouch " + os.environ["FAKE_PRE_PUSH_SENTINEL"] + "\\n")
         hook.chmod(0o755)
+    if os.environ.get("FAKE_UNTRACKED"):  # an uncommitted file left in the agent's clone
+        Path(os.environ["FAKE_UNTRACKED"]).write_text("[tasks.check]\\nrun = 'true'\\n")
     if os.environ.get("FAKE_TAMPER_BUNDLE"):  # the agent rewrites Lane 1's tests on disk
         Path(os.environ["FAKE_TAMPER_BUNDLE"]).write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
     drop = os.environ.get("FAKE_DROP_HOOK", "")
@@ -189,6 +191,10 @@ class Pipeline(unittest.TestCase):
         # Run evidence and the base-check cache stay in the fixture (#1112).
         self.enter(mock.patch.object(te_run, "RUNS_ROOT", self.tmp / "runs"))
         self.enter(mock.patch.object(te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"))
+        self.enter(mock.patch.object(te_run, "CHECK_TREE_ROOT", self.tmp / "check-trees"))
+        # One test step, run through the stub mise (FAKE_MISE_OUT/FAKE_MISE_RC).
+        self.enter(mock.patch.object(te_run, "CHECK_STEPS",
+                                     (("run_tests", "python3 tools/run_tests.py"),)))
         self.preflight = mock.MagicMock(return_value={"failures": [], "reported": []})
         self.enter(mock.patch.object(te_run, "run_preflight", self.preflight))
         self.enter(mock.patch.object(tq, "first_failure", return_value=None))
@@ -367,7 +373,8 @@ class Pipeline(unittest.TestCase):
     def test_agent_check_and_kill_tests_run_inside_the_boundary(self):
         self.drive()
         commands = [self.wrapped_command(c) for c in self.bwrap_calls()]
-        self.assertIn(["mise", "run", "check"], commands)
+        self.assertTrue(any(c[:5] == ["mise", "exec", "--", "sh", "-c"] for c in commands),
+                        commands)
         # kill_runner's test commands (a subprocess of te_run) are wrapped too
         self.assertTrue(any(c[:3] == ["python3", "-m", "unittest"] for c in commands), commands)
 
@@ -1164,9 +1171,17 @@ class CloneOrigin(Pipeline):
         self.assertTrue((clone / ".git" / "objects" / "info" / "alternates").is_file())
 
 
+def checked(test_out: str = "", test_rc: int = 0, **steps: int) -> dict:
+    """A run_steps-shaped result: the test step's output and rc, and any other
+    steps' rcs."""
+    rows = [{"name": "run_tests", "rc": test_rc}] + [{"name": k, "rc": v} for k, v in steps.items()]
+    return {"steps": rows, "step_failures": [f"{k} exited {v}" for k, v in steps.items() if v],
+            "test_rc": test_rc, **te_run.parse_check(test_out)}
+
+
 @pipeline_only
 class BaseRelative(Pipeline):
-    """harmonic-forge#1112 AC4 and pitch changes A/B."""
+    """harmonic-forge#1112 AC4 and pitch changes A/B, reforged per step."""
 
     def test_a_failure_on_base_too_is_not_a_check_fail(self):
         out = "FAIL: test_host (test_lane.Host.test_host)\\nRan 5 tests in 0.1s\\n"
@@ -1181,35 +1196,152 @@ class BaseRelative(Pipeline):
         self.assertEqual(len(cached), 1)
 
     def test_head_crash_before_tests_on_failing_base_is_a_fail(self):
-        base = {"sha": "b", "rc": 1, "failures": ["task check"], "module_errors": [], "ran": 0}
-        head = te_run.parse_check("mise ERROR failed to parse mise.toml\n")
-        rc, new, _base = te_run.judge_check({"rc": 1, **head}, base)
+        base = checked("ImportError: no module\n", 1)  # ran 0: only change A can catch it
+        rc, new, _base = te_run.judge_check(checked("ImportError: no module\n", 1), base)
         self.assertNotEqual(rc, 0)
         self.assertTrue(new)
 
     def test_module_level_error_on_head_always_counts_as_new(self):
         test_id = "test_x (unittest.loader._FailedTest.test_x)"
-        base = {"failures": [test_id], "module_errors": [test_id], "ran": 3}
-        head = {"rc": 1, **te_run.parse_check(f"ERROR: {test_id}\nRan 3 tests in 0.1s\n")}
-        rc, new, _base = te_run.judge_check(head, base)
+        base = checked(f"ERROR: {test_id}\nRan 3 tests in 0.1s\n", 1)
+        rc, new, _base = te_run.judge_check(checked(f"ERROR: {test_id}\nRan 3 tests in 0.1s\n",
+                                                    1), base)
         self.assertNotEqual(rc, 0)
         self.assertIn(test_id, new)
 
     def test_head_running_fewer_tests_than_base_fails(self):
-        base = {"failures": [], "module_errors": [], "ran": 10}
-        rc, new, _base = te_run.judge_check({"rc": 0, **te_run.parse_check("Ran 4 tests in 1s")},
-                                            base)
+        base = checked("Ran 10 tests in 1s\n")
+        rc, new, _base = te_run.judge_check(checked("Ran 4 tests in 1s\n"), base)
         self.assertNotEqual(rc, 0)
         self.assertTrue(new)
 
     def test_a_new_failure_on_the_head_is_a_check_fail(self):
-        base = {"failures": ["a (m.C.a)"], "module_errors": [], "ran": 2}
-        head = {"rc": 1, **te_run.parse_check("FAIL: a (m.C.a)\nFAIL: b (m.C.b)\n"
-                                                 "[check] ERROR task failed\nRan 2 tests in 1s")}
+        base = checked("FAIL: a (m.C.a)\nRan 2 tests in 1s\n", 1)
+        head = checked("FAIL: a (m.C.a)\nFAIL: b (m.C.b)\nRan 2 tests in 1s\n", 1)
         rc, new, base_failures = te_run.judge_check(head, base)
         self.assertNotEqual(rc, 0)
-        self.assertEqual(new, ["b (m.C.b)", "task check"])
+        self.assertEqual(new, ["b (m.C.b)"])
         self.assertEqual(base_failures, ["a (m.C.a)"])
+
+    def test_head_breaking_a_later_step_fails_on_a_failing_base(self):
+        # Sticky-wicket kill check: the base fails one unittest, the head breaks
+        # check_cross_registry. Every step runs, so the head must fail.
+        base = checked("FAIL: a (m.C.a)\nRan 2 tests in 1s\n", 1, check_cross_registry=0)
+        head = checked("FAIL: a (m.C.a)\nRan 2 tests in 1s\n", 1, check_cross_registry=1)
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(new, ["step check_cross_registry exited 1"])
+
+    def test_a_step_failing_on_base_and_head_with_different_rc_fails(self):
+        # Sticky-wicket kill check: no task-level name masks the head.
+        base = checked("Ran 2 tests in 1s\n", 0, context_budget_ratchet=1)
+        head = checked("Ran 2 tests in 1s\n", 0, context_budget_ratchet=2)
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertEqual(rc, 2)
+        self.assertEqual(new, ["step context_budget_ratchet exited 2"])
+
+    def test_every_step_runs_after_a_failing_one(self):
+        steps = (("first", "exit 1"), ("run_tests", "echo 'Ran 1 test in 0.0s'"),
+                 ("last", "exit 3"))
+        with mock.patch.object(te_run, "CHECK_STEPS", steps), \
+                mock.patch.object(te_run, "STEP_PREFIX", ()):
+            sha = sh("git", "rev-parse", "HEAD", cwd=self.src)
+            result = te_run.check_sha(sha, dict(os.environ), self.tmp / "ev")
+        self.assertEqual([s["rc"] for s in result["steps"]], [1, 0, 3])
+        self.assertEqual(result["step_failures"], ["first exited 1", "last exited 3"])
+        self.assertFalse(result["complete"])  # rc 3 is a crash
+
+    def test_non_test_step_failing_on_the_base_aborts_the_run(self):
+        steps = (("run_tests", "echo 'Ran 1 test in 0.0s'"), ("lint", "exit 1"))
+        with mock.patch.object(te_run, "CHECK_STEPS", steps), \
+                mock.patch.object(te_run, "STEP_PREFIX", ()):
+            self.assertEqual(self.drive(), 3)
+        item = self.item()
+        self.assertEqual(item["status"], "blocked")
+        self.assertIn("lint exited 1", item["note"])
+
+    def test_untracked_mise_local_toml_in_the_agent_clone_never_reaches_the_check(self):
+        # Sticky-wicket kill check (survivor 6): the head check runs in a fresh
+        # clone of the pinned head SHA, never the agent's working tree.
+        steps = (("run_tests", "if [ -e mise.local.toml ]; then echo POISONED; exit 1; fi\n"
+                               "echo 'Ran 1 test in 0.0s'"),)
+        with mock.patch.object(te_run, "CHECK_STEPS", steps), \
+                mock.patch.object(te_run, "STEP_PREFIX", ()):
+            self.drive(FAKE_UNTRACKED="mise.local.toml")
+        clone = self.tmp / "wt" / "harmonic-forge-7r-impl"
+        self.assertTrue((clone / "mise.local.toml").is_file())
+        item = self.item()
+        self.assertEqual(item["facts"]["check_rc"], 0, item["facts"])
+        self.assertEqual(item["verdict"]["state"], "green", item["verdict"])
+
+
+class BaseCache(unittest.TestCase):
+    """Sticky-wicket REFORGE step 5: lock, atomic write, never a crashed run."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for target, name, value in ((te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"),):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_concurrent_base_checks_never_cache_a_crashed_run(self):
+        import threading
+        calls = []
+
+        def crashed(sha, env, evidence, name="check"):
+            calls.append(sha)
+            return {"sha": sha, "complete": False, "steps": [{"name": "run_tests", "rc": 2}],
+                    "step_failures": [], "test_rc": 2, "failures": [], "module_errors": [],
+                    "ran": 0, "printed_ran": False}
+        results = []
+        with mock.patch.object(te_run, "check_sha", crashed):
+            threads = [threading.Thread(target=lambda: results.append(te_run.base_check("b" * 40,
+                                                                                        {})))
+                       for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(len(calls), 2)  # nothing cached, so the second ran it again
+        self.assertFalse(list((self.tmp / "base-check").glob("*/result.json")))
+        self.assertFalse(any(r["complete"] for r in results))
+
+    def test_a_complete_run_is_cached_and_reused(self):
+        calls = []
+
+        def complete(sha, env, evidence, name="check"):
+            calls.append(sha)
+            return {"sha": sha, "complete": True, "steps": [], "step_failures": [],
+                    "test_rc": 0, "failures": [], "module_errors": [], "ran": 1,
+                    "printed_ran": True}
+        with mock.patch.object(te_run, "check_sha", complete):
+            te_run.base_check("c" * 40, {})
+            te_run.base_check("c" * 40, {})
+        self.assertEqual(len(calls), 1)
+        self.assertTrue((self.tmp / "base-check" / ("c" * 40) / "result.json").is_file())
+
+
+class CheckSteps(unittest.TestCase):
+    """CHECK_STEPS cannot drift from mise.toml's `check` (with `ci-check` inlined)."""
+
+    def test_check_steps_match_the_mise_check_task(self):
+        import tomllib
+        tasks = tomllib.loads((te_run.SOURCE / "mise.toml").read_text(encoding="utf-8"))["tasks"]
+
+        def lines(task: str) -> list[str]:
+            out = []
+            for line in tasks[task]["run"].splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line in ("set -e",
+                                                                "head=$(git rev-parse HEAD)"):
+                    continue
+                out += lines(line.split()[-1]) if line.startswith("mise run ") else [line]
+            return out
+        ours = [l.strip() for _n, script in te_run.CHECK_STEPS for l in script.splitlines()]
+        self.assertEqual(ours, lines("check"))
+        self.assertIn(te_run.TEST_STEP, [n for n, _s in te_run.CHECK_STEPS])
 
 
 class Settings(unittest.TestCase):
@@ -1232,6 +1364,19 @@ class Settings(unittest.TestCase):
         self.assertIn("Edit(./**/mise-tasks/**)", deny)
         for path in (".mise/tasks/check", "tools/mise-tasks/x.sh"):
             self.assertTrue(te_run.deny_check.denied(path), path)
+
+
+    def test_mise_alternate_configs_are_denied_and_only_mise_toml_is_trusted(self):
+        # Preclose survivor 2.
+        for path in ("mise.local.toml", ".mise.toml", ".mise.local.toml", ".config/mise.toml",
+                     ".config/mise/config.toml", "mise/config.toml", ".mise-tasks/check",
+                     "mise/tasks/check", "sub/mise.local.toml"):
+            self.assertTrue(te_run.deny_check.denied(path), path)
+        clone = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, clone, True)
+        argv = te_run.sandbox.boundary_argv(clone)
+        at = argv.index("MISE_TRUSTED_CONFIG_PATHS")
+        self.assertEqual(argv[at + 1], str(clone.resolve() / "mise.toml"))
 
 
 class Prompt(unittest.TestCase):
@@ -1260,7 +1405,8 @@ class Evidence(Pipeline):
         self.drive()
         state = te_run.queue_state.load(self.queue)
         item_dir = self.tmp / "runs" / state["run_id"] / "7"
-        for name in ("stream.jsonl", "stream.jsonl.stderr", "check.stdout", "check.stderr",
+        for name in ("stream.jsonl", "stream.jsonl.stderr", "check-run_tests.stdout",
+                     "check-run_tests.stderr",
                      "kill_runner.stdout", "kill_runner.stderr", "bundle/checks.json"):
             self.assertTrue((item_dir / name).is_file(), name)
         self.assertTrue((item_dir / "transcripts").is_dir())

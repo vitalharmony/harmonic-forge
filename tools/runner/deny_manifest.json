@@ -175,6 +175,28 @@
       ]
     },
     {
+      "why": "harmonic-forge#1112 preclose survivor 2: mise's alternate config files and task directories, which mise would load from the clone alongside mise.toml",
+      "globs": [
+        "./**/mise.local.toml",
+        "./**/.mise.toml",
+        "./**/.mise.local.toml",
+        "./**/.config/mise.toml",
+        "./**/.config/mise/**",
+        "./**/mise/**",
+        "./**/.mise-tasks/**",
+        "./**/mise/tasks/**"
+      ],
+      "regexes": [
+        "(^|/)mise\\.local\\.toml$",
+        "(^|/)\\.mise\\.toml$",
+        "(^|/)\\.mise\\.local\\.toml$",
+        "(^|/)\\.config/mise\\.toml$",
+        "(^|/)\\.config/mise/",
+        "(^|/)mise/",
+        "(^|/)\\.mise-tasks/"
+      ]
+    },
+    {
       "why": "G4: Lane 1's kill-check bundles",
       "globs": [
         "~/.local/share/te-runner/kill-bundles/**"

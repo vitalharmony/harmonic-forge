@@ -10,9 +10,14 @@ a. permission probe: `claude -p` with the agent's settings, inside the agent's
    boundary, on a cheap model with a budget of at most $0.10, runs each queued
    item's verification commands plus `PROBE_COMMANDS`. Any
    `permission_denials` entry fails, and so does a command the probe never
-   attempted (undecidable is a failure).
-b. base check: a non-empty base-failure set where the previous cached base's
-   was empty is reported, not fatal.
+   attempted (undecidable is a failure), a non-zero claude exit, a result
+   event with `is_error` true, or a result subtype other than `success`.
+b. base check: the runner's per-step check (`te_run.CHECK_STEPS`) on the base.
+   Any step other than the test step failing on the base is fatal, and so is
+   a base run that crashed (`base_problems`): the head is judged absolutely on
+   those steps, so a failing base can never mask one. A non-empty base test
+   failure set where the previous cached base's was empty is reported, not
+   fatal.
 c. kill-bundle baselines: every queued item's bundle checks run on the base in
    the oracle boundary and must each fail with a test failure. A pass, an
    import or collection error, or an output naming no test failure is fatal.
@@ -144,10 +149,31 @@ def permission_probe(commands: list[str], clone: Path, transcripts: Path, agent_
     if result is None:
         return [f"permission probe: no result event (exit {done.returncode}): "
                 f"{done.stderr.strip()[-200:]}"]
-    failures = [f"permission probe: denied `{command}`" for command in denied]
+    # Preclose survivor 5: a probe that attempted every command but failed
+    # (non-zero exit, is_error, a non-success subtype) proves nothing ran.
+    failures = []
+    if done.returncode:
+        failures.append(f"permission probe: claude exited {done.returncode}")
+    if result.get("is_error"):
+        failures.append("permission probe: the result event has is_error true")
+    if result.get("subtype") != "success":
+        failures.append(f"permission probe: result subtype {result.get('subtype')!r}, "
+                        "not 'success'")
+    failures += [f"permission probe: denied `{command}`" for command in denied]
     failures += [f"permission probe: never attempted `{command}`" for command in commands
                  if command not in attempted]
     return failures
+
+
+def base_problems(base: dict) -> list[str]:
+    """Fatal (sticky-wicket REFORGE, harmonic-forge#1112): every non-test step
+    that failed on the base, and a base run that did not complete."""
+    sha = str(base.get("sha", "?"))[:12]
+    found = [f"base {sha}: {line}" for line in base.get("step_failures") or []]
+    if not base.get("complete"):
+        found.append(f"base {sha}: the check did not complete (a step crashed or the test "
+                     "step printed no `Ran` line); nothing was cached")
+    return found
 
 
 def base_regression(current: dict, previous: dict | None) -> list[str]:

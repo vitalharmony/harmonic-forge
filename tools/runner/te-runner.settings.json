@@ -85,6 +85,14 @@
       "Edit(./**/*.pth)",
       "Edit(./**/.mise/tasks/**)",
       "Edit(./**/mise-tasks/**)",
+      "Edit(./**/mise.local.toml)",
+      "Edit(./**/.mise.toml)",
+      "Edit(./**/.mise.local.toml)",
+      "Edit(./**/.config/mise.toml)",
+      "Edit(./**/.config/mise/**)",
+      "Edit(./**/mise/**)",
+      "Edit(./**/.mise-tasks/**)",
+      "Edit(./**/mise/tasks/**)",
       "Edit(~/.local/share/te-runner/kill-bundles/**)"
     ]
   }

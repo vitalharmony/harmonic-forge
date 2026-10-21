@@ -104,7 +104,8 @@ class KillBaselines(Base):
                 mock.patch.object(preflight, "rehearsal", return_value=[]), \
                 mock.patch.object(preflight, "item_failures", return_value=[]), \
                 mock.patch.object(te_run, "base_check",
-                                  return_value={"sha": self.base, "failures": [], "ran": 0}):
+                                  return_value={"sha": self.base, "failures": [], "ran": 1,
+                                                "complete": True, "step_failures": []}):
             record = te_run.run_preflight(state, self.tmp / "run", {**os.environ},
                                           {**os.environ})
         self.assertTrue(record["failures"])
@@ -233,6 +234,15 @@ class Pieces(unittest.TestCase):
         self.assertEqual(denied, ["mkdir -p x"])
         self.assertIsNotNone(result)
 
+    def test_base_problems_name_failing_non_test_steps_and_a_crashed_run(self):
+        self.assertEqual(preflight.base_problems({"sha": "b", "complete": True,
+                                                  "step_failures": []}), [])
+        found = preflight.base_problems({"sha": "b", "complete": True,
+                                         "step_failures": ["check_cross_registry exited 1"]})
+        self.assertEqual(found, ["base b: check_cross_registry exited 1"])
+        self.assertTrue(preflight.base_problems({"sha": "b", "complete": False,
+                                                 "step_failures": []}))
+
     def test_base_regression_is_reported_only_from_empty(self):
         self.assertTrue(preflight.base_regression({"sha": "b", "failures": ["x"]},
                                                   {"sha": "a", "failures": []}))
@@ -246,6 +256,33 @@ class Pieces(unittest.TestCase):
                     "git restore", "git stash", "git mv", "git rm", "git reset", "git rev-parse",
                     "git branch", "mise tasks", "mise run check --help"):
             self.assertIn(cmd, text)
+
+
+class ProbeFailure(Base):
+    """Preclose survivor 5: a probe that attempted every command but failed
+    proves nothing ran."""
+
+    def probe(self, result: dict, rc: int = 0) -> list[str]:
+        commands = ["mkdir -p x"]
+        lines = [{"type": "assistant", "message": {"content": [
+                     {"type": "tool_use", "name": "Bash", "input": {"command": commands[0]}}]}},
+                 {"type": "result", "permission_denials": [], **result}]
+        done = subprocess.CompletedProcess([], rc, "\n".join(map(json.dumps, lines)), "")
+        with mock.patch.object(preflight, "_run", return_value=done):
+            return preflight.permission_probe(commands, self.tmp, self.tmp / "t", {},
+                                              self.tmp / "settings.json", ())
+
+    def test_a_clean_probe_passes(self):
+        self.assertEqual(self.probe({"subtype": "success", "is_error": False}), [])
+
+    def test_is_error_with_no_denials_fails(self):
+        failures = self.probe({"subtype": "success", "is_error": True})
+        self.assertTrue(any("is_error" in f for f in failures), failures)
+
+    def test_non_zero_exit_or_error_subtype_fails(self):
+        self.assertTrue(self.probe({"subtype": "success", "is_error": False}, rc=1))
+        failures = self.probe({"subtype": "error_during_execution", "is_error": False})
+        self.assertTrue(any("error_during_execution" in f for f in failures), failures)
 
 
 if __name__ == "__main__":

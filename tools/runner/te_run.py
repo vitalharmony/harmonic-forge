@@ -11,14 +11,14 @@ statuses: the agent is never given the queue path. Per item:
 2. create `fix/<N>-te-runner` from `origin/main` in a fresh `git clone
    --shared` (an existing checkout, local branch, `refs/te-runner/<N>` or
    runner-fork branch of that name blocks the item, never reused). The agent
-   and every run of its code (`mise run check`, the kill-check tests, the
+   and every run of its code (the check steps, the kill-check tests, the
    preclose refuters, the cross-family reviewer) run inside `sandbox.py`'s
    allowlist `bwrap` boundary (harmonic-forge#1098);
 3. run `claude -p` in it with `te-runner.settings.json`, the runner's own key
    and gh config (`preclose_driver.runner_env`), and stream-json with hook
    events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit` and
    `Stop` hook events each appear and `init.apiKeySource` is not `none`;
-4. `mise run check`, `kill_runner.py run`, then `kill_check.py` over checks
+4. the check (`CHECK_STEPS`), `kill_runner.py run`, then `kill_check.py` over checks
    generated from the bundle and the agent's own diff reversed (operator
    ruling on this issue), `deny_check.py diff`, and `preclose_driver.py run`
    exactly once (any non-zero exit sets the item aside; never retried);
@@ -36,10 +36,15 @@ No oracle process runs with `PYTHONSAFEPATH` (harmonic-forge#1112 AC2): it kept
 the repo off `sys.path`, so no check could import it. A head-authored module
 that would shadow pytest or the standard library is a `deny_check.py diff` hit.
 
-The check fact is base-relative (AC4): `mise run check` on the base, once per
-base SHA and cached under `BASE_CHECK_ROOT/<sha>/`, and `check_rc` is non-zero
-only for a test ID or task that fails on the head and not on the base, a
-head crash that names no failure, a module-level error, or fewer tests run.
+The check fact (AC4, reforged after preclose pass 1): the runner runs each
+step of `CHECK_STEPS` (mise.toml's `check`, `ci-check` inlined) on its own,
+for base and head alike, in a fresh `--shared` clone of the pinned SHA in a
+per-process `mkdtemp` directory. Only the test step is base-relative: a test
+ID failing on the head and not on the base, a module-level error, a test step
+that exits non-zero naming no test, or fewer tests run. Every other step fails
+the head on any non-zero exit, and failing on the base is fatal. The base's
+result is cached under `BASE_CHECK_ROOT/<sha>/`, under a lock and atomically,
+only when the run completed.
 
 Every per-item artifact is kept under `RUNS_ROOT/<run_id>/<issue>/` (AC7); the
 newest `KEEP_RUNS` runs are kept, older ones pruned at run start.
@@ -52,6 +57,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import fcntl
 import json
 import math
 import os
@@ -459,9 +465,46 @@ def preclose_fact(issue: int, base: str, head: str, tier: str, env: dict[str, st
 
 
 # --- the base-relative check (AC4) --------------------------------------------------
+#
+# Sticky-wicket REFORGE (harmonic-forge#1112 preclose pass 1): one fail-fast
+# `mise run check` never lists every step's result, so the runner owns the
+# step list and runs each step on its own. Only the test step is judged
+# against the base, by test ID; every other step must pass absolutely.
+
+#: The `check` task's steps, in order, with `ci-check` inlined: one entry per
+#: step, each run on its own (`set -e` and `head` are each step's prelude).
+#: `test_te_run.CheckSteps` keeps this equal to mise.toml's run lines.
+CHECK_STEPS: tuple[tuple[str, str], ...] = (
+    ("py_compile_tools", "find tools -name '*.py' -print0 | xargs -0 -n1 python3 -m py_compile"),
+    ("py_compile_sync_rules", "python3 -m py_compile sync_rules.py"),
+    ("syntax_banner", 'echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"'),
+    ("run_tests", "python3 tools/run_tests.py"),
+    ("memory_lint_clean",
+     "python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate "
+     "--today 2026-09-06"),
+    ("memory_lint_aging",
+     "rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --gate "
+     "--today 2026-09-06 >/dev/null || rc=$?\n"
+     'test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under '
+     '--gate (got $rc)"; exit 1; }'),
+    ("check_test_main_last", "python3 tools/rules/check_test_main_last.py"),
+    ("check_installed_lane_sources",
+     'python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" '
+     "--skip-if-absent"),
+    ("platform_link_report", "python3 tools/onboard/platform_link_report.py --project ."),
+    ("check_cross_registry", "python3 tools/rules/check_cross_registry.py"),
+    ("context_budget_ratchet", "python3 tools/memory/context_budget_ratchet.py --repo . --gate"),
+    ("check_receipt", 'python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"'),
+)
+#: The one step judged base-relatively, by test ID.
+TEST_STEP = "run_tests"
+#: Each step runs under mise's toolchain, never through a mise task.
+STEP_PREFIX: tuple[str, ...] = ("mise", "exec", "--")
+STEP_PRELUDE = "set -e\nhead=$(git rev-parse HEAD)\n"
+#: Fresh per-process check trees live here (`mkdtemp`), never at a fixed path.
+CHECK_TREE_ROOT = TE_RUNNER_HOME / "check-trees"
 
 TEST_LINE = re.compile(r"^(?:FAIL|ERROR): (.+?)\s*$", re.M)
-TASK_LINE = re.compile(r"^\[([^\]]+)\] ERROR task failed", re.M)
 RAN_LINE = re.compile(r"^Ran (\d+) tests? in ", re.M)
 #: A test ID naming one of these failed outside any one test: a module that
 #: did not import, or a class or module fixture (pitch named change B).
@@ -470,48 +513,79 @@ MODULE_LEVEL = ("unittest.loader._FailedTest", "_ErrorHolder", "setUpModule", "t
 
 
 def parse_check(text: str) -> dict:
-    """Failing test IDs and mise task names, module-level errors, tests run."""
+    """The test step's failing test IDs, module-level errors, and tests run
+    (`printed_ran`: whether any `Ran N tests` line appeared)."""
     tests = [m.group(1) for m in TEST_LINE.finditer(text)]
-    tasks = [f"task {m.group(1)}" for m in TASK_LINE.finditer(text)]
-    return {"failures": sorted(set(tests + tasks)),
+    ran = [int(m.group(1)) for m in RAN_LINE.finditer(text)]
+    return {"failures": sorted(set(tests)),
             "module_errors": sorted({t for t in tests if any(k in t for k in MODULE_LEVEL)}),
-            "ran": sum(int(m.group(1)) for m in RAN_LINE.finditer(text))}
+            "ran": sum(ran), "printed_ran": bool(ran)}
 
 
-def check_in(tree: Path, env: dict[str, str], evidence: Path, name: str) -> dict:
-    """`mise run check` in `tree`, inside the oracle boundary, kept and parsed."""
+def run_steps(tree: Path, env: dict[str, str], evidence: Path | None, name: str) -> dict:
+    """Every step in `CHECK_STEPS`, each on its own inside the oracle boundary,
+    none short-circuiting another; each step's rc and output kept."""
+    steps, step_failures, tests = [], [], None
+    for step, script in CHECK_STEPS:
+        try:
+            argv = sandbox.wrap([*STEP_PREFIX, "sh", "-c", STEP_PRELUDE + script], tree,
+                                inputs=(source_objects(),))
+        except sandbox.SandboxError as exc:
+            raise Abort(str(exc)) from exc
+        result = run(argv, cwd=tree, env=oracle_env(env))
+        keep(evidence, f"{name}-{step}", result)
+        steps.append({"name": step, "rc": result.returncode})
+        if step == TEST_STEP:
+            tests = {"test_rc": result.returncode,
+                     **parse_check(f"{result.stdout}\n{result.stderr}")}
+        elif result.returncode:
+            step_failures.append(f"{step} exited {result.returncode}")
+    tests = tests or {"test_rc": 127, "failures": [], "module_errors": [], "ran": 0,
+                      "printed_ran": False}
+    # Complete: no step crashed (rc other than 0/1) and the test step said how
+    # many tests it ran. Only a complete base run is ever cached.
+    complete = all(s["rc"] in (0, 1) for s in steps) and tests["printed_ran"]
+    return {"steps": steps, "step_failures": step_failures, "complete": complete, **tests}
+
+
+def check_sha(sha: str, env: dict[str, str], evidence: Path | None, name: str = "check") -> dict:
+    """The check on `sha`, in a fresh `--shared` clone of it in a per-process
+    `mkdtemp` directory: the same function for base and head, never the
+    agent's working tree (preclose survivors 1 and 6)."""
+    CHECK_TREE_ROOT.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix=f"{sha[:12]}-", dir=CHECK_TREE_ROOT))
+    tree = root / "tree"
     try:
-        argv = sandbox.wrap(["mise", "run", "check"], tree, inputs=(source_objects(),))
-    except sandbox.SandboxError as exc:
-        raise Abort(str(exc)) from exc
-    result = run(argv, cwd=tree, env=oracle_env(env))
-    keep(evidence, name, result)
-    return {"rc": result.returncode, **parse_check(f"{result.stdout}\n{result.stderr}")}
+        git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(tree))
+        git("checkout", "-q", "--detach", sha, cwd=tree)
+        git("remote", "set-url", "origin", UPSTREAM_URL, cwd=tree)
+        return {"sha": sha, **run_steps(tree, env, evidence, name)}
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def base_check(base: str, env: dict[str, str]) -> dict:
-    """The base's check, once per SHA: run in a `--shared` clone of the base in
-    the same boundary as the head's, cached as JSON under BASE_CHECK_ROOT/<sha>/."""
+    """The base's check, once per SHA: under an `fcntl` lock on
+    BASE_CHECK_ROOT/<sha>.lock, cached as BASE_CHECK_ROOT/<sha>/result.json
+    (written atomically) only when the run completed."""
+    BASE_CHECK_ROOT.mkdir(parents=True, exist_ok=True)
     cache = BASE_CHECK_ROOT / base
     stored = cache / "result.json"
-    try:
-        data = json.loads(stored.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("sha") == base:
-            return data
-    except (OSError, ValueError):
-        pass
-    cache.mkdir(parents=True, exist_ok=True)
-    tree = cache / "tree"
-    shutil.rmtree(tree, ignore_errors=True)
-    git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(tree))
-    try:
-        git("checkout", "-q", "--detach", base, cwd=tree)
-        git("remote", "set-url", "origin", UPSTREAM_URL, cwd=tree)
-        data = {"sha": base, **check_in(tree, env, cache, "check")}
-    finally:
-        shutil.rmtree(tree, ignore_errors=True)
-    stored.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
-    return data
+    with open(BASE_CHECK_ROOT / f"{base}.lock", "a", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            data = json.loads(stored.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("sha") == base and data.get("complete"):
+                return data
+        except (OSError, ValueError):
+            pass
+        cache.mkdir(parents=True, exist_ok=True)
+        data = check_sha(base, env, cache)
+        if data["complete"]:
+            partial = cache / f".result.{os.getpid()}.tmp"
+            partial.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+            os.replace(partial, stored)
+        return data
 
 
 def previous_base(base: str) -> dict | None:
@@ -527,18 +601,22 @@ def previous_base(base: str) -> dict | None:
 
 
 def judge_check(head: dict, base: dict) -> tuple[int, list[str], list[str]]:
-    """(check_rc, new failures, base failures). When undecidable, it fails."""
+    """(check_rc, new failures, base test failures). Only the test step is
+    base-relative; every other step fails the head on any non-zero exit."""
     base_failures = sorted(set(base.get("failures") or []))
     new = sorted(set(head["failures"]) - set(base_failures))
     # Change B: a module-level error on the head always counts as new.
     new += [m for m in head["module_errors"] if m not in new]
-    # Change A: a non-zero exit that names no failure is a crash before the
-    # tests (an import error, a mise config error), never an empty difference.
-    if head["rc"] and not head["failures"]:
-        new.append(f"check exited {head['rc']} naming no failing test or task")
+    # Change A: a test step that exits non-zero naming no failing test crashed
+    # before the tests, never an empty difference.
+    if head["test_rc"] and not head["failures"]:
+        new.append(f"{TEST_STEP} exited {head['test_rc']} naming no failing test")
     if head["ran"] < (base.get("ran") or 0):
         new.append(f"head ran {head['ran']} tests, base ran {base.get('ran')}")
-    return (head["rc"] or 1) if new else 0, new, base_failures
+    # Every other step is absolute: a failure on the base never masks the head.
+    new += [f"step {line}" for line in head.get("step_failures") or []]
+    rcs = [s["rc"] for s in head.get("steps") or [] if s["rc"]]
+    return (rcs[0] if rcs else 1) if new else 0, new, base_failures
 
 
 # --- the PR ------------------------------------------------------------------------
@@ -671,10 +749,15 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     head = git("rev-parse", "FETCH_HEAD")
     git("update-ref", f"refs/te-runner/{issue}", head)
     log("agent", f"head {head[:12]}, cost {result.get('total_cost_usd')}")
-    head_check = check_in(clone, env, scratch, "check")
-    check_rc, new_failures, base_failures = judge_check(head_check, base_check(base, env))
-    log("check", f"exit {head_check['rc']}, {len(new_failures)} new failure(s), "
-                 f"{len(base_failures)} on the base")
+    # A fresh clone of the pinned head, never the agent's tree (survivor 6).
+    head_check = check_sha(head, env, scratch)
+    base_result = base_check(base, env)
+    problems = preflight.base_problems(base_result)
+    if base_result.get("step_failures"):  # a non-test step failing on the base is fatal
+        raise Abort("; ".join(problems))
+    check_rc, new_failures, base_failures = judge_check(head_check, base_result)
+    log("check", f"{len(new_failures)} new failure(s), {len(base_failures)} test failure(s) "
+                 "on the base")
     kill = kill_facts(issue, base, head, env, bundle, pin, scratch)
     if kill and not kill_receipt(issue, base, head, env, scratch, bundle):
         kill = []
@@ -818,7 +901,7 @@ def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
 
     def base_run() -> list[str]:
         current.update(base_check(base, env))
-        return []
+        return preflight.base_problems(current)
 
     record = preflight.run_all(
         [("permission-probe", permissions), ("base-check", base_run),
