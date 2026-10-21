@@ -915,6 +915,51 @@ class TestFindRetiredCitations(unittest.TestCase):
         self.assertGreaterEqual(len(self._must_flag_rows()), 800)
         self.assertGreaterEqual(len(self._MUST_NOT_FLAG), 25)
 
+    #: harmonic-forge#1113 AC4 as amended (operator ruling 2026-10-21): the
+    #: citation grammar is the oracle. One row per grammar form; every row
+    #: must flag inside a backtick span.
+    AC4_GRAMMAR_ROWS = (
+        ("a-whole-path", "GEMINI.md"),
+        ("a-whole-path-nested", "tools/lane/policies/gemini-lane2.toml"),
+        ("a-trailing-after-home-forge", "~/harmonic-forge/GEMINI.md"),
+        ("a-trailing-after-forge", "harmonic-forge/tools/lane/gemini-probe-deny.toml"),
+        ("a-trailing-after-abs", "/srv/x/prompts/gemini-gem-harmonic-forge.md"),
+        ("b-descendant", "tools/gemini/lane3-context/README.md"),
+        ("b-descendant-prefixed", "~/harmonic-forge/tools/gemini/x/y.json"),
+    ) + tuple(
+        (f"c-{flag}-{sep_name}", f"{flag}{sep}{q}{value}{q}")
+        for flag, value in (("--agent", "gemini"), ("--caller", "gemini"),
+                            ("LANE_CLI", "gemini"), ("--families", "3"))
+        for sep_name, sep, q in (("space", " ", ""), ("eq", "=", ""),
+                                 ("space-dq", " ", '"'), ("eq-sq", "=", "'"))
+    )
+    #: Declared exclusions: out of scope, NOT asserted either way. Recorded
+    #: so the contract is visible rather than silently untested.
+    AC4_DECLARED_EXCLUSIONS = (
+        ("no-space-shell-operator", "cat<GEMINI.md"),
+        ("quoted-flag", '"--agent" gemini'),
+        ("substitution", "$(echo --agent) gemini"),
+        ("glob", "tools/gemini*/x"),
+        ("url", "https://github.com/vitalharmony/harmonic-forge/blob/main/GEMINI.md"),
+        ("citation-outside-backticks", "see tools/gemini/ in prose"),
+        ("basename-false-positive", "docs/board_sync.py"),
+    )
+
+    def test_ac4_grammar_rows_flag(self):
+        for name, span in self.AC4_GRAMMAR_ROWS:
+            with self.subTest(form=name, span=span):
+                hits = gh_issue.find_retired_citations(f"See `{span}`.")
+                self.assertTrue(hits)
+                self.assertTrue(all("harmonic-forge#1113" in n for _, n in hits))
+
+    def test_ac4_declared_exclusions_recorded(self):
+        """Exclusions are a documented list, deliberately unasserted."""
+        names = {n for n, _ in self.AC4_DECLARED_EXCLUSIONS}
+        self.assertEqual(names, {
+            "no-space-shell-operator", "quoted-flag", "substitution", "glob",
+            "url", "citation-outside-backticks", "basename-false-positive"})
+        self.assertEqual(len(self.AC4_GRAMMAR_ROWS), 23)
+
     def test_gemini_model_api_spans_not_flagged(self):
         for body in ("`gemini-embedding-001`", "`genai.Client(model=\"gemini-2.5-flash\")`",
                      "`GEMINI_API_KEY`", "`gemini`"):

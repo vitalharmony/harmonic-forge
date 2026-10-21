@@ -78,5 +78,5 @@ RETIRED_COMMAND_FRAGMENTS: dict[re.Pattern[str], str] = {
     re.compile(r"--agent[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
     re.compile(r"--caller[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
     re.compile(r"--families[=\s]+[\"']?3" + _VALUE_END): _GEMINI_CLI_RETIRED,
-    re.compile(r"\bLANE_CLI=[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
+    re.compile(r"\bLANE_CLI[=\s]+[\"']?gemini" + _VALUE_END): _GEMINI_CLI_RETIRED,
 }
