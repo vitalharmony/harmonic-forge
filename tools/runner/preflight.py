@@ -2,7 +2,7 @@
 """The te-runner's preflight (harmonic-forge#1112 AC9).
 
 Runs before the first item (`te_run.py run`) and on its own
-(`te_run.py preflight --queue FILE`). Five checks, each independent: every one
+(`te_run.py preflight --queue FILE`). Six checks, each independent: every one
 runs and every failure is listed, never only the first, so one run surfaces
 every stage that cannot work before any agent spend.
 
@@ -18,8 +18,13 @@ c. kill-bundle baselines: every queued item's bundle checks run on the base in
    import or collection error, or an output naming no test failure is fatal.
 d. reviewer codex: `codex --version` inside the reviewer boundary must equal
    the operator's `~/.npm-global/bin/codex --version`.
-e. refuter: one `claude -p --json-schema FINDINGS_SCHEMA` call must return
-   `structured_output`.
+e. rehearsal (AC15): one refuter call (`claude -p --json-schema
+   FINDINGS_SCHEMA`, which must return `structured_output`) and one
+   cross-family `verify` call on a fixed fixture with a known-true
+   assumption, whose label must start `Red-team provenance: cross-family (`.
+f. per item (AC12): `item_failures`, the pipeline's own read-only
+   preconditions: `te_queue` eligibility, the kill-bundle snapshot and pin
+   check, and `preclose_driver.read_only_preconditions`.
 
 `preflight.json` in the run dir records every check's outcome.
 """
@@ -207,15 +212,99 @@ def codex_parity(scratch: Path, env: dict) -> list[str]:
     return []
 
 
-def refuter_call(scratch: Path, env: dict) -> list[str]:
-    tree = scratch / "refuter-head"
-    tree.mkdir(parents=True, exist_ok=True)
+def item_failures(issue: int, source: Path, base: str, scratch: Path, env: dict) -> list[str]:
+    """Every read-only per-item precondition the pipeline checks before it
+    spends (harmonic-forge#1112 AC12), by calling the pipeline's own functions:
+    `te_queue` eligibility, the kill-bundle snapshot and pin check, and
+    `preclose_driver.read_only_preconditions`. Every refusal is listed, each
+    prefixed with the item; a raising check is a refusal, never a stop.
+    `te_queue.py add` runs this too (AC15)."""
+    failures: list[str] = []
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    def eligibility() -> list[str]:
+        failure = te_queue.first_failure(issue)
+        return [f"{failure[0]}: {failure[1]}"] if failure else []
+
+    def bundle() -> list[str]:
+        te_queue.snapshot_bundle(issue, te_queue.bundle_pin(issue), scratch / "kill")
+        return []
+
+    def driver() -> list[str]:
+        ctx = preclose_driver.preconditions_context(te_queue.REPO, issue, base, source,
+                                                    scratch / "driver", env)
+        return preclose_driver.read_only_preconditions(ctx)
+
+    for name, check in (("eligibility", eligibility), ("kill bundle", bundle),
+                        ("preclose driver", driver)):
+        try:
+            found = check()
+        except Exception as exc:  # noqa: BLE001 -- one check never hides another
+            found = [str(exc)]
+        failures += [f"F{issue} {name}: {line}" for line in found]
+    return failures
+
+
+#: The rehearsal's fixed fixture: one file, one known-true assumption (AC15).
+REHEARSAL_FILE, REHEARSAL_TEXT = "rehearsal.py", "VALUE = 2\n"
+REHEARSAL_ASSUMPTION = f"The file {REHEARSAL_FILE} at HEAD assigns VALUE the integer 2."
+
+
+def rehearsal(scratch: Path, env: dict) -> list[str]:
+    """One refuter call and one cross-family `verify` call on a fixed fixture
+    with a known-true assumption (harmonic-forge#1112 AC15), through the
+    driver's own functions. Fails unless the classifier's label is the
+    cross-family one: a reviewer that cannot check a known-true assumption
+    will check nothing on a real item either."""
+    root = scratch / "rehearsal"
+    shutil.rmtree(root, ignore_errors=True)
+    source = root / "source"
+    source.mkdir(parents=True)
+    (source / REHEARSAL_FILE).write_text(REHEARSAL_TEXT, encoding="utf-8")
+    for argv in (["git", "init", "-q", "-b", "main"], ["git", "add", REHEARSAL_FILE],
+                 ["git", "-c", "user.name=te-runner", "-c", "user.email=te-runner@localhost",
+                  "commit", "-q", "-m", "rehearsal fixture"]):
+        done = _run(argv, cwd=source, timeout=60)
+        if done.returncode:
+            return [f"rehearsal: fixture setup failed: {done.stderr.strip()[-200:]}"]
+    failures: list[str] = []
+    try:
+        tree = root / "head"
+        preclose_driver.export_head(source, "HEAD", tree)
+        objects = (preclose_driver.source_objects(source),)
+    except preclose_driver.DriverError as exc:
+        return [f"rehearsal: cannot export the fixture: {exc}"]
     try:
         preclose_driver.run_refuter("preflight", "Return an empty findings list.", tree, env,
-                                    PROBE_MODEL, PROBE_BUDGET)
+                                    PROBE_MODEL, PROBE_BUDGET, objects)
     except preclose_driver.DriverError as exc:
-        return [f"refuter: {exc}"]
+        failures.append(f"refuter: {exc}")
+    failures += verify_rehearsal(root, tree, env, objects)
+    return failures
+
+
+def verify_rehearsal(root: Path, tree: Path, env: dict, objects: tuple[Path, ...]) -> list[str]:
+    try:
+        brief = root / "brief.md"
+        built = preclose_driver.call(
+            [sys.executable, str(preclose_driver.BRIEF_BUILDER),
+             "--artifact", str(tree / REHEARSAL_FILE),
+             "--intent", "Rehearse the cross-family verify call before a run.",
+             "--question", "Is the assumption true of the working directory?",
+             "--assumption", REHEARSAL_ASSUMPTION, "--evidence", REHEARSAL_FILE,
+             "--out", str(brief)], env=env)
+        if built.returncode:
+            return [f"cross-family rehearsal: brief refused: {built.stderr.strip()[-200:]}"]
+        envelope, _ms = preclose_driver.cross_family_verify(tree, root, brief, env, objects)
+        label = preclose_driver.provenance_label(envelope, preclose_driver.DEFAULT_MODEL, env)
+    except preclose_driver.DriverError as exc:
+        return [f"cross-family rehearsal: {exc}"]
+    if not label.startswith(CROSS_FAMILY_LABEL):
+        return [f"cross-family rehearsal: a known-true assumption got {label!r}"]
     return []
+
+
+CROSS_FAMILY_LABEL = "Red-team provenance: cross-family ("
 
 
 def run_all(checks: list[tuple[str, Callable[[], list[str]]]],

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -20,6 +21,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import te_run  # noqa: E402
+
+
+def NO_CHECKS(issue: int) -> list[str]:  # noqa: N802 -- add-time checks have their own tests
+    return []
 
 REAL_PRECLOSE_FACT = te_run.preclose_fact
 
@@ -161,7 +166,7 @@ class Pipeline(unittest.TestCase):
             (self.bin / name).chmod(0o755)
         self.queue = self.tmp / "queue.json"
         (self.bin / "queue_path").write_text(str(self.queue))
-        te_run.te_queue.add(self.queue, ["F7"])
+        te_run.te_queue.add(self.queue, ["F7"], checks=NO_CHECKS)
         key = self.tmp / "anthropic-key"
         key.write_text("sk-runner\n")
         key.chmod(0o600)
@@ -255,7 +260,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(self.events), 1)
 
     def test_green_item_records_the_summary_link_and_live_read_time(self):
-        def fact(issue, base, head, tier, env, out):
+        def fact(issue, base, head, tier, env, out, harness=None):
             out.mkdir(parents=True, exist_ok=True)
             (out / "summary.md").write_text("## Preclose pass\n")
             return {"status": "complete", "survivors": 0,
@@ -270,7 +275,7 @@ class Pipeline(unittest.TestCase):
         self.assertIn("--repo", comment)
 
     def test_every_finished_item_carries_the_runs_id(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.object(te_run.te_queue, "issue_number",
                                side_effect=lambda key: int(key[1:])):
             self.drive(FAKE_MISE_RC="1")
@@ -448,7 +453,7 @@ class Pipeline(unittest.TestCase):
 
     def setUp_queue_fresh(self):
         self.queue.unlink()
-        te_run.te_queue.add(self.queue, ["F7"])
+        te_run.te_queue.add(self.queue, ["F7"], checks=NO_CHECKS)
         for stale in (self.tmp / "wt").iterdir():
             shutil.rmtree(stale)
         sh("git", "worktree", "prune", cwd=self.src)
@@ -639,7 +644,7 @@ class Pipeline(unittest.TestCase):
     # --- AC5 G3 ------------------------------------------------------------------------
 
     def test_missing_stop_hook_event_aborts_the_run(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         self.assertEqual(self.drive(FAKE_DROP_HOOK="Stop"), 3)
         self.assertEqual(self.item()["status"], "blocked")
         self.assertIn("no Stop hook events", self.item()["note"])
@@ -664,7 +669,7 @@ class Pipeline(unittest.TestCase):
     # --- AC3 serial order, AC4 never reuse, AC7 recovery -------------------------------
 
     def test_serial_order_one_item_at_a_time(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.object(te_run.te_queue, "issue_number",
                                side_effect=lambda key: int(key[1:])):
             self.drive(FAKE_MISE_RC="1")
@@ -778,11 +783,11 @@ class Pipeline(unittest.TestCase):
     def test_queue_is_locked_while_a_run_holds_it(self):
         with te_run.te_queue.queue_lock(self.queue):
             with self.assertRaises(te_run.te_queue.QueueError):
-                te_run.te_queue.add(self.queue, ["F8"])
+                te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
             self.assertEqual(te_run.main(["run", "--queue", str(self.queue),
                                           "--max-budget-usd", "1"]), 2)
         self.assertEqual(self.item()["status"], "pending")
-        te_run.te_queue.add(self.queue, ["F8"])  # free again once the holder ends
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)  # free again once the holder ends
 
     def test_an_unexpected_error_blocks_the_item_never_in_progress(self):
         boom = UnicodeDecodeError("utf-8", b"\\xe9", 0, 1, "invalid continuation byte")
@@ -793,7 +798,7 @@ class Pipeline(unittest.TestCase):
         self.assertIn("invalid continuation byte", item["note"])
 
     def test_max_steps_bounds_the_run(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.dict(os.environ, {"FAKE_MISE_RC": "1"}):
             te_run.run_queue(self.queue, "1", 1)
         self.assertEqual(self.item("F8")["status"], "pending")
@@ -1284,6 +1289,35 @@ class Unit(unittest.TestCase):
         parts = line.split("=", 2)[2].split(":")
         self.assertIn("%h/.npm-global/bin", parts)
         self.assertLess(parts.index("%h/.npm-global/bin"), parts.index("/usr/local/bin"))
+
+    def test_finished_run_renders_report_and_notifies_once(self):
+        # AC13: the unit's own ExecStopPost line, run as systemd would (%h
+        # expanded, $$ unescaped), renders <run-id>.md and notifies once.
+        unit = (Path(te_run.__file__).resolve().parent / "systemd"
+                / "forge-te-runner.service").read_text()
+        lines = [l.split("=", 1)[1] for l in unit.splitlines() if l.startswith("ExecStopPost=")]
+        self.assertEqual(len(lines), 1, "the unit has no single ExecStopPost= line")
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        (home / "harmonic-forge").symlink_to(Path(te_run.__file__).resolve().parents[2])
+        data = home / ".local" / "share" / "te-runner"
+        data.mkdir(parents=True)
+        te_run.queue_state.save(data / "queue.json", {"run_id": "20261021T000000Z-abcd",
+                                                       "items": []})
+        (data / "ntfy-topic").write_text("topic\n")
+        fake = home / "bin"
+        fake.mkdir()
+        (fake / "curl").write_text(f"#!/bin/sh\necho \"$*\" >> {home}/curl.log\n")
+        (fake / "curl").chmod(0o755)
+        command = lines[0].replace("%h", str(home)).replace("$$", "$") \
+            .replace("/usr/bin/python3", sys.executable)
+        argv = shlex.split(command)
+        done = subprocess.run(argv, env={**os.environ, "HOME": str(home),
+                                         "PATH": f"{fake}:{os.environ['PATH']}"},
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue((data / "reports" / "20261021T000000Z-abcd.md").is_file())
+        self.assertEqual(len((home / "curl.log").read_text().splitlines()), 1)
 
 
 if __name__ == "__main__":

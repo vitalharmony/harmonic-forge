@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The te-runner's queue: named issues only, eligibility re-checked (harmonic-forge#1055, G1).
 
-    te_queue.py add --queue FILE F<N>...   # append pending items; an id already queued is refused
+    te_queue.py add --queue FILE F<N>...   # append pending items; an id already queued, or
+                                          # one failing the preflight's per-item checks, is refused
     te_queue.py check --queue FILE         # per pending item: eligible, or the first failing reason
 
 The queue file is `tools/lane/queue_state.py`'s format, imported unmodified.
@@ -101,12 +102,44 @@ def queue_lock(path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def add(path: Path, keys: list[str]) -> list[str]:
-    """Append each key as a pending item; refuse any already present."""
+def add(path: Path, keys: list[str], checks=None) -> list[str]:
+    """Append each key as a pending item; refuse any already present, and any
+    that fails the preflight's per-item checks (harmonic-forge#1112 AC15), so
+    an item that would fail them is refused now, not at the next run start.
+    Every failure of every key is listed together; nothing is added then."""
     for key in keys:
         issue_number(key)
+    checks = item_failures if checks is None else checks
+    failures = [line for key in keys for line in checks(issue_number(key))]
+    if failures:
+        raise QueueError("refused, the per-item checks fail:\n  " + "\n  ".join(failures))
     with queue_lock(path):
         return _add(path, keys)
+
+
+def add_context() -> tuple[Path, str, dict]:
+    """(SOURCE, its `origin/main` SHA, the runner's env) for the add-time checks."""
+    import preclose_driver  # noqa: PLC0415 -- imports this module's siblings
+    source = HERE.parent.parent
+    base = subprocess.run(["git", "-C", str(source), "rev-parse", "--verify", "origin/main"],
+                          capture_output=True, text=True)
+    if base.returncode:
+        raise QueueError(f"cannot resolve origin/main in {source}: {base.stderr.strip()}")
+    try:
+        env = preclose_driver.runner_env()
+    except preclose_driver.DriverError as exc:
+        raise QueueError(str(exc)) from exc
+    return source, base.stdout.strip(), env
+
+
+def item_failures(issue: int) -> list[str]:
+    """The preflight's own per-item checks (`preflight.item_failures`).
+    Imported here, not at module load: preflight imports this module."""
+    import tempfile  # noqa: PLC0415
+    import preflight  # noqa: PLC0415
+    source, base, env = add_context()
+    with tempfile.TemporaryDirectory(prefix="te-queue-add-") as scratch:
+        return preflight.item_failures(issue, source, base, Path(scratch), env)
 
 
 def _add(path: Path, keys: list[str]) -> list[str]:
@@ -172,6 +205,41 @@ def handoff(issue: int) -> str | None:
 
 def receipt(issue: int) -> dict | None:
     return pitch_receipt.read(REPO, issue)
+
+
+def bundle_pin(issue: int) -> str:
+    """The handoff's `kill-bundle-sha256`, or QueueError."""
+    body = handoff(issue)
+    pinned = DIGEST_RE.search(body or "")
+    if not pinned:
+        raise QueueError("the handoff pins no kill-bundle-sha256")
+    return pinned.group(1)
+
+
+def snapshot_bundle(issue: int, pin: str, scratch: Path) -> Path:
+    """The bundle copied into `scratch` and verified against the handoff's pin.
+    The oracle uses only this copy, so nothing done to the bundle on disk
+    afterwards reaches it. The preflight runs this same function per item
+    (harmonic-forge#1112 AC12); `te_run` runs it before the agent."""
+    import shutil  # noqa: PLC0415
+    snapshot = scratch / "bundle"
+    try:
+        shutil.copytree(bundle_dir(issue), snapshot, symlinks=True)
+    except OSError as exc:
+        raise QueueError(f"cannot snapshot the kill-check bundle: {exc}") from exc
+    # A symlink anywhere in the copy (checks.json included) would point the
+    # oracle at a file the agent can still write, so none is accepted. The copy
+    # is what is scanned: it is exactly what the oracle will use.
+    links = [str(p.relative_to(snapshot)) for p in snapshot.rglob("*") if p.is_symlink()]
+    if links:
+        raise QueueError(f"the kill-check bundle holds a symlink ({', '.join(links[:3])}); refused")
+    try:
+        digest = kill_runner.bundle_digest(snapshot)
+    except kill_runner.RunnerError as exc:
+        raise QueueError(f"cannot snapshot the kill-check bundle: {exc}") from exc
+    if digest != pin:
+        raise QueueError("the kill-check bundle no longer matches the handoff's kill-bundle-sha256")
+    return snapshot
 
 
 # --- handoff parsing -----------------------------------------------------------

@@ -101,7 +101,8 @@ class KillBaselines(Base):
                 mock.patch.object(preflight.te_queue, "bundle_dir", return_value=bundle), \
                 mock.patch.object(preflight, "permission_probe", return_value=[]), \
                 mock.patch.object(preflight, "codex_parity", return_value=[]), \
-                mock.patch.object(preflight, "refuter_call", return_value=[]), \
+                mock.patch.object(preflight, "rehearsal", return_value=[]), \
+                mock.patch.object(preflight, "item_failures", return_value=[]), \
                 mock.patch.object(te_run, "base_check",
                                   return_value={"sha": self.base, "failures": [], "ran": 0}):
             record = te_run.run_preflight(state, self.tmp / "run", {**os.environ},
@@ -109,6 +110,116 @@ class KillBaselines(Base):
         self.assertTrue(record["failures"])
         self.assertTrue(any("broken-test" in f for f in record["failures"]), record)
         self.assertTrue((self.tmp / "run" / "preflight.json").is_file())
+
+
+ISSUE_BODY = "## Acceptance criteria\n\n1. The widget returns 2.\n"
+
+FAKE_CLAUDE = """#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+print(json.dumps({"is_error": False, "result": "", "structured_output": {"findings": []}}))
+"""
+
+# A fixture reviewer: writes a real-shaped envelope whose one verdict is
+# FAKE_VERDICT, so the real classifier labels it.
+FAKE_CROSS = """#!/usr/bin/env bash
+set -eu
+python3 - "$@" <<'PY'
+import json, os, sys
+pairs = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+envelope = {"family": "codex", "caller_family": "claude", "posture": "verify", "status": "ok",
+            "exit_code": 0, "verify_model": "gpt-6-sol",
+            "report": {"summary": "s", "findings": [], "assumptions": [
+                {"assumption": "VALUE is 2", "verdict": os.environ["FAKE_VERDICT"],
+                 "evidence": "$ cat rehearsal.py\\nVALUE = 2"}]}}
+open(pairs["--out"], "w").write(json.dumps(envelope) + "\\n")
+PY
+"""
+
+
+class ItemChecks(Base):
+    """AC12: the preflight calls the pipeline's own per-item preconditions."""
+
+    def setUp(self):
+        super().setUp()
+        self.src = self.tmp / "src"
+        self.src.mkdir()
+        sh("git", "init", "-q", "-b", "main", cwd=self.src)
+        (self.src / "widget.py").write_text("def widget():\n    return 1\n")
+        commit(self.src, "base")
+        self.base = sh("git", "rev-parse", "HEAD", cwd=self.src)
+        self.seams = {"first_failure": None, "bundle_pin": "a" * 64,
+                      "snapshot_bundle": self.tmp / "snap", "body": ISSUE_BODY}
+
+    def failures(self, **override) -> list[str]:
+        seams = {**self.seams, **override}
+
+        def seam(value):
+            if isinstance(value, Exception):
+                return {"side_effect": value}
+            return {"return_value": value}
+        with mock.patch.object(preflight.te_queue, "first_failure", **seam(seams["first_failure"])), \
+                mock.patch.object(preflight.te_queue, "bundle_pin", **seam(seams["bundle_pin"])), \
+                mock.patch.object(preflight.te_queue, "snapshot_bundle",
+                                  **seam(seams["snapshot_bundle"])), \
+                mock.patch.object(preflight.preclose_driver, "passes_held", return_value=0), \
+                mock.patch.object(preflight.preclose_driver, "issue_body",
+                                  return_value=seams["body"]):
+            return preflight.item_failures(7, self.src, self.base, self.tmp / "item", {})
+
+    def test_clean_item_has_no_failures(self):
+        self.assertEqual(self.failures(), [])
+        # The driver's export step ran: a git repository at the base.
+        head = self.tmp / "item" / "driver" / "head"
+        self.assertEqual(sh("git", "rev-parse", "HEAD", cwd=head), self.base)
+
+    def test_new_driver_error_is_reported(self):
+        # A DriverError path added to the driver's read-only steps reaches the
+        # preflight with no change to the preflight's code.
+        def new_step(ctx):
+            raise preflight.preclose_driver.DriverError("a brand-new refusal")
+        steps = (*preflight.preclose_driver.READ_ONLY_STEPS, new_step)
+        with mock.patch.object(preflight.preclose_driver, "READ_ONLY_STEPS", steps):
+            failures = self.failures(body="## Problem\n\nno criteria\n")
+        self.assertTrue(any("a brand-new refusal" in f for f in failures), failures)
+        # ...beside the step that also failed: every refusal, never the first.
+        self.assertTrue(any("acceptance criteria" in f for f in failures), failures)
+
+    def test_kill_bundle_and_queue_refusals_are_both_listed(self):
+        failures = self.failures(
+            first_failure=("ineligible", "no tooling-exception label"),
+            snapshot_bundle=preflight.te_queue.QueueError("the kill-check bundle no longer "
+                                                          "matches the handoff's pin"))
+        self.assertTrue(any("eligibility" in f and "tooling-exception" in f for f in failures),
+                        failures)
+        self.assertTrue(any("kill bundle" in f and "no longer matches" in f for f in failures),
+                        failures)
+
+
+class Rehearsal(Base):
+    """AC15: one refuter and one cross-family verify call on a fixed fixture."""
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "claude").write_text(FAKE_CLAUDE)
+        (bin_dir / "claude").chmod(0o755)
+        (self.tmp / "cross.sh").write_text(FAKE_CROSS)
+        patcher = mock.patch.object(preflight.preclose_driver, "CROSS_FAMILY",
+                                    self.tmp / "cross.sh")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+    def test_confirmed_known_true_assumption_passes(self):
+        self.assertEqual(preflight.rehearsal(self.tmp, {**self.env, "FAKE_VERDICT": "confirmed"}),
+                         [])
+
+    def test_uncheckable_reviewer_fails_the_preflight(self):
+        failures = preflight.rehearsal(self.tmp, {**self.env, "FAKE_VERDICT": "uncheckable"})
+        self.assertTrue(any("cross-family rehearsal" in f and "in-family fallback" in f
+                            for f in failures), failures)
 
 
 class Pieces(unittest.TestCase):

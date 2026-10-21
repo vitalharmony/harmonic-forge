@@ -29,7 +29,7 @@ statuses: the agent is never given the queue path. Per item:
    comment. The runner never merges, closes, labels or comments on an issue.
 
 `deny_check.py boundary` runs once at start: a failure aborts the run. Then
-`preflight.py`'s five checks run (harmonic-forge#1112 AC9); any failure aborts
+`preflight.py`'s checks run (harmonic-forge#1112 AC9); any failure aborts
 the run, listing every one. `te_run.py preflight --queue FILE` runs them alone.
 
 No oracle process runs with `PYTHONSAFEPATH` (harmonic-forge#1112 AC2): it kept
@@ -68,6 +68,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "lane"))
 sys.path.insert(0, str(HERE.parent / "telemetry"))
+import acceptance  # noqa: E402
 import deny_check  # noqa: E402
 import preclose_driver  # noqa: E402
 import preflight  # noqa: E402
@@ -351,27 +352,11 @@ def probe(agent_env: dict[str, str]) -> bool:
 # --- the oracle --------------------------------------------------------------------
 
 def snapshot_bundle(issue: int, pin: str, scratch: Path) -> Path:
-    """The bundle copied into this run's private scratch BEFORE the agent runs,
-    and verified against the handoff's pin. The oracle uses only this copy, so
-    nothing the agent does to the bundle on disk afterwards reaches it."""
-    snapshot = scratch / "bundle"
+    """`te_queue.snapshot_bundle`, BEFORE the agent runs; a refusal blocks the item."""
     try:
-        shutil.copytree(te_queue.bundle_dir(issue), snapshot, symlinks=True)
-    except OSError as exc:
-        raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
-    # A symlink anywhere in the copy (checks.json included) would point the
-    # oracle at a file the agent can still write, so none is accepted. The copy
-    # is what is scanned: it is exactly what the oracle will use.
-    links = [str(p.relative_to(snapshot)) for p in snapshot.rglob("*") if p.is_symlink()]
-    if links:
-        raise Blocked(f"the kill-check bundle holds a symlink ({', '.join(links[:3])}); refused")
-    try:
-        digest = te_queue.kill_runner.bundle_digest(snapshot)
-    except te_queue.kill_runner.RunnerError as exc:
-        raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
-    if digest != pin:
-        raise Blocked("the kill-check bundle no longer matches the handoff's kill-bundle-sha256")
-    return snapshot
+        return te_queue.snapshot_bundle(issue, pin, scratch)
+    except te_queue.QueueError as exc:
+        raise Blocked(str(exc)) from exc
 
 
 def kill_facts(issue: int, base: str, head: str, env: dict[str, str], bundle: Path,
@@ -456,12 +441,13 @@ def deny_hits(base: str, head: str) -> list[str]:
 
 
 def preclose_fact(issue: int, base: str, head: str, tier: str, env: dict[str, str],
-                  out: Path) -> dict:
+                  out: Path, harness: Path | None = None) -> dict:
     """Exactly one driver run; any non-zero exit sets the item aside (operator
     ruling, harmonic-forge#1059): the runner never retries it."""
     result = run([sys.executable, str(PRECLOSE_DRIVER), "run",
                   "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
-                  "--source-repo", str(SOURCE), "--tier", tier, "--out", str(out)],
+                  "--source-repo", str(SOURCE), "--tier", tier, "--out", str(out),
+                  *(["--harness-results", str(harness)] if harness else [])],
                  cwd=SOURCE, env=env)
     keep(out.parent, "preclose_driver", result)
     if result.returncode:
@@ -603,13 +589,9 @@ def open_pr(item: dict, state: dict, queue: Path, issue: int, head: str,
 # --- one item ----------------------------------------------------------------------
 
 def ac_titles(body: str) -> list[str]:
-    section = re.search(r"^## Acceptance criteria\s*$(.*?)(?=^## |\Z)", body, re.M | re.S)
-    titles = []
-    for line in (section.group(1) if section else "").splitlines():
-        match = re.match(r"\s*\d+\.\s+(.*)", line)
-        if match:
-            titles.append(re.split(r"(?<=[.:])\s", match.group(1), maxsplit=1)[0][:80])
-    return titles
+    """One short title per criterion, read through the shared matcher (AC11)."""
+    return [re.split(r"(?<=[.:])\s", item, maxsplit=1)[0][:80]
+            for item in acceptance.items(acceptance.section(body))]
 
 
 def self_flag(result: dict | None) -> str:
@@ -699,8 +681,13 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     log("kill", f"{len(kill)} check(s)")
     hits = deny_hits(base, head)
     log("deny", f"{len(hits)} hit(s)")
+    # The harness's own results, for the cross-family brief's evidence (AC14).
+    harness = scratch / "harness-results.json"
+    harness.write_text(json.dumps({"kill": kill, "deny_hits": hits, "check": {
+        "check_rc": check_rc, "new_failures": new_failures, "base_failures": base_failures}},
+        indent=1) + "\n", encoding="utf-8")
     preclose = preclose_fact(issue, base, head, te_queue.tier(issue) or "standard", env,
-                             scratch / "preclose")
+                             scratch / "preclose", harness)
     log("preclose", preclose.get("status", "?"))
     summary_path = scratch / "preclose" / "summary.md"
     summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
@@ -809,7 +796,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
 
 def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
                   agent_env: dict[str, str]) -> dict:
-    """AC9's five checks; every one runs and every failure is logged."""
+    """AC9's checks, AC12's per-item preconditions and AC15's rehearsal; every
+    one runs and every failure is logged."""
     scratch = run_dir / "preflight"
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
@@ -836,7 +824,9 @@ def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
         [("permission-probe", permissions), ("base-check", base_run),
          ("kill-baselines", lambda: preflight.kill_baselines(issues, SOURCE, base, scratch)),
          ("codex", lambda: preflight.codex_parity(scratch, env)),
-         ("refuter", lambda: preflight.refuter_call(scratch, env))],
+         ("rehearsal", lambda: preflight.rehearsal(scratch, env)),
+         ("per-item", lambda: [line for issue in issues for line in preflight.item_failures(
+             issue, SOURCE, base, scratch / f"item-{issue}", env)])],
         [("base-regression", lambda: preflight.base_regression(current, previous_base(base)))],
         run_dir)
     for line in record["reported"]:
