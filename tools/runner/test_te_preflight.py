@@ -197,6 +197,25 @@ class ItemChecks(Base):
                         failures)
 
 
+    def test_headless_plan_refusal_is_reported(self):
+        # Sticky-wicket patch 3: with no head the plan step still runs plan's
+        # head-independent refusals, so an IMC hook record with no matching
+        # receipt fails the preflight, before any agent spend.
+        pc = preflight.preclose_driver.preclose_check
+        with mock.patch.object(pc.imc_waiver, "unmatched_hook_record",
+                               return_value={"granted_at": "2026-10-20T00:00:00Z", "key": "F7"}):
+            failures = self.failures()
+        self.assertTrue(any("preclose driver" in f and "plan refused" in f
+                            and "IMC hook record" in f for f in failures), failures)
+
+    def test_headless_plan_that_cannot_run_is_a_failure(self):
+        # A step that cannot run is listed as a failure, never passed.
+        pc = preflight.preclose_driver.preclose_check
+        with mock.patch.object(pc, "receipt_dir", side_effect=RuntimeError("no home")):
+            failures = self.failures()
+        self.assertTrue(any("plan not checked before spend" in f for f in failures), failures)
+
+
 class Rehearsal(Base):
     """AC15: one refuter and one cross-family verify call on a fixed fixture."""
 

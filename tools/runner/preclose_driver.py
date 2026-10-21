@@ -207,8 +207,41 @@ def _step_passes(ctx: dict) -> None:
                           "a third never runs")
 
 
+def plan_refusals_without_head(repo: str, issue: int) -> None:
+    """The subset of `preclose_check.plan`'s refusals that needs no head: the
+    receipt dir is writable, no IMC waiver receipt is unconfirmed, and no live
+    IMC hook record lacks its receipt. Raises DriverError naming the refusal,
+    or naming that the plan could not be checked (harmonic-forge#1112
+    sticky-wicket patch 3). The full plan, which needs a kill-check receipt at
+    the head and writes a planned receipt, runs once the head exists."""
+    try:
+        preclose_check.require_writable(preclose_check.receipt_dir())
+        imc = preclose_check.imc_waiver
+        held = imc.waiver_receipt(repo, issue)
+        if held is not None and not imc.waiver_satisfied(held):
+            raise DriverError(f"plan refused: {repo}#{issue} holds an IMC waiver receipt that "
+                              f"is not recorded (status {held.get('status', 'unreadable')!r})")
+        unmatched = imc.unmatched_hook_record(repo, issue)
+        if unmatched is not None:
+            raise DriverError(f"plan refused: {repo}#{issue} holds a live IMC hook record "
+                              f"(granted {unmatched.get('granted_at')}) but no matching "
+                              "waiver receipt")
+    except DriverError:
+        raise
+    except SystemExit as exc:
+        raise DriverError(f"plan refused: receipt dir not writable (exit {exc.code})") from exc
+    except Exception as exc:  # noqa: BLE001 -- a check that cannot run is a failure
+        raise DriverError(f"plan not checked before spend: {exc}") from exc
+
+
 def _step_plan(ctx: dict) -> None:
-    if "head" not in ctx or ctx["errors"]:
+    # With no head (the preflight, te_queue add) the plan never returns
+    # silently: its head-independent refusals run, and one that cannot run is
+    # listed as a failure (harmonic-forge#1112 sticky-wicket patch 3).
+    if "head" not in ctx:
+        plan_refusals_without_head(ctx["repo"], ctx["issue"])
+        return
+    if ctx["errors"]:
         return
     planned = call([*ctx["check"], "--tier", ctx["tier"]], cwd=ctx["source"], env=ctx["env"])
     if planned.returncode:
@@ -246,7 +279,7 @@ def preconditions_context(repo: str, issue: int, base: str, source: Path, scratc
 def read_only_preconditions(ctx: dict) -> list[str]:
     """Every step in READ_ONLY_STEPS, each refusal collected, never only the
     first. With no head (the preflight, before any agent runs) the head is the
-    base and the plan does not run."""
+    base and the plan runs only its head-independent refusals."""
     for step in READ_ONLY_STEPS:
         if ctx.get("head") and "check" not in ctx:
             ctx["check"] = [sys.executable, str(PRECLOSE), "--repo", ctx["repo"],
