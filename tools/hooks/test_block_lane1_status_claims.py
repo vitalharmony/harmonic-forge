@@ -905,7 +905,9 @@ class TestF529UnresolvedCwdFailsLoud(_BashWriteSurface):
     """
 
     def test_relative_write_after_a_variable_cd_is_denied(self):
-        self.assertTrue(self.denied('D=/tmp/x; cd "$D" && cat > out.txt'))
+        # harmonic-forge#1116: a same-command literal assignment now resolves,
+        # so the variable here is the outer shell's, which stays unknown.
+        self.assertTrue(self.denied('cd "$D" && cat > out.txt'))
 
     def test_relative_write_in_a_loop_body_is_denied(self):
         self.assertTrue(self.denied(
@@ -989,6 +991,222 @@ class TestF529ImplWorktreeIsNotTheMainCheckout(unittest.TestCase):
         sibling.mkdir()
         subprocess.run(["git", "init", "-q", str(sibling)], check=True)
         self.assertIn(self.main, m.protected_checkout_roots(sibling))
+
+
+class _F1116Fixture(unittest.TestCase):
+    """harmonic-forge#1116 fixture: a protected checkout (`main`, a tracked
+    file), an untracked scratch dir beside it, and HOME pinned to their common
+    parent so `~/proj` and `~/scratch` name them. LANE and the session id are
+    pinned per test, so nothing depends on the launching session's own
+    environment."""
+
+    LANE: str | None = None
+
+    def setUp(self) -> None:
+        import os
+        import subprocess
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name).resolve()
+        self.main = self.base / "proj"
+        self.scratch = self.base / "scratch"
+        self.scratch.mkdir()
+        (self.scratch / "sub").mkdir()
+        self.main.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True)
+        (self.main / "tracked.md").write_text("x\n")
+        subprocess.run(["git", "-C", str(self.main), "add", "tracked.md"], check=True)
+        subprocess.run(["git", "-C", str(self.main), "-c", "user.email=t@t",
+                        "-c", "user.name=t", "commit", "-qm", "seed"], check=True)
+        env = {"HOME": str(self.base)}
+        patcher = unittest.mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("LANE", "CLAUDE_CODE_SESSION_ID", "TMPDIR"):
+            os.environ.pop(name, None)
+        if self.LANE is not None:
+            os.environ["LANE"] = self.LANE
+
+    def fill(self, command: str) -> str:
+        return (command.replace("{MAIN}", str(self.main))
+                .replace("{SCRATCH}", str(self.scratch))
+                .replace("{TMP}", tempfile.gettempdir()))
+
+    def reason(self, command: str) -> str | None:
+        result = m.decision(self.fill(command), self.scratch)
+        if not _is_denied(result):
+            return None
+        return result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def assertAllowed(self, command: str) -> None:
+        self.assertIsNone(self.reason(command), command)
+
+    def assertUnresolved(self, command: str, variable: str | None = None) -> None:
+        reason = self.reason(command)
+        self.assertIsNotNone(reason, command)
+        self.assertIn("cannot resolve statically", reason)
+        if variable is not None:
+            self.assertIn(f"`${variable}`", reason)
+            self.assertIn("assign it to a literal absolute path in this same "
+                          "command, or use the absolute path", reason)
+
+    def assertProtected(self, command: str) -> str:
+        reason = self.reason(command)
+        self.assertIsNotNone(reason, command)
+        self.assertNotIn("cannot resolve statically", reason)
+        return reason
+
+
+class TestF1116SameCommandVariables(_F1116Fixture):
+    """harmonic-forge#1116 AC1-AC4."""
+
+    # AC1
+    def test_ac1_literal_assignment_resolves(self):
+        self.assertAllowed("W={SCRATCH}; cd $W && echo x > f")
+
+    def test_ac1_export_and_braced_quoted_operand_resolve(self):
+        self.assertAllowed('export W={SCRATCH} && cd "${W}" && echo x > f')
+
+    def test_ac1_tilde_and_suffix_resolve(self):
+        self.assertAllowed("W=~/scratch; cd $W/sub && echo > f")
+
+    def test_ac1_home_prefix_resolves(self):
+        self.assertAllowed('W=$HOME/scratch; cd "$W" && echo > f')
+
+    def test_ac1_chained_assignment_resolves(self):
+        self.assertAllowed("A={SCRATCH}; B=$A/sub; cd $B && echo > f")
+
+    def test_ac1_directory_change_is_backward_compatible(self):
+        self.assertEqual(m.directory_change(["cd", "$W"]), (None, False))
+        self.assertEqual(m.directory_change(["cd", "$W/x"], {"W": "/a"}), ("/a/x", True))
+        self.assertEqual(m.directory_change(["cd", "${W}"], {"W": "/a"}), ("/a", True))
+        self.assertEqual(m.directory_change(["cd", "$V"], {"W": "/a"}), (None, False))
+
+    # AC2
+    def test_ac2_variable_into_main_checkout_denies_as_protected(self):
+        reason = self.assertProtected("W={MAIN}; cd $W && echo x > tracked.md")
+        self.assertIn("tracked file", reason)
+
+    def test_ac2_tilde_into_main_checkout_denies_as_protected(self):
+        self.assertProtected("W=~/proj; cd $W && echo x > tracked.md")
+
+    # AC3
+    def test_ac3_mktemp_resolves_as_temp_dir(self):
+        self.assertAllowed("T=$(mktemp -d); cd $T && echo > f")
+        self.assertAllowed('T="$(mktemp -d)"; cd $T && echo > f')
+        self.assertAllowed("T=$(mktemp -d -t x.XXXX); cd $T && echo > f")
+
+    def test_ac3_mktemp_p_into_checkout_stays_unresolved(self):
+        self.assertUnresolved("T=$(mktemp -d -p {MAIN}); cd $T && echo > tracked.md", "T")
+
+    def test_ac3_mktemp_tmpdir_forms_stay_unresolved(self):
+        self.assertUnresolved("T=$(TMPDIR={MAIN} mktemp -d); cd $T && echo > tracked.md", "T")
+        self.assertUnresolved("T=$(mktemp -d --tmpdir={MAIN}); cd $T && echo > tracked.md", "T")
+        self.assertUnresolved("TMPDIR={MAIN}; T=$(mktemp -d); cd $T && echo > tracked.md", "T")
+
+    def test_ac3_other_substitutions_poison(self):
+        self.assertUnresolved("T=$(mktemp -d)/sub; cd $T && echo > f", "T")
+        self.assertUnresolved("T=`mktemp -d`; cd $T && echo > f", "T")
+        self.assertUnresolved("T=$(mktemp -d x.XXXX); cd $T && echo > f", "T")
+
+    # AC4
+    def test_ac4_outer_shell_variable_names_it(self):
+        self.assertUnresolved("cd $W && echo > f", "W")
+
+    def test_ac4_poisoned_shapes_deny_and_name_the_variable(self):
+        for command in (
+            "if x; then W={SCRATCH}; fi; cd $W && echo > f",
+            "for d in a; do W={SCRATCH}; done; cd $W && echo > f",
+            "{ W={SCRATCH}; }; cd $W && echo > f",
+            "(W={SCRATCH}); cd $W && echo > f",
+            "W=$(pwd); cd $W && echo > f",
+            "W={SCRATCH}; W={SCRATCH}; cd $W && echo > f",
+            "true && W={SCRATCH}; cd $W && echo > f",
+            "false || W={SCRATCH}; cd $W && echo > f",
+            "W={SCRATCH} | cat; cd $W && echo > f",
+            "W={SCRATCH} & cd $W && echo > f",
+            "case a in a) W={SCRATCH};; esac; cd $W && echo > f",
+            "W=.; cd $W && echo > f",
+            "W='~/scratch'; cd $W && echo > f",
+            'W="~/scratch"; cd $W && echo > f',
+            "W='$HOME/scratch'; cd $W && echo > f",
+            "W={SCRATCH}/*; cd $W && echo > f",
+            "W={SCRATCH}; read W; cd $W && echo > f",
+            "W={SCRATCH}; unset W; cd $W && echo > f",
+            "W={SCRATCH}; declare W={MAIN}; cd $W && echo > f",
+            "W={SCRATCH}; local W; cd $W && echo > f",
+            "W={SCRATCH}; eval \"N=1\"; cd $W && echo > f",
+            "W={SCRATCH}; printf -v W %s {MAIN}; cd $W && echo > f",
+            "W={SCRATCH}; mapfile W < x; cd $W && echo > f",
+            "W={SCRATCH}; readarray W < x; cd $W && echo > f",
+            "W={SCRATCH}; let W=1; cd $W && echo > f",
+            "W={SCRATCH}; typeset W; cd $W && echo > f",
+            "W={SCRATCH}; W+=/sub; cd $W && echo > f",
+            "W={SCRATCH}; export -n W; cd $W && echo > f",
+            "W={SCRATCH}; source ./env.sh; cd $W && echo > f",
+            "W={SCRATCH}; . ./env.sh; cd $W && echo > f",
+            "W={SCRATCH}; N=W; declare \"$N={MAIN}\"; cd $W && echo > f",
+            "W={SCRATCH}; : ${W:={MAIN}}; cd $W && echo > f",
+            "W={SCRATCH}; for W in {MAIN}; do :; done; cd $W && echo > f",
+            "HOME={MAIN}; W=~/x; cd $W && echo > f",
+            "IFS=/; W={SCRATCH}; cd $W && echo > f",
+        ):
+            with self.subTest(command=command):
+                self.assertUnresolved(command, "W")
+
+    def test_ac4_message_keeps_existing_guidance(self):
+        reason = self.reason("cd $W && echo > f")
+        self.assertIn("Pass an absolute path for the write target", reason)
+        self.assertIn("harmonic-forge#529", reason)
+
+
+class TestF1116Lane2(_F1116Fixture):
+    LANE = "2"
+
+    def test_ac2_lane2_variable_into_main_checkout_is_the_lane2_denial(self):
+        reason = self.assertProtected("W={MAIN}; cd $W && echo x > new.md")
+        self.assertIn("LANE=2", reason)
+
+
+class TestF1116CorpusRegression(_F1116Fixture):
+    """harmonic-forge#1116 AC5 — the synthetic regression corpus."""
+
+    def test_ac5_corpus(self):
+        import json
+        fixture = Path(__file__).parent / "fixtures" / "f1116_cwd_corpus.json"
+        rows = json.loads(fixture.read_text())["rows"]
+        self.assertEqual(len(rows), 68)
+        resolved = refused = 0
+        for row in rows:
+            reason = self.reason(row["command"])
+            if reason is not None and "cannot resolve statically" in reason:
+                refused += 1
+            else:
+                resolved += 1
+            with self.subTest(command=row["command"]):
+                if row["expect"] == "allow":
+                    self.assertIsNone(reason)
+                elif row["expect"] == "deny-protected":
+                    self.assertIsNotNone(reason)
+                    self.assertNotIn("cannot resolve statically", reason)
+                else:
+                    self.assertIsNotNone(reason)
+                    self.assertIn("cannot resolve statically", reason)
+        self.assertEqual((resolved, refused), (67, 1))
+        self.assertGreaterEqual(
+            sum(row["expect"] == "deny-protected" for row in rows), 5)
+
+
+class TestF1116AttackShapes(_F1116Fixture):
+    """harmonic-forge#1116 AC6."""
+
+    def test_ac6_a_mktemp_lookalike_is_unresolved(self):
+        self.assertUnresolved(
+            "T=$(mktemp -d >&2; echo {MAIN}); cd $T && echo > tracked.md", "T")
+
+    def test_ac6_b_conditional_reassignment_is_unresolved(self):
+        self.assertUnresolved(
+            'W={MAIN}; [ -n "$X" ] && W=/safe; cd $W && echo > tracked.md', "W")
 
 
 if __name__ == "__main__":
