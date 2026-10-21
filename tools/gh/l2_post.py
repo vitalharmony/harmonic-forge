@@ -34,6 +34,8 @@ from receipt_runner import clear_lock, is_locked, lock_path, strip_ansi, write_r
 import belt_candidates  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _caller_path  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import tasklist_owed  # noqa: E402  (harmonic-forge#1126: never raises)
 
 
 def _sha(text: str) -> str:
@@ -558,6 +560,7 @@ def main() -> int:
     #: issue is still queued for.
     if args.kind != "finding":
         belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
+    tasklist_owed.record_post(args.repo, args.issue, args.kind)
     print(json.dumps(result))
     return 0
 

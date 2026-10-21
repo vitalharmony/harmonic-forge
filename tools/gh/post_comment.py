@@ -34,6 +34,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
 import _caller_path  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import tasklist_owed  # noqa: E402  (harmonic-forge#1126: never raises)
+
 
 def post_comment(repo: str, issue: int, body_file: Path, source_content: str) -> int:
     print(f"[POST-COMMENT] Posting to {repo}#{issue}")
@@ -84,6 +87,7 @@ def post_comment(repo: str, issue: int, body_file: Path, source_content: str) ->
         return 1
 
     print("[POST-COMMENT] Self-check passed: posted content matches source exactly.")
+    tasklist_owed.record_post(repo, issue, "comment")
     return 0
 
 

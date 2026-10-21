@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""PostToolUse Bash: a merge, a PR or a close owes a task-list update (harmonic-forge#1126 AC2).
+
+The lane post scripts record their own markers (`tasklist_owed.record_post`),
+because they know the issue and the kind exactly. This hook covers the three
+`gh` commands no script of ours wraps: `gh pr merge`, `gh pr create` and
+`gh issue close`, parsed with `batch_auth`'s classifiers over
+`shell_parse.command_segments`. PostToolUse fires on failure too, so a merge or
+close is recorded only when `batch_auth.action_landed` confirms it, and a PR
+only when the output names one. Every failure is silent. The entry shape is in
+`tasklist_hold.py`.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import tasklist_owed as owed  # noqa: E402
+from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+
+_PR_URL = re.compile(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
+_TITLE_FLAGS = ("--title", "-t")
+
+
+def _output(payload: dict) -> str:
+    response = payload.get("tool_response")
+    if isinstance(response, dict):
+        return f"{response.get('stdout') or ''}\n{response.get('stderr') or ''}"
+    return str(response or "")
+
+
+def _title_key(tokens: list[str], pr_repo: str) -> str | None:
+    import batch_auth  # noqa: PLC0415
+    title = next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t in _TITLE_FLAGS), "")
+    keys = {batch_auth._carrier_key(slug, number, pr_repo)
+            for slug, number in batch_auth._TITLE_ISSUE.findall(title)}
+    keys.discard(None)
+    return keys.pop() if len(keys) == 1 else None
+
+
+def _short_repo(tokens: list[str]) -> str | None:
+    """`-R owner/repo`, which `batch_auth._repo_flag` does not read."""
+    return next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == "-R"), None)
+
+
+def events(payload: dict) -> list[tuple[str, str]]:
+    """`[(key, kind), ...]` this Bash call owes, kind in merge/pr/close."""
+    import batch_auth  # noqa: PLC0415
+    command = (payload.get("tool_input") or {}).get("command") or ""
+    found = []
+    for segment in command_segments(command):
+        close = batch_auth.classify_issue_close(segment)
+        if close and close[1]:
+            repo, number = close[0] or _short_repo(segment), close[1]
+            if not repo:
+                continue
+            if batch_auth.action_landed("close", repo, number):
+                key = batch_auth.issue_key(repo, number)
+                if key:
+                    found.append((key, "close"))
+            continue
+        merge = batch_auth.classify_pr_merge(segment)
+        if merge and merge[1]:
+            repo, number = merge[0] or _short_repo(segment), merge[1]
+            if not repo:
+                continue
+            if batch_auth.action_landed("merge", repo, number):
+                key = batch_auth.derive_issue_key(repo, number, {})
+                if key:
+                    found.append((key, "merge"))
+            continue
+        tokens = strip_invocation_prefix(segment)
+        if tokens[:3] and Path(tokens[0]).name == "gh" and tokens[1:3] == ["pr", "create"]:
+            match = _PR_URL.search(_output(payload))
+            if match:
+                key = _title_key(tokens, match.group(1))
+                if key:
+                    found.append((key, "pr"))
+    return found
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    if not isinstance(payload, dict) or not os.environ.get("LANE"):
+        return 0
+    if payload.get("tool_name") not in (None, "Bash"):
+        return 0
+    try:
+        session = payload.get("session_id") or owed.session_id()
+        for key, kind in events(payload):
+            owed.record(key, kind, session=session)
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

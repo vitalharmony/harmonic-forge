@@ -151,6 +151,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "TaskUpdate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -260,6 +270,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_stop_backstop.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 25
           },
@@ -283,6 +298,16 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/record_tasklist_post.py\"",
             "timeout": 10
           }
         ]
