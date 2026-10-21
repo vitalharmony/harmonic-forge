@@ -885,6 +885,9 @@ class TestFindRetiredCitations(unittest.TestCase):
         "--caller gemini/other", "--caller gemini+other",
         '--caller "gemini other"', "--families 3/4", "--families 3+4",
         '--families "3 4"',
+        # Second post-verdict check: a closing quote is not a boundary.
+        '--agent "gemini"/other', "--caller 'gemini'+other",
+        'LANE_CLI="gemini"/other', '--families "3".5',
     )
 
     def _path_keys(self):
