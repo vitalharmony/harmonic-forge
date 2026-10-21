@@ -11,6 +11,7 @@ import importlib.util
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 from pathlib import Path
 
@@ -92,8 +93,10 @@ class LaneStateRecognitionTests(unittest.TestCase):
         """(c2) Not scored, and the quote is removed by the shared stripper
         `gate_ci` reads, not by an accident of `lane_state`'s own regex."""
         body = "> ## L3P — H1\n"
-        with mock.patch.object(lane_state.markdown_strip, "visible_text",
-                               wraps=lane_state.markdown_strip.visible_text) as spy:
+        # Replace lane_state's OWN binding, so gate_ci's call cannot satisfy it.
+        spy = mock.Mock(wraps=lane_state.markdown_strip.visible_text)
+        with mock.patch.object(lane_state, "markdown_strip",
+                               SimpleNamespace(visible_text=spy)):
             self.assertFalse(scored(body))
         spy.assert_any_call(body)
 
@@ -117,6 +120,14 @@ CORPUS = [
 ] + [f"{' ' * (n % 4)}{'#' * n} Lane 3 Gate Results — {v}\n"
      for n in range(1, 7) for v in ("PASS", "FAIL")]
 
+#: Headingless verdict bodies (pass-2 survivor 1): never a gate transition.
+HEADINGLESS = [
+    "## L2D — H5\n\nResult: PASS (unit tests 40/40)\n",
+    "## Lane 1 review — H5\n\n**Verdict:** PASS\n",
+    "## Handoff\n\nVerdict: FAIL on prior gate\n",
+]
+CORPUS += HEADINGLESS
+
 
 class SharedCorpusPropertyTests(unittest.TestCase):
     def test_d_every_scored_gate_is_a_possible_gate_report(self):
@@ -126,13 +137,21 @@ class SharedCorpusPropertyTests(unittest.TestCase):
                 if scored(body):
                     self.assertTrue(gate_ci.may_be_a_gate_report(body))
 
+    def test_d_headingless_verdict_bodies_are_not_scored(self):
+        """Pass 2: a verdict line with no gate heading or token is no gate."""
+        for body in HEADINGLESS:
+            with self.subTest(body=body):
+                self.assertFalse(gate_ci.may_be_a_gate_report(body))
+                self.assertFalse(scored(body))
+
     def test_d_the_corpus_is_not_vacuous(self):
         self.assertGreaterEqual(sum(scored(b) for b in CORPUS), 16)
         self.assertIn("gate.pass", keys("## L3P — H1\n"))
 
 
 #: The sticky-wicket survivor bodies (harmonic-forge#1108 pass 1).
-AGREEMENT_CORPUS = CORPUS + [
+#: Recognized gate bodies only: `verdict_of` is defined behind recognition.
+AGREEMENT_CORPUS = [b for b in CORPUS if b not in HEADINGLESS] + [
     "##\nL3P — H1\n",
     "## Lane 3 Gate Results — BLOCKED (PASS once CI is green)\n",
     "## Lane 3 Gate Results — BLOCKED\n\nCI not green.\n\n"

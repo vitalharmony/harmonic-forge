@@ -445,12 +445,16 @@ def _scan_comment(comment: dict) -> list[Transition]:
     attested = kind == "gate-result"
     provenance = "footer:gate-result" if attested else "heading:gate-result"
     validated = _validated(kind, body) if attested else False
-    verdict = gate_ci.verdict_of(raw)
+    # `verdict_of` reads the whole body when there is no gate heading, so it
+    # is only asked about a recognized gate comment (harmonic-forge#1108
+    # pass 2): a `Result: PASS` in an L2D is not a gate.
+    is_gate = bool(GATE_HEADING.search(body) or GATE_TOKEN.search(body))
+    verdict = gate_ci.verdict_of(raw) if is_gate else None
     if verdict == "PASS":
         out.append(made(KEY_GATE_PASS, provenance, validated))
     elif verdict == "FAIL":
         out.append(made(KEY_GATE_FAIL, provenance, validated))
-    elif GATE_HEADING.search(body) or GATE_TOKEN.search(body):
+    elif is_gate:
         # A gate comment with no scorable verdict (BLOCKED, CONFLICT, none):
         # `unknown` — attested or not.
         out.append(made(KEY_UNKNOWN, provenance))
