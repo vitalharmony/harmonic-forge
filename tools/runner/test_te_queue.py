@@ -160,6 +160,23 @@ class Check(unittest.TestCase):
                                return_value=comments[1:]):
             self.assertIsNone(te_queue.handoff(7))
 
+    def test_tier_reads_the_board_as_the_runner(self):
+        # harmonic-forge#1107 AC4: the operator's gh never answers for the runner.
+        seen = {}
+
+        def fetch(repo, issue, board, run=None, **kw):
+            self.assertIsNotNone(run)
+            with mock.patch.object(te_queue.subprocess, "run",
+                                   lambda *a, **k: seen.update(k) or "ok"):
+                run(["gh", "api", "graphql"])
+            return "standard"
+        with mock.patch.object(te_queue.item_list_cache, "fetch_issue_tier", fetch), \
+                mock.patch.dict("os.environ", {"GH_TOKEN": "operator"}):
+            self.assertEqual(te_queue.tier(7), "standard")
+        self.assertEqual(seen["env"]["GH_CONFIG_DIR"],
+                         str(Path.home() / ".config" / "te-runner" / "gh"))
+        self.assertNotIn("GH_TOKEN", seen["env"])
+
     def test_affected_files_parses_plain_and_backticked_paths(self):
         self.assertEqual(te_queue.affected_files(self.seams["handoff"]),
                          ["tools/telemetry/widget.py", "tools/telemetry/test_widget.py"])

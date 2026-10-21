@@ -71,9 +71,18 @@ FAKE_GH = textwrap.dedent("""\
     import json, os, subprocess, sys
     from pathlib import Path
     here = Path(__file__).resolve().parent
-    with open(here / "gh.jsonl", "a") as log:
-        log.write(json.dumps(sys.argv[1:]) + "\\n")
     args = sys.argv[1:]
+    try:  # best effort: under real bwrap the fake's own directory is read-only
+        with open(here / "gh.jsonl", "a") as log:
+            log.write(json.dumps(args) + "\\n")
+        with open(here / "gh_env.jsonl", "a") as log:
+            log.write(json.dumps({"argv": args, "GH_TOKEN": os.environ.get("GH_TOKEN")}) + "\\n")
+    except OSError:
+        pass
+    if args[:2] == ["api", "user"]:  # the start-up probe (harmonic-forge#1107)
+        sys.stderr.write(os.environ.get("FAKE_PROBE_STDERR", ""))
+        print(os.environ.get("FAKE_LOGIN", "vitalharmony-runner"))
+        sys.exit(int(os.environ.get("FAKE_PROBE_RC", "0")))
     if args[:2] == ["pr", "create"]:
         branch = args[args.index("--head") + 1].split(":", 1)[1]
         sha = subprocess.run(["git", "-C", os.environ["FAKE_FORK"], "rev-parse",
@@ -156,6 +165,10 @@ class Pipeline(unittest.TestCase):
         key = self.tmp / "anthropic-key"
         key.write_text("sk-runner\n")
         key.chmod(0o600)
+        self.token = self.tmp / "gh-token"
+        self.token.write_text("runner-token\n")
+        self.token.chmod(0o600)
+        self.enter(mock.patch.object(te_run, "RUNNER_GH_TOKEN", self.token, create=True))
         self.enter(mock.patch.dict(os.environ, {
             "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_FORK": str(self.fork),
             "GH_TOKEN": "operator-token", "GITHUB_TOKEN": "operator-token",
@@ -348,11 +361,18 @@ class Pipeline(unittest.TestCase):
         # kill_runner's test commands (a subprocess of te_run) are wrapped too
         self.assertTrue(any(c[:3] == ["python3", "-m", "unittest"] for c in commands), commands)
 
+    def test_system_binds_the_ca_store(self):
+        # /etc/ssl/certs links into it; without it TLS fails inside (harmonic-forge#1107).
+        self.assertIn("/var/lib/ca-certificates", te_run.sandbox.SYSTEM)
+
     def test_missing_bwrap_aborts_the_run(self):
         with mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}), \
-                mock.patch.object(te_run.sandbox.shutil, "which", return_value=None):
+                mock.patch.object(te_run.sandbox.shutil, "which", return_value=None), \
+                mock.patch.object(te_run, "log") as logged:
             self.assertEqual(self.drive(), 3)
-        self.assertIn("bwrap is not installed", self.item()["note"])
+        # The start-up probe needs the boundary too, so it fails closed before any item.
+        self.assertIn("bwrap is not installed", " ".join(c.args[1] for c in logged.call_args_list))
+        self.assertEqual(self.item()["status"], "pending")
         self.assertEqual(self.observed(), [])
 
     def test_fetched_head_is_pinned_by_a_ref(self):
@@ -450,12 +470,135 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.item()["status"], "done")
 
     def test_child_env_has_no_gh_token(self):
-        self.drive()
+        # harmonic-forge#1107 AC5: the agent carries the runner token; every
+        # oracle, kill, preclose and PR env carries none.
+        envs = []
+        real_run = te_run.run
+
+        def spy(argv, **kw):
+            envs.append((argv, kw.get("env")))
+            return real_run(argv, **kw)
+
+        fact_envs = []
+
+        def fact(*args, **kw):
+            fact_envs.append(args[4])
+            return {"status": "complete", "survivors": 0,
+                    "provenance": "Red-team provenance: cross-family (codex) — 1/1"}
+        with mock.patch.object(te_run, "run", spy), \
+                mock.patch.object(te_run, "preclose_fact", fact), \
+                mock.patch.object(te_run, "kill_facts", wraps=te_run.kill_facts) as kills:
+            self.assertEqual(self.drive(), 0)
         env = self.observed()[0]["env"]
-        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env["GH_TOKEN"], "runner-token")
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertEqual(env["GH_CONFIG_DIR"], str(self.tmp / "runner-gh"))
         self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-runner")
+        self.assertTrue(envs and fact_envs and kills.call_args_list)
+        for argv, child in envs:  # env=None is the harness's own host git
+            if child is not None:
+                self.assertNotIn("GH_TOKEN", child, argv)
+        for child in fact_envs + [c.args[3] for c in kills.call_args_list]:
+            self.assertNotIn("GH_TOKEN", child)
+        pr_calls = [c for c in self.gh_env() if c["argv"][:1] == ["pr"]]
+        self.assertTrue(pr_calls)
+        self.assertTrue(all(c["GH_TOKEN"] is None for c in pr_calls), pr_calls)
+
+    def gh_env(self) -> list[dict]:
+        path = self.bin / "gh_env.jsonl"
+        return [json.loads(l) for l in path.read_text().splitlines()] if path.exists() else []
+
+    def test_probe_runs_inside_the_agent_boundary_with_the_token(self):
+        self.assertEqual(self.drive(), 0)
+        [probe] = [c for c in self.gh_env() if c["argv"][:2] == ["api", "user"]]
+        self.assertEqual(probe["GH_TOKEN"], "runner-token")
+        wrapped = [json.loads(l) for l in (self.tmp / "bwrap.jsonl").read_text().splitlines()]
+        self.assertTrue(any("api" in json.dumps(w) and "user" in json.dumps(w) for w in wrapped))
+
+    def test_probe_wrong_login_or_failure_aborts_before_any_item(self):
+        for env in ({"FAKE_LOGIN": "operator"},
+                    {"FAKE_PROBE_RC": "1", "FAKE_PROBE_STDERR": "x509: unknown authority"}):
+            with self.subTest(env=env), mock.patch.object(te_run, "log") as logged:
+                self.assertEqual(self.drive(**env), 3)
+                self.assertEqual(self.observed(), [])
+                self.assertEqual(self.item()["status"], "pending")
+                steps = [c.args[0] for c in logged.call_args_list]
+                self.assertIn("probe", steps)
+                if "FAKE_PROBE_STDERR" in env:
+                    self.assertIn("x509", " ".join(c.args[1] for c in logged.call_args_list))
+
+    def test_missing_loose_or_empty_token_file_aborts(self):
+        for setup in (lambda: self.token.chmod(0o644), lambda: self.token.unlink(),
+                      lambda: (self.token.write_text(""), self.token.chmod(0o600))):
+            with self.subTest():
+                if self.token.exists():
+                    self.token.chmod(0o600)
+                self.token.write_text("runner-token\n")
+                self.token.chmod(0o600)
+                setup()
+                self.assertEqual(self.drive(), 3)
+                self.assertEqual(self.observed(), [])
+                self.assertEqual(self.gh_env(), [])
+                self.assertEqual(self.item()["status"], "pending")
+
+    def test_g3_abort_carries_the_agent_stderr_tail(self):
+        noisy = self.bin / "claude"
+        noisy.write_text(FAKE_CLAUDE.replace(
+            "print(json.dumps({\"type\": \"result\"",
+            "sys.stderr.write(''.join(f'line {i}\\n' for i in range(40)) + 'boom: TLS\\n')\n"
+            "print(json.dumps({\"type\": \"result\"", 1))
+        self.assertEqual(self.drive(FAKE_DROP_HOOK="Stop"), 3)
+        note = self.item()["note"]
+        self.assertIn("G3", note)
+        self.assertIn("boom: TLS", note)
+        self.assertNotIn("line 5\n", note)  # the tail only, 20 lines
+
+    def test_nonzero_agent_exit_after_g3_is_logged_not_raised(self):
+        rc1 = self.bin / "claude"
+        rc1.write_text(FAKE_CLAUDE.rstrip("\n")
+                       + "\nsys.stderr.write('boom: TLS\\n')\nsys.exit(1)\n")
+        with mock.patch.object(te_run, "log") as logged:
+            self.assertEqual(self.drive(), 0)
+        self.assertEqual(self.item()["status"], "done")
+        self.assertTrue(any(a[0] == "agent" and "claude exited 1" in a[1]
+                            and "boom: TLS" in a[1]
+                            for a in (c.args for c in logged.call_args_list)))
+
+    def test_nonzero_agent_exit_with_empty_stderr_logs_the_bare_exit(self):
+        rc1 = self.bin / "claude"
+        rc1.write_text(FAKE_CLAUDE.rstrip("\n") + "\nsys.exit(1)\n")
+        with mock.patch.object(te_run, "log") as logged:
+            self.assertEqual(self.drive(), 0)
+        self.assertIn(("agent", "claude exited 1"),
+                      [c.args for c in logged.call_args_list])
+
+    def test_agent_stderr_is_written_beside_the_stream_log(self):
+        log_path = self.tmp / "s" / "stream.jsonl"
+        log_path.parent.mkdir()
+        done = subprocess.CompletedProcess([], 0, "", "warn: x\n")
+        with mock.patch.object(te_run.subprocess, "run", return_value=done), \
+                mock.patch.object(te_run, "source_objects", return_value=self.tmp), \
+                self.assertRaises(te_run.Abort):
+            te_run.run_agent(self.tmp, "p", "1", {}, log_path, self.tmp / "t")
+        self.assertEqual((self.tmp / "s" / "stream.jsonl.stderr").read_text(), "warn: x\n")
+
+    def test_token_with_special_mode_bits_is_refused(self):
+        self.token.chmod(0o1600)
+        self.assertIsNone(te_run.runner_token())
+
+    def test_non_utf8_agent_stderr_still_aborts_with_g3_and_writes_logs(self):
+        bad = self.bin / "claude"
+        bad.write_text("#!/usr/bin/env python3\nimport sys\n"
+                       "sys.stdin.read()\nsys.stderr.buffer.write(b'\\xff\\xfe')\n")
+        bad.chmod(0o755)
+        log_path = self.tmp / "s2" / "stream.jsonl"
+        log_path.parent.mkdir()
+        with mock.patch.object(te_run, "claude_argv", return_value=[str(bad)]), \
+                mock.patch.object(te_run, "source_objects", return_value=self.tmp), \
+                self.assertRaises(te_run.Abort) as caught:
+            te_run.run_agent(self.tmp, "p", "1", dict(os.environ), log_path, self.tmp / "t2")
+        self.assertIn("G3", str(caught.exception))
+        self.assertTrue((self.tmp / "s2" / "stream.jsonl.stderr").exists())
 
     def test_missing_or_loose_key_file_refuses(self):
         key = te_run.preclose_driver.RUNNER_KEY

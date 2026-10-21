@@ -4,6 +4,8 @@ OnFailure=forge-te-runner-alert.service
 
 [Service]
 Type=oneshot
+# The unit owns its PATH: `claude` lives in ~/.local/bin (harmonic-forge#1107).
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
 # The budget has no default: runner.env must set TE_RUNNER_BUDGET_USD, or te_run.py refuses.
 EnvironmentFile=%h/.config/te-runner/runner.env
 ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/runner/te_run.py run --queue %h/.local/share/te-runner/queue.json --max-budget-usd ${TE_RUNNER_BUDGET_USD}
