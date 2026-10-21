@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -20,6 +21,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import te_run  # noqa: E402
+
+
+def NO_CHECKS(issue: int) -> list[str]:  # noqa: N802 -- add-time checks have their own tests
+    return []
 
 REAL_PRECLOSE_FACT = te_run.preclose_fact
 
@@ -51,6 +56,8 @@ FAKE_CLAUDE = textwrap.dedent("""\
         hook = Path(".git/hooks/pre-push")
         hook.write_text("#!/bin/sh\\ntouch " + os.environ["FAKE_PRE_PUSH_SENTINEL"] + "\\n")
         hook.chmod(0o755)
+    if os.environ.get("FAKE_UNTRACKED"):  # an uncommitted file left in the agent's clone
+        Path(os.environ["FAKE_UNTRACKED"]).write_text("[tasks.check]\\nrun = 'true'\\n")
     if os.environ.get("FAKE_TAMPER_BUNDLE"):  # the agent rewrites Lane 1's tests on disk
         Path(os.environ["FAKE_TAMPER_BUNDLE"]).write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
     drop = os.environ.get("FAKE_DROP_HOOK", "")
@@ -96,7 +103,7 @@ FAKE_GH = textwrap.dedent("""\
                           "statusCheckRollup": [{"conclusion": "SUCCESS"}]}))
 """)
 
-FAKE_MISE = "#!/bin/sh\nexit ${FAKE_MISE_RC:-0}\n"
+FAKE_MISE = "#!/bin/sh\nprintf '%b' \"${FAKE_MISE_OUT:-}\"\nexit ${FAKE_MISE_RC:-0}\n"
 
 
 def private_scratch_root(case: unittest.TestCase) -> str:
@@ -161,7 +168,7 @@ class Pipeline(unittest.TestCase):
             (self.bin / name).chmod(0o755)
         self.queue = self.tmp / "queue.json"
         (self.bin / "queue_path").write_text(str(self.queue))
-        te_run.te_queue.add(self.queue, ["F7"])
+        te_run.te_queue.add(self.queue, ["F7"], checks=NO_CHECKS)
         key = self.tmp / "anthropic-key"
         key.write_text("sk-runner\n")
         key.chmod(0o600)
@@ -181,6 +188,15 @@ class Pipeline(unittest.TestCase):
                 (pd, "RUNNER_KEY", key), (pd, "RUNNER_GH", self.tmp / "runner-gh")):
             self.enter(mock.patch.object(target, name, value))
         self.enter(mock.patch.object(te_run.deny_check, "boundary", return_value=[]))
+        # Run evidence and the base-check cache stay in the fixture (#1112).
+        self.enter(mock.patch.object(te_run, "RUNS_ROOT", self.tmp / "runs"))
+        self.enter(mock.patch.object(te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"))
+        self.enter(mock.patch.object(te_run, "CHECK_TREE_ROOT", self.tmp / "check-trees"))
+        # One test step, run through the stub mise (FAKE_MISE_OUT/FAKE_MISE_RC).
+        self.enter(mock.patch.object(te_run, "CHECK_STEPS",
+                                     (("run_tests", "python3 tools/run_tests.py"),)))
+        self.preflight = mock.MagicMock(return_value={"failures": [], "reported": []})
+        self.enter(mock.patch.object(te_run, "run_preflight", self.preflight))
         self.enter(mock.patch.object(tq, "first_failure", return_value=None))
         self.enter(mock.patch.object(tq, "gh_json", return_value={"body": ISSUE}))
         self.digest = tq.kill_runner.bundle_digest(bundle)
@@ -250,7 +266,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(self.events), 1)
 
     def test_green_item_records_the_summary_link_and_live_read_time(self):
-        def fact(issue, base, head, tier, env, out):
+        def fact(issue, base, head, tier, env, out, harness=None):
             out.mkdir(parents=True, exist_ok=True)
             (out / "summary.md").write_text("## Preclose pass\n")
             return {"status": "complete", "survivors": 0,
@@ -265,13 +281,18 @@ class Pipeline(unittest.TestCase):
         self.assertIn("--repo", comment)
 
     def test_every_finished_item_carries_the_runs_id(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.object(te_run.te_queue, "issue_number",
                                side_effect=lambda key: int(key[1:])):
             self.drive(FAKE_MISE_RC="1")
         state = te_run.queue_state.load(self.queue)
         self.assertRegex(state["run_id"], r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")
         self.assertEqual({i["run_id"] for i in state["items"]}, {state["run_id"]})
+
+    def test_the_run_saves_its_invocation_id_beside_its_run_id(self):
+        # Sticky-wicket patch 2: the report ties itself to the run that ended.
+        self.drive(INVOCATION_ID="inv-123")
+        self.assertEqual(te_run.queue_state.load(self.queue).get("invocation_id"), "inv-123")
 
     def test_a_run_that_works_nothing_still_replaces_the_run_id(self):
         state = te_run.queue_state.load(self.queue)
@@ -325,11 +346,11 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(agent), 1)
         call = agent[0]
         self.assertEqual(call[call.index("--chdir") + 1], clone)
-        # The writable bind is the last mount, after every read-only one.
-        self.assertEqual(call[call.index("--chdir") - 3:call.index("--chdir")],
-                         ["--bind", clone, clone])
-        self.assertEqual(call[call.index("--chdir") - 6:call.index("--chdir") - 3],
-                         ["--ro-bind"] + [str(te_run.source_objects())] * 2)
+        # The writable bind is the last mount, after every read-only one; only
+        # the mise env follows it (harmonic-forge#1112).
+        at = call.index("--setenv")
+        self.assertEqual(call[at - 3:at], ["--bind", clone, clone])
+        self.assertEqual(call[at - 6:at - 3], ["--ro-bind"] + [str(te_run.source_objects())] * 2)
 
     def test_boundary_is_an_allowlist_over_an_empty_home(self):
         self.drive()
@@ -357,7 +378,8 @@ class Pipeline(unittest.TestCase):
     def test_agent_check_and_kill_tests_run_inside_the_boundary(self):
         self.drive()
         commands = [self.wrapped_command(c) for c in self.bwrap_calls()]
-        self.assertIn(["mise", "run", "check"], commands)
+        self.assertTrue(any(c[:5] == ["mise", "exec", "--", "sh", "-c"] for c in commands),
+                        commands)
         # kill_runner's test commands (a subprocess of te_run) are wrapped too
         self.assertTrue(any(c[:3] == ["python3", "-m", "unittest"] for c in commands), commands)
 
@@ -413,6 +435,25 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.item()["reason"], "kill-check-fail")
         self.assertEqual(self.fork_branches(), "")
 
+    def test_preclose_is_skipped_once_an_earlier_clause_failed(self):
+        # Sticky-wicket patch 6: no paid refuters or cross-family call once
+        # the item cannot go green; every failed clause is still listed (AC8).
+        cases = ({"kill_receipt": False}, {"deny_hits": ["tools/hooks/x.py"]})
+        for patched in cases:
+            self.setUp_queue_fresh()
+            fact = mock.MagicMock(return_value={"status": "complete", "survivors": 0,
+                                                "provenance": "Red-team provenance: x"})
+            with mock.patch.object(te_run, "preclose_fact", fact), \
+                    mock.patch.multiple(te_run, **{k: mock.MagicMock(return_value=v)
+                                                   for k, v in patched.items()}):
+                self.drive()
+            item = self.item()
+            fact.assert_not_called()
+            self.assertEqual(item["facts"]["preclose"]["status"], "skipped: earlier clause failed")
+            reasons = [r["reason"] for r in item["verdict"]["reasons"]]
+            self.assertIn("preclose-survivor", reasons, patched)
+            self.assertGreaterEqual(len(reasons), 2, patched)
+
     def test_preclose_driver_failure_sets_aside_and_is_not_retried(self):
         # A real stub driver behind preclose_fact: it writes a PASSING
         # preclose.json and still exits non-zero. Each item is set aside, and
@@ -443,7 +484,7 @@ class Pipeline(unittest.TestCase):
 
     def setUp_queue_fresh(self):
         self.queue.unlink()
-        te_run.te_queue.add(self.queue, ["F7"])
+        te_run.te_queue.add(self.queue, ["F7"], checks=NO_CHECKS)
         for stale in (self.tmp / "wt").iterdir():
             shutil.rmtree(stale)
         sh("git", "worktree", "prune", cwd=self.src)
@@ -634,7 +675,7 @@ class Pipeline(unittest.TestCase):
     # --- AC5 G3 ------------------------------------------------------------------------
 
     def test_missing_stop_hook_event_aborts_the_run(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         self.assertEqual(self.drive(FAKE_DROP_HOOK="Stop"), 3)
         self.assertEqual(self.item()["status"], "blocked")
         self.assertIn("no Stop hook events", self.item()["note"])
@@ -659,7 +700,7 @@ class Pipeline(unittest.TestCase):
     # --- AC3 serial order, AC4 never reuse, AC7 recovery -------------------------------
 
     def test_serial_order_one_item_at_a_time(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.object(te_run.te_queue, "issue_number",
                                side_effect=lambda key: int(key[1:])):
             self.drive(FAKE_MISE_RC="1")
@@ -773,11 +814,11 @@ class Pipeline(unittest.TestCase):
     def test_queue_is_locked_while_a_run_holds_it(self):
         with te_run.te_queue.queue_lock(self.queue):
             with self.assertRaises(te_run.te_queue.QueueError):
-                te_run.te_queue.add(self.queue, ["F8"])
+                te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
             self.assertEqual(te_run.main(["run", "--queue", str(self.queue),
                                           "--max-budget-usd", "1"]), 2)
         self.assertEqual(self.item()["status"], "pending")
-        te_run.te_queue.add(self.queue, ["F8"])  # free again once the holder ends
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)  # free again once the holder ends
 
     def test_an_unexpected_error_blocks_the_item_never_in_progress(self):
         boom = UnicodeDecodeError("utf-8", b"\\xe9", 0, 1, "invalid continuation byte")
@@ -788,7 +829,7 @@ class Pipeline(unittest.TestCase):
         self.assertIn("invalid continuation byte", item["note"])
 
     def test_max_steps_bounds_the_run(self):
-        te_run.te_queue.add(self.queue, ["F8"])
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.dict(os.environ, {"FAKE_MISE_RC": "1"}):
             te_run.run_queue(self.queue, "1", 1)
         self.assertEqual(self.item("F8")["status"], "pending")
@@ -941,46 +982,69 @@ for _name in [n for n in vars(Pipeline) if n.startswith("test_")]:
     setattr(RealPipeline, _name, unittest.skip("covered under the stub bwrap")(lambda self: None))
 
 
-class SafePath(unittest.TestCase):
-    """Operator ruling on this issue: a head that shadows the test runner must
-    still fail the kill oracle."""
+def shadow_repo(case: unittest.TestCase) -> tuple[Path, str, str, Path]:
+    """A repo whose head fixes `widget`, and a bundle whose check imports the
+    repo (`import widget`) by path, `python3 -m unittest tests/test_widget.py`:
+    the form F1008's checks use, which `-t .` discovery would not exercise."""
+    tmp = Path(tempfile.mkdtemp())
+    case.addCleanup(shutil.rmtree, tmp, True)
+    src = tmp / "src"
+    src.mkdir()
+    sh("git", "init", "-q", "-b", "main", cwd=src)
+    (src / "widget.py").write_text("def widget():\n    return 1\n")
+    commit(src, "base")
+    base = sh("git", "rev-parse", "HEAD", cwd=src)
+    (src / "widget.py").write_text("def widget():\n    return 2\n")
+    commit(src, "head")
+    head = sh("git", "rev-parse", "HEAD", cwd=src)
+    bundle = tmp / "bundle"
+    (bundle / "files" / "tests").mkdir(parents=True)
+    (bundle / "files" / "tests" / "__init__.py").write_text("")
+    (bundle / "files" / "tests" / "test_widget.py").write_text(
+        "import unittest\nimport widget\n\n\nclass W(unittest.TestCase):\n"
+        "    def test_two(self):\n        self.assertEqual(widget.widget(), 2)\n")
+    (bundle / "checks.json").write_text(json.dumps(
+        [{"ac": "AC1", "test": ["python3", "-m", "unittest", "tests/test_widget.py"]}]))
+    return src, base, head, bundle
 
-    def test_head_shadowing_unittest_still_fails_the_kill_check(self):
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        src = tmp / "src"
-        src.mkdir()
-        sh("git", "init", "-q", "-b", "main", cwd=src)
-        (src / "widget.py").write_text("def widget():\n    return 1\n")
-        commit(src, "base")
-        base = sh("git", "rev-parse", "HEAD", cwd=src)
-        (src / "unittest.py").write_text("raise SystemExit(0)\n")  # no fix, only a shadow
-        commit(src, "head")
-        head = sh("git", "rev-parse", "HEAD", cwd=src)
-        bundle = tmp / "bundle"
-        (bundle / "files" / "tests").mkdir(parents=True)
-        (bundle / "files" / "tests" / "__init__.py").write_text("")
-        (bundle / "files" / "tests" / "test_widget.py").write_text(
-            "import unittest\nimport widget\n\n\nclass W(unittest.TestCase):\n"
-            "    def test_two(self):\n        self.assertEqual(widget.widget(), 2)\n")
-        (bundle / "checks.json").write_text(json.dumps(
-            [{"ac": "AC1", "test": ["python3", "-m", "unittest", "discover", "-s", "tests",
-                                    "-t", "."]}]))
-        env = {**os.environ, "HRSE_SCRATCH_ROOT": private_scratch_root(self)}
+
+class OracleImports(unittest.TestCase):
+    """harmonic-forge#1112 AC2: no oracle process runs with PYTHONSAFEPATH, so a
+    check that imports the repo works; shadowing is the deny check's."""
+
+    def test_oracle_env_never_carries_pythonsafepath(self):
+        env = te_run.oracle_env({"PYTHONSAFEPATH": "1", "PATH": "/usr/bin"})
+        self.assertNotIn("PYTHONSAFEPATH", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_unittest_path_check_imports_the_repo(self):
+        src, base, head, bundle = shadow_repo(self)
+        env = {**os.environ, "HRSE_SCRATCH_ROOT": private_scratch_root(self),
+               "PYTHONSAFEPATH": "1"}  # inherited: oracle_env must drop it
         digest = te_run.te_queue.kill_runner.bundle_digest(bundle)
         with mock.patch.object(te_run, "SOURCE", src):
             kill = te_run.kill_facts(7, base, head, env, bundle, digest)
             self.assertEqual(te_run.kill_facts(7, base, head, env, bundle, "0" * 64), [],
                              "a bundle other than the pinned one must not count")
-        self.assertEqual(len(kill), 1)
-        self.assertNotEqual(kill[0]["head_rc"], 0, "the head's unittest.py shadowed the oracle")
+        self.assertEqual(kill, [{"ac": "AC1", "base_rc": 1, "head_rc": 0}])
+
+    def test_shadowing_head_is_a_deny_hit(self):
+        src, base, _head, _bundle = shadow_repo(self)
+        (src / "unittest.py").write_text("raise SystemExit(0)\n")
+        commit(src, "shadow")
+        head = sh("git", "rev-parse", "HEAD", cwd=src)
+        cwd = os.getcwd()
+        os.chdir(src)
+        self.addCleanup(os.chdir, cwd)
+        with mock.patch.object(te_run, "SOURCE", src):
+            self.assertEqual(te_run.deny_hits(base, head), ["unittest.py"])
 
 
 @unittest.skipUnless(shutil.which("bwrap"), "real bwrap is not installed")
 class RealKillReceipt(unittest.TestCase):
-    """The real kill_check.py path (operator ruling: python3 -P on every oracle
-    run). A head that only adds a unittest.py shadow, with a wrong fix, must
-    not earn a passing receipt."""
+    """The real kill_check.py path. A head that adds a `unittest.py` shadow is
+    the deny check's to refuse (harmonic-forge#1112 AC2), not the oracle's:
+    see `OracleImports.test_shadowing_head_is_a_deny_hit`."""
 
     def receipt(self, fix: str, shadow: bool) -> tuple[bool, dict]:
         tmp = Path(tempfile.mkdtemp())
@@ -1027,13 +1091,6 @@ class RealKillReceipt(unittest.TestCase):
         self.assertTrue(passed, receipt)
         self.assertEqual(receipt["status"], "pass", receipt)
 
-    def test_shadowing_head_never_earns_a_kill_check_receipt(self):
-        passed, receipt = self.receipt("3", shadow=True)
-        self.assertFalse(passed, "the unittest.py shadow earned a passing kill_check receipt")
-        # Failed for the right reason: the real test ran at the head and failed
-        # (the shadow did not mask it), not because kill_check.py refused to run.
-        self.assertEqual(receipt["status"], "fail", receipt)
-        self.assertEqual([c["verdict"] for c in receipt["checks"]], ["broken-test"], receipt)
 
 
 class KillCheckChecks(unittest.TestCase):
@@ -1093,6 +1150,372 @@ class KillCheckChecks(unittest.TestCase):
         sh("git", "apply", "--check", check["patch"], cwd=src)  # applies to the head
         sh("git", "apply", check["patch"], cwd=src)
         self.assertIn("return 1", (src / "widget.py").read_text())
+
+
+def pipeline_only(cls):
+    """A Pipeline subclass that runs only its own tests, never Pipeline's again."""
+    for name in [n for n in vars(Pipeline) if n.startswith("test_")]:
+        if name not in vars(cls):
+            setattr(cls, name, None)
+    return cls
+
+
+@unittest.skipUnless(shutil.which("bwrap") and shutil.which("mise"), "real bwrap or mise missing")
+class MiseEnv(unittest.TestCase):
+    """harmonic-forge#1112 AC1: mise must trust a fresh clone inside the boundary."""
+
+    def test_check_runs_past_config_loading_in_a_fresh_clone(self):
+        base = Path.home() / ".cache" / "te-runner-test-scratch"
+        base.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(dir=base))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = tmp / "src"
+        src.mkdir()
+        sh("git", "init", "-q", "-b", "main", cwd=src)
+        (src / "mise.toml").write_text('[tasks.check]\nrun = "echo MISE-CHECK-RAN"\n')
+        commit(src, "base")
+        clone = tmp / "clone"
+        sh("git", "clone", "-q", "--shared", str(src), str(clone), cwd=tmp)
+        with mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}):
+            argv = te_run.sandbox.wrap(["mise", "run", "check"], clone,
+                                       inputs=(src / ".git" / "objects",))
+        done = subprocess.run(argv, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("MISE-CHECK-RAN", done.stdout)
+
+
+@pipeline_only
+class CloneOrigin(Pipeline):
+    def test_origin_is_the_github_url(self):
+        self.drive()
+        clone = self.tmp / "wt" / "harmonic-forge-7r-impl"
+        self.assertEqual(sh("git", "remote", "get-url", "origin", cwd=clone),
+                         "https://github.com/vitalharmony/harmonic-forge.git")
+        # Objects are still borrowed from SOURCE through alternates.
+        self.assertTrue((clone / ".git" / "objects" / "info" / "alternates").is_file())
+
+
+def checked(test_out: str = "", test_rc: int = 0, **steps: int) -> dict:
+    """A run_steps-shaped result: the test step's output and rc, and any other
+    steps' rcs."""
+    rows = [{"name": "run_tests", "rc": test_rc}] + [{"name": k, "rc": v} for k, v in steps.items()]
+    return {"steps": rows, "step_failures": [f"{k} exited {v}" for k, v in steps.items() if v],
+            "test_rc": test_rc, **te_run.parse_check(test_out)}
+
+
+@pipeline_only
+class BaseRelative(Pipeline):
+    """harmonic-forge#1112 AC4 and pitch changes A/B, reforged per step."""
+
+    def test_a_failure_on_base_too_is_not_a_check_fail(self):
+        out = "FAIL: test_host (test_lane.Host.test_host)\\nRan 5 tests in 0.1s\\n"
+        self.drive(FAKE_MISE_RC="1", FAKE_MISE_OUT=out)
+        item = self.item()
+        self.assertEqual(item["facts"]["check_rc"], 0, item["facts"])
+        self.assertEqual(item["facts"]["check_base_failures"],
+                         ["test_host (test_lane.Host.test_host)"])
+        self.assertEqual(item["facts"]["check_new_failures"], [])
+        self.assertEqual(item["verdict"]["state"], "green", item["verdict"])
+        cached = list((self.tmp / "base-check").glob("*/result.json"))
+        self.assertEqual(len(cached), 1)
+
+    def test_head_crash_before_tests_on_failing_base_is_a_fail(self):
+        base = checked("ImportError: no module\n", 1)  # ran 0: only change A can catch it
+        rc, new, _base = te_run.judge_check(checked("ImportError: no module\n", 1), base)
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(new)
+
+    def test_module_level_error_on_head_always_counts_as_new(self):
+        test_id = "test_x (unittest.loader._FailedTest.test_x)"
+        base = checked(f"ERROR: {test_id}\nRan 3 tests in 0.1s\n", 1)
+        rc, new, _base = te_run.judge_check(checked(f"ERROR: {test_id}\nRan 3 tests in 0.1s\n",
+                                                    1), base)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(test_id, new)
+
+    def test_head_running_fewer_tests_than_base_fails(self):
+        base = checked("Ran 10 tests in 1s\n")
+        rc, new, _base = te_run.judge_check(checked("Ran 4 tests in 1s\n"), base)
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(new)
+
+    def test_a_new_failure_on_the_head_is_a_check_fail(self):
+        base = checked("FAIL: a (m.C.a)\nRan 2 tests in 1s\n", 1)
+        head = checked("FAIL: a (m.C.a)\nFAIL: b (m.C.b)\nRan 2 tests in 1s\n", 1)
+        rc, new, base_failures = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(new, ["b (m.C.b)"])
+        self.assertEqual(base_failures, ["a (m.C.a)"])
+
+    def test_head_test_step_exiting_abnormally_is_a_fail(self):
+        # Sticky-wicket patch 5: the base exits 1 with test_old failing; the
+        # head exits 2 with the same failure listed and as many tests run. An
+        # exit other than 0 or 1 is a crash, never a matching failure set.
+        base = checked("FAIL: test_old (m.C.test_old)\nRan 2 tests in 1s\n", 1)
+        head = checked("FAIL: test_old (m.C.test_old)\nRan 2 tests in 1s\n", 2)
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("test step exited 2", new)
+
+    def test_head_breaking_a_later_step_fails_on_a_failing_base(self):
+        # Sticky-wicket kill check: the base fails one unittest, the head breaks
+        # check_cross_registry. Every step runs, so the head must fail.
+        base = checked("FAIL: a (m.C.a)\nRan 2 tests in 1s\n", 1, check_cross_registry=0)
+        head = checked("FAIL: a (m.C.a)\nRan 2 tests in 1s\n", 1, check_cross_registry=1)
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(new, ["step check_cross_registry exited 1"])
+
+    def test_a_step_failing_on_base_and_head_with_different_rc_fails(self):
+        # Sticky-wicket kill check: no task-level name masks the head.
+        base = checked("Ran 2 tests in 1s\n", 0, context_budget_ratchet=1)
+        head = checked("Ran 2 tests in 1s\n", 0, context_budget_ratchet=2)
+        rc, new, _base = te_run.judge_check(head, base)
+        self.assertEqual(rc, 2)
+        self.assertEqual(new, ["step context_budget_ratchet exited 2"])
+
+    def test_every_step_runs_after_a_failing_one(self):
+        steps = (("first", "exit 1"), ("run_tests", "echo 'Ran 1 test in 0.0s'"),
+                 ("last", "exit 3"))
+        with mock.patch.object(te_run, "CHECK_STEPS", steps), \
+                mock.patch.object(te_run, "STEP_PREFIX", ()):
+            sha = sh("git", "rev-parse", "HEAD", cwd=self.src)
+            result = te_run.check_sha(sha, dict(os.environ), self.tmp / "ev")
+        self.assertEqual([s["rc"] for s in result["steps"]], [1, 0, 3])
+        self.assertEqual(result["step_failures"], ["first exited 1", "last exited 3"])
+        self.assertFalse(result["complete"])  # rc 3 is a crash
+
+    def test_non_test_step_failing_on_the_base_aborts_the_run(self):
+        steps = (("run_tests", "echo 'Ran 1 test in 0.0s'"), ("lint", "exit 1"))
+        with mock.patch.object(te_run, "CHECK_STEPS", steps), \
+                mock.patch.object(te_run, "STEP_PREFIX", ()):
+            self.assertEqual(self.drive(), 3)
+        item = self.item()
+        self.assertEqual(item["status"], "blocked")
+        self.assertIn("lint exited 1", item["note"])
+
+    def test_untracked_mise_local_toml_in_the_agent_clone_never_reaches_the_check(self):
+        # Sticky-wicket kill check (survivor 6): the head check runs in a fresh
+        # clone of the pinned head SHA, never the agent's working tree.
+        steps = (("run_tests", "if [ -e mise.local.toml ]; then echo POISONED; exit 1; fi\n"
+                               "echo 'Ran 1 test in 0.0s'"),)
+        with mock.patch.object(te_run, "CHECK_STEPS", steps), \
+                mock.patch.object(te_run, "STEP_PREFIX", ()):
+            self.drive(FAKE_UNTRACKED="mise.local.toml")
+        clone = self.tmp / "wt" / "harmonic-forge-7r-impl"
+        self.assertTrue((clone / "mise.local.toml").is_file())
+        item = self.item()
+        self.assertEqual(item["facts"]["check_rc"], 0, item["facts"])
+        self.assertEqual(item["verdict"]["state"], "green", item["verdict"])
+
+
+class BaseCache(unittest.TestCase):
+    """Sticky-wicket REFORGE step 5: lock, atomic write, never a crashed run."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for target, name, value in ((te_run, "BASE_CHECK_ROOT", self.tmp / "base-check"),):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_concurrent_base_checks_never_cache_a_crashed_run(self):
+        import threading
+        calls = []
+
+        def crashed(sha, env, evidence, name="check"):
+            calls.append(sha)
+            return {"sha": sha, "complete": False, "steps": [{"name": "run_tests", "rc": 2}],
+                    "step_failures": [], "test_rc": 2, "failures": [], "module_errors": [],
+                    "ran": 0, "printed_ran": False}
+        results = []
+        with mock.patch.object(te_run, "check_sha", crashed):
+            threads = [threading.Thread(target=lambda: results.append(te_run.base_check("b" * 40,
+                                                                                        {})))
+                       for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(len(calls), 2)  # nothing cached, so the second ran it again
+        self.assertFalse(list((self.tmp / "base-check").glob("*/result.json")))
+        self.assertFalse(any(r["complete"] for r in results))
+
+    def test_a_complete_run_is_cached_and_reused(self):
+        calls = []
+
+        def complete(sha, env, evidence, name="check"):
+            calls.append(sha)
+            return {"sha": sha, "complete": True, "steps": [], "step_failures": [],
+                    "test_rc": 0, "failures": [], "module_errors": [], "ran": 1,
+                    "printed_ran": True}
+        with mock.patch.object(te_run, "check_sha", complete):
+            te_run.base_check("c" * 40, {})
+            te_run.base_check("c" * 40, {})
+        self.assertEqual(len(calls), 1)
+        self.assertTrue((self.tmp / "base-check" / ("c" * 40) / "result.json").is_file())
+
+
+class CheckSteps(unittest.TestCase):
+    """CHECK_STEPS cannot drift from mise.toml's `check` (with `ci-check` inlined)."""
+
+    def test_check_steps_match_the_mise_check_task(self):
+        import tomllib
+        tasks = tomllib.loads((te_run.SOURCE / "mise.toml").read_text(encoding="utf-8"))["tasks"]
+
+        def lines(task: str) -> list[str]:
+            out = []
+            for line in tasks[task]["run"].splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line in ("set -e",
+                                                                "head=$(git rev-parse HEAD)"):
+                    continue
+                out += lines(line.split()[-1]) if line.startswith("mise run ") else [line]
+            return out
+        ours = [l.strip() for _n, script in te_run.CHECK_STEPS for l in script.splitlines()]
+        self.assertEqual(ours, lines("check"))
+        self.assertIn(te_run.TEST_STEP, [n for n, _s in te_run.CHECK_STEPS])
+
+
+class Settings(unittest.TestCase):
+    def settings(self) -> dict:
+        return json.loads(te_run.SETTINGS.read_text())["permissions"]
+
+    def test_allow_list_has_the_required_commands(self):
+        allow = self.settings()["allow"]
+        for cmd in ("mkdir", "rm", "cp", "mv", "touch", "git checkout", "git switch",
+                    "git restore", "git stash", "git mv", "git rm", "git reset", "git rev-parse",
+                    "git branch", "mise tasks", "mise run"):
+            self.assertIn(f"Bash({cmd}:*)", allow)
+        for cmd in ("bash", "sh", "env", "eval", "xargs"):
+            self.assertFalse([a for a in allow if a.startswith(f"Bash({cmd}")], cmd)
+            self.assertIn(f"Bash({cmd}:*)", self.settings()["deny"])
+
+    def test_mise_task_dirs_are_write_denied(self):
+        deny = self.settings()["deny"]
+        self.assertIn("Edit(./**/.mise/tasks/**)", deny)
+        self.assertIn("Edit(./**/mise-tasks/**)", deny)
+        for path in (".mise/tasks/check", "tools/mise-tasks/x.sh"):
+            self.assertTrue(te_run.deny_check.denied(path), path)
+
+
+    def test_mise_alternate_configs_are_denied_and_only_mise_toml_is_trusted(self):
+        # Preclose survivor 2.
+        for path in ("mise.local.toml", ".mise.toml", ".mise.local.toml", ".config/mise.toml",
+                     ".config/mise/config.toml", "mise/config.toml", ".mise-tasks/check",
+                     "mise/tasks/check", "sub/mise.local.toml"):
+            self.assertTrue(te_run.deny_check.denied(path), path)
+        clone = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, clone, True)
+        argv = te_run.sandbox.boundary_argv(clone)
+        at = argv.index("MISE_TRUSTED_CONFIG_PATHS")
+        self.assertEqual(argv[at + 1], str(clone.resolve() / "mise.toml"))
+
+
+class Prompt(unittest.TestCase):
+    def test_prompt_names_harness_owned_steps_and_refusal_policy(self):
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF")
+        for phrase in ("`mkdir`", "`git checkout`", "`mise tasks`",
+                       "A refusal is never a reason to stop",
+                       "commit what exists",
+                       "The harness runs the kill checks, `mise run check`, the deny check and "
+                       "the preclose check",
+                       "cannot see them",
+                       "`os.environ`", "never as a command prefix",
+                       "`pytest` is not installed", "`python3 -m unittest`",
+                       "`python3 tools/run_tests.py`",
+                       "deployed or live measurement", "not a reason to self-flag",
+                       te_run.SELF_FLAG, "BODY", "HANDOFF"):
+            self.assertIn(phrase, text)
+        self.assertNotIn("following the Lane 1 handoff below exactly", text)
+
+
+@pipeline_only
+class Evidence(Pipeline):
+    """harmonic-forge#1112 AC7."""
+
+    def test_item_artifacts_survive_the_item(self):
+        self.drive()
+        state = te_run.queue_state.load(self.queue)
+        item_dir = self.tmp / "runs" / state["run_id"] / "7"
+        for name in ("stream.jsonl", "stream.jsonl.stderr", "check-run_tests.stdout",
+                     "check-run_tests.stderr",
+                     "kill_runner.stdout", "kill_runner.stderr", "bundle/checks.json"):
+            self.assertTrue((item_dir / name).is_file(), name)
+        self.assertTrue((item_dir / "transcripts").is_dir())
+
+    def test_only_the_newest_runs_are_kept(self):
+        runs = self.tmp / "runs"
+        for n in range(12):
+            (runs / f"run-20200101T0000{n:02d}Z-00").mkdir(parents=True)
+        self.drive()
+        kept = sorted(p.name for p in runs.iterdir())
+        self.assertEqual(len(kept), te_run.KEEP_RUNS)
+        self.assertEqual(kept[-1], te_run.queue_state.load(self.queue)["run_id"])
+
+    def test_failed_preflight_aborts_before_any_item(self):
+        self.preflight.return_value = {"failures": ["x"], "reported": []}
+        self.assertEqual(self.drive(), 3)
+        self.assertEqual(self.item()["status"], "pending")
+        self.assertEqual(self.observed(), [])
+
+
+class Unit(unittest.TestCase):
+    def test_npm_global_precedes_usr_local(self):
+        unit = (Path(te_run.__file__).resolve().parent / "systemd"
+                / "forge-te-runner.service").read_text()
+        [line] = [l for l in unit.splitlines() if l.startswith("Environment=PATH=")]
+        parts = line.split("=", 2)[2].split(":")
+        self.assertIn("%h/.npm-global/bin", parts)
+        self.assertLess(parts.index("%h/.npm-global/bin"), parts.index("/usr/local/bin"))
+
+    def stop_post(self, saved: dict, invocation: str, exit_status: str = "0") -> tuple[Path, Path]:
+        """The unit's own ExecStopPost line, run as systemd would (%h expanded,
+        $$ unescaped), over a queue holding `saved`; (home, data dir)."""
+        unit = (Path(te_run.__file__).resolve().parent / "systemd"
+                / "forge-te-runner.service").read_text()
+        lines = [l.split("=", 1)[1] for l in unit.splitlines() if l.startswith("ExecStopPost=")]
+        self.assertEqual(len(lines), 1, "the unit has no single ExecStopPost= line")
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        (home / "harmonic-forge").symlink_to(Path(te_run.__file__).resolve().parents[2])
+        data = home / ".local" / "share" / "te-runner"
+        data.mkdir(parents=True)
+        te_run.queue_state.save(data / "queue.json", {**saved, "items": []})
+        (data / "ntfy-topic").write_text("topic\n")
+        fake = home / "bin"
+        fake.mkdir()
+        (fake / "curl").write_text(f"#!/bin/sh\necho \"$*\" >> {home}/curl.log\n")
+        (fake / "curl").chmod(0o755)
+        command = lines[0].replace("%h", str(home)).replace("$$", "$") \
+            .replace("/usr/bin/python3", sys.executable)
+        argv = shlex.split(command)
+        done = subprocess.run(argv, env={**os.environ, "HOME": str(home),
+                                         "PATH": f"{fake}:{os.environ['PATH']}",
+                                         "INVOCATION_ID": invocation, "EXIT_STATUS": exit_status},
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return home, data
+
+    def test_finished_run_renders_report_and_notifies_once(self):
+        # AC13: the ExecStopPost line renders <run-id>.md and notifies once.
+        home, data = self.stop_post({"run_id": "20261021T000000Z-abcd",
+                                     "invocation_id": "inv-n"}, "inv-n")
+        self.assertTrue((data / "reports" / "20261021T000000Z-abcd.md").is_file())
+        self.assertEqual(len((home / "curl.log").read_text().splitlines()), 1)
+
+    def test_run_that_ended_before_it_started_never_reports_the_last_run(self):
+        # Sticky-wicket patch 2: run N+1 exits before _run_queue saves a new
+        # run id (an empty budget, a held queue lock). Its ExecStopPost must
+        # not render or notify run N's report as this run's result.
+        home, data = self.stop_post({"run_id": "20261021T000000Z-abcd",
+                                     "invocation_id": "inv-n"}, "inv-n-plus-1", "2")
+        self.assertFalse((data / "reports" / "20261021T000000Z-abcd.md").exists())
+        [report] = list((data / "reports").glob("*.md"))
+        self.assertIn("run ended before it started: exit 2", report.read_text())
+        [sent] = (home / "curl.log").read_text().splitlines()
+        self.assertIn("run ended before it started: exit 2", sent)
 
 
 if __name__ == "__main__":

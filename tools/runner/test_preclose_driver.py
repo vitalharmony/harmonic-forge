@@ -35,8 +35,18 @@ FAKE_PRECLOSE = textwrap.dedent("""\
         if os.environ.get("FAKE_COMPLETE_RC"):
             print("refused", file=sys.stderr); sys.exit(int(os.environ["FAKE_COMPLETE_RC"]))
         print("preclose-check: recorded pass 1 of at most 2")
-        print("  " + os.environ.get("FAKE_PROVENANCE",
-              "Red-team provenance: cross-family (codex) -- 1/1 confirmed"))
+        label = os.environ.get("FAKE_PROVENANCE",
+                               "Red-team provenance: cross-family (codex) -- 1/1 confirmed")
+        if os.environ.get("FAKE_REAL_PROVENANCE"):
+            # The platform classifier on the real envelope, as --complete runs it.
+            import subprocess
+            argv = sys.argv[1:]
+            label = subprocess.run(
+                [sys.executable, os.environ["FAKE_REAL_PROVENANCE"],
+                 "--envelope", argv[argv.index("--envelope") + 1],
+                 "--own-model", argv[argv.index("--own-model") + 1]],
+                capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
+        print("  " + label)
     else:
         # Lenses print even on a refusal, so only the exit code can stop the pass.
         print("preclose-check plan\\n  lenses:")
@@ -68,6 +78,27 @@ FAKE_CROSS = textwrap.dedent("""\
         log.write(json.dumps(["cross-tree", sorted(os.listdir(pairs["--cwd"]))]) + "\\n")
     if os.environ.get("FAKE_CROSS_NO_ENVELOPE"):
         sys.exit(1)
+    if os.environ.get("FAKE_CROSS_REVIEW"):
+        # A fixture reviewer: one verdict per asserted assumption. It confirms
+        # an assumption only when it names one acceptance criterion and the
+        # working directory is a git repository at a commit; any evidence it
+        # cannot reach is `uncheckable`.
+        import re, subprocess
+        brief = open(pairs["--brief"]).read()
+        listed = brief.split("## Asserted assumptions", 1)[1].split("\\n## ", 1)[0]
+        found = re.findall(r"^\\d+\\. (.+)$", listed, re.M)
+        is_repo = subprocess.run(["git", "-C", pairs["--cwd"], "rev-parse", "HEAD"],
+                                 capture_output=True).returncode == 0
+        verdicts = [{"assumption": a, "evidence": "$ git show HEAD" if is_repo else "",
+                     "verdict": "confirmed" if is_repo and a.startswith("Acceptance criterion ")
+                     and "Kill receipt" in brief else "uncheckable"} for a in found]
+        envelope = {"family": "codex", "caller_family": "claude", "posture": "verify",
+                    "status": "ok", "exit_code": 0, "verify_model": "gpt-6-sol",
+                    "report": {"summary": "s", "findings": [], "assumptions": verdicts}}
+        with open(os.environ["FAKE_LOG"], "a") as log:
+            log.write(json.dumps(["review", verdicts]) + "\\n")
+        open(pairs["--out"], "w").write(json.dumps(envelope) + "\\n")
+        sys.exit(0)
     open(pairs["--out"], "w").write('{"status": "ok"}\\n')
     PY
 """)
@@ -162,13 +193,46 @@ class Driver(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def drive(self, **env) -> int:
+    def drive(self, *extra: str, **env) -> int:
         self.env.update(env)
         out = self.tmp / "out"
         return preclose_driver.main(["run", "--repo", "vitalharmony/harmonic-forge", "--issue", "7",
                                      "--base", "main~1", "--head", self.head,
                                      "--source-repo", str(self.src), "--tier", "deep",
-                                     "--out", str(out)])
+                                     "--out", str(out), *extra])
+
+    def test_reviewer_checks_each_criterion_in_a_git_head(self):
+        # AC14: the export is a git repository at the head, the brief asks one
+        # assumption per criterion and carries the harness's results, so a
+        # reviewer that marks unreachable evidence `uncheckable` still checks
+        # every one, and the label is the cross-family one.
+        harness = self.tmp / "harness.json"
+        harness.write_text(json.dumps({
+            "kill": [{"ac": "AC1", "base_rc": 1, "head_rc": 0},
+                     {"ac": "AC2", "base_rc": 1, "head_rc": 0}],
+            "check": {"check_rc": 0, "new_failures": [], "base_failures": []},
+            "deny_hits": []}))
+        self.assertEqual(self.drive("--harness-results", str(harness), FAKE_CROSS_REVIEW="1",
+                                    FAKE_REAL_PROVENANCE=str(preclose_driver.PROVENANCE_TOOL)), 0)
+        [verdicts] = self.logged("review")
+        self.assertEqual(len(verdicts[0]), 2)  # ISSUE_BODY has two criteria
+        self.assertEqual({v["verdict"] for v in verdicts[0]}, {"confirmed"})
+        fact = json.loads((self.tmp / "out" / "preclose.json").read_text())
+        self.assertTrue(fact["provenance"].startswith("Red-team provenance: cross-family ("),
+                        fact["provenance"])
+        brief = (self.tmp / "out" / "brief.md").read_text()
+        for text in ("AC1: base rc 1, head rc 0", "check_rc 0", "Deny check: no hits"):
+            self.assertIn(text, brief)
+
+    def test_export_is_a_detached_clone_with_github_origin(self):
+        dest = self.tmp / "export" / "head"
+        preclose_driver.export_head(self.src, self.head, dest)
+        self.assertEqual(sh("git", "rev-parse", "HEAD", cwd=dest).strip(), self.head)
+        self.assertEqual(sh("git", "remote", "get-url", "origin", cwd=dest).strip(),
+                         "https://github.com/vitalharmony/harmonic-forge.git")
+        self.assertTrue((dest / ".git" / "objects" / "info" / "alternates").is_file())
+        self.assertEqual(subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=dest)
+                         .returncode, 1)  # detached
 
     def logged(self, kind: str) -> list[list]:
         if not self.log.exists():

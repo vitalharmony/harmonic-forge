@@ -11,14 +11,14 @@ statuses: the agent is never given the queue path. Per item:
 2. create `fix/<N>-te-runner` from `origin/main` in a fresh `git clone
    --shared` (an existing checkout, local branch, `refs/te-runner/<N>` or
    runner-fork branch of that name blocks the item, never reused). The agent
-   and every run of its code (`mise run check`, the kill-check tests, the
+   and every run of its code (the check steps, the kill-check tests, the
    preclose refuters, the cross-family reviewer) run inside `sandbox.py`'s
    allowlist `bwrap` boundary (harmonic-forge#1098);
 3. run `claude -p` in it with `te-runner.settings.json`, the runner's own key
    and gh config (`preclose_driver.runner_env`), and stream-json with hook
    events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit` and
    `Stop` hook events each appear and `init.apiKeySource` is not `none`;
-4. `mise run check`, `kill_runner.py run`, then `kill_check.py` over checks
+4. the check (`CHECK_STEPS`), `kill_runner.py run`, then `kill_check.py` over checks
    generated from the bundle and the agent's own diff reversed (operator
    ruling on this issue), `deny_check.py diff`, and `preclose_driver.py run`
    exactly once (any non-zero exit sets the item aside; never retried);
@@ -28,18 +28,36 @@ statuses: the agent is never given the queue path. Per item:
    facts and reduced again, and the preclose summary is attached as a PR
    comment. The runner never merges, closes, labels or comments on an issue.
 
-`deny_check.py boundary` runs once at start: a failure aborts the run. Every
-oracle test runs with `PYTHONSAFEPATH=1` (`python3 -P`), so a head-authored
-module never shadows pytest or the standard library (operator ruling).
+`deny_check.py boundary` runs once at start: a failure aborts the run. Then
+`preflight.py`'s checks run (harmonic-forge#1112 AC9); any failure aborts
+the run, listing every one. `te_run.py preflight --queue FILE` runs them alone.
 
-Exit 0 when the queue was worked, 3 when the run aborted (boundary, G3, or a
-blocked item), 2 on an error before any item ran.
+No oracle process runs with `PYTHONSAFEPATH` (harmonic-forge#1112 AC2): it kept
+the repo off `sys.path`, so no check could import it. A head-authored module
+that would shadow pytest or the standard library is a `deny_check.py diff` hit.
+
+The check fact (AC4, reforged after preclose pass 1): the runner runs each
+step of `CHECK_STEPS` (mise.toml's `check`, `ci-check` inlined) on its own,
+for base and head alike, in a fresh `--shared` clone of the pinned SHA in a
+per-process `mkdtemp` directory. Only the test step is base-relative: a test
+ID failing on the head and not on the base, a module-level error, a test step
+that exits non-zero naming no test, or fewer tests run. Every other step fails
+the head on any non-zero exit, and failing on the base is fatal. The base's
+result is cached under `BASE_CHECK_ROOT/<sha>/`, under a lock and atomically,
+only when the run completed.
+
+Every per-item artifact is kept under `RUNS_ROOT/<run_id>/<issue>/` (AC7); the
+newest `KEEP_RUNS` runs are kept, older ones pruned at run start.
+
+Exit 0 when the queue was worked, 3 when the run aborted (boundary, preflight,
+G3, or a blocked item), 2 on an error before any item ran.
 """
 from __future__ import annotations
 
 import argparse
 import collections
 import datetime as dt
+import fcntl
 import json
 import math
 import os
@@ -56,8 +74,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "lane"))
 sys.path.insert(0, str(HERE.parent / "telemetry"))
+import acceptance  # noqa: E402
 import deny_check  # noqa: E402
 import preclose_driver  # noqa: E402
+import preflight  # noqa: E402
 import sandbox  # noqa: E402
 import queue_state  # noqa: E402
 import te_queue  # noqa: E402
@@ -71,7 +91,13 @@ RUNNER_LOGIN = deny_check.RUNNER_LOGIN
 FORK_URL = f"https://github.com/{RUNNER_LOGIN}/harmonic-forge.git"
 REQUIRED_HOOKS = ("SessionStart", "UserPromptSubmit", "Stop")
 SELF_FLAG = "TE-RUNNER-SELF-FLAG:"
-SAFE_PATH = {"PYTHONSAFEPATH": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+#: The agent clone's `origin` (AC3): manifest code reads owner/name from it.
+#: Objects are still borrowed from SOURCE through the clone's alternates.
+UPSTREAM_URL = "https://github.com/vitalharmony/harmonic-forge.git"
+TE_RUNNER_HOME = Path.home() / ".local" / "share" / "te-runner"
+RUNS_ROOT = TE_RUNNER_HOME / "runs"
+BASE_CHECK_ROOT = TE_RUNNER_HOME / "base-check"
+KEEP_RUNS = 10
 CLAUDE = "claude"
 #: The runner identity's token, for the agent's gh only: bwrap cannot reach the
 #: keyring (harmonic-forge#1107). Mode 0o600, non-empty, or the run aborts.
@@ -127,7 +153,34 @@ def source_objects() -> Path:
 
 
 def oracle_env(env: dict[str, str]) -> dict[str, str]:
-    return {**env, **SAFE_PATH}
+    """No `PYTHONSAFEPATH`, inherited or set (AC2): the oracle's checks must
+    import the repo. Shadowing is denied statically (`deny_check.shadows`)."""
+    clean = {k: v for k, v in env.items() if k != "PYTHONSAFEPATH"}
+    return {**clean, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def keep(evidence: Path | None, name: str, result: subprocess.CompletedProcess) -> None:
+    """A subprocess's stdout and stderr, kept beside the item (AC7)."""
+    if evidence is None:
+        return
+    evidence.mkdir(parents=True, exist_ok=True)
+    (evidence / f"{name}.stdout").write_text(result.stdout or "", encoding="utf-8")
+    (evidence / f"{name}.stderr").write_text(result.stderr or "", encoding="utf-8")
+
+
+def prune_runs(root: Path, keep_runs: int = KEEP_RUNS) -> None:
+    """The newest `keep_runs` run dirs stay; older ones go. Run ids sort by time."""
+    if not root.is_dir():
+        return
+    runs = sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink())
+    for old in runs[:-keep_runs] if keep_runs > 0 else runs:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def new_run_id() -> str:
+    # A random suffix: two runs in the same second must never share an id.
+    return ("run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-" + secrets.token_hex(4))
 
 
 # --- the queue -------------------------------------------------------------------
@@ -158,11 +211,28 @@ def save(path: Path, state: dict) -> None:
 # --- the agent run ---------------------------------------------------------------
 
 def agent_prompt(issue: int, body: str, handoff: str) -> str:
-    """The issue and its handoff only: never the queue, never a status."""
-    return (f"Implement harmonic-forge#{issue} in this checkout, following the Lane 1 handoff "
-            "below exactly. Commit your work with `git commit` when it is done; do not push, "
-            "and do not open a pull request. If you cannot complete the issue honestly, end "
-            f"your final message with one line `{SELF_FLAG} <reason>`.\n\n"
+    """The issue and its handoff only: never the queue, never a status (AC6)."""
+    return (f"Implement harmonic-forge#{issue} in this checkout from the issue and its Lane 1 "
+            "handoff below. Commit your work with `git commit` when it is done; do not push, "
+            "and do not open a pull request.\n\n"
+            "Commands you may run: Read, Grep, Glob, Edit and Write; in Bash only `git add`, "
+            "`git commit`, `git status`, `git diff`, `git log`, `git show`, `git checkout`, "
+            "`git switch`, `git restore`, `git stash`, `git mv`, `git rm`, `git reset`, "
+            "`git rev-parse`, `git branch`, `python3`, `mise run`, `mise tasks`, `mkdir`, `rm`, "
+            "`cp`, `mv` and `touch`. Everything else is refused, `bash`, `sh`, `env`, `eval` "
+            "and `xargs` included.\n\n"
+            "A refusal is never a reason to stop: use Read, Grep, Glob or Edit, or an allowed "
+            "equivalent, and commit what exists.\n\n"
+            "Set environment variables inside `python3` (`os.environ`), never as a command "
+            "prefix: `FOO=1 python3 ...` is refused. `pytest` is not installed: run tests with "
+            "`python3 -m unittest` or `python3 tools/run_tests.py`.\n\n"
+            "The harness runs the kill checks, `mise run check`, the deny check and the preclose "
+            "check after you finish. You do not run them and cannot see them: skip any handoff "
+            "step that names them (the kill-check bundle, `preclose-check`).\n\n"
+            "An acceptance criterion that needs a deployed or live measurement: implement it "
+            "and name it in your final message. That alone is not a reason to self-flag.\n\n"
+            "If you cannot complete the issue honestly for any other reason, end your final "
+            f"message with one line `{SELF_FLAG} <reason>`.\n\n"
             f"## Issue\n\n{body}\n\n## Handoff\n\n{handoff}\n")
 
 
@@ -288,35 +358,20 @@ def probe(agent_env: dict[str, str]) -> bool:
 # --- the oracle --------------------------------------------------------------------
 
 def snapshot_bundle(issue: int, pin: str, scratch: Path) -> Path:
-    """The bundle copied into this run's private scratch BEFORE the agent runs,
-    and verified against the handoff's pin. The oracle uses only this copy, so
-    nothing the agent does to the bundle on disk afterwards reaches it."""
-    snapshot = scratch / "bundle"
+    """`te_queue.snapshot_bundle`, BEFORE the agent runs; a refusal blocks the item."""
     try:
-        shutil.copytree(te_queue.bundle_dir(issue), snapshot, symlinks=True)
-    except OSError as exc:
-        raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
-    # A symlink anywhere in the copy (checks.json included) would point the
-    # oracle at a file the agent can still write, so none is accepted. The copy
-    # is what is scanned: it is exactly what the oracle will use.
-    links = [str(p.relative_to(snapshot)) for p in snapshot.rglob("*") if p.is_symlink()]
-    if links:
-        raise Blocked(f"the kill-check bundle holds a symlink ({', '.join(links[:3])}); refused")
-    try:
-        digest = te_queue.kill_runner.bundle_digest(snapshot)
-    except te_queue.kill_runner.RunnerError as exc:
-        raise Blocked(f"cannot snapshot the kill-check bundle: {exc}") from exc
-    if digest != pin:
-        raise Blocked("the kill-check bundle no longer matches the handoff's kill-bundle-sha256")
-    return snapshot
+        return te_queue.snapshot_bundle(issue, pin, scratch)
+    except te_queue.QueueError as exc:
+        raise Blocked(str(exc)) from exc
 
 
 def kill_facts(issue: int, base: str, head: str, env: dict[str, str], bundle: Path,
-               pin: str) -> list[dict]:
-    result = run([sys.executable, "-P", str(HERE / "kill_runner.py"), "run",
+               pin: str, evidence: Path | None = None) -> list[dict]:
+    result = run([sys.executable, str(HERE / "kill_runner.py"), "run",
                   "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
                   "--bundle", str(bundle), "--source-repo", str(SOURCE)],
                  cwd=SOURCE, env=oracle_env(env))
+    keep(evidence, "kill_runner", result)
     if result.returncode:
         log("kill", f"kill_runner could not run: {result.stderr.strip()[:200]}")
         return []
@@ -375,6 +430,7 @@ def kill_receipt(issue: int, base: str, head: str, env: dict[str, str], scratch:
     result = run([sys.executable, str(HERE.parent / "gh" / "kill_check.py"), "run",
                   "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
                   "--checks", str(checks)], cwd=SOURCE, env=oracle_env(env))
+    keep(scratch, "kill_check", result)
     log("kill-check", (result.stdout.strip().splitlines() or ["no output"])[-1])
     return result.returncode == 0
 
@@ -391,19 +447,180 @@ def deny_hits(base: str, head: str) -> list[str]:
 
 
 def preclose_fact(issue: int, base: str, head: str, tier: str, env: dict[str, str],
-                  out: Path) -> dict:
+                  out: Path, harness: Path | None = None) -> dict:
     """Exactly one driver run; any non-zero exit sets the item aside (operator
     ruling, harmonic-forge#1059): the runner never retries it."""
     result = run([sys.executable, str(PRECLOSE_DRIVER), "run",
                   "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
-                  "--source-repo", str(SOURCE), "--tier", tier, "--out", str(out)],
+                  "--source-repo", str(SOURCE), "--tier", tier, "--out", str(out),
+                  *(["--harness-results", str(harness)] if harness else [])],
                  cwd=SOURCE, env=env)
+    keep(out.parent, "preclose_driver", result)
     if result.returncode:
         return {"status": f"driver exit {result.returncode}", "survivors": 0, "provenance": ""}
     try:
         return json.loads((out / "preclose.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"status": "driver wrote no preclose.json", "survivors": 0, "provenance": ""}
+
+
+# --- the base-relative check (AC4) --------------------------------------------------
+#
+# Sticky-wicket REFORGE (harmonic-forge#1112 preclose pass 1): one fail-fast
+# `mise run check` never lists every step's result, so the runner owns the
+# step list and runs each step on its own. Only the test step is judged
+# against the base, by test ID; every other step must pass absolutely.
+
+#: The `check` task's steps, in order, with `ci-check` inlined: one entry per
+#: step, each run on its own (`set -e` and `head` are each step's prelude).
+#: `test_te_run.CheckSteps` keeps this equal to mise.toml's run lines.
+CHECK_STEPS: tuple[tuple[str, str], ...] = (
+    ("py_compile_tools", "find tools -name '*.py' -print0 | xargs -0 -n1 python3 -m py_compile"),
+    ("py_compile_sync_rules", "python3 -m py_compile sync_rules.py"),
+    ("syntax_banner", 'echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"'),
+    ("run_tests", "python3 tools/run_tests.py"),
+    ("memory_lint_clean",
+     "python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate "
+     "--today 2026-09-06"),
+    ("memory_lint_aging",
+     "rc=0; python3 tools/memory/memory_lint.py --store tools/memory/testdata/aging --gate "
+     "--today 2026-09-06 >/dev/null || rc=$?\n"
+     'test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under '
+     '--gate (got $rc)"; exit 1; }'),
+    ("check_test_main_last", "python3 tools/rules/check_test_main_last.py"),
+    ("check_installed_lane_sources",
+     'python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" '
+     "--skip-if-absent"),
+    ("platform_link_report", "python3 tools/onboard/platform_link_report.py --project ."),
+    ("check_cross_registry", "python3 tools/rules/check_cross_registry.py"),
+    ("context_budget_ratchet", "python3 tools/memory/context_budget_ratchet.py --repo . --gate"),
+    ("check_receipt", 'python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"'),
+)
+#: The one step judged base-relatively, by test ID.
+TEST_STEP = "run_tests"
+#: Each step runs under mise's toolchain, never through a mise task.
+STEP_PREFIX: tuple[str, ...] = ("mise", "exec", "--")
+STEP_PRELUDE = "set -e\nhead=$(git rev-parse HEAD)\n"
+#: Fresh per-process check trees live here (`mkdtemp`), never at a fixed path.
+CHECK_TREE_ROOT = TE_RUNNER_HOME / "check-trees"
+
+TEST_LINE = re.compile(r"^(?:FAIL|ERROR): (.+?)\s*$", re.M)
+RAN_LINE = re.compile(r"^Ran (\d+) tests? in ", re.M)
+#: A test ID naming one of these failed outside any one test: a module that
+#: did not import, or a class or module fixture (pitch named change B).
+MODULE_LEVEL = ("unittest.loader._FailedTest", "_ErrorHolder", "setUpModule", "tearDownModule",
+                "setUpClass", "tearDownClass")
+
+
+def parse_check(text: str) -> dict:
+    """The test step's failing test IDs, module-level errors, and tests run
+    (`printed_ran`: whether any `Ran N tests` line appeared)."""
+    tests = [m.group(1) for m in TEST_LINE.finditer(text)]
+    ran = [int(m.group(1)) for m in RAN_LINE.finditer(text)]
+    return {"failures": sorted(set(tests)),
+            "module_errors": sorted({t for t in tests if any(k in t for k in MODULE_LEVEL)}),
+            "ran": sum(ran), "printed_ran": bool(ran)}
+
+
+def run_steps(tree: Path, env: dict[str, str], evidence: Path | None, name: str) -> dict:
+    """Every step in `CHECK_STEPS`, each on its own inside the oracle boundary,
+    none short-circuiting another; each step's rc and output kept."""
+    steps, step_failures, tests = [], [], None
+    for step, script in CHECK_STEPS:
+        try:
+            argv = sandbox.wrap([*STEP_PREFIX, "sh", "-c", STEP_PRELUDE + script], tree,
+                                inputs=(source_objects(),))
+        except sandbox.SandboxError as exc:
+            raise Abort(str(exc)) from exc
+        result = run(argv, cwd=tree, env=oracle_env(env))
+        keep(evidence, f"{name}-{step}", result)
+        steps.append({"name": step, "rc": result.returncode})
+        if step == TEST_STEP:
+            tests = {"test_rc": result.returncode,
+                     **parse_check(f"{result.stdout}\n{result.stderr}")}
+        elif result.returncode:
+            step_failures.append(f"{step} exited {result.returncode}")
+    tests = tests or {"test_rc": 127, "failures": [], "module_errors": [], "ran": 0,
+                      "printed_ran": False}
+    # Complete: no step crashed (rc other than 0/1) and the test step said how
+    # many tests it ran. Only a complete base run is ever cached.
+    complete = all(s["rc"] in (0, 1) for s in steps) and tests["printed_ran"]
+    return {"steps": steps, "step_failures": step_failures, "complete": complete, **tests}
+
+
+def check_sha(sha: str, env: dict[str, str], evidence: Path | None, name: str = "check") -> dict:
+    """The check on `sha`, in a fresh `--shared` clone of it in a per-process
+    `mkdtemp` directory: the same function for base and head, never the
+    agent's working tree (preclose survivors 1 and 6)."""
+    CHECK_TREE_ROOT.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix=f"{sha[:12]}-", dir=CHECK_TREE_ROOT))
+    tree = root / "tree"
+    try:
+        git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(tree))
+        git("checkout", "-q", "--detach", sha, cwd=tree)
+        git("remote", "set-url", "origin", UPSTREAM_URL, cwd=tree)
+        return {"sha": sha, **run_steps(tree, env, evidence, name)}
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def base_check(base: str, env: dict[str, str]) -> dict:
+    """The base's check, once per SHA: under an `fcntl` lock on
+    BASE_CHECK_ROOT/<sha>.lock, cached as BASE_CHECK_ROOT/<sha>/result.json
+    (written atomically) only when the run completed."""
+    BASE_CHECK_ROOT.mkdir(parents=True, exist_ok=True)
+    cache = BASE_CHECK_ROOT / base
+    stored = cache / "result.json"
+    with open(BASE_CHECK_ROOT / f"{base}.lock", "a", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            data = json.loads(stored.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("sha") == base and data.get("complete"):
+                return data
+        except (OSError, ValueError):
+            pass
+        cache.mkdir(parents=True, exist_ok=True)
+        data = check_sha(base, env, cache)
+        if data["complete"]:
+            partial = cache / f".result.{os.getpid()}.tmp"
+            partial.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+            os.replace(partial, stored)
+        return data
+
+
+def previous_base(base: str) -> dict | None:
+    """The newest cached base other than `base`, for preflight's report."""
+    found = []
+    for path in BASE_CHECK_ROOT.glob("*/result.json") if BASE_CHECK_ROOT.is_dir() else []:
+        if path.parent.name != base:
+            try:
+                found.append((path.stat().st_mtime, json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, ValueError):
+                continue
+    return max(found, key=lambda pair: pair[0])[1] if found else None
+
+
+def judge_check(head: dict, base: dict) -> tuple[int, list[str], list[str]]:
+    """(check_rc, new failures, base test failures). Only the test step is
+    base-relative; every other step fails the head on any non-zero exit."""
+    base_failures = sorted(set(base.get("failures") or []))
+    new = sorted(set(head["failures"]) - set(base_failures))
+    # Change B: a module-level error on the head always counts as new.
+    new += [m for m in head["module_errors"] if m not in new]
+    # Change A: a test step that exits non-zero naming no failing test crashed
+    # before the tests, never an empty difference.
+    if head["test_rc"] and not head["failures"]:
+        new.append(f"{TEST_STEP} exited {head['test_rc']} naming no failing test")
+    # Sticky-wicket patch 5, the pass-1 reforge's crash rule applied to the
+    # head: a test step exiting other than 0 or 1 crashed, whatever it listed.
+    if head["test_rc"] not in (0, 1):
+        new.append(f"test step exited {head['test_rc']}")
+    if head["ran"] < (base.get("ran") or 0):
+        new.append(f"head ran {head['ran']} tests, base ran {base.get('ran')}")
+    # Every other step is absolute: a failure on the base never masks the head.
+    new += [f"step {line}" for line in head.get("step_failures") or []]
+    rcs = [s["rc"] for s in head.get("steps") or [] if s["rc"]]
+    return (rcs[0] if rcs else 1) if new else 0, new, base_failures
 
 
 # --- the PR ------------------------------------------------------------------------
@@ -454,13 +671,9 @@ def open_pr(item: dict, state: dict, queue: Path, issue: int, head: str,
 # --- one item ----------------------------------------------------------------------
 
 def ac_titles(body: str) -> list[str]:
-    section = re.search(r"^## Acceptance criteria\s*$(.*?)(?=^## |\Z)", body, re.M | re.S)
-    titles = []
-    for line in (section.group(1) if section else "").splitlines():
-        match = re.match(r"\s*\d+\.\s+(.*)", line)
-        if match:
-            titles.append(re.split(r"(?<=[.:])\s", match.group(1), maxsplit=1)[0][:80])
-    return titles
+    """One short title per criterion, read through the shared matcher (AC11)."""
+    return [re.split(r"(?<=[.:])\s", item, maxsplit=1)[0][:80]
+            for item in acceptance.items(acceptance.section(body))]
 
 
 def self_flag(result: dict | None) -> str:
@@ -488,8 +701,69 @@ def emit_event(issue: int, head: str, extra: dict, cost: object) -> None:
         log("telemetry", f"not written: {exc}")
 
 
+# --- the per-item guards (harmonic-forge#1112 sticky-wicket patch 4) ---------------
+#
+# Every guard work_item checks before it spends, as one list: work_item calls
+# `item_preconditions` first and the preflight (`preflight.item_failures`) calls
+# the same function per queued item, so a guard added here is a preflight
+# failure with no change to the preflight. Each guard raises Blocked.
+
+def _guard_reuse(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    # Every trace an earlier run of this issue leaves counts: its checkout, a
+    # local branch, the pinned head ref. A re-queued issue whose clone was
+    # deleted must not run the agent again.
+    branch = f"fix/{issue}-te-runner"
+    clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
+    if clone.exists() or any(not run(["git", "rev-parse", "--verify", "--quiet", ref],
+                                     cwd=source).returncode
+                             for ref in (f"refs/heads/{branch}", f"refs/te-runner/{issue}")):
+        raise Blocked(f"branch {branch}, refs/te-runner/{issue} or checkout {clone} "
+                      "already exists; never reused")
+
+
+def _guard_fork_branch(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    branch = f"fix/{issue}-te-runner"
+    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
+                 cwd=source, env=env)
+    if remote.returncode:
+        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
+    if remote.stdout.strip():
+        raise Blocked(f"branch {branch} already exists on the runner fork; never reused")
+
+
+def _guard_bundle_pin(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    if not te_queue.DIGEST_RE.search(te_queue.handoff(issue) or ""):
+        raise Blocked("the handoff pins no kill-bundle-sha256")
+
+
+def _guard_origin_fetch(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    # work_item bases the item on a fresh origin/main; a fetch that cannot run
+    # is a refusal before spend, never a mid-item stop (post-verdict gap 3).
+    fetched = run(["git", "fetch", "-q", "origin", "main"], cwd=source, env=env)
+    if fetched.returncode:
+        raise preclose_driver.DriverError(
+            f"git fetch origin main failed: {fetched.stderr.strip()[:200]}")
+
+
+ITEM_GUARDS = (_guard_reuse, _guard_fork_branch, _guard_bundle_pin, _guard_origin_fetch)
+
+
+def item_preconditions(issue: int, env: dict[str, str] | None = None,
+                       source: Path | None = None) -> list[str]:
+    """Every guard in ITEM_GUARDS, each refusal collected, never only the first."""
+    problems = []
+    for guard in ITEM_GUARDS:
+        try:
+            guard(issue, env, Path(source or SOURCE))
+        except (Blocked, preclose_driver.DriverError, te_queue.QueueError) as exc:
+            # QueueError: _guard_bundle_pin reads the handoff (cross-family
+            # finding 2); one guard's refusal never hides another's.
+            problems.append(str(exc))
+    return problems
+
+
 def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, str],
-              agent_env: dict[str, str]) -> dict:
+              agent_env: dict[str, str], run_dir: Path) -> dict:
     issue = te_queue.issue_number(item["id"])
     failure = te_queue.first_failure(issue)
     body = te_queue.gh_json(f"repos/{te_queue.REPO}/issues/{issue}").get("body") or ""
@@ -498,88 +772,95 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         facts = {"eligible": failure[0] != "ineligible",
                  "deny_hits": [failure[1]] if failure[0] == "deny-path" else []}
         return {"facts": facts, "verdict": verdict.reduce(facts), "ac_titles": titles}
+    problems = item_preconditions(issue, env)
+    if problems:
+        raise Blocked("; ".join(problems))
     branch = f"fix/{issue}-te-runner"
     clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
-    # Every trace an earlier run of this issue leaves counts: its checkout, a
-    # local branch, the pinned head ref, or the branch on the runner's fork. A
-    # re-queued issue whose clone was deleted must not run the agent again.
-    if clone.exists() or any(not run(["git", "rev-parse", "--verify", "--quiet", ref],
-                                     cwd=SOURCE).returncode
-                             for ref in (f"refs/heads/{branch}", f"refs/te-runner/{issue}")):
-        raise Blocked(f"branch {branch}, refs/te-runner/{issue} or checkout {clone} "
-                      "already exists; never reused")
-    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
-                 cwd=SOURCE, env=env)
-    if remote.returncode:
-        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
-    if remote.stdout.strip():
-        raise Blocked(f"branch {branch} already exists on the runner fork; never reused")
     git("fetch", "-q", "origin", "main")
     base = git("rev-parse", "origin/main")
     # A standalone clone, not a linked worktree: its .git lives inside the
     # boundary's one writable directory, so the agent can commit (#1098).
     git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(clone))
     git("checkout", "-q", "-b", branch, base, cwd=clone)
+    git("remote", "set-url", "origin", UPSTREAM_URL, cwd=clone)  # AC3
     log("clone", f"{clone} on {branch} from {base[:12]}")
-    with tempfile.TemporaryDirectory(prefix="te-run-") as scratch_name:
-        scratch = Path(scratch_name)
-        handoff = te_queue.handoff(issue) or ""
-        pinned = te_queue.DIGEST_RE.search(handoff)
-        if not pinned:
-            raise Blocked("the handoff pins no kill-bundle-sha256")
-        pin = pinned.group(1)
-        bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
-        parsed = run_agent(clone, agent_prompt(issue, body, handoff),
-                           budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts")
-        result = parsed["result"]
-        # The head is read through SOURCE, never the clone's own git, and pinned
-        # by a ref so a gc in SOURCE cannot prune it before the push (#1098).
-        git("fetch", "-q", str(clone), "HEAD")
-        head = git("rev-parse", "FETCH_HEAD")
-        git("update-ref", f"refs/te-runner/{issue}", head)
-        log("agent", f"head {head[:12]}, cost {result.get('total_cost_usd')}")
-        try:
-            check_argv = sandbox.wrap(["mise", "run", "check"], clone,
-                                      inputs=(source_objects(),))
-        except sandbox.SandboxError as exc:
-            raise Abort(str(exc)) from exc
-        check_rc = run(check_argv, cwd=clone, env=oracle_env(env)).returncode
-        log("check", f"exit {check_rc}")
-        kill = kill_facts(issue, base, head, env, bundle, pin)
-        if kill and not kill_receipt(issue, base, head, env, scratch, bundle):
-            kill = []
-        log("kill", f"{len(kill)} check(s)")
-        hits = deny_hits(base, head)
-        log("deny", f"{len(hits)} hit(s)")
+    # Kept after the item (AC7): never a temporary directory.
+    scratch = run_dir / str(issue)
+    scratch.mkdir(parents=True, exist_ok=True)
+    handoff = te_queue.handoff(issue) or ""
+    pinned = te_queue.DIGEST_RE.search(handoff)
+    if not pinned:  # item_preconditions checked it; the handoff changed since
+        raise Blocked("the handoff pins no kill-bundle-sha256")
+    pin = pinned.group(1)
+    bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
+    parsed = run_agent(clone, agent_prompt(issue, body, handoff),
+                       budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts")
+    result = parsed["result"]
+    # The head is read through SOURCE, never the clone's own git, and pinned
+    # by a ref so a gc in SOURCE cannot prune it before the push (#1098).
+    git("fetch", "-q", str(clone), "HEAD")
+    head = git("rev-parse", "FETCH_HEAD")
+    git("update-ref", f"refs/te-runner/{issue}", head)
+    log("agent", f"head {head[:12]}, cost {result.get('total_cost_usd')}")
+    # A fresh clone of the pinned head, never the agent's tree (survivor 6).
+    head_check = check_sha(head, env, scratch)
+    base_result = base_check(base, env)
+    problems = preflight.base_problems(base_result)
+    if base_result.get("step_failures"):  # a non-test step failing on the base is fatal
+        raise Abort("; ".join(problems))
+    check_rc, new_failures, base_failures = judge_check(head_check, base_result)
+    log("check", f"{len(new_failures)} new failure(s), {len(base_failures)} test failure(s) "
+                 "on the base")
+    kill = kill_facts(issue, base, head, env, bundle, pin, scratch)
+    if kill and not kill_receipt(issue, base, head, env, scratch, bundle):
+        kill = []
+    log("kill", f"{len(kill)} check(s)")
+    hits = deny_hits(base, head)
+    log("deny", f"{len(hits)} hit(s)")
+    # The harness's own results, for the cross-family brief's evidence (AC14).
+    harness = scratch / "harness-results.json"
+    harness.write_text(json.dumps({"kill": kill, "deny_hits": hits, "check": {
+        "check_rc": check_rc, "new_failures": new_failures, "base_failures": base_failures}},
+        indent=1) + "\n", encoding="utf-8")
+    # Sticky-wicket patch 6: once the check, the deny check or the kill receipt
+    # failed the item cannot go green, so no paid refuter or cross-family call
+    # runs; the preclose fact says why, and the reducer still lists every
+    # failed clause (AC8).
+    if check_rc or hits or not kill:
+        preclose = {"status": "skipped: earlier clause failed", "survivors": 0, "provenance": ""}
+    else:
         preclose = preclose_fact(issue, base, head, te_queue.tier(issue) or "standard", env,
-                                 scratch / "preclose")
-        log("preclose", preclose.get("status", "?"))
-        summary_path = scratch / "preclose" / "summary.md"
-        summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
-        facts = {"eligible": True, "deny_hits": hits,
-                 "permission_denials": len(result.get("permission_denials") or []),
-                 "budget_exceeded": result.get("subtype") == "error_max_budget_usd",
-                 "self_flag": self_flag(result), "check_rc": check_rc, "kill": kill,
-                 "preclose": preclose,
-                 # Every clause but the PR's: a branch is pushed only on green.
-                 "live": {"pr_exists": True, "head_sha_matches": True, "ci": "pending"}}
+                                 scratch / "preclose", harness)
+    log("preclose", preclose.get("status", "?"))
+    summary_path = scratch / "preclose" / "summary.md"
+    summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
+    facts = {"eligible": True, "deny_hits": hits,
+             "permission_denials": len(result.get("permission_denials") or []),
+             "budget_exceeded": result.get("subtype") == "error_max_budget_usd",
+             "self_flag": self_flag(result), "check_rc": check_rc,
+             "check_new_failures": new_failures, "check_base_failures": base_failures,
+             "kill": kill,
+             "preclose": preclose,
+             # Every clause but the PR's: a branch is pushed only on green.
+             "live": {"pr_exists": True, "head_sha_matches": True, "ci": "pending"}}
+    outcome = verdict.reduce(facts)
+    extra = {"head_sha": head, "branch": branch,
+             "diff_stat": (git("diff", "--stat", base, head).splitlines() or [""])[-1].strip(),
+             "ac_titles": titles, "total_cost_usd": result.get("total_cost_usd")}
+    if outcome["state"] == "green":
+        pr = open_pr(item, state, queue, issue, head, branch, titles, env)
+        extra["pr"] = pr
+        facts["live"] = live_facts(pr, head, env)
+        extra["live_read_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         outcome = verdict.reduce(facts)
-        extra = {"head_sha": head, "branch": branch,
-                 "diff_stat": (git("diff", "--stat", base, head).splitlines() or [""])[-1].strip(),
-                 "ac_titles": titles, "total_cost_usd": result.get("total_cost_usd")}
-        if outcome["state"] == "green":
-            pr = open_pr(item, state, queue, issue, head, branch, titles, env)
-            extra["pr"] = pr
-            facts["live"] = live_facts(pr, head, env)
-            extra["live_read_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            outcome = verdict.reduce(facts)
-            if summary:
-                posted = run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body",
-                              summary], env=env)
-                url = posted.stdout.strip().splitlines()[-1] if posted.stdout.strip() else ""
-                # The report links the summary (harmonic-forge#1056 AC3).
-                extra["preclose_summary"] = url if url.startswith("https://") else ""
-        return {**extra, "facts": facts, "verdict": outcome}
+        if summary:
+            posted = run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body",
+                          summary], env=env)
+            url = posted.stdout.strip().splitlines()[-1] if posted.stdout.strip() else ""
+            # The report links the summary (harmonic-forge#1056 AC3).
+            extra["preclose_summary"] = url if url.startswith("https://") else ""
+    return {**extra, "facts": facts, "verdict": outcome}
 
 
 def run_queue(queue: Path, budget: str, max_steps: int) -> int:
@@ -599,16 +880,21 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     # The run's id first, saved at once: a run that ends before any item (a
     # boundary failure, an empty queue) must still replace the last run's id,
     # or the report would re-propose that run's work.
-    # A random suffix: two runs in the same second must never share an id.
-    run_id = ("run-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-              + "-" + secrets.token_hex(4))
+    run_id = new_run_id()
     state["run_id"] = run_id
+    # The unit's invocation beside the run id: ExecStopPost's report checks it,
+    # so a later run that ends before this point never re-reports this one
+    # (harmonic-forge#1112 sticky-wicket patch 2).
+    state["invocation_id"] = os.environ.get("INVOCATION_ID", "")
     before = {item["id"]: (item["status"], item["note"]) for item in state["items"]}
     reconcile(state)  # queue_state.recover is imported unmodified, so its changes are
     for item in state["items"]:  # detected and stamped here rather than inside it
         if (item["status"], item["note"]) != before[item["id"]]:
             set_status(item, item["status"], run_id)
     save(queue, state)
+    run_dir = RUNS_ROOT / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    prune_runs(RUNS_ROOT)
     problems = deny_check.boundary()
     if problems:
         log("boundary", "; ".join(problems))
@@ -622,6 +908,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     agent_env = {**env, "GH_TOKEN": token}
     if not probe(agent_env):
         return 3
+    if run_preflight(state, run_dir, env, agent_env)["failures"]:
+        return 3
     blocked = False
     for _step in range(max_steps):
         item = queue_state.next_item(state)
@@ -631,7 +919,7 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         save(queue, state)
         log("item", f"{item['id']} in progress")
         try:
-            extra = work_item(item, state, queue, budget, env, agent_env)
+            extra = work_item(item, state, queue, budget, env, agent_env, run_dir)
         except Exception as exc:  # noqa: BLE001 -- nothing may leave an item in_progress
             set_status(item, "blocked", run_id, note=str(exc))
             save(queue, state)
@@ -654,6 +942,68 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     return 3 if blocked else 0
 
 
+def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
+                  agent_env: dict[str, str]) -> dict:
+    """AC9's checks, AC12's per-item preconditions and AC15's rehearsal; every
+    one runs and every failure is logged."""
+    scratch = run_dir / "preflight"
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True)
+    # A failed fetch is one refusal among the others, never an abort before
+    # every check has run and reported (cross-family finding 1).
+    fetched = run(["git", "fetch", "-q", "origin", "main"], cwd=SOURCE)
+    fetch_problems = ([f"git fetch origin main failed: {fetched.stderr.strip()[:200]}"]
+                      if fetched.returncode else [])
+    resolved = run(["git", "rev-parse", "--verify", "origin/main^{commit}"], cwd=SOURCE)
+    base = "" if resolved.returncode else resolved.stdout.strip()
+    issues = preflight.pending_issues(state)
+
+    def permissions() -> list[str]:
+        clone = scratch / "probe-clone"
+        git("clone", "-q", "--shared", "--no-checkout", str(SOURCE), str(clone))
+        git("checkout", "-q", "--detach", base, cwd=clone)
+        git("remote", "set-url", "origin", UPSTREAM_URL, cwd=clone)
+        commands = preflight.verification_commands(issues) + list(preflight.PROBE_COMMANDS)
+        return preflight.permission_probe(commands, clone, scratch / "probe-transcripts",
+                                          agent_env, SETTINGS, (source_objects(),))
+
+    current: dict = {}
+
+    def base_run() -> list[str]:
+        current.update(base_check(base, env))
+        return preflight.base_problems(current)
+
+    record = preflight.run_all(
+        [("origin-fetch", lambda: fetch_problems),
+         ("permission-probe", permissions), ("base-check", base_run),
+         ("kill-baselines", lambda: preflight.kill_baselines(issues, SOURCE, base, scratch)),
+         ("codex", lambda: preflight.codex_parity(scratch, env)),
+         ("rehearsal", lambda: preflight.rehearsal(scratch, env)),
+         ("per-item", lambda: [line for issue in issues for line in preflight.item_failures(
+             issue, SOURCE, base, scratch / f"item-{issue}", env)])],
+        [("base-regression", lambda: preflight.base_regression(current, previous_base(base)))],
+        run_dir)
+    for line in record["reported"]:
+        log("preflight", f"reported: {line}")
+    for line in record["failures"]:
+        log("preflight", line)
+    return record
+
+
+def preflight_only(queue: Path) -> int:
+    state = queue_state.load(queue)
+    run_dir = RUNS_ROOT / new_run_id()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    prune_runs(RUNS_ROOT)
+    env = preclose_driver.runner_env()
+    token = runner_token()
+    if token is None:
+        return 3
+    record = run_preflight(state, run_dir, env, {**env, "GH_TOKEN": token})
+    print(run_dir / "preflight.json")
+    return 3 if record["failures"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -661,8 +1011,11 @@ def main(argv: list[str] | None = None) -> int:
     worked.add_argument("--queue", required=True)
     worked.add_argument("--max-budget-usd", required=True)
     worked.add_argument("--max-steps", type=int, default=5)
+    sub.add_parser("preflight").add_argument("--queue", required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "preflight":
+            return preflight_only(Path(args.queue))
         if not (math.isfinite(float(args.max_budget_usd)) and float(args.max_budget_usd) > 0) \
                 or args.max_steps <= 0:
             raise ValueError("--max-budget-usd must be a finite positive number and "

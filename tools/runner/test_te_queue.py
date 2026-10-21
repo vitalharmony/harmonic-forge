@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,10 @@ class Add(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir)
         self.queue = self.dir / "queue.json"
+        # The per-item checks have their own tests (AddTimeChecks, test_te_preflight).
+        patcher = mock.patch.object(te_queue, "item_failures", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_add_appends_pending_items_readable_by_queue_state(self):
         te_queue.add(self.queue, ["F7", "F8"])
@@ -85,7 +90,7 @@ class Check(unittest.TestCase):
                       "handoff": HANDOFF.format(digest=digest),
                       "receipt": {"verdict": "PROCEED", "consumed_by": "https://x"}}
         self.queue = self.dir / "queue.json"
-        te_queue.add(self.queue, ["F7"])
+        te_queue.add(self.queue, ["F7"], checks=lambda issue: [])
 
     def failure(self, **override):
         seams = {**self.seams, **override}
@@ -180,6 +185,46 @@ class Check(unittest.TestCase):
     def test_affected_files_parses_plain_and_backticked_paths(self):
         self.assertEqual(te_queue.affected_files(self.seams["handoff"]),
                          ["tools/telemetry/widget.py", "tools/telemetry/test_widget.py"])
+
+
+class AddTimeChecks(Check):
+    """AC15: `add` runs the preflight's per-item checks and refuses failures."""
+
+    def add_with(self, body: str, key: str = "F9") -> list[str]:
+        src = self.dir / "src"
+        if not src.exists():
+            src.mkdir()
+            for argv in (["git", "init", "-q", "-b", "main"],
+                         ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                          "--allow-empty", "-m", "base"],
+                         # origin reads as the upstream, as a real source checkout's does
+                         ["git", "remote", "add", "origin",
+                          "https://github.com/vitalharmony/harmonic-forge.git"]):
+                subprocess.run(argv, cwd=src, check=True, capture_output=True)
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        import preclose_driver as driver  # noqa: PLC0415 -- the module preflight calls
+        import te_run  # noqa: PLC0415 -- its item_preconditions are preflight's too
+        seams = self.seams
+        with mock.patch.object(te_queue, "labels", return_value=seams["labels"]), \
+                mock.patch.object(te_queue, "tier", return_value=seams["tier"]), \
+                mock.patch.object(te_queue, "handoff", return_value=seams["handoff"]), \
+                mock.patch.object(te_queue, "receipt", return_value=seams["receipt"]), \
+                mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle), \
+                mock.patch.object(te_queue, "add_context", return_value=(src, base, {})), \
+                mock.patch.object(driver, "passes_held", return_value=0), \
+                mock.patch.object(te_run, "item_preconditions", return_value=[]), \
+                mock.patch.object(driver, "issue_body", return_value=body):
+            return te_queue.add(self.queue, [key])
+
+    def test_item_with_no_acceptance_section_is_refused(self):
+        with self.assertRaisesRegex(te_queue.QueueError, "acceptance criteria"):
+            self.add_with("## Problem\n\nNo criteria here.\n")
+        ids = [i["id"] for i in te_queue.queue_state.load(self.queue)["items"]]
+        self.assertNotIn("F9", ids)
+
+    def test_item_passing_every_check_is_added(self):
+        self.assertEqual(self.add_with("## Acceptance\n\n- [ ] It works.\n"), ["F9"])
 
 
 if __name__ == "__main__":

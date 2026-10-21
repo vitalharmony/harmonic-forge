@@ -73,7 +73,8 @@ class EnumAndShape(unittest.TestCase):
 
     def test_all_facts_passing_is_green(self):
         self.assertEqual(verdict.reduce(green_facts()),
-                         {"state": "green", "reason": None, "detail": "all clauses passed"})
+                         {"state": "green", "reason": None, "detail": "all clauses passed",
+                      "reasons": []})
 
     def test_reduce_does_not_mutate_its_input(self):
         facts = hit("check-fail")
@@ -264,6 +265,24 @@ class NeverOutsideTheEnum(unittest.TestCase):
             else:
                 self.assertIn(result["reason"], verdict.SET_ASIDE_REASONS)
             self.assertLessEqual(len(result["detail"]), 200)
+
+
+class AllReasons(unittest.TestCase):
+    """harmonic-forge#1112 AC8."""
+
+    def test_every_failing_clause_is_listed(self):
+        out = verdict.reduce(hit("check-fail", "tool-refusal", "preclose-survivor"))
+        self.assertEqual(out["reason"], "tool-refusal")
+        self.assertEqual([r["reason"] for r in out["reasons"]],
+                         ["tool-refusal", "check-fail", "preclose-survivor"])
+        self.assertEqual(out["detail"], out["reasons"][0]["detail"])
+
+    def test_a_fact_gap_still_stops_at_its_clause(self):
+        facts = hit("tool-refusal")
+        del facts["check_rc"]
+        out = verdict.reduce(facts)
+        self.assertEqual([r["reason"] for r in out["reasons"]], ["tool-refusal", "check-fail"])
+        self.assertIn("fact gap", out["reasons"][-1]["detail"])
 
 
 if __name__ == "__main__":

@@ -12,10 +12,16 @@ session, so this module runs exactly one pass in its place:
 2. `preclose_check.py` plan, run from `--source-repo` (never an agent's
    worktree). Plan refuses without a passing `kill_check.py` receipt; for
    runner items Lane 1 writes those checks (operator ruling, 2026-10-19);
-3. one `claude -p --json-schema` refuter per planned lens, in a scratch export
-   of the head, briefed with the issue's acceptance criteria, the diff and the
-   lens only, returning its findings as structured output;
-4. one cross-family `verify` call;
+   Steps 1-2 and the reads after them are `READ_ONLY_STEPS`, run first and
+   every refusal collected (`read_only_preconditions`); the te-runner's
+   preflight runs the same list per queued item (harmonic-forge#1112 AC12);
+3. one `claude -p --json-schema` refuter per planned lens, in a scratch clone
+   of the head (a git repository, AC14), briefed with the issue's acceptance
+   criteria, the diff and the lens only, returning its findings as structured
+   output;
+4. one cross-family `verify` call, briefed with one assumption per acceptance
+   criterion and the harness's own results (`--harness-results`: the kill
+   receipt, the base-relative check, the deny check);
 5. `preclose_check.py --complete --cross-family` with every finding undismissed.
 
 Exit 0 when the pass was recorded (survivors or not), 2 when it was not, and
@@ -48,6 +54,7 @@ sys.path.insert(0, str(GH_TOOLS))
 import preclose_check  # noqa: E402
 import preclose_passes  # noqa: E402
 sys.path.insert(0, str(HERE))
+import acceptance  # noqa: E402
 import sandbox  # noqa: E402
 
 PRECLOSE = GH_TOOLS / "preclose_check.py"
@@ -60,6 +67,9 @@ FORBIDDEN = ("--force", "--reforge", "--allow-dirty", "--not-triggered", "--clus
              "--allow-repo-mismatch")
 DEFAULT_MODEL = "claude-opus-5-5"
 REFUTER_TIMEOUT = 1800
+#: The exported head's `origin` (harmonic-forge#1112 AC14, as AC3).
+UPSTREAM_URL = "https://github.com/vitalharmony/harmonic-forge.git"
+PROVENANCE_TOOL = HERE.parent / "lane" / "cross_family_provenance.py"
 #: The receipt gained a pass but the run failed afterwards (or the receipt
 #: could not be re-read): never retry, the item is set aside.
 RECORDED_INCOMPLETE = 4
@@ -106,15 +116,23 @@ def git(source: Path, *args: str) -> str:
     return result.stdout
 
 
-def acceptance_criteria(repo: str, issue: int, env: dict[str, str]) -> str:
+def issue_body(repo: str, issue: int, env: dict[str, str]) -> str:
     result = call(["gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".body"], env=env)
     if result.returncode:
         raise DriverError(f"cannot read {repo}#{issue}: {result.stderr.strip()}")
-    match = re.search(r"^## Acceptance criteria\s*$(.*?)(?=^## |\Z)", result.stdout,
-                      re.MULTILINE | re.DOTALL)
-    if not match or not match.group(1).strip():
-        raise DriverError(f"{repo}#{issue} has no '## Acceptance criteria' section")
-    return match.group(1).strip()
+    return result.stdout
+
+
+def acceptance_criteria(repo: str, issue: int, env: dict[str, str]) -> str:
+    """The acceptance section through the shared matcher (harmonic-forge#1112 AC11)."""
+    text = acceptance.section(issue_body(repo, issue, env))
+    if not text:
+        raise DriverError(f"{repo}#{issue} has no acceptance criteria section")
+    # A section with no criterion items is refused, never one blanket
+    # assumption (harmonic-forge#1112 sticky-wicket patch 1).
+    if not acceptance.items(text):
+        raise DriverError(f"{repo}#{issue}'s acceptance section lists no criteria")
+    return text
 
 
 def _passes(receipt: dict | None) -> int:
@@ -140,13 +158,160 @@ def planned_lenses(stdout: str) -> list[str]:
 
 
 def export_head(source: Path, head: str, dest: Path) -> None:
-    """A fresh tree of the head, made with `git -C <source>`: no worktree is
-    added to the source repo and no agent checkout is read."""
-    dest.mkdir(parents=True)
-    tarball = dest.parent / "head.tar"
-    git(source, "archive", "-o", str(tarball), head)
-    if call(["tar", "-x", "-f", str(tarball), "-C", str(dest)]).returncode:
-        raise DriverError(f"cannot unpack {head[:12]} from {source}")
+    """A git repository at the head (harmonic-forge#1112 AC14): a `git clone
+    --shared --no-checkout` of SOURCE, the head checked out detached, and
+    `origin` set to GitHub as the agent's clone is (AC3). No worktree is added
+    to the source repo and no agent checkout is read; objects are borrowed
+    through alternates, so each boundary names SOURCE's object store."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        raise DriverError(f"cannot export {head[:12]}: {dest} already exists")
+    git(source, "clone", "-q", "--shared", "--no-checkout", str(source), str(dest))
+    git(dest, "checkout", "-q", "--detach", head)
+    git(dest, "remote", "set-url", "origin", UPSTREAM_URL)
+
+
+def source_objects(source: Path) -> Path:
+    """SOURCE's object store, which an exported head borrows from."""
+    return (source / git(source, "rev-parse", "--git-path", "objects").strip()).resolve()
+
+
+# --- the read-only preconditions (harmonic-forge#1112 AC12) --------------------------
+#
+# Every step the driver checks before it spends, as one list. The driver runs
+# them first; the preflight runs the same list per queued item before any
+# agent spend. Each step reads `ctx` and adds what later steps need; a step
+# whose input an earlier step failed to produce is skipped, since that failure
+# is already listed. The plan writes a planned receipt and needs a kill-check
+# receipt at the head, so it runs only for a real head and only when nothing
+# before it failed.
+
+def _step_out_dir(ctx: dict) -> None:
+    # A fresh --out per run: anything already there would read as this run's
+    # output whenever this run fails before replacing it.
+    out = ctx.get("out")
+    if out is not None and out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise DriverError(f"--out {out} is not an empty directory")
+
+
+def _step_head(ctx: dict) -> None:
+    if ctx.get("head_ref"):
+        ctx["head"] = git(ctx["source"], "rev-parse", "--verify",
+                          f"{ctx['head_ref']}^{{commit}}").strip()
+
+
+def _step_passes(ctx: dict) -> None:
+    held = passes_held(ctx["repo"], ctx["issue"])
+    if held >= preclose_passes.MAX_PASSES:
+        raise DriverError(f"{ctx['repo']}#{ctx['issue']} already holds {held} passes; "
+                          "a third never runs")
+
+
+def plan_refusals_without_head(repo: str, issue: int, source: Path) -> None:
+    """The subset of `preclose_check.plan`'s refusals that needs no head: the
+    receipt dir is writable, `source`'s origin is `repo`, no IMC waiver receipt is unconfirmed, no live
+    IMC hook record lacks its receipt, and `source` has no uncommitted or
+    untracked path (the interactive plan's dirty-tree refusal). Raises DriverError naming the refusal,
+    or naming that the plan could not be checked (harmonic-forge#1112
+    sticky-wicket patch 3). The full plan, which needs a kill-check receipt at
+    the head and writes a planned receipt, runs once the head exists."""
+    try:
+        preclose_check.require_writable(preclose_check.receipt_dir())
+        imc = preclose_check.imc_waiver
+        held = imc.waiver_receipt(repo, issue)
+        if held is not None and not imc.waiver_satisfied(held):
+            raise DriverError(f"plan refused: {repo}#{issue} holds an IMC waiver receipt that "
+                              f"is not recorded (status {held.get('status', 'unreadable')!r})")
+        unmatched = imc.unmatched_hook_record(repo, issue)
+        if unmatched is not None:
+            raise DriverError(f"plan refused: {repo}#{issue} holds a live IMC hook record "
+                              f"(granted {unmatched.get('granted_at')}) but no matching "
+                              "waiver receipt")
+        # The interactive plan's origin/repo identity check (cross-family
+        # finding 3): the raw configured URL, as `_require_repo_and_head` reads it.
+        url = call(["git", "config", "--get", "remote.origin.url"], cwd=source)
+        try:
+            actual = (preclose_check.normalize_repo(url.stdout.strip())
+                      if not url.returncode and url.stdout.strip() else None)
+        except SystemExit:
+            actual = None
+        if actual != preclose_check.normalize_repo(repo):
+            reason = (f"{source}'s origin is {actual}" if actual
+                      else f"{source} has no recognized `origin` remote to compare against")
+            raise DriverError(f"plan refused: --repo says {repo} but {reason}")
+        status = call(["git", "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
+                      cwd=source)
+        if status.returncode:
+            raise DriverError(f"plan not checked before spend: `git status` failed in {source} "
+                              f"(exit {status.returncode})")
+        dirty = [entry[3:] for entry in status.stdout.split("\0") if len(entry) > 3]
+        if dirty:
+            raise DriverError(f"plan refused: {len(dirty)} uncommitted/untracked path(s) in "
+                              f"{source}: {', '.join(dirty[:5])}")
+    except DriverError:
+        raise
+    except SystemExit as exc:
+        raise DriverError(f"plan refused: receipt dir not writable (exit {exc.code})") from exc
+    except Exception as exc:  # noqa: BLE001 -- a check that cannot run is a failure
+        raise DriverError(f"plan not checked before spend: {exc}") from exc
+
+
+def _step_plan(ctx: dict) -> None:
+    # With no head (the preflight, te_queue add) the plan never returns
+    # silently: its head-independent refusals run, and one that cannot run is
+    # listed as a failure (harmonic-forge#1112 sticky-wicket patch 3).
+    if "head" not in ctx:
+        plan_refusals_without_head(ctx["repo"], ctx["issue"], ctx["source"])
+        return
+    if ctx["errors"]:
+        return
+    planned = call([*ctx["check"], "--tier", ctx["tier"]], cwd=ctx["source"], env=ctx["env"])
+    if planned.returncode:
+        raise DriverError(f"plan refused: {(planned.stderr or planned.stdout).strip()[-400:]}")
+    ctx["plan_stdout"] = planned.stdout
+
+
+def _step_lenses(ctx: dict) -> None:
+    if "plan_stdout" in ctx:
+        ctx["lenses"] = planned_lenses(ctx["plan_stdout"])
+
+
+def _step_acceptance(ctx: dict) -> None:
+    ctx["criteria"] = acceptance_criteria(ctx["repo"], ctx["issue"], ctx["env"])
+
+
+def _step_export(ctx: dict) -> None:
+    export_head(ctx["source"], ctx.get("head") or ctx["base"], ctx["scratch"] / "head")
+    ctx["tree"] = ctx["scratch"] / "head"
+
+
+READ_ONLY_STEPS = (_step_out_dir, _step_head, _step_passes, _step_plan, _step_lenses,
+                   _step_acceptance, _step_export)
+
+
+def preconditions_context(repo: str, issue: int, base: str, source: Path, scratch: Path,
+                          env: dict[str, str], *, head: str | None = None,
+                          out: Path | None = None, tier: str | None = None) -> dict:
+    ctx = {"repo": repo, "issue": issue, "base": base, "source": Path(source).resolve(),
+           "scratch": Path(scratch), "env": env, "head_ref": head, "out": out, "tier": tier,
+           "errors": []}
+    return ctx
+
+
+def read_only_preconditions(ctx: dict) -> list[str]:
+    """Every step in READ_ONLY_STEPS, each refusal collected, never only the
+    first. With no head (the preflight, before any agent runs) the head is the
+    base and the plan runs only its head-independent refusals."""
+    for step in READ_ONLY_STEPS:
+        if ctx.get("head") and "check" not in ctx:
+            ctx["check"] = [sys.executable, str(PRECLOSE), "--repo", ctx["repo"],
+                            "--issue", str(ctx["issue"]), "--base", ctx["base"],
+                            "--head", ctx["head"]]
+        try:
+            step(ctx)
+        except DriverError as exc:
+            ctx["errors"].append(str(exc))
+    return list(ctx["errors"])
 
 
 #: The structured output each refuter must return (`claude -p --json-schema`).
@@ -192,7 +357,7 @@ def parse_findings(structured: object) -> list[dict]:
 
 
 def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: str,
-                budget: str) -> tuple[list[dict], int | None]:
+                budget: str, inputs: tuple[Path, ...] = ()) -> tuple[list[dict], int | None]:
     argv = ["claude", "-p", "--model", model,
             "--permission-prompts", "none", "--permission-mode", "dontAsk",
             "--max-budget-usd", budget, "--output-format", "json",
@@ -202,7 +367,7 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
         # bwrap boundary: only its export of the head and a private transcripts
         # dir are writable (harmonic-forge#1098).
         argv = sandbox.wrap(argv, cwd, Path(tempfile.mkdtemp(prefix="transcripts-", dir=cwd.parent)),
-                            profile="agent")
+                            profile="agent", inputs=inputs)
     except sandbox.SandboxError as exc:
         raise DriverError(str(exc)) from exc
     result = call(argv, cwd=cwd, env=env, stdin=prompt, timeout=REFUTER_TIMEOUT)
@@ -224,81 +389,138 @@ def run_refuter(lens: str, prompt: str, cwd: Path, env: dict[str, str], model: s
     return [{**f, "lens": lens} for f in parse_findings(envelope.get("structured_output"))], tokens
 
 
+def assumptions(criteria: str) -> list[str]:
+    """One assumption per acceptance criterion (harmonic-forge#1112 AC14), read
+    through the shared matcher's item list; a section with no list items is
+    one criterion."""
+    found = acceptance.items(criteria) or [" ".join(criteria.split())]
+    return [f"Acceptance criterion {n} holds at the working directory's HEAD: {text}"
+            for n, text in enumerate(found, 1)]
+
+
+def harness_results(path: Path | None) -> str:
+    """The harness's own results for this head (AC14): the kill receipt (each
+    AC's base and head rc), the base-relative check result (AC4) and the
+    deny-check result, rendered for the brief. The runner writes them as JSON."""
+    if path is None:
+        return "No harness results were supplied for this head (the driver ran on its own).\n"
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DriverError(f"--harness-results {path} unreadable: {exc}") from exc
+    kill = data.get("kill") or []
+    lines = ["Results the harness obtained for this head, before this review.", "",
+             "Kill receipt (each acceptance criterion's check, base rc then head rc; a "
+             "kill check must fail on the base and pass on the head):"]
+    lines += [f"- {k.get('ac')}: base rc {k.get('base_rc')}, head rc {k.get('head_rc')}"
+              for k in kill if isinstance(k, dict)] or ["- none recorded"]
+    check = data.get("check") or {}
+    lines += ["", f"Base-relative `mise run check`: check_rc {check.get('check_rc')}; "
+                  f"new failures on the head: {check.get('new_failures') or 'none'}; "
+                  f"failures already on the base: {check.get('base_failures') or 'none'}."]
+    hits = data.get("deny_hits")
+    lines += ["", f"Deny check: {'no hits' if not hits else 'hits: ' + '; '.join(hits)}."]
+    return "\n".join(lines) + "\n"
+
+
+def build_brief(scratch: Path, repo: str, issue: int, criteria: str, diff: str,
+                harness: str, env: dict[str, str]) -> Path:
+    brief = scratch / "brief.md"
+    for name, text in (("diff.patch", diff), ("criteria.md", criteria),
+                       ("harness-results.md", harness)):
+        (scratch / name).write_text(text, encoding="utf-8")
+    argv = [sys.executable, str(BRIEF_BUILDER),
+            "--artifact", str(scratch / "criteria.md"),
+            "--artifact", str(scratch / "diff.patch"),
+            "--artifact", str(scratch / "harness-results.md"),
+            "--intent", f"Satisfy the acceptance criteria of {repo}#{issue}.",
+            "--question", "Does this change satisfy each acceptance criterion? One verdict per "
+                          "assumption, from the evidence below.",
+            "--evidence", ". (a git repository at the head; `git log -1`, `git show HEAD`)",
+            "--evidence", "harness-results.md, embedded below: the kill receipt, the "
+                          "base-relative check result and the deny-check result for this head",
+            "--out", str(brief)]
+    for assumption in assumptions(criteria):
+        argv[argv.index("--out"):argv.index("--out")] = ["--assumption", assumption]
+    built = call(argv, env=env)
+    if built.returncode:
+        raise DriverError(f"cross-family brief refused: {built.stderr.strip()[-300:]}")
+    return brief
+
+
+def cross_family_verify(tree: Path, scratch: Path, brief: Path, env: dict[str, str],
+                        inputs: tuple[Path, ...] = ()) -> tuple[Path, int]:
+    """One cross-family `verify` call in the reviewer boundary: (envelope, ms).
+    The reviewers' own workspace config in the head (`.codex/`) is
+    the agent's to write: it is removed from the export first."""
+    for config in (".codex",):
+        if (tree / config).is_symlink() or (tree / config).is_file():
+            (tree / config).unlink()
+        else:
+            shutil.rmtree(tree / config, ignore_errors=True)
+    envelope = scratch / "envelope.jsonl"
+    try:
+        cross_argv = sandbox.wrap(
+            ["bash", str(CROSS_FAMILY), "--caller", "claude", "--families", "2",
+             "--posture", "verify", "--brief", str(brief), "--cwd", str(tree),
+             "--out", str(envelope)], scratch, profile="reviewer",
+            inputs=tuple(dict.fromkeys((Path(CROSS_FAMILY).resolve().parent, HERE.parent,
+                                        *inputs))))
+    except sandbox.SandboxError as exc:
+        raise DriverError(str(exc)) from exc
+    started = time.monotonic()
+    crossed = call(cross_argv, cwd=scratch, env=env)
+    # The envelope lives in this run's scratch directory, so one that exists
+    # was written by this call.
+    if not envelope.is_file():
+        raise DriverError(f"cross-family call left no envelope (exit {crossed.returncode})")
+    return envelope, max(1, int((time.monotonic() - started) * 1000))
+
+
+def provenance_label(envelope: Path, own_model: str, env: dict[str, str]) -> str:
+    """The platform classifier's label for an envelope, as --complete computes it."""
+    result = call([sys.executable, str(PROVENANCE_TOOL), "--envelope", str(envelope),
+                   "--own-model", own_model], env=env)
+    label = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if result.returncode or not label:
+        raise DriverError(f"provenance classifier failed ({result.returncode}): "
+                          f"{result.stderr.strip()[-200:]}")
+    return label
+
+
 def run_pass(args: argparse.Namespace, env: dict[str, str], progress: dict | None = None) -> int:
     """`progress` records the two facts main() needs after a failure: that
     --complete was started, and that it exited 0."""
     progress = {} if progress is None else progress
     source, out = Path(args.source_repo).resolve(), Path(args.out).resolve()
-    # A fresh --out per run: anything already there would read as this run's
-    # output whenever this run fails before replacing it.
-    if out.exists() and (not out.is_dir() or any(out.iterdir())):
-        raise DriverError(f"--out {out} is not an empty directory")
-    head = git(source, "rev-parse", "--verify", f"{args.head}^{{commit}}").strip()
-    held = passes_held(args.repo, args.issue)
-    if held >= preclose_passes.MAX_PASSES:
-        raise DriverError(f"{args.repo}#{args.issue} already holds {held} passes; a third never runs")
-    check = [sys.executable, str(PRECLOSE), "--repo", args.repo,
-             "--issue", str(args.issue), "--base", args.base, "--head", head]
-    planned = call([*check, "--tier", args.tier], cwd=source, env=env)
-    if planned.returncode:
-        raise DriverError(f"plan refused: {(planned.stderr or planned.stdout).strip()[-400:]}")
-    lenses = planned_lenses(planned.stdout)
-    criteria = acceptance_criteria(args.repo, args.issue, env)
-    diff = git(source, "diff", f"{args.base}...{head}")
+    with tempfile.TemporaryDirectory(prefix="preclose-driver-") as scratch_dir:
+        scratch = Path(scratch_dir)
+        ctx = preconditions_context(args.repo, args.issue, args.base, source, scratch, env,
+                                    head=args.head, out=out, tier=args.tier)
+        errors = read_only_preconditions(ctx)
+        if errors:
+            raise DriverError("; ".join(errors))
+        head, lenses, criteria, tree = ctx["head"], ctx["lenses"], ctx["criteria"], ctx["tree"]
+        check = ctx["check"]
+        diff = git(source, "diff", f"{args.base}...{head}")
+        harness = harness_results(Path(args.harness_results) if args.harness_results else None)
+        objects = (source_objects(source),)
 
-    with tempfile.TemporaryDirectory(prefix="preclose-driver-") as scratch:
-        tree = Path(scratch) / "head"
-        export_head(source, head, tree)
         started = time.monotonic()
         with ThreadPoolExecutor(max_workers=len(lenses)) as pool:
             futures = [pool.submit(run_refuter, lens, refuter_prompt(lens, criteria, diff), tree,
-                                   env, args.model, args.budget_usd) for lens in lenses]
+                                   env, args.model, args.budget_usd, objects) for lens in lenses]
             results = [f.result() for f in futures]
         panel_ms = max(1, int((time.monotonic() - started) * 1000))
         findings = [f for found, _tokens in results for f in found]
         tokens = [t for _found, t in results]
-        findings_path = Path(scratch) / "findings.json"
+        findings_path = scratch / "findings.json"
         findings_path.write_text(json.dumps(findings, indent=1) + "\n", encoding="utf-8")
 
-        brief, envelope = Path(scratch) / "brief.md", Path(scratch) / "envelope.jsonl"
-        (Path(scratch) / "diff.patch").write_text(diff, encoding="utf-8")
-        (Path(scratch) / "criteria.md").write_text(criteria, encoding="utf-8")
-        built = call([sys.executable, str(BRIEF_BUILDER),
-                      "--artifact", str(Path(scratch) / "criteria.md"),
-                      "--artifact", str(Path(scratch) / "diff.patch"),
-                      "--intent", f"Satisfy the acceptance criteria of {args.repo}#{args.issue}.",
-                      "--question", "Does this change contain a defect against its acceptance "
-                                    "criteria that the in-family panel missed?",
-                      "--assumption", "The change at the working directory satisfies every "
-                                      "acceptance criterion with no concrete failing scenario.",
-                      "--evidence", ".", "--out", str(brief)], env=env)
-        if built.returncode:
-            raise DriverError(f"cross-family brief refused: {built.stderr.strip()[-300:]}")
-        # The reviewers' own workspace config in the head (`.codex/`)
-        # is the agent's to write: it is removed from the export, and the call
-        # runs inside the reviewer boundary, writable = this run's scratch.
-        for config in (".codex",):
-            if (tree / config).is_symlink() or (tree / config).is_file():
-                (tree / config).unlink()
-            else:
-                shutil.rmtree(tree / config, ignore_errors=True)
-        try:
-            cross_argv = sandbox.wrap(
-                ["bash", str(CROSS_FAMILY), "--caller", "claude", "--families", "2",
-                 "--posture", "verify", "--brief", str(brief), "--cwd", str(tree),
-                 "--out", str(envelope)], Path(scratch), profile="reviewer",
-                inputs=tuple(dict.fromkeys((Path(CROSS_FAMILY).resolve().parent, HERE.parent))))
-        except sandbox.SandboxError as exc:
-            raise DriverError(str(exc)) from exc
-        started = time.monotonic()
-        crossed = call(cross_argv, cwd=Path(scratch), env=env)
-        cross_ms = max(1, int((time.monotonic() - started) * 1000))
-        # The envelope lives in this run's scratch directory, so one that exists
-        # was written by this call. A failed or fallback call is still recorded
-        # when it left one: --complete labels it, and the reducer sets the item
-        # aside on that label.
-        if not envelope.is_file():
-            raise DriverError(f"cross-family call left no envelope (exit {crossed.returncode})")
+        brief = build_brief(scratch, args.repo, args.issue, criteria, diff, harness, env)
+        # A failed or fallback call is still recorded when it left an envelope:
+        # --complete labels it, and the reducer sets the item aside on that label.
+        envelope, cross_ms = cross_family_verify(tree, scratch, brief, env, objects)
 
         cost = (["--panel-tokens", str(sum(tokens)), "--panel-ms", str(panel_ms)]
                 if all(isinstance(t, int) for t in tokens)
@@ -319,6 +541,7 @@ def run_pass(args: argparse.Namespace, env: dict[str, str], progress: dict | Non
         out.mkdir(parents=True, exist_ok=True)
         shutil.copy2(findings_path, out / "findings.json")
         shutil.copy2(envelope, out / "envelope.jsonl")
+        shutil.copy2(brief, out / "brief.md")
         (out / "preclose.json").write_text(json.dumps(fact, indent=1) + "\n", encoding="utf-8")
         write_summary(out / "summary.md", args, head, lenses, findings, fact)
     print(json.dumps(fact))
@@ -350,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--out", required=True)
     run.add_argument("--model", default=DEFAULT_MODEL)
     run.add_argument("--budget-usd", default="5")
+    run.add_argument("--harness-results", default=None,
+                     help="JSON of the harness's kill receipt, check and deny results (AC14)")
     args = parser.parse_args(argv)
     before, progress = None, {}
     try:

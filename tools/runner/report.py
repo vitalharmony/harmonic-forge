@@ -2,6 +2,8 @@
 """The te-runner's report: one card per green PR (harmonic-forge#1056, G9, ruling 7).
 
     report.py render --queue FILE --out DIR   # writes DIR/<run-id>.md, prints its path
+        [--invocation-id ID --exit-status N]  # the unit's: a run that never started
+                                              # gets a one-line report of its own
     report.py notify --report FILE            # one ntfy line: counts and the report path
 
 `render` reads the queue file and nothing else: each item's harness-written
@@ -120,7 +122,7 @@ def card(item: dict) -> list[str]:
         f"### {issue_key(item)} — {item.get('pr') or 'no PR recorded'}",
         f"- Acceptance criteria: {clean(titles, 400)}",
         f"- Diff: {clean(item.get('diff_stat'), 120) or 'none recorded'}",
-        f"- Kill checks: {clean(kills, 400)}",
+        f"- Kill checks: {clean(kills, 400)}. {check_line(facts)}",
         f"- Preclose survivors: {'none' if survivors == 0 else clean(survivors, 20)}",
         f"- Provenance: {clean(preclose.get('provenance'), 160) or 'none recorded'}",
         f"- CI: {ci}, as of {clean(item.get('live_read_at'), 30) or 'unknown'}, "
@@ -132,13 +134,34 @@ def card(item: dict) -> list[str]:
     ]
 
 
+def check_line(facts: dict) -> str:
+    """The base-relative check fact (harmonic-forge#1112 AC4): what failed on
+    the head only, and what already failed on the base."""
+    def names(key: str) -> str:
+        found = facts.get(key)
+        return clean("; ".join(map(str, found)), 400) if found else "none"
+    return (f"Check: new failures {names('check_new_failures')}; "
+            f"base failures {names('check_base_failures')}")
+
+
+def all_reasons(item: dict) -> str:
+    """Every clause that failed, in precedence order (harmonic-forge#1112 AC8)."""
+    found = (item.get("verdict") or {}).get("reasons") or []
+    return "; ".join(f"{clean(r.get('reason'), 40)}: {clean(r.get('detail'))}"
+                     for r in found if isinstance(r, dict)) or "none recorded"
+
+
 def set_aside_entry(number: int, item: dict) -> str:
     kind = classify(item)
     reason = reason_code(item, kind)
     decision, recommendation = DECISIONS.get(reason, ("what went wrong", "route it to Lane 1"))
     detail = clean((item.get("verdict") or {}).get("detail")) if kind not in ("blocked", "unstamped") else \
         "see the item's note in the queue file"
-    return (f"{number}. {issue_key(item)} ({reason}): {detail}. Decision: {decision}. "
+    extra = ""
+    if kind not in ("blocked", "unstamped"):
+        extra = (f" All reasons: {all_reasons(item)}. "
+                 f"{check_line(item.get('facts') or {})}.")
+    return (f"{number}. {issue_key(item)} ({reason}): {detail}.{extra} Decision: {decision}. "
             f"Recommendation: {recommendation}.")
 
 
@@ -186,8 +209,21 @@ def render_text(state: dict, run_id: str) -> str:
     return "\n".join(lines)
 
 
-def render(queue: Path, out: Path, now: dt.datetime | None = None) -> Path:
+def render(queue: Path, out: Path, now: dt.datetime | None = None,
+           invocation: str | None = None, exit_status: str | None = None) -> Path:
     state = queue_state.load(queue)
+    # Under systemd the unit passes its $INVOCATION_ID: the report belongs to
+    # the invocation that just ended. A run that exited before `_run_queue`
+    # saved its own invocation id (an empty budget, a held queue lock) never
+    # started: its report says so in one line and is never the last run's
+    # report (harmonic-forge#1112 sticky-wicket patch 2).
+    if invocation and state.get("invocation_id") != invocation:
+        run_id = "unstarted-" + (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{run_id}.md"
+        path.write_text(f"# te-runner report {run_id}\n\nrun ended before it started: exit "
+                        f"{exit_status or 'unknown'}\n", encoding="utf-8")
+        return path
     # The queue's own run id names the report; a queue no run has worked yet
     # gets a render-time id and lists only pending items.
     run_id = state.get("run_id") or \
@@ -229,12 +265,16 @@ def main(argv: list[str] | None = None) -> int:
     rendered = sub.add_parser("render")
     rendered.add_argument("--queue", required=True)
     rendered.add_argument("--out", required=True)
+    rendered.add_argument("--invocation-id", default="",
+                          help="the unit's $INVOCATION_ID (patch 2); empty skips the check")
+    rendered.add_argument("--exit-status", default="", help="the unit's $EXIT_STATUS")
     notified = sub.add_parser("notify")
     notified.add_argument("--report", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "render":
-            print(render(Path(args.queue), Path(args.out)))
+            print(render(Path(args.queue), Path(args.out), invocation=args.invocation_id,
+                         exit_status=args.exit_status))
             return 0
         return notify(Path(args.report))
     except (ValueError, OSError) as exc:

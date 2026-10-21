@@ -10,6 +10,10 @@ ruling, issue comment 6284219941): nothing is visible unless named here.
 - a private, empty tmpfs over `/tmp`, `/var/tmp` and the whole of `$HOME`;
 - the toolchain (mise's installs, state and config, `~/.local/bin`) read-only;
 - the step's one writable directory, plus any read-only inputs the caller names;
+- `MISE_STATE_DIR` on the private `/tmp` and `MISE_TRUSTED_CONFIG_PATHS` set to
+  the writable directory's own `mise.toml`, so mise can trust a fresh clone's
+  config and nothing else in the tree (harmonic-forge#1112; mise's alternate
+  config and task-dir names are deny-manifest hits, preclose survivor 2);
 - then the profile's own additions:
   - `oracle`: nothing more. It never sees the agent's clone, the runner's
     receipts, keys or config, or the operator's `~/.claude`.
@@ -56,6 +60,8 @@ RUNNER_GH = HOME / ".config" / "te-runner" / "gh"
 TRUSTED_LINK = HOME / "harmonic-forge"
 REVIEWER_RO = (HOME / ".npm-global",)
 REVIEWER_RW = (HOME / ".codex",)
+#: Under the boundary's private `/tmp` tmpfs (harmonic-forge#1112 AC1).
+MISE_STATE_DIR = "/tmp/mise-state"
 PROFILES = ("oracle", "agent", "reviewer")
 BWRAP = "bwrap"
 
@@ -122,6 +128,14 @@ def boundary_argv(writable: Path, transcripts: Path | None = None, *,
             raise SandboxError(f"read-only input {item} does not exist")
         argv += ["--ro-bind", str(item), str(item)]
     argv += ["--bind", str(writable), str(writable)]
+    # mise writes a trust link for each new config under its state dir, which
+    # the toolchain binds read-only: every profile trusts its writable dir's
+    # mise.toml and
+    # keeps mise's state on the private /tmp (harmonic-forge#1112 AC1). Only
+    # the tree's own mise.toml is trusted: an alternate config (mise.local.toml,
+    # .config/mise.toml, ...) in the writable tree is never (preclose survivor 2).
+    argv += ["--setenv", "MISE_STATE_DIR", MISE_STATE_DIR,
+             "--setenv", "MISE_TRUSTED_CONFIG_PATHS", str(writable / "mise.toml")]
     return argv + ["--chdir", str(writable), "--"]
 
 
