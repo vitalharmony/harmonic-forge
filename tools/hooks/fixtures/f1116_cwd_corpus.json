@@ -1,5 +1,5 @@
 {
- "_comment": "harmonic-forge#1116 AC5: synthetic regression corpus built from the issue's measured distribution (58 literal / 6 mktemp / 2 chained / 1 literal parse-miss / 1 outer-shell). Not a replay of the measured commands. {MAIN} is a git checkout on main with tracked.md; {SCRATCH} is an untracked dir; HOME is pinned to their common parent, so ~/proj and ~/scratch name them.",
+ "_comment": "harmonic-forge#1116 AC5: synthetic regression corpus built from the issue's measured distribution (58 literal / 6 mktemp / 2 chained / 1 literal parse-miss / 1 outer-shell). Not a replay of the measured commands. {MAIN} is a git checkout on main with tracked.md; {SCRATCH} is an untracked dir; HOME is pinned to their common parent, so ~/proj and ~/scratch name them. Reforged to the AC1 allow-list (2026-10-21): pushd rows, mktemp rows (AC3 dropped) and the newline-joined row now refuse as unresolved, as on origin/main.",
  "rows": [
   {
    "shape": "literal-assignment",
@@ -24,7 +24,7 @@
   {
    "shape": "literal-assignment",
    "command": "W={SCRATCH}; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -49,7 +49,7 @@
   {
    "shape": "literal-assignment",
    "command": "export W={SCRATCH}; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -74,7 +74,7 @@
   {
    "shape": "literal-assignment",
    "command": "W=~/scratch; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -99,7 +99,7 @@
   {
    "shape": "literal-assignment",
    "command": "export W=~/scratch; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -124,7 +124,7 @@
   {
    "shape": "literal-assignment",
    "command": "W=$HOME/scratch; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -149,7 +149,7 @@
   {
    "shape": "literal-assignment",
    "command": "export W=$HOME/scratch; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -174,7 +174,7 @@
   {
    "shape": "literal-assignment",
    "command": "W=${HOME}/scratch; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -199,7 +199,7 @@
   {
    "shape": "literal-assignment",
    "command": "export W=${HOME}/scratch; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -224,7 +224,7 @@
   {
    "shape": "literal-assignment",
    "command": "W=\"{SCRATCH}\"; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -249,7 +249,7 @@
   {
    "shape": "literal-assignment",
    "command": "export W=\"{SCRATCH}\"; pushd $W >/dev/null && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -284,7 +284,7 @@
   {
    "shape": "literal-assignment",
    "command": "W=\"{MAIN}\"\ncd \"${W}\"\necho x > tracked.md",
-   "expect": "deny-protected"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "literal-assignment",
@@ -294,32 +294,32 @@
   {
    "shape": "mktemp",
    "command": "T=$(mktemp -d); cd $T && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "mktemp",
    "command": "T=\"$(mktemp -d)\"; cd \"$T\" && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "mktemp",
    "command": "T=$(mktemp -d -t f1116.XXXXXX) && cd $T && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "mktemp",
    "command": "T=$(mktemp --directory); cd ${T} && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "mktemp",
    "command": "T=$(mktemp -q -d)\ncd $T\necho x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "mktemp",
    "command": "export T=$(mktemp -d); pushd $T && echo x > out.txt",
-   "expect": "allow"
+   "expect": "deny-unresolved"
   },
   {
    "shape": "chained",

@@ -100,7 +100,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -108,7 +107,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from shell_parse import (  # noqa: E402  (harmonic-forge#167)
     command_segments,
-    mask_heredoc_bodies,
     strip_invocation_prefix,
 )
 
@@ -1112,425 +1110,162 @@ def protected_write_denial(
     return None
 
 
-# --- harmonic-forge#1116: same-command directory variables -----------------
-#
-# `W=/abs; cd $W && ... > rel` was refused as unresolvable although the
-# destination was static. The guard now records same-command assignments to a
-# literal absolute path (or a fresh `mktemp -d`) and resolves `cd $W` from
-# them. Everything here fails CLOSED: any doubt poisons the name, and a
-# poisoned name leaves the `cd` exactly as unresolvable as it was before. A
-# resolved target goes through every protected-write predicate unchanged.
-#
-# `shell_parse.command_segments` flattens `$(...)`, drops every operator and
-# keeps subshell/conditional assignments as bare segments, so the safety
-# questions (where does this assignment sit, what is inside its substitution)
-# are answered from the raw command text by `_raw_shell_words`, a small
-# quote-aware scanner -- never from adjacent parsed segments.
-
-VARIABLE_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
-ASSIGNMENT_TOKEN = re.compile(rf"^({VARIABLE_NAME})=(.*)$", re.DOTALL)
-#: `$NAME` / `${NAME}` plus a literal suffix, the only operand shape resolved.
-VARIABLE_OPERAND = re.compile(rf"^\$(?:\{{({VARIABLE_NAME})\}}|({VARIABLE_NAME}))(.*)$", re.DOTALL)
-FIRST_VARIABLE = re.compile(rf"\$\{{?[#!]?({VARIABLE_NAME})")
-#: Characters a resolved path may contain. No whitespace, glob, quote, `$`,
-#: backtick, `#` or `~`: an unquoted `$W` holding any of those is split,
-#: globbed or commented differently by the shell than a literal read predicts.
-SAFE_PATH = re.compile(r"^[A-Za-z0-9._/+@%,:=-]+$")
-#: Names the shell itself sets or reads specially. Never recorded.
-SPECIAL_VARIABLES = {
-    "HOME", "PWD", "OLDPWD", "CDPATH", "IFS", "PATH", "TMPDIR", "ENV",
-    "RANDOM", "SRANDOM", "SECONDS", "LINENO", "EPOCHSECONDS", "EPOCHREALTIME",
-    "PPID", "UID", "EUID", "SHLVL", "HISTCMD", "FUNCNAME", "GROUPS",
-    "DIRSTACK", "PIPESTATUS", "OPTIND", "OPTARG", "REPLY", "MAPFILE",
-}
-#: Builtins that can set a variable under a name built at run time. With a
-#: dynamic operand they poison every name; `eval`/`source`/`.` always do.
-NAME_SETTING_VERBS = {
-    "read", "unset", "declare", "local", "printf", "mapfile", "readarray",
-    "let", "typeset", "export", "readonly", "getopts",
-}
-EVERY_NAME_VERBS = {"eval", "source", ".", "builtin", "enable", "trap"}
-#: Raw-text words opening/closing a compound statement. Counted wherever they
-#: appear (fail closed: `echo if` merely poisons later assignments).
-COMPOUND_OPENERS = {"if", "while", "until", "for", "select", "case", "{", "function", "coproc"}
-COMPOUND_CLOSERS = {"fi", "done", "esac", "}"}
-RAW_OPERATORS = ("&&", "||", ";;&", ";;", ";&", "|&", ";", "&", "|", "\n", "(", ")")
-#: The operators an assignment may sit between and still run in THIS shell,
-#: unconditionally. `&&`/`||` before it make it conditional; `|`/`&` around
-#: it put it in a subshell.
-ASSIGNMENT_BEFORE = {"^", ";", "\n"}
-ASSIGNMENT_AFTER = {"$", ";", "\n", "&&", "||"}
-#: A word (or the part before its `=`) made only of name characters and
-#: quotes/backslashes: once dequoted, it may spell any name.
-QUOTED_NAME = re.compile(r"^(?=.*[A-Za-z0-9_])[A-Za-z0-9_'\"\\]+$")
-#: Raw operators after which the next word is a command word.
-COMMAND_POSITION = {"^", ";", "\n", "&&", "||", "|", "|&", "&", "("}
-#: `name ()` -- a POSIX function definition, wherever it appears.
-FUNCTION_DEFINITION = re.compile(r"[^\s;&|()<>]\s*\(\s*\)")
-MKTEMP_SUBSTITUTION = re.compile(r'^(?P<q>"?)\$\((?P<body>[^()$`;&|<>\n"\'\\]*)\)(?P=q)$')
-MKTEMP_FLAGS = {"-d", "--directory", "-t", "-q"}
-MKTEMP_TEMPLATE = re.compile(r"^[A-Za-z0-9._-]+$")
+# harmonic-forge#1116 (reforged to an allow-list after two preclose passes
+# found ten deny-list bypasses): a variable `cd` operand resolves only for ONE
+# exact raw-text shape. Everything else stays unresolvable, as before.
+ALLOWLIST_FORBIDDEN = re.compile(r"[\n\r|()`\\<]|\$\(|(?<!&)&(?!&)|&&&")
+ALLOWLIST_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+ALLOWLIST_PATH_CHARS = r"[A-Za-z0-9._/@+-]"
+ALLOWLIST_ASSIGNMENT = re.compile(
+    rf"(?:export\s+)?(?P<name>{ALLOWLIST_NAME})=(?P<value>\S*)")
+ALLOWLIST_VALUE = re.compile(
+    rf"(?:(?P<abs>/{ALLOWLIST_PATH_CHARS}*)"
+    rf"|(?P<tilde>~)(?P<tsuffix>/{ALLOWLIST_PATH_CHARS}*)?"
+    rf"|\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
+    rf"(?P<vsuffix>/{ALLOWLIST_PATH_CHARS}*)?)")
+ALLOWLIST_CD = re.compile(
+    rf"cd\s+(?P<q>\"?)\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
+    rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?(?P=q)")
+ALLOWLIST_SPECIAL_NAMES = frozenset({
+    "HOME", "PWD", "OLDPWD", "CDPATH", "IFS", "TMPDIR", "PATH",
+    "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE",
+})
+ALLOWLIST_DIR_WORD = re.compile(r"(?:^|[\s;&\"'])(?:cd|pushd|popd)(?=$|[\s;&\"'])")
+ALLOWLIST_COMPOUND_WORD = re.compile(
+    r"(?:^|[\s;&])(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|"
+    r"select|function|coproc|time)(?=$|[\s;&])")
+VARIABLE_OPERAND = re.compile(rf"\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})")
 
 
-def _skip_double_quoted(text: str, index: int) -> int | None:
-    """Index just past the `"` closing the one opened at `index`, else None."""
-    cursor = index + 1
-    while cursor < len(text):
-        char = text[cursor]
-        if char == "\\":
-            cursor += 2
-        elif char == '"':
-            return cursor + 1
-        elif char == "$" and text.startswith("$(", cursor):
-            end = _skip_parenthesized(text, cursor + 1)
-            if end is None:
-                return None
-            cursor = end
-        elif char == "`":
-            end = text.find("`", cursor + 1)
-            if end == -1:
-                return None
-            cursor = end + 1
-        else:
-            cursor += 1
-    return None
-
-
-def _skip_parenthesized(text: str, index: int) -> int | None:
-    """Index just past the `)` matching the `(` at `index`, else None."""
-    depth = 0
-    cursor = index
-    while cursor < len(text):
-        char = text[cursor]
-        if char == "\\":
-            cursor += 2
-            continue
-        if char == "'":
-            end = text.find("'", cursor + 1)
-            if end == -1:
-                return None
-            cursor = end + 1
-            continue
-        if char == '"':
-            end = _skip_double_quoted(text, cursor)
-            if end is None:
-                return None
-            cursor = end
-            continue
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0:
-                return cursor + 1
-        cursor += 1
-    return None
-
-
-def _raw_shell_words(text: str) -> list[dict] | None:
-    """Words of `text` with their raw context, or None when unsure.
-
-    Each word carries its raw spelling and start offset, the operator before
-    and after it (`"w"` for an adjacent word, `"^"`/`"$"` for the ends of the
-    command, `"redir"` for a redirection), its subshell depth and the number
-    of compound statements open around it. Quotes, `$(...)`, `${...}` and
-    backticks are kept inside the word they belong to. Anything the scanner
-    cannot follow -- an unterminated quote, an unbalanced `)`, a line
-    continuation -- returns None, and the caller resolves nothing.
-    """
-    words: list[dict] = []
-    cursor, depth, compound, previous = 0, 0, 0, "^"
-
-    def close_previous(operator: str) -> None:
-        if words and words[-1]["after"] is None:
-            words[-1]["after"] = operator
-
-    while cursor < len(text):
-        char = text[cursor]
-        if char in " \t":
-            cursor += 1
-            continue
-        if char == "\\" and text.startswith("\\\n", cursor):
-            return None
-        if char == "#":
-            end = text.find("\n", cursor)
-            cursor = len(text) if end == -1 else end
-            continue
-        operator = next((op for op in RAW_OPERATORS if text.startswith(op, cursor)), None)
-        if operator is not None:
-            if operator == "\n" and previous in ("&&", "||", "|", "|&"):
-                # A newline after `&&`/`||`/`|` continues that operator; the
-                # word after it is still conditional or piped (preclose pass
-                # 1, survivor 2). Recording "\n" would hide that.
-                return None
-            if operator == "(":
-                depth += 1
-            elif operator == ")":
-                depth -= 1
-                if depth < 0:
-                    return None
-            close_previous(operator)
-            previous = operator
-            cursor += len(operator)
-            continue
-        if char in "<>":
-            while cursor < len(text) and text[cursor] in "<>&-":
-                cursor += 1
-            close_previous("redir")
-            previous = "redir"
-            continue
-        start = cursor
-        while cursor < len(text) and text[cursor] not in " \t\n;&|()<>":
-            char = text[cursor]
-            if char == "\\":
-                cursor += 2
-            elif char == "'":
-                end = text.find("'", cursor + 1)
-                if end == -1:
-                    return None
-                cursor = end + 1
-            elif char == '"':
-                end = _skip_double_quoted(text, cursor)
-                if end is None:
-                    return None
-                cursor = end
-            elif char == "`":
-                end = text.find("`", cursor + 1)
-                if end == -1:
-                    return None
-                cursor = end + 1
-            elif char == "$" and text.startswith("$(", cursor):
-                end = _skip_parenthesized(text, cursor + 1)
-                if end is None:
-                    return None
-                cursor = end
-            elif char == "$" and text.startswith("${", cursor):
-                end = text.find("}", cursor)
-                if end == -1:
-                    return None
-                cursor = end + 1
-            else:
-                cursor += 1
-        word = text[start:min(cursor, len(text))]
-        close_previous("w")
-        if word in COMPOUND_CLOSERS:
-            compound -= 1
-            if compound < 0:
-                return None
-        words.append({"word": word, "start": start, "before": previous,
-                      "after": None, "depth": depth, "compound": compound})
-        if word in COMPOUND_OPENERS:
-            compound += 1
-        previous = "w"
-    close_previous("$")
-    if depth != 0:
-        return None
-    return words
-
-
-def _bare_occurrences(text: str, name: str) -> list[int]:
-    """Offsets where `name` appears as a word that is NOT a `$name`/`${name}`
-    expansion. Any such occurrence may set the variable (`read W`, `for W in`,
-    `${W:=x}`, `W+=`, `printf -v W`, a second `W=`), so the caller requires
-    exactly one: the assignment itself."""
-    found = []
-    for match in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text):
-        start = match.start()
-        if text[max(0, start - 1):start] == "$":
-            continue
-        if text[max(0, start - 2):start] == "${":
-            # `${W=x}` / `${W:=x}` ASSIGN when W is unset or empty.
-            rest = text[match.end():match.end() + 2]
-            if not (rest.startswith("=") or rest.startswith(":=")):
-                continue
-        if text[max(0, start - 3):start] in ("${#", "${!"):
-            continue
-        found.append(start)
-    return found
-
-
-def mktemp_substitution(raw_value: str, text: str) -> bool:
-    """True only for a raw value that is exactly a fresh `mktemp -d`.
-
-    Read from the raw text (harmonic-forge#1116 AC3): the parser flattens
-    `$(mktemp -d >&2; echo <checkout>)` into adjacent segments that look like
-    a bare `mktemp -d`, so a segment-level match would be fooled. `-p`,
-    `--tmpdir` and a `TMPDIR` anywhere in the command choose the directory,
-    so they never resolve; neither does a template without `-t`, which GNU
-    `mktemp` creates relative to the CURRENT directory.
-    """
-    match = MKTEMP_SUBSTITUTION.match(raw_value)
-    if match is None or _bare_occurrences(text, "TMPDIR"):
-        return False
-    tokens = match.group("body").split()
-    if not tokens or tokens[0] != "mktemp":
-        return False
-    flags = [token for token in tokens[1:] if token.startswith("-")]
-    templates = [token for token in tokens[1:] if not token.startswith("-")]
-    if any(flag not in MKTEMP_FLAGS for flag in flags):
-        return False
-    if not ({"-d", "--directory"} & set(flags)):
-        return False
-    if templates:
-        if len(templates) > 1 or "-t" not in flags:
-            return False
-        if not MKTEMP_TEMPLATE.match(templates[0]):
-            return False
-    return True
-
-
-def same_command_assignments(command: str, segments: list[list[str]]) -> dict[str, str] | None:
-    """Raw-text verdict per assigned name: its raw value when the assignment
-    is the name's only bare occurrence and runs unconditionally in this shell;
-    a name missing from the result is poisoned. None poisons every name."""
-    text = mask_heredoc_bodies(command)
-    words = _raw_shell_words(text)
-    if words is None or _bare_occurrences(text, "IFS"):
-        return None
-    if FUNCTION_DEFINITION.search(text) or any(w["word"] == "function" for w in words):
-        # A same-command function can shadow any command, `mktemp` included,
-        # and change what a trusted substitution prints (preclose pass 1,
-        # survivor 4).
-        return None
-    for word in words:
-        if (word["before"] in COMMAND_POSITION and DYNAMIC_TOKEN.search(word["word"])
-                and not ASSIGNMENT_TOKEN.match(word["word"])):
-            # The same check on the raw text, where the parser cannot hide it.
-            return None
-        # A quote or backslash inside a name-shaped word (`W""X=`, `read W""X`)
-        # is dequoted by the shell into a name the bare-occurrence scan
-        # never sees (preclose pass 1, survivor 1).
-        head = word["word"].split("=", 1)[0]
-        if QUOTED_NAME.match(head) and re.search(r"['\"\\]", head):
-            return None
-    for segment in segments:
-        index = 0
-        while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
-            index += 1
-        tokens = strip_invocation_prefix(segment[index:], unwrap_shells=False)
-        if not tokens:
-            continue
-        verb = tokens[0]
-        if verb in ("command", "builtin") and len(tokens) > 1:
-            verb = tokens[1]
-        if verb in EVERY_NAME_VERBS or DYNAMIC_TOKEN.search(verb):
-            # A command word held in a variable (`e=eval; $e ...`) may be
-            # eval, source or any name-setter (preclose pass 1, survivor 3).
-            return None
-        if verb in NAME_SETTING_VERBS and any(
-                DYNAMIC_TOKEN.search(t.split("=", 1)[0]) for t in tokens[1:]):
-            # A name built at run time (`declare "$N=..."`) may be any name.
-            return None
-    result: dict[str, str] = {}
-    for position, word in enumerate(words):
-        match = ASSIGNMENT_TOKEN.match(word["word"])
-        if match is None:
-            continue
-        name, raw_value = match.group(1), match.group(2)
-        before = word["before"]
-        if before == "w" and position > 0:
-            prior = words[position - 1]
-            if prior["word"] != "export" or prior["after"] != "w":
-                continue
-            before = prior["before"]
-            if prior["depth"] or prior["compound"]:
-                continue
-        if (before not in ASSIGNMENT_BEFORE or word["after"] not in ASSIGNMENT_AFTER
-                or word["depth"] or word["compound"]):
-            continue
-        if _bare_occurrences(text, name) != [word["start"]]:
-            continue
-        result[name] = raw_value
-    return result
-
-
-def resolve_assignment_value(name: str, raw_value: str, parsed_value: str,
-                             variables: dict[str, str], text: str) -> str | None:
-    """The absolute path a raw assignment value names, else None (poison).
-
-    Accepted, per harmonic-forge#1116 AC1/AC3: an absolute path; `~`/`~/...`
-    (unquoted -- quoted, the shell does not expand it); `$HOME`/`${HOME}` or
-    an already-recorded `$KNOWN`/`${KNOWN}` followed by a literal suffix; a
-    fresh `mktemp -d` (a synthetic location under the temp dir, never
-    created). The value as parsed must agree with the raw spelling.
-    """
-    if mktemp_substitution(raw_value, text):
-        return str(Path(tempfile.gettempdir()) / f"f1116-mktemp-{name}")
-    if "`" in raw_value or "$(" in raw_value or "\\" in raw_value:
-        return None
+def _allowlist_split(command: str) -> tuple[list[str], list[str]] | None:
+    """Split on `&&`/`;` outside quotes: `(segments, separators)`, or None
+    for unbalanced quotes or an empty segment."""
+    segments: list[str] = []
+    separators: list[str] = []
+    current: list[str] = []
     quote = ""
-    inner = raw_value
-    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "'\"":
-        quote, inner = raw_value[0], raw_value[1:-1]
-    if "'" in inner or '"' in inner or inner != parsed_value:
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote:
+            if char == quote:
+                quote = ""
+            current.append(char)
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == ";" or command.startswith("&&", index):
+            separators.append(";" if char == ";" else "&&")
+            segments.append("".join(current).strip())
+            current = []
+            index += 1 if char == ";" else 2
+            continue
+        current.append(char)
+        index += 1
+    if quote:
         return None
-    if quote == "'" and ("$" in inner or "~" in inner):
+    segments.append("".join(current).strip())
+    if any(not segment for segment in segments):
         return None
-    home_untouched = not _bare_occurrences(text, "HOME")
-    if inner.startswith("~"):
-        if quote or not (inner == "~" or inner.startswith("~/")) or not home_untouched:
-            return None
-        resolved = os.path.expanduser("~") + inner[1:]
-    elif inner.startswith("$"):
-        match = VARIABLE_OPERAND.match(inner)
+    return segments, separators
+
+
+def allowlisted_variable_cd(command: str) -> dict[str, str] | None:
+    """`{NAME: path}` when `command` is exactly the AC1 shape, else None.
+
+    The whole raw command must be one flat chain of simple segments joined by
+    `&&`/`;`; every segment before the single `cd` is `NAME=VALUE` or
+    `export NAME=VALUE` with a literal absolute VALUE (`/...`, `~/...`,
+    `$HOME/...` or an earlier `$NAME/...`); the `cd` operand is an unescaped
+    `$NAME`, `"$NAME"` or `${NAME}` plus an optional literal suffix; there is
+    no other directory change; every separator after the `cd` is `&&`; and no
+    assigned NAME appears after the `cd`. No partial maps: anything else is
+    None, and the operand stays unresolvable exactly as before
+    (harmonic-forge#1116 AC1, fail closed).
+    """
+    if ALLOWLIST_FORBIDDEN.search(command):
+        return None
+    if re.sub(rf"\$\{{{ALLOWLIST_NAME}\}}", "", command).count("{") or "}" in re.sub(
+            rf"\$\{{{ALLOWLIST_NAME}\}}", "", command):
+        return None
+    if ALLOWLIST_COMPOUND_WORD.search(command):
+        return None
+    if len(ALLOWLIST_DIR_WORD.findall(command)) != 1:
+        return None
+    split = _allowlist_split(command)
+    if split is None:
+        return None
+    segments, separators = split
+    cd_index = next((i for i, segment in enumerate(segments)
+                     if ALLOWLIST_CD.fullmatch(segment)), None)
+    if cd_index is None or cd_index == 0:
+        return None
+    if any(separator != "&&" for separator in separators[cd_index:]):
+        return None
+    home = os.path.expanduser("~")
+    variables: dict[str, str] = {}
+    for segment in segments[:cd_index]:
+        match = ALLOWLIST_ASSIGNMENT.fullmatch(segment)
         if match is None:
             return None
-        name = match.group(1) or match.group(2)
-        suffix = match.group(3)
-        if "$" in suffix or (suffix and suffix[0] not in "/"):
+        name, value = match.group("name"), match.group("value")
+        if name in ALLOWLIST_SPECIAL_NAMES or name in variables:
             return None
-        if name == "HOME":
-            if not home_untouched:
+        quoted = len(value) >= 2 and value[0] == value[-1] == '"'
+        if quoted:
+            value = value[1:-1]
+        if '"' in value or "'" in value:
+            return None
+        parsed = ALLOWLIST_VALUE.fullmatch(value)
+        if parsed is None:
+            return None
+        if parsed.group("abs") is not None:
+            resolved = parsed.group("abs")
+        elif parsed.group("tilde") is not None:
+            if quoted:
                 return None
-            base = os.path.expanduser("~")
-        elif name in variables:
-            base = variables[name]
+            resolved = home + (parsed.group("tsuffix") or "")
         else:
-            return None
-        resolved = base + suffix
-    else:
-        resolved = inner
-    if not resolved.startswith("/") or not SAFE_PATH.match(resolved):
+            ref = parsed.group("var") or parsed.group("bvar")
+            base = home if ref == "HOME" else variables.get(ref)
+            if base is None:
+                return None
+            resolved = base + (parsed.group("vsuffix") or "")
+        variables[name] = resolved
+    cd = ALLOWLIST_CD.fullmatch(segments[cd_index])
+    assert cd is not None
+    if (cd.group("var") or cd.group("bvar")) not in variables:
         return None
-    return resolved
+    rest = " ".join(segments[cd_index + 1:])
+    for name in variables:
+        if re.search(rf"(?<![A-Za-z0-9_]){name}(?![A-Za-z0-9_])", rest):
+            return None
+    return variables
 
 
-def assignment_segment(segment: list[str]) -> tuple[str, str, bool] | None:
-    """`(name, value, under_keyword)` for an assignment-only segment.
-
-    `NAME=value` or `export NAME=value`, optionally after compound keywords
-    (`under_keyword` is then True and the caller poisons the name). An env
-    prefix (`NAME=value cmd`) or a multi-assignment is not assignment-only.
-    """
+def unresolved_variable(segment: list[str]) -> str | None:
+    """The variable named by a directory change's operand, if any."""
     index = 0
     while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
         index += 1
     tokens = segment[index:]
-    if len(tokens) == 2 and tokens[0] == "export":
-        tokens = tokens[1:]
-    if len(tokens) != 1:
+    if not tokens or tokens[0] not in DIR_CHANGE_VERBS:
         return None
-    match = ASSIGNMENT_TOKEN.match(tokens[0])
-    if match is None:
-        return None
-    return (match.group(1), match.group(2), index > 0)
-
-
-def unresolved_variable(segment: list[str]) -> str | None:
-    """The first variable a directory change's operand names, if any."""
-    index = 0
-    while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
-        index += 1
-    operands = [token for token in segment[index + 1:] if token not in DIR_CHANGE_FLAGS]
+    operands = [token for token in tokens[1:] if token not in DIR_CHANGE_FLAGS]
     if not operands:
         return None
-    match = FIRST_VARIABLE.search(operands[0])
-    return match.group(1) if match else None
-
+    match = VARIABLE_OPERAND.search(operands[0])
+    if match is None:
+        return None
+    return match.group("var") or match.group("bvar")
 
 
 def directory_change(segment: list[str],
-                     variables: dict[str, str] | None = None
+                     variables: dict[str, str] | None = None,
                      ) -> tuple[str | None, bool] | None:
     """`(target, resolvable)` when `segment` changes directory, else None.
 
@@ -1540,6 +1275,10 @@ def directory_change(segment: list[str],
     using the old cwd in that case: a relative write target resolved against a
     directory the command has already left is a guess, and the guess fails
     open (harmonic-forge#529).
+
+    `variables` is `allowlisted_variable_cd`'s map, and only that
+    (harmonic-forge#1116): a `$NAME`/`${NAME}` operand, plus a literal suffix,
+    is substituted from it. The raw-text shape was already proven there.
     """
     index = 0
     while index < len(segment) and segment[index] in COMPOUND_KEYWORDS:
@@ -1552,16 +1291,13 @@ def directory_change(segment: list[str],
         return (None, False)
     target = operands[0]
     if variables:
-        # harmonic-forge#1116: a `$NAME`/`${NAME}` operand, with a literal
-        # suffix, resolves from this command's own recorded assignments.
-        match = VARIABLE_OPERAND.match(target)
+        match = re.fullmatch(
+            rf"\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
+            rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?", target)
         if match is not None:
-            name = match.group(1) or match.group(2)
-            suffix = match.group(3)
-            if (name in variables and not DYNAMIC_TOKEN.search(suffix)
-                    and (not suffix or suffix.startswith("/"))
-                    and SAFE_PATH.match(variables[name] + suffix)):
-                return (variables[name] + suffix, True)
+            name = match.group("var") or match.group("bvar")
+            if name in variables:
+                return (variables[name] + (match.group("suffix") or ""), True)
     if DYNAMIC_TOKEN.search(target):
         return (None, False)
     return (target, True)
@@ -1594,7 +1330,8 @@ def nested_shell_write_targets(script: str) -> list[str]:
         return []
 
 
-def unresolved_cwd_denial(targets: list[str], variable: str | None = None) -> dict | None:
+def unresolved_cwd_denial(targets: list[str],
+                          variable: str | None = None) -> dict | None:
     """Deny a RELATIVE write target after a directory change we could not follow.
 
     Fail loud, not open (harmonic-forge#529, ratified). The alternative is to
@@ -1614,13 +1351,15 @@ def unresolved_cwd_denial(targets: list[str], variable: str | None = None) -> di
                 continue
         except (OSError, ValueError, RuntimeError):
             pass
-        named = (
-            f"The variable `${variable}` could not be resolved; assign it to a "
-            "literal absolute path in this same command, or use the absolute "
-            "path (harmonic-forge#1116). "
-        ) if variable else ""
+        named = ""
+        if variable is not None:
+            # harmonic-forge#1116 AC4: name the variable and the fix.
+            named = (f"The variable `${variable}` could not be resolved; "
+                     "assign it to a literal absolute path in this same "
+                     "command, or use the absolute path. ")
         return denial(
-            f"{named}Blocked: this command changes directory to somewhere this guard "
+            named
+            + f"Blocked: this command changes directory to somewhere this guard "
             f"cannot resolve statically (a variable, a bare `cd`/`pushd`, or a "
             f"nested `bash -c`), and then writes to the RELATIVE path "
             f"{target!r} (harmonic-forge#529). Where that lands depends on the "
@@ -1658,39 +1397,16 @@ def decision(command: object, cwd: Path) -> dict:
     # to somewhere unknown does not come back to a known one just because a
     # later segment looks ordinary.
     cwd_unresolved = False
-    # harmonic-forge#1116: same-command literal assignments, recorded in
-    # segment order. `raw_assignments` is the raw-text verdict; a name it
-    # does not vouch for, or one assigned twice or under a keyword, is
-    # poisoned for the rest of the command.
-    raw_assignments = same_command_assignments(command, segments)
-    variables: dict[str, str] = {}
-    poisoned: set[str] = set()
-    seen: set[str] = set()
+    # harmonic-forge#1116: the one allow-listed variable `cd` shape, or None.
+    variables = allowlisted_variable_cd(command)
     unresolved_name: str | None = None
     for segment in segments:
-        assignment = assignment_segment(segment)
-        if assignment is not None:
-            name, parsed_value, under_keyword = assignment
-            resolved = None
-            if (raw_assignments is not None and name in raw_assignments
-                    and name not in seen and name not in poisoned
-                    and name not in SPECIAL_VARIABLES and not under_keyword):
-                parsed = "" if parsed_value.startswith("$(") or parsed_value == "$" else parsed_value
-                resolved = resolve_assignment_value(
-                    name, raw_assignments[name], parsed, variables, mask_heredoc_bodies(command))
-            seen.add(name)
-            if resolved is None:
-                variables.pop(name, None)
-                poisoned.add(name)
-            else:
-                variables[name] = resolved
         change = directory_change(segment, variables)
         if change is not None:
             target, resolvable = change
             if not resolvable or target is None:
                 cwd_unresolved = True
-                if unresolved_name is None:
-                    unresolved_name = unresolved_variable(segment)
+                unresolved_name = unresolved_name or unresolved_variable(segment)
                 continue
             expanded = Path(target).expanduser()
             effective_cwd = (expanded if expanded.is_absolute()
