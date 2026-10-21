@@ -1065,6 +1065,25 @@ def _latest_sweep_calls(repo: str, issue: int, sha: str) -> list[str]:
     return sweep_external_calls(max(sweeps, key=lambda c: c["id"]).get("body", ""))
 
 
+def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str) -> None:
+    """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
+    when the AE was checked there was no sweep yet. The sweep is checked
+    against the newest AE on its own SHA instead."""
+    calls = sweep_external_calls(sweep_body)
+    if not calls:
+        return
+    import check_lane3_ready  # noqa: PLC0415
+    comments = check_lane3_ready.fetch_comments(repo, issue)
+    aes = [c for c in comments if (m := check_lane3_ready.FOOTER_KIND.search(c.get("body", "")))
+           and m.group(1).lower() == "ae"
+           and check_lane3_ready.same_sha(check_lane3_ready.footer_sha(c), sha)]
+    if not aes:
+        fail(f"sweep names external call(s) {', '.join(calls)} but no AE is posted on "
+             f"{sha[:12]} -- the AE goes first and must authorize each one (R-0208, "
+             "harmonic-forge#1115)")
+    validate_ae_external_calls(max(aes, key=lambda c: c["id"]).get("body", ""), calls)
+
+
 #: Only a LEADING outcome word, bold stripped: readiness text may say a check
 #: "will fail closed" or that "pass/fail assertions" exist (post-verdict check).
 _OUTCOME_WORD = re.compile(r"^\W*(pass|passed|fail|failed)\b", re.I)
@@ -3214,6 +3233,8 @@ def main() -> None:
     steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
         steps.append(lambda: validate_sweep(body, _spec_body(repo, args.spec_comment), repo, args.issue))
+        # harmonic-forge#1115 AC9: the AE already posted names this sweep's calls.
+        steps.append(lambda: validate_sweep_against_posted_ae(repo, args.issue, sha, body))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),
