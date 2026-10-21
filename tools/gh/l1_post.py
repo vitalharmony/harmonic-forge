@@ -391,6 +391,12 @@ def _collect(steps: list) -> list:
     return results
 
 
+def _once(fetch):
+    """`fetch()` on first call, its result after: one spec fetch per post."""
+    cache: list = []
+    return lambda: cache[0] if cache else (cache.append(fetch()) or cache[0])
+
+
 def _spec_body(repo: str, spec_comment) -> str:
     """The referenced Lane 3 spec's body, or `fail()`."""
     spec = run("gh", "api", f"repos/{repo}/issues/comments/{spec_comment}", "--jq", ".body")
@@ -1049,9 +1055,17 @@ def sweep_case_external_calls(sweep_body: str) -> dict[str, list[frozenset[str]]
     return found
 
 
-def sweep_external_calls(sweep_body: str) -> frozenset[str]:
-    """The union of every case's `External calls:` set (AC9's comparison)."""
-    return frozenset().union(*(s for sets in sweep_case_external_calls(sweep_body).values() for s in sets))
+def spec_live_ids(spec_body: str) -> set[str]:
+    """The spec's live case ids, canonicalized onto sweep TC numbers."""
+    return _canonical_live_ids(footer_live_case_ids(spec_body))
+
+
+def sweep_external_calls(sweep_body: str, live_ids: set[str]) -> frozenset[str]:
+    """The union of the LIVE cases' `External calls:` sets (AC9's comparison).
+    `live_ids` are canonical (`spec_live_ids`); a non-live case's line is
+    never part of the union (harmonic-forge#1115 reforge pass 1)."""
+    return frozenset().union(*(s for case, sets in sweep_case_external_calls(sweep_body).items()
+                               if _canonical_case_id(case) in live_ids for s in sets))
 
 
 def ae_external_calls(ae_body: str) -> frozenset[str]:
@@ -1093,18 +1107,26 @@ def _newest_on_sha(repo: str, issue: int, sha: str, kind: str) -> str | None:
     return max(found, key=lambda c: c["id"]).get("body", "") if found else None
 
 
-def _latest_sweep_calls(repo: str, issue: int, sha: str) -> frozenset[str] | None:
-    """The newest sweep's call union on `sha`, for a standalone AE; None when
-    no sweep is on that SHA."""
+def _latest_sweep_calls(repo: str, issue: int, sha: str, spec_comment: int | None) -> frozenset[str] | None:
+    """The newest sweep's live-case call union on `sha`, for a standalone AE;
+    None when no sweep is on that SHA. With a sweep but no `--spec-comment`
+    the live ids are unknown, so it refuses rather than guessing."""
     body = _newest_on_sha(repo, issue, sha, "sweep")
-    return None if body is None else sweep_external_calls(body)
+    if body is None:
+        return None
+    if spec_comment is None:
+        fail(f"a sweep is posted on {sha[:12]}, so this AE's `{AE_CALLS_LABEL}:` field is compared "
+             "with its live cases' calls -- pass --spec-comment <id> naming the Lane 3 spec whose "
+             "`classes=` footer says which cases are live (harmonic-forge#1115)")
+    return sweep_external_calls(body, spec_live_ids(_spec_body(repo, spec_comment)))
 
 
-def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str) -> None:
+def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str,
+                                     live_ids: set[str]) -> None:
     """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
     the sweep is checked against the newest AE on its own SHA, and refused
     when there is none."""
-    swept = sweep_external_calls(sweep_body)
+    swept = sweep_external_calls(sweep_body, live_ids)
     ae_body = _newest_on_sha(repo, issue, sha, "ae")
     if ae_body is None:
         fail(f"no AE is posted on {sha[:12]} -- the AE goes first and its `{AE_CALLS_LABEL}:` "
@@ -3064,7 +3086,9 @@ def main() -> None:
     parser.add_argument("--file", type=Path, help="Body file for every --kind except ae-and-sweep")
     parser.add_argument("--ae-file", type=Path, help="AE body file, --kind ae-and-sweep only")
     parser.add_argument("--sweep-file", type=Path, help="Sweep body file, --kind ae-and-sweep only")
-    parser.add_argument("--spec-comment", type=int)
+    parser.add_argument("--spec-comment", type=int,
+                        help="The Lane 3 spec comment id: required for sweep / ae-and-sweep; for a "
+                             "standalone ae, required once a sweep is on the SHA (harmonic-forge#1115)")
     # harmonic-forge#1036: the PASS a rebase of the gated change carries forward.
     parser.add_argument("--from-sha", default=None,
                         help="--kind carry-forward only: the SHA the Lane 3 PASS gated")
@@ -3136,8 +3160,8 @@ def main() -> None:
         fail("--ack-no-pr-required requires a non-empty reason")
     if args.kind in ("sweep", "ae-and-sweep") and not args.spec_comment:
         fail("--spec-comment is required for sweep / ae-and-sweep")
-    if args.kind not in ("sweep", "ae-and-sweep") and args.spec_comment:
-        fail("--spec-comment is valid only for sweep / ae-and-sweep")
+    if args.kind not in ("sweep", "ae", "ae-and-sweep") and args.spec_comment:
+        fail("--spec-comment is valid only for sweep / ae / ae-and-sweep")
     if args.ack_overlap is not None and not args.ack_overlap.strip():
         fail("--ack-overlap requires a non-empty reason")
     if args.milestone_ack is not None:
@@ -3184,14 +3208,16 @@ def main() -> None:
         # a validation failure alone.
         ae_body = regular_body(args.ae_file)
         sweep_body = regular_body(args.sweep_file)
-        reject_reserved_marker(ae_body)
-        reject_reserved_marker(sweep_body)
+        spec_once = _once(lambda: _spec_body(repo, args.spec_comment))
         # harmonic-forge#1017: every fast-stage validator runs and refuses once.
         # harmonic-forge#472 on both halves, before either is posted: the
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
         # landed leaves the bare AE this branch exists to prevent.
         _collect([
+            # Collected, so a reserved marker never hides the other refusals (F1115 AC1).
+            lambda: reject_reserved_marker(ae_body),
+            lambda: reject_reserved_marker(sweep_body),
             lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha),  # harmonic-forge#997
             lambda: validate_ae(ae_body, repo, args.issue),
             lambda: validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required),
@@ -3199,8 +3225,9 @@ def main() -> None:
                                      bool(prod_run), args.ack_no_pr_required),
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
-            lambda: validate_sweep(sweep_body, _spec_body(repo, args.spec_comment), repo, args.issue),
-            lambda: validate_ae_external_calls(ae_body, sweep_external_calls(sweep_body)),  # F1115 AC9
+            lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
+            lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
+                ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()))),
             *(_publish_checks(repo, args.issue, "ae", sha, args.branch, ack_overlap=args.ack_overlap,
                               ack_no_pr_required=args.ack_no_pr_required,
                               grant_on_main=grant_on_main(ae_body, sha))
@@ -3263,10 +3290,10 @@ def main() -> None:
         return
 
     body = regular_body(args.file)
-    reject_reserved_marker(body)
     # harmonic-forge#1017: the same validators in the same order, every one run,
-    # one refusal naming all of them.
-    steps = []
+    # one refusal naming all of them. The reserved-marker check is collected
+    # too, so it never hides the others (harmonic-forge#1115 AC1).
+    steps = [lambda: reject_reserved_marker(body)]
     if args.kind == "handoff":
         steps += [
             lambda: validate_handoff(body, args.mutates_live or args.cross_repo),
@@ -3287,9 +3314,11 @@ def main() -> None:
         steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha))
     steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
-        steps.append(lambda: validate_sweep(body, _spec_body(repo, args.spec_comment), repo, args.issue))
-        # harmonic-forge#1115 AC9: equals the newest AE's field on this SHA.
-        steps.append(lambda: validate_sweep_against_posted_ae(repo, args.issue, sha, body))
+        spec_once = _once(lambda: _spec_body(repo, args.spec_comment))
+        steps.append(lambda: validate_sweep(body, spec_once(), repo, args.issue))
+        # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
+        steps.append(lambda: validate_sweep_against_posted_ae(
+            repo, args.issue, sha, body, spec_live_ids(spec_once())))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),
@@ -3297,7 +3326,8 @@ def main() -> None:
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
             # harmonic-forge#1115 AC9: the field is required; equals the newest sweep on this SHA.
-            lambda: validate_ae_external_calls(body, _latest_sweep_calls(repo, args.issue, sha)),
+            lambda: validate_ae_external_calls(
+                body, _latest_sweep_calls(repo, args.issue, sha, args.spec_comment)),
         ]
     if args.dry_run:
         if args.kind == "carry-forward":

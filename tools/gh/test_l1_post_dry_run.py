@@ -278,6 +278,20 @@ class DryRunTests(Harness):
         self.posted.assert_not_called()
         self.assertEqual(self.receipts(), [])
 
+    def test_a_reserved_marker_does_not_hide_the_other_refusals(self):
+        """AC1 (reforge pass 1): the marker refusal is collected with the body
+        and world refusals, never raised ahead of them."""
+        self.overlap = True
+        code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--sha", SHA_A,
+                                   "--branch", "fix/1115-x",
+                                   "--file", self.body(NO_NEXT + "<!-- l1-post copied -->\n"), "--dry-run")
+        self.assertIn("3 problems", code)
+        self.assertIn("reserved l1-post attestation namespace", code)
+        self.assertIn("must lead with its summary block", code)
+        self.assertIn(OVERLAP, code)
+        self.posted.assert_not_called()
+        self.assertEqual(self.receipts(), [])
+
     def test_real_post_still_runs_world_checks_after_clean_dry_run(self):
         """The dry run gates in front of the real checks; it replaces none."""
         argv = ("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--sha", SHA_A,
@@ -292,6 +306,8 @@ class DryRunTests(Harness):
 #: kind, base flags, changed flags, body file to rewrite). Flags are a dict,
 #: `True` for a switch; a changed flag replaces its base value.
 DIGEST_ROWS = [
+    ("repo", "ready-for-l3", {}, {"--repo": "vitalharmony/hrse"}, None),
+    ("kind", "ready-for-l3", {}, {"--kind": "rework"}, None),
     ("issue", "ready-for-l3", {}, {"--issue": ISSUE + 1}, None),
     ("sha", "ready-for-l3", {}, {"--sha": SHA_B}, None),
     ("branch", "ready-for-l3", {}, {"--branch": "fix/1115-y"}, None),
@@ -343,7 +359,7 @@ class ReceiptDigestFieldTests(Harness):
                 "issue", "kind", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
                 "from_sha", "pass_comment", "ack_overlap", "ack_no_pr_required", "milestone_ack",
                 "plan_first", "mutates_live", "cross_repo")}), REPO, SHA_A)
-        self.assertEqual(set(seen) - {"repo", "kind"}, {row[0] for row in DIGEST_ROWS})
+        self.assertEqual(set(seen), {row[0] for row in DIGEST_ROWS})
 
     def test_each_digest_field_invalidates_the_receipt(self):
         for name, kind, base, changed, body in DIGEST_ROWS:

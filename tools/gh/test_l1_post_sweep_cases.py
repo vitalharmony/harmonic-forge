@@ -481,7 +481,7 @@ class FooterCaseIdsTests(unittest.TestCase):
                     f"- TC1: ready — offline fixtures\n  External calls: {named}")
                 self._validate(sweep, spec)
         self.assertEqual(L.sweep_external_calls(self._sweep(["1"]).replace(
-            "offline fixtures", "offline fixtures\n  External calls: llm:gemini; message:gmail-draft")),
+            "offline fixtures", "offline fixtures\n  External calls: llm:gemini; message:gmail-draft"), {"1"}),
             frozenset({"llm:gemini", "message:gmail-draft"}))
         # an empty value names nothing and is refused
         empty = self._sweep(["1", "2"]).replace("- TC1: ready — offline fixtures",

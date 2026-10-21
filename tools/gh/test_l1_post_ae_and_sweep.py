@@ -449,11 +449,11 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         with patch.object(post, "_spec_body", side_effect=lambda repo, comment: self.spec):
             super()._run(ae_body, sweep_body)
 
-    def _standalone(self, kind: str, body: str) -> None:
+    def _standalone(self, kind: str, body: str, spec_comment: bool = True) -> None:
         self.ae_file.write_text(body)
         argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
                 "--kind", kind, "--sha", FAKE_SHA, "--branch", "x", "--file", str(self.ae_file)]
-        if kind == "sweep":
+        if spec_comment:
             argv += ["--spec-comment", "999"]
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "_spec_body", side_effect=lambda repo, comment: self.spec), \
@@ -507,6 +507,36 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         self._on_thread(LIVE_SWEEP, "sweep")
         self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
         self.assertEqual(len(self.posted), 1)
+
+    def test_a_standalone_ae_with_a_sweep_but_no_spec_comment_is_refused(self) -> None:
+        """No spec means no live ids: fail closed, never guess (reforge pass 1)."""
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"),
+                                               spec_comment=False), "--spec-comment")
+
+    # Reforge pass 1: the comparand is the LIVE cases' union, on every path.
+    def test_a_non_live_case_call_the_ae_does_not_authorize_is_accepted(self) -> None:
+        sweep = LIVE_SWEEP + "  External calls: paid-api:serp\n"  # TC2 is `ac`
+        self._run(_ae("llm:anthropic; paid-api:tavily"), sweep)
+        self.assertEqual(len(self.posted), 2)
+        self.posted.clear()
+        self._on_thread(sweep, "sweep")
+        self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
+        self.assertEqual(len(self.posted), 1)
+        self.posted.clear()
+        self.thread.clear()
+        self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
+        self._standalone("sweep", sweep)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_a_live_case_call_missing_from_the_ae_is_refused(self) -> None:
+        sweep = LIVE_SWEEP + "  External calls: paid-api:serp\n"
+        self._refused(lambda: self._run(_ae("llm:anthropic"), sweep), "not authorized: paid-api:tavily")
+        self._on_thread(sweep, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic")), "not authorized: paid-api:tavily")
+        self.thread.clear()
+        self._on_thread(_ae("llm:anthropic"), "ae")
+        self._refused(lambda: self._standalone("sweep", sweep), "not authorized: paid-api:tavily")
 
     # Kill check 3: the sweep side runs against the newest AE on the SHA.
     def test_a_sweep_naming_a_call_the_newest_ae_lacks_is_refused(self) -> None:
