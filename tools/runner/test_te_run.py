@@ -1210,7 +1210,10 @@ class MiseEnv(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TE_RUNNER_BWRAP": ""}):
             argv = te_run.sandbox.wrap(["mise", "run", "check"], clone,
                                        inputs=(src / ".git" / "objects",))
-        done = subprocess.run(argv, capture_output=True, text=True)
+        # The boundary's /tmp is a private tmpfs: an inherited TMPDIR (mise run
+        # check sets one under /tmp) names a path that does not exist inside it.
+        env = {k: v for k, v in os.environ.items() if k != "TMPDIR"}
+        done = subprocess.run(argv, capture_output=True, text=True, env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("MISE-CHECK-RAN", done.stdout)
 
