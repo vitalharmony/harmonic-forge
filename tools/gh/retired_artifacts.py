@@ -12,13 +12,16 @@ should point here rather than re-deriving or duplicating the list — a
 second copy is the exact dual-source-of-truth failure hrse#839 was filed
 for.
 
-Keys are matched whole-string against a backtick-quoted span in an issue
-body (see `find_retired_citations()` in `gh_issue.py`) -- never a bare
-word, since the audit that produced this list found bare-word matching
+Keys are matched only inside a backtick-quoted span in an issue body (see
+`find_retired_citations()` in `gh_issue.py`): a path-shaped key anywhere
+in the span after a left boundary, a word key against the whole span --
+never a bare word, since the audit that produced this list found bare-word matching
 responsible for its worst false positives (flagging "Estimate" in every
 issue that correctly states one, flagging "Devin" in the issue whose
 whole point was scrubbing Devin references).
 """
+
+import re
 
 _GEMINI_CLI_RETIRED = (
     "Gemini CLI retired (harmonic-forge#1113) -- it cannot authenticate by "
@@ -46,8 +49,8 @@ RETIRED_ARTIFACTS: dict[str, str] = {
     # harmonic-forge#1113: the Gemini CLI as a lane agent and cross-family
     # family. Command-shaped and full-path keys only (never the bare word),
     # so HRSE2's Gemini model API is never flagged.
-    # A key ending in "/" is a directory key: it also flags any span that
-    # starts with it, so every file the deletion removed is covered.
+    # Path-shaped keys match anywhere in a span after a left boundary, so
+    # "tools/gemini/" also covers every file beneath it.
     "tools/gemini/": _GEMINI_CLI_RETIRED,
     "tools/gemini/install-lane3-context-extension": _GEMINI_CLI_RETIRED,
     "tools/gemini/lane3-context/lane3_context_mcp.py": _GEMINI_CLI_RETIRED,
@@ -63,13 +66,13 @@ RETIRED_ARTIFACTS: dict[str, str] = {
     "prompts/gemini-gem-harmonic-forge.md": _GEMINI_CLI_RETIRED,
 }
 
-# Command-fragment keys (harmonic-forge#1113): matched as a contiguous run of
-# whitespace-separated tokens anywhere inside a backtick span, so
-# `lane3 --agent gemini` is flagged. A small explicit set -- never the bare
-# word "gemini", which would flag HRSE2's Gemini model API.
-RETIRED_COMMAND_FRAGMENTS: dict[str, str] = {
-    "--agent gemini": _GEMINI_CLI_RETIRED,
-    "--caller gemini": _GEMINI_CLI_RETIRED,
-    "--families 3": _GEMINI_CLI_RETIRED,
-    "LANE_CLI=gemini": _GEMINI_CLI_RETIRED,
+# Command-fragment patterns (harmonic-forge#1113): regexes searched anywhere
+# inside a backtick span, accepting a space or "=" between flag and value, so
+# `lane3 --agent=gemini; echo done` is flagged. Never the bare word "gemini",
+# which would flag HRSE2's Gemini model API.
+RETIRED_COMMAND_FRAGMENTS: dict[re.Pattern[str], str] = {
+    re.compile(r"--agent[=\s]+gemini\b"): _GEMINI_CLI_RETIRED,
+    re.compile(r"--caller[=\s]+gemini\b"): _GEMINI_CLI_RETIRED,
+    re.compile(r"--families[=\s]+3\b"): _GEMINI_CLI_RETIRED,
+    re.compile(r"\bLANE_CLI=gemini\b"): _GEMINI_CLI_RETIRED,
 }

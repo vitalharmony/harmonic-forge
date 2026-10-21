@@ -801,41 +801,65 @@ class TestFindRetiredCitations(unittest.TestCase):
         self.assertEqual([h[0] for h in hits], ["tools/gemini/"])
         self.assertIn("harmonic-forge#1113", hits[0][1])
 
-    def test_every_path_head_deletes_is_flagged(self):
-        """harmonic-forge#1113 AC4: every file this branch deletes, computed
-        from git, is flagged when cited."""
-        import subprocess
-        def git(*a):
-            return subprocess.run(["git", *a], capture_output=True, text=True,
-                                  check=True).stdout.strip()
-        try:
-            base = git("merge-base", "HEAD", "origin/main")
-            deleted = git("diff", "--diff-filter=D", "--name-only", base,
-                          "HEAD").split()
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            self.skipTest("git merge-base with origin/main unavailable")
-        if not deleted:
-            self.skipTest("HEAD deletes nothing relative to origin/main")
-        for path in deleted:
-            with self.subTest(path=path):
-                self.assertTrue(gh_issue.find_retired_citations(f"See `{path}`."))
+    #: harmonic-forge#1113 AC4. A permanent literal list -- never computed
+    #: from git, so it cannot go vacuous after merge (preclose pass 2).
+    GEMINI_CLI_DELETED_PATHS = (
+        "GEMINI.md",
+        "prompts/gemini-gem-harmonic-architect-co-pilot.md",
+        "prompts/gemini-gem-harmonic-forge.md",
+        "tools/gemini/install-lane3-context-extension",
+        "tools/gemini/lane3-context/gemini-extension.json",
+        "tools/gemini/lane3-context/lane3_context_mcp.py",
+        "tools/lane/gemini-probe-deny.toml",
+        "tools/lane/gemini-read-only-deny.toml",
+        "tools/lane/policies/canary/run_canary.py",
+        "tools/lane/policies/gemini-lane1.toml",
+        "tools/lane/policies/gemini-lane2.toml",
+        "tools/lane/policies/gemini-lane3.toml",
+        "tools/lane/test_lane3_context_mcp.py",
+    )
+    GEMINI_CLI_DESCENDANT = "tools/gemini/lane3-context/README.md"
+    #: Command forms executed against the matcher in preclose passes 1 and 2.
+    GEMINI_CLI_COMMAND_FORMS = (
+        "lane3 --agent gemini",
+        "LANE_CLI=gemini lane3",
+        "cross_family_call.sh --caller gemini --families 2",
+        "cross_family_call.sh --families 3 --mode verify",
+        "lane3 --agent=gemini",
+        "lane3 --agent gemini; echo done",
+        "cat GEMINI.md",
+        "cat tools/gemini/lane3-context/gemini-extension.json",
+    )
 
-    def test_directory_key_flags_descendant(self):
-        hits = gh_issue.find_retired_citations(
-            "Edit `tools/gemini/lane3-context/gemini-extension.json`.")
-        self.assertEqual([h[0] for h in hits], ["tools/gemini/"])
+    def test_gemini_cli_coverage_tuple_is_flagged(self):
+        """harmonic-forge#1113 AC4: every deleted path, a descendant, and
+        every executed command form is flagged. Never skips."""
+        spans = (self.GEMINI_CLI_DELETED_PATHS + (self.GEMINI_CLI_DESCENDANT,)
+                 + self.GEMINI_CLI_COMMAND_FORMS)
+        for span in spans:
+            with self.subTest(span=span):
+                hits = gh_issue.find_retired_citations(f"See `{span}`.")
+                self.assertTrue(hits)
+                self.assertTrue(all("harmonic-forge#1113" in n for _, n in hits))
 
-    def test_command_fragments_flagged_inside_larger_span(self):
-        cases = {
-            "`lane3 --agent gemini`": "--agent gemini",
-            "`LANE_CLI=gemini lane3`": "LANE_CLI=gemini",
-            "`cross_family_call.sh --caller gemini --families 2`": "--caller gemini",
-            "`cross_family_call.sh --families 3 --mode verify`": "--families 3",
-        }
-        for body, key in cases.items():
+    def test_gemini_cli_coverage_tuple_names_every_deleted_path(self):
+        """The literal tuple is the full deletion set: 13 paths, and every
+        Gemini CLI file key in retired_artifacts.py is in it."""
+        from retired_artifacts import RETIRED_ARTIFACTS, _GEMINI_CLI_RETIRED
+        self.assertEqual(len(set(self.GEMINI_CLI_DELETED_PATHS)), 13)
+        file_keys = {k for k, v in RETIRED_ARTIFACTS.items()
+                     if v == _GEMINI_CLI_RETIRED and not k.endswith("/")}
+        self.assertLessEqual(file_keys, set(self.GEMINI_CLI_DELETED_PATHS))
+
+    def test_gemini_model_api_spans_not_flagged(self):
+        for body in ("`gemini-embedding-001`", "`genai.Client(model=\"gemini-2.5-flash\")`",
+                     "`GEMINI_API_KEY`", "`gemini`"):
             with self.subTest(body=body):
-                self.assertIn(key, [h[0] for h in
-                                    gh_issue.find_retired_citations(body)])
+                self.assertEqual(gh_issue.find_retired_citations(body), [])
+
+    def test_path_key_needs_left_boundary(self):
+        self.assertEqual(gh_issue.find_retired_citations(
+            "`docs/old_board_sync.py` and `xtools/gemini/x`"), [])
 
     def test_bare_gemini_and_gemini_api_not_flagged(self):
         for body in ("gemini", "`gemini`", "Gemini API", "`Gemini API`",
