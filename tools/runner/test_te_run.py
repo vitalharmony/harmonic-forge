@@ -435,6 +435,25 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.item()["reason"], "kill-check-fail")
         self.assertEqual(self.fork_branches(), "")
 
+    def test_preclose_is_skipped_once_an_earlier_clause_failed(self):
+        # Sticky-wicket patch 6: no paid refuters or cross-family call once
+        # the item cannot go green; every failed clause is still listed (AC8).
+        cases = ({"kill_receipt": False}, {"deny_hits": ["tools/hooks/x.py"]})
+        for patched in cases:
+            self.setUp_queue_fresh()
+            fact = mock.MagicMock(return_value={"status": "complete", "survivors": 0,
+                                                "provenance": "Red-team provenance: x"})
+            with mock.patch.object(te_run, "preclose_fact", fact), \
+                    mock.patch.multiple(te_run, **{k: mock.MagicMock(return_value=v)
+                                                   for k, v in patched.items()}):
+                self.drive()
+            item = self.item()
+            fact.assert_not_called()
+            self.assertEqual(item["facts"]["preclose"]["status"], "skipped: earlier clause failed")
+            reasons = [r["reason"] for r in item["verdict"]["reasons"]]
+            self.assertIn("preclose-survivor", reasons, patched)
+            self.assertGreaterEqual(len(reasons), 2, patched)
+
     def test_preclose_driver_failure_sets_aside_and_is_not_retried(self):
         # A real stub driver behind preclose_fact: it writes a PASSING
         # preclose.json and still exits non-zero. Each item is set aside, and

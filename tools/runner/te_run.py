@@ -812,8 +812,15 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     harness.write_text(json.dumps({"kill": kill, "deny_hits": hits, "check": {
         "check_rc": check_rc, "new_failures": new_failures, "base_failures": base_failures}},
         indent=1) + "\n", encoding="utf-8")
-    preclose = preclose_fact(issue, base, head, te_queue.tier(issue) or "standard", env,
-                             scratch / "preclose", harness)
+    # Sticky-wicket patch 6: once the check, the deny check or the kill receipt
+    # failed the item cannot go green, so no paid refuter or cross-family call
+    # runs; the preclose fact says why, and the reducer still lists every
+    # failed clause (AC8).
+    if check_rc or hits or not kill:
+        preclose = {"status": "skipped: earlier clause failed", "survivors": 0, "provenance": ""}
+    else:
+        preclose = preclose_fact(issue, base, head, te_queue.tier(issue) or "standard", env,
+                                 scratch / "preclose", harness)
     log("preclose", preclose.get("status", "?"))
     summary_path = scratch / "preclose" / "summary.md"
     summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
