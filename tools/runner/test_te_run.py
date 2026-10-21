@@ -1660,6 +1660,17 @@ class ProvisionClone(unittest.TestCase):
             with self.assertRaises(te_run.provision.ProvisionError):
                 te_run.provision.provision_clone(path, Path("/objects"))
 
+    def test_hung_linker_raises(self):
+        path = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, path, True)
+        sh("git", "init", "-q", cwd=path)
+        (path / "sync_rules.py").write_text("")
+        with mock.patch.object(te_run.provision.sandbox, "wrap",
+                               lambda argv, *a, **k: ["sleep", "30"]), \
+                mock.patch.object(te_run.provision, "LINK_TIMEOUT", 0.2):
+            with self.assertRaisesRegex(te_run.provision.ProvisionError, "timed out"):
+                te_run.provision.provision_clone(path, Path("/objects"))
+
 
 @pipeline_only
 class ProvisionCleanup(Pipeline):

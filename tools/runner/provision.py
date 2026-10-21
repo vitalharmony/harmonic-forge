@@ -24,6 +24,10 @@ sys.path.insert(0, str(HERE))
 import sandbox  # noqa: E402
 
 
+# sync_rules.py links a few files; a run past this is a hang, not a slow link.
+LINK_TIMEOUT = 120
+
+
 class ProvisionError(Exception):
     """The clone could not be linked to its own platform."""
 
@@ -33,7 +37,11 @@ def _sandboxed(argv: list[str], path: Path, objects: Path) -> subprocess.Complet
         full = sandbox.wrap(argv, path, inputs=(objects,))
     except sandbox.SandboxError as exc:
         raise ProvisionError(str(exc)) from exc
-    return subprocess.run(full, cwd=path, capture_output=True, text=True)
+    try:
+        return subprocess.run(full, cwd=path, capture_output=True, text=True,
+                              timeout=LINK_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise ProvisionError(f"{argv[1]} timed out after {LINK_TIMEOUT}s") from exc
 
 
 def provision_clone(path: Path, objects: Path) -> None:
