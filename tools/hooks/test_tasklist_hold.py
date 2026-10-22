@@ -262,7 +262,8 @@ class Wiring(unittest.TestCase):
         for name in ("l1_post.py", "post_comment.py"):
             self.assertTrue(_calls_record_post(ROOT / "tools" / "gh" / name), name)
 
-    def test_settings_wire_tasklist_hooks(self):
+    @staticmethod
+    def _roots():
         # Preclose pass 1: the lanes run in HRSE2 too, so its settings are checked
         # as well as this repo's. HRSE2 is the sibling checkout the lanes use;
         # where it is absent (forge CI) only forge's own settings are checked.
@@ -270,17 +271,36 @@ class Wiring(unittest.TestCase):
         hrse2 = Path(os.environ.get("HRSE2_ROOT", Path.home() / "Harmonic_Projects" / "HRSE2"))
         if (hrse2 / ".claude" / "settings.json").is_file():
             roots.append(hrse2)
-        for root in roots:
-            hooks = json.loads((root / ".claude" / "settings.json").read_text())["hooks"]
+        return roots
 
-            def wired(event, matcher, script):
-                return any((matcher is None or e.get("matcher") == matcher)
-                           and any(script in h["command"] for h in e["hooks"])
-                           for e in hooks.get(event, []))
+    @staticmethod
+    def _missing_wiring(root):
+        hooks = json.loads((root / ".claude" / "settings.json").read_text())["hooks"]
+
+        def wired(event, matcher, script):
+            return any((matcher is None or e.get("matcher") == matcher)
+                       and any(script in h["command"] for h in e["hooks"])
+                       for e in hooks.get(event, []))
+        wanted = (("PreToolUse", "TaskUpdate", "tasklist_hold.py"),
+                  ("Stop", None, "tasklist_hold.py"),
+                  ("PostToolUse", "Bash", "record_tasklist_post.py"))
+        return [w for w in wanted if not wired(*w)]
+
+    def test_settings_wire_tasklist_hooks(self):
+        for root in self._roots():
             with self.subTest(root=str(root)):
-                self.assertTrue(wired("PreToolUse", "TaskUpdate", "tasklist_hold.py"))
-                self.assertTrue(wired("Stop", None, "tasklist_hold.py"))
-                self.assertTrue(wired("PostToolUse", "Bash", "record_tasklist_post.py"))
+                self.assertEqual(self._missing_wiring(root), [])
+
+    def test_an_unwired_hrse2_checkout_is_checked(self):
+        """Preclose pass 1 fix C: an HRSE2 checkout without the hooks is caught."""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / ".claude").mkdir()
+        (tmp / ".claude" / "settings.json").write_text(json.dumps({"hooks": {}}))
+        with mock.patch.dict(os.environ, {"HRSE2_ROOT": str(tmp)}):
+            roots = self._roots()
+        self.assertIn(tmp, roots)
+        self.assertEqual(len(self._missing_wiring(tmp)), 3)
 
     def test_entry_shape_lives_only_in_hook(self):
         files = [ROOT / "3-lane-protocol.md", *sorted((ROOT / "rules").glob("*.md"))]
