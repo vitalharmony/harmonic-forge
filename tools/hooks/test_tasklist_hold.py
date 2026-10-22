@@ -108,10 +108,26 @@ class PreToolUse(Base):
             self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "deny")
             # A failed update reports back and ends the pending removal.
             payload = {"hook_event_name": "PostToolUseFailure", "tool_name": "TaskUpdate",
-                       "session_id": SESSION, "tool_input": {"taskId": "1"}}
+                       "session_id": SESSION, "tool_input": {"taskId": "1",
+                                                             "status": "completed"}}
             with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
                 hold.main()
             self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "allow")
+
+    def test_a_non_removing_update_never_ends_a_pending_removal(self):
+        """Pass 2 (fail-direction): A1 completes A, A2 edits A's description in
+        the same batch and reports first; S must still see A as pending."""
+        self.entry(1, "H9 — read thread")
+        self.entry(2, "H9 — review")
+        with self.closed(False):
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+            for event in ("PostToolUse", "PostToolUseFailure"):
+                payload = {"hook_event_name": event, "tool_name": "TaskUpdate",
+                           "session_id": SESSION, "tool_input": {"taskId": "1",
+                                                                 "description": "x"}}
+                with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+                    hold.main()
+            self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "deny")
 
     def test_an_unusable_lock_denies(self):
         self.entry(1, "H2463 — read thread")

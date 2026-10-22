@@ -212,7 +212,10 @@ def posttooluse_decide(payload: dict) -> str | None:
         return None
     session = payload.get("session_id") or ""
     tool_input = payload.get("tool_input") or {}
-    if session and payload.get("tool_name") == "TaskUpdate":
+    if (session and payload.get("tool_name") == "TaskUpdate"
+            and tool_input.get("status") in ("completed", "deleted")):
+        # Pass 2: only the removal itself reports back; a parallel non-removing
+        # update to the same task must not end its pending record early.
         owed.clear_pending(session, str(tool_input.get("taskId") or ""))
     subject = tool_input.get("subject")
     if not session or not isinstance(subject, str):
@@ -276,7 +279,9 @@ def main() -> int:
             posttooluse_decide(payload)
         elif event == "PostToolUseFailure":
             # A failed TaskUpdate ends its pending removal and settles nothing.
-            if os.environ.get("LANE") and payload.get("tool_name") == "TaskUpdate":
+            tool_input = payload.get("tool_input") or {}
+            if (os.environ.get("LANE") and payload.get("tool_name") == "TaskUpdate"
+                    and tool_input.get("status") in ("completed", "deleted")):
                 owed.clear_pending(payload.get("session_id") or "",
                                    str((payload.get("tool_input") or {}).get("taskId") or ""))
         elif event == "Stop":
