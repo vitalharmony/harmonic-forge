@@ -532,6 +532,9 @@ issue.** `3-lane-protocol.md` R-0226 condition 3 binds; **R-0232's
 self-declared Tooling-Exception eligibility does not reach this exception** —
 an agent cannot scope its own filing out of the artifact requirement.
 <!-- /R-0039 -->
+<!-- R-0417 -->
+A substantive tooling or process change is filed before it is implemented, including in files Lane 1 may edit directly.
+<!-- /R-0417 -->
 
 <!-- R-0372 -->
 **A Tooling Exception issue is also split by mechanism when it is filed**:
@@ -729,6 +732,9 @@ main, gate running" is a complete and correct report. The rule is about VOLUME
 AND CONTENT, not frequency, and a one-line note is not required to have three
 sections.
 <!-- /R-0356 -->
+<!-- R-0416 -->
+A status report does not restate a documented rule as a new finding. It names the rule by ID or leaves it out.
+<!-- /R-0416 -->
 
 <!-- R-0357 -->
 **Evidence a protocol rule requires is mandatory and unaffected by R-0356.**
