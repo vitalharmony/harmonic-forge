@@ -1474,9 +1474,19 @@ class Prompt(unittest.TestCase):
     def test_prompt_recommends_no_path_the_boundary_refuses(self):
         """preclose pass 1: the prompt sent the agent to `.claude/cache/`, which
         te-runner.settings.json's Edit deny refuses, so following it set the item aside."""
+        # Preclose pass 2 (sticky-wicket PATCH): assert the behavior, not two
+        # literals. The prohibition must be present, and once that one sentence
+        # is cut out, no file path may be left recommended.
         text = te_run.agent_prompt(7, "BODY", "HANDOFF").split("## Issue")[0]
-        self.assertNotIn(".claude/cache", text)
-        self.assertNotIn("te-agent-scratch", text)
+        prohibition = ("never as a script file (no scratch file anywhere: `.claude/` is "
+                       "refused and a file outside the checkout is too)")
+        self.assertIn(prohibition, text)
+        rest = text.replace(prohibition, "")
+        # `tools/run_tests.py` is a command the agent runs inside the checkout,
+        # not a file it is told to write.
+        rest = rest.replace("`python3 tools/run_tests.py`", "")
+        found = re.findall(r"[\w./-]*\.(?:py|sh|txt)\b|(?<!\w)/tmp\b|\.claude/\S+", rest)
+        self.assertEqual(found, [], f"the prompt recommends a path: {found}")
 
     def test_prompt_states_the_one_command_per_call_shape(self):
         """harmonic-forge#1137 AC1: each refused shape is named, with its alternative."""
