@@ -311,8 +311,8 @@ class Stop(Base):
     def test_status_only_update_does_not_settle(self):
         # The entry is open and carries the key, so only the missing subject
         # can keep the marker (kill check at b323003: no entry was vacuous).
+        owed.record("H2463", "completion", session=SESSION, now=time.time() - 5)
         self.entry(1, "H2463 — implementing")
-        owed.record("H2463", "completion", session=SESSION)
         self.assertIsNone(hold.posttooluse_decide(self.post("TaskUpdate", taskId="1",
                                                             status="in_progress")))
         self.assertEqual(hold.stop_decide(self.stop())[0], "block")
@@ -412,8 +412,8 @@ class Stop(Base):
 
     def test_renaming_a_left_entry_never_settles_its_key(self):
         """Pass 1 (second-run): the renamed entry must still be open."""
+        owed.record("H5", "completion", session=SESSION, now=time.time() - 5)
         self.entry(1, "H5 — L2D posted", status="completed")
-        owed.record("H5", "completion", session=SESSION)
         hold.posttooluse_decide(self.post("TaskUpdate", taskId="1", subject="H5 — L2D posted"))
         self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["H5"])
 
