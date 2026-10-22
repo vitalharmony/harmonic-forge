@@ -92,6 +92,11 @@ class Decide(unittest.TestCase):
         self.assertEqual(self.decide(self.t.say(actions("bash ~/Harmonic_Projects/research/x.sh")))[0],
                          "allow")
 
+    def test_relative_probe_clears_absolute_offer(self):
+        self.t.bash("python3 tools/gh/l1_post.py --help")
+        self.assertEqual(self.decide(self.t.say(actions(
+            "python3 ~/harmonic-forge/tools/gh/l1_post.py --issue 1")))[0], "allow")
+
     def test_bare_nonexecutable_tilde_script_blocks_even_when_probed(self):
         with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
             self.t.bash(f"bash -n {self.script}")
