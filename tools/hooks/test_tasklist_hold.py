@@ -318,8 +318,8 @@ class Stop(Base):
         self.assertEqual(hold.stop_decide(self.stop())[0], "block")
 
     def test_rewritten_subject_settles_and_clears(self):
+        owed.record("H2463", "completion", session=SESSION, now=time.time() - 5)
         self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
-        owed.record("H2463", "completion", session=SESSION)
         self.assertEqual(hold.posttooluse_decide(self.post(
             "TaskUpdate", taskId="1", subject="H2463 — L2D posted · waiting on Lane 1 review")),
             "H2463")
@@ -330,6 +330,7 @@ class Stop(Base):
         """Pass 2 survivors 2 and 5: no history guess; creating the entry settles it."""
         owed.record("H2500", "completion", session=SESSION)
         self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+        self.entry(1, "H2500 — L2D posted", mtime=time.time() + 5)
         hold.posttooluse_decide(self.post("TaskCreate", subject="H2500 — L2D posted"))
         self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
@@ -414,9 +415,17 @@ class Stop(Base):
         hold.posttooluse_decide(self.post("TaskUpdate", taskId="1", subject="H5 — L2D posted"))
         self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["H5"])
 
+    def test_a_post_recorded_after_the_entry_write_keeps_its_marker(self):
+        """Pass 2 (codex, sticky PATCH): a late clear never erases a newer post."""
+        now = time.time()
+        self.entry(1, "H5 — L2D posted", mtime=now - 10)
+        owed.record("H5", "rework", session=SESSION, now=now)
+        hold.posttooluse_decide(self.post("TaskUpdate", taskId="1", subject="H5 — L2D posted"))
+        self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["H5"])
+
     def test_main_routes_posttooluse_to_the_clear(self):
+        owed.record("F9", "handoff", session=SESSION, now=time.time() - 5)
         self.entry(1, "F9 — handoff posted")
-        owed.record("F9", "handoff", session=SESSION)
         payload = self.post("TaskUpdate", taskId="1", subject="F9 — handoff posted")
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
                 redirect_stdout(io.StringIO()):
@@ -452,6 +461,14 @@ class Store(Base):
         owed.prune()
         self.assertEqual(owed.markers(SESSION), [])
         self.assertFalse((owed.OWED_DIR / SESSION).exists())
+
+    def test_prune_never_drops_a_pending_removal(self):
+        """Pass 2 (codex, sticky PATCH): an old pending record still protects."""
+        owed.mark_pending(SESSION, "1")
+        old = time.time() - 30 * 86400
+        os.utime(owed.OWED_DIR / SESSION / ".pending" / "1", (old, old))
+        owed.prune()
+        self.assertEqual(owed.pending_removals(SESSION), {"1"})
 
     def test_prune_keeps_a_fresh_marker_in_an_old_directory(self):
         """Preclose epoch 1 pass 2: an overwrite leaves the directory's mtime old."""

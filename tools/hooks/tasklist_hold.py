@@ -224,17 +224,30 @@ def posttooluse_decide(payload: dict) -> str | None:
     if not key or tool_input.get("status") in ("completed", "deleted"):
         return None
     task_id = str(tool_input.get("taskId") or "")
+    try:
+        entries = owed.read_entries(session)
+    except OSError:
+        return None
     if payload.get("tool_name") == "TaskUpdate":
         # Pass 1: the call must leave an open entry carrying the key, never
         # settle the marker by renaming an entry that has left the list.
-        try:
-            entries = owed.read_entries(session)
-        except OSError:
-            return None
         target = next((e for e in entries if str(e.get("id")) == task_id), None)
         if (target is None or target.get("status") not in owed.OPEN_STATUSES
                 or owed.entry_key(target) != key):
             return None
+        written = float(target["_mtime"])
+    else:
+        # TaskCreate carries no taskId: the newest open entry for the key.
+        live = owed.open_entries(entries, key)
+        if not live:
+            return None
+        written = max(float(e["_mtime"]) for e in live)
+    # Pass 2 (sticky PATCH): settle only a marker recorded at or before this
+    # entry write, so a post recorded between the write and this late hook
+    # keeps its own obligation.
+    marker = next((m for m in owed.markers(session) if m.get("key") == key), None)
+    if marker is not None and float(marker.get("ts") or 0) > written:
+        return None
     owed.clear(session, key)
     return key
 

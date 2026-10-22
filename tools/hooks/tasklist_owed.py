@@ -164,8 +164,8 @@ def pending_removals(session: str) -> set[str]:
     Pass 1 (cross-family): no TTL. A record leaves only when that task's
     TaskUpdate reaches PostToolUse or PostToolUseFailure (`clear_pending`), so
     a removal held at a prompt never expires into a second survivor; a record
-    whose report never arrives keeps denying sibling removals (fail closed)
-    until `prune` drops it after `PRUNE_AFTER_DAYS`."""
+    whose report never arrives keeps denying sibling removals (fail closed);
+    `prune` never drops one (pass 2 sticky PATCH)."""
     directory = _dir(session) / ".pending"
     if not directory.exists():
         return set()
@@ -206,10 +206,9 @@ def prune(now: float | None = None) -> None:
         try:
             for path in directory.iterdir():
                 if path.is_dir():
-                    for record in path.iterdir():
-                        if record.stat().st_mtime < cutoff:
-                            record.unlink()
-                    path.rmdir()
+                    # Pass 2 (sticky PATCH): .pending records are never pruned;
+                    # one left by a call that never reported only denies.
+                    continue
                 elif path.stat().st_mtime < cutoff:
                     path.unlink()
             directory.rmdir()
