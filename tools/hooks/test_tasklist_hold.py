@@ -116,6 +116,23 @@ class PreToolUse(Base):
             payload = self.update(1, "completed", subject="F1112 — closed")
             self.assertEqual(hold.pretooluse_decide(payload)[0], "allow")
 
+    def test_renaming_in_the_completing_call_keeps_the_hold(self):
+        """Preclose pass 1: the key is the stored entry's, not the update's."""
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        with self.closed(False):
+            for subject in ("done", "H1 — closed"):
+                payload = self.update(1, "completed", subject=subject)
+                self.assertEqual(hold.pretooluse_decide(payload)[0], "deny", subject)
+
+    def test_open_state_is_never_cached(self):
+        """Preclose pass 1: a close is seen at once, not after the TTL."""
+        open_, closed_ = (subprocess.CompletedProcess([], 0, f"{s}\n", "")
+                          for s in ("open", "closed"))
+        with mock.patch.object(hold.subprocess, "run", side_effect=[open_, closed_]) as run:
+            self.assertFalse(hold.issue_closed("F1112"))
+            self.assertTrue(hold.issue_closed("F1112"))
+        self.assertEqual(run.call_count, 2)
+
     def test_closed_state_is_cached(self):
         done = subprocess.CompletedProcess([], 0, "closed\n", "")
         with mock.patch.object(hold.subprocess, "run", return_value=done) as run:

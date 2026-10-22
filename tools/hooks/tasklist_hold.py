@@ -90,8 +90,11 @@ def issue_closed(key: str, now: float | None = None) -> bool:
     cache = STATE_DIR / f"{key}.json"
     try:
         cached = json.loads(cache.read_text(encoding="utf-8"))
-        if now - float(cached["ts"]) < STATE_TTL:
-            return bool(cached["closed"])
+        # Only a closed result is reused (preclose pass 1): an open one is
+        # re-read every time, so a close is seen at once, and a reopen drops
+        # the cache (record_tasklist_post).
+        if cached.get("closed") is True and now - float(cached["ts"]) < STATE_TTL:
+            return True
     except (OSError, ValueError, KeyError, TypeError):
         pass
     prefix, number = key[0], key[1:]
@@ -112,7 +115,8 @@ def issue_closed(key: str, now: float | None = None) -> bool:
                            f"{(done.stderr or state).strip()[:200]}")
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps({"ts": now, "closed": state == "closed"}), encoding="utf-8")
+        if state == "closed":
+            cache.write_text(json.dumps({"ts": now, "closed": True}), encoding="utf-8")
     except OSError:
         pass
     return state == "closed"
@@ -142,8 +146,11 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     if target is None:
         _note(f"task {task_id} not readable, allowing")
         return "allow", ""
-    subject = str(tool_input.get("subject") or target.get("subject") or "")
-    match = owed.KEY_RE.match(subject)
+    # Preclose pass 1: the key is the stored entry's, never the update's, so
+    # renaming an entry in the same call that completes it cannot drop its hold.
+    stored = str(target.get("subject") or "")
+    subject = str(tool_input.get("subject") or stored)
+    match = owed.KEY_RE.match(stored) or owed.KEY_RE.match(subject)
     if not match:
         return "allow", ""
     key = match.group(1) + match.group(2)
