@@ -162,6 +162,31 @@ class Decide(unittest.TestCase):
         self.t.entries.pop()  # drop its tool_result
         self.assertEqual(self.decide(self.t.say(block("gh pr merge 12")))[0], "block")
 
+    def test_one_lexer_decides_quoting_for_every_check(self):
+        """Epoch-2 pass 2 (sticky-wicket PATCH): quoting is read in one place."""
+        allowed = [("gh issue comment 1 --body \"a;b\"", "gh issue comment 1 --body \"a;b\""),
+                   ("gh x --body 'a && b' --help", "gh x --body 'a && b'"),
+                   ("echo ';'", "echo ';'"),
+                   ("echo '&&' --help", "echo '&&'"),
+                   ("echo '$(x)'", "echo '$(x)'")]
+        for probe, line in allowed:
+            t = self.fresh()
+            t.bash(probe)
+            with self.subTest(line=line):
+                self.assertEqual(self.decide(t.say(block(line)))[0], "allow")
+        for line in ('echo "$(x)"', f"echo 'x && y' && {self.script}"):
+            t = self.fresh()
+            t.bash(line)
+            with self.subTest(line=line):
+                self.assertEqual(self.decide(t.say(block(line)))[0], "block")
+
+    def test_ac2_reads_past_a_quoted_and_on_a_question_turn(self):
+        line = f"echo 'x && y' && {self.script}"
+        tail = "\n## DECISIONS NEEDED\n1. Should I run it? Yes.\n"
+        verdict, reason = self.decide(self.t.say(block(line) + tail))
+        self.assertEqual(verdict, "block")
+        self.assertIn("not executable as written", reason)
+
     def test_actions_without_a_block_are_refused(self):
         for text in ("**YOUR NEXT ACTIONS**\n1. `gh pr merge 1`\n",
                      "## YOUR NEXT ACTIONS\n> ```\n> rm -rf build\n> ```\n",

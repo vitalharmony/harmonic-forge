@@ -56,7 +56,6 @@ _BLOCK_RE = re.compile(r"^[ \t]*(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
 #: A fence line declaring the block, at any backtick count; never inline code.
 _DECLARED_RE = re.compile(r"^[ \t]*`{3,}[ \t]*operator-commands[ \t]*$", re.M)
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_OPERATOR_CHARS = set(";&|()<>")
 
 
 def blocks(text: str) -> list[str]:
@@ -68,37 +67,87 @@ def lines_of(body: str) -> list[str]:
             if ln.strip() and not ln.strip().startswith("#")]
 
 
+def segments(line: str) -> tuple[list[str], set[str]] | None:
+    """One quote-aware pass over `line` (epoch-2 sticky-wicket PATCH): the
+    `&&`-joined commands and the operators found outside quotes, or None on
+    an unterminated quote or a trailing escape. Every check reads quoting from
+    here, never from raw text: `$(` and backticks count unquoted or inside
+    double quotes (they run there), never inside single quotes."""
+    parts, hits, cur = [], set(), []
+    quote, i = None, 0
+    while i < len(line):
+        c = line[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            cur.append(c)
+        elif c == "\\":
+            if i + 1 >= len(line):
+                return None
+            cur.append(line[i:i + 2])
+            i += 2
+            continue
+        elif quote == '"':
+            if c == '"':
+                quote = None
+            elif c == "`" or line.startswith("$(", i):
+                hits.add("$(" if c == "$" else "`")
+            cur.append(c)
+        elif c in "'\"":
+            quote = c
+            cur.append(c)
+        elif line.startswith("&&", i):
+            parts.append("".join(cur).strip())
+            cur = []
+            i += 2
+            continue
+        elif c in ";|&<>()":
+            hits.add(c)
+            cur.append(c)
+        elif c == "`" or line.startswith("$(", i):
+            hits.add("$(" if c == "$" else "`")
+            cur.append(c)
+        else:
+            cur.append(c)
+        i += 1
+    if quote:
+        return None
+    parts.append("".join(cur).strip())
+    return parts, hits
+
+
 def shape_problem(line: str) -> str | None:
-    """Why a line is not one plain command, or None. Tokens keep their quotes
-    (posix=False), so quoted text is never read as an operator, and single-
-    quoted text is never read as a substitution (epoch 2 pass 1)."""
-    lexer = shlex.shlex(line, posix=False, punctuation_chars="".join(sorted(_OPERATOR_CHARS)))
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
+    """Why a line is not one plain command, or None."""
+    parsed = segments(line)
+    if parsed is None:
         return "the shell cannot split it; split it or simplify it"
-    if any(("$(" in t or "`" in t) and not t.startswith("'") for t in tokens):
+    parts, hits = parsed
+    if hits & {"$(", "`"}:
         return "holds command substitution; split it or simplify it"
-    bad = sorted({t for t in tokens if t and set(t) <= _OPERATOR_CHARS and t != "&&"})
-    if bad:
-        return f"holds {' '.join(bad)}; one command per line (`&&` is allowed)"
+    if hits or any(not p for p in parts):
+        bad = " ".join(sorted(hits)) or "an empty command"
+        return f"holds {bad}; one command per line (`&&` is allowed)"
     return None
 
 
 def probed(line: str, probes: set[str]) -> bool:
     if line in probes:
         return True
-    return "&&" not in line and any(line + s in probes for s in PROBE_SUFFIXES)
+    parsed = segments(line)
+    return parsed is not None and len(parsed[0]) == 1 and any(
+        line + s in probes for s in PROBE_SUFFIXES)
 
 
 def not_runnable(line: str) -> bool:
     """AC2 for each `&&`-joined command, past any `VAR=value` prefix."""
-    for part in line.split("&&"):
+    parsed = segments(line)
+    if parsed is None:
+        return False  # shape_problem already refuses an unparseable line
+    for part in parsed[0]:
         try:
-            tokens = [t for t in shlex.split(part)]
+            tokens = shlex.split(part)
         except ValueError:
-            return False
+            return True  # fail closed: the part cannot be read as a command
         while tokens and _ASSIGNMENT_RE.match(tokens[0]):
             tokens.pop(0)
         if not tokens:
