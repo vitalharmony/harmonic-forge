@@ -36,10 +36,29 @@ class Helper(unittest.TestCase):
 
     def test_a_misowned_host_policy_is_not_skipped(self):
         """Preclose pass 1: drift on the host fails loudly, never skips."""
-        self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(1000), overflow=65534))
+        self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(1000), overflow=65534,
+                                                        userns=True))
+
+    def test_a_host_file_really_owned_by_the_overflow_uid_is_not_skipped(self):
+        """Pass 2: outside a user namespace 65534 is a real owner."""
+        self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(65534), overflow=65534,
+                                                        userns=False))
+
+    def test_a_read_error_runs_the_tests(self):
+        """Pass 2: only absence and a remap are decided; an error is not a remap."""
+        def denied(path):
+            raise PermissionError(path)
+        self.assertIsNone(policy.lane3_policy_untrusted(lstat=denied, userns=True))
+
+    def test_the_identity_map_is_not_a_namespace(self):
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(policy.Path, "read_text", return_value="         0          0 4294967295\n"):
+            self.assertFalse(policy.in_user_namespace())
+        with mock.patch.object(policy.Path, "read_text", return_value="         0       1000          1\n"):
+            self.assertTrue(policy.in_user_namespace())
 
     def test_another_uid_names_the_path_and_the_uid(self):
-        reason = policy.lane3_policy_untrusted(lstat=stat_as(65534), overflow=65534)
+        reason = policy.lane3_policy_untrusted(lstat=stat_as(65534), overflow=65534, userns=True)
         self.assertIn("/usr/local/share/hrse-gate/claude-lane3.json", reason)
         self.assertIn("65534", reason)
 
