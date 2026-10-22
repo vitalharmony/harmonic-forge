@@ -69,6 +69,10 @@ SHAPE = "<KEY> — <last action> · waiting on <who> <step>"
 STATE_DIR = Path.home() / ".cache" / "harmonic-forge" / "tasklist_state"
 STATE_TTL = 300
 OTHER_ACCOUNT = {"K", "Y", "D"}
+# Well under the hooks' 10 s timeout (preclose pass 2, F): a read Claude Code
+# kills prints nothing, which would let the update through; a timeout here
+# raises and the caller denies.
+GH_TIMEOUT = 6
 
 
 def _closed_subject(key: str, subject: str) -> bool:
@@ -106,7 +110,7 @@ def issue_closed(key: str, now: float | None = None) -> bool:
         raise RuntimeError(f"no repo maps to prefix {prefix}")
     try:
         done = subprocess.run(["gh", "api", f"repos/{repo}/issues/{number}", "--jq", ".state"],
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=GH_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"reading {repo}#{number}: {exc}") from exc
     state = done.stdout.strip()
@@ -127,12 +131,20 @@ def _note(text: str) -> None:
 
 
 def pretooluse_decide(payload: dict) -> tuple[str, str]:
-    """AC1/AC3: `("allow", "")` or `("deny", reason)`."""
+    """AC1/AC3: `("allow", "")` or `("deny", reason)`.
+
+    Reforged after preclose pass 2 (sticky-wicket, issuecomment-6333367330):
+    a rule over the task list, not over the one call that completes. It runs
+    on every TaskUpdate and compares the list before and after this update.
+    When the update takes away the last open entry carrying the key its target
+    had BEFORE the update (by completing, deleting, or renaming it away), it
+    is allowed only when that issue is closed and the STORED entry already
+    reads `<KEY> — closed`, so the close was shown first. Renaming within the
+    same key, or any update that leaves another open entry for the key, is
+    always allowed."""
     if not os.environ.get("LANE"):
         return "allow", ""
     tool_input = payload.get("tool_input") or {}
-    if tool_input.get("status") not in ("completed", "deleted"):
-        return "allow", ""
     session = payload.get("session_id") or ""
     task_id = str(tool_input.get("taskId") or "")
     if not session or not task_id:
@@ -146,14 +158,19 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     if target is None:
         _note(f"task {task_id} not readable, allowing")
         return "allow", ""
-    # Preclose pass 1: the key is the stored entry's, never the update's, so
-    # renaming an entry in the same call that completes it cannot drop its hold.
-    stored = str(target.get("subject") or "")
-    subject = str(tool_input.get("subject") or stored)
-    match = owed.KEY_RE.match(stored) or owed.KEY_RE.match(subject)
-    if not match:
+    if target.get("status") not in owed.OPEN_STATUSES:
         return "allow", ""
-    key = match.group(1) + match.group(2)
+    key = owed.entry_key(target)
+    if not key:
+        return "allow", ""
+    stored = str(target.get("subject") or "")
+    applied = dict(target)
+    if "status" in tool_input and tool_input["status"] is not None:
+        applied["status"] = tool_input["status"]
+    if tool_input.get("subject"):
+        applied["subject"] = tool_input["subject"]
+    if applied.get("status") in owed.OPEN_STATUSES and owed.entry_key(applied) == key:
+        return "allow", ""
     if any(str(e.get("id")) != task_id and e.get("status") in owed.OPEN_STATUSES
            and owed.entry_key(e) == key for e in entries):
         return "allow", ""
@@ -162,15 +179,16 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     except RuntimeError as exc:
         return "deny", (f"{key}'s state could not be read ({exc}), so its last task-list "
                         f"entry stays. Update it to \"{SHAPE}\" instead.")
-    if closed and _closed_subject(key, subject):
+    if closed and _closed_subject(key, stored):
         return "allow", ""
     if closed:
         return "deny", (f"{key} is closed. Update this entry to \"{key} — closed\" (with the "
                         "merge SHA when there is one) first, so the close is shown, then "
                         "complete it.")
     return "deny", (f"{key} is still open, and this is its only entry: an issue's entry leaves "
-                    f"the list only when the issue closes. Update this entry to \"{SHAPE}\" "
-                    "instead (tools/hooks/tasklist_hold.py).")
+                    f"the list only when the issue closes, and it cannot be renamed away from "
+                    f"its key. Update this entry to \"{SHAPE}\" instead "
+                    "(tools/hooks/tasklist_hold.py).")
 
 
 def stop_decide(payload: dict) -> tuple[str, str]:
@@ -200,6 +218,12 @@ def stop_decide(payload: dict) -> tuple[str, str]:
                 owed.clear(session, key)
             else:
                 missing.append(f"  - {key}: after `{kind}`, set the entry to \"{key} — closed\"")
+            continue
+        if any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
+               for e in entries):
+            # Preclose pass 2 (E): a post on an issue whose entry already reads
+            # "<KEY> — closed" owes nothing more; it never needs a new open entry.
+            owed.clear(session, key)
             continue
         entry = owed.open_entry(entries, key)
         if entry is None:

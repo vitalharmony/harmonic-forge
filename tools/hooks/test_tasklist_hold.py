@@ -112,9 +112,11 @@ class PreToolUse(Base):
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
             self.entry(1, "F1112 — closed (5a1b2c3)")
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+            # Preclose pass 2 (G): renaming to "closed" in the completing call
+            # never showed the close, so it is refused; the stored entry rules.
             self.entry(1, "F1112 — merged")
             payload = self.update(1, "completed", subject="F1112 — closed")
-            self.assertEqual(hold.pretooluse_decide(payload)[0], "allow")
+            self.assertEqual(hold.pretooluse_decide(payload)[0], "deny")
 
     def test_renaming_in_the_completing_call_keeps_the_hold(self):
         """Preclose pass 1: the key is the stored entry's, not the update's."""
@@ -123,6 +125,45 @@ class PreToolUse(Base):
             for subject in ("done", "H1 — closed"):
                 payload = self.update(1, "completed", subject=subject)
                 self.assertEqual(hold.pretooluse_decide(payload)[0], "deny", subject)
+
+    def test_every_rename_and_complete_ordering_keeps_an_open_issue(self):
+        """Reforge (pass 2: A, G, I): whatever order a session renames and
+        completes in, an open issue's only entry cannot leave the list."""
+        steps = {"rename-away": {"subject": "done"},
+                 "rename-other-key": {"subject": "H1 — closed"},
+                 "rename-closed": {"subject": "H2463 — closed"},
+                 "complete": {"status": "completed"},
+                 "delete": {"status": "deleted"}}
+        with self.closed(False):
+            for name, change in steps.items():
+                for combined in (change, {**change, "status": "completed"}):
+                    self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+                    payload = self.update(1, combined.get("status"), **{
+                        k: v for k, v in combined.items() if k != "status"})
+                    verdict = hold.pretooluse_decide(payload)[0]
+                    keeps_key = (combined.get("subject", "H2463").startswith("H2463")
+                                 and combined.get("status") is None)
+                    with self.subTest(step=name, combined=combined):
+                        self.assertEqual(verdict, "allow" if keeps_key else "deny")
+
+    def test_closed_issue_leaves_only_after_the_close_is_shown(self):
+        self.entry(1, "H2463 — merged abc · waiting on YOU: close")
+        with self.closed(True):
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
+            self.assertEqual(hold.pretooluse_decide(
+                self.update(1, None, subject="H2463 — closed (abc)"))[0], "allow")
+            self.entry(1, "H2463 — closed (abc)")
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+
+    def test_a_slow_read_denies_inside_the_hook_timeout(self):
+        """Pass 2 (F): the read times out under the hook's 10 s and denies."""
+        self.assertLess(hold.GH_TIMEOUT, 10)
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        with mock.patch.object(hold.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("gh", hold.GH_TIMEOUT)):
+            verdict, reason = hold.pretooluse_decide(self.update(1, "completed"))
+        self.assertEqual(verdict, "deny")
+        self.assertIn("could not be read", reason)
 
     def test_open_state_is_never_cached(self):
         """Preclose pass 1: a close is seen at once, not after the TTL."""
@@ -262,45 +303,20 @@ class Wiring(unittest.TestCase):
         for name in ("l1_post.py", "post_comment.py"):
             self.assertTrue(_calls_record_post(ROOT / "tools" / "gh" / name), name)
 
-    @staticmethod
-    def _roots():
-        # Preclose pass 1: the lanes run in HRSE2 too, so its settings are checked
-        # as well as this repo's. HRSE2 is the sibling checkout the lanes use;
-        # where it is absent (forge CI) only forge's own settings are checked.
-        roots = [ROOT]
-        hrse2 = Path(os.environ.get("HRSE2_ROOT", Path.home() / "Harmonic_Projects" / "HRSE2"))
-        if (hrse2 / ".claude" / "settings.json").is_file():
-            roots.append(hrse2)
-        return roots
-
-    @staticmethod
-    def _missing_wiring(root):
-        hooks = json.loads((root / ".claude" / "settings.json").read_text())["hooks"]
+    def test_settings_wire_tasklist_hooks(self):
+        # Preclose pass 2 (H): forge checks its own settings only. HRSE2's
+        # wiring is checked by HRSE2's own test (scripts/test_tasklist_hooks_wired.py),
+        # which HRSE2's CI runs; a forge test that skipped HRSE2 where it is
+        # absent covered nothing.
+        hooks = json.loads((ROOT / ".claude" / "settings.json").read_text())["hooks"]
 
         def wired(event, matcher, script):
             return any((matcher is None or e.get("matcher") == matcher)
                        and any(script in h["command"] for h in e["hooks"])
                        for e in hooks.get(event, []))
-        wanted = (("PreToolUse", "TaskUpdate", "tasklist_hold.py"),
-                  ("Stop", None, "tasklist_hold.py"),
-                  ("PostToolUse", "Bash", "record_tasklist_post.py"))
-        return [w for w in wanted if not wired(*w)]
-
-    def test_settings_wire_tasklist_hooks(self):
-        for root in self._roots():
-            with self.subTest(root=str(root)):
-                self.assertEqual(self._missing_wiring(root), [])
-
-    def test_an_unwired_hrse2_checkout_is_checked(self):
-        """Preclose pass 1 fix C: an HRSE2 checkout without the hooks is caught."""
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        (tmp / ".claude").mkdir()
-        (tmp / ".claude" / "settings.json").write_text(json.dumps({"hooks": {}}))
-        with mock.patch.dict(os.environ, {"HRSE2_ROOT": str(tmp)}):
-            roots = self._roots()
-        self.assertIn(tmp, roots)
-        self.assertEqual(len(self._missing_wiring(tmp)), 3)
+        self.assertTrue(wired("PreToolUse", "TaskUpdate", "tasklist_hold.py"))
+        self.assertTrue(wired("Stop", None, "tasklist_hold.py"))
+        self.assertTrue(wired("PostToolUse", "Bash", "record_tasklist_post.py"))
 
     def test_entry_shape_lives_only_in_hook(self):
         files = [ROOT / "3-lane-protocol.md", *sorted((ROOT / "rules").glob("*.md"))]

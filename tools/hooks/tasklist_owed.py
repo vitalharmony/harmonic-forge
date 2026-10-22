@@ -99,6 +99,14 @@ def record(key: str, kind: str, session: str | None = None,
             entry = None
         path = _dir(session) / f"{key}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Preclose pass 2 (E): a close outranks any later post on the same key
+        # and is never overwritten; the close obligation stands until cleared.
+        if kind != "close":
+            try:
+                if json.loads(path.read_text(encoding="utf-8")).get("kind") == "close":
+                    return False
+            except (OSError, ValueError):
+                pass
         path.write_text(json.dumps({
             "key": key, "kind": kind,
             "ts": now if now is not None else time.time(),
