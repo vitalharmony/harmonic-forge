@@ -50,6 +50,12 @@ class Helper(unittest.TestCase):
             raise PermissionError(path)
         self.assertIsNone(policy.lane3_policy_untrusted(lstat=denied, userns=True))
 
+    def test_an_unreadable_overflow_uid_never_skips(self):
+        """Post-verdict: no guessed 65534 default opens the skip."""
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(policy, "overflow_uid", return_value=None):
+            self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(65534), userns=True))
+
     def test_the_identity_map_is_not_a_namespace(self):
         from unittest import mock  # noqa: PLC0415
         with mock.patch.object(policy.Path, "read_text", return_value="         0          0 4294967295\n"):

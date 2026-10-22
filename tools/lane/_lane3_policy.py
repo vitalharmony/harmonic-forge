@@ -29,12 +29,13 @@ def _registry() -> tuple[str, int]:
     return (path.group(1) if path else "", int(owner.group(1)) if owner and owner.group(1) else 0)
 
 
-def overflow_uid() -> int:
-    """The uid a user namespace shows for an unmapped owner (root, here)."""
+def overflow_uid() -> int | None:
+    """The uid a user namespace shows for an unmapped owner (root, here), or
+    None when it cannot be read: no guessed default ever opens the skip."""
     try:
         return int(Path("/proc/sys/kernel/overflowuid").read_text().strip())
     except (OSError, ValueError):
-        return 65534
+        return None
 
 
 def in_user_namespace() -> bool:
@@ -64,7 +65,8 @@ def lane3_policy_untrusted(lstat=os.lstat, overflow=None, userns=None) -> str | 
     except OSError:
         return None  # not a remap: the tests run and fail loudly (sticky-wicket PATCH)
     in_userns = in_user_namespace() if userns is None else userns
-    if in_userns and uid != owner and uid == (overflow_uid() if overflow is None else overflow):
+    remapped = overflow_uid() if overflow is None else overflow
+    if in_userns and remapped is not None and uid != owner and uid == remapped:
         return (f"Lane 3 policy {path} reads as uid {uid} here, not {owner} (a user "
                 "namespace?); the launch trust check (harmonic-forge#878) cannot pass")
     return None
