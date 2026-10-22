@@ -21,6 +21,12 @@ anything else, the same order as `enforce_handoff_owed.py`. A turn that ends
 at a genuine question is allowed (shared `turn_question`). An operator
 command is never a tool call, so the response text is the only signal; the
 allowlist and token-wise keys keep the grammar closed.
+
+Documented limits (preclose pass 1, sticky-wicket PATCH; each fix would need
+a new mechanism, R-0380/R-0381): a stop that follows a sibling Stop hook's
+block carries `stop_hook_active` and is not re-read; an unexpected error
+allows the stop; only `~`/`/` paths are script commands, never relative
+ones; and a probe skipped by shell control flow (`true || cmd`) still counts.
 """
 from __future__ import annotations
 
@@ -40,7 +46,9 @@ PROGRAMS = {"python3", "bash", "mise", "systemctl", "gh", "git"}
 DOCUMENT_SUFFIXES = {".md", ".txt", ".json", ".jsonl", ".log", ".toml", ".yml", ".yaml"}
 _SECTION_RE = re.compile(r"^[ \t]*#{1,4}[ \t]*YOUR NEXT ACTIONS[ \t]*$", re.I | re.M)
 _HEADING_RE = re.compile(r"^[ \t]*#{1,4}[ \t]+\S", re.M)
-_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+_FENCE_RE = re.compile(r"(```|~~~)[^\n]*\n(.*?)\1", re.S)
+#: Flags whose next token is a value, never the subcommand.
+VALUE_FLAGS = {"-C", "-R", "--repo", "-c", "--git-dir", "--work-tree"}
 _SPAN_RE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 
 
@@ -49,12 +57,15 @@ def section(text: str) -> str:
     if not match:
         return ""
     rest = text[match.end():]
-    end = _HEADING_RE.search(rest)
-    return rest[:end.start()] if end else rest
+    fences = [(m.start(), m.end()) for m in _FENCE_RE.finditer(rest)]
+    for end in _HEADING_RE.finditer(rest):
+        if not any(a <= end.start() < b for a, b in fences):  # never a fenced `# comment`
+            return rest[:end.start()]
+    return rest
 
 
 def snippets(body: str) -> list[str]:
-    fenced = [m.group(1) for m in _FENCE_RE.finditer(body)]
+    fenced = [m.group(2) for m in _FENCE_RE.finditer(body)]
     spans = [m.group(1) for m in _SPAN_RE.finditer(_FENCE_RE.sub("", body))]
     return fenced + spans
 
@@ -70,8 +81,22 @@ def _is_path_command(token: str) -> bool:
     return path.is_file() and path.suffix not in DOCUMENT_SUFFIXES
 
 
+def _args(tokens: list[str]) -> list[str]:
+    """Non-flag tokens, skipping the value of a value-taking flag."""
+    out, skip = [], False
+    for token in tokens:
+        if skip:
+            skip = False
+        elif token in VALUE_FLAGS:
+            skip = True
+        elif not token.startswith("-"):
+            out.append(token)
+    return out
+
+
 def _first_arg(tokens: list[str]) -> str:
-    return next((t for t in tokens if not t.startswith("-")), "")
+    args = _args(tokens)
+    return args[0] if args else ""
 
 
 def key_of(tokens: list[str]) -> tuple[str, str] | None:
@@ -82,9 +107,9 @@ def key_of(tokens: list[str]) -> tuple[str, str] | None:
     head = tokens[0]
     if head in PROGRAMS:
         arg = _first_arg(tokens[1:])
-        if head == "mise" and arg == "run":
-            rest = tokens[tokens.index("run") + 1:]
-            arg = "run " + _first_arg(rest)
+        args = _args(tokens[1:])
+        if head in ("mise", "gh") and len(args) > 1:  # `mise run <task>`, `gh pr merge`
+            arg = args[0] + " " + args[1]
         return head, _expand(arg)
     if _is_path_command(head):
         return "path", _expand(head)
@@ -93,7 +118,11 @@ def key_of(tokens: list[str]) -> tuple[str, str] | None:
 
 def commands(snippet: str) -> list[tuple[str, tuple[str, str], list[str]]]:
     found = []
-    for tokens in command_segments(mask_heredoc_bodies(snippet)):
+    try:
+        segments = command_segments(mask_heredoc_bodies(snippet))
+    except Exception:  # one malformed span never allows the whole response
+        return found
+    for tokens in segments:
         if not tokens or tokens[0] == "cd":
             continue
         key = key_of(tokens)
@@ -143,7 +172,10 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     if not offered:
         return "allow", ""
     if probes is None:
-        probes = [call[0] for call in scan_turn(transcript)[0]]
+        calls, truncated = scan_turn(transcript)[:2]
+        if truncated:  # an early probe may be unseen: a partial view is not absence
+            return "allow", ""
+        probes = [call[0] for call in calls]
     probe_keys = [c[1] for p in probes for c in commands(p)]
     unprobed, unrunnable = [], []
     for raw, key, tokens in offered:

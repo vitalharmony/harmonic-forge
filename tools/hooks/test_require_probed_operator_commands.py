@@ -105,9 +105,35 @@ class Decide(unittest.TestCase):
         self.assertIn("not executable as written", reason)
 
     def test_plain_words_and_trigger_phrases_are_not_commands(self):
-        text = actions("forced F1145", "BATCH F1151 IMC F1151", "test", "close H2484",
-                       "~/Harmonic_Projects/HRSE2/CLAUDE.md")
+        doc = self.tmp / "notes.md"
+        doc.write_text("# notes\n")
+        text = actions("forced F1145", "BATCH F1151 IMC F1151", "test", "close H2484", str(doc))
         self.assertEqual(self.decide(self.t.say(text))[0], "allow")
+
+    def test_flag_value_is_not_the_subcommand(self):
+        self.t.bash("git -C /r status")
+        self.assertEqual(self.decide(self.t.say(actions("git -C /r push --force")))[0], "block")
+
+    def test_gh_read_does_not_clear_gh_write(self):
+        self.t.bash("gh pr view 12 --repo o/r")
+        self.assertEqual(self.decide(self.t.say(actions("gh pr merge 12 --repo o/r")))[0], "block")
+
+    def test_comment_inside_fence_does_not_end_section(self):
+        text = "## YOUR NEXT ACTIONS\n1. Run:\n```bash\n# merge forge first\ngh pr merge 12 --squash\n```\n"
+        self.assertEqual(self.decide(self.t.say(text))[0], "block")
+
+    def test_tilde_fence_is_read(self):
+        text = "## YOUR NEXT ACTIONS\n~~~\ngh pr merge 12 --squash\n~~~\n"
+        self.assertEqual(self.decide(self.t.say(text))[0], "block")
+
+    def test_malformed_span_does_not_hide_other_commands(self):
+        text = actions("echo 'oops", "gh pr merge 12 --squash")
+        self.assertEqual(self.decide(self.t.say(text))[0], "block")
+
+    def test_truncated_scan_allows(self):
+        path = self.t.say(actions("gh pr merge 12 --squash"))
+        with mock.patch.object(hook, "scan_turn", return_value=([], True)):
+            self.assertEqual(self.decide(path)[0], "allow")
 
     def test_no_section_or_no_commands_is_allowed(self):
         self.assertEqual(self.decide(self.t.say("All done, nothing owed."))[0], "allow")
