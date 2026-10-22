@@ -1947,8 +1947,8 @@ class LaneWorktreeImportTests(unittest.TestCase):
                        capture_output=True, text=True, check=True)
         self.addCleanup(subprocess.run,
                         ["git", "-C", str(home), "worktree", "remove", "--force", str(lane)],
-                        capture_output=True, text=True)
-        env = dict(os.environ, SPRINT_PLAN_LANE_CHILD="1")
+                        capture_output=True, text=True, check=True)
+        env =dict(os.environ, SPRINT_PLAN_LANE_CHILD="1")
         done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT),
                                "-p", "test_milestone_summary.py"],
                               cwd=lane, env=env, capture_output=True, text=True)
