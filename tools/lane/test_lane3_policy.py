@@ -34,8 +34,12 @@ class Helper(unittest.TestCase):
         """The launcher launches without a policy, so nothing is refused."""
         self.assertIsNone(policy.lane3_policy_untrusted(lstat=absent))
 
+    def test_a_misowned_host_policy_is_not_skipped(self):
+        """Preclose pass 1: drift on the host fails loudly, never skips."""
+        self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(1000), overflow=65534))
+
     def test_another_uid_names_the_path_and_the_uid(self):
-        reason = policy.lane3_policy_untrusted(lstat=stat_as(65534))
+        reason = policy.lane3_policy_untrusted(lstat=stat_as(65534), overflow=65534)
         self.assertIn("/usr/local/share/hrse-gate/claude-lane3.json", reason)
         self.assertIn("65534", reason)
 

@@ -29,9 +29,19 @@ def _registry() -> tuple[str, int]:
     return (path.group(1) if path else "", int(owner.group(1)) if owner and owner.group(1) else 0)
 
 
-def lane3_policy_untrusted(lstat=os.lstat) -> str | None:
+def overflow_uid() -> int:
+    """The uid a user namespace shows for an unmapped owner (root, here)."""
+    try:
+        return int(Path("/proc/sys/kernel/overflowuid").read_text().strip())
+    except (OSError, ValueError):
+        return 65534
+
+
+def lane3_policy_untrusted(lstat=os.lstat, overflow=None) -> str | None:
     """The reason a Lane 3 claude launch cannot pass the trust check here, or
-    None when it can (owner as required) or there is no policy to check."""
+    None. Only a user-namespace remap (the owner reads as the overflow uid)
+    skips: any other ownership drift is a real install defect, so the tests
+    run and fail loudly (preclose pass 1)."""
     path, owner = _registry()
     if not path:
         return None
@@ -41,7 +51,7 @@ def lane3_policy_untrusted(lstat=os.lstat) -> str | None:
         return None
     except OSError as exc:
         return f"Lane 3 policy {path} cannot be read here ({exc})"
-    if uid != owner:
+    if uid != owner and uid == (overflow_uid() if overflow is None else overflow):
         return (f"Lane 3 policy {path} reads as uid {uid} here, not {owner} (a user "
                 "namespace?); the launch trust check (harmonic-forge#878) cannot pass")
     return None
