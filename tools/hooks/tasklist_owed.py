@@ -179,11 +179,32 @@ def clear_pending(session: str, task_id: str) -> None:
         pass
 
 
-def mark_pending(session: str, task_id: str) -> None:
-    """Raises OSError; the caller denies rather than allow an unrecorded removal."""
+def mark_pending(session: str, task_id: str, key: str = "") -> None:
+    """Raises OSError; the caller denies rather than allow an unrecorded removal.
+    The record holds the key the removal takes the entry away from (post-verdict:
+    a rename away reports back as a subject change, not a status)."""
     directory = _dir(session) / ".pending"
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / task_id).write_text("", encoding="utf-8")
+    (directory / task_id).write_text(key, encoding="utf-8")
+
+
+def pending_key(session: str, task_id: str) -> str:
+    try:
+        return (_dir(session) / ".pending" / task_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def removal_reported(session: str, tool_input: dict) -> bool:
+    """True when this TaskUpdate is the removal its pending record names: a
+    completion or deletion, or a subject that no longer carries the record's key."""
+    if tool_input.get("status") in ("completed", "deleted"):
+        return True
+    subject = tool_input.get("subject")
+    if not isinstance(subject, str):
+        return False
+    key = pending_key(session, str(tool_input.get("taskId") or ""))
+    return bool(key) and entry_key({"subject": subject}) != key
 
 
 def clear(session: str, key: str) -> None:

@@ -129,6 +129,23 @@ class PreToolUse(Base):
                     hold.main()
             self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "deny")
 
+    def test_a_rename_away_ends_its_own_pending_record(self):
+        """Post-verdict (codex): a sibling-allowed rename away reports back as a
+        subject change, and must not leave the key's removals denied forever."""
+        self.entry(1, "H9 — read thread")
+        self.entry(2, "H9 — review")
+        self.entry(3, "H9 — triage")
+        with self.closed(False):
+            self.assertEqual(hold.pretooluse_decide(
+                self.update(1, None, subject="F1 — other work"))[0], "allow")
+            self.assertEqual(owed.pending_removals(SESSION), {"1"})
+            self.entry(1, "F1 — other work")
+            hold.posttooluse_decide({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate",
+                                     "session_id": SESSION,
+                                     "tool_input": {"taskId": "1", "subject": "F1 — other work"}})
+            self.assertEqual(owed.pending_removals(SESSION), set())
+            self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "allow")
+
     def test_an_unusable_lock_denies(self):
         self.entry(1, "H2463 — read thread")
         self.entry(2, "H2463 — review L2D")

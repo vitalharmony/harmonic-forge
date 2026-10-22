@@ -192,7 +192,7 @@ def _sibling_decide(session: str, task_id: str, key: str) -> tuple[str, str]:
             if any(str(e.get("id")) not in (task_id, *pending)
                    and e.get("status") in owed.OPEN_STATUSES
                    and owed.entry_key(e) == key for e in entries):
-                owed.mark_pending(session, task_id)
+                owed.mark_pending(session, task_id, key)
                 return "allow", ""
     except OSError as exc:
         return "deny", (f"{key}'s sibling entries could not be checked ({exc}); retry this "
@@ -213,7 +213,7 @@ def posttooluse_decide(payload: dict) -> str | None:
     session = payload.get("session_id") or ""
     tool_input = payload.get("tool_input") or {}
     if (session and payload.get("tool_name") == "TaskUpdate"
-            and tool_input.get("status") in ("completed", "deleted")):
+            and owed.removal_reported(session, tool_input)):
         # Pass 2: only the removal itself reports back; a parallel non-removing
         # update to the same task must not end its pending record early.
         owed.clear_pending(session, str(tool_input.get("taskId") or ""))
@@ -294,7 +294,7 @@ def main() -> int:
             # A failed TaskUpdate ends its pending removal and settles nothing.
             tool_input = payload.get("tool_input") or {}
             if (os.environ.get("LANE") and payload.get("tool_name") == "TaskUpdate"
-                    and tool_input.get("status") in ("completed", "deleted")):
+                    and owed.removal_reported(payload.get("session_id") or "", tool_input)):
                 owed.clear_pending(payload.get("session_id") or "",
                                    str((payload.get("tool_input") or {}).get("taskId") or ""))
         elif event == "Stop":
