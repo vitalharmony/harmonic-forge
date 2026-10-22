@@ -4123,6 +4123,21 @@ class OfferStateTest(unittest.TestCase):
         on_disk = json.loads(tick.path.read_text().splitlines()[-1])
         self.assertEqual(on_disk["reoffer_suppressed"], 1)
 
+    def test_1015_same_process_poll_not_counted_new_process_counted(self):
+        c = {1530: [{"id": 11, "body": self.BODY}]}
+        self._cycle(c, now_ts=self.T0)
+        # Same process: the previous poll's queue is carried in last_queue.
+        tick = self._tick()
+        queue, _, _ = self._cycle(c, now_ts=self.T0 + 300, tick=tick)
+        self.assertEqual(tick.reoffer_suppressed, 1)
+        tick = self._tick()
+        self._cycle(c, now_ts=self.T0 + 600, tick=tick, last_queue=queue)
+        self.assertEqual(tick.reoffer_suppressed, 0)
+        # New process: empty last_queue, persisted entry suppresses.
+        tick = self._tick()
+        self._cycle(c, now_ts=self.T0 + 900, tick=tick)
+        self.assertEqual(tick.reoffer_suppressed, 1)
+
     def test_ac1_different_or_unknown_session_reoffers(self):
         c = {1530: [{"id": 11, "body": self.BODY}]}
         self._cycle(c, now_ts=self.T0)
