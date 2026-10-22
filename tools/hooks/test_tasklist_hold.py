@@ -195,9 +195,19 @@ class PreToolUse(Base):
 
     def test_unreadable_task_file_denies(self):
         """Epoch 3 (AC1): an unreadable task file denies; it never lifts the hold."""
+        self.entry(1, "H2463 — closed (abc)")
+        with self.closed(True):
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+            (self.tasks / "2.json").write_text("{not json")
+            verdict, reason = hold.pretooluse_decide(self.update(1, "completed"))
+        self.assertEqual(verdict, "deny")
+        self.assertIn("could not be read", reason)
+
+    def test_an_empty_proposed_subject_is_applied(self):
+        """Epoch 3 pass 1: '' removes the key, so it is a rename away."""
         self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
-        (self.tasks / "2.json").write_text("{not json")
-        self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
+        with self.closed(False):
+            self.assertEqual(hold.pretooluse_decide(self.update(1, None, subject=""))[0], "deny")
 
     def test_main_prints_json_deny(self):
         self.entry(1, "H1 — review")
@@ -247,6 +257,7 @@ class Stop(Base):
     def test_a_key_with_no_open_entry_owes_nothing(self):
         """Epoch 3 (AC2): an entry leaves only through AC1, which proved the
         close shown, so a key with no open entry is cleared without a read."""
+        self.entry(1, "F9 — closed (abc)")
         owed.record("F9", "close", session=SESSION)
         self.entry(1, "F9 — closed (abc)", status="completed")
         with mock.patch.object(hold, "issue_closed") as read:
@@ -323,10 +334,28 @@ class Stop(Base):
 
     def test_a_deleted_closed_entry_does_not_wedge_stop(self):
         """Epoch 2 pass 1: AC1 allows deleting a shown closed entry."""
+        path = self.entry(1, "F123 — closed (abc)")
         owed.record("F123", "close", session=SESSION)
+        path.unlink()  # Claude Code removes a deleted task's file
         with self.closed(True):
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
         self.assertEqual(owed.markers(SESSION), [])
+
+    def test_a_key_that_never_had_an_entry_owes_one(self):
+        """Epoch 3 pass 1: never created is not the same as already left."""
+        owed.record("H2500", "completion", session=SESSION)
+        verdict, reason = hold.stop_decide(self.stop())
+        self.assertEqual(verdict, "block")
+        self.assertIn("add one", reason)
+
+    def test_any_rewritten_entry_of_a_key_settles_it(self):
+        """Epoch 3 pass 1: never the first entry in filesystem order."""
+        now = time.time()
+        self.entry(1, "F9 — implementing", mtime=now - 60)
+        self.entry(2, "F9 — reviewing", mtime=now - 60)
+        owed.record("F9", "completion", session=SESSION, now=now - 30)
+        self.entry(2, "F9 — L2D posted · waiting on Lane 1 review", mtime=now)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
     def test_a_touched_old_closed_entry_never_shows_a_new_close(self):
         """Epoch 2 pass 1: a status-only touch bumps an old entry's mtime."""

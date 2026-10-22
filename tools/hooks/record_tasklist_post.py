@@ -37,6 +37,8 @@ def _output(payload: dict) -> str:
 def _title_key(tokens: list[str], pr_repo: str) -> str | None:
     import batch_auth  # noqa: PLC0415
     title = next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t in _TITLE_FLAGS), "")
+    title = title or next((t.split("=", 1)[1] for t in tokens  # --title=..., -t=...
+                           if t.split("=", 1)[0] in _TITLE_FLAGS and "=" in t), "")
     keys = {batch_auth._carrier_key(slug, number, pr_repo)
             for slug, number in batch_auth._TITLE_ISSUE.findall(title)}
     keys.discard(None)

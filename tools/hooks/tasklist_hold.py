@@ -154,7 +154,7 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     applied = dict(target)
     if "status" in tool_input and tool_input["status"] is not None:
         applied["status"] = tool_input["status"]
-    if tool_input.get("subject"):
+    if tool_input.get("subject") is not None:  # an empty subject applies too
         applied["subject"] = tool_input["subject"]
     if applied.get("status") in owed.OPEN_STATUSES and owed.entry_key(applied) == key:
         return "allow", ""
@@ -204,15 +204,24 @@ def stop_decide(payload: dict) -> tuple[str, str]:
         # Reforge epoch 3: no state read and no closed logic here. AC1 lets an
         # entry leave only once the issue reads closed live and its stored
         # subject showed the close, so a key with no open entry owes nothing.
-        entry = owed.open_entry(entries, key)
-        if entry is None:
+        live = owed.open_entries(entries, key)
+        if not live:
+            # Left through AC1, or never created: only the first is settled
+            # (epoch 3 pass 1). A key with no entry gets one (AC2).
+            if marker.get("had_entry", True):
+                owed.clear(session, key)
+            else:
+                missing.append(f"  - {key}: after `{kind}`, it has no entry; add one")
+            continue
+        ts = float(marker.get("ts") or 0)
+        before = set(marker.get("subjects") or [str(marker.get("subject") or "")])
+        if any(float(e["_mtime"]) >= ts and str(e.get("subject") or "") not in before
+               for e in live):
             owed.clear(session, key)
-        elif float(marker.get("ts") or 0) > float(entry["_mtime"]):
+        elif all(ts > float(e["_mtime"]) for e in live):
             missing.append(f"  - {key}: after `{kind}`, its entry was not updated")
-        elif str(entry.get("subject") or "") == str(marker.get("subject") or ""):
-            missing.append(f"  - {key}: after `{kind}`, its entry's subject is unchanged")
         else:
-            owed.clear(session, key)
+            missing.append(f"  - {key}: after `{kind}`, its entry's subject is unchanged")
     if not missing:
         return "allow", ""
     return "block", ("Task-list entries owe an update for this turn's posts:\n"

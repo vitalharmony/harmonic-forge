@@ -72,6 +72,10 @@ def entry_key(entry: dict) -> str | None:
     return f"{match.group(1)}{match.group(2)}" if match else None
 
 
+def open_entries(entries: list[dict], key: str) -> list[dict]:
+    return [e for e in entries if e.get("status") in OPEN_STATUSES and entry_key(e) == key]
+
+
 def open_entry(entries: list[dict], key: str) -> dict | None:
     for entry in entries:
         if entry.get("status") in OPEN_STATUSES and entry_key(entry) == key:
@@ -108,6 +112,11 @@ def record(key: str, kind: str, session: str | None = None,
             "key": key, "kind": kind,
             "ts": now if now is not None else time.time(),
             "subject": str((entry or {}).get("subject") or ""),
+            # Epoch 3 pass 1: every open entry's subject (Stop judges them all,
+            # never the first in filesystem order), and whether the key had an
+            # entry at all, so "never created" is not read as "already left".
+            "subjects": [str(e.get("subject") or "") for e in open_entries(entries, key)],
+            "had_entry": any(entry_key(e) == key for e in entries),
         }), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:

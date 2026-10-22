@@ -51,6 +51,12 @@ class Events(unittest.TestCase):
                             on_event=lambda k, kind: seen.append(k))
         self.assertEqual(seen, ["F1"])
 
+    def test_a_title_given_with_equals_is_read(self):
+        """Epoch 3 pass 1: --title=... names the issue too."""
+        found = hook.events(bash('gh pr create -R vitalharmony/harmonic-forge '
+                                 '--title="Fix it (harmonic-forge#1112)" --body x'))
+        self.assertEqual(found, [("F1112", "pr")])
+
     def test_every_close_records_without_reading_whether_it_landed(self):
         """Epoch 3: no landed check and no output reading."""
         with mock.patch.object(batch_auth, "action_landed") as landed:
