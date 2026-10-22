@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -1469,6 +1470,50 @@ class Prompt(unittest.TestCase):
                        te_run.SELF_FLAG, "BODY", "HANDOFF"):
             self.assertIn(phrase, text)
         self.assertNotIn("following the Lane 1 handoff below exactly", text)
+
+    def test_prompt_recommends_no_path_the_boundary_refuses(self):
+        """preclose pass 1: the prompt sent the agent to `.claude/cache/`, which
+        te-runner.settings.json's Edit deny refuses, so following it set the item aside."""
+        # Preclose pass 2 (sticky-wicket PATCH): assert the behavior, not two
+        # literals. The prohibition must be present, and once that one sentence
+        # is cut out, no file path may be left recommended.
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF").split("## Issue")[0]
+        prohibition = ("never as a script file (no scratch file anywhere: `.claude/` is "
+                       "refused and a file outside the checkout is too)")
+        self.assertIn(prohibition, text)
+        rest = text.replace(prohibition, "")
+        # `tools/run_tests.py` is a command the agent runs inside the checkout,
+        # not a file it is told to write.
+        rest = rest.replace("`python3 tools/run_tests.py`", "")
+        found = re.findall(r"[\w./-]*\.(?:py|sh|txt)\b|(?<!\w)/tmp\b|\.claude/\S+", rest)
+        self.assertEqual(found, [], f"the prompt recommends a path: {found}")
+
+    def test_prompt_states_the_one_command_per_call_shape(self):
+        """harmonic-forge#1137 AC1: each refused shape is named, with its alternative."""
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF")
+        for phrase in ("already the checkout", "exactly one of the commands above",
+                       "`cd`", "`git -C`", "`&&`", "`;`", "`|`", "`>`", "heredoc (`<<`)",
+                       "`python3 -c '...'`", "never as a script file",
+                       "`python3 -m unittest discover -s <dir> -t <dir>`",
+                       "sets your item aside"):
+            self.assertIn(phrase, text)
+
+    def test_prompt_names_only_tools_the_session_has(self):
+        """harmonic-forge#1137 AC2: the tool set is the recorded session's `init` event,
+        not a hand-typed list; Grep and Glob were named but absent in run 9d10b3e1."""
+        init = json.loads((Path(__file__).parent / "testdata"
+                           / "agent_init_9d10b3e1.json").read_text())
+        observed = set(init["tools"])
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF")
+        # The whole instruction text, not only the opening list (preclose pass 1:
+        # a tool restored in the refusal-fallback sentence passed a list-only scan).
+        # The issue and handoff are appended verbatim and are not instructions.
+        instructions = text.split("## Issue")[0]
+        named = set(re.findall(r"\b(Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch|WebSearch)\b",
+                               instructions))
+        self.assertTrue(named)
+        self.assertLessEqual(named, observed, f"prompt names tools the session lacks: "
+                                              f"{sorted(named - observed)}")
 
 
 @pipeline_only
