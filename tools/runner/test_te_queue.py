@@ -263,6 +263,14 @@ class Unchanged(unittest.TestCase):
             queue.write_text(json.dumps({"items": [self.item("check-fail")]}))
             self.assertEqual(te_queue.check(queue)[0]["reason"], "undecidable")
 
+    def test_an_unparseable_body_in_handoff_is_a_queue_error(self):
+        # Post-verdict check: handoff() has its own fetch_comments call.
+        import json as _json  # noqa: PLC0415
+        with mock.patch.object(te_queue.fetch_lane1_context, "fetch_comments",
+                               side_effect=_json.JSONDecodeError("bad", "<html>", 0)):
+            with self.assertRaises(te_queue.QueueError):
+                te_queue.handoff(7)
+
     def test_an_unreadable_bundle_is_undecidable_never_worked(self):
         shutil.rmtree(self.bundle)
         with self.assertRaises(te_queue.QueueError):
