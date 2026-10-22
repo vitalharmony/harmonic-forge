@@ -91,8 +91,8 @@ derivable from code or Git.
   `mise run check` in a worktree holds the one forge-check slot, machine-wide
   (one at a time across every session), and may run alongside a scratch check.
   If swap exceeds 10G, `/tmp` has under 10 GB free, or the scratch root is
-  under its `HRSE_SCRATCH_MIN_FREE_GB` floor, drop back to one check total:
-  the running scratch check finishes and the forge check waits.
+  under its `HRSE_SCRATCH_MIN_FREE_GB` floor (default 10), drop back to one
+  check total: the running scratch check finishes and the forge check waits.
 <!-- /R-0388 -->
 <!-- R-0389 -->
 - A Tooling Exception branch is pushed only with a passing `mise run check`
