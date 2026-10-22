@@ -74,7 +74,8 @@ ROOT = Path(__file__).resolve().parent
 # failure class this comment already describes one level up.
 TEST_DIRS = ["gate", "gh", "hooks", "lane", "memory", "models", "onboard", "rules", "runner", "telemetry",
              "transaction-log",
-             "../scripts", "../skills/belt-and-suspenders", "../skills/verification-gate"]
+             "../scripts", "../skills/belt-and-suspenders", "../skills/verification-gate",
+             "../skills/sprint-plan", "../skills/sprint-plan/scripts"]
 PATTERN = "test_*.py"
 
 

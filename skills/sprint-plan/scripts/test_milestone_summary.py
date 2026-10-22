@@ -71,6 +71,24 @@ def _repo_root() -> Path:
                              capture_output=True, text=True, check=True)
         return Path(top.stdout.strip())
 
+
+# harmonic-forge#1073: tests asserting on a consuming project's files skip,
+# with this one reason, when no consumer is configured (forge CI).
+CONSUMER_ABSENT = ("sprint-plan consumer absent: no config resolves or the "
+                   "asserted consumer file does not exist")
+
+
+def _skip_unless_consumer(test: unittest.TestCase, *relative: str) -> None:
+    """Skip `test` when no config resolves or any named consumer file is
+    missing under the home checkout. Runs before any `_repo_root()` load."""
+    try:
+        root = _repo_root()
+    except (_home.config_loader.ConfigError, subprocess.CalledProcessError):
+        test.skipTest(CONSUMER_ABSENT)
+    if not all((root / rel).exists() for rel in relative):
+        test.skipTest(CONSUMER_ABSENT)
+
+
 summary = load("milestone_summary")
 lane_state = load("lane_state")
 
@@ -1479,6 +1497,7 @@ class GatePhaseRenderTests(RenderTests):
         row = next(line for line in text.splitlines()
                    if line.startswith("- ") and "Tier:" in line)
         self.assertIn(f"| {lane_state.EXECUTABLE}]", row)
+        _skip_unless_consumer(self, "scripts/board_dashboard_renderer.py")
         renderer = load_from(_repo_root() / "scripts", "board_dashboard_renderer")
         match = renderer._BRACKETED_ROW_RE.match(row)
         self.assertIsNotNone(match)
@@ -1739,6 +1758,7 @@ class Lane3EmitterRoundTripTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        _skip_unless_consumer(self, "scripts/post_lane_discussion.py")
         self.emitter = load_from(_repo_root() / "scripts", "post_lane_discussion")
 
     def round_trip(self, kind, body):
@@ -1901,6 +1921,7 @@ class StaleRenderTests(RenderTests):
         row = next(line for line in text.splitlines()
                    if line.startswith("- ") and "Tier:" in line)
         self.assertIn("| stale ", row)
+        _skip_unless_consumer(self, "scripts/board_dashboard_renderer.py")
         renderer = load_from(_repo_root() / "scripts", "board_dashboard_renderer")
         match = renderer._BRACKETED_ROW_RE.match(row)
         self.assertIsNotNone(match, f"row no longer parses: {row}")
@@ -1939,7 +1960,9 @@ class LaneWorktreeImportTests(unittest.TestCase):
         try:
             home = _home.home_root()
         except _home.config_loader.ConfigError:
-            self.skipTest("no home checkout resolves here (e.g. forge CI)")
+            self.skipTest(CONSUMER_ABSENT)
+        if not (home / ".git").exists():
+            self.skipTest(CONSUMER_ABSENT)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         lane = Path(tmp.name) / "x-lane3"
