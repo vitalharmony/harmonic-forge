@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lane3_policy import needs_trusted_lane3_policy  # noqa: E402
 import test_lane_launchers as tll  # noqa: E402
 
 # Referenced through the module, not imported by name: a TestCase class bound
@@ -181,6 +182,7 @@ class PrecloseFindings(unittest.TestCase):
                         LANE_CAPTURE_EXTRA_ENV=self.KEYS3,
                         LANE_REFRESH_LOG_DIR=str(tree.root / "refresh-log"))
 
+    @needs_trusted_lane3_policy
     def test_a_pushed_branch_is_detached_and_named(self):
         """H1: no silent detach -- the branch is named in the record."""
         with _FixtureTree() as tree:
@@ -224,6 +226,7 @@ class PrecloseFindings(unittest.TestCase):
                 self.assertNotIn("could not determine or reach", cell["stderr"])
                 self.assertNotIn("cannot determine whether", cell["stderr"])
 
+    @needs_trusted_lane3_policy
     def test_a_busy_worktree_is_not_moved(self):
         """M3: a live process with its cwd in the worktree."""
         with _FixtureTree() as tree:
@@ -385,6 +388,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
         tree.define_tasks(tree.main, DECLARED)
         tree.write_stub_mise(exit_code)
 
+    @needs_trusted_lane3_policy
     def test_a_declared_provisioner_runs_instead_of_relinking(self):
         with _FixtureTree(with_backend_env=True) as tree:
             self._declare(tree)
@@ -407,6 +411,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "provisioned")
             self.assertEqual(_env_record(tree), ["provisioned"])
 
+    @needs_trusted_lane3_policy
     def test_ack_stale_still_provisions(self):
         with _FixtureTree(with_backend_env=True) as tree:
             self._declare(tree)
@@ -415,6 +420,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "provisioned")
             self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
 
+    @needs_trusted_lane3_policy
     def test_a_task_missing_at_the_gate_worktrees_ref_still_provisions(self):
         """Preclose survivor 1: the gate worktree sits on a ref that predates
         the task (`--ack-stale` on an older target, `skipped-busy`, or forge
@@ -471,6 +477,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(tree.mise_calls(), [])
             self.assertEqual(_env_record(tree), ["provision-failed"])
 
+    @needs_trusted_lane3_policy
     def test_an_exported_manifest_override_cannot_steer_the_lookup(self):
         """Preclose survivor 4: FORGE_PROJECTS_MANIFEST exported at a valid
         manifest that lacks the key must not make a declared project relink.
@@ -491,6 +498,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(list((tree.lane3 / "backend").glob(".env.pre-relink-*")), [])
             self.assertEqual(_env_record(tree), ["provisioned"])
 
+    @needs_trusted_lane3_policy
     def test_stderr_noise_on_an_undeclared_project_still_relinks(self):
         """Preclose survivor 2, AC2: python3 exits 0 but writes to stderr. The
         noise is not a task name, so a project declaring nothing relinks."""
@@ -504,6 +512,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(tree.mise_calls(), [])
             self.assertEqual(_env_record(tree), ["relinked"])
 
+    @needs_trusted_lane3_policy
     def test_stderr_noise_on_a_declared_project_yields_exactly_the_task(self):
         with _FixtureTree(with_backend_env=True) as tree:
             self._declare(tree)
@@ -540,6 +549,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(len(tree.mise_calls()), 1)
             self.assertEqual(_env_record(tree), ["provision-failed"])
 
+    @needs_trusted_lane3_policy
     def test_a_project_without_the_key_is_still_relinked(self):
         with _FixtureTree(with_backend_env=True) as tree:
             tll._drift_lane3_env(tree)
@@ -552,6 +562,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
             self.assertEqual(_env_record(tree), ["relinked"])
 
+    @needs_trusted_lane3_policy
     def test_a_project_with_no_backend_env_is_untouched_and_logged_na(self):
         with _FixtureTree() as tree:
             cell = _run3(tree)
@@ -698,6 +709,7 @@ class Lane3OwnedEnvRefusal(unittest.TestCase):
             self.assertIn("left untouched", proc.stderr)
             self._assert_untouched(env_file, before)
 
+    @needs_trusted_lane3_policy
     def test_an_absent_or_symlinked_target_is_still_relinked(self):
         for shape in ("absent", "symlink"):
             for runner in ("lane3", "lane3-provision"):

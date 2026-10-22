@@ -33,6 +33,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lane3_policy import lane3_policy_untrusted, needs_trusted_lane3_policy  # noqa: E402
 
 import baseline_capture as bc  # noqa: E402
 
@@ -247,6 +248,7 @@ class NineCombinations(unittest.TestCase):
     EXPECTED_WHY_PREFIX = {"1": "Lane 1", "2": "Lane 2 (implementer)",
                            "3": "Lane 3 (gate)"}
 
+    @needs_trusted_lane3_policy
     def test_all_nine_combinations_launch_correctly(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
@@ -265,6 +267,7 @@ class NineCombinations(unittest.TestCase):
                         # after any env(1) prefix.
                         self.assertIn(agent, _agent_args(cell))
 
+    @needs_trusted_lane3_policy
     def test_why_string_names_the_actual_agent(self):
         """TC9 -- AC7.  Every launcher said 'Claude Code' unconditionally."""
         with _FixtureTree() as tree:
@@ -555,6 +558,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
     the flag, so the two cannot drift -- that derivation is what is tested
     here, not a hand-maintained second list."""
 
+    @needs_trusted_lane3_policy
     def test_lane3_launch_flags_match_the_committed_closed_list(self):
         """The amendment gate (harmonic-forge#322 required change 9).
 
@@ -597,6 +601,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                         f"which is not on lane3_safety_additions.txt -- amend "
                         f"that list in its own issue, or drop the flag")
 
+    @needs_trusted_lane3_policy
     def test_claude_lane3_carries_no_codex_flag(self):
         """Claude Lane 3 gets no `--admin-policy` and not Codex's sandbox
         (unchanged by harmonic-forge#644, which only touches Codex). Its own
@@ -743,6 +748,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                     args = _agent_args(tree.run(lane, ["--agent", "codex", "--", "resume", "--last"]))
                     self.assertEqual(args[args.index("--sandbox") + 1], "danger-full-access")
 
+    @needs_trusted_lane3_policy
     def test_claude_is_not_affected_by_the_codex_sandbox_denials(self):
         """The new deny tokens belong to the codex row only: each Codex-refused
         form still launches for Claude (F840 preclose: an empty
@@ -1080,6 +1086,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
                               check=True, capture_output=True,
                               text=True).stdout.strip()
 
+    @needs_trusted_lane3_policy
     def test_lane3_updates_a_stale_worktree_and_records_it(self):
         """TC1 (lane3 path) and AC4."""
         with _FixtureTree() as tree:
@@ -1097,6 +1104,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
             self.assertEqual(len(log), 1)
             self.assertIn("\tupdated\t", log[0])
 
+    @needs_trusted_lane3_policy
     def test_lane3_fetches_a_tip_it_has_never_seen(self):
         """The old check could only refuse here; the tip is fetched now."""
         with _FixtureTree() as tree:
@@ -1118,6 +1126,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
             self.assertIn("README.md", cell["stderr"])
             self.assertEqual(self._head(tree.lane3), before)
 
+    @needs_trusted_lane3_policy
     def test_an_untracked_backend_env_alone_never_blocks(self):
         with _FixtureTree(with_backend_env=True) as tree:
             self._advance_origin(tree)
@@ -1125,6 +1134,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
             cell = self._run3(tree)
             self.assertTrue(cell["launched"], cell.get("stderr"))
 
+    @needs_trusted_lane3_policy
     def test_lane3_leaves_a_worktree_ahead_of_origin_alone(self):
         """TC8: HEAD already contains the remote tip (a gate on a Lane 2
         branch) records `current` and does not move."""
@@ -1140,6 +1150,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
             self.assertEqual(self._head(tree.lane3), ahead)
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "current")
 
+    @needs_trusted_lane3_policy
     def test_lane3_escape_hatch_skips_the_update(self):
         """TC5."""
         with _FixtureTree() as tree:
@@ -1163,6 +1174,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
                     self.assertFalse(cell["launched"])
                     self.assertIn("non-empty reason", cell["stderr"])
 
+    @needs_trusted_lane3_policy
     def test_lane3_starts_when_current(self):
         with _FixtureTree() as tree:
             cell = self._run3(tree)
@@ -1205,6 +1217,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
                 with self.subTest(file=name, mutation=mutation):
                     self.assertNotIn(mutation, source)
 
+    @needs_trusted_lane3_policy
     def test_lane3_relinks_a_drifted_env_and_records_it(self):
         """TC12, AC6."""
         with _FixtureTree(with_backend_env=True) as tree:
@@ -1216,6 +1229,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
             self.assertEqual(link.resolve(), (tree.main / "backend" / ".env").resolve())
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
 
+    @needs_trusted_lane3_policy
     def test_ack_stale_still_relinks_the_env(self):
         """--ack-stale skips only the checkout; backend/.env has no
         legitimate per-worktree divergence."""
@@ -1226,6 +1240,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
             self.assertTrue((tree.lane3 / "backend" / ".env").is_symlink())
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_ENV"], "relinked")
 
+    @needs_trusted_lane3_policy
     def test_lane3_records_a_correct_env_link_as_ok(self):
         with _FixtureTree(with_backend_env=True) as tree:
             (tree.lane3 / "backend").mkdir()
@@ -1239,6 +1254,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
 class Lane3Provision(unittest.TestCase):
     """The two mutations lane3 gave up, and nothing else."""
 
+    @needs_trusted_lane3_policy
     def test_provision_repairs_staleness_and_the_env_symlink(self):
         with _FixtureTree(with_backend_env=True) as tree:
             _drift_lane3_env(tree)
@@ -1283,6 +1299,7 @@ def _flag_values(args: list[str], flag: str) -> list[str]:
 
 class LaunchDefaultModelAndEffort(unittest.TestCase):
 
+    @needs_trusted_lane3_policy
     def test_clean_env_injects_sonnet_and_no_effort_at_every_lane(self):
         """TC1 / AC1."""
         with _FixtureTree() as tree:
@@ -1304,6 +1321,7 @@ class LaunchDefaultModelAndEffort(unittest.TestCase):
             self.assertEqual(_flag_values(args, "--model"), ["opus"])
             self.assertEqual(_flag_values(args, "--effort"), ["low"])
 
+    @needs_trusted_lane3_policy
     def test_passthrough_suppresses_injection_in_every_form(self):
         """TC3 / TC4 / AC2: spaced and `=` forms, at Lane 2 and Lane 3, and
         with native args after a bare `--` (which _lane_args.sh consumes)."""
@@ -1467,6 +1485,7 @@ class CodexSessionFlags(unittest.TestCase):
                         self.assertLess(args.index("--no-daemon"),
                                         len(args) - len(shape))
 
+    @needs_trusted_lane3_policy
     def test_other_agents_get_no_session_flag(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
@@ -1550,6 +1569,7 @@ class CodexLaneTmp(unittest.TestCase):
                         self.assertEqual(
                             (cell["extra_env"]["GIT_CEILING_DIRECTORIES"] or "").split(":")[0], tmpdir)
 
+    @needs_trusted_lane3_policy
     def test_claude_is_unchanged_and_keeps_the_callers_tmpdir(self):
         """TC7: no key, no add-dir, and TMPDIR is not overridden."""
         with _FixtureTree() as tree:
@@ -1665,6 +1685,10 @@ class RegressionBaseline(unittest.TestCase):
         fixture = json.loads(BASELINE.read_text())
         diffs = bc.compare(captured, fixture,
                            bc._load_lane3_additions(ADDITIONS))
+        if lane3_policy_untrusted():
+            # harmonic-forge#1156: only the lane3/claude rows need a launch
+            # the trust check refuses here; every other row is still compared.
+            diffs = [d for d in diffs if not d.startswith("lane3/claude/")]
         self.assertEqual(diffs, [], "\n".join(diffs))
 
     def test_the_baseline_covers_every_cell(self):
@@ -1733,6 +1757,7 @@ class PlatformRulesSync(unittest.TestCase):
     the fixture's HOME has no `harmonic-forge/sync_rules.py` at all, which is
     exactly the "sync fails" case, and the launch must still proceed."""
 
+    @needs_trusted_lane3_policy
     def test_sync_rules_pull_runs_and_failure_does_not_block_launch(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
@@ -1969,6 +1994,7 @@ class DeferredToolsLaunchPrompt(unittest.TestCase):
                 'concluding a tool is unavailable, and never report a browser or tool as '
                 'unavailable from a names-only listing.')
 
+    @needs_trusted_lane3_policy
     def test_every_claude_lane_carries_the_sentence(self):
         with _FixtureTree() as tree:
             for lane in ("1", "2", "3"):
