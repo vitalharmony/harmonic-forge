@@ -180,6 +180,13 @@ class Decide(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(self.decide(t.say(block(line)))[0], "block")
 
+    def test_substitution_is_named_as_such(self):
+        for line in ('echo "$(x)"', "echo `id`", "echo $(id)"):
+            t = self.fresh()
+            t.bash(line)
+            with self.subTest(line=line):
+                self.assertIn("command substitution", self.decide(t.say(block(line)))[1])
+
     def test_ac2_reads_past_a_quoted_and_on_a_question_turn(self):
         line = f"echo 'x && y' && {self.script}"
         tail = "\n## DECISIONS NEEDED\n1. Should I run it? Yes.\n"
