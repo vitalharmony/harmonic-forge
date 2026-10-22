@@ -36,6 +36,25 @@ _spec.loader.exec_module(wp)
 EXEMPT = {"l2-run"}
 THROWAWAY = "--zz-1117-throwaway"
 
+_SAVED_FORGE_ROOT: str | None = None
+
+
+def setUpModule() -> None:
+    """Wrappers reach their scripts as `${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/...`,
+    and discovery keeps only paths that resolve. Without a forge checkout at
+    `$HOME` (CI) every such task vanished, and three tests failed on the PR
+    only (harmonic-forge#1117, PR #1142). Pin the root to the repo under test."""
+    global _SAVED_FORGE_ROOT
+    _SAVED_FORGE_ROOT = os.environ.get("HARMONIC_FORGE_ROOT")
+    os.environ["HARMONIC_FORGE_ROOT"] = str(REPO)
+
+
+def tearDownModule() -> None:
+    if _SAVED_FORGE_ROOT is None:
+        os.environ.pop("HARMONIC_FORGE_ROOT", None)
+    else:
+        os.environ["HARMONIC_FORGE_ROOT"] = _SAVED_FORGE_ROOT
+
 
 def verbatim_tasks() -> list[str]:
     return sorted(name for name, script in wp.discover_wrapper_tasks(REPO / "mise.toml")
