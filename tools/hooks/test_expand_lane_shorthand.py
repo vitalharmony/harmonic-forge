@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import sys
 import unittest
 import unittest.mock
@@ -765,6 +766,45 @@ class BatchAuthorizationTests(unittest.TestCase):
             receipt = m.authorize_batch("BATCH F1", state_path=tmp)
         self.assertIn("FAILED", receipt)
         self.assertIn("boom", receipt)
+
+
+class BatchRearmTests(unittest.TestCase):
+    """harmonic-forge#1145: an operator-typed BATCH line re-arms a key whose
+    every target was revoked; a quoted (non-operator) line never does."""
+
+    def _revoked_state(self) -> Path:
+        import batch_auth as ba
+
+        tmp = Path(tempfile.mkdtemp()) / "state.json"
+        ba.authorize(["F1"], state_path=tmp)
+        ba.revoke(["F1"], state_path=tmp)
+        return tmp
+
+    def _merges(self, tmp: Path) -> list[dict]:
+        return [t for t in json.loads(tmp.read_text())["F1"]["targets"]
+                if "merge" in t["action"]]
+
+    def test_k1_operator_line_rearms_and_says_so(self) -> None:
+        import batch_auth as ba
+
+        tmp = self._revoked_state()
+        with mock.patch.object(ba, "STATE_PATH", tmp):
+            receipt = m.authorize_batch("BATCH F1", state_path=tmp)
+        self.assertIn("re-armed F1", receipt)
+        self.assertNotIn("extended F1", receipt)
+        self.assertTrue(all(not t["consumed"] for t in self._merges(tmp)))
+
+    def test_k5_a_non_operator_batch_line_never_rearms(self) -> None:
+        import batch_auth as ba
+
+        tmp = self._revoked_state()
+        # A line the parser accepts but provenance refuses (an SDK entrypoint).
+        with mock.patch.object(ba, "STATE_PATH", tmp), \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk-py"}):
+            receipt = m.authorize_batch("BATCH F1", state_path=tmp)
+        self.assertIn("BATCH REFUSED", receipt)
+        self.assertTrue(all(str(t["consumed_by"]).startswith("revoked-")
+                            for t in self._merges(tmp)))
 
 
 class BatchWiringTests(unittest.TestCase):

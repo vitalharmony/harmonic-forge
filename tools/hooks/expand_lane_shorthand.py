@@ -623,13 +623,20 @@ def authorize_batch(prompt: str, state_path: Path | None = None,
         # harmonic-forge#612: no `gh issue close` target -- BATCH grants
         # merges only. A batched issue closes by an explicit close command
         # after its merge (harmonic-forge#911), not a target here.
+        # harmonic-forge#1145: only this operator-prompt path re-arms a key whose
+        # every target was revoked (an ended IMC waiver revokes them).
+        rearmed: list[str] = []
         fresh = top_up(keys, actions=["gh pr merge", "gh pr merge"],
-                       state_path=state_path, session_id=session_id)
+                       state_path=state_path, session_id=session_id,
+                       rearm_revoked=True, rearmed=rearmed)
     except Exception as exc:  # noqa: BLE001
         return (f"BATCH authorization FAILED for {', '.join(keys)}: {exc}. "
                 "Every merge will prompt. Fix before relying on it.")
-    extended = [k for k in keys if k not in fresh]
+    extended = [k for k in keys if k not in fresh and k.upper() not in rearmed]
     parts = []
+    if rearmed:
+        parts.append(f"re-armed {', '.join(rearmed)} (every target revoked; 2 fresh merge "
+                     f"slots each, {DEFAULT_TTL_HOURS:g}h TTL)")
     if fresh:
         parts.append(f"authorized {', '.join(fresh)} (2 merge slots each, "
                      f"{DEFAULT_TTL_HOURS:g}h TTL)")

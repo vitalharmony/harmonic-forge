@@ -725,5 +725,65 @@ class RetireTests(unittest.TestCase):
         self.assertFalse((self.state / "F902.json").exists())
 
 
+
+class RearmAfterEndTests(unittest.TestCase):
+    """harmonic-forge#1145 K6: `end` revokes the key's merge targets; the
+    operator's next `BATCH K IMC K` line re-arms the grant through the hook,
+    so `record` passes its grant check and preclose's IMC guard finds the
+    matching receipt."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.state = self.tmp / "imc"
+        self.batch = self.tmp / "batch-authorized.json"
+        for target, value in ((imc_waiver, ("IMC_STATE_DIR", self.state)),
+                              (batch_auth, ("STATE_PATH", self.batch))):
+            patcher = patch.object(target, *value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        lane = patch.dict(imc_waiver.os.environ, {"LANE": "1"})
+        lane.start()
+        self.addCleanup(lane.stop)
+        import preclose_check  # noqa: PLC0415
+        self.preclose = sticky_receipt()
+        finder = patch.object(preclose_check, "find_receipt",
+                              lambda repo, issue: self.preclose)
+        finder.start()
+        self.addCleanup(finder.stop)
+
+    def hook_record(self, granted: datetime) -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / f"{KEY}.json").write_text(json.dumps({
+            "key": KEY, "repo": "vitalharmony/harmonic-forge", "issue": 892,
+            "granted_at": imc_waiver._iso(granted), "session_id": "sess-1",
+            "line": f"BATCH {KEY} IMC {KEY}", "hook_version": "1"}))
+
+    def test_k6_end_then_operator_line_rearms_record_and_guard(self) -> None:
+        import expand_lane_shorthand as hook  # noqa: PLC0415
+
+        # The waiver predates sticky_receipt()'s two passes (02:00Z), so `end` is at its IMC stop.
+        first = datetime(2026, 10, 17, 1, 2, 3, tzinfo=timezone.utc)
+        self.hook_record(first)
+        batch_auth.authorize([KEY], actions=["gh pr merge"], state_path=self.batch)
+        imc_waiver.record(KEY, branch="fix/892-x", now=first,
+                          batch_state_path=self.batch, runner=FakeGh())
+        imc_waiver.end(KEY, reason="sticky-wicket PATCH", now=first + timedelta(hours=2),
+                       batch_state_path=self.batch, runner=EndGh())
+        self.assertFalse(imc_waiver.live_merge_grant(KEY, self.batch))
+
+        receipt = hook.authorize_batch(f"BATCH {KEY} IMC {KEY}", state_path=self.batch)
+        self.assertIn(f"re-armed {KEY}", receipt)
+        self.assertNotIn(f"extended {KEY}", receipt)
+        self.assertTrue(imc_waiver.live_merge_grant(KEY, self.batch))
+
+        second = first + timedelta(hours=3)
+        self.hook_record(second)
+        recorded = imc_waiver.record(KEY, branch="fix/892-x", now=second,
+                                     batch_state_path=self.batch, runner=FakeGh())
+        self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(recorded["granted_at"], imc_waiver._iso(second))
+        self.assertIsNone(imc_waiver.unmatched_hook_record(
+            "vitalharmony/harmonic-forge", 892, second))
+
 if __name__ == "__main__":
     unittest.main()
