@@ -386,6 +386,15 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
     cluster = preclose_passes._mechanism_cluster(receipt, epoch)
     if cluster and cluster.get("verdict") in ("PATCH", "REFORGE") and waived:
         return f"mechanism-cluster verdict {cluster.get('verdict')} (current epoch)"
+    # harmonic-forge#1154: an epoch already at the cap when the waiver was
+    # granted can run no pass under it, so nothing could ever reach the stops
+    # above. A time test, not `_under_waiver`: a pass after the grant without
+    # the cross-family call, or with no readable time, still counts as after.
+    if granted is not None and len(passes) >= preclose_passes.MAX_PASSES:
+        post_grant = [p for p in passes
+                      if (done := _parse_time(p.get("completed_at"))) is None or done >= granted]
+        if not post_grant:
+            return "pass cap reached before the waiver (no pass can run under it)"
     return None
 
 
@@ -506,7 +515,8 @@ def end(key: str, *, reason: str, now: datetime | None = None,
                         f"imc-waiver: {repo}#{issue} is not at an IMC stop: its preclose receipt "
                         "shows neither two current-epoch passes run under this waiver (forced "
                         "cross-family) that both left surviving findings nor a current-epoch "
-                        "PATCH/REFORGE mechanism-cluster verdict after such a pass. `end` is the "
+                        "PATCH/REFORGE mechanism-cluster verdict after such a pass, nor an epoch "
+                        "already at the pass cap before the waiver. `end` is the "
                         "exit from that stop, never a way around the forced cross-family pass.")
                 ending = {**data, "status": "ending", "end_reason": reason.strip(),
                           "ended_at": _iso(moment), "end_stop": stop}
