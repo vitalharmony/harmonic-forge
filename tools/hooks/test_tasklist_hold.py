@@ -399,10 +399,12 @@ class Stop(Base):
     def test_removing_an_entry_never_settles_its_key(self):
         """Pass 1 (correctness, fail-direction, second-run): a rename that
         completes or deletes in the same call leaves no rewritten entry."""
+        # The marker predates the entry writes, so only the status check can
+        # keep it (kill check at 9a8eb1f).
+        owed.record("H5", "completion", session=SESSION, now=time.time() - 5)
         self.entry(1, "H5 — implementing")
         self.entry(2, "H5 — rebase")
         self.entry(3, "run lint")
-        owed.record("H5", "completion", session=SESSION)
         for task_id, status in (("1", "completed"), ("3", "deleted")):
             hold.posttooluse_decide(self.post("TaskUpdate", taskId=task_id, status=status,
                                               subject="H5 — L2D posted"))
