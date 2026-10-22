@@ -900,7 +900,7 @@ marker is a PASS or Lane 1's own post is never re-announced. There the task
 entry is the only record. This rule adds no shared state.
 <!-- /R-0376 -->
 <!-- R-0413 -->
-Each task-list entry is a concrete step (read, review, push/PR, post), never a whole issue. An issue's entry leaves the list only when the issue closes; while another lane holds it, the entry reads `waiting on <lane> <step>`. With no active step nothing is `in_progress`, and the belt watch is never listed. Only operator-owned items carry a `YOU:` prefix.
+The list is updated inside the action that changes it. Each task-list entry is a concrete step (read, review, push/PR, post), never a whole issue. An issue's entry leaves the list only when the issue closes; while another lane holds it, the entry reads `waiting on <lane> <step>`. With no active step nothing is `in_progress`; while working, at most one entry is `in_progress`, and the belt watch is never listed. Only operator-owned items carry a `YOU:` prefix.
 <!-- /R-0413 -->
 
 ## HITL Gate Language

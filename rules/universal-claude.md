@@ -155,5 +155,5 @@ A `CronCreate`/`ScheduleWakeup` job armed for a scoped purpose is deleted in the
 When the auto-mode classifier blocks an unattended-agent launcher (a `claude -p` job, its timer), tighten the design once if it deserves it, then hand the install command to the operator. Never route around the block.
 <!-- /R-0411 -->
 <!-- R-0412 -->
-An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open.
+An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open, and leave that tab open.
 <!-- /R-0412 -->

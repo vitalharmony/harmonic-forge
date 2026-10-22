@@ -861,8 +861,8 @@ hooks = []
 id = "R-0099"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
-statement = "Use templates/lane1-handoff.md and read it in full; do not reconstruct its section list from memory."
-text_sha = "dd5eccd0349f5b28"
+statement = "Use templates/lane1-handoff.md and read it in full; do not reconstruct its section list from memory. Compose it from the template, never by copying an earlier post or scratch file."
+text_sha = "0adc95e9d5828300"
 hooks = []
 
 [[rule]]
@@ -2650,8 +2650,8 @@ hooks = []
 id = "R-0393"
 file = "rules/universal-lane1.md"
 anchor = "apq-protocol"
-statement = "A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits or the worktree."
-text_sha = "c6cce77baf6bb219"
+statement = "A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits, the worktree or conversation context."
+text_sha = "46c1ad406b698f6a"
 hooks = []
 
 [[rule]]
@@ -2682,8 +2682,8 @@ hooks = []
 id = "R-0398"
 file = "rules/universal-agent.md"
 anchor = "live-versioned-values"
-statement = "Credentials or env vars handed to the operator for a tool run are enumerated per component (backend and provider separately) from that tool's docs, never from what the last error named."
-text_sha = "da7f5a929fa77ea9"
+statement = "Credentials or env vars handed to the operator for a tool run are enumerated per component (backend and provider separately) from that tool's docs, never from what the last error named; what an existing doc already lists is not enough."
+text_sha = "701bc907df3a7de0"
 hooks = []
 
 [[rule]]
@@ -2786,14 +2786,30 @@ hooks = []
 id = "R-0412"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
-statement = "An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open."
-text_sha = "6ecc8df73967b2e9"
+statement = "An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open; leave that tab open."
+text_sha = "dcec63478467709a"
 hooks = []
 
 [[rule]]
 id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed."
-text_sha = "ed1d695005a978cc"
+statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed. The list is updated inside the action that changes it. While working, at most one entry is in_progress."
+text_sha = "15b54c5d21ecfecf"
+hooks = []
+
+[[rule]]
+id = "R-0416"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "A status report names a documented rule by ID or leaves it out; it never restates the rule as a new finding."
+text_sha = "1d7a2aa316586bd0"
+hooks = []
+
+[[rule]]
+id = "R-0417"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "A substantive tooling or process change is filed before it is implemented, including in files Lane 1 may edit directly."
+text_sha = "a5fa850bb8baeecb"
 hooks = []
