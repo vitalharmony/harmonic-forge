@@ -34,6 +34,7 @@ import argparse
 import re
 from pathlib import Path
 
+import _caller_path
 from l1_post import (
     fail, is_substantive, regular_body, reject_reserved_marker, resolve_repo, run, apply_project_identity,
 )
@@ -184,6 +185,7 @@ def main() -> None:
         .replace("%", "%%"),
     )
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'body_file')  # harmonic-forge#1117 AC2
     args.repo = resolve_repo(args.repo)
     apply_project_identity(args.repo)  # harmonic-forge#804
     body = regular_body(args.body_file)

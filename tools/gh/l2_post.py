@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from receipt_runner import clear_lock, is_locked, lock_path, strip_ansi, write_receipt  # noqa: E402
 import belt_candidates  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
+import _caller_path  # noqa: E402
 
 
 def _sha(text: str) -> str:
@@ -455,7 +456,9 @@ def main() -> int:
                              "reads as L2S/L2D/L2B to lane_state.py or the belt.")
     post_p.add_argument("--repo", required=True)
     post_p.add_argument("--issue", type=int, required=True)
-    post_p.add_argument("--receipts", nargs="*", default=[])
+    # harmonic-forge#1117: "extend", so a repeated --receipts adds to the list
+    # rather than replacing it, as the per-flag mise wrapper's `var=#true` did.
+    post_p.add_argument("--receipts", nargs="*", action="extend", default=[])
     post_p.add_argument("--narrative-file", type=Path, required=True)
     post_p.add_argument("--real-run", dest="real_run_file", type=Path, default=None,
                         help="harmonic-forge#999: the output of one real run of each call the "
@@ -482,6 +485,9 @@ def main() -> int:
     lock_p.add_argument("--resolution-comment", type=int, required=True)
 
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'narrative_file', 'real_run_file', 'receipts')  # harmonic-forge#1117 AC2
+    for task in ('l2-post', 'l2-snapshot', 'l2-resolve-lock'):
+        _caller_path.refuse_repo_override(parser, task)
     apply_project_identity(args.repo)  # harmonic-forge#804
 
     if args.action == "snapshot":

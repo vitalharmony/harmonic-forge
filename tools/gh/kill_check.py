@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_check as preclose  # noqa: E402
 import preclose_passes  # noqa: E402  (harmonic-forge#1077)
+import _caller_path  # noqa: E402  (harmonic-forge#1117)
 import _scratch  # noqa: E402
 
 SCRATCH_AGE_SECONDS = 24 * 60 * 60
@@ -360,6 +361,7 @@ def main() -> None:
         else:
             command.add_argument("--reason", required=True)
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'checks')  # harmonic-forge#1117 AC2
     raise SystemExit(run(args) if args.command == "run" else waive(args))
 
 

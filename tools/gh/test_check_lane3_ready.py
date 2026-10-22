@@ -3,6 +3,9 @@
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import re
@@ -19,6 +22,27 @@ SPEC.loader.exec_module(c)
 
 
 DEFAULT_SHA = "a" * 40
+
+
+_MARKER_TMP: tempfile.TemporaryDirectory | None = None
+_MARKER_PATCH = None
+
+
+def setUpModule() -> None:
+    """harmonic-forge#1117 post-verdict finding: `main(["--mark-active"])` now clears
+    the marker itself, so a test that reaches it must never touch the real
+    LANE3_ACTIVE of the checkout running the suite. Every test in this module gets
+    a throwaway marker path; a test that needs its own patches `_marker` again."""
+    global _MARKER_TMP, _MARKER_PATCH
+    _MARKER_TMP = tempfile.TemporaryDirectory()
+    _MARKER_PATCH = mock.patch.object(c, "_marker",
+                                      return_value=Path(_MARKER_TMP.name) / "LANE3_ACTIVE")
+    _MARKER_PATCH.start()
+
+
+def tearDownModule() -> None:
+    _MARKER_PATCH.stop()
+    _MARKER_TMP.cleanup()
 
 
 def _comment(
@@ -97,6 +121,77 @@ class IssueForBranchTests(unittest.TestCase):
         with mock.patch.object(c, "RECEIPT_ROOT", Path("/nonexistent/does/not/exist")):
             with self.assertRaises(SystemExit):
                 c.issue_for_branch("fix/1-x")
+
+
+class MarkActiveTests(unittest.TestCase):
+    """harmonic-forge#1117 preclose survivor: `mise run lane3-begin -- --help`
+    used to exit 0 through an EXIT trap that then wrote LANE3_ACTIVE with no
+    check run. The check owns the marker now and writes it only on a pass."""
+
+    def _main(self, comments, argv):
+        with mock.patch.object(c, "current_branch", return_value="fix/1-x"), \
+             mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
+             mock.patch.object(c, "issue_for_branch", return_value=1), \
+             mock.patch.object(c, "fetch_comments", return_value=comments), \
+             mock.patch.object(c, "current_head_sha", return_value=DEFAULT_SHA), \
+             mock.patch.object(c, "mark_active") as mark:
+            try:
+                c.main(argv)
+            except SystemExit:
+                pass
+        return mark
+
+    def test_pass_marks(self):
+        mark = self._main([_comment(1, "ae", "2026-08-15T09:00:00Z"),
+                           _comment(2, "sweep", "2026-08-15T10:00:00Z")], ["--mark-active"])
+        mark.assert_called_once_with()
+
+    def test_refusal_and_help_do_not_mark(self):
+        mark = self._main([_comment(1, "sweep", "2026-08-15T10:00:00Z")], ["--mark-active"])
+        mark.assert_not_called()
+        mark = self._main([], ["--mark-active", "--help"])
+        mark.assert_not_called()
+
+    def test_real_help_writes_no_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            done = subprocess.run([sys.executable, str(Path(c.__file__)), "--mark-active", "--help"],
+                                  cwd=tmp, capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((Path(tmp) / ".git" / "LANE3_ACTIVE").exists())
+
+    def test_refusal_clears_a_stale_marker(self):
+        # harmonic-forge#792: a marker an earlier gate left never survives a refusal.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "LANE3_ACTIVE"
+            marker.touch()
+            with mock.patch.object(c, "_marker", return_value=marker):
+                self._main([_comment(1, "sweep", "2026-08-15T10:00:00Z")], ["--mark-active"])
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(shutil.which("mise"), "mise not installed")
+    def test_lane3_begin_help_keeps_a_live_marker(self):
+        # harmonic-forge#1117 pass-2 survivor: the task body used to `rm -f`
+        # the marker before the script parsed `-- --help`, so reading the
+        # flags mid-gate unlocked nothing and deleted the live marker.
+        repo = Path(c.__file__).resolve().parents[2]
+        text = (repo / "mise.toml").read_text()
+        start = re.search(r"(?m)^\[tasks\.lane3-begin\]\n", text)
+        end = re.search(r"(?m)^\[[A-Za-z]", text[start.end():])
+        block = text[start.start(): start.end() + end.start()]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            (root / "tools").mkdir()
+            (root / "tools" / "gh").symlink_to(Path(c.__file__).resolve().parent)
+            (root / "mise.toml").write_text(block)
+            marker = root / ".git" / "LANE3_ACTIVE"
+            marker.touch()
+            env = {**os.environ, "MISE_TRUSTED_CONFIG_PATHS": tmp}
+            done = subprocess.run(["mise", "run", "-q", "lane3-begin", "--", "--help"],
+                                  cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue(marker.exists(), "lane3-begin -- --help deleted a live marker")
 
 
 class MainReadinessTests(unittest.TestCase):

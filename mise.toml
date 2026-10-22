@@ -243,45 +243,16 @@ python3 tools/transaction-log/transaction_log.py --project-root . --boundary rec
 """
 
 [tasks.gh-new-issue]
-description = "Create a GitHub issue and add it to the harmonic-forge Backlog board (tools/gh/gh_issue.py). Prefer --body-file over --body; set --tier at filing time."
+description = "Create a GitHub issue and add it to the harmonic-forge Backlog board (tools/gh/gh_issue.py). Prefer --body-file over --body; set --tier at filing time. The script owns the flag surface (harmonic-forge#1117): `mise run gh-new-issue -- --help` lists it."
 usage = '''
-flag "--title <title>" help="Issue title" required=#true
-flag "--body <body>" help="Issue body as a string. Prefer --body-file: prose passed as a shell argument is corrupted by backticks, printf specifiers, and dropped apostrophes (harmonic-forge#266)."
-flag "--body-file <path>" help="Read the issue body from a file. PREFERRED over --body."
-flag "--labels <labels>" help="Comma-separated labels" default="feature"
-flag "--tier <tier>" help="Board Tier field: fast | standard | deep. The model-routing signal (harmonic-forge#257) - set it at filing time."
-flag "--theme <theme>" help="Board Theme field (hrse#966) - what capability this issue is about. Required on every open issue; options are read live from the board."
-flag "--venture <venture>" help="Board Venture field (hrse#966) - whose work this is. Required on every open issue; options are read live from the board."
-flag "--no-prior-owner <reason>" help="R-0397 (harmonic-forge#1032): file even though the pre-create title search printed candidate prior owners; the reason says why none of them owns this work."
-flag "--handoff-exception <exception>" help="Claim one of R-0039's filing-bar exceptions (harmonic-forge#687); requires --handoff-exception-reason."
-flag "--handoff-exception-reason <text>" help="Why the R-0039 exception applies; posted to the issue."
+arg "[args]" var=#true help="tools/gh/gh_issue.py arguments verbatim, e.g. --title T --body-file body.md --tier fast; --repo is fixed to $GH_REPO"
 '''
 run = """
-set -e
-# harmonic-forge#316: --body-file, --tier, --theme, --venture were all
-# absent here -- the same drift class harmonic-forge#290 filed for hrse's
-# wrapper (hrse#883), just unfixed on the repo that owns the parity check.
-# --milestone deliberately stays off: harmonic-forge has none by decision
-# (harmonic-forge#283) and wrapper-parity's --allow-missing covers it.
-if [ -n "$usage_body" ] && [ -n "$usage_body_file" ]; then
-  echo "gh-new-issue: pass --body or --body-file, not both." >&2
-  exit 2
-fi
-if [ -z "$usage_body" ] && [ -z "$usage_body_file" ]; then
-  usage_body="*Created via mise gh-new-issue*"
-fi
-python3 tools/gh/gh_issue.py \
-  --repo "$GH_REPO" \
-  --title "$usage_title" \
-  --labels "$usage_labels" \
-  ${usage_body_file:+--body-file "$usage_body_file"} \
-  ${usage_body:+--body "$usage_body"} \
-  ${usage_tier:+--tier "$usage_tier"} \
-  ${usage_theme:+--theme "$usage_theme"} \
-  ${usage_venture:+--venture "$usage_venture"} \
-  ${usage_no_prior_owner:+--no-prior-owner "$usage_no_prior_owner"} \
-  ${usage_handoff_exception:+--handoff-exception "$usage_handoff_exception"} \
-  ${usage_handoff_exception_reason:+--handoff-exception-reason "$usage_handoff_exception_reason"}
+# harmonic-forge#1117: the per-flag block that lived here drifted from the
+# script five times (hrse#883, harmonic-forge#266/#290/#316, hrse#1943). The
+# script owns every flag, default and error now; only --repo stays fixed.
+# eval restores mise's quoting of multi-word values (harmonic-forge#568).
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/gh_issue.py --repo '"$GH_REPO"' $usage_args
 """
 
 [tasks.board-fields]
@@ -297,12 +268,13 @@ eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/board_fields
 """
 
 [tasks.post-comment]
-description = "Post a GitHub issue comment via --body-file with a mandatory self-check (tools/gh/post_comment.py, ADR-004/ADR-005)"
+description = "Post a GitHub issue comment via --file with a mandatory self-check (tools/gh/post_comment.py, ADR-004/ADR-005). The script refuses --body through this wrapper (harmonic-forge#266, #1117)."
 usage = '''
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--file <file>" help="Path to a file containing the comment body" required=#true
+arg "[args]" var=#true help="tools/gh/post_comment.py arguments verbatim, e.g. --issue 123 --file body.md; --repo is fixed to $GH_REPO"
 '''
-run = "python3 tools/gh/post_comment.py --repo \"$GH_REPO\" --issue \"$usage_issue\" --file \"$usage_file\""
+run = """
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/post_comment.py --repo '"$GH_REPO"' $usage_args
+"""
 
 [tasks.l2-run]
 description = "Run a command under a Lane 2 issue's receipt scope (tools/gh/receipt_runner.py, harmonic-forge#371). Records argv/exit-code/output-digest; locks the issue on a non-zero exit."
@@ -329,38 +301,25 @@ run = """
 # behaviour for a different task). Live-verified against a value containing
 # spaces: eval yields ['--ack-overlap', 'a reason with spaces'], not the
 # mangled form.
-eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/l1_post.py" $usage_args
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/l1_post.py" $usage_args
 """
 
 [tasks.lane-comment]
-description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml."
+description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml. The script owns the flag surface (harmonic-forge#1117)."
 usage = '''
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--file <file>" help="Path to the comment body" required=#true
-flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
-flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
+arg "[args]" var=#true help="tools/gh/post_lane_discussion.py arguments verbatim, e.g. --issue 123 --file body.md --kind discussion"
 '''
 run = '''
-set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
-[ -n "${usage_repo:-}" ] && set -- "$@" --repo "$usage_repo"
-python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane_discussion.py" "$@"
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane_discussion.py" $usage_args
 '''
 
 [tasks.l1-issue]
-description = "Validate and set a Lane 1 issue body through the platform transport; omit --repo to resolve the invoking checkout through projects.toml."
+description = "Validate and set a Lane 1 issue body through the platform transport; omit --repo to resolve the invoking checkout through projects.toml. The script owns the flag surface (harmonic-forge#1117)."
 usage = '''
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--body-file <path>" help="Path to the substantive issue body" required=#true
-flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
-flag "--amend" help="Force amendment mode"
-flag "--allow-shrink" help="Permit an intentional destructive shrink"
+arg "[args]" var=#true help="tools/gh/post_lane1_issue.py arguments verbatim, e.g. --issue 123 --body-file body.md [--amend] [--allow-shrink]"
 '''
 run = '''
-set -- --issue "$usage_issue" --body-file "$usage_body_file"
-[ -n "${usage_repo:-}" ] && set -- "$@" --repo "$usage_repo"
-[ "${usage_amend:-false}" = "true" ] && set -- "$@" --amend
-[ "${usage_allow_shrink:-false}" = "true" ] && set -- "$@" --allow-shrink
-python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane1_issue.py" "$@"
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/post_lane1_issue.py" $usage_args
 '''
 
 [tasks.lane1-transport-test]
@@ -377,70 +336,57 @@ arg "<branch>" help="The Lane 2 branch"
 run = 'python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/lane/lane1_rebase.py" "$usage_repo_dir" "$usage_issue" "$usage_branch"'
 
 [tasks.l2-post]
-description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py."
+description = "Post a receipt-backed Lane 2 status comment, with a mandatory post/fetch/diff self-check (tools/gh/l2_post.py, harmonic-forge#371). The only sanctioned raw-GitHub-post transport under LANE=2 -- see tools/hooks/block_lane2_status_claims.py. The script owns the flag surface (harmonic-forge#1117)."
 usage = '''
-flag "--kind <kind>" help="plan | completion | blocked | finding (harmonic-forge#571: a durable, attributed defect note -- a report, not a status transition)" required=#true
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--narrative-file <file>" help="Path to a file containing the narrative section" required=#true
-flag "--receipts <receipts>" help="Space-separated receipt JSON paths" var=#true
-flag "--status <status>" help="Lead block: where the issue now stands (required for completion/blocked, harmonic-forge#472)"
-flag "--change <change>" help="Lead block: what changed, or what blocks"
-flag "--next <next>" help="Lead block: the literal next action"
+arg "[args]" var=#true help="tools/gh/l2_post.py post arguments verbatim, e.g. --kind completion --issue 123 --narrative-file n.md --receipts r1.json r2.json --status S --change C --next N; --repo is fixed to $GH_REPO"
 '''
-run = "python3 tools/gh/l2_post.py post --kind \"$usage_kind\" --repo \"$GH_REPO\" --issue \"$usage_issue\" --narrative-file \"$usage_narrative_file\" --receipts $usage_receipts --status \"$usage_status\" --change \"$usage_change\" --next \"$usage_next\""
+run = """
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/l2_post.py post --repo '"$GH_REPO"' $usage_args
+"""
 
 [tasks.l2-snapshot]
 description = "Fetch and record a fresh comment snapshot for an issue (tools/gh/l2_post.py snapshot, harmonic-forge#371) -- the only source a Lane 2 'no new comment exists' claim may be sourced from (AC3)."
 usage = '''
-flag "--issue <issue>" help="Issue number" required=#true
+arg "[args]" var=#true help="tools/gh/l2_post.py snapshot arguments verbatim, e.g. --issue 123; --repo is fixed to $GH_REPO"
 '''
-run = "python3 tools/gh/l2_post.py snapshot --repo \"$GH_REPO\" --issue \"$usage_issue\""
+run = """
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/l2_post.py snapshot --repo '"$GH_REPO"' $usage_args
+"""
 
 [tasks.l2-resolve-lock]
 description = "Clear a Lane 2 issue-scoped failure lock (tools/gh/l2_post.py resolve-lock, harmonic-forge#371). Refuses unless --resolution-comment names a real, fetchable comment."
 usage = '''
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--resolution-comment <id>" help="Comment id that resolves the lock" required=#true
+arg "[args]" var=#true help="tools/gh/l2_post.py resolve-lock arguments verbatim, e.g. --issue 123 --resolution-comment 456; --repo is fixed to $GH_REPO"
 '''
-run = "python3 tools/gh/l2_post.py resolve-lock --repo \"$GH_REPO\" --issue \"$usage_issue\" --resolution-comment \"$usage_resolution_comment\""
+run = """
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/l2_post.py resolve-lock --repo '"$GH_REPO"' $usage_args
+"""
 
 [tasks.wrapper-parity]
-description = "Assert every mise wrapper over tools/gh/ exposes its script's full flag surface (harmonic-forge#290/#316). The meta-finding #316 exists to fix: this checker lived only in the repo it never ran against."
+description = "Assert every mise wrapper over tools/gh/ forwards its arguments verbatim, so no script flag can be unreachable through it (harmonic-forge#1117; per-flag parity from #290/#316 retired for these wrappers)."
 run = """
 set -e
-PARITY=tools/gh/wrapper_parity.py
-# Intentional omissions are declared per wrapper, so an *undeclared* gap is
-# the failure. --repo is supplied from $GH_REPO by every wrapper here;
-# --milestone is off by decision (harmonic-forge#283, no milestones here).
-python3 $PARITY --task gh-new-issue \
-  --mise-toml mise.toml \
-  --script tools/gh/gh_issue.py \
-  --allow-missing "repo,project-owner,project-number,milestone,estimate"
-# post-comment deliberately exposes only --file: passing a comment body as a
-# shell argument is the corruption harmonic-forge#266 exists to prevent.
-python3 $PARITY --task post-comment \
-  --mise-toml mise.toml \
-  --script tools/gh/post_comment.py \
-  --allow-missing "repo,body"
+# l2-run keeps its shape: its command follows a second `--`, and a verbatim
+# arg drops that separator (live on mise 2026.10.7), so receipt_runner.py
+# could not tell its own flags from the command's.
+python3 tools/gh/wrapper_parity.py --mise-toml mise.toml --shape --exempt l2-run \
+  --expect gh-new-issue,post-comment,lane-comment,l1-issue,l1-post,l2-post,l2-snapshot,l2-resolve-lock,lane3-begin
 """
 
 [tasks.lane3-begin]
 description = "Lane 3: mark this worktree as actively filling Lane 3, unlocking gate-checkout for the next 12 hours (harmonic-forge#138). Refuses first, before marking anything, unless the target issue's current round is approved: an AE (or a tier-R sweep) covering the checked-out SHA, followed by a gate-readiness sweep, with no handoff or spec between that approval and the ready-for-l3 carrying it (tools/gh/check_lane3_ready.py; harmonic-forge#792 wires it here -- before that this repo's own lane3-begin checked nothing, so #791's fix protected consumer repos but not harmonic-forge itself). Pass '--issue N' when the worktree is detached or on a prior gate's branch, as HRSE2's own lane3-begin does. Run once per Lane 3 session, from the worktree you're gating in."
 usage = '''
-flag "--issue <issue>" help="Validate this issue number directly instead of deriving it from the current branch's l1-post receipt. Required when the worktree is detached or on a prior gate's branch."
+arg "[args]" var=#true help="tools/gh/check_lane3_ready.py arguments verbatim, e.g. --issue 123 (required when the worktree is detached or on a prior gate's branch)"
 '''
 run = '''
 set -e
-git_dir="$(git rev-parse --absolute-git-dir)"
-# A marker left by an earlier gate must not survive a refusal (harmonic-forge#792).
-rm -f "$git_dir/LANE3_ACTIVE"
-if [ -n "$usage_issue" ]; then
-  python3 tools/gh/check_lane3_ready.py --issue "$usage_issue"
-else
-  python3 tools/gh/check_lane3_ready.py
-fi
-touch "$git_dir/LANE3_ACTIVE"
-echo "lane3-begin: $(pwd) marked Lane 3-active"
+# The script clears a marker an earlier gate left (harmonic-forge#792) after
+# parsing its arguments, so `-- --help` never deletes a live one (harmonic-forge#1117).
+# harmonic-forge#1117: mise appends arguments given after `--` to the run
+# script's LAST line, so the script call must be last. The script writes the
+# marker itself, only after a passed check: an EXIT trap here also fired on
+# `-- --help`, which exits 0 having checked nothing (preclose survivor).
+eval python3 tools/gh/check_lane3_ready.py --mark-active $usage_args
 '''
 
 [tasks.lane3-end]
@@ -511,7 +457,7 @@ usage = '''
 arg "args" var=#true help="tools/gh/kill_check.py run|waive plus its flags"
 '''
 run = '''
-eval python3 tools/gh/kill_check.py $usage_args
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/kill_check.py $usage_args
 '''
 
 [tasks.preclose-check]
@@ -520,7 +466,7 @@ usage = '''
 arg "args" var=#true help="tools/gh/preclose_check.py's own flags verbatim, e.g. --repo owner/name --issue N [--base REF] [--head REF] [--tier fast|standard|deep] [--complete] [--force] [--allow-dirty] [--allow-repo-mismatch]"
 '''
 run = '''
-eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" $usage_args
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" $usage_args
 '''
 
 [tasks.preclose-test]

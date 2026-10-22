@@ -38,6 +38,7 @@ except ImportError:
 # gate uses, so the readiness-marker snapshot can never diverge from what
 # Lane 3's own CI-outrun guard already considers authoritative.
 import gate_ci
+import _caller_path  # noqa: E402
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "telemetry"))
 try:
     import eras as _eras  # harmonic-forge#1000: the one reader of a spec's classes= footer
@@ -3190,6 +3191,7 @@ def main() -> None:
     # checked nothing about the post). The gate is a clean --dry-run of the same
     # post, enforced below once the repo and SHA are resolved.
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'file', 'ae_file', 'sweep_file')  # harmonic-forge#1117 AC2
     validate_carry_forward_args(args)
     prod_run = None
     if args.prod_run is not None:

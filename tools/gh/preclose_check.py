@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_passes  # noqa: E402  (harmonic-forge#834)
 import preclose_enrollment  # noqa: E402  (harmonic-forge#890)
 import imc_waiver  # noqa: E402  (harmonic-forge#895)
+import _caller_path  # noqa: E402  (harmonic-forge#1117)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 # harmonic-forge#939: the Claude verify reviewer is accepted by the model-tier
@@ -1268,6 +1269,7 @@ def main() -> None:
     parser.add_argument("--allow-repo-mismatch", action="store_true",
                         help="Permit --repo to differ from this checkout's origin remote.")
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'findings', 'envelope')  # harmonic-forge#1117 AC2
     # harmonic-forge#1076: the preflight receipt is recorded (or required) only
     # once main()'s own argument validation has passed, just before dispatch, so
     # a no-force run this tool rejects never counts as the preflight.

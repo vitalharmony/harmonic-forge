@@ -24,6 +24,7 @@ already pure REST and is unchanged.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 from manifest_identity import apply_project_identity  # noqa: E402
+import _caller_path  # noqa: E402
 
 
 def post_comment(repo: str, issue: int, body_file: Path, source_content: str) -> int:
@@ -93,6 +95,15 @@ def main() -> int:
     group.add_argument("--file", type=Path, help="Path to a file containing the comment body")
     group.add_argument("--body", type=str, help="Comment body as a literal string (written to a tempfile internally)")
     args = parser.parse_args()
+    _caller_path.resolve_args(args, 'file')  # harmonic-forge#1117 AC2
+    _caller_path.refuse_repo_override(parser, 'post-comment')
+    # harmonic-forge#266, moved here from the wrapper by harmonic-forge#1117
+    # (operator ruling): a body passed as a shell argument is corrupted by
+    # backticks, printf specifiers and dropped apostrophes, so the mise task
+    # refuses it. Direct callers keep --body for short literal bodies.
+    if args.body is not None and os.environ.get("MISE_TASK_NAME") == "post-comment":
+        parser.error("--body is refused through `mise run post-comment`; write the body "
+                     "to a file and pass --file (harmonic-forge#266)")
     apply_project_identity(args.repo)  # harmonic-forge#804
 
     tmp_path: Path | None = None

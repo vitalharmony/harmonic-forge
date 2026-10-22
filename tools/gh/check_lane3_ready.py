@@ -416,6 +416,27 @@ def tier_w_availability() -> str | None:
     return entry.get("text") if entry else None
 
 
+def _marker() -> Path:
+    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+    return Path(git_dir) / "LANE3_ACTIVE"
+
+
+def clear_marker() -> None:
+    """Remove a marker an earlier gate left, so it never survives a refusal
+    (harmonic-forge#792). Runs after argument parsing, so `--help` or a usage
+    error exits first and a live marker is untouched (harmonic-forge#1117)."""
+    _marker().unlink(missing_ok=True)
+
+
+def mark_active() -> None:
+    """Touch `LANE3_ACTIVE` in this worktree's git dir, unlocking gate-checkout
+    (harmonic-forge#138). Called only after every readiness check passed, so
+    `--help` or a refusal never leaves a marker (harmonic-forge#1117)."""
+    _marker().touch()
+    print(f"lane3-begin: {Path.cwd()} marked Lane 3-active", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -449,6 +470,14 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
+        "--mark-active", action="store_true",
+        help=(
+            "harmonic-forge#1117: on a passed readiness check only, touch "
+            "<git-dir>/LANE3_ACTIVE (mise run lane3-begin passes this). --help, "
+            "a usage error or a refusal exits before the marker is written."
+        ),
+    )
+    parser.add_argument(
         "--json", action="store_true",
         help=(
             "harmonic-forge#878: on success print exactly one JSON object, "
@@ -458,6 +487,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    if args.mark_active:
+        clear_marker()
     wanted = None
     if args.require_prod_run is not None:
         try:
@@ -494,6 +525,8 @@ def main(argv: list[str] | None = None) -> None:
         if reason is not None:
             fail(f"{repo}#{issue}: {reason}")
         prod_run = _prod_run.declared(authority.get("body", ""))
+    if args.mark_active:
+        mark_active()
     if args.json:
         print(json.dumps({
             "repo": repo,
