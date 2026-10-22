@@ -94,18 +94,27 @@ def record(key: str, kind: str, session: str | None = None,
         return False
     try:
         try:
-            entry = open_entry(read_entries(session), key)
+            entries = read_entries(session)
         except OSError:
-            entry = None
+            entries = []
+        entry = open_entry(entries, key)
         path = _dir(session) / f"{key}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         # Reforge epoch 2: one marker per key, always overwritten; the latest
         # wins, and Stop reads the issue's live state to decide what it owes.
-        path.write_text(json.dumps({
+        # Entries already reading closed now can never show this action
+        # (epoch 2 pass 1). The write is atomic: a killed hook leaves the old
+        # marker or the new one, never a truncated file read as no marker.
+        stale = [str(e.get("id")) for e in entries
+                 if str(e.get("subject") or "").startswith(f"{key} — closed")]
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({
             "key": key, "kind": kind,
             "ts": now if now is not None else time.time(),
             "subject": str((entry or {}).get("subject") or ""),
+            "stale_ids": stale,
         }), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         return False
     prune(now)

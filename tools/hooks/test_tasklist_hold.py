@@ -197,15 +197,6 @@ class PreToolUse(Base):
         (self.tasks / "1.json").write_text("{not json")
         self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
 
-    def test_one_unreadable_file_among_valid_ones_allows_stop(self):
-        """Reforge epoch 1 (E): a skipped entry would be judged absent."""
-        self.entry(1, "F9 — handoff posted · waiting on Lane 2 implement")
-        owed.record("F9", "handoff", session=SESSION)
-        self.entry(1, "F9 — handoff posted · waiting on Lane 2 implement")
-        (self.tasks / "2.json").write_text("{not json")
-        (self.tasks / "3.txt").write_text("skipped")
-        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
-
     def test_main_prints_json_deny(self):
         self.entry(1, "H1 — review")
         out = io.StringIO()
@@ -315,6 +306,61 @@ class Stop(Base):
         owed.record("F9", "handoff", session=SESSION)
         marker = json.loads((owed.OWED_DIR / SESSION / "F9.json").read_text())
         self.assertEqual(marker["kind"], "handoff")
+
+    def test_one_unreadable_file_among_valid_ones_allows_stop(self):
+        """Reforge epoch 1 (E): a skipped entry would be judged absent. The
+        entry was never updated, so only the unreadable-file rule can allow."""
+        now = time.time()
+        self.entry(1, "F9 — handoff posted · waiting on Lane 2 implement", mtime=now - 60)
+        owed.record("F9", "handoff", session=SESSION, now=now)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+        (self.tasks / "2.json").write_text("{not json")
+        (self.tasks / "3.txt").write_text("skipped")
+        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+
+    def test_unreadable_state_judges_the_open_entry_locally(self):
+        """Epoch 2 pass 1: K/Y/D (or a failed read) still owes its open entry."""
+        now = time.time()
+        self.entry(1, "K65 — implementing", mtime=now - 60)
+        owed.record("K65", "completion", session=SESSION, now=now - 30)
+        with mock.patch.object(hold, "issue_closed", side_effect=RuntimeError("K")):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+            self.entry(1, "K65 — L2D posted · waiting on Lane 1 review", mtime=now)
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+
+    def test_spent_read_budget_judges_locally_without_reading(self):
+        now = time.time()
+        self.entry(1, "F9 — implementing", mtime=now - 60)
+        owed.record("F9", "completion", session=SESSION, now=now - 30)
+        with mock.patch.object(hold, "STOP_READ_BUDGET", -1), \
+                mock.patch.object(hold, "issue_closed") as read:
+            self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+        read.assert_not_called()
+
+    def test_a_deleted_closed_entry_does_not_wedge_stop(self):
+        """Epoch 2 pass 1: AC1 allows deleting a shown closed entry."""
+        owed.record("F123", "close", session=SESSION)
+        with self.closed(True):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_a_touched_old_closed_entry_never_shows_a_new_close(self):
+        """Epoch 2 pass 1: a status-only touch bumps an old entry's mtime."""
+        now = time.time()
+        self.entry(1, "F9 — closed (abc)", status="completed", mtime=now - 600)
+        self.entry(2, "F9 — rework posted · waiting on Lane 2 implement", mtime=now - 300)
+        owed.record("F9", "close", session=SESSION, now=now - 30)
+        self.entry(1, "F9 — closed (abc)", status="completed", mtime=now)
+        with self.closed(True):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+
+    def test_marker_write_is_atomic(self):
+        owed.record("F9", "handoff", session=SESSION)
+        before = (owed.OWED_DIR / SESSION / "F9.json").read_text()
+        with mock.patch.object(owed.os, "replace", side_effect=OSError("killed")):
+            self.assertFalse(owed.record("F9", "close", session=SESSION))
+        self.assertEqual((owed.OWED_DIR / SESSION / "F9.json").read_text(), before)
+        self.assertEqual([m["kind"] for m in owed.markers(SESSION)], ["handoff"])
 
     def test_stop_hook_active_allows(self):
         owed.record("F9", "handoff", session=SESSION)

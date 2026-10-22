@@ -62,6 +62,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -75,6 +76,10 @@ OTHER_ACCOUNT = {"K", "Y", "D"}
 # kills prints nothing, which would let the update through; a timeout here
 # raises and the caller denies.
 GH_TIMEOUT = 6
+#: Stop's total budget for live reads, under its 10 s hook timeout (epoch 2
+#: pass 1): a killed hook prints nothing, which would allow. Past it, each
+#: remaining key is judged locally.
+STOP_READ_BUDGET = 7
 
 
 def _closed_subject(key: str, subject: str) -> bool:
@@ -199,20 +204,31 @@ def stop_decide(payload: dict) -> tuple[str, str]:
         _note(f"task directory unreadable, allowing stop: {exc}")
         return "allow", ""
     missing = []
+    deadline = time.monotonic() + STOP_READ_BUDGET
     for marker in found:
         key, kind = str(marker["key"]), str(marker.get("kind") or "post")
+        ts = float(marker.get("ts") or 0)
+        # A `— closed` entry shows this close only when it was written after the
+        # marker and is not one that already read closed when the marker was
+        # recorded (epoch 2 pass 1: a status-only touch bumps an old one's mtime).
+        stale = {str(i) for i in marker.get("stale_ids") or []}
+        shown = any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
+                    and float(e["_mtime"]) >= ts and str(e.get("id")) not in stale
+                    for e in entries)
         # Reforge epoch 2: the issue's live state decides which update is owed;
         # a `— closed` subject is display, never proof. An unreadable state
-        # (K/Y/D, network) allows, Stop's documented failure direction.
+        # (K/Y/D, network, or Stop's read budget spent) is judged locally below.
         try:
-            closed = issue_closed(key)
+            if time.monotonic() > deadline:
+                raise RuntimeError("Stop's read budget is spent")
+            closed: bool | None = issue_closed(key)
         except RuntimeError as exc:
-            _note(f"{key}'s state unreadable, allowing stop: {exc}")
-            continue
-        if closed:
-            ts = float(marker.get("ts") or 0)
-            if any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
-                   and float(e["_mtime"]) >= ts for e in entries):
+            _note(f"{key}'s state unreadable, judging its entry locally: {exc}")
+            closed = None
+        if closed or (closed is None and shown):
+            if shown or not any(owed.entry_key(e) == key for e in entries):
+                # Shown, or its entry already left the list (a delete AC1
+                # allows only after the close was shown).
                 owed.clear(session, key)
             else:
                 missing.append(f"  - {key}: it is closed; set its entry to \"{key} — closed\"")

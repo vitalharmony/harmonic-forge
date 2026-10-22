@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -53,6 +54,9 @@ def _short_repo(tokens: list[str]) -> str | None:
 #: Its `.claude/settings.json` timeout must exceed this (preclose epoch 1 pass 2),
 #: or Claude Code kills the hook before any marker is written.
 NETWORK_BUDGET = 15 + 30 + 30
+#: This hook's timeout in `.claude/settings.json` (pinned by a test).
+HOOK_TIMEOUT = 90
+_ALREADY_CLOSED = re.compile(r"\balready closed\b", re.I)
 
 
 def _cwd_repo(payload: dict) -> str | None:
@@ -71,23 +75,43 @@ def _cwd_repo(payload: dict) -> str | None:
     return done.stdout.strip() or None
 
 
-def events(payload: dict) -> list[tuple[str, str]]:
-    """`[(key, kind), ...]` this Bash call owes, kind in merge/pr/close."""
+def events(payload: dict, on_event=None) -> list[tuple[str, str]]:
+    """`[(key, kind), ...]` this Bash call owes, kind in merge/pr/close.
+    `on_event` is called with each one as soon as it is verified, so a hook
+    killed at its timeout keeps every marker already written (epoch 2 pass 1);
+    a segment needing a network read is skipped once the next one could
+    outrun the hook timeout."""
     import batch_auth  # noqa: PLC0415
     command = (payload.get("tool_input") or {}).get("command") or ""
-    found = []
+    found: list[tuple[str, str]] = []
+    start = time.monotonic()
+
+    def add(key: str, kind: str) -> None:
+        found.append((key, kind))
+        if on_event:
+            on_event(key, kind)
+
+    def spent() -> bool:
+        return time.monotonic() - start > HOOK_TIMEOUT - NETWORK_BUDGET
+
     for segment in command_segments(command):
         close = batch_auth.classify_issue_close(segment)
+        if close and close[1] and spent():
+            continue
         if close and close[1]:
+            if _ALREADY_CLOSED.search(_output(payload)):
+                continue  # gh skipped it: nothing closed, nothing owed
             repo, number = close[0] or _short_repo(segment) or _cwd_repo(payload), close[1]
             if not repo:
                 continue
             if batch_auth.action_landed("close", repo, number):
                 key = batch_auth.issue_key(repo, number)
                 if key:
-                    found.append((key, "close"))
+                    add(key, "close")
             continue
         merge = batch_auth.classify_pr_merge(segment)
+        if merge and merge[1] and spent():
+            continue
         if merge and merge[1]:
             repo, number = merge[0] or _short_repo(segment) or _cwd_repo(payload), merge[1]
             if not repo:
@@ -95,7 +119,7 @@ def events(payload: dict) -> list[tuple[str, str]]:
             if batch_auth.action_landed("merge", repo, number):
                 key = batch_auth.derive_issue_key(repo, number, {})
                 if key:
-                    found.append((key, "merge"))
+                    add(key, "merge")
             continue
         tokens = strip_invocation_prefix(segment)
         if tokens[:3] and Path(tokens[0]).name == "gh" and tokens[1:3] == ["pr", "create"]:
@@ -103,7 +127,7 @@ def events(payload: dict) -> list[tuple[str, str]]:
             if match:
                 key = _title_key(tokens, match.group(1))
                 if key:
-                    found.append((key, "pr"))
+                    add(key, "pr")
     return found
 
 
@@ -118,8 +142,7 @@ def main() -> int:
         return 0
     try:
         session = payload.get("session_id") or owed.session_id()
-        for key, kind in events(payload):
-            owed.record(key, kind, session=session)
+        events(payload, on_event=lambda key, kind: owed.record(key, kind, session=session))
     except Exception:
         pass
     return 0
