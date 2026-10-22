@@ -416,13 +416,24 @@ def tier_w_availability() -> str | None:
     return entry.get("text") if entry else None
 
 
+def _marker() -> Path:
+    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+    return Path(git_dir) / "LANE3_ACTIVE"
+
+
+def clear_marker() -> None:
+    """Remove a marker an earlier gate left, so it never survives a refusal
+    (harmonic-forge#792). Runs after argument parsing, so `--help` or a usage
+    error exits first and a live marker is untouched (harmonic-forge#1117)."""
+    _marker().unlink(missing_ok=True)
+
+
 def mark_active() -> None:
     """Touch `LANE3_ACTIVE` in this worktree's git dir, unlocking gate-checkout
     (harmonic-forge#138). Called only after every readiness check passed, so
     `--help` or a refusal never leaves a marker (harmonic-forge#1117)."""
-    git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
-                             capture_output=True, text=True, check=True).stdout.strip()
-    (Path(git_dir) / "LANE3_ACTIVE").touch()
+    _marker().touch()
     print(f"lane3-begin: {Path.cwd()} marked Lane 3-active", file=sys.stderr)
 
 
@@ -476,6 +487,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    if args.mark_active:
+        clear_marker()
     wanted = None
     if args.require_prod_run is not None:
         try:

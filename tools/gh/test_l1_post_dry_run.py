@@ -5,6 +5,7 @@ real post in this session."""
 import contextlib
 import io
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -194,12 +195,18 @@ class DryRunTests(Harness):
     def test_wrapper_and_direct_runs_share_digest(self):
         body = self.body(R4L3)
         cwd = os.getcwd()
-        os.chdir(self.dir)
+        # The wrapper cds elsewhere (Lane 1's tools worktree), so run from a
+        # directory that does NOT hold the body: only HF_CALLER_CWD can find
+        # it, and deleting resolve_args fails this test (pass-2 survivor).
+        elsewhere = Path(tempfile.mkdtemp(prefix="l1-post-elsewhere-"))
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        os.chdir(elsewhere)
         self.addCleanup(os.chdir, cwd)
+        self.assertFalse((elsewhere / body.name).exists())
         relative = ("--repo", REPO, "--issue", ISSUE, "--kind", "ready-for-l3", "--sha", SHA_A,
                     "--branch", "fix/1115-x", "--file", body.name, "--dry-run")
-        # A wrapper run: mise exports the caller's directory, which l1_post
-        # resolves the relative --file against (harmonic-forge#1117 AC2).
+        # A wrapper run: the exec line passes the caller's directory, which
+        # l1_post resolves the relative --file against (harmonic-forge#1117 AC2).
         with mock.patch.dict(os.environ, {"L1_POST_ENTRY": "mise run l1-post",
                                           "HF_CALLER_CWD": str(self.dir)}):
             self.assertIsNone(self.run_main(*relative)[0])

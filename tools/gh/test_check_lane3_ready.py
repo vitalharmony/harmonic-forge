@@ -3,6 +3,8 @@
 
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -136,6 +138,39 @@ class MarkActiveTests(unittest.TestCase):
                                   cwd=tmp, capture_output=True, text=True, timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse((Path(tmp) / ".git" / "LANE3_ACTIVE").exists())
+
+    def test_refusal_clears_a_stale_marker(self):
+        # harmonic-forge#792: a marker an earlier gate left never survives a refusal.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "LANE3_ACTIVE"
+            marker.touch()
+            with mock.patch.object(c, "_marker", return_value=marker):
+                self._main([_comment(1, "sweep", "2026-08-15T10:00:00Z")], ["--mark-active"])
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(shutil.which("mise"), "mise not installed")
+    def test_lane3_begin_help_keeps_a_live_marker(self):
+        # harmonic-forge#1117 pass-2 survivor: the task body used to `rm -f`
+        # the marker before the script parsed `-- --help`, so reading the
+        # flags mid-gate unlocked nothing and deleted the live marker.
+        repo = Path(c.__file__).resolve().parents[2]
+        text = (repo / "mise.toml").read_text()
+        start = re.search(r"(?m)^\[tasks\.lane3-begin\]\n", text)
+        end = re.search(r"(?m)^\[[A-Za-z]", text[start.end():])
+        block = text[start.start(): start.end() + end.start()]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            (root / "tools").mkdir()
+            (root / "tools" / "gh").symlink_to(Path(c.__file__).resolve().parent)
+            (root / "mise.toml").write_text(block)
+            marker = root / ".git" / "LANE3_ACTIVE"
+            marker.touch()
+            env = {**os.environ, "MISE_TRUSTED_CONFIG_PATHS": tmp}
+            done = subprocess.run(["mise", "run", "-q", "lane3-begin", "--", "--help"],
+                                  cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue(marker.exists(), "lane3-begin -- --help deleted a live marker")
 
 
 class MainReadinessTests(unittest.TestCase):

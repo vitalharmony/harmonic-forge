@@ -10,6 +10,7 @@ drift did in production: mise rejects the argument before the script runs.
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import os
 import re
@@ -193,19 +194,45 @@ class RepoOverride(unittest.TestCase):
                 self.assertRegex(text, r"""eval HF_CALLER_CWD='"\$MISE_ORIGINAL_CWD"' python3 \S*tools/gh/"""
                                  + script + r"\.py")
 
-    def test_every_script_resolves_its_file_flags(self):
-        expected = {
-            "l1_post.py": ("file", "ae_file", "sweep_file"),
-            "post_lane_discussion.py": ("file",),
-            "post_lane1_issue.py": ("body_file",),
-            "post_comment.py": ("file",),
-            "gh_issue.py": ("body_file",),
-            "l2_post.py": ("narrative_file", "real_run_file", "receipts"),
-        }
-        for script, names in expected.items():
-            with self.subTest(script=script):
-                call = "_caller_path.resolve_args(args, " + ", ".join(map(repr, names)) + ")"
-                self.assertIn(call, (HERE / script).read_text())
+    def test_every_path_argument_is_resolved(self):
+        # Pass-2 survivor: resolve_args covered only --file in some scripts, so
+        # other file-path arguments the verbatim wrapper newly reaches
+        # (--tc-classes, --tc-results) were read relative to the tools
+        # worktree. Read every wrapper-reached script's parser, not a
+        # hand-kept list: any type=Path argument, or one whose flag names a
+        # file or receipts, must be in that script's resolve_args call.
+        # This checkout's copy of each script a verbatim wrapper runs
+        # (discovery expands the forge-root prefix to the main checkout).
+        tasks = set(verbatim_tasks())
+        scripts = {HERE / script.name
+                   for name, script in wp.discover_wrapper_tasks(REPO / "mise.toml")
+                   if name in tasks}
+        self.assertGreaterEqual(len(scripts), 6)
+        for script in sorted(scripts):
+            tree = ast.parse(script.read_text())
+            wanted, resolved = set(), set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                attr = getattr(node.func, "attr", "")
+                if attr == "add_argument":
+                    flags = [a.value for a in node.args if isinstance(a, ast.Constant)
+                             and isinstance(a.value, str) and a.value.startswith("--")]
+                    if not flags:
+                        continue
+                    kw = {k.arg: k.value for k in node.keywords}
+                    typ = kw.get("type")
+                    is_path = getattr(typ, "id", None) == "Path" or any(
+                        re.search(r"file|receipts", f) for f in flags)
+                    if is_path:
+                        dest = kw.get("dest")
+                        wanted.add(dest.value if isinstance(dest, ast.Constant)
+                                   else flags[0][2:].replace("-", "_"))
+                elif attr == "resolve_args":
+                    resolved |= {a.value for a in node.args[1:] if isinstance(a, ast.Constant)}
+            with self.subTest(script=script.name):
+                self.assertEqual(sorted(wanted - resolved), [],
+                                 f"{script.name}: path arguments not passed to resolve_args")
 
 
 class Shape(unittest.TestCase):
@@ -225,6 +252,20 @@ class Shape(unittest.TestCase):
             (Path(tmp) / "tools" / "gh").symlink_to(HERE)
             problems = wp.shape_violations(mt, EXEMPT)
         self.assertTrue(any(p.startswith("l2-snapshot: usage re-declares --issue")
+                            for p in problems), problems)
+
+    def test_short_alias_flag_line_fails(self):
+        # Pass-2 survivor: `flag "-d --dry-run"` used to slip past --shape, and
+        # mise then consumed --dry-run, so the caller's dry run became a real post.
+        with tempfile.TemporaryDirectory() as tmp:
+            text = re.sub(r'(\[tasks\.l1-post\][^\[]*?usage = \'\'\'\n)',
+                          r'\1flag "-d --dry-run"\n', (REPO / "mise.toml").read_text(), count=1)
+            mt = Path(tmp) / "mise.toml"
+            mt.write_text(text)
+            (Path(tmp) / "tools").mkdir()
+            (Path(tmp) / "tools" / "gh").symlink_to(HERE)
+            problems = wp.shape_violations(mt, EXEMPT)
+        self.assertTrue(any(p.startswith("l1-post: usage re-declares -d --dry-run")
                             for p in problems), problems)
 
     def test_shape_expect_names_a_missing_task(self):

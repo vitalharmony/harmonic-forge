@@ -514,7 +514,7 @@ def main() -> None:
         help="harmonic-forge#893: a JSON object mapping each case id a gate report ran to "
              "pass, fail or blocked. Without it a gate report posts with results=absent.")
     args = parser.parse_args()
-    _caller_path.resolve_args(args, 'file')  # harmonic-forge#1117 AC2
+    _caller_path.resolve_args(args, 'file', 'tc_classes', 'tc_results')  # harmonic-forge#1117 AC2
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
         fail("--ack-no-pr-required requires a non-empty reason")
     # Preclose finding: the reason is written INSIDE the HTML-comment footer,

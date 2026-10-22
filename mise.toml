@@ -380,9 +380,8 @@ arg "[args]" var=#true help="tools/gh/check_lane3_ready.py arguments verbatim, e
 '''
 run = '''
 set -e
-git_dir="$(git rev-parse --absolute-git-dir)"
-# A marker left by an earlier gate must not survive a refusal (harmonic-forge#792).
-rm -f "$git_dir/LANE3_ACTIVE"
+# The script clears a marker an earlier gate left (harmonic-forge#792) after
+# parsing its arguments, so `-- --help` never deletes a live one (harmonic-forge#1117).
 # harmonic-forge#1117: mise appends arguments given after `--` to the run
 # script's LAST line, so the script call must be last. The script writes the
 # marker itself, only after a passed check: an EXIT trap here also fired on

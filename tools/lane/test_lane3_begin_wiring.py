@@ -50,10 +50,17 @@ class Lane3BeginWiringTests(unittest.TestCase):
 STUB = """import json, os, subprocess, sys
 open(os.environ["STUB_ARGV"], "w").write(json.dumps(sys.argv[1:]))
 code = int(os.environ["STUB_EXIT"])
-if code == 0 and "--mark-active" in sys.argv:
+# Mirrors check_lane3_ready.py's contract (harmonic-forge#1117): with
+# --mark-active it clears a stale marker after parsing (never on --help),
+# and writes one only on a pass.
+if "--mark-active" in sys.argv and "--help" not in sys.argv:
     git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
                              capture_output=True, text=True).stdout.strip()
-    open(os.path.join(git_dir, "LANE3_ACTIVE"), "w").close()
+    marker = os.path.join(git_dir, "LANE3_ACTIVE")
+    if os.path.exists(marker):
+        os.remove(marker)
+    if code == 0:
+        open(marker, "w").close()
 sys.exit(code)
 """
 

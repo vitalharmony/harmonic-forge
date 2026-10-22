@@ -110,7 +110,12 @@ _USAGE_BLOCK = re.compile(r"^usage:(.*?)(?:\n\n|\n[A-Za-z])", re.S | re.M)
 _LONG_FLAG = re.compile(r"--[A-Za-z][\w-]*")
 
 # `flag "--name <value>"` inside a mise task's `usage = '''...'''` block.
-_MISE_FLAG = re.compile(r"""^\s*flag\s+"(--[\w-]+)""", re.M)
+# The long name of a `flag` spec, including mise's short-alias form
+# `flag "-d --dry-run"` (harmonic-forge#1117 pass-2 survivor).
+_MISE_FLAG = re.compile(r"""^\s*flag\s+"(?:-\w\s+)?(--[\w-]+)""", re.M)
+# AC4's shape check: ANY `flag` line, whatever its form (`-x`, `-x --long`,
+# `--long`), re-declares part of a verbatim wrapper's surface.
+_ANY_FLAG_LINE = re.compile(r'^\s*flag\s+"([^"]+)"', re.M)
 _MISE_ARG = re.compile(r"""^\s*arg\s+"\[?args\]?\"""", re.M)
 
 # A literal `python3 <path>.py` (or `<interpreter-path>/python3 <path>.py`,
@@ -307,7 +312,7 @@ def shape_violations(mise_toml: Path, exempt: set[str]) -> list[str]:
         usage = usage if isinstance(usage, str) else ""
         run = entry.get("run", "")
         run = _COMMENT_LINE.sub("", run) if isinstance(run, str) else ""
-        flags = _MISE_FLAG.findall(usage)
+        flags = _ANY_FLAG_LINE.findall(usage)
         if flags:
             problems.append(f"{name}: usage re-declares {', '.join(flags)}; "
                             f"forward $usage_args verbatim instead")
