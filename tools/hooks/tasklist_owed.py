@@ -12,22 +12,32 @@ session's record), prune by mtime after `PRUNE_AFTER_DAYS`, and every failure
 is silent -- `record()` never raises into a post that already succeeded.
 
 Layout: `~/.cache/harmonic-forge/tasklist_owed/<session>/<KEY>.json`, one file
-per issue key, holding `{key, kind, ts, subject}`. `subject` is the key's open
-entry subject at record time, so the Stop hook can tell a rewritten entry from
-a status-only touch.
+per issue key, holding `{key, kind, ts}`. Reforge epoch 4: a marker is cleared
+only by `tasklist_hold.py`'s PostToolUse hook, when a successful TaskCreate or
+TaskUpdate gives an entry carrying the key its subject; nothing compares task
+files against the marker.
+
+`<session>/.lock` serializes the PreToolUse sibling check, and
+`<session>/.pending/<taskId>` records an entry whose removal was just allowed
+on the strength of a sibling, for `PENDING_TTL` seconds, so a parallel call
+never counts it as the survivor (epoch 3 pass 2, survivor 1).
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 OWED_DIR = Path.home() / ".cache" / "harmonic-forge" / "tasklist_owed"
 TASKS_DIR = Path.home() / ".claude" / "tasks"
 PRUNE_AFTER_DAYS = 7
+#: Seconds a sibling-allowed removal stays pending (well over a hook's 10 s).
+PENDING_TTL = 60
 OPEN_STATUSES = ("pending", "in_progress")
 KEY_RE = re.compile(r"^([HFIOPKYD])(\d+)\b")
 
@@ -76,13 +86,6 @@ def open_entries(entries: list[dict], key: str) -> list[dict]:
     return [e for e in entries if e.get("status") in OPEN_STATUSES and entry_key(e) == key]
 
 
-def open_entry(entries: list[dict], key: str) -> dict | None:
-    for entry in entries:
-        if entry.get("status") in OPEN_STATUSES and entry_key(entry) == key:
-            return entry
-    return None
-
-
 def _dir(session: str) -> Path:
     return OWED_DIR / session
 
@@ -97,11 +100,6 @@ def record(key: str, kind: str, session: str | None = None,
         # session id in run_tests.py, would otherwise do).
         return False
     try:
-        try:
-            entries = read_entries(session)
-        except OSError:
-            entries = []
-        entry = open_entry(entries, key)
         path = _dir(session) / f"{key}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         # One marker per key, always overwritten; the latest wins.
@@ -111,12 +109,6 @@ def record(key: str, kind: str, session: str | None = None,
         tmp.write_text(json.dumps({
             "key": key, "kind": kind,
             "ts": now if now is not None else time.time(),
-            "subject": str((entry or {}).get("subject") or ""),
-            # Epoch 3 pass 1: every open entry's subject (Stop judges them all,
-            # never the first in filesystem order), and whether the key had an
-            # entry at all, so "never created" is not read as "already left".
-            "subjects": [str(e.get("subject") or "") for e in open_entries(entries, key)],
-            "had_entry": any(entry_key(e) == key for e in entries),
         }), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
@@ -152,6 +144,37 @@ def markers(session: str) -> list[dict]:
     return found
 
 
+@contextmanager
+def session_lock(session: str):
+    """An exclusive lock over `session`'s sibling check. Raises OSError when
+    it cannot be taken; the caller denies."""
+    directory = _dir(session)
+    directory.mkdir(parents=True, exist_ok=True)
+    with open(directory / ".lock", "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def pending_removals(session: str, now: float | None = None) -> set[str]:
+    """Task ids whose removal was allowed within `PENDING_TTL`. Raises OSError
+    on an unreadable record directory; a missing one is empty."""
+    directory = _dir(session) / ".pending"
+    if not directory.exists():
+        return set()
+    cutoff = (now if now is not None else time.time()) - PENDING_TTL
+    return {p.name for p in directory.iterdir() if p.stat().st_mtime >= cutoff}
+
+
+def mark_pending(session: str, task_id: str) -> None:
+    """Raises OSError; the caller denies rather than allow an unrecorded removal."""
+    directory = _dir(session) / ".pending"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / task_id).write_text("", encoding="utf-8")
+
+
 def clear(session: str, key: str) -> None:
     try:
         (_dir(session) / f"{key}.json").unlink()
@@ -171,7 +194,12 @@ def prune(now: float | None = None) -> None:
     for directory in dirs:
         try:
             for path in directory.iterdir():
-                if path.stat().st_mtime < cutoff:
+                if path.is_dir():
+                    for record in path.iterdir():
+                        if record.stat().st_mtime < cutoff:
+                            record.unlink()
+                    path.rmdir()
+                elif path.stat().st_mtime < cutoff:
                     path.unlink()
             directory.rmdir()
         except OSError:

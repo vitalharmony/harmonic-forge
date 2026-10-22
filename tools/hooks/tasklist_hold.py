@@ -26,10 +26,10 @@ is this lane's own.
    sees the close, and only then completed.
 2. Every lane post, merge, PR or close on an issue owes its entry an update
    naming that action (`tasklist_owed.py` records it; `stop_decide` refuses to
-   end the turn until the entry is rewritten). One marker per key, the latest
-   wins. Stop makes no state read: each marker is satisfied when its key's
-   open entry was rewritten after it, or when the key has no open entry left
-   (an entry leaves only through rule 1, which proved the close shown).
+   end the turn while the marker remains). One marker per key, the latest
+   wins. Reforge epoch 4: only a successful TaskCreate or TaskUpdate that
+   gives an entry carrying the key its subject clears the marker
+   (`posttooluse_decide`). Stop compares nothing and makes no state read.
 3. An entry names a concrete step (read, review, push/PR, post), never only
    the issue.
 4. With no active step, nothing is `in_progress`.
@@ -43,10 +43,10 @@ one home.
 
 Claude Code lane sessions only: a session with no `LANE` is not subject to
 either hook. Codex lanes keep R-0376's record. In PreToolUse an unreadable
-task file or a failed GitHub read denies, with the reason (reforge epoch 3).
-In Stop an unreadable task directory allows (with a stderr note): the layout
-is Claude Code's, and failing closed on a format change would wedge every
-lane at once. A K/Y/D key (the
+task file, a failed GitHub read, or a sibling lock or pending-removal record
+that cannot be used denies, with the reason (reforge epoch 3). A TaskUpdate
+that rewrites a subject to the same text still clears its marker: PostToolUse
+sees only the call, not the subject it replaced (epoch 4 residual). A K/Y/D key (the
 harmonicarchitect account) is never read under the ambient credentials: an
 open K/Y/D entry is denied, naming the account (`rules/lane-shorthand.md`: an
 empty result is never absence), and a `<KEY> — closed` entry may be completed
@@ -160,7 +160,7 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
         return "allow", ""
     if any(str(e.get("id")) != task_id and e.get("status") in owed.OPEN_STATUSES
            and owed.entry_key(e) == key for e in entries):
-        return "allow", ""
+        return _sibling_decide(session, task_id, key)
     if key[0] in OTHER_ACCOUNT and _closed_subject(key, stored):
         return "allow", ""
     try:
@@ -180,8 +180,49 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
                     "(tools/hooks/tasklist_hold.py).")
 
 
+def _sibling_decide(session: str, task_id: str, key: str) -> tuple[str, str]:
+    """Epoch 3 pass 2 (survivor 1): under the session lock, re-read the list
+    and count a sibling as the survivor only when its own removal is not
+    pending; an allowed removal is then recorded as pending. Two parallel
+    completions of a key's last two entries cannot both pass."""
+    try:
+        with owed.session_lock(session):
+            entries = owed.read_entries(session)
+            pending = owed.pending_removals(session)
+            if any(str(e.get("id")) not in (task_id, *pending)
+                   and e.get("status") in owed.OPEN_STATUSES
+                   and owed.entry_key(e) == key for e in entries):
+                owed.mark_pending(session, task_id)
+                return "allow", ""
+    except OSError as exc:
+        return "deny", (f"{key}'s sibling entries could not be checked ({exc}); retry this "
+                        "update.")
+    return "deny", (f"{key}'s other entry is being removed by a parallel call, so this is its "
+                    f"last entry and the issue is not shown closed. Update it to \"{SHAPE}\" "
+                    "instead (tools/hooks/tasklist_hold.py).")
+
+
+def posttooluse_decide(payload: dict) -> str | None:
+    """AC2 (epoch 4): the key whose marker this successful TaskCreate or
+    TaskUpdate settles, after clearing it, or None. It settles a marker only
+    when the call gives an entry carrying the key its subject."""
+    if not os.environ.get("LANE"):
+        return None
+    if payload.get("tool_name") not in ("TaskCreate", "TaskUpdate"):
+        return None
+    session = payload.get("session_id") or ""
+    subject = (payload.get("tool_input") or {}).get("subject")
+    if not session or not isinstance(subject, str):
+        return None
+    key = owed.entry_key({"subject": subject})
+    if key:
+        owed.clear(session, key)
+    return key
+
+
 def stop_decide(payload: dict) -> tuple[str, str]:
-    """AC2/AC3: `("allow", "")` or `("block", reason)`."""
+    """AC2/AC3 (epoch 4): `("allow", "")` or `("block", reason)`. Compares
+    nothing: every marker left is an update still owed."""
     if not os.environ.get("LANE"):
         return "allow", ""
     session = payload.get("session_id") or ""
@@ -193,37 +234,8 @@ def stop_decide(payload: dict) -> tuple[str, str]:
     transcript = payload.get("transcript_path") or ""
     if transcript and asks_a_question(last_assistant_text(Path(transcript))):
         return "allow", ""
-    try:
-        entries = owed.read_entries(session)
-    except OSError as exc:
-        _note(f"task directory unreadable, allowing stop: {exc}")
-        return "allow", ""
-    missing = []
-    for marker in found:
-        key, kind = str(marker["key"]), str(marker.get("kind") or "post")
-        # Reforge epoch 3: no state read and no closed logic here. AC1 lets an
-        # entry leave only once the issue reads closed live and its stored
-        # subject showed the close, so a key with no open entry owes nothing.
-        live = owed.open_entries(entries, key)
-        if not live:
-            # Left through AC1, or never created: only the first is settled
-            # (epoch 3 pass 1). A key with no entry gets one (AC2).
-            if marker.get("had_entry", True):
-                owed.clear(session, key)
-            else:
-                missing.append(f"  - {key}: after `{kind}`, it has no entry; add one")
-            continue
-        ts = float(marker.get("ts") or 0)
-        before = set(marker.get("subjects") or [str(marker.get("subject") or "")])
-        if any(float(e["_mtime"]) >= ts and str(e.get("subject") or "") not in before
-               for e in live):
-            owed.clear(session, key)
-        elif all(ts > float(e["_mtime"]) for e in live):
-            missing.append(f"  - {key}: after `{kind}`, its entry was not updated")
-        else:
-            missing.append(f"  - {key}: after `{kind}`, its entry's subject is unchanged")
-    if not missing:
-        return "allow", ""
+    missing = [f"  - {m['key']}: after `{m.get('kind') or 'post'}`, create or rewrite its entry"
+               for m in found]
     return "block", ("Task-list entries owe an update for this turn's posts:\n"
                      + "\n".join(missing)
                      + f"\n\nEach entry reads \"{SHAPE}\" (tools/hooks/tasklist_hold.py).")
@@ -244,6 +256,8 @@ def main() -> int:
                 print(json.dumps({"hookSpecificOutput": {
                     "hookEventName": "PreToolUse", "permissionDecision": "deny",
                     "permissionDecisionReason": reason}}))
+        elif event == "PostToolUse":
+            posttooluse_decide(payload)
         elif event == "Stop":
             if payload.get("stop_hook_active"):
                 return 0
