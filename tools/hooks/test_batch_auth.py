@@ -288,6 +288,49 @@ class RearmRevokedTests(StateFixture):
         self.assertTrue(self._merges())
         self.assertTrue(all(not t["consumed"] for t in self._merges()))
 
+    def _rearm(self, session_id=None, now=None):
+        rearmed: list[str] = []
+        with mock.patch.object(ba, "_now", return_value=now or datetime.now(timezone.utc)):
+            fresh = ba.top_up(["F1"], state_path=self.state_path, session_id=session_id,
+                              rearm_revoked=True, rearmed=rearmed)
+        return fresh, rearmed, ba._load(self.state_path)["F1"]
+
+    def test_k1a_rearmed_targets_are_fresh_and_nothing_is_newly_authorized(self):
+        self._grant()
+        ba.revoke(["F1"], state_path=self.state_path)
+        fresh, rearmed, entry = self._rearm()
+        self.assertEqual((fresh, rearmed), ([], ["F1"]))
+        for target in entry["targets"]:
+            self.assertFalse(target["consumed"])
+            self.assertIsNone(target.get("consumed_by"))
+
+    def test_k1b_session_ids_carry_over_and_dedupe(self):
+        ba.authorize(["F1"], actions=["gh pr merge", "gh pr merge"],
+                     state_path=self.state_path, session_id="session-A")
+        ba.revoke(["F1"], state_path=self.state_path)
+        _, _, entry = self._rearm(session_id="session-B")
+        self.assertEqual(entry["session_ids"], ["session-A", "session-B"])
+        ba.revoke(["F1"], state_path=self.state_path)
+        _, _, entry = self._rearm(session_id="session-A")
+        self.assertEqual(entry["session_ids"], ["session-A", "session-B"])
+
+    def test_k1c_rearm_sets_a_fresh_expiry_and_grant_time(self):
+        self._grant()
+        old = ba._load(self.state_path)["F1"]["expires_at"]
+        ba.revoke(["F1"], state_path=self.state_path)
+        later = datetime.now(timezone.utc) + timedelta(hours=1)
+        _, _, entry = self._rearm(now=later)
+        self.assertEqual(entry["expires_at"],
+                         (later + timedelta(hours=ba.DEFAULT_TTL_HOURS)).isoformat())
+        self.assertEqual(entry["authorized_at"], later.isoformat())
+        self.assertGreater(entry["expires_at"], old)
+
+    def test_k1d_a_legacy_entry_without_sessions_takes_the_new_session(self):
+        self._grant()
+        ba.revoke(["F1"], state_path=self.state_path)
+        _, _, entry = self._rearm(session_id="session-B")
+        self.assertEqual(entry["session_ids"], ["session-B"])
+
     def test_k2_plain_top_up_cli_never_rearms(self):
         self._grant()
         ba.revoke(["F1"], state_path=self.state_path)
