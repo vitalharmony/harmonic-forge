@@ -53,7 +53,9 @@ PROBE_SUFFIXES = (" --help", " --dry-run")
 _ACTIONS_RE = re.compile(r"YOUR NEXT ACTIONS", re.I)
 _BLOCK_RE = re.compile(r"^[ \t]*(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
                        r"(?P<body>.*?)^[ \t]*(?P=fence)`*[ \t]*$", re.M | re.S)
-_DECLARED_RE = re.compile(r"^[ \t]*`+[ \t]*operator-commands\b", re.M)
+#: A fence line declaring the block, at any backtick count; never inline code.
+_DECLARED_RE = re.compile(r"^[ \t]*`{3,}[ \t]*operator-commands[ \t]*$", re.M)
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _OPERATOR_CHARS = set(";&|()<>")
 
 
@@ -67,15 +69,17 @@ def lines_of(body: str) -> list[str]:
 
 
 def shape_problem(line: str) -> str | None:
-    """Why a line is not one plain command, or None."""
-    if "$(" in line or "`" in line:
-        return "holds command substitution; split it or simplify it"
-    lexer = shlex.shlex(line, posix=True, punctuation_chars="".join(sorted(_OPERATOR_CHARS)))
+    """Why a line is not one plain command, or None. Tokens keep their quotes
+    (posix=False), so quoted text is never read as an operator, and single-
+    quoted text is never read as a substitution (epoch 2 pass 1)."""
+    lexer = shlex.shlex(line, posix=False, punctuation_chars="".join(sorted(_OPERATOR_CHARS)))
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
     except ValueError:
         return "the shell cannot split it; split it or simplify it"
+    if any(("$(" in t or "`" in t) and not t.startswith("'") for t in tokens):
+        return "holds command substitution; split it or simplify it"
     bad = sorted({t for t in tokens if t and set(t) <= _OPERATOR_CHARS and t != "&&"})
     if bad:
         return f"holds {' '.join(bad)}; one command per line (`&&` is allowed)"
@@ -89,14 +93,20 @@ def probed(line: str, probes: set[str]) -> bool:
 
 
 def not_runnable(line: str) -> bool:
-    try:
-        head = shlex.split(line)[:1]
-    except ValueError:
-        return False
-    if not head:
-        return False
-    path = os.path.expanduser(head[0])
-    return "/" in path and os.path.isfile(path) and not os.access(path, os.X_OK)
+    """AC2 for each `&&`-joined command, past any `VAR=value` prefix."""
+    for part in line.split("&&"):
+        try:
+            tokens = [t for t in shlex.split(part)]
+        except ValueError:
+            return False
+        while tokens and _ASSIGNMENT_RE.match(tokens[0]):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        path = os.path.expanduser(tokens[0])
+        if "/" in path and os.path.isfile(path) and not os.access(path, os.X_OK):
+            return True
+    return False
 
 
 def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
@@ -113,7 +123,7 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
                          "per line (`# none` when there is no command) (harmonic-forge#1151).")
     complete = True
     if probes is None:
-        calls, truncated = scan_turn(transcript, drop_background=True)[:2]
+        calls, truncated = scan_turn(transcript, drop_background=True, require_result=True)[:2]
         complete = not truncated  # a partial view is not absence
         probes = [call[0] for call in calls]
     probe_set = {p.strip() for p in probes}

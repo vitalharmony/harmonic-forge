@@ -134,6 +134,34 @@ class Decide(unittest.TestCase):
         self.assertEqual(verdict, "block")
         self.assertIn("not executable as written", reason)
 
+    def test_ac2_checks_every_joined_command_past_assignments(self):
+        """Epoch 2 pass 1: not only the line's first token."""
+        for line in (f"cd /tmp && {self.script}", f"FOO=1 {self.script}"):
+            t = self.fresh()
+            t.bash(line)
+            with self.subTest(line=line):
+                verdict, reason = self.decide(t.say(block(line)))
+                self.assertEqual(verdict, "block")
+                self.assertIn("not executable as written", reason)
+
+    def test_quoted_operators_and_single_quoted_substitution_are_text(self):
+        for line in ("gh issue comment 1 --body 'a > b'", "gh issue comment 1 --body '$(x)'"):
+            t = self.fresh()
+            t.bash(line)
+            with self.subTest(line=line):
+                self.assertEqual(self.decide(t.say(block(line)))[0], "allow")
+
+    def test_inline_mention_of_the_info_string_is_not_a_second_block(self):
+        self.t.bash("gh pr view 1")
+        text = block("gh pr view 1") + "\n`operator-commands` above holds the step.\n"
+        self.assertEqual(self.decide(self.t.say(text))[0], "allow")
+
+    def test_a_probe_with_no_result_is_no_probe(self):
+        """Epoch 2 pass 1: a call that never returned is no evidence."""
+        self.t.bash("gh pr merge 12")
+        self.t.entries.pop()  # drop its tool_result
+        self.assertEqual(self.decide(self.t.say(block("gh pr merge 12")))[0], "block")
+
     def test_actions_without_a_block_are_refused(self):
         for text in ("**YOUR NEXT ACTIONS**\n1. `gh pr merge 1`\n",
                      "## YOUR NEXT ACTIONS\n> ```\n> rm -rf build\n> ```\n",
