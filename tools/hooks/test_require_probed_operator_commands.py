@@ -180,6 +180,19 @@ class Decide(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(self.decide(t.say(block(line)))[0], "block")
 
+    def test_ansi_c_quoting_and_comments_are_refused(self):
+        """Post-verdict: forms the lexer does not model are refused, not read."""
+        for line in ("echo $'it\\'s' # x' && ./s.sh", "echo $'a'", "gh pr view 1 # note"):
+            t = self.fresh()
+            t.bash(line)
+            with self.subTest(line=line):
+                verdict, reason = self.decide(t.say(block(line)))
+                self.assertEqual(verdict, "block")
+                self.assertIn("cannot split it", reason)
+        t = self.fresh()
+        t.bash("gh pr view 1 --body 'a#b'")
+        self.assertEqual(self.decide(t.say(block("gh pr view 1 --body 'a#b'")))[0], "allow")
+
     def test_substitution_is_named_as_such(self):
         for line in ('echo "$(x)"', "echo `id`", "echo $(id)"):
             t = self.fresh()

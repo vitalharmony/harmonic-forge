@@ -93,6 +93,10 @@ def segments(line: str) -> tuple[list[str], set[str]] | None:
             elif c == "`" or line.startswith("$(", i):
                 hits.add("$(" if c == "$" else "`")
             cur.append(c)
+        elif line.startswith("$'", i):
+            return None  # ANSI-C quoting: refused, never modelled (sticky-wicket)
+        elif c == "#" and (not cur or cur[-1].isspace()):
+            return None  # a comment: everything after it is invisible here
         elif c in "'\"":
             quote = c
             cur.append(c)
