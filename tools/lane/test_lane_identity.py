@@ -18,6 +18,7 @@ from unittest import mock
 LANE_DIR = Path(__file__).resolve().parent
 ONBOARD = LANE_DIR.parent / "onboard"
 sys.path.insert(0, str(LANE_DIR))
+from _lane3_policy import needs_trusted_lane3_policy  # noqa: E402
 sys.path.insert(0, str(ONBOARD))
 
 import lane_targets as lt  # noqa: E402
@@ -156,6 +157,7 @@ class LauncherTests(unittest.TestCase):
     def _tmux_calls(self) -> list[str]:
         return self.tmux_log.read_text().splitlines() if self.tmux_log.exists() else []
 
+    @needs_trusted_lane3_policy
     def test_claude_gets_the_label_as_its_session_name(self):
         for lane in ("1", "2", "3"):
             with self.subTest(lane=lane):
