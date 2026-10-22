@@ -193,9 +193,11 @@ class PreToolUse(Base):
         self.entry(1, "K12 — L2D posted")
         self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
 
-    def test_unreadable_task_file_allows(self):
-        (self.tasks / "1.json").write_text("{not json")
-        self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+    def test_unreadable_task_file_denies(self):
+        """Epoch 3 (AC1): an unreadable task file denies; it never lifts the hold."""
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        (self.tasks / "2.json").write_text("{not json")
+        self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
 
     def test_main_prints_json_deny(self):
         self.entry(1, "H1 — review")
@@ -242,11 +244,24 @@ class Stop(Base):
         self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
         self.assertEqual(owed.markers(SESSION), [])
 
-    def test_marker_with_no_entry_is_refused(self):
-        owed.record("F9", "handoff", session=SESSION)
-        verdict, reason = hold.stop_decide(self.stop())
-        self.assertEqual(verdict, "block")
-        self.assertIn("no open entry", reason)
+    def test_a_key_with_no_open_entry_owes_nothing(self):
+        """Epoch 3 (AC2): an entry leaves only through AC1, which proved the
+        close shown, so a key with no open entry is cleared without a read."""
+        owed.record("F9", "close", session=SESSION)
+        self.entry(1, "F9 — closed (abc)", status="completed")
+        with mock.patch.object(hold, "issue_closed") as read:
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+        read.assert_not_called()
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_a_close_marker_with_an_open_entry_owes_its_update(self):
+        """Epoch 3: a close marker is an ordinary marker."""
+        now = time.time()
+        self.entry(1, "F9 — merged abc · waiting on YOU: close", mtime=now - 60)
+        owed.record("F9", "close", session=SESSION, now=now - 30)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+        self.entry(1, "F9 — closed (abc)", mtime=now)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
     def test_question_turn_is_not_refused(self):
         owed.record("F9", "handoff", session=SESSION)
@@ -266,30 +281,6 @@ class Stop(Base):
             self.entry(1, "F1112 — closed (5a1b2c3)", status="completed", mtime=now)
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
         self.assertFalse((owed.OWED_DIR / SESSION / "F1112.json").exists())
-
-    def test_post_on_a_reopened_issue_needs_an_open_entry(self):
-        """Reforge epoch 2: an old `— closed` entry is not proof once reopened."""
-        now = time.time()
-        self.entry(1, "F1112 — closed (abc)", status="completed", mtime=now - 60)
-        owed.record("F1112", "handoff", session=SESSION, now=now)
-        with self.closed(False):
-            verdict, reason = hold.stop_decide(self.stop())
-        self.assertEqual(verdict, "block")
-        self.assertIn("no open entry", reason)
-
-    def test_second_close_cycle_needs_a_fresh_closed_entry(self):
-        """Reforge epoch 2: a `— closed` entry from an earlier close never
-        satisfies a later close; the entry must be updated after the marker."""
-        now = time.time()
-        self.entry(1, "F9 — closed (abc)", status="completed", mtime=now - 600)
-        self.entry(2, "F9 — rework posted · waiting on Lane 2 implement", mtime=now - 300)
-        owed.record("F9", "close", session=SESSION, now=now)
-        with self.closed(True):
-            verdict, reason = hold.stop_decide(self.stop())
-            self.assertEqual(verdict, "block")
-            self.assertIn("F9 — closed", reason)
-            self.entry(2, "F9 — closed (def)", mtime=now + 1)
-            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
     def test_close_reopen_post_follows_the_live_state(self):
         """Reforge epoch 2: a post after a close replaces its marker, so a
@@ -327,15 +318,6 @@ class Stop(Base):
             self.assertEqual(hold.stop_decide(self.stop())[0], "block")
             self.entry(1, "K65 — L2D posted · waiting on Lane 1 review", mtime=now)
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
-
-    def test_spent_read_budget_judges_locally_without_reading(self):
-        now = time.time()
-        self.entry(1, "F9 — implementing", mtime=now - 60)
-        owed.record("F9", "completion", session=SESSION, now=now - 30)
-        with mock.patch.object(hold, "STOP_READ_BUDGET", -1), \
-                mock.patch.object(hold, "issue_closed") as read:
-            self.assertEqual(hold.stop_decide(self.stop())[0], "block")
-        read.assert_not_called()
 
     def test_a_deleted_closed_entry_does_not_wedge_stop(self):
         """Epoch 2 pass 1: AC1 allows deleting a shown closed entry."""

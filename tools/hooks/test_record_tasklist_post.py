@@ -41,35 +41,23 @@ class Events(unittest.TestCase):
                 mock.patch.object(hook, "_cwd_repo", return_value=None):
             self.assertEqual(hook.events(bash("gh issue close 1112")), [])
 
-    def test_an_already_closed_issue_records_nothing(self):
-        """Epoch 2 pass 1: gh skips the close; nothing closed, nothing owed."""
-        payload = bash("gh issue close 1112 -R vitalharmony/harmonic-forge",
-                       stdout="! Issue #1112 (x) is already closed\n")
-        with mock.patch.object(batch_auth, "action_landed", return_value=True):
-            self.assertEqual(hook.events(payload), [])
-
-    def test_each_event_is_recorded_before_the_next_is_verified(self):
-        """Epoch 2 pass 1: a later timeout keeps the earlier marker."""
+    def test_each_event_is_recorded_as_it_is_found(self):
+        """Epoch 2 pass 1: a later failure keeps the earlier marker."""
         seen = []
-        with mock.patch.object(batch_auth, "action_landed",
-                               side_effect=[True, RuntimeError("timeout")]):
+        with mock.patch.object(batch_auth, "issue_key", side_effect=["F1", RuntimeError("x")]):
             with self.assertRaises(RuntimeError):
                 hook.events(bash("gh issue close 1 -R vitalharmony/harmonic-forge; "
                                  "gh issue close 2 -R vitalharmony/harmonic-forge"),
                             on_event=lambda k, kind: seen.append(k))
         self.assertEqual(seen, ["F1"])
 
-    def test_spent_budget_skips_further_network_segments(self):
-        with mock.patch.object(batch_auth, "action_landed", return_value=True) as landed, \
-                mock.patch.object(hook.time, "monotonic", side_effect=[0, 0, 1000, 1000]):
-            found = hook.events(bash("gh issue close 1 -R vitalharmony/harmonic-forge; "
-                                     "gh issue close 2 -R vitalharmony/harmonic-forge"))
-        self.assertEqual(found, [("F1", "close")])
-        self.assertEqual(landed.call_count, 1)
-
-    def test_failed_close_records_nothing(self):
-        with mock.patch.object(batch_auth, "action_landed", return_value=False):
-            self.assertEqual(hook.events(bash("gh issue close 1112 -R vitalharmony/harmonic-forge")), [])
+    def test_every_close_records_without_reading_whether_it_landed(self):
+        """Epoch 3: no landed check and no output reading."""
+        with mock.patch.object(batch_auth, "action_landed") as landed:
+            found = hook.events(bash("gh issue close 1112 -R vitalharmony/harmonic-forge",
+                                     stdout="! Issue #1112 (x) is already closed\n"))
+        self.assertEqual(found, [("F1112", "close")])
+        landed.assert_not_called()
 
     def test_landed_merge_records_linked_issue(self):
         with mock.patch.object(batch_auth, "action_landed", return_value=True), \
@@ -83,10 +71,6 @@ class Events(unittest.TestCase):
                    '--title "Dry run (harmonic-forge#1115)" --body-file b.md')
         found = hook.events(bash(command, "https://github.com/vitalharmony/harmonic-forge/pull/1128\n"))
         self.assertEqual(found, [("F1115", "pr")])
-
-    def test_failed_pr_create_records_nothing(self):
-        command = 'gh pr create -R vitalharmony/harmonic-forge --title "x (harmonic-forge#1115)"'
-        self.assertEqual(hook.events(bash(command, "pull request create failed")), [])
 
     def test_other_commands_record_nothing(self):
         self.assertEqual(hook.events(bash("git status && gh issue view 12")), [])

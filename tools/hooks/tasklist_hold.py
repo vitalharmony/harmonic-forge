@@ -27,9 +27,9 @@ is this lane's own.
 2. Every lane post, merge, PR or close on an issue owes its entry an update
    naming that action (`tasklist_owed.py` records it; `stop_decide` refuses to
    end the turn until the entry is rewritten). One marker per key, the latest
-   wins. Stop reads the issue's state live: a closed issue owes a
-   `<KEY> — closed` entry updated after the marker; an open one owes its open
-   entry's update. The `— closed` subject is display, never proof.
+   wins. Stop makes no state read: each marker is satisfied when its key's
+   open entry was rewritten after it, or when the key has no open entry left
+   (an entry leaves only through rule 1, which proved the close shown).
 3. An entry names a concrete step (read, review, push/PR, post), never only
    the issue.
 4. With no active step, nothing is `in_progress`.
@@ -42,15 +42,15 @@ one home.
 ## Scope and failure direction
 
 Claude Code lane sessions only: a session with no `LANE` is not subject to
-either hook. Codex lanes keep R-0376's record. An unreadable task file or task
-directory allows (with a stderr note): the layout is Claude Code's, and
-failing closed on a format change would wedge every lane at once. An
-unreadable GitHub state denies, with the reason. A K/Y/D key (the
+either hook. Codex lanes keep R-0376's record. In PreToolUse an unreadable
+task file or a failed GitHub read denies, with the reason (reforge epoch 3).
+In Stop an unreadable task directory allows (with a stderr note): the layout
+is Claude Code's, and failing closed on a format change would wedge every
+lane at once. A K/Y/D key (the
 harmonicarchitect account) is never read under the ambient credentials: an
 open K/Y/D entry is denied, naming the account (`rules/lane-shorthand.md`: an
 empty result is never absence), and a `<KEY> — closed` entry may be completed
-on the lane's own word, because its state cannot be read here. In Stop, an
-unreadable state (K/Y/D included) allows.
+on the lane's own word, because its state cannot be read here.
 
 The deny is JSON on stdout with exit 0, because HRSE2 wraps every forge hook
 in `|| true` (AC0, probed on Claude Code 2.1.305).
@@ -62,7 +62,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -76,10 +75,6 @@ OTHER_ACCOUNT = {"K", "Y", "D"}
 # kills prints nothing, which would let the update through; a timeout here
 # raises and the caller denies.
 GH_TIMEOUT = 6
-#: Stop's total budget for live reads, under its 10 s hook timeout (epoch 2
-#: pass 1): a killed hook prints nothing, which would allow. Past it, each
-#: remaining key is judged locally.
-STOP_READ_BUDGET = 7
 
 
 def _closed_subject(key: str, subject: str) -> bool:
@@ -144,8 +139,8 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     try:
         entries = owed.read_entries(session)
     except OSError as exc:
-        _note(f"task directory unreadable, allowing: {exc}")
-        return "allow", ""
+        return "deny", (f"a task file could not be read ({exc}), so this update cannot be "
+                        "checked; retry it (epoch 3: an unreadable task file denies).")
     target = next((e for e in entries if str(e.get("id")) == task_id), None)
     if target is None:
         _note(f"task {task_id} not readable, allowing")
@@ -204,37 +199,14 @@ def stop_decide(payload: dict) -> tuple[str, str]:
         _note(f"task directory unreadable, allowing stop: {exc}")
         return "allow", ""
     missing = []
-    deadline = time.monotonic() + STOP_READ_BUDGET
     for marker in found:
         key, kind = str(marker["key"]), str(marker.get("kind") or "post")
-        # A `— closed` entry shows this close only when it did not already read
-        # closed when the marker was recorded: an entry that turned closed since
-        # was written after the marker, and an old one's mtime proves nothing
-        # (epoch 2 pass 1: a status-only touch bumps it).
-        stale = {str(i) for i in marker.get("stale_ids") or []}
-        shown = any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
-                    and str(e.get("id")) not in stale for e in entries)
-        # Reforge epoch 2: the issue's live state decides which update is owed;
-        # a `— closed` subject is display, never proof. An unreadable state
-        # (K/Y/D, network, or Stop's read budget spent) is judged locally below.
-        try:
-            if time.monotonic() > deadline:
-                raise RuntimeError("Stop's read budget is spent")
-            closed: bool | None = issue_closed(key)
-        except RuntimeError as exc:
-            _note(f"{key}'s state unreadable, judging its entry locally: {exc}")
-            closed = None
-        if closed or (closed is None and shown):
-            if shown or not any(owed.entry_key(e) == key for e in entries):
-                # Shown, or its entry already left the list (a delete AC1
-                # allows only after the close was shown).
-                owed.clear(session, key)
-            else:
-                missing.append(f"  - {key}: it is closed; set its entry to \"{key} — closed\"")
-            continue
+        # Reforge epoch 3: no state read and no closed logic here. AC1 lets an
+        # entry leave only once the issue reads closed live and its stored
+        # subject showed the close, so a key with no open entry owes nothing.
         entry = owed.open_entry(entries, key)
         if entry is None:
-            missing.append(f"  - {key}: after `{kind}`, it has no open entry; add one")
+            owed.clear(session, key)
         elif float(marker.get("ts") or 0) > float(entry["_mtime"]):
             missing.append(f"  - {key}: after `{kind}`, its entry was not updated")
         elif str(entry.get("subject") or "") == str(marker.get("subject") or ""):
