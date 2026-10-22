@@ -193,10 +193,17 @@ class Decide(unittest.TestCase):
         with mock.patch.object(hook, "scan_turn", return_value=([], True)):
             self.assertEqual(self.decide(path)[0], "block")
 
-    def test_no_actions_text_or_a_question_is_allowed(self):
+    def test_no_actions_text_is_allowed(self):
         self.assertEqual(self.decide(self.t.say("All done, nothing owed."))[0], "allow")
-        text = block("gh pr merge 12") + "\n## DECISIONS NEEDED\n1. Should I merge it? Yes.\n"
-        self.assertEqual(self.decide(self.fresh().say(text))[0], "allow")
+
+    def test_a_question_withholds_only_never_probed(self):
+        """Operator-approved 2026-10-22: a question never bypasses the gate."""
+        tail = "\n## DECISIONS NEEDED\n1. Should I merge it? Yes.\n"
+        self.assertEqual(self.decide(self.fresh().say(block("gh pr merge 12") + tail))[0], "allow")
+        for text in (block(str(self.script)) + tail, block("a | b") + tail,
+                     "## YOUR NEXT ACTIONS\n`gh pr merge 1`\nProceed?\n"):
+            with self.subTest(text=text):
+                self.assertEqual(self.decide(self.fresh().say(text))[0], "block")
 
 
 class ScanTurn(unittest.TestCase):

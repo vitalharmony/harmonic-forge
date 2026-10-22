@@ -26,9 +26,9 @@ shell at all.
   is a file with no execute bit is refused whatever was probed.
 
 The hook nudges at most once per turn: `stop_hook_active` is honoured before
-anything else. A turn that ends at a genuine question is allowed (shared
-`turn_question`). A truncated transcript scan withholds only the "never
-probed" finding.
+anything else. A turn that ends at a genuine question (shared
+`turn_question`) or a truncated transcript scan withholds only the "never
+probed" finding; every other check still runs.
 
 Documented limits: a stop that follows a sibling Stop hook's block carries
 `stop_hook_active` and is not re-read; an unexpected error allows the stop;
@@ -114,19 +114,23 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     if not transcript:
         return "allow", ""
     text = last_assistant_text(Path(transcript))
-    if not text or asks_a_question(text) or not _ACTIONS_RE.search(text):
+    if not text or not _ACTIONS_RE.search(text):
         return "allow", ""
+    # A question turn withholds only "never probed" (operator-approved
+    # 2026-10-22): the block shape and AC2 still run, so a question can end
+    # the turn without a probe but never bypass the gate.
+    question = asks_a_question(text)
     declared = blocks(text)
     if len(declared) != 1 or len(_DECLARED_RE.findall(text)) != 1:
         return "block", ("A response with YOUR NEXT ACTIONS carries exactly one "
                          "`operator-commands` block, opened with four backticks, one command "
                          "per line (`# none` when there is no command) (harmonic-forge#1151).")
-    complete = True
-    if probes is None:
+    complete = not question
+    if probes is None and complete:
         calls, truncated = scan_turn(transcript, drop_background=True, require_result=True)[:2]
         complete = not truncated  # a partial view is not absence
         probes = [call[0] for call in calls]
-    probe_set = {p.strip() for p in probes}
+    probe_set = {p.strip() for p in probes or []}
     problems = []
     for line in lines_of(declared[0]):
         why = shape_problem(line)
