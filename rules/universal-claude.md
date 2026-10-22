@@ -84,9 +84,15 @@ derivable from code or Git.
   that specific push.
 <!-- /R-0084 -->
 <!-- R-0388 -->
-- Scratch-heavy checks (`l1-post` ready-for-l3 checks, image builds,
-  kill-check archives) run one at a time. (Parallel checks filled the 16 GB
-  `/tmp` tmpfs on 2026-10-08.)
+- Two check slots, split by kind; never more than one of each.
+  Scratch-heavy checks (HRSE2 ready-for-l3/`l1-post` checks, kill checks,
+  image builds) run one at a time under `tools/gh/_scratch.py`'s machine-wide
+  lock; do not add a session check-slot lock around them. A forge
+  `mise run check` in a worktree holds the one forge-check slot, machine-wide
+  (one at a time across every session), and may run alongside a scratch check.
+  If swap exceeds 10G, `/tmp` has under 10 GB free, or the scratch root is
+  under its `HRSE_SCRATCH_MIN_FREE_GB` floor, drop back to one check total:
+  the running scratch check finishes and the forge check waits.
 <!-- /R-0388 -->
 <!-- R-0389 -->
 - A Tooling Exception branch is pushed only with a passing `mise run check`

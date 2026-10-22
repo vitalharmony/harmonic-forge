@@ -2610,8 +2610,8 @@ hooks = []
 id = "R-0388"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
-statement = "Scratch-heavy checks run one at a time."
-text_sha = "0276a5a4bb931577"
+statement = "Two check slots split by kind: scratch-heavy checks one at a time under _scratch.py's machine-wide lock, one forge mise run check alongside; drop to one under swap >10G or a disk floor."
+text_sha = "78081ddd1ddbd038"
 hooks = []
 
 [[rule]]
