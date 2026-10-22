@@ -124,9 +124,6 @@ A `CronCreate`/`ScheduleWakeup` job armed for a scoped purpose is deleted in the
 <!-- R-0418 -->
 A backgrounded command is never polled by a second shell or a sleep loop. The harness notifies on completion.
 <!-- /R-0418 -->
-<!-- R-0419 -->
-The task list is updated inside the action that changes it, with exactly one item in progress, and an item is closed the moment it is answered.
-<!-- /R-0419 -->
 <!-- R-0087 -->
 - **Every merge silently closes a stacked child PR pointing at the merged
   branch** — not only `gh pr merge --delete-branch`. Every project repo
@@ -161,5 +158,5 @@ The task list is updated inside the action that changes it, with exactly one ite
 When the auto-mode classifier blocks an unattended-agent launcher (a `claude -p` job, its timer), tighten the design once if it deserves it, then hand the install command to the operator. Never route around the block.
 <!-- /R-0411 -->
 <!-- R-0412 -->
-An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open.
+An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open, and leave that tab open.
 <!-- /R-0412 -->

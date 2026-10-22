@@ -187,7 +187,7 @@ A turn that asks the operator a genuine question ends at that question. Work tha
 Filing an issue, even one this session diagnosed itself, never authorizes implementing it. Implementation starts only on an operator instruction that names the issue (hard form of R-0092).
 <!-- /R-0392 -->
 <!-- R-0393 -->
-A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits or the worktree.
+A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits, the worktree or conversation context.
 <!-- /R-0393 -->
 
 <!-- R-0093 -->

@@ -340,7 +340,7 @@ training data goes stale the moment a vendor ships a new version.
   unverified rather than silently substituting a plausible-looking guess.
 <!-- /R-0028 -->
 <!-- R-0398 -->
-Credentials or env vars handed to the operator for a tool run are enumerated per component (backend and provider separately) from that tool's docs, never from what the last error named.
+Credentials or env vars handed to the operator for a tool run are enumerated per component (backend and provider separately) from that tool's docs, never from what the last error named. What an existing doc already lists is not enough.
 <!-- /R-0398 -->
 
 ## API ABSTRACTION (FRONTEND)
