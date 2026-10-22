@@ -956,7 +956,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         if skipped:
             passed_over.add(pending["id"])
             log("item", f"{pending['id']} {skipped}")
-    for _step in range(max_steps):
+    worked = 0  # a passed-over item uses no step; each one joins passed_over
+    while worked < max_steps:
         item = next((i for i in state["items"]
                      if i.get("status") == "pending" and i["id"] not in passed_over), None)
         if item is None:
@@ -970,6 +971,7 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
             log("item", f"{item['id']} undecidable ({exc}); passed over this run")
             continue
         set_status(item, "in_progress", run_id)
+        worked += 1
         save(queue, state)
         log("item", f"{item['id']} in progress")
         try:
@@ -989,6 +991,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
                    note=outcome.get("detail", ""))
         if outcome.get("reason"):  # AC1: what this set-aside depended on
             item["last_outcome"] = {**snapshot, "reason": outcome["reason"]}
+        else:  # green: a stale set-aside record must not gate it later
+            item.pop("last_outcome", None)
         for key, default in DONE_KEYS.items():  # never overwrites pushed_sha set before a push
             item.setdefault(key, default)
         save(queue, state)

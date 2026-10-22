@@ -501,6 +501,46 @@ class Pipeline(unittest.TestCase):
         work.assert_not_called()
         self.assertEqual(self.item()["status"], "pending")
 
+    def test_a_passed_over_item_uses_no_step(self):
+        # Sticky-wicket PATCH 2: with one step, an undecidable F7 at the head
+        # must not stop F8 from being worked.
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
+
+        def marker(issue):
+            if issue == 7:
+                raise te_run.te_queue.QueueError("cannot read")
+            return 11
+        worked = []
+        with mock.patch.object(te_run.te_queue, "issue_number",
+                               side_effect=lambda key: int(key[1:])), \
+                mock.patch.object(te_run.te_queue, "lane1_marker_id", side_effect=marker), \
+                mock.patch.object(te_run, "work_item",
+                                  side_effect=lambda item, *a: worked.append(item["id"])
+                                  or (_ for _ in ()).throw(te_run.Blocked("stop"))):
+            with mock.patch.dict(os.environ, {}):
+                te_run.run_queue(self.queue, "1", 1)
+        self.assertEqual(worked, ["F8"])
+        self.assertEqual(self.item("F7")["status"], "pending")
+
+    def test_a_green_run_clears_a_stale_last_outcome(self):
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0]["last_outcome"] = {
+            "run_id": "run-old", "reason": "check-fail", "lane1_marker_id": 10,
+            "bundle_digest": self.digest, "runner_tree": "tree0"}
+        te_run.queue_state.save(self.queue, state)
+        self.drive()
+        item = self.item()
+        self.assertEqual(item["verdict"]["state"], "green")
+        self.assertNotIn("last_outcome", item)
+
+    def test_an_unreadable_bundle_at_snapshot_is_never_worked(self):
+        with mock.patch.object(te_run.te_queue.kill_runner, "bundle_digest",
+                               side_effect=te_run.te_queue.kill_runner.RunnerError("gone")), \
+                mock.patch.object(te_run, "work_item") as work:
+            self.drive()
+        work.assert_not_called()
+        self.assertEqual(self.item()["status"], "pending")
+
     def test_failed_receipt_keeps_kill_facts(self):
         # harmonic-forge#1147 AC6 (F1073, run 7): the receipt failed, but the
         # facts it judged stay on the item, so the report names each check

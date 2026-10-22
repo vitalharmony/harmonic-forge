@@ -197,7 +197,7 @@ def handoff(issue: int) -> str | None:
     """The newest posted Lane 1 handoff's body, or None."""
     try:
         comments = fetch_lane1_context.fetch_comments(REPO, issue)
-    except SystemExit as exc:
+    except (SystemExit, ValueError) as exc:  # ValueError: an unparseable body
         raise QueueError(f"cannot read the comments of F{issue}") from exc
     handoffs = [c.get("body", "") for c in comments if is_handoff(c)]
     return handoffs[-1] if handoffs else None
@@ -208,7 +208,7 @@ def lane1_marker_id(issue: int) -> int | None:
     by the same login-plus-marker test as `is_handoff`, or None."""
     try:
         comments = fetch_lane1_context.fetch_comments(REPO, issue)
-    except SystemExit as exc:
+    except (SystemExit, ValueError) as exc:  # ValueError: an unparseable body
         raise QueueError(f"cannot read the comments of F{issue}") from exc
     ids = []
     for comment in comments:
@@ -240,8 +240,8 @@ def outcome_record(issue: int, run_id: str, reason: str | None) -> dict:
     the item is worked, so a Lane 1 post that lands mid-run re-arms it."""
     try:
         digest = kill_runner.bundle_digest(bundle_dir(issue))
-    except kill_runner.RunnerError:
-        digest = None
+    except kill_runner.RunnerError as exc:  # undecidable, as in unchanged()
+        raise QueueError(f"kill bundle of F{issue} unreadable: {exc}") from exc
     return {"run_id": run_id, "reason": reason, "lane1_marker_id": lane1_marker_id(issue),
             "bundle_digest": digest, "runner_tree": runner_tree(), "runner_source": str(SOURCE)}
 
