@@ -293,6 +293,9 @@ class Stop(Base):
         self.assertIn(hold.SHAPE, reason)
 
     def test_status_only_update_does_not_settle(self):
+        # The entry is open and carries the key, so only the missing subject
+        # can keep the marker (kill check at b323003: no entry was vacuous).
+        self.entry(1, "H2463 — implementing")
         owed.record("H2463", "completion", session=SESSION)
         self.assertIsNone(hold.posttooluse_decide(self.post("TaskUpdate", taskId="1",
                                                             status="in_progress")))
