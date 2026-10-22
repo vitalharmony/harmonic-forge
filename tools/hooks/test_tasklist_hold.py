@@ -264,7 +264,9 @@ class Stop(Base):
         self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
     def test_question_turn_is_not_refused(self):
+        self.entry(9, "F9 — implementing", mtime=time.time() - 60)
         owed.record("F9", "handoff", session=SESSION)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "block")  # owed without the guard
         transcript = self.tmp / "t.jsonl"
         transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Should I post the rework now?"}]}}) + "\n")
@@ -345,7 +347,9 @@ class Stop(Base):
         self.assertEqual([m["kind"] for m in owed.markers(SESSION)], ["handoff"])
 
     def test_stop_hook_active_allows(self):
+        self.entry(9, "F9 — implementing", mtime=time.time() - 60)
         owed.record("F9", "handoff", session=SESSION)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "block")  # owed without the guard
         out = io.StringIO()
         payload = self.stop(stop_hook_active=True)
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
@@ -360,7 +364,9 @@ class Stop(Base):
 
     def test_no_lane_session_is_exempt(self):
         self.entry(1, "H1 — review")
+        self.entry(9, "F9 — implementing", mtime=time.time() - 60)
         owed.record("F9", "handoff", session=SESSION)
+        self.assertEqual(hold.stop_decide(self.stop())[0], "block")  # owed without the guard
         with mock.patch.dict(os.environ, {}, clear=True), self.closed(False):
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
