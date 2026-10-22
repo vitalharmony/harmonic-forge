@@ -162,10 +162,58 @@ class Decide(unittest.TestCase):
                 "2. Read `notes.csv`.\n")
         self.assertEqual(self.decide(self.t.say(text))[0], "allow")
 
-    def test_truncated_scan_allows(self):
+    def test_truncated_scan_withholds_only_never_probed(self):
         path = self.t.say(block("gh pr merge 12 --squash"))
         with mock.patch.object(hook, "scan_turn", return_value=([], True)):
             self.assertEqual(self.decide(path)[0], "allow")
+        t = Transcript(self.tmp)
+        path = t.say(block(str(self.script)))
+        with mock.patch.object(hook, "scan_turn", return_value=([], True)):
+            self.assertEqual(self.decide(path)[0], "block")  # AC2 still runs
+
+    def test_any_label_form_and_plain_fence_fail_closed(self):
+        """Reforge pass 1: the presence check fails closed on every form."""
+        for text in ("**YOUR NEXT ACTIONS**\n1. `gh pr merge 1`\n",
+                     "## 4. YOUR NEXT ACTIONS (2)\n1. `gh pr merge 1`\n",
+                     "## YOUR NEXT ACTIONS\n```\nmise run restart --push\n```\n",
+                     "## YOUR NEXT ACTIONS\n1. `sh ./x.sh`\n"):
+            with self.subTest(text=text):
+                self.assertEqual(self.decide(Transcript(self.tmp).say(text))[0], "block")
+
+    def test_a_stray_command_beside_a_block_blocks(self):
+        self.t.bash("gh pr view 1")
+        text = block("gh pr view 1") + "\nThen `gh pr merge 1`.\n"
+        self.assertEqual(self.decide(self.t.say(text))[0], "block")
+
+    def test_malformed_or_empty_declarations_are_refused(self):
+        for text in ("## YOUR NEXT ACTIONS\n```operator-commands\ngh pr merge 12\n```\n",
+                     "## YOUR NEXT ACTIONS\n" + FENCE + "operator-commands\n# nothing\n"
+                     + FENCE + "\n"):
+            with self.subTest(text=text):
+                self.assertEqual(self.decide(Transcript(self.tmp).say(text))[0], "block")
+
+    def test_a_failure_masked_by_a_pipe_is_not_a_probe(self):
+        """Reforge pass 1: the F1126 incident, `cmd | tail` exits 0."""
+        for probe in ("python3 x.py end --key F1 | tail -5", "python3 x.py end --key F1 || true",
+                      "python3 x.py end --key F1; echo done"):
+            t = Transcript(self.tmp)
+            t.bash(probe)
+            with self.subTest(probe=probe):
+                self.assertEqual(self.decide(t.say(block("python3 x.py end --key F1")))[0],
+                                 "block")
+        t = Transcript(self.tmp)
+        t.bash("cd /tmp && python3 x.py end --key F1 2>&1")
+        self.assertEqual(self.decide(t.say(block("cd /tmp && python3 x.py end --key F1")))[0],
+                         "allow")
+
+    def test_bash_c_with_positional_arguments_matches_whole(self):
+        self.t.bash("bash -c 'gh pr merge \"$1\"' _ 12")
+        self.assertEqual(self.decide(self.t.say(block("bash -c 'gh pr merge \"$1\"' _ 13")))[0],
+                         "block")
+
+    def test_a_bare_script_name_resolves_by_position(self):
+        self.t.bash("python3 run.py --help")
+        self.assertEqual(self.decide(self.t.say(block(f"python3 {self.tmp}/run.py")))[0], "allow")
 
     def test_turn_ending_in_question_is_allowed(self):
         text = block("gh pr merge 12") + "\n## DECISIONS NEEDED\n1. Should I merge it? Yes.\n"

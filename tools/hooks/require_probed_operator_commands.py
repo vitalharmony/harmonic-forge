@@ -24,34 +24,39 @@ coarsely. The author declares them, and a probe must match exactly.
   strings are split again and each inner command is matched the same way.
 - **Runnable.** A command whose first token is a file with no execute bit is
   refused whatever was probed, and a `cd` to a missing directory is refused.
-- **Presence.** A `YOUR NEXT ACTIONS` section that holds a backticked token
-  starting with a known program or a `~`/`/` path, but no block, is blocked
-  once, asking for the block.
+- **Presence (fails closed).** From the first `YOUR NEXT ACTIONS`, in any
+  form, to the end of the text, any fence line or backticked command shape
+  outside a well-formed block is blocked once, asking for the block. This only
+  looks for shapes; it never parses that text as commands. A malformed or empty
+  `operator-commands` block is refused the same way.
+- **Credit.** A probe counts only from a call whose segments are joined by
+  `&&` alone: behind `|`, `||` or `;` a failed segment still exits 0.
 
 The hook nudges at most once per turn: `stop_hook_active` is honoured before
 anything else. A turn that ends at a genuine question is allowed (shared
 `turn_question`).
 
 Documented limits (preclose pass 1, accepted): a stop that follows a sibling
-Stop hook's block carries `stop_hook_active` and is not re-read; an
-unexpected error allows the stop; and a probe skipped by shell control flow
-(`true || cmd`) still counts.
+Stop hook's block carries `stop_hook_active` and is not re-read; and an
+unexpected error allows the stop. A truncated scan withholds only the
+"never probed" finding; every other check still runs.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
 from tier_model_stop_backstop import scan_turn  # noqa: E402
 from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
-PROGRAMS = ("python3", "bash", "mise", "systemctl", "gh", "git", "cd")
+PROGRAMS = ("python3", "bash", "sh", "mise", "systemctl", "gh", "git", "cd")
 SHELLS = ("bash", "sh")
 #: Appending one of these is a read-only form of the same command.
 PROBE_FLAGS = ("--help", "--dry-run")
@@ -59,22 +64,41 @@ PROBE_FLAGS = ("--help", "--dry-run")
 MUTATING_FLAGS = ("--force", "--apply", "--push", "--execute", "--yes", "-y", "--reforge")
 _BLOCK_RE = re.compile(r"^[ \t]*(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
                        r"(?P<body>.*?)^[ \t]*(?P=fence)`*[ \t]*$", re.M | re.S)
-_SECTION_RE = re.compile(r"^[ \t]*#{1,4}[ \t]*YOUR NEXT ACTIONS[ \t]*$", re.I | re.M)
-_HEADING_RE = re.compile(r"^[ \t]*#{1,4}[ \t]+\S", re.M)
-_COMMAND_SHAPED = re.compile(r"`+[ \t]*(?:(?:%s)\b|~/|/)" % "|".join(PROGRAMS))
+_ACTIONS_RE = re.compile(r"YOUR NEXT ACTIONS", re.I)
+#: Outside a well-formed block, any fence line (a malformed declaration or a
+#: plain code block) or a backticked command shape fails closed (pass-1 PATCH).
+_ANY_FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.M)
+_COMMAND_SHAPED = re.compile(r"`+[ \t]*(?:(?:%s)\b|~/|\./|/)" % "|".join(PROGRAMS))
+_FD_REDIRECT = re.compile(r"\d*>&\d+|&>>?|\d*<&\d+")
 
 
 def blocks(text: str) -> list[str]:
     return [m.group("body") for m in _BLOCK_RE.finditer(text or "")]
 
 
-def section(text: str) -> str:
-    match = _SECTION_RE.search(text or "")
+def undeclared(text: str) -> bool:
+    """True when text from the first `YOUR NEXT ACTIONS`, in any form, to the
+    end holds a fence or a command shape outside every well-formed block. It
+    only looks for shapes; it never parses that text as commands."""
+    match = _ACTIONS_RE.search(text or "")
     if not match:
-        return ""
-    rest = text[match.end():]
-    end = _HEADING_RE.search(rest)
-    return rest[:end.start()] if end else rest
+        return False
+    rest = _BLOCK_RE.sub("", text[match.start():])
+    return bool(_ANY_FENCE.search(rest) or _COMMAND_SHAPED.search(rest))
+
+
+def only_and_joined(command: str) -> bool:
+    """A Bash call's success vouches for each segment only when they are joined
+    by `&&` alone: behind `|`, `||` or `;` a failed segment still exits 0."""
+    lexer = shlex.shlex(mask_heredoc_bodies(_FD_REDIRECT.sub(" ", command)), posix=True,
+                        punctuation_chars=";&|()\n")
+    lexer.whitespace_split = True
+    lexer.whitespace = lexer.whitespace.replace("\n", "")
+    try:
+        operators = [t for t in lexer if t and all(c in ";&|()\n" for c in t)]
+    except ValueError:
+        return False
+    return all(op == "&&" for op in operators)
 
 
 def _resolve(token: str, cwd: str) -> str:
@@ -90,14 +114,21 @@ def normalize(command: str, cwd: str) -> list[tuple[str, ...]]:
     `cd` moving the base for the segments after it. Raises ValueError on a
     line the shell grammar cannot split."""
     out: list[tuple[str, ...]] = []
-    for raw in command_segments(command):
-        if len(raw) >= 3 and raw[0] in SHELLS and raw[1] == "-c":
+    for raw in command_segments(_FD_REDIRECT.sub(" ", command)):
+        if len(raw) == 3 and raw[0] in SHELLS and raw[1] == "-c":
             out.extend(normalize(raw[2], cwd))
             continue
         tokens = strip_invocation_prefix(raw, unwrap_shells=False)
         if not tokens:
             continue
-        resolved = tuple(_resolve(t, cwd) for t in tokens)
+        resolved = [_resolve(t, cwd) for t in tokens]
+        # A bare script name is a path by position (pass-1 PATCH), never by
+        # whether a file of that name exists.
+        if resolved[0] in SHELLS + ("python3",) and not {"-c", "-m"} & set(resolved[1:]):
+            args = [i for i, t in enumerate(resolved) if i and not t.startswith("-")]
+            if args and "/" not in tokens[args[0]]:
+                resolved[args[0]] = os.path.normpath(os.path.join(cwd, tokens[args[0]]))
+        resolved = tuple(resolved)
         if resolved[0] == "cd" and len(resolved) > 1:
             cwd = _resolve(tokens[1] if "/" in tokens[1] or tokens[1].startswith("~")
                            else "./" + tokens[1], cwd)
@@ -148,28 +179,33 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     text = last_assistant_text(Path(transcript))
     if not text or asks_a_question(text):
         return "allow", ""
+    if undeclared(text):
+        return "block", ("YOUR NEXT ACTIONS holds a fence or a command outside a well-formed "
+                         "`operator-commands` block (harmonic-forge#1151). Put every command "
+                         "in one block opened with four backticks and the info string "
+                         "`operator-commands`, one command per line.")
     declared = blocks(text)
     if not declared:
-        if _COMMAND_SHAPED.search(section(text)):
-            return "block", ("YOUR NEXT ACTIONS hands the operator commands outside an "
-                             "`operator-commands` block (harmonic-forge#1151). Put every "
-                             "command in one block opened with four backticks and the info "
-                             "string `operator-commands`, one command per line.")
         return "allow", ""
     cwd = payload.get("cwd") or os.getcwd()
+    complete = True
     if probes is None:
         calls, truncated = scan_turn(transcript)[:2]
-        if truncated:  # an early probe may be unseen: a partial view is not absence
-            return "allow", ""
+        # A partial view is not absence: only "never probed" is withheld.
+        complete = not truncated
         probes = [call[0] for call in calls]
     probe_set: set[tuple[str, ...]] = set()
     for command in probes:
+        if not only_and_joined(command):
+            continue
         try:
             probe_set.update(normalize(command, cwd))
         except ValueError:
             continue
     lines = []
     for body in declared:
+        if not any(ln.strip() and not ln.strip().startswith("#") for ln in body.splitlines()):
+            lines.append("  - the operator-commands block holds no command")
         for line in body.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -183,7 +219,7 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
                 why = not_runnable(offer)
                 if why:
                     lines.append(f"  - `{' '.join(offer)}`: {why}")
-                elif offer[0] != "cd" and not probed(offer, probe_set):
+                elif complete and offer[0] != "cd" and not probed(offer, probe_set):
                     lines.append(f"  - `{' '.join(offer)}`: no Bash call this turn ran it "
                                  "or a read-only form of it")
     if not lines:
