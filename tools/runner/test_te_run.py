@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -1469,6 +1470,30 @@ class Prompt(unittest.TestCase):
                        te_run.SELF_FLAG, "BODY", "HANDOFF"):
             self.assertIn(phrase, text)
         self.assertNotIn("following the Lane 1 handoff below exactly", text)
+
+    def test_prompt_states_the_one_command_per_call_shape(self):
+        """harmonic-forge#1137 AC1: each refused shape is named, with its alternative."""
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF")
+        for phrase in ("already the checkout", "exactly one of the commands above",
+                       "`cd`", "`git -C`", "`&&`", "`;`", "`|`", "`>`", "heredoc (`<<`)",
+                       "`python3 -c '...'`", "`.claude/cache/te-agent-scratch.py`",
+                       "`python3 -m unittest discover -s <dir> -t <dir>`",
+                       "sets your item aside"):
+            self.assertIn(phrase, text)
+
+    def test_prompt_names_only_tools_the_session_has(self):
+        """harmonic-forge#1137 AC2: the tool set is the recorded session's `init` event,
+        not a hand-typed list; Grep and Glob were named but absent in run 9d10b3e1."""
+        init = json.loads((Path(__file__).parent / "testdata"
+                           / "agent_init_9d10b3e1.json").read_text())
+        observed = set(init["tools"])
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF")
+        line = next(p for p in text.split("\n\n") if p.startswith("Commands you may run:"))
+        named = set(re.findall(r"\b(Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch)\b",
+                               line.split("; in Bash")[0]))
+        self.assertTrue(named)
+        self.assertLessEqual(named, observed, f"prompt names tools the session lacks: "
+                                              f"{sorted(named - observed)}")
 
 
 @pipeline_only
