@@ -1471,12 +1471,19 @@ class Prompt(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertNotIn("following the Lane 1 handoff below exactly", text)
 
+    def test_prompt_recommends_no_path_the_boundary_refuses(self):
+        """preclose pass 1: the prompt sent the agent to `.claude/cache/`, which
+        te-runner.settings.json's Edit deny refuses, so following it set the item aside."""
+        text = te_run.agent_prompt(7, "BODY", "HANDOFF").split("## Issue")[0]
+        self.assertNotIn(".claude/cache", text)
+        self.assertNotIn("te-agent-scratch", text)
+
     def test_prompt_states_the_one_command_per_call_shape(self):
         """harmonic-forge#1137 AC1: each refused shape is named, with its alternative."""
         text = te_run.agent_prompt(7, "BODY", "HANDOFF")
         for phrase in ("already the checkout", "exactly one of the commands above",
                        "`cd`", "`git -C`", "`&&`", "`;`", "`|`", "`>`", "heredoc (`<<`)",
-                       "`python3 -c '...'`", "`.claude/cache/te-agent-scratch.py`",
+                       "`python3 -c '...'`", "never as a script file",
                        "`python3 -m unittest discover -s <dir> -t <dir>`",
                        "sets your item aside"):
             self.assertIn(phrase, text)
@@ -1488,9 +1495,12 @@ class Prompt(unittest.TestCase):
                            / "agent_init_9d10b3e1.json").read_text())
         observed = set(init["tools"])
         text = te_run.agent_prompt(7, "BODY", "HANDOFF")
-        line = next(p for p in text.split("\n\n") if p.startswith("Commands you may run:"))
-        named = set(re.findall(r"\b(Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch)\b",
-                               line.split("; in Bash")[0]))
+        # The whole instruction text, not only the opening list (preclose pass 1:
+        # a tool restored in the refusal-fallback sentence passed a list-only scan).
+        # The issue and handoff are appended verbatim and are not instructions.
+        instructions = text.split("## Issue")[0]
+        named = set(re.findall(r"\b(Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch|WebSearch)\b",
+                               instructions))
         self.assertTrue(named)
         self.assertLessEqual(named, observed, f"prompt names tools the session lacks: "
                                               f"{sorted(named - observed)}")
