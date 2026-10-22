@@ -409,7 +409,7 @@ class Store(Base):
         owed.record("F9", "handoff", session=SESSION)
         old = time.time() - 8 * 86400
         os.utime(owed.OWED_DIR / SESSION, (old, old))
-        owed.record("F9", "handoff", session=SESSION)
+        owed.prune()
         self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["F9"])
 
 

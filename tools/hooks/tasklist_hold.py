@@ -207,14 +207,13 @@ def stop_decide(payload: dict) -> tuple[str, str]:
     deadline = time.monotonic() + STOP_READ_BUDGET
     for marker in found:
         key, kind = str(marker["key"]), str(marker.get("kind") or "post")
-        ts = float(marker.get("ts") or 0)
-        # A `— closed` entry shows this close only when it was written after the
-        # marker and is not one that already read closed when the marker was
-        # recorded (epoch 2 pass 1: a status-only touch bumps an old one's mtime).
+        # A `— closed` entry shows this close only when it did not already read
+        # closed when the marker was recorded: an entry that turned closed since
+        # was written after the marker, and an old one's mtime proves nothing
+        # (epoch 2 pass 1: a status-only touch bumps it).
         stale = {str(i) for i in marker.get("stale_ids") or []}
         shown = any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
-                    and float(e["_mtime"]) >= ts and str(e.get("id")) not in stale
-                    for e in entries)
+                    and str(e.get("id")) not in stale for e in entries)
         # Reforge epoch 2: the issue's live state decides which update is owed;
         # a `— closed` subject is display, never proof. An unreadable state
         # (K/Y/D, network, or Stop's read budget spent) is judged locally below.
