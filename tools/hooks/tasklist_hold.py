@@ -32,11 +32,13 @@ is this lane's own.
    (`posttooluse_decide`). Stop compares nothing and makes no state read.
 3. An entry names a concrete step (read, review, push/PR, post), never only
    the issue.
-4. With no active step, nothing is `in_progress`.
+4. With no active step, nothing is `in_progress`; while working, at most one
+   entry is `in_progress`.
 5. The belt watch is never listed.
 6. Only operator-owned items carry a `YOU:` prefix.
+7. The list is updated inside the action that changes it.
 
-Rules 3-6 are not enforced by these hooks; they live here so the rule has
+Rules 3-7 are not enforced by these hooks; they live here so the rule has
 one home.
 
 ## Scope and failure direction

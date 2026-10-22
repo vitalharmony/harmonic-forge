@@ -187,7 +187,7 @@ A turn that asks the operator a genuine question ends at that question. Work tha
 Filing an issue, even one this session diagnosed itself, never authorizes implementing it. Implementation starts only on an operator instruction that names the issue (hard form of R-0092).
 <!-- /R-0392 -->
 <!-- R-0393 -->
-A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits or the worktree.
+A session whose task is not yet named states readiness and stops. It never infers scope from the branch name, recent commits, the worktree or conversation context.
 <!-- /R-0393 -->
 
 <!-- R-0093 -->
@@ -397,7 +397,8 @@ A handoff or rework is posted only for an issue in the current release milestone
 <!-- R-0099 -->
 Use `templates/lane1-handoff.md`. Read it in full when writing a
 handoff; do not reconstruct its section list from memory or this
-summary.
+summary. Compose it from the template, never by copying an earlier post or
+scratch file.
 <!-- /R-0099 -->
 A handoff's `Scenario Trace` section (harmonic-forge#920, `3-lane-protocol.md`
 R-0379) walks the issue's own example to the changed code before the handoff posts.

@@ -363,6 +363,47 @@ class EndTests(unittest.TestCase):
             self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
             self.assertEqual(gh.calls, [])
 
+    def test_end_accepts_an_epoch_capped_before_the_waiver(self) -> None:
+        """harmonic-forge#1154 (a): two current-epoch passes before the grant."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 1, "completed_at": "2026-10-16T23:00:00Z", "cross_family_ran": True}]}
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_refuses_one_pass_before_the_waiver(self) -> None:
+        """harmonic-forge#1154 (b)."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_refuses_a_capped_epoch_with_no_grant_time(self) -> None:
+        """harmonic-forge#1154 (d)."""
+        import imc_waiver  # noqa: PLC0415
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 1, "completed_at": "2026-10-16T23:00:00Z", "cross_family_ran": True}]}
+        self.assertIsNone(imc_waiver.imc_stop("o/r", 1, None))
+
+    def test_end_refuses_a_post_grant_pass_without_cross_family(self) -> None:
+        """harmonic-forge#1154 (e): after the grant counts by time alone."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 1, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": False}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_refuses_a_new_epoch_after_a_capped_one(self) -> None:
+        """harmonic-forge#1154 (f): only the current epoch is counted."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T21:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 1, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "c", "surviving": 1, "completed_at": "2026-10-16T23:00:00Z", "cross_family_ran": True,
+             "epoch": 1}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
     def test_end_refuses_when_second_pass_was_clean(self) -> None:
         self.preclose = {"status": "complete", "pass_history": [
             {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}, {"sha": "b", "surviving": 0, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
@@ -377,11 +418,13 @@ class EndTests(unittest.TestCase):
         self.assertEqual(self.end()["status"], "ended")
 
     def test_end_refuses_passes_from_before_the_waiver(self) -> None:
-        """Pass 1 (silent-bypass): two survivor passes recorded before
-        granted_at, or without the forced cross-family call, are no IMC stop."""
+        """Pass 1 (silent-bypass): a survivor pass recorded before granted_at,
+        or passes without the forced cross-family call, are no IMC stop. (Two
+        passes before the grant are harmonic-forge#1154's capped-epoch stop:
+        no pass can run under the waiver, so none is dodged.)"""
         early = {"completed_at": "2026-10-17T00:00:00Z", "cross_family_ran": True}
         self.preclose = {"status": "complete", "pass_history": [
-            {"sha": "a", "surviving": 2, **early}, {"sha": "b", "surviving": 1, **early}]}
+            {"sha": "a", "surviving": 2, **early}]}
         with self.assertRaises(SystemExit) as refused:
             self.end()
         self.assertIn("not at an IMC stop", str(refused.exception))
