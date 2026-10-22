@@ -2069,7 +2069,9 @@ def queue_cycle(
     a freshly discovered item is emitted unless the same lane `session`
     already got the same marker (same comment id and marker string) less
     than `REOFFER_INTERVAL_S` ago; a suppressed item counts into
-    `tick.reoffer_suppressed`. Persisted entries are used ONLY for
+    `tick.reoffer_suppressed` only when the in-process rule
+    (`last_queue.get(key) == marker`) would not have blocked it, i.e. a
+    cross-process re-offer saved (harmonic-forge#1015). Persisted entries are used ONLY for
     retraction -- never for the carry-forward, which reads `last_queue`
     alone (AC5a). Entries are recorded in memory here; the caller saves them
     only after printing (`deliver_queue_lines`).
@@ -2173,7 +2175,7 @@ def queue_cycle(
                 continue
             if offers.suppresses(key, marker, fresh_ids[key], session, when,
                                 REOFFER_INTERVAL_S):
-                if tick is not None:
+                if tick is not None and last_queue.get(key) != marker:
                     tick.reoffer_suppressed += 1
                 continue
             offers.record(key, marker, fresh_ids[key], session, when)
