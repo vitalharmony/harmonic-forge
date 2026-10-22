@@ -61,6 +61,16 @@ class Helper(unittest.TestCase):
         with mock.patch.object(policy.Path, "read_text", side_effect=OSError("no proc")):
             self.assertIsNone(policy.overflow_uid())
 
+    def test_the_defaults_discover_the_namespace_and_overflow_uid(self):
+        """Post-verdict: with no arguments the helper itself asks the kernel."""
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.object(policy, "in_user_namespace", return_value=True), \
+                mock.patch.object(policy, "overflow_uid", return_value=65534):
+            self.assertIn("65534", policy.lane3_policy_untrusted(lstat=stat_as(65534)))
+        with mock.patch.object(policy, "in_user_namespace", return_value=False), \
+                mock.patch.object(policy, "overflow_uid", return_value=65534):
+            self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(65534)))
+
     def test_the_identity_map_is_not_a_namespace(self):
         from unittest import mock  # noqa: PLC0415
         with mock.patch.object(policy.Path, "read_text", return_value="         0          0 4294967295\n"):
