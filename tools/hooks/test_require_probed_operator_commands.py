@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for require_probed_operator_commands.py (harmonic-forge#1151)."""
+"""Tests for require_probed_operator_commands.py (harmonic-forge#1151, reforged)."""
 from __future__ import annotations
 
 import io
@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import require_probed_operator_commands as hook  # noqa: E402
 
-ROOT = HERE.parent.parent
+FENCE = "````"
 
 
 class Transcript:
@@ -42,9 +42,9 @@ class Transcript:
         return str(self.path)
 
 
-def actions(*cmds: str) -> str:
-    return "Done.\n\n## YOUR NEXT ACTIONS\n" + "\n".join(
-        f"{i}. Run:\n   `{c}`" for i, c in enumerate(cmds, 1)) + "\n"
+def block(*cmds: str) -> str:
+    return ("Done.\n\n## YOUR NEXT ACTIONS\n1. Run:\n" + FENCE + "operator-commands\n"
+            + "\n".join(cmds) + "\n" + FENCE + "\n")
 
 
 class Decide(unittest.TestCase):
@@ -52,6 +52,7 @@ class Decide(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.t = Transcript(self.tmp)
+        self.cwd = str(self.tmp)
         self.script = self.tmp / "reset.sh"
         self.script.write_text("#!/usr/bin/env bash\necho hi\n")
         os.chmod(self.script, 0o644)
@@ -60,92 +61,118 @@ class Decide(unittest.TestCase):
         self._tmp.cleanup()
 
     def decide(self, path):
-        return hook.decide({"transcript_path": path})
+        return hook.decide({"transcript_path": path, "cwd": self.cwd})
 
     def test_unprobed_command_blocks(self):
-        verdict, reason = self.decide(self.t.say(actions("python3 tools/gh/l1_post.py --issue 1")))
+        verdict, reason = self.decide(self.t.say(block("gh pr merge 12 --squash")))
         self.assertEqual(verdict, "block")
-        self.assertIn("python3 tools/gh/l1_post.py", reason)
+        self.assertIn("gh pr merge 12 --squash", reason)
 
-    def test_probed_command_is_allowed(self):
-        self.t.bash("python3 tools/gh/l1_post.py --help")
-        self.assertEqual(self.decide(self.t.say(actions("python3 tools/gh/l1_post.py --issue 1")))[0],
+    def test_same_command_probed_is_allowed(self):
+        self.t.bash("gh pr merge 12 --squash")
+        self.assertEqual(self.decide(self.t.say(block("gh pr merge 12 --squash")))[0], "allow")
+
+    def test_help_or_dry_run_probe_clears(self):
+        self.t.bash("python3 tools/x.py --issue 1 --dry-run")
+        self.assertEqual(self.decide(self.t.say(block("python3 tools/x.py --issue 1")))[0], "allow")
+
+    def test_removed_mutating_flag_probe_clears(self):
+        self.t.bash("python3 tools/x.py --issue 1")
+        self.assertEqual(self.decide(self.t.say(block("python3 tools/x.py --issue 1 --force")))[0],
                          "allow")
 
-    def test_probe_of_other_script_does_not_clear(self):
-        self.t.bash("python3 tools/gh/other.py --help")
-        self.assertEqual(self.decide(self.t.say(actions("python3 tools/gh/l1_post.py --issue 1")))[0],
-                         "block")
+    def test_other_arguments_do_not_clear(self):
+        """Pass 1 #1 / pass 2 #1: a coarse key let a read clear a write."""
+        for probe, offer in (("gh pr view 12", "gh pr merge 12"),
+                             ("git -C /r status", "git -C /r push --force"),
+                             ('python3 -c "print(1)"', 'python3 -c "print(2)"')):
+            t = Transcript(self.tmp)
+            t.bash(probe)
+            with self.subTest(offer=offer):
+                self.assertEqual(self.decide(t.say(block(offer)))[0], "block")
 
-    def test_other_mise_task_does_not_clear(self):
-        self.t.bash("mise run check")
-        self.assertEqual(self.decide(self.t.say(actions("mise run restart")))[0], "block")
+    def test_paths_compare_resolved_never_by_suffix(self):
+        """Pass 2 #4: a probe of ./run.py never clears another run.py."""
+        self.t.bash("python3 ./run.py --help")
+        self.assertEqual(self.decide(self.t.say(block("python3 /x/y/run.py")))[0], "block")
+        self.t.bash(f"python3 {self.tmp}/run.py --help")
+        self.assertEqual(self.decide(self.t.say(block("python3 ./run.py")))[0], "allow")
 
-    def test_errored_probe_does_not_clear(self):
-        self.t.bash("python3 tools/gh/l1_post.py --help", error=True)
-        self.assertEqual(self.decide(self.t.say(actions("python3 tools/gh/l1_post.py --issue 1")))[0],
-                         "block")
+    def test_cd_in_the_probe_moves_its_base(self):
+        sub = self.tmp / "repo"
+        sub.mkdir()
+        self.t.bash(f"cd {sub} && python3 tools/x.py --help")
+        self.assertEqual(self.decide(self.t.say(block(f"python3 {sub}/tools/x.py")))[0], "allow")
 
     def test_tilde_and_absolute_spellings_match(self):
         home = Path.home()
         self.t.bash(f"bash -n {home}/Harmonic_Projects/research/x.sh")
-        self.assertEqual(self.decide(self.t.say(actions("bash ~/Harmonic_Projects/research/x.sh")))[0],
+        self.assertEqual(self.decide(self.t.say(block("bash ~/Harmonic_Projects/research/x.sh")))[0],
                          "allow")
 
-    def test_relative_probe_clears_absolute_offer(self):
-        self.t.bash("python3 tools/gh/l1_post.py --help")
-        self.assertEqual(self.decide(self.t.say(actions(
-            "python3 ~/harmonic-forge/tools/gh/l1_post.py --issue 1")))[0], "allow")
+    def test_bash_c_is_split_and_each_command_matched(self):
+        """Pass 2 #7."""
+        self.t.bash("gh pr view 12")
+        verdict, reason = self.decide(self.t.say(block('bash -c "gh pr view 12; gh pr merge 12"')))
+        self.assertEqual(verdict, "block")
+        self.assertIn("gh pr merge 12", reason)
+        t = Transcript(self.tmp)
+        t.bash('bash -c "echo ready; gh pr view 12"')
+        self.assertEqual(self.decide(t.say(block("gh pr view 12")))[0], "allow")
 
-    def test_bare_nonexecutable_tilde_script_blocks_even_when_probed(self):
-        with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
-            self.t.bash(f"bash -n {self.script}")
-            verdict, reason = self.decide(self.t.say(actions("~/reset.sh && systemctl --user start x")))
+    def test_errored_probe_does_not_clear(self):
+        self.t.bash("gh pr merge 12", error=True)
+        self.assertEqual(self.decide(self.t.say(block("gh pr merge 12")))[0], "block")
+
+    def test_nonexecutable_script_blocks_even_when_probed(self):
+        self.t.bash(f"bash -n {self.script}")
+        verdict, reason = self.decide(self.t.say(block(str(self.script))))
         self.assertEqual(verdict, "block")
         self.assertIn("not executable as written", reason)
+        t = Transcript(self.tmp)
+        t.bash(f"bash -n {self.script}")
+        self.assertEqual(self.decide(t.say(block(f"bash {self.script}")))[0], "allow")
 
-    def test_plain_words_and_trigger_phrases_are_not_commands(self):
-        doc = self.tmp / "notes.md"
-        doc.write_text("# notes\n")
-        text = actions("forced F1145", "BATCH F1151 IMC F1151", "test", "close H2484", str(doc))
+    def test_cd_to_missing_directory_blocks(self):
+        """Pass 2 #2: `cd` is checked."""
+        verdict, reason = self.decide(self.t.say(block(f"cd {self.tmp}/nope")))
+        self.assertEqual(verdict, "block")
+        self.assertIn("does not exist", reason)
+        self.assertEqual(self.decide(Transcript(self.tmp).say(block(f"cd {self.tmp}")))[0], "allow")
+
+    def test_inner_triple_backticks_do_not_close_the_block(self):
+        """Pass 2 #5."""
+        text = block("echo '```'", "# merge forge first", "gh pr merge 12 --squash")
+        verdict, reason = self.decide(self.t.say(text))
+        self.assertEqual(verdict, "block")
+        self.assertIn("gh pr merge 12", reason)
+
+    def test_commands_outside_a_block_are_asked_into_one(self):
+        """Pass 2 #6: any backticked command shape, double backticks included."""
+        for text in ("## YOUR NEXT ACTIONS\nRun ``gh pr merge 12 --squash``.\n",
+                     "## YOUR NEXT ACTIONS\n1. `bash ~/x.sh`\n"):
+            with self.subTest(text=text):
+                verdict, reason = self.decide(Transcript(self.tmp).say(text))
+                self.assertEqual(verdict, "block")
+                self.assertIn("operator-commands", reason)
+
+    def test_prose_and_trigger_phrases_are_allowed(self):
+        """Pass 2 #3: nothing outside the block is classified."""
+        text = ("## YOUR NEXT ACTIONS\n1. Type `BATCH F1151 IMC F1151`.\n"
+                "2. Read `notes.csv`.\n")
         self.assertEqual(self.decide(self.t.say(text))[0], "allow")
 
-    def test_flag_value_is_not_the_subcommand(self):
-        self.t.bash("git -C /r status")
-        self.assertEqual(self.decide(self.t.say(actions("git -C /r push --force")))[0], "block")
-
-    def test_gh_read_does_not_clear_gh_write(self):
-        self.t.bash("gh pr view 12 --repo o/r")
-        self.assertEqual(self.decide(self.t.say(actions("gh pr merge 12 --repo o/r")))[0], "block")
-
-    def test_comment_inside_fence_does_not_end_section(self):
-        text = "## YOUR NEXT ACTIONS\n1. Run:\n```bash\n# merge forge first\ngh pr merge 12 --squash\n```\n"
-        self.assertEqual(self.decide(self.t.say(text))[0], "block")
-
-    def test_tilde_fence_is_read(self):
-        text = "## YOUR NEXT ACTIONS\n~~~\ngh pr merge 12 --squash\n~~~\n"
-        self.assertEqual(self.decide(self.t.say(text))[0], "block")
-
-    def test_malformed_span_does_not_hide_other_commands(self):
-        text = actions("echo 'oops", "gh pr merge 12 --squash")
-        self.assertEqual(self.decide(self.t.say(text))[0], "block")
-
     def test_truncated_scan_allows(self):
-        path = self.t.say(actions("gh pr merge 12 --squash"))
+        path = self.t.say(block("gh pr merge 12 --squash"))
         with mock.patch.object(hook, "scan_turn", return_value=([], True)):
             self.assertEqual(self.decide(path)[0], "allow")
 
-    def test_no_section_or_no_commands_is_allowed(self):
-        self.assertEqual(self.decide(self.t.say("All done, nothing owed."))[0], "allow")
-
     def test_turn_ending_in_question_is_allowed(self):
-        text = actions("python3 tools/gh/l1_post.py --issue 1") + \
-            "\n## DECISIONS NEEDED\n1. Should I post it? I recommend yes.\n"
+        text = block("gh pr merge 12") + "\n## DECISIONS NEEDED\n1. Should I merge it? Yes.\n"
         self.assertEqual(self.decide(self.t.say(text))[0], "allow")
 
-    def test_section_ends_at_next_heading(self):
-        text = "## YOUR NEXT ACTIONS\nNone.\n\n## Notes\n`python3 tools/gh/l1_post.py`\n"
-        self.assertEqual(self.decide(self.t.say(text))[0], "allow")
+    def test_no_section_is_allowed(self):
+        self.assertEqual(self.decide(self.t.say("All done, nothing owed."))[0], "allow")
 
 
 class Main(unittest.TestCase):
