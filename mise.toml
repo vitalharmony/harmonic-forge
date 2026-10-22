@@ -457,7 +457,7 @@ usage = '''
 arg "args" var=#true help="tools/gh/kill_check.py run|waive plus its flags"
 '''
 run = '''
-eval python3 tools/gh/kill_check.py $usage_args
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 tools/gh/kill_check.py $usage_args
 '''
 
 [tasks.preclose-check]
@@ -466,7 +466,7 @@ usage = '''
 arg "args" var=#true help="tools/gh/preclose_check.py's own flags verbatim, e.g. --repo owner/name --issue N [--base REF] [--head REF] [--tier fast|standard|deep] [--complete] [--force] [--allow-dirty] [--allow-repo-mismatch]"
 '''
 run = '''
-eval python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" $usage_args
+eval HF_CALLER_CWD='"$MISE_ORIGINAL_CWD"' python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" $usage_args
 '''
 
 [tasks.preclose-test]

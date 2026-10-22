@@ -187,9 +187,15 @@ class RepoOverride(unittest.TestCase):
         self.assertIn("refuse_repo_override(parser, task)", (HERE / "l2_post.py").read_text())
 
     def test_wrapper_sets_the_one_shot_variable(self):
+        # Every script that calls resolve_args, read from the source rather than
+        # a hand-kept list (post-verdict finding: kill_check and preclose_check
+        # resolved nothing because no list named them).
         text = (REPO / "mise.toml").read_text()
-        for script in ("gh_issue", "post_comment", "post_lane_discussion", "post_lane1_issue",
-                       "l1_post", "l2_post"):
+        callers = sorted(p.stem for p in HERE.glob("*.py")
+                         if not p.name.startswith("test_") and p.name != "_caller_path.py"
+                         and "_caller_path.resolve_args(" in p.read_text())
+        self.assertGreaterEqual(len(callers), 8)
+        for script in callers:
             with self.subTest(script=script):
                 self.assertRegex(text, r"""eval HF_CALLER_CWD='"\$MISE_ORIGINAL_CWD"' python3 \S*tools/gh/"""
                                  + script + r"\.py")
@@ -223,7 +229,7 @@ class RepoOverride(unittest.TestCase):
                     kw = {k.arg: k.value for k in node.keywords}
                     typ = kw.get("type")
                     is_path = getattr(typ, "id", None) == "Path" or any(
-                        re.search(r"file|receipts", f) for f in flags)
+                        re.search(r"file|receipts|findings|envelope|checks|brief", f) for f in flags)
                     if is_path:
                         dest = kw.get("dest")
                         wanted.add(dest.value if isinstance(dest, ast.Constant)

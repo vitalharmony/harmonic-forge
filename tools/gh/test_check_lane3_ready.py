@@ -24,6 +24,27 @@ SPEC.loader.exec_module(c)
 DEFAULT_SHA = "a" * 40
 
 
+_MARKER_TMP: tempfile.TemporaryDirectory | None = None
+_MARKER_PATCH = None
+
+
+def setUpModule() -> None:
+    """harmonic-forge#1117 post-verdict finding: `main(["--mark-active"])` now clears
+    the marker itself, so a test that reaches it must never touch the real
+    LANE3_ACTIVE of the checkout running the suite. Every test in this module gets
+    a throwaway marker path; a test that needs its own patches `_marker` again."""
+    global _MARKER_TMP, _MARKER_PATCH
+    _MARKER_TMP = tempfile.TemporaryDirectory()
+    _MARKER_PATCH = mock.patch.object(c, "_marker",
+                                      return_value=Path(_MARKER_TMP.name) / "LANE3_ACTIVE")
+    _MARKER_PATCH.start()
+
+
+def tearDownModule() -> None:
+    _MARKER_PATCH.stop()
+    _MARKER_TMP.cleanup()
+
+
 def _comment(
     comment_id: int,
     kind: str | None,
