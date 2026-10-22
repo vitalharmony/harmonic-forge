@@ -255,14 +255,18 @@ def _receipt_urls(command: str, text: str) -> list[tuple[str, int]]:
     return found
 
 
-def scan_turn(transcript_path: str, with_receipts: bool = False):
+def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background: bool = False):
     """`(turn_posts, truncated)`. `truncated` is True when the bounded tail
     read ran out before reaching the turn's first entry (harmonic-forge#656
     preclose fix 6), so earlier calls in this turn were never seen.
 
     `with_receipts=True` (harmonic-forge#843 reforge) also returns this turn's
     post receipts, `(repo, issue, model)`, from the SAME bounded pass:
-    `(turn_posts, truncated, receipts)`. The default shape is unchanged."""
+    `(turn_posts, truncated, receipts)`. The default shape is unchanged.
+
+    `drop_background=True` (harmonic-forge#1151) also drops a Bash call run
+    with `run_in_background`: its tool_result acknowledges the launch, so a
+    non-error result says nothing about the command's exit."""
     errored: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
     results: dict[str, str] = {}
@@ -296,6 +300,8 @@ def scan_turn(transcript_path: str, with_receipts: bool = False):
                     if isinstance(block, dict) and block.get("type") == "tool_use" \
                             and block.get("name") == "Bash":
                         command = (block.get("input") or {}).get("command")
+                        if drop_background and (block.get("input") or {}).get("run_in_background"):
+                            continue
                         if isinstance(command, str):
                             calls.append((command, model, block.get("id") or ""))
     except OSError:
