@@ -18,6 +18,8 @@ import json
 import tempfile
 import threading
 import time
+import io
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -253,6 +255,72 @@ class SessionScopeTests(StateFixture):
         ba.top_up(["F1063"], state_path=self.state_path, session_id="session-A")
         ba.top_up(["F1063"], state_path=self.state_path, session_id=None)
         self.assertEqual(self._entry("F1063")["session_ids"], ["session-A"])
+
+
+class RearmRevokedTests(StateFixture):
+    """harmonic-forge#1145: `imc_waiver.py end` revokes a key's merge targets,
+    and a re-typed BATCH line used to only extend that dead entry. Only the
+    operator-prompt path (`rearm_revoked=True`) replaces an all-revoked entry."""
+
+    def _merges(self, key="F1"):
+        return [t for t in ba._load(self.state_path)[key]["targets"]
+                if "merge" in t["action"]]
+
+    def _spend(self, key="F1", by="real-merge-hash", count=None):
+        state = ba._load(self.state_path)
+        merges = [t for t in state[key]["targets"] if "merge" in t["action"]]
+        for target in merges[:count]:
+            target.update(consumed=True, consumed_by=by)
+        ba._save(state, self.state_path)
+
+    def test_k1_rearm_replaces_an_all_revoked_entry(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.revoke(["F1"], state_path=self.state_path)
+        rearmed: list[str] = []
+        ba.top_up(["F1"], state_path=self.state_path,
+                  rearm_revoked=True, rearmed=rearmed)
+        self.assertEqual(rearmed, ["F1"])
+        self.assertTrue(self._merges())
+        self.assertTrue(all(not t["consumed"] for t in self._merges()))
+
+    def test_k2_plain_top_up_cli_never_rearms(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        ba.revoke(["F1"], state_path=self.state_path)
+        with mock.patch.object(ba, "STATE_PATH", self.state_path), \
+                mock.patch.object(sys, "argv", ["batch_auth.py", "top-up", "F1"]), \
+                mock.patch("sys.stdout", io.StringIO()):
+            ba._cli()
+        self.assertTrue(all(t["consumed"] for t in self._merges()))
+        self.assertTrue(all(str(t["consumed_by"]).startswith("revoked-")
+                            for t in self._merges()))
+
+    def test_k3_one_unconsumed_target_is_extended_not_rearmed(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._spend(count=1)
+        rearmed: list[str] = []
+        ba.top_up(["F1"], state_path=self.state_path,
+                  rearm_revoked=True, rearmed=rearmed)
+        self.assertEqual(rearmed, [])
+        self.assertEqual(sum(t["consumed"] for t in self._merges()), 1)
+
+    def test_k4_all_merged_is_extended_not_rearmed(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._spend()
+        rearmed: list[str] = []
+        ba.top_up(["F1"], state_path=self.state_path,
+                  rearm_revoked=True, rearmed=rearmed)
+        self.assertEqual(rearmed, [])
+        self.assertTrue(all(t["consumed_by"] == "real-merge-hash" for t in self._merges()))
+
+    def test_k4b_mixed_merged_and_revoked_is_not_rearmed(self):
+        ba.authorize(["F1"], state_path=self.state_path)
+        self._spend(count=1)
+        ba.revoke(["F1"], state_path=self.state_path)
+        rearmed: list[str] = []
+        ba.top_up(["F1"], state_path=self.state_path,
+                  rearm_revoked=True, rearmed=rearmed)
+        self.assertEqual(rearmed, [])
+        self.assertTrue(all(t["consumed"] for t in self._merges()))
 
 
 class TopUpCliTests(StateFixture):

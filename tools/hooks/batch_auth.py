@@ -448,14 +448,30 @@ def _archive_pruned(entries: list[dict]) -> int:
         origin_of=lambda e: archive.origin_for_key(e.get("key")))
 
 
+def _all_revoked(entry: dict) -> bool:
+    """Every target was revoked by `revoke()` (harmonic-forge#1145)."""
+    targets = entry.get("targets") or []
+    return bool(targets) and all(
+        str(t.get("consumed_by") or "").startswith("revoked-") for t in targets)
+
+
 def top_up(
     keys: list[str],
     actions: list[str] | tuple[str, ...] = DEFAULT_ACTIONS,
     ttl_hours: float = DEFAULT_TTL_HOURS,
     state_path: Path | None = None,
     session_id: str | None = None,
+    rearm_revoked: bool = False,
+    rearmed: list[str] | None = None,
 ) -> list[str]:
     """Extend a live grant instead of replacing it; authorize fresh keys.
+
+    harmonic-forge#1145: with `rearm_revoked`, a live entry whose EVERY target
+    was revoked (`consumed_by` starting `revoked-`, written only by `revoke()`)
+    is replaced by a fresh grant and its key appended to `rearmed`. Only the
+    operator-prompt hook passes it; the `top-up` CLI and every other caller
+    keep "a live key's targets are never rewritten". A target spent on a real
+    merge never qualifies, so a mixed entry is extended, not re-armed.
 
     **`authorize()` REPLACES an entry outright**, resetting consumption and
     wiping every recorded `link_pr` mapping. That was safe while its only
@@ -487,6 +503,16 @@ def top_up(
         for raw_key in keys:
             key = raw_key.upper()
             entry = state.get(key)
+            if entry is not None and _entry_live(entry, now) and rearm_revoked \
+                    and _all_revoked(entry):
+                owners = entry.get("session_ids")
+                key, state[key] = _fresh_entry(raw_key, now, expires, actions, session_id)
+                if isinstance(owners, list):
+                    merged = list(dict.fromkeys([*owners, *(state[key].get("session_ids") or [])]))
+                    state[key]["session_ids"] = merged
+                if rearmed is not None:
+                    rearmed.append(key)
+                continue
             if entry is not None and _entry_live(entry, now):
                 entry["expires_at"] = expires.isoformat()
                 owners = entry.get("session_ids")
