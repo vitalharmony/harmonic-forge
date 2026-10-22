@@ -31,6 +31,27 @@ class Events(unittest.TestCase):
             found = hook.events(bash("gh issue close 1112 -R vitalharmony/harmonic-forge"))
         self.assertEqual(found, [("F1112", "close")])
 
+    def test_bare_close_resolves_the_cwd_repo(self):
+        """Preclose pass 1: `gh issue close N` with no repo flag uses gh's own
+        repository for the cwd, which the hook now resolves the same way."""
+        with mock.patch.object(batch_auth, "action_landed", return_value=True), \
+                mock.patch.object(hook, "_cwd_repo", return_value="vitalharmony/harmonic-forge"):
+            self.assertEqual(hook.events(bash("gh issue close 1112")), [("F1112", "close")])
+        with mock.patch.object(batch_auth, "action_landed", return_value=True), \
+                mock.patch.object(hook, "_cwd_repo", return_value=None):
+            self.assertEqual(hook.events(bash("gh issue close 1112")), [])
+
+    def test_reopen_drops_the_cached_closed_state(self):
+        """Preclose pass 1: a reopen must not leave a cached closed=true behind."""
+        import tasklist_hold  # noqa: PLC0415
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        cached = tmp / "F1112.json"
+        cached.write_text(json.dumps({"ts": 0, "closed": True}))
+        with mock.patch.object(tasklist_hold, "STATE_DIR", tmp):
+            hook.events(bash("gh issue reopen 1112 -R vitalharmony/harmonic-forge"))
+        self.assertFalse(cached.exists())
+
     def test_failed_close_records_nothing(self):
         with mock.patch.object(batch_auth, "action_landed", return_value=False):
             self.assertEqual(hook.events(bash("gh issue close 1112 -R vitalharmony/harmonic-forge")), [])
