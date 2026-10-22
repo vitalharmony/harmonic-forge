@@ -142,7 +142,7 @@ class Decide(unittest.TestCase):
 
     def test_inner_triple_backticks_do_not_close_the_block(self):
         """Pass 2 #5."""
-        text = block("echo '```'", "# merge forge first", "gh pr merge 12 --squash")
+        text = block("echo '```'", "```", "# merge forge first", "gh pr merge 12 --squash")
         verdict, reason = self.decide(self.t.say(text))
         self.assertEqual(verdict, "block")
         self.assertIn("gh pr merge 12", reason)
