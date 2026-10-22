@@ -255,15 +255,22 @@ def _receipt_urls(command: str, text: str) -> list[tuple[str, int]]:
     return found
 
 
-def scan_turn(transcript_path: str, with_receipts: bool = False):
+def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background: bool = False,
+              require_result: bool = False):
     """`(turn_posts, truncated)`. `truncated` is True when the bounded tail
     read ran out before reaching the turn's first entry (harmonic-forge#656
     preclose fix 6), so earlier calls in this turn were never seen.
 
     `with_receipts=True` (harmonic-forge#843 reforge) also returns this turn's
     post receipts, `(repo, issue, model)`, from the SAME bounded pass:
-    `(turn_posts, truncated, receipts)`. The default shape is unchanged."""
+    `(turn_posts, truncated, receipts)`. The default shape is unchanged.
+
+    `drop_background=True` (harmonic-forge#1151) also drops a Bash call run
+    with `run_in_background`: its tool_result acknowledges the launch, so a
+    non-error result says nothing about the command's exit. `require_result=True`
+    also drops a call with no tool_result yet: no result is no evidence."""
     errored: set[str] = set()
+    answered: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
     results: dict[str, str] = {}
     reached_turn_start = False
@@ -286,6 +293,7 @@ def scan_turn(transcript_path: str, with_receipts: bool = False):
             if entry.get("type") == "user":
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
+                        answered.add(block.get("tool_use_id"))
                         if block.get("is_error"):
                             errored.add(block.get("tool_use_id"))
                         elif with_receipts:
@@ -296,13 +304,16 @@ def scan_turn(transcript_path: str, with_receipts: bool = False):
                     if isinstance(block, dict) and block.get("type") == "tool_use" \
                             and block.get("name") == "Bash":
                         command = (block.get("input") or {}).get("command")
+                        if drop_background and (block.get("input") or {}).get("run_in_background"):
+                            continue
                         if isinstance(command, str):
                             calls.append((command, model, block.get("id") or ""))
     except OSError:
         return ([], False, []) if with_receipts else ([], False)
     truncated = not reached_turn_start and size > _bytes_scanned(size)
     calls.reverse()
-    kept = [call for call in calls if call[2] not in errored]
+    kept = [call for call in calls if call[2] not in errored
+            and (not require_result or call[2] in answered)]
     if not with_receipts:
         return kept, truncated
     receipts: list[tuple[str, int, str | None]] = []
