@@ -2037,8 +2037,11 @@ def _offer_superseded(repo: str, issue: int, entry: dict | None, lane: str,
     (harmonic-forge#1141): the issue carries a live closed mark, or its newest
     classified post is a kind this lane is never offered AND is newer than the
     offer. Local reads only; a missing or unreadable file is never evidence."""
-    if belt_candidates.closed_marked(repo, issue, now=now):
-        return True
+    try:
+        if belt_candidates.closed_marked(repo, issue, now=now):
+            return True
+    except ValueError:  # e.g. UnicodeDecodeError: an unreadable file is not evidence
+        return False
     path = belt_candidates._candidate_path(belt_candidates.DEFAULT_CANDIDATES_DIR, repo, issue)
     try:
         candidate = json.loads(path.read_text(encoding="utf-8"))
@@ -2048,8 +2051,9 @@ def _offer_superseded(repo: str, issue: int, entry: dict | None, lane: str,
     except (OSError, ValueError, KeyError, TypeError):
         return False
     try:
-        if not isinstance(candidate, dict) or candidate.get("kind") in QUEUE_KINDS.get(lane, ()):
-            return False
+        kind = candidate.get("kind") if isinstance(candidate, dict) else None
+        if not isinstance(kind, str) or not kind or kind in QUEUE_KINDS.get(lane, ()):
+            return False  # an unclassified record proves nothing
         return posted > offered
     except TypeError:  # a naive offered_at cannot be ordered: not evidence
         return False

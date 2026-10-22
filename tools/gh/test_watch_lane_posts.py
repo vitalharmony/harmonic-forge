@@ -4180,6 +4180,31 @@ class OfferStateTest(unittest.TestCase):
                 session=self.SESSION, now_ts=self.T0 + 1800)
         self.assertEqual(lines, [f"{self.REPO}#1530 left-queue-for-l3"])
 
+    def test_unclassified_candidate_keeps_offer(self):
+        for kind in (None, ""):
+            with self.subTest(kind=kind):
+                self.path.unlink(missing_ok=True)
+                lines = self._offer_then_unchecked(
+                    self._store(kind=kind, posted_at=self._iso(self.T0 + 60)), self.T0 + 1800)
+                self.assertEqual(lines, [])
+        self.path.unlink(missing_ok=True)
+        store = Path(self._tmp.name) / "candidates"
+        (store / "vitalharmony__hrse__1530.json").write_text(json.dumps(
+            {"repo": self.REPO, "issue": 1530, "posted_at": self._iso(self.T0 + 60)}))
+        lines = self._offer_then_unchecked(
+            patch.object(watch_lane_posts.belt_candidates, "DEFAULT_CANDIDATES_DIR", store),
+            self.T0 + 1800)
+        self.assertEqual(lines, [])
+
+    def test_undecodable_candidate_keeps_offer_without_crashing(self):
+        store = Path(self._tmp.name) / "bad-candidates"
+        store.mkdir()
+        (store / "vitalharmony__hrse__1530.json").write_bytes(b"\xff\xfe not utf-8")
+        lines = self._offer_then_unchecked(
+            patch.object(watch_lane_posts.belt_candidates, "DEFAULT_CANDIDATES_DIR", store),
+            self.T0 + 1800)
+        self.assertEqual(lines, [])
+
     def test_expired_closed_mark_keeps_offer(self):
         stale = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         lines = self._offer_then_unchecked(
