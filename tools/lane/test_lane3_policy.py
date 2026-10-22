@@ -61,5 +61,15 @@ class Helper(unittest.TestCase):
                 self.assertEqual(bool(ran), not skipped)
 
 
+class TrustCheckCoverage(unittest.TestCase):
+    def test_the_trust_check_tests_are_never_skipped(self):
+        """harmonic-forge#1156 kill 4: the class that exercises the launcher's
+        trust check must run everywhere, sandbox included."""
+        import test_lane_launchers  # noqa: PLC0415
+        cls = test_lane_launchers.ClaudeLane3Settings
+        wrapped = [n for n in dir(cls) if n.startswith("test_")
+                   and hasattr(getattr(cls, n), "__wrapped__")]
+        self.assertEqual(wrapped, [])
+
 if __name__ == "__main__":
     unittest.main()
