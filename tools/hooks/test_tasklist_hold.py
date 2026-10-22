@@ -263,15 +263,24 @@ class Wiring(unittest.TestCase):
             self.assertTrue(_calls_record_post(ROOT / "tools" / "gh" / name), name)
 
     def test_settings_wire_tasklist_hooks(self):
-        hooks = json.loads((ROOT / ".claude" / "settings.json").read_text())["hooks"]
+        # Preclose pass 1: the lanes run in HRSE2 too, so its settings are checked
+        # as well as this repo's. HRSE2 is the sibling checkout the lanes use;
+        # where it is absent (forge CI) only forge's own settings are checked.
+        roots = [ROOT]
+        hrse2 = Path(os.environ.get("HRSE2_ROOT", Path.home() / "Harmonic_Projects" / "HRSE2"))
+        if (hrse2 / ".claude" / "settings.json").is_file():
+            roots.append(hrse2)
+        for root in roots:
+            hooks = json.loads((root / ".claude" / "settings.json").read_text())["hooks"]
 
-        def wired(event, matcher, script):
-            return any((matcher is None or e.get("matcher") == matcher)
-                       and any(script in h["command"] for h in e["hooks"])
-                       for e in hooks.get(event, []))
-        self.assertTrue(wired("PreToolUse", "TaskUpdate", "tasklist_hold.py"))
-        self.assertTrue(wired("Stop", None, "tasklist_hold.py"))
-        self.assertTrue(wired("PostToolUse", "Bash", "record_tasklist_post.py"))
+            def wired(event, matcher, script):
+                return any((matcher is None or e.get("matcher") == matcher)
+                           and any(script in h["command"] for h in e["hooks"])
+                           for e in hooks.get(event, []))
+            with self.subTest(root=str(root)):
+                self.assertTrue(wired("PreToolUse", "TaskUpdate", "tasklist_hold.py"))
+                self.assertTrue(wired("Stop", None, "tasklist_hold.py"))
+                self.assertTrue(wired("PostToolUse", "Bash", "record_tasklist_post.py"))
 
     def test_entry_shape_lives_only_in_hook(self):
         files = [ROOT / "3-lane-protocol.md", *sorted((ROOT / "rules").glob("*.md"))]
