@@ -791,6 +791,7 @@ class BatchRearmTests(unittest.TestCase):
         with mock.patch.object(ba, "STATE_PATH", tmp):
             receipt = m.authorize_batch("BATCH F1", state_path=tmp)
         self.assertIn("re-armed F1", receipt)
+        self.assertNotIn("extended F1", receipt)
         self.assertTrue(all(not t["consumed"] for t in self._merges(tmp)))
 
     def test_k5_a_non_operator_batch_line_never_rearms(self) -> None:

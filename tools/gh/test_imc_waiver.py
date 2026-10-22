@@ -773,6 +773,7 @@ class RearmAfterEndTests(unittest.TestCase):
 
         receipt = hook.authorize_batch(f"BATCH {KEY} IMC {KEY}", state_path=self.batch)
         self.assertIn(f"re-armed {KEY}", receipt)
+        self.assertNotIn(f"extended {KEY}", receipt)
         self.assertTrue(imc_waiver.live_merge_grant(KEY, self.batch))
 
         second = first + timedelta(hours=3)
