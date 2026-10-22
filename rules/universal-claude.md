@@ -121,9 +121,6 @@ derivable from code or Git.
 <!-- R-0410 -->
 A `CronCreate`/`ScheduleWakeup` job armed for a scoped purpose is deleted in the turn that purpose ends, the same unit of work R-0086 sets for `Monitor`.
 <!-- /R-0410 -->
-<!-- R-0418 -->
-A backgrounded command is never polled by a second shell or a sleep loop. The harness notifies on completion.
-<!-- /R-0418 -->
 <!-- R-0087 -->
 - **Every merge silently closes a stacked child PR pointing at the merged
   branch** — not only `gh pr merge --delete-branch`. Every project repo

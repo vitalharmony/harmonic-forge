@@ -397,7 +397,8 @@ A handoff or rework is posted only for an issue in the current release milestone
 <!-- R-0099 -->
 Use `templates/lane1-handoff.md`. Read it in full when writing a
 handoff; do not reconstruct its section list from memory or this
-summary.
+summary. Compose it from the template, never by copying an earlier post or
+scratch file.
 <!-- /R-0099 -->
 A handoff's `Scenario Trace` section (harmonic-forge#920, `3-lane-protocol.md`
 R-0379) walks the issue's own example to the changed code before the handoff posts.

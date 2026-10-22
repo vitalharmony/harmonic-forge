@@ -861,8 +861,8 @@ hooks = []
 id = "R-0099"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
-statement = "Use templates/lane1-handoff.md and read it in full; do not reconstruct its section list from memory."
-text_sha = "dd5eccd0349f5b28"
+statement = "Use templates/lane1-handoff.md and read it in full; do not reconstruct its section list from memory. Compose it from the template, never by copying an earlier post or scratch file."
+text_sha = "0adc95e9d5828300"
 hooks = []
 
 [[rule]]
@@ -2794,8 +2794,8 @@ hooks = []
 id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed. The list is updated inside the action that changes it."
-text_sha = "e8f723b9d9ca4f3b"
+statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed. The list is updated inside the action that changes it. While working, at most one entry is in_progress."
+text_sha = "15b54c5d21ecfecf"
 hooks = []
 
 [[rule]]
@@ -2812,12 +2812,4 @@ file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
 statement = "A substantive tooling or process change is filed before it is implemented, including in files Lane 1 may edit directly."
 text_sha = "a5fa850bb8baeecb"
-hooks = []
-
-[[rule]]
-id = "R-0418"
-file = "rules/universal-claude.md"
-anchor = "tool-use-safeguards"
-statement = "A backgrounded command is never polled by a second shell or a sleep loop; the harness notifies on completion."
-text_sha = "3a23e1649246a060"
 hooks = []
