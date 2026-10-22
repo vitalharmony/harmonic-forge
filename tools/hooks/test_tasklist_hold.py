@@ -234,7 +234,8 @@ class Stop(Base):
         # The stored subject differs from the entry's, so only the time
         # comparison can refuse.
         marker = owed.OWED_DIR / SESSION / "H2463.json"
-        marker.write_text(json.dumps({**json.loads(marker.read_text()), "subject": "older"}))
+        marker.write_text(json.dumps({**json.loads(marker.read_text()), "subject": "older",
+                                      "subjects": ["older"]}))
         verdict, reason = hold.stop_decide(self.stop())
         self.assertEqual(verdict, "block")
         self.assertIn("H2463", reason)
