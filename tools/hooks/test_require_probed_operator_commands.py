@@ -182,7 +182,8 @@ class Decide(unittest.TestCase):
 
     def test_ansi_c_quoting_and_comments_are_refused(self):
         """Post-verdict: forms the lexer does not model are refused, not read."""
-        for line in ("echo $'it\\'s' # x' && ./s.sh", "echo $'a'", "gh pr view 1 # note"):
+        for line in ("echo $'it\\'s' # x' && ./s.sh", "echo $'a'", "gh pr view 1 # note",
+                     '$"tools/x.sh"'):
             t = self.fresh()
             t.bash(line)
             with self.subTest(line=line):
