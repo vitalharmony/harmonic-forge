@@ -50,7 +50,8 @@ def key_for(repo: str, issue: int | str) -> str | None:
 
 def read_entries(session: str, tasks_dir: Path | None = None) -> list[dict]:
     """Every task entry of `session`, each with `_mtime`. Raises OSError when
-    the directory cannot be listed; unparseable files are skipped."""
+    the directory or any `.json` entry cannot be read: a skipped entry would be
+    judged absent, so the caller cannot judge and allows (reforge epoch 1)."""
     base = (tasks_dir or TASKS_DIR) / session
     entries = []
     for path in base.iterdir():
@@ -59,8 +60,8 @@ def read_entries(session: str, tasks_dir: Path | None = None) -> list[dict]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             mtime = path.stat().st_mtime
-        except (OSError, ValueError):
-            continue
+        except (OSError, ValueError) as exc:
+            raise OSError(f"{path}: {exc}") from exc
         if isinstance(data, dict):
             data["_mtime"] = mtime
             entries.append(data)

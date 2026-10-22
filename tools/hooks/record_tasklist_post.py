@@ -64,27 +64,12 @@ def _cwd_repo(payload: dict) -> str | None:
     return done.stdout.strip() or None
 
 
-def _drop_reopened(segment: list[str], payload: dict) -> None:
-    """A landed `gh issue reopen` drops tasklist_hold's cached closed state."""
-    import batch_auth  # noqa: PLC0415
-    import tasklist_hold  # noqa: PLC0415
-    tokens = strip_invocation_prefix(segment)
-    if not (tokens[:3] and Path(tokens[0]).name == "gh" and tokens[1:3] == ["issue", "reopen"]):
-        return
-    number = next((t.lstrip("#") for t in tokens[3:] if t.lstrip("#").isdigit()), None)
-    repo = batch_auth._repo_flag(tokens) or _short_repo(tokens) or _cwd_repo(payload)
-    key = batch_auth.issue_key(repo, number) if repo and number else None
-    if key:
-        (tasklist_hold.STATE_DIR / f"{key}.json").unlink(missing_ok=True)
-
-
 def events(payload: dict) -> list[tuple[str, str]]:
     """`[(key, kind), ...]` this Bash call owes, kind in merge/pr/close."""
     import batch_auth  # noqa: PLC0415
     command = (payload.get("tool_input") or {}).get("command") or ""
     found = []
     for segment in command_segments(command):
-        _drop_reopened(segment, payload)
         close = batch_auth.classify_issue_close(segment)
         if close and close[1]:
             repo, number = close[0] or _short_repo(segment) or _cwd_repo(payload), close[1]

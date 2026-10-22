@@ -43,9 +43,11 @@ either hook. Codex lanes keep R-0376's record. An unreadable task file or task
 directory allows (with a stderr note): the layout is Claude Code's, and
 failing closed on a format change would wedge every lane at once. An
 unreadable GitHub state denies, with the reason. A K/Y/D key (the
-harmonicarchitect account) is never read under the ambient credentials, so it
-is always denied, naming the account (`rules/lane-shorthand.md`: an empty
-result is never absence).
+harmonicarchitect account) is never read under the ambient credentials: an
+open K/Y/D entry is denied, naming the account (`rules/lane-shorthand.md`: an
+empty result is never absence), and a `<KEY> — closed` entry may be completed
+on the lane's own word, because its state cannot be read here. In Stop, an
+unreadable state (K/Y/D included) allows.
 
 The deny is JSON on stdout with exit 0, because HRSE2 wraps every forge hook
 in `|| true` (AC0, probed on Claude Code 2.1.305).
@@ -57,7 +59,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -66,8 +67,6 @@ import tasklist_owed as owed  # noqa: E402
 from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
 SHAPE = "<KEY> — <last action> · waiting on <who> <step>"
-STATE_DIR = Path.home() / ".cache" / "harmonic-forge" / "tasklist_state"
-STATE_TTL = 300
 OTHER_ACCOUNT = {"K", "Y", "D"}
 # Well under the hooks' 10 s timeout (preclose pass 2, F): a read Claude Code
 # kills prints nothing, which would let the update through; a timeout here
@@ -87,20 +86,11 @@ def _repo_for(prefix: str) -> str | None:
     return None
 
 
-def issue_closed(key: str, now: float | None = None) -> bool:
+def issue_closed(key: str) -> bool:
     """True when `key`'s issue is closed. Raises RuntimeError when that
-    cannot be established; the caller denies."""
-    now = time.time() if now is None else now
-    cache = STATE_DIR / f"{key}.json"
-    try:
-        cached = json.loads(cache.read_text(encoding="utf-8"))
-        # Only a closed result is reused (preclose pass 1): an open one is
-        # re-read every time, so a close is seen at once, and a reopen drops
-        # the cache (record_tasklist_post).
-        if cached.get("closed") is True and now - float(cached["ts"]) < STATE_TTL:
-            return True
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
+    cannot be established; the caller denies. Read live every time, never
+    cached (reforge epoch 1 sticky-wicket): a stored closed state is exactly
+    the stale evidence a reopen invalidates."""
     prefix, number = key[0], key[1:]
     if prefix in OTHER_ACCOUNT:
         raise RuntimeError(f"{key} is on the harmonicarchitect account; its state is "
@@ -117,12 +107,6 @@ def issue_closed(key: str, now: float | None = None) -> bool:
     if done.returncode or state not in ("open", "closed"):
         raise RuntimeError(f"reading {repo}#{number}: exit {done.returncode} "
                            f"{(done.stderr or state).strip()[:200]}")
-    try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        if state == "closed":
-            cache.write_text(json.dumps({"ts": now, "closed": True}), encoding="utf-8")
-    except OSError:
-        pass
     return state == "closed"
 
 
@@ -174,6 +158,8 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     if any(str(e.get("id")) != task_id and e.get("status") in owed.OPEN_STATUSES
            and owed.entry_key(e) == key for e in entries):
         return "allow", ""
+    if key[0] in OTHER_ACCOUNT and _closed_subject(key, stored):
+        return "allow", ""
     try:
         closed = issue_closed(key)
     except RuntimeError as exc:
@@ -222,9 +208,16 @@ def stop_decide(payload: dict) -> tuple[str, str]:
         if any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
                for e in entries):
             # Preclose pass 2 (E): a post on an issue whose entry already reads
-            # "<KEY> — closed" owes nothing more; it never needs a new open entry.
-            owed.clear(session, key)
-            continue
+            # "<KEY> — closed" owes nothing more, but only while the issue is
+            # closed now: a reopened issue needs a new open entry. An unreadable
+            # state allows, Stop's documented failure direction.
+            try:
+                still_closed = issue_closed(key)
+            except RuntimeError:
+                still_closed = True
+            if still_closed:
+                owed.clear(session, key)
+                continue
         entry = owed.open_entry(entries, key)
         if entry is None:
             missing.append(f"  - {key}: after `{kind}`, it has no open entry; add one")

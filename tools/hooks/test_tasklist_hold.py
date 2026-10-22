@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """harmonic-forge#1126 — a lane's task list holds one entry per issue until it closes.
 
-Every test points `tasklist_owed.OWED_DIR`, `tasklist_owed.TASKS_DIR` and
-`tasklist_hold.STATE_DIR` at a temp directory and sets `LANE`, so nothing here
+Every test points `tasklist_owed.OWED_DIR` and `tasklist_owed.TASKS_DIR` at a
+temp directory and sets `LANE`, so nothing here
 reads or writes the real stores.
 """
 from __future__ import annotations
@@ -36,8 +36,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        for target, name, sub in ((owed, "OWED_DIR", "owed"), (owed, "TASKS_DIR", "tasks"),
-                                  (hold, "STATE_DIR", "state")):
+        for target, name, sub in ((owed, "OWED_DIR", "owed"), (owed, "TASKS_DIR", "tasks")):
             patcher = mock.patch.object(target, name, self.tmp / sub)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -101,7 +100,8 @@ class PreToolUse(Base):
         self.assertIn("could not be read", reason)
 
     def test_other_account_key_denies_naming_account(self):
-        self.entry(1, "K65 — closed")
+        self.entry(1, "K65 — L2D posted")
+        self.entry(2, "K65 — closed", status="completed")
         verdict, reason = hold.pretooluse_decide(self.update(1, "completed"))
         self.assertEqual(verdict, "deny")
         self.assertIn("harmonicarchitect", reason)
@@ -174,16 +174,37 @@ class PreToolUse(Base):
             self.assertTrue(hold.issue_closed("F1112"))
         self.assertEqual(run.call_count, 2)
 
-    def test_closed_state_is_cached(self):
-        done = subprocess.CompletedProcess([], 0, "closed\n", "")
-        with mock.patch.object(hold.subprocess, "run", return_value=done) as run:
+    def test_closed_state_is_never_cached(self):
+        """Reforge epoch 1: a reopen made anywhere is seen on the next read."""
+        closed_, open_ = (subprocess.CompletedProcess([], 0, f"{s}\n", "")
+                          for s in ("closed", "open"))
+        self.entry(1, "F1112 — closed (abc)")
+        with mock.patch.object(hold.subprocess, "run", side_effect=[closed_, open_]) as run:
             self.assertTrue(hold.issue_closed("F1112"))
-            self.assertTrue(hold.issue_closed("F1112"))
-        self.assertEqual(run.call_count, 1)
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
+        self.assertEqual(run.call_count, 2)
+
+    def test_other_account_closed_subject_completes_without_a_read(self):
+        """Reforge epoch 1 (C): a K/Y/D `— closed` entry leaves on the lane's word."""
+        self.entry(1, "K12 — closed")
+        with mock.patch.object(hold.subprocess, "run") as run:
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+        run.assert_not_called()
+        self.entry(1, "K12 — L2D posted")
+        self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
 
     def test_unreadable_task_file_allows(self):
         (self.tasks / "1.json").write_text("{not json")
         self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+
+    def test_one_unreadable_file_among_valid_ones_allows_stop(self):
+        """Reforge epoch 1 (E): a skipped entry would be judged absent."""
+        self.entry(1, "F9 — handoff posted · waiting on Lane 2 implement")
+        owed.record("F9", "handoff", session=SESSION)
+        self.entry(1, "F9 — handoff posted · waiting on Lane 2 implement")
+        (self.tasks / "2.json").write_text("{not json")
+        (self.tasks / "3.txt").write_text("skipped")
+        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
     def test_main_prints_json_deny(self):
         self.entry(1, "H1 — review")
@@ -246,6 +267,23 @@ class Stop(Base):
         self.entry(1, "F1112 — closed (5a1b2c3)", status="completed")
         self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
         self.assertFalse((owed.OWED_DIR / SESSION / "F1112.json").exists())
+
+    def test_post_on_a_reopened_issue_needs_an_open_entry(self):
+        """Reforge epoch 1 (B): an old `— closed` entry is not proof once reopened."""
+        self.entry(1, "F1112 — closed (abc)", status="completed")
+        owed.record("F1112", "handoff", session=SESSION)
+        with self.closed(False):
+            verdict, reason = hold.stop_decide(self.stop())
+        self.assertEqual(verdict, "block")
+        self.assertIn("no open entry", reason)
+        with self.closed(True):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+
+    def test_a_close_outranks_a_later_post(self):
+        owed.record("F9", "close", session=SESSION)
+        owed.record("F9", "handoff", session=SESSION)
+        marker = json.loads((owed.OWED_DIR / SESSION / "F9.json").read_text())
+        self.assertEqual(marker["kind"], "close")
 
     def test_stop_hook_active_allows(self):
         owed.record("F9", "handoff", session=SESSION)
