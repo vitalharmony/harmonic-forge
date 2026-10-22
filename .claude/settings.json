@@ -333,6 +333,16 @@
             "timeout": 90
           }
         ]
+      },
+      {
+        "matcher": "TaskUpdate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

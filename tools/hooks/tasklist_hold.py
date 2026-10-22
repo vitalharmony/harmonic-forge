@@ -211,12 +211,28 @@ def posttooluse_decide(payload: dict) -> str | None:
     if payload.get("tool_name") not in ("TaskCreate", "TaskUpdate"):
         return None
     session = payload.get("session_id") or ""
-    subject = (payload.get("tool_input") or {}).get("subject")
+    tool_input = payload.get("tool_input") or {}
+    if session and payload.get("tool_name") == "TaskUpdate":
+        owed.clear_pending(session, str(tool_input.get("taskId") or ""))
+    subject = tool_input.get("subject")
     if not session or not isinstance(subject, str):
         return None
     key = owed.entry_key({"subject": subject})
-    if key:
-        owed.clear(session, key)
+    if not key or tool_input.get("status") in ("completed", "deleted"):
+        return None
+    task_id = str(tool_input.get("taskId") or "")
+    if payload.get("tool_name") == "TaskUpdate":
+        # Pass 1: the call must leave an open entry carrying the key, never
+        # settle the marker by renaming an entry that has left the list.
+        try:
+            entries = owed.read_entries(session)
+        except OSError:
+            return None
+        target = next((e for e in entries if str(e.get("id")) == task_id), None)
+        if (target is None or target.get("status") not in owed.OPEN_STATUSES
+                or owed.entry_key(target) != key):
+            return None
+    owed.clear(session, key)
     return key
 
 
@@ -258,6 +274,11 @@ def main() -> int:
                     "permissionDecisionReason": reason}}))
         elif event == "PostToolUse":
             posttooluse_decide(payload)
+        elif event == "PostToolUseFailure":
+            # A failed TaskUpdate ends its pending removal and settles nothing.
+            if os.environ.get("LANE") and payload.get("tool_name") == "TaskUpdate":
+                owed.clear_pending(payload.get("session_id") or "",
+                                   str((payload.get("tool_input") or {}).get("taskId") or ""))
         elif event == "Stop":
             if payload.get("stop_hook_active"):
                 return 0
@@ -265,6 +286,13 @@ def main() -> int:
             if verdict == "block":
                 print(json.dumps({"decision": "block", "reason": reason}))
     except Exception as exc:
+        if event == "PreToolUse":
+            # Pass 1: an unexpected error never lifts the hold.
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": f"tasklist_hold could not check this update "
+                                            f"({exc}); retry it."}}))
+            return 0
         _note(f"error, allowing: {exc}")
     return 0
 

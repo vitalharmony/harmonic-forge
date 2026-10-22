@@ -17,9 +17,10 @@ only by `tasklist_hold.py`'s PostToolUse hook, when a successful TaskCreate or
 TaskUpdate gives an entry carrying the key its subject; nothing compares task
 files against the marker.
 
-`<session>/.lock` serializes the PreToolUse sibling check, and
-`<session>/.pending/<taskId>` records an entry whose removal was just allowed
-on the strength of a sibling, for `PENDING_TTL` seconds, so a parallel call
+A flock on the session's task directory serializes the PreToolUse sibling
+check, and
+`<session>/.pending/<taskId>` records an entry whose removal was allowed on
+the strength of a sibling until that update reports back, so a parallel call
 never counts it as the survivor (epoch 3 pass 2, survivor 1).
 """
 from __future__ import annotations
@@ -36,8 +37,6 @@ from pathlib import Path
 OWED_DIR = Path.home() / ".cache" / "harmonic-forge" / "tasklist_owed"
 TASKS_DIR = Path.home() / ".claude" / "tasks"
 PRUNE_AFTER_DAYS = 7
-#: Seconds a sibling-allowed removal stays pending (well over a hook's 10 s).
-PENDING_TTL = 60
 OPEN_STATUSES = ("pending", "in_progress")
 KEY_RE = re.compile(r"^([HFIOPKYD])(\d+)\b")
 
@@ -145,27 +144,39 @@ def markers(session: str) -> list[dict]:
 
 
 @contextmanager
-def session_lock(session: str):
-    """An exclusive lock over `session`'s sibling check. Raises OSError when
-    it cannot be taken; the caller denies."""
-    directory = _dir(session)
-    directory.mkdir(parents=True, exist_ok=True)
-    with open(directory / ".lock", "a", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+def session_lock(session: str, tasks_dir: Path | None = None):
+    """An exclusive lock over `session`'s sibling check, taken on the session's
+    task directory itself (pass 1: a lock file of ours could be pruned while
+    held, and a lock on an unlinked inode excludes nothing; this directory is
+    Claude Code's and nothing here removes it). Raises OSError when it cannot
+    be taken; the caller denies."""
+    fd = os.open((tasks_dir or TASKS_DIR) / session, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
-def pending_removals(session: str, now: float | None = None) -> set[str]:
-    """Task ids whose removal was allowed within `PENDING_TTL`. Raises OSError
-    on an unreadable record directory; a missing one is empty."""
+def pending_removals(session: str) -> set[str]:
+    """Task ids whose sibling-allowed removal has not yet reported back.
+    Raises OSError on an unreadable record directory; a missing one is empty.
+    Pass 1 (cross-family): no TTL. A record leaves only when that task's
+    TaskUpdate reaches PostToolUse or PostToolUseFailure (`clear_pending`), so
+    a removal held at a prompt never expires into a second survivor; a record
+    whose report never arrives keeps denying sibling removals (fail closed)
+    until `prune` drops it after `PRUNE_AFTER_DAYS`."""
     directory = _dir(session) / ".pending"
     if not directory.exists():
         return set()
-    cutoff = (now if now is not None else time.time()) - PENDING_TTL
-    return {p.name for p in directory.iterdir() if p.stat().st_mtime >= cutoff}
+    return {p.name for p in directory.iterdir()}
+
+
+def clear_pending(session: str, task_id: str) -> None:
+    try:
+        (_dir(session) / ".pending" / task_id).unlink()
+    except OSError:
+        pass
 
 
 def mark_pending(session: str, task_id: str) -> None:

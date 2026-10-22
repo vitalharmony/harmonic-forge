@@ -97,13 +97,20 @@ class PreToolUse(Base):
         self.assertEqual(verdict, "deny")
         self.assertIn("parallel", reason)
 
-    def test_a_pending_removal_expires(self):
+    def test_a_pending_removal_never_expires_until_it_reports(self):
+        """Pass 1 (cross-family): a removal held past any TTL still counts."""
         self.entry(1, "H2463 — read thread")
         self.entry(2, "H2463 — review L2D")
         with self.closed(False):
             hold.pretooluse_decide(self.update(1, "completed"))
-            old = time.time() - owed.PENDING_TTL - 5
+            old = time.time() - 3600
             os.utime(owed.OWED_DIR / SESSION / ".pending" / "1", (old, old))
+            self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "deny")
+            # A failed update reports back and ends the pending removal.
+            payload = {"hook_event_name": "PostToolUseFailure", "tool_name": "TaskUpdate",
+                       "session_id": SESSION, "tool_input": {"taskId": "1"}}
+            with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+                hold.main()
             self.assertEqual(hold.pretooluse_decide(self.update(2, "completed"))[0], "allow")
 
     def test_an_unusable_lock_denies(self):
@@ -237,6 +244,27 @@ class PreToolUse(Base):
         with self.closed(False):
             self.assertEqual(hold.pretooluse_decide(self.update(1, None, subject=""))[0], "deny")
 
+    def test_an_unexpected_error_denies(self):
+        """Pass 1 (fail-direction): any exception on the PreToolUse path denies."""
+        self.entry(1, "H1 — review")
+        out = io.StringIO()
+        with mock.patch.object(hold, "issue_closed", side_effect=ImportError("batch_auth")), \
+                mock.patch.object(sys, "stdin", io.StringIO(json.dumps(
+                    self.update(1, "completed")))), redirect_stdout(out):
+            hold.main()
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"],
+                         "deny")
+
+    def test_the_lock_is_the_task_directory_and_survives_prune(self):
+        """Pass 1 (fail-direction): no lock file of ours for prune to unlink."""
+        owed.record("F9", "handoff", session=SESSION)
+        old = time.time() - 8 * 86400
+        os.utime(owed.OWED_DIR / SESSION / "F9.json", (old, old))
+        with owed.session_lock(SESSION):
+            owed.prune()
+            self.assertFalse((owed.OWED_DIR / SESSION / ".lock").exists())
+        self.assertTrue(self.tasks.is_dir())
+
     def test_main_prints_json_deny(self):
         self.entry(1, "H1 — review")
         out = io.StringIO()
@@ -271,6 +299,7 @@ class Stop(Base):
         self.assertEqual(hold.stop_decide(self.stop())[0], "block")
 
     def test_rewritten_subject_settles_and_clears(self):
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
         owed.record("H2463", "completion", session=SESSION)
         self.assertEqual(hold.posttooluse_decide(self.post(
             "TaskUpdate", taskId="1", subject="H2463 — L2D posted · waiting on Lane 1 review")),
@@ -298,6 +327,7 @@ class Stop(Base):
         self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["F9"])
 
     def test_a_later_post_needs_a_later_update(self):
+        self.entry(1, "F9 — handoff")
         owed.record("F9", "handoff", session=SESSION)
         hold.posttooluse_decide(self.post("TaskUpdate", taskId="1", subject="F9 — handoff"))
         owed.record("F9", "close", session=SESSION)
@@ -308,9 +338,9 @@ class Stop(Base):
         owed.record("F1112", "close", session=SESSION)
         with self.closed(True):
             self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+            self.entry(1, "F1112 — closed (5a1b2c3)")
             hold.posttooluse_decide(self.post("TaskUpdate", taskId="1",
                                               subject="F1112 — closed (5a1b2c3)"))
-            self.entry(1, "F1112 — closed (5a1b2c3)")
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
@@ -346,7 +376,27 @@ class Stop(Base):
             hold.main()
         self.assertEqual(out.getvalue(), "")
 
+    def test_removing_an_entry_never_settles_its_key(self):
+        """Pass 1 (correctness, fail-direction, second-run): a rename that
+        completes or deletes in the same call leaves no rewritten entry."""
+        self.entry(1, "H5 — implementing")
+        self.entry(2, "H5 — rebase")
+        self.entry(3, "run lint")
+        owed.record("H5", "completion", session=SESSION)
+        for task_id, status in (("1", "completed"), ("3", "deleted")):
+            hold.posttooluse_decide(self.post("TaskUpdate", taskId=task_id, status=status,
+                                              subject="H5 — L2D posted"))
+        self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["H5"])
+
+    def test_renaming_a_left_entry_never_settles_its_key(self):
+        """Pass 1 (second-run): the renamed entry must still be open."""
+        self.entry(1, "H5 — L2D posted", status="completed")
+        owed.record("H5", "completion", session=SESSION)
+        hold.posttooluse_decide(self.post("TaskUpdate", taskId="1", subject="H5 — L2D posted"))
+        self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["H5"])
+
     def test_main_routes_posttooluse_to_the_clear(self):
+        self.entry(1, "F9 — handoff posted")
         owed.record("F9", "handoff", session=SESSION)
         payload = self.post("TaskUpdate", taskId="1", subject="F9 — handoff posted")
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
@@ -425,6 +475,7 @@ class Wiring(unittest.TestCase):
         # (AC0 probe: a nonzero Bash call routes to PostToolUseFailure).
         self.assertTrue(wired("PostToolUse", "TaskCreate|TaskUpdate", "tasklist_hold.py"))
         self.assertTrue(wired("PostToolUseFailure", "Bash", "record_tasklist_post.py"))
+        self.assertTrue(wired("PostToolUseFailure", "TaskUpdate", "tasklist_hold.py"))
 
     def test_recorder_timeout_exceeds_its_network_budget(self):
         """Preclose epoch 1 pass 2: a hook killed at its timeout writes no marker."""
