@@ -8,6 +8,8 @@ against docs/PRIORITIES.md.
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 import tempfile
@@ -52,7 +54,22 @@ def load_from(directory: Path, name: str):
 sys.path.insert(0, str(ROOT))
 import _home  # noqa: E402
 
-REPO_ROOT = _home.home_root()
+
+
+def _repo_root() -> Path:
+    """The home checkout, resolved when a test needs it, never at import
+    (harmonic-forge#1136): in a lane worktree the config guard refuses the
+    root, which at module level failed every test in this file. Only that
+    refusal falls back to the git top level, and only these read-only script
+    loads use it; any other config error still raises."""
+    try:
+        return _home.home_root()
+    except _home.config_loader.ConfigError as exc:
+        if "refused lane worktree root" not in str(exc):
+            raise
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True)
+        return Path(top.stdout.strip())
 
 summary = load("milestone_summary")
 lane_state = load("lane_state")
@@ -1462,7 +1479,7 @@ class GatePhaseRenderTests(RenderTests):
         row = next(line for line in text.splitlines()
                    if line.startswith("- ") and "Tier:" in line)
         self.assertIn(f"| {lane_state.EXECUTABLE}]", row)
-        renderer = load_from(REPO_ROOT / "scripts", "board_dashboard_renderer")
+        renderer = load_from(_repo_root() / "scripts", "board_dashboard_renderer")
         match = renderer._BRACKETED_ROW_RE.match(row)
         self.assertIsNotNone(match)
         self.assertEqual(match.group("lane"), lane_state.EXECUTABLE)
@@ -1722,7 +1739,7 @@ class Lane3EmitterRoundTripTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.emitter = load_from(REPO_ROOT / "scripts", "post_lane_discussion")
+        self.emitter = load_from(_repo_root() / "scripts", "post_lane_discussion")
 
     def round_trip(self, kind, body):
         posted = body.rstrip("\n") + self.emitter.footer(kind, body, "LANE3")
@@ -1884,7 +1901,7 @@ class StaleRenderTests(RenderTests):
         row = next(line for line in text.splitlines()
                    if line.startswith("- ") and "Tier:" in line)
         self.assertIn("| stale ", row)
-        renderer = load_from(REPO_ROOT / "scripts", "board_dashboard_renderer")
+        renderer = load_from(_repo_root() / "scripts", "board_dashboard_renderer")
         match = renderer._BRACKETED_ROW_RE.match(row)
         self.assertIsNotNone(match, f"row no longer parses: {row}")
         self.assertIn("stale ", match.group("lane"))
@@ -1908,6 +1925,34 @@ class StaleRenderTests(RenderTests):
             with self.subTest(key=key):
                 self.assertNotIn("|", label)
                 self.assertNotIn("]", label)
+
+
+class LaneWorktreeImportTests(unittest.TestCase):
+    """This module imports and passes from a lane worktree (harmonic-forge#1136).
+
+    Re-runs the module in a child process whose cwd is a `-lane3`-named
+    worktree of the home checkout, the shape the config guard refuses."""
+
+    def test_module_runs_from_a_lane3_worktree(self):
+        if os.environ.get("SPRINT_PLAN_LANE_CHILD"):
+            self.skipTest("already the lane-worktree child run")
+        try:
+            home = _home.home_root()
+        except _home.config_loader.ConfigError:
+            self.skipTest("no home checkout resolves here (e.g. forge CI)")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        lane = Path(tmp.name) / "x-lane3"
+        subprocess.run(["git", "-C", str(home), "worktree", "add", "--detach", str(lane), "HEAD"],
+                       capture_output=True, text=True, check=True)
+        self.addCleanup(subprocess.run,
+                        ["git", "-C", str(home), "worktree", "remove", "--force", str(lane)],
+                        capture_output=True, text=True, check=True)
+        env =dict(os.environ, SPRINT_PLAN_LANE_CHILD="1")
+        done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT),
+                               "-p", "test_milestone_summary.py"],
+                              cwd=lane, env=env, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
 
 
 if __name__ == "__main__":
