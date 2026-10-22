@@ -2031,6 +2031,30 @@ def cycle_is_quiet(
     return True
 
 
+def _offer_superseded(repo: str, issue: int, entry: dict | None, lane: str,
+                      now: "dt.datetime | None" = None) -> bool:
+    """Whether the local candidate store already shows this offer stale
+    (harmonic-forge#1141): the issue carries a live closed mark, or its newest
+    classified post is a kind this lane is never offered AND is newer than the
+    offer. Local reads only; a missing or unreadable file is never evidence."""
+    if belt_candidates.closed_marked(repo, issue, now=now):
+        return True
+    path = belt_candidates._candidate_path(belt_candidates.DEFAULT_CANDIDATES_DIR, repo, issue)
+    try:
+        candidate = json.loads(path.read_text(encoding="utf-8"))
+        posted = belt_candidates._parse_iso(candidate["posted_at"])
+        offered = dt.datetime.fromisoformat(
+            str((entry or {})["offered_at"]).replace("Z", "+00:00"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    try:
+        if not isinstance(candidate, dict) or candidate.get("kind") in QUEUE_KINDS.get(lane, ()):
+            return False
+        return posted > offered
+    except TypeError:  # a naive offered_at cannot be ordered: not evidence
+        return False
+
+
 def queue_cycle(
     repos: list[str],
     lane: str,
@@ -2189,6 +2213,11 @@ def queue_cycle(
         # its entry simply ages out (AC5a).
         for key in offers.keys():
             if key in queue or key[0] not in ok_repos:
+                continue
+            # harmonic-forge#1141: an unchecked offer the candidate store
+            # already shows superseded retracts now, not after 14 days.
+            if _offer_superseded(key[0], key[1], offers.get(key), lane):
+                retract.add(key)
                 continue
             if recorded_only or key in checked_pairs:
                 retract.add(key)

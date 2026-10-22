@@ -4123,6 +4123,70 @@ class OfferStateTest(unittest.TestCase):
         on_disk = json.loads(tick.path.read_text().splitlines()[-1])
         self.assertEqual(on_disk["reoffer_suppressed"], 1)
 
+    # harmonic-forge#1141: the candidate store retires an unchecked offer.
+    def _store(self, issue=1530, **entry):
+        store = Path(self._tmp.name) / "candidates"
+        store.mkdir(exist_ok=True)
+        (store / f"vitalharmony__hrse__{issue}.json").write_text(json.dumps(
+            {"repo": self.REPO, "issue": issue, "posted_by": "LANE3", **entry}))
+        return patch.object(watch_lane_posts.belt_candidates, "DEFAULT_CANDIDATES_DIR", store)
+
+    @staticmethod
+    def _iso(ts):
+        return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _offer_then_unchecked(self, store_patch, now_ts):
+        self._cycle({1530: [{"id": 11, "body": self.BODY}]}, now_ts=self.T0)
+        with store_patch:
+            _, lines, _ = self._cycle({}, now_ts=now_ts, candidates=())
+        return lines
+
+    def test_h2396_superseded_offer_retracts(self):
+        lines = self._offer_then_unchecked(
+            self._store(kind="discussion", posted_at=self._iso(self.T0 + 60)), self.T0 + 1800)
+        self.assertEqual(lines, [f"{self.REPO}#1530 left-queue-for-l3"])
+        self.assertIsNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 1800).get((self.REPO, 1530)))
+
+    def test_closed_candidate_retires_offer(self):
+        now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = self._offer_then_unchecked(
+            self._store(kind="ready-for-l3", posted_at=self._iso(self.T0 - 60), closed_at=now),
+            self.T0 + 1800)
+        self.assertEqual(lines, [f"{self.REPO}#1530 left-queue-for-l3"])
+
+    def test_older_nonofferable_candidate_keeps_offer(self):
+        lines = self._offer_then_unchecked(
+            self._store(kind="discussion", posted_at=self._iso(self.T0 - 60)), self.T0 + 1800)
+        self.assertEqual(lines, [])
+        self.assertIsNotNone(watch_lane_posts.OfferState(self.path, now=self.T0 + 1800).get((self.REPO, 1530)))
+
+    def test_missing_candidate_keeps_offer(self):
+        store = Path(self._tmp.name) / "empty-candidates"
+        store.mkdir()
+        lines = self._offer_then_unchecked(
+            patch.object(watch_lane_posts.belt_candidates, "DEFAULT_CANDIDATES_DIR", store),
+            self.T0 + 1800)
+        self.assertEqual(lines, [])
+
+    def test_retirement_makes_no_github_call(self):
+        store_patch = self._store(kind="discussion", posted_at=self._iso(self.T0 + 60))
+        self._cycle({1530: [{"id": 11, "body": self.BODY}]}, now_ts=self.T0)
+        with store_patch, \
+                patch("watch_lane_posts._fetch_all_comments", side_effect=AssertionError("gh")), \
+                patch("watch_lane_posts._issue_meta", side_effect=AssertionError("gh")):
+            offers = watch_lane_posts.OfferState(self.path, now=self.T0 + 1800)
+            _, lines, _ = watch_lane_posts.queue_cycle(
+                [self.REPO], "l3", {}, "t", candidate_pairs=set(), offers=offers,
+                session=self.SESSION, now_ts=self.T0 + 1800)
+        self.assertEqual(lines, [f"{self.REPO}#1530 left-queue-for-l3"])
+
+    def test_expired_closed_mark_keeps_offer(self):
+        stale = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = self._offer_then_unchecked(
+            self._store(kind="ready-for-l3", posted_at=self._iso(self.T0 - 60), closed_at=stale),
+            self.T0 + 1800)
+        self.assertEqual(lines, [])
+
     def test_1015_same_process_poll_not_counted_new_process_counted(self):
         c = {1530: [{"id": 11, "body": self.BODY}]}
         self._cycle(c, now_ts=self.T0)
