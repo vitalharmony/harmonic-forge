@@ -211,6 +211,9 @@ class Pipeline(unittest.TestCase):
                                      return_value=f"the handoff\nkill-bundle-sha256: {self.digest}\n"))
         self.enter(mock.patch.object(tq, "tier", return_value="standard"))
         self.enter(mock.patch.object(tq, "bundle_dir", return_value=bundle))
+        # harmonic-forge#1147: the newest Lane 1 post and the runner tree, offline.
+        self.enter(mock.patch.object(tq, "lane1_marker_id", return_value=11))
+        self.enter(mock.patch.object(tq, "runner_tree", return_value="tree0"))
         self.enter(mock.patch.object(te_run, "kill_receipt", return_value=True))
         self.enter(mock.patch.object(te_run, "preclose_fact", return_value={
             "status": "complete", "survivors": 0,
@@ -441,6 +444,116 @@ class Pipeline(unittest.TestCase):
             self.drive()
         self.assertEqual(self.item()["reason"], "kill-check-fail")
         self.assertEqual(self.fork_branches(), "")
+
+    def test_done_item_records_its_dependencies(self):
+        # harmonic-forge#1147 AC1: a set-aside records what it depended on.
+        with mock.patch.object(te_run, "kill_receipt", return_value=False):
+            self.drive()
+        last = self.item()["last_outcome"]
+        self.assertEqual(last["reason"], "kill-check-fail")
+        self.assertEqual(last["run_id"], self.item()["run_id"])
+        self.assertEqual((last["lane1_marker_id"], last["bundle_digest"], last["runner_tree"]),
+                         (11, self.digest, "tree0"))
+        self.assertEqual(last["runner_source"], str(te_run.te_queue.SOURCE))
+
+    def test_unchanged_item_is_never_set_aside_again(self):
+        # harmonic-forge#1147 AC2a: an unchanged item never reaches work_item,
+        # so its last_outcome keeps the real reason, not a tool-refusal.
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0]["last_outcome"] = {
+            "run_id": "run-old", "reason": "check-fail", "lane1_marker_id": 11,
+            "bundle_digest": self.digest, "runner_tree": "tree0"}
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run, "work_item") as work:
+            self.drive()
+        work.assert_not_called()
+        item = self.item()
+        self.assertEqual(item["status"], "pending")
+        self.assertEqual(item["last_outcome"]["reason"], "check-fail")
+        self.assertEqual(self.observed(), [])
+
+    def test_dependencies_are_read_before_the_work(self):
+        # Sticky-wicket PATCH: a Lane 1 post landing mid-run (12) is not
+        # recorded as consumed; last_outcome keeps the marker the run used (11).
+        with mock.patch.object(te_run, "kill_receipt", return_value=False), \
+                mock.patch.object(te_run.te_queue, "lane1_marker_id", side_effect=[11, 12, 12]):
+            self.drive()
+        self.assertEqual(self.item()["last_outcome"]["lane1_marker_id"], 11)
+
+    def test_an_unreadable_snapshot_passes_the_item_over_pending(self):
+        with mock.patch.object(te_run.te_queue, "lane1_marker_id",
+                               side_effect=te_run.te_queue.QueueError("cannot read")), \
+                mock.patch.object(te_run, "work_item") as work:
+            self.assertEqual(self.drive(), 0)
+        work.assert_not_called()
+        self.assertEqual(self.item()["status"], "pending")
+
+    def test_an_unreadable_unchanged_check_passes_over_only_that_item(self):
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0]["last_outcome"] = {
+            "run_id": "run-old", "reason": "check-fail", "lane1_marker_id": 11,
+            "bundle_digest": self.digest, "runner_tree": "tree0"}
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run.te_queue, "lane1_marker_id",
+                               side_effect=te_run.te_queue.QueueError("cannot read")), \
+                mock.patch.object(te_run, "work_item") as work:
+            self.assertEqual(self.drive(), 0)
+        work.assert_not_called()
+        self.assertEqual(self.item()["status"], "pending")
+
+    def test_a_passed_over_item_uses_no_step(self):
+        # Sticky-wicket PATCH 2: with one step, an undecidable F7 at the head
+        # must not stop F8 from being worked.
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
+
+        def marker(issue):
+            if issue == 7:
+                raise te_run.te_queue.QueueError("cannot read")
+            return 11
+        worked = []
+        with mock.patch.object(te_run.te_queue, "issue_number",
+                               side_effect=lambda key: int(key[1:])), \
+                mock.patch.object(te_run.te_queue, "lane1_marker_id", side_effect=marker), \
+                mock.patch.object(te_run, "work_item",
+                                  side_effect=lambda item, *a: worked.append(item["id"])
+                                  or (_ for _ in ()).throw(te_run.Blocked("stop"))):
+            with mock.patch.dict(os.environ, {}):
+                te_run.run_queue(self.queue, "1", 1)
+        self.assertEqual(worked, ["F8"])
+        self.assertEqual(self.item("F7")["status"], "pending")
+
+    def test_a_green_run_clears_a_stale_last_outcome(self):
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0]["last_outcome"] = {
+            "run_id": "run-old", "reason": "check-fail", "lane1_marker_id": 10,
+            "bundle_digest": self.digest, "runner_tree": "tree0"}
+        te_run.queue_state.save(self.queue, state)
+        self.drive()
+        item = self.item()
+        self.assertEqual(item["verdict"]["state"], "green")
+        self.assertNotIn("last_outcome", item)
+
+    def test_an_unreadable_bundle_at_snapshot_is_never_worked(self):
+        with mock.patch.object(te_run.te_queue.kill_runner, "bundle_digest",
+                               side_effect=te_run.te_queue.kill_runner.RunnerError("gone")), \
+                mock.patch.object(te_run, "work_item") as work:
+            self.drive()
+        work.assert_not_called()
+        self.assertEqual(self.item()["status"], "pending")
+
+    def test_failed_receipt_keeps_kill_facts(self):
+        # harmonic-forge#1147 AC6 (F1073, run 7): the receipt failed, but the
+        # facts it judged stay on the item, so the report names each check
+        # instead of "no kill checks ran"; no paid preclose runs.
+        with mock.patch.object(te_run, "kill_receipt", return_value=False), \
+                mock.patch.object(te_run, "preclose_fact") as preclose:
+            self.drive()
+        item = self.item()
+        self.assertEqual(item["reason"], "kill-check-fail")
+        self.assertEqual(item["facts"]["kill"], [{"ac": "AC1", "base_rc": 1, "head_rc": 0}])
+        self.assertIs(item["facts"]["kill_receipt"], False)
+        self.assertNotIn("no kill checks ran", item["note"])
+        preclose.assert_not_called()
 
     def test_preclose_is_skipped_once_an_earlier_clause_failed(self):
         # Sticky-wicket patch 6: no paid refuters or cross-family call once

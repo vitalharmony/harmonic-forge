@@ -844,21 +844,23 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     log("check", f"{len(new_failures)} new failure(s), {len(base_failures)} test failure(s) "
                  "on the base")
     kill = kill_facts(issue, base, head, env, bundle, pin, scratch)
-    if kill and not kill_receipt(issue, base, head, env, scratch, bundle):
-        kill = []
-    log("kill", f"{len(kill)} check(s)")
+    # harmonic-forge#1147 AC6: a failed receipt keeps the facts it judged, so
+    # the report names each check; the reducer reads the receipt on its own.
+    receipt_ok = bool(kill) and kill_receipt(issue, base, head, env, scratch, bundle)
+    log("kill", f"{len(kill)} check(s), receipt {'ok' if receipt_ok else 'failed'}")
     hits = deny_hits(base, head)
     log("deny", f"{len(hits)} hit(s)")
     # The harness's own results, for the cross-family brief's evidence (AC14).
     harness = scratch / "harness-results.json"
-    harness.write_text(json.dumps({"kill": kill, "deny_hits": hits, "check": {
+    harness.write_text(json.dumps({"kill": kill, "kill_receipt": receipt_ok,
+                                   "deny_hits": hits, "check": {
         "check_rc": check_rc, "new_failures": new_failures, "base_failures": base_failures}},
         indent=1) + "\n", encoding="utf-8")
     # Sticky-wicket patch 6: once the check, the deny check or the kill receipt
     # failed the item cannot go green, so no paid refuter or cross-family call
     # runs; the preclose fact says why, and the reducer still lists every
     # failed clause (AC8).
-    if check_rc or hits or not kill:
+    if check_rc or hits or not kill or not receipt_ok:
         preclose = {"status": "skipped: earlier clause failed", "survivors": 0, "provenance": ""}
     else:
         preclose = preclose_fact(issue, base, head, te_queue.tier(issue) or "standard", env,
@@ -871,7 +873,7 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
              "budget_exceeded": result.get("subtype") == "error_max_budget_usd",
              "self_flag": self_flag(result), "check_rc": check_rc,
              "check_new_failures": new_failures, "check_base_failures": base_failures,
-             "kill": kill,
+             "kill": kill, "kill_receipt": receipt_ok,
              "preclose": preclose,
              # Every clause but the PR's: a branch is pushed only on green.
              "live": {"pr_exists": True, "head_sha_matches": True, "ci": "pending"}}
@@ -942,11 +944,34 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     if run_preflight(state, run_dir, env, agent_env)["failures"]:
         return 3
     blocked = False
-    for _step in range(max_steps):
-        item = queue_state.next_item(state)
+    # harmonic-forge#1147 AC2a: an unchanged item is passed over before
+    # work_item, whose first_failure path would rewrite its reason.
+    # The item stays `pending`, so a later fix re-arms it with no queue edit.
+    passed_over = set()
+    for pending in [i for i in state["items"] if i.get("status") == "pending"]:
+        try:
+            skipped = te_queue.unchanged(pending)
+        except te_queue.QueueError as exc:  # undecidable: pass over this item only
+            skipped = f"undecidable ({exc}); passed over this run"
+        if skipped:
+            passed_over.add(pending["id"])
+            log("item", f"{pending['id']} {skipped}")
+    worked = 0  # a passed-over item uses no step; each one joins passed_over
+    while worked < max_steps:
+        item = next((i for i in state["items"]
+                     if i.get("status") == "pending" and i["id"] not in passed_over), None)
         if item is None:
             break
+        # The dependencies this run works against, read before it starts
+        # (sticky-wicket PATCH): a failed read passes the item over, pending.
+        try:
+            snapshot = te_queue.outcome_record(te_queue.issue_number(item["id"]), run_id, None)
+        except te_queue.QueueError as exc:
+            passed_over.add(item["id"])
+            log("item", f"{item['id']} undecidable ({exc}); passed over this run")
+            continue
         set_status(item, "in_progress", run_id)
+        worked += 1
         save(queue, state)
         log("item", f"{item['id']} in progress")
         try:
@@ -964,6 +989,10 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         outcome = extra["verdict"]
         set_status(item, "done", run_id, **extra, reason=outcome.get("reason") or "",
                    note=outcome.get("detail", ""))
+        if outcome.get("reason"):  # AC1: what this set-aside depended on
+            item["last_outcome"] = {**snapshot, "reason": outcome["reason"]}
+        else:  # green: a stale set-aside record must not gate it later
+            item.pop("last_outcome", None)
         for key, default in DONE_KEYS.items():  # never overwrites pushed_sha set before a push
             item.setdefault(key, default)
         save(queue, state)

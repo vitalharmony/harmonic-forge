@@ -165,7 +165,13 @@ def _kill_check_fail(facts: dict) -> str | None:
         head = _int(check, "head_rc", f"kill[{number}].head_rc")
         if base == 0 or head != 0:
             failed.append(f"{ac} (base {base}, head {head})")
-    return f"kill check not fail-on-base/pass-on-head: {'; '.join(failed)}" if failed else None
+    # harmonic-forge#1147 AC6: kill_check.py's receipt is its own check, and a
+    # failed one sets the item aside even when every kill fact passed.
+    receipt_ok = _bool(facts, "kill_receipt")
+    if failed:
+        reason = f"kill check not fail-on-base/pass-on-head: {'; '.join(failed)}"
+        return reason if receipt_ok else reason + "; kill-check receipt failed"
+    return None if receipt_ok else "kill-check receipt failed"
 
 
 def _preclose_survivor(facts: dict) -> str | None:

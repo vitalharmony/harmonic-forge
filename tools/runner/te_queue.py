@@ -197,10 +197,88 @@ def handoff(issue: int) -> str | None:
     """The newest posted Lane 1 handoff's body, or None."""
     try:
         comments = fetch_lane1_context.fetch_comments(REPO, issue)
-    except SystemExit as exc:
+    except (SystemExit, ValueError) as exc:  # ValueError: an unparseable body
         raise QueueError(f"cannot read the comments of F{issue}") from exc
     handoffs = [c.get("body", "") for c in comments if is_handoff(c)]
     return handoffs[-1] if handoffs else None
+
+
+def lane1_marker_id(issue: int) -> int | None:
+    """The newest Lane 1 handoff or rework comment's id (harmonic-forge#1147),
+    by the same login-plus-marker test as `is_handoff`, or None."""
+    try:
+        comments = fetch_lane1_context.fetch_comments(REPO, issue)
+    except (SystemExit, ValueError) as exc:  # ValueError: an unparseable body
+        raise QueueError(f"cannot read the comments of F{issue}") from exc
+    ids = []
+    for comment in comments:
+        marker = fetch_lane1_context._MARKER_RE.search(comment.get("body") or "")
+        kind = fetch_lane1_context._KIND_RE.search(marker.group(0)) if marker else None
+        if (comment.get("user") or {}).get("login") == LANE1_LOGIN and kind \
+                and kind.group(1) in ("handoff", "rework"):
+            ids.append(comment.get("id"))
+    return ids[-1] if ids else None
+
+
+#: The runner's own checkout (`te_run.SOURCE`): set-aside and `check` read
+#: the tree of this one path, so they compare the same checkout by construction.
+SOURCE = HERE.parent.parent
+
+
+def runner_tree(source: Path = SOURCE) -> str:
+    """`tools/runner/`'s tree hash at the runner checkout's HEAD, or QueueError."""
+    result = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD:tools/runner"],
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise QueueError(f"cannot read the tools/runner tree in {source}: "
+                         f"{result.stderr.strip()[:200]}")
+    return result.stdout.strip()
+
+
+def outcome_record(issue: int, run_id: str, reason: str | None) -> dict:
+    """What a set-aside depended on (harmonic-forge#1147 AC1). Taken BEFORE
+    the item is worked, so a Lane 1 post that lands mid-run re-arms it."""
+    try:
+        digest = kill_runner.bundle_digest(bundle_dir(issue))
+    except kill_runner.RunnerError as exc:  # undecidable, as in unchanged()
+        raise QueueError(f"kill bundle of F{issue} unreadable: {exc}") from exc
+    return {"run_id": run_id, "reason": reason, "lane1_marker_id": lane1_marker_id(issue),
+            "bundle_digest": digest, "runner_tree": runner_tree(), "runner_source": str(SOURCE)}
+
+
+#: Which change re-arms each verdict reason (AC2); a reason absent here is
+#: never gated, because the existing eligibility clauses re-check it.
+REARMED_BY = {
+    "check-fail": "lane1", "kill-check-fail": "lane1",
+    "preclose-survivor": "lane1", "self-flag": "lane1",
+    "tool-refusal": "runner", "budget": "runner",
+}
+
+
+def unchanged(item: dict) -> str | None:
+    """`unchanged since <run_id>, skipped; ...` when nothing that could change
+    the item's last set-aside has changed, else None (harmonic-forge#1147)."""
+    last = item.get("last_outcome")
+    if item.get("status") != "pending" or not isinstance(last, dict):
+        return None
+    rule = REARMED_BY.get(last.get("reason") or "")
+    if rule is None:
+        return None
+    issue = issue_number(item["id"])
+    if rule == "lane1":
+        if lane1_marker_id(issue) != last.get("lane1_marker_id"):
+            return None
+        try:
+            if kill_runner.bundle_digest(bundle_dir(issue)) != last.get("bundle_digest"):
+                return None
+        except kill_runner.RunnerError as exc:  # undecidable: never worked on a guess
+            raise QueueError(f"kill bundle of F{issue} unreadable: {exc}") from exc
+        after = "a new Lane 1 handoff or rework, or a changed kill bundle"
+    else:
+        if runner_tree() != last.get("runner_tree"):
+            return None
+        after = "a change to tools/runner/"
+    return f"unchanged since {last.get('run_id')}, skipped; eligible after {after}"
 
 
 def receipt(issue: int) -> dict | None:
@@ -302,6 +380,16 @@ def check(path: Path) -> list[dict]:
     rows = []
     for item in load(path)["items"]:
         if item["status"] != "pending":
+            continue
+        try:
+            skipped = unchanged(item)
+        except QueueError as exc:
+            rows.append({"id": item["id"], "eligible": False, "reason": "undecidable",
+                         "detail": str(exc)})
+            continue
+        if skipped:
+            rows.append({"id": item["id"], "eligible": False, "reason": "unchanged",
+                         "detail": skipped})
             continue
         failure = first_failure(issue_number(item["id"]))
         rows.append({"id": item["id"], "eligible": failure is None,

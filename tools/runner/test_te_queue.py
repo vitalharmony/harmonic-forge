@@ -187,6 +187,109 @@ class Check(unittest.TestCase):
                          ["tools/telemetry/widget.py", "tools/telemetry/test_widget.py"])
 
 
+class Unchanged(unittest.TestCase):
+    """harmonic-forge#1147: an item unchanged since its last set-aside is skipped."""
+
+    RUN = "run-20261022T045339Z-93c3e519"
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.bundle = self.dir / "bundle"
+        (self.bundle / "files").mkdir(parents=True)
+        (self.bundle / "checks.json").write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
+        self.digest = te_queue.kill_runner.bundle_digest(self.bundle)
+        self.comments = [{"id": 11, "user": {"login": "vitalharmony"},
+                          "body": "h\n<!-- l1-post v1; kind=handoff; plan-first=false -->"}]
+        self.tree = "aaaa"
+        for name, value in (("bundle_dir", lambda issue: self.bundle),
+                            ("runner_tree", lambda source=None: self.tree)):
+            patcher = mock.patch.object(te_queue, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(te_queue.fetch_lane1_context, "fetch_comments",
+                                    lambda repo, issue: self.comments)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def item(self, reason):
+        return {"id": "F1008", "kind": "te", "status": "pending", "note": "",
+                "last_outcome": {"run_id": self.RUN, "reason": reason,
+                                 "lane1_marker_id": 11, "bundle_digest": self.digest,
+                                 "runner_tree": "aaaa"}}
+
+    def test_check_fail_with_no_new_lane1_post_is_skipped(self):
+        # F1008's run-6/run-7 shape (AC4).
+        skipped = te_queue.unchanged(self.item("check-fail"))
+        self.assertTrue(skipped.startswith(f"unchanged since {self.RUN}, skipped"))
+        queue = self.dir / "queue.json"
+        queue.write_text(json.dumps({"items": [self.item("check-fail")]}))
+        rows = te_queue.check(queue)
+        self.assertEqual(rows[0]["reason"], "unchanged")
+        self.assertFalse(rows[0]["eligible"])
+
+    def test_a_new_lane1_handoff_or_rework_rearms(self):
+        for kind in ("handoff", "rework"):
+            self.comments.append({"id": 12, "user": {"login": "vitalharmony"},
+                                  "body": f"x\n<!-- l1-post v1; kind={kind}; plan-first=false -->"})
+            self.assertIsNone(te_queue.unchanged(self.item("check-fail")), kind)
+            self.comments.pop()
+
+    def test_a_lane3_post_does_not_rearm_a_check_fail(self):
+        self.comments.append({"id": 13, "user": {"login": "someone-else"},
+                              "body": "x\n<!-- l1-post v1; kind=rework; plan-first=false -->"})
+        self.comments.append({"id": 14, "user": {"login": "vitalharmony"},
+                              "body": "## Lane 3 Test Spec\nno marker"})
+        self.assertIsNotNone(te_queue.unchanged(self.item("check-fail")))
+
+    def test_a_changed_bundle_rearms_a_kill_check_fail(self):
+        (self.bundle / "files" / "k.py").write_text("x = 1\n")
+        self.assertIsNone(te_queue.unchanged(self.item("kill-check-fail")))
+
+    def test_tool_refusal_rearms_only_on_runner_change(self):
+        self.comments.append({"id": 12, "user": {"login": "vitalharmony"},
+                              "body": "x\n<!-- l1-post v1; kind=rework; plan-first=false -->"})
+        self.assertIsNotNone(te_queue.unchanged(self.item("tool-refusal")))
+        self.tree = "bbbb"
+        self.assertIsNone(te_queue.unchanged(self.item("tool-refusal")))
+
+    def test_an_unparseable_comments_body_is_undecidable(self):
+        import json as _json  # noqa: PLC0415
+        with mock.patch.object(te_queue.fetch_lane1_context, "fetch_comments",
+                               side_effect=_json.JSONDecodeError("bad", "<html>", 0)):
+            with self.assertRaises(te_queue.QueueError):
+                te_queue.unchanged(self.item("check-fail"))
+            queue = self.dir / "queue.json"
+            queue.write_text(json.dumps({"items": [self.item("check-fail")]}))
+            self.assertEqual(te_queue.check(queue)[0]["reason"], "undecidable")
+
+    def test_an_unparseable_body_in_handoff_is_a_queue_error(self):
+        # Post-verdict check: handoff() has its own fetch_comments call.
+        import json as _json  # noqa: PLC0415
+        with mock.patch.object(te_queue.fetch_lane1_context, "fetch_comments",
+                               side_effect=_json.JSONDecodeError("bad", "<html>", 0)):
+            with self.assertRaises(te_queue.QueueError):
+                te_queue.handoff(7)
+
+    def test_an_unreadable_bundle_is_undecidable_never_worked(self):
+        shutil.rmtree(self.bundle)
+        with self.assertRaises(te_queue.QueueError):
+            te_queue.unchanged(self.item("check-fail"))
+        queue = self.dir / "queue.json"
+        queue.write_text(json.dumps({"items": [self.item("check-fail")]}))
+        rows = te_queue.check(queue)
+        self.assertEqual((rows[0]["eligible"], rows[0]["reason"]), (False, "undecidable"))
+
+    def test_ungated_reasons_and_items_without_an_outcome_pass(self):
+        for reason in ("ineligible", "deny-path"):
+            self.assertIsNone(te_queue.unchanged(self.item(reason)), reason)
+        bare = self.item("check-fail")
+        del bare["last_outcome"]
+        self.assertIsNone(te_queue.unchanged(bare))
+        blocked = {**self.item("check-fail"), "status": "blocked"}
+        self.assertIsNone(te_queue.unchanged(blocked))
+
+
 class AddTimeChecks(Check):
     """AC15: `add` runs the preflight's per-item checks and refuses failures."""
 

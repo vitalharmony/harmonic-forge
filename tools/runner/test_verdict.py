@@ -22,6 +22,7 @@ def green_facts() -> dict:
         "self_flag": "",
         "check_rc": 0,
         "kill": [{"ac": "AC1", "base_rc": 1, "head_rc": 0}],
+        "kill_receipt": True,
         "preclose": {"status": "complete", "survivors": 0, "provenance": CROSS},
         "live": {"pr_exists": True, "head_sha_matches": True, "ci": "green"},
     }
@@ -202,6 +203,23 @@ class ClauseSemantics(unittest.TestCase):
         facts = green_facts()
         facts["kill"] = [{"ac": "AC1", "base_rc": 1, "head_rc": 1}]
         self.assertEqual(verdict.reduce(facts)["reason"], "kill-check-fail")
+
+    def test_failed_receipt_with_passing_facts_is_never_green(self):
+        """harmonic-forge#1147 AC6: every kill fact fail-on-base/pass-on-head,
+        but kill_check.py's receipt failed -- set aside, never green."""
+        facts = green_facts()
+        facts["kill_receipt"] = False
+        result = verdict.reduce(facts)
+        self.assertEqual(result["state"], "set-aside")
+        self.assertEqual(result["reason"], "kill-check-fail")
+        self.assertIn("receipt failed", result["detail"])
+
+    def test_missing_kill_receipt_is_a_fact_gap(self):
+        facts = green_facts()
+        del facts["kill_receipt"]
+        result = verdict.reduce(facts)
+        self.assertEqual(result["reason"], "kill-check-fail")
+        self.assertIn("kill_receipt", result["detail"])
 
     def test_in_family_fallback_is_preclose_survivor(self):
         facts = green_facts()
