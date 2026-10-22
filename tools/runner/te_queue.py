@@ -235,8 +235,9 @@ def runner_tree(source: Path = SOURCE) -> str:
     return result.stdout.strip()
 
 
-def outcome_record(issue: int, run_id: str, reason: str) -> dict:
-    """What a set-aside depended on (harmonic-forge#1147 AC1)."""
+def outcome_record(issue: int, run_id: str, reason: str | None) -> dict:
+    """What a set-aside depended on (harmonic-forge#1147 AC1). Taken BEFORE
+    the item is worked, so a Lane 1 post that lands mid-run re-arms it."""
     try:
         digest = kill_runner.bundle_digest(bundle_dir(issue))
     except kill_runner.RunnerError:
@@ -270,8 +271,8 @@ def unchanged(item: dict) -> str | None:
         try:
             if kill_runner.bundle_digest(bundle_dir(issue)) != last.get("bundle_digest"):
                 return None
-        except kill_runner.RunnerError:
-            return None
+        except kill_runner.RunnerError as exc:  # undecidable: never worked on a guess
+            raise QueueError(f"kill bundle of F{issue} unreadable: {exc}") from exc
         after = "a new Lane 1 handoff or rework, or a changed kill bundle"
     else:
         if runner_tree() != last.get("runner_tree"):
@@ -380,7 +381,12 @@ def check(path: Path) -> list[dict]:
     for item in load(path)["items"]:
         if item["status"] != "pending":
             continue
-        skipped = unchanged(item)
+        try:
+            skipped = unchanged(item)
+        except QueueError as exc:
+            rows.append({"id": item["id"], "eligible": False, "reason": "undecidable",
+                         "detail": str(exc)})
+            continue
         if skipped:
             rows.append({"id": item["id"], "eligible": False, "reason": "unchanged",
                          "detail": skipped})

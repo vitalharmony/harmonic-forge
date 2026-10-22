@@ -472,6 +472,35 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(item["last_outcome"]["reason"], "check-fail")
         self.assertEqual(self.observed(), [])
 
+    def test_dependencies_are_read_before_the_work(self):
+        # Sticky-wicket PATCH: a Lane 1 post landing mid-run (12) is not
+        # recorded as consumed; last_outcome keeps the marker the run used (11).
+        with mock.patch.object(te_run, "kill_receipt", return_value=False), \
+                mock.patch.object(te_run.te_queue, "lane1_marker_id", side_effect=[11, 12, 12]):
+            self.drive()
+        self.assertEqual(self.item()["last_outcome"]["lane1_marker_id"], 11)
+
+    def test_an_unreadable_snapshot_passes_the_item_over_pending(self):
+        with mock.patch.object(te_run.te_queue, "lane1_marker_id",
+                               side_effect=te_run.te_queue.QueueError("cannot read")), \
+                mock.patch.object(te_run, "work_item") as work:
+            self.assertEqual(self.drive(), 0)
+        work.assert_not_called()
+        self.assertEqual(self.item()["status"], "pending")
+
+    def test_an_unreadable_unchanged_check_passes_over_only_that_item(self):
+        state = te_run.queue_state.load(self.queue)
+        state["items"][0]["last_outcome"] = {
+            "run_id": "run-old", "reason": "check-fail", "lane1_marker_id": 11,
+            "bundle_digest": self.digest, "runner_tree": "tree0"}
+        te_run.queue_state.save(self.queue, state)
+        with mock.patch.object(te_run.te_queue, "lane1_marker_id",
+                               side_effect=te_run.te_queue.QueueError("cannot read")), \
+                mock.patch.object(te_run, "work_item") as work:
+            self.assertEqual(self.drive(), 0)
+        work.assert_not_called()
+        self.assertEqual(self.item()["status"], "pending")
+
     def test_failed_receipt_keeps_kill_facts(self):
         # harmonic-forge#1147 AC6 (F1073, run 7): the receipt failed, but the
         # facts it judged stay on the item, so the report names each check

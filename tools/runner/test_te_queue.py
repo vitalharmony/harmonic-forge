@@ -253,6 +253,15 @@ class Unchanged(unittest.TestCase):
         self.tree = "bbbb"
         self.assertIsNone(te_queue.unchanged(self.item("tool-refusal")))
 
+    def test_an_unreadable_bundle_is_undecidable_never_worked(self):
+        shutil.rmtree(self.bundle)
+        with self.assertRaises(te_queue.QueueError):
+            te_queue.unchanged(self.item("check-fail"))
+        queue = self.dir / "queue.json"
+        queue.write_text(json.dumps({"items": [self.item("check-fail")]}))
+        rows = te_queue.check(queue)
+        self.assertEqual((rows[0]["eligible"], rows[0]["reason"]), (False, "undecidable"))
+
     def test_ungated_reasons_and_items_without_an_outcome_pass(self):
         for reason in ("ineligible", "deny-path"):
             self.assertIsNone(te_queue.unchanged(self.item(reason)), reason)

@@ -949,7 +949,10 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     # The item stays `pending`, so a later fix re-arms it with no queue edit.
     passed_over = set()
     for pending in [i for i in state["items"] if i.get("status") == "pending"]:
-        skipped = te_queue.unchanged(pending)
+        try:
+            skipped = te_queue.unchanged(pending)
+        except te_queue.QueueError as exc:  # undecidable: pass over this item only
+            skipped = f"undecidable ({exc}); passed over this run"
         if skipped:
             passed_over.add(pending["id"])
             log("item", f"{pending['id']} {skipped}")
@@ -958,6 +961,14 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
                      if i.get("status") == "pending" and i["id"] not in passed_over), None)
         if item is None:
             break
+        # The dependencies this run works against, read before it starts
+        # (sticky-wicket PATCH): a failed read passes the item over, pending.
+        try:
+            snapshot = te_queue.outcome_record(te_queue.issue_number(item["id"]), run_id, None)
+        except te_queue.QueueError as exc:
+            passed_over.add(item["id"])
+            log("item", f"{item['id']} undecidable ({exc}); passed over this run")
+            continue
         set_status(item, "in_progress", run_id)
         save(queue, state)
         log("item", f"{item['id']} in progress")
@@ -977,8 +988,7 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
         set_status(item, "done", run_id, **extra, reason=outcome.get("reason") or "",
                    note=outcome.get("detail", ""))
         if outcome.get("reason"):  # AC1: what this set-aside depended on
-            item["last_outcome"] = te_queue.outcome_record(
-                te_queue.issue_number(item["id"]), run_id, outcome["reason"])
+            item["last_outcome"] = {**snapshot, "reason": outcome["reason"]}
         for key, default in DONE_KEYS.items():  # never overwrites pushed_sha set before a push
             item.setdefault(key, default)
         save(queue, state)
