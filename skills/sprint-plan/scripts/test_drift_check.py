@@ -125,7 +125,10 @@ class StrandedWorkTests(unittest.TestCase):
 
     def test_open_issue_stranded_vs_closed_issue_stranded_are_separated(self):
         ahead = {48: ("fix/48-something", 2), 632: ("fix/632-something", 1)}
-        with patch.object(drift_check, "branches_ahead_of_main", return_value=ahead):
+        # harmonic-forge#1073: no merged PRs, stubbed -- the real call reaches
+        # GitHub, which fails without credentials (forge CI).
+        with patch.object(drift_check, "branches_ahead_of_main", return_value=ahead), \
+                patch.object(drift_check, "merged_pr_head_refs", return_value={}):
             stranded_open, stranded_closed = drift_check.stranded_work(
                 open_by_repo={"vitalharmony/hrse": {48}},
                 closed_by_repo={"vitalharmony/hrse": {632}},
@@ -628,6 +631,14 @@ class BaselineSelfExpiry(unittest.TestCase):
         self.assertEqual(drift_check.load_baseline(Path("/nonexistent.toml")), [])
 
     def test_the_shipped_baseline_parses_and_is_fully_specified(self):
+        # harmonic-forge#1073: the baseline belongs to the consuming project.
+        try:
+            present = (drift_check._home.data_dir() / "drift_baseline.toml").exists()
+        except drift_check._home.config_loader.ConfigError:
+            present = False
+        if not present:
+            self.skipTest("sprint-plan consumer absent: no config resolves or "
+                          "the asserted consumer file does not exist")
         entries = drift_check.load_baseline()
         self.assertTrue(entries, "the shipped baseline should be non-empty")
         for e in entries:
