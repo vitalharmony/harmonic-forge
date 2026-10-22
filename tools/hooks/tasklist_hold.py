@@ -26,7 +26,10 @@ is this lane's own.
    sees the close, and only then completed.
 2. Every lane post, merge, PR or close on an issue owes its entry an update
    naming that action (`tasklist_owed.py` records it; `stop_decide` refuses to
-   end the turn until the entry is rewritten).
+   end the turn until the entry is rewritten). One marker per key, the latest
+   wins. Stop reads the issue's state live: a closed issue owes a
+   `<KEY> — closed` entry updated after the marker; an open one owes its open
+   entry's update. The `— closed` subject is display, never proof.
 3. An entry names a concrete step (read, review, push/PR, post), never only
    the issue.
 4. With no active step, nothing is `in_progress`.
@@ -198,26 +201,22 @@ def stop_decide(payload: dict) -> tuple[str, str]:
     missing = []
     for marker in found:
         key, kind = str(marker["key"]), str(marker.get("kind") or "post")
-        if kind == "close":
+        # Reforge epoch 2: the issue's live state decides which update is owed;
+        # a `— closed` subject is display, never proof. An unreadable state
+        # (K/Y/D, network) allows, Stop's documented failure direction.
+        try:
+            closed = issue_closed(key)
+        except RuntimeError as exc:
+            _note(f"{key}'s state unreadable, allowing stop: {exc}")
+            continue
+        if closed:
+            ts = float(marker.get("ts") or 0)
             if any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
-                   for e in entries):
+                   and float(e["_mtime"]) >= ts for e in entries):
                 owed.clear(session, key)
             else:
-                missing.append(f"  - {key}: after `{kind}`, set the entry to \"{key} — closed\"")
+                missing.append(f"  - {key}: it is closed; set its entry to \"{key} — closed\"")
             continue
-        if any(owed.entry_key(e) == key and _closed_subject(key, str(e.get("subject") or ""))
-               for e in entries):
-            # Preclose pass 2 (E): a post on an issue whose entry already reads
-            # "<KEY> — closed" owes nothing more, but only while the issue is
-            # closed now: a reopened issue needs a new open entry. An unreadable
-            # state allows, Stop's documented failure direction.
-            try:
-                still_closed = issue_closed(key)
-            except RuntimeError:
-                still_closed = True
-            if still_closed:
-                owed.clear(session, key)
-                continue
         entry = owed.open_entry(entries, key)
         if entry is None:
             missing.append(f"  - {key}: after `{kind}`, it has no open entry; add one")

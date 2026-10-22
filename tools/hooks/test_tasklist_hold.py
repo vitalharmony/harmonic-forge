@@ -217,6 +217,13 @@ class PreToolUse(Base):
 
 
 class Stop(Base):
+    def setUp(self):
+        super().setUp()
+        # Stop reads the live state (reforge epoch 2): open unless a test says so.
+        live = mock.patch.object(hold, "issue_closed", return_value=False)
+        live.start()
+        self.addCleanup(live.stop)
+
     def test_l2d_then_stop_without_entry_update_is_refused(self):
         now = time.time()
         self.entry(1, "H2463 — implementing", mtime=now - 60)
@@ -258,32 +265,56 @@ class Stop(Base):
         self.assertEqual(hold.stop_decide(self.stop(transcript_path=str(transcript)))[0], "allow")
 
     def test_close_then_closed_subject_then_complete_stop_allows(self):
-        self.entry(1, "F1112 — merged 5a1b2c3 · waiting on YOU: close")
-        owed.record("F1112", "close", session=SESSION)
-        self.assertEqual(hold.stop_decide(self.stop())[0], "block")
-        self.entry(1, "F1112 — closed (5a1b2c3)")
+        now = time.time()
+        self.entry(1, "F1112 — merged 5a1b2c3 · waiting on YOU: close", mtime=now - 60)
+        owed.record("F1112", "close", session=SESSION, now=now - 30)
         with self.closed(True):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+            self.entry(1, "F1112 — closed (5a1b2c3)", mtime=now)
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
-        self.entry(1, "F1112 — closed (5a1b2c3)", status="completed")
-        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+            self.entry(1, "F1112 — closed (5a1b2c3)", status="completed", mtime=now)
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
         self.assertFalse((owed.OWED_DIR / SESSION / "F1112.json").exists())
 
     def test_post_on_a_reopened_issue_needs_an_open_entry(self):
-        """Reforge epoch 1 (B): an old `— closed` entry is not proof once reopened."""
-        self.entry(1, "F1112 — closed (abc)", status="completed")
-        owed.record("F1112", "handoff", session=SESSION)
+        """Reforge epoch 2: an old `— closed` entry is not proof once reopened."""
+        now = time.time()
+        self.entry(1, "F1112 — closed (abc)", status="completed", mtime=now - 60)
+        owed.record("F1112", "handoff", session=SESSION, now=now)
         with self.closed(False):
             verdict, reason = hold.stop_decide(self.stop())
         self.assertEqual(verdict, "block")
         self.assertIn("no open entry", reason)
+
+    def test_second_close_cycle_needs_a_fresh_closed_entry(self):
+        """Reforge epoch 2: a `— closed` entry from an earlier close never
+        satisfies a later close; the entry must be updated after the marker."""
+        now = time.time()
+        self.entry(1, "F9 — closed (abc)", status="completed", mtime=now - 600)
+        self.entry(2, "F9 — rework posted · waiting on Lane 2 implement", mtime=now - 300)
+        owed.record("F9", "close", session=SESSION, now=now)
         with self.closed(True):
+            verdict, reason = hold.stop_decide(self.stop())
+            self.assertEqual(verdict, "block")
+            self.assertIn("F9 — closed", reason)
+            self.entry(2, "F9 — closed (def)", mtime=now + 1)
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
-    def test_a_close_outranks_a_later_post(self):
+    def test_close_reopen_post_follows_the_live_state(self):
+        """Reforge epoch 2: a post after a close replaces its marker, so a
+        reopened issue owes an open-entry update, never a closed subject."""
+        now = time.time()
+        owed.record("F9", "close", session=SESSION, now=now - 30)
+        owed.record("F9", "handoff", session=SESSION, now=now - 20)
+        self.entry(1, "F9 — handoff posted · waiting on Lane 2 implement", mtime=now)
+        with self.closed(False):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+
+    def test_the_latest_marker_wins(self):
         owed.record("F9", "close", session=SESSION)
         owed.record("F9", "handoff", session=SESSION)
         marker = json.loads((owed.OWED_DIR / SESSION / "F9.json").read_text())
-        self.assertEqual(marker["kind"], "close")
+        self.assertEqual(marker["kind"], "handoff")
 
     def test_stop_hook_active_allows(self):
         owed.record("F9", "handoff", session=SESSION)
@@ -319,12 +350,21 @@ class Store(Base):
                 owed.record_post("vitalharmony/harmonic-forge", 1126, "handoff")
         self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["F1126"])
 
-    def test_prune_drops_old_sessions(self):
+    def test_prune_drops_old_markers(self):
+        owed.record("F9", "handoff", session=SESSION)
+        old = time.time() - 8 * 86400
+        os.utime(owed.OWED_DIR / SESSION / "F9.json", (old, old))
+        owed.prune()
+        self.assertEqual(owed.markers(SESSION), [])
+        self.assertFalse((owed.OWED_DIR / SESSION).exists())
+
+    def test_prune_keeps_a_fresh_marker_in_an_old_directory(self):
+        """Preclose epoch 1 pass 2: an overwrite leaves the directory's mtime old."""
         owed.record("F9", "handoff", session=SESSION)
         old = time.time() - 8 * 86400
         os.utime(owed.OWED_DIR / SESSION, (old, old))
-        owed.prune()
-        self.assertEqual(owed.markers(SESSION), [])
+        owed.record("F9", "handoff", session=SESSION)
+        self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["F9"])
 
 
 def _calls_record_post(path: Path) -> bool:
@@ -355,6 +395,15 @@ class Wiring(unittest.TestCase):
         self.assertTrue(wired("PreToolUse", "TaskUpdate", "tasklist_hold.py"))
         self.assertTrue(wired("Stop", None, "tasklist_hold.py"))
         self.assertTrue(wired("PostToolUse", "Bash", "record_tasklist_post.py"))
+
+    def test_recorder_timeout_exceeds_its_network_budget(self):
+        """Preclose epoch 1 pass 2: a hook killed at its timeout writes no marker."""
+        import record_tasklist_post  # noqa: PLC0415
+        hooks = json.loads((ROOT / ".claude" / "settings.json").read_text())["hooks"]
+        timeouts = [h.get("timeout", 60) for e in hooks.get("PostToolUse", [])
+                    for h in e["hooks"] if "record_tasklist_post.py" in h["command"]]
+        self.assertTrue(timeouts)
+        self.assertTrue(all(t > record_tasklist_post.NETWORK_BUDGET for t in timeouts), timeouts)
 
     def test_entry_shape_lives_only_in_hook(self):
         files = [ROOT / "3-lane-protocol.md", *sorted((ROOT / "rules").glob("*.md"))]

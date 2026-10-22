@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -100,14 +99,8 @@ def record(key: str, kind: str, session: str | None = None,
             entry = None
         path = _dir(session) / f"{key}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Preclose pass 2 (E): a close outranks any later post on the same key
-        # and is never overwritten; the close obligation stands until cleared.
-        if kind != "close":
-            try:
-                if json.loads(path.read_text(encoding="utf-8")).get("kind") == "close":
-                    return False
-            except (OSError, ValueError):
-                pass
+        # Reforge epoch 2: one marker per key, always overwritten; the latest
+        # wins, and Stop reads the issue's live state to decide what it owes.
         path.write_text(json.dumps({
             "key": key, "kind": kind,
             "ts": now if now is not None else time.time(),
@@ -154,7 +147,9 @@ def clear(session: str, key: str) -> None:
 
 
 def prune(now: float | None = None) -> None:
-    """Drop session directories untouched for `PRUNE_AFTER_DAYS`. Never raises."""
+    """Drop markers untouched for `PRUNE_AFTER_DAYS`, by each marker file's own
+    mtime (an overwrite in place never touches its directory's), then any
+    session directory left empty. Never raises."""
     cutoff = (now if now is not None else time.time()) - PRUNE_AFTER_DAYS * 86400
     try:
         dirs = [d for d in OWED_DIR.iterdir() if d.is_dir()]
@@ -162,7 +157,9 @@ def prune(now: float | None = None) -> None:
         return
     for directory in dirs:
         try:
-            if directory.stat().st_mtime < cutoff:
-                shutil.rmtree(directory, ignore_errors=True)
+            for path in directory.iterdir():
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            directory.rmdir()
         except OSError:
             continue

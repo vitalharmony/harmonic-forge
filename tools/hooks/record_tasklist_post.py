@@ -48,6 +48,13 @@ def _short_repo(tokens: list[str]) -> str | None:
     return next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == "-R"), None)
 
 
+#: Seconds of network one Bash call can cost this hook: `gh repo view` (15) and
+#: `batch_auth.action_landed` (30), plus its PR-carrier read (30) on a merge.
+#: Its `.claude/settings.json` timeout must exceed this (preclose epoch 1 pass 2),
+#: or Claude Code kills the hook before any marker is written.
+NETWORK_BUDGET = 15 + 30 + 30
+
+
 def _cwd_repo(payload: dict) -> str | None:
     """The repository `gh` itself would use when no repo flag is given
     (preclose pass 1: a bare `gh issue close N` recorded nothing)."""

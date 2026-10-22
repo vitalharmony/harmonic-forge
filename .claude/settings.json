@@ -308,7 +308,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/record_tasklist_post.py\"",
-            "timeout": 10
+            "timeout": 90
           }
         ]
       }
