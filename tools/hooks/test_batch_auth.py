@@ -273,8 +273,13 @@ class RearmRevokedTests(StateFixture):
             target.update(consumed=True, consumed_by=by)
         ba._save(state, self.state_path)
 
+    def _grant(self):
+        # Two merge slots, as the hook mints, so a mixed entry is possible.
+        ba.authorize(["F1"], actions=["gh pr merge", "gh pr merge"],
+                     state_path=self.state_path)
+
     def test_k1_rearm_replaces_an_all_revoked_entry(self):
-        ba.authorize(["F1"], state_path=self.state_path)
+        self._grant()
         ba.revoke(["F1"], state_path=self.state_path)
         rearmed: list[str] = []
         ba.top_up(["F1"], state_path=self.state_path,
@@ -284,7 +289,7 @@ class RearmRevokedTests(StateFixture):
         self.assertTrue(all(not t["consumed"] for t in self._merges()))
 
     def test_k2_plain_top_up_cli_never_rearms(self):
-        ba.authorize(["F1"], state_path=self.state_path)
+        self._grant()
         ba.revoke(["F1"], state_path=self.state_path)
         with mock.patch.object(ba, "STATE_PATH", self.state_path), \
                 mock.patch.object(sys, "argv", ["batch_auth.py", "top-up", "F1"]), \
@@ -295,16 +300,18 @@ class RearmRevokedTests(StateFixture):
                             for t in self._merges()))
 
     def test_k3_one_unconsumed_target_is_extended_not_rearmed(self):
-        ba.authorize(["F1"], state_path=self.state_path)
-        self._spend(count=1)
+        # One slot revoked, one still unconsumed (AC2: any unconsumed slot
+        # means extend, never re-arm).
+        self._grant()
+        self._spend(count=1, by="revoked-2026-10-22T00:00:00+00:00")
         rearmed: list[str] = []
         ba.top_up(["F1"], state_path=self.state_path,
                   rearm_revoked=True, rearmed=rearmed)
         self.assertEqual(rearmed, [])
-        self.assertEqual(sum(t["consumed"] for t in self._merges()), 1)
+        self.assertEqual([t["consumed"] for t in self._merges()], [True, False])
 
     def test_k4_all_merged_is_extended_not_rearmed(self):
-        ba.authorize(["F1"], state_path=self.state_path)
+        self._grant()
         self._spend()
         rearmed: list[str] = []
         ba.top_up(["F1"], state_path=self.state_path,
@@ -313,7 +320,7 @@ class RearmRevokedTests(StateFixture):
         self.assertTrue(all(t["consumed_by"] == "real-merge-hash" for t in self._merges()))
 
     def test_k4b_mixed_merged_and_revoked_is_not_rearmed(self):
-        ba.authorize(["F1"], state_path=self.state_path)
+        self._grant()
         self._spend(count=1)
         ba.revoke(["F1"], state_path=self.state_path)
         rearmed: list[str] = []

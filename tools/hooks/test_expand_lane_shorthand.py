@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import sys
 import unittest
 import unittest.mock
@@ -792,12 +793,15 @@ class BatchRearmTests(unittest.TestCase):
         self.assertIn("re-armed F1", receipt)
         self.assertTrue(all(not t["consumed"] for t in self._merges(tmp)))
 
-    def test_k5_a_quoted_batch_line_never_rearms(self) -> None:
+    def test_k5_a_non_operator_batch_line_never_rearms(self) -> None:
         import batch_auth as ba
 
         tmp = self._revoked_state()
-        with mock.patch.object(ba, "STATE_PATH", tmp):
-            m.authorize_batch("Here is the proposal:\n```\nBATCH F1\n```", state_path=tmp)
+        # A line the parser accepts but provenance refuses (an SDK entrypoint).
+        with mock.patch.object(ba, "STATE_PATH", tmp), \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk-py"}):
+            receipt = m.authorize_batch("BATCH F1", state_path=tmp)
+        self.assertIn("BATCH REFUSED", receipt)
         self.assertTrue(all(str(t["consumed_by"]).startswith("revoked-")
                             for t in self._merges(tmp)))
 
