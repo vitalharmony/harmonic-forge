@@ -135,6 +135,33 @@
       ]
     },
     {
+      "why": "harmonic-forge#1176: the authorization surfaces and rule text HIGH_BLAST now flags",
+      "globs": [
+        "./**/tools/gh/_carry_forward.py",
+        "./**/tools/gh/force_grant.py",
+        "./**/tools/gh/check_lane3_ready.py",
+        "./**/tools/gh/preclose_check.py",
+        "./**/tools/gh/preclose_passes.py",
+        "./**/tools/gh/preclose_enrollment.py",
+        "./**/tools/gh/_auto_ae.py",
+        "./**/tools/gh/_standing_grant.py",
+        "./**/tools/gh/imc_waiver.py",
+        "./**/tools/gh/kill_check.py",
+        "./**/tools/gh/pitch_receipt.py",
+        "./**/tools/gh/sticky_receipt.py",
+        "./**/tools/runner/**",
+        "./**/tools/gate/**",
+        "./**/rules/**",
+        "./**/docs/decisions/**"
+      ],
+      "regexes": [
+        "(^|/)tools/gh/(_auto_ae|_carry_forward|_standing_grant|imc_waiver|force_grant|preclose_check|preclose_passes|preclose_enrollment|kill_check|pitch_receipt|sticky_receipt|check_lane3_ready)\\.py$",
+        "(^|/)tools/runner/",
+        "(^|/)tools/gate/",
+        "(^|/)(rules|docs/decisions)/"
+      ]
+    },
+    {
       "why": "G2: the runner itself (its fences and this manifest)",
       "globs": [
         "./tools/runner/**"
