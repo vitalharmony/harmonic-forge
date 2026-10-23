@@ -98,7 +98,14 @@ class ReuseTests(unittest.TestCase):
                 return _done("https://github.com/vitalharmony/harmonic-forge.git")
             raise RuntimeError("past the receipt: the full check would run")
 
-        with mock.patch.object(L, "run", side_effect=fake_run):
+        def past_receipt(*_a, **_k):
+            raise RuntimeError("past the receipt: the full check would run")
+
+        # The scratch worktree is created before any further `run`; reaching
+        # it means the receipt was not reused (and it must never take the
+        # real scratch lock in a test).
+        with mock.patch.object(L, "run", side_effect=fake_run), \
+                mock.patch.object(L._scratch, "scratch_dir", side_effect=past_receipt):
             try:
                 result = L.static_checks(SHA, "fix/1134-x")
             except RuntimeError:
