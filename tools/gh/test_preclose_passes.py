@@ -11,6 +11,7 @@ receipt shape rather than each against its own mock.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -376,6 +377,10 @@ class MechanismClusterTests(ScratchRepo):
         self.assertIn("--force --reforge", preclose_passes.refusal(
             receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
             main_ref="base", force=True, repo=REPO, issue=ISSUE))
+        # harmonic-forge#1169: --force --reforge takes no grant. The refused
+        # plain forces above left one on disk; remove it so this proves that.
+        for grant in (Path(os.environ["HOME"]) / ".claude/state/force").glob("*.json"):
+            grant.unlink()
         self.plan(tier="fast", force=True, reforge=True)
         preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
                                 findings=self.findings_file(self.findings("new")), envelope=None,
