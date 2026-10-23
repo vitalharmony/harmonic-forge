@@ -45,12 +45,15 @@ class Case(unittest.TestCase):
         return path
 
     def post(self, kind: str, body: str, classes: dict | None = None,
-             results: dict | None = None, lane: str = "3") -> str:
-        """Run main(); return the posted text (body plus footer)."""
+             results: dict | None = None, lane: str = "3", ack: str | None = None) -> str:
+        """Run main(); return the posted text (body plus footer). `ack` passes
+        --ack-no-pr-required and has the CI override take effect."""
         path = self.dir / "body.md"
         path.write_text(body)
         argv = ["post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge",
                 "--issue", "1", "--file", str(path), "--kind", kind]
+        if ack is not None:
+            argv += ["--ack-no-pr-required", ack]
         if classes is not None:
             argv += ["--tc-classes", str(self.json_file(classes))]
         if results is not None:
@@ -62,7 +65,7 @@ class Case(unittest.TestCase):
         with unittest.mock.patch.object(sys, "argv", argv), \
              unittest.mock.patch.dict(os.environ, {"LANE": lane}), \
              unittest.mock.patch.object(P, "comment_body", side_effect=comment_body), \
-             unittest.mock.patch.object(P, "require_green_ci", return_value=False), \
+             unittest.mock.patch.object(P, "require_green_ci", return_value=ack is not None), \
              unittest.mock.patch.object(P, "require_round_approval", return_value=None), \
              unittest.mock.patch.object(P, "belt_candidates"), \
              unittest.mock.patch.object(sys, "stdout", new=io.StringIO()):
@@ -125,6 +128,44 @@ class ASpecDeclaresItsWriteTier(Case):
 
     def test_one_declaration_is_accepted(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC)))
+
+    def test_a_w_spec_saying_no_tier_p_is_refused(self):
+        """harmonic-forge#1173: hrse#2491's spec, refused by auto-AE's veto."""
+        err = self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nNo Tier P. Nothing touches production.\n"))
+        self.assertIn("No Tier P", err)
+        self.assertIn("no production writes", err)
+
+    def test_a_p_spec_mentioning_tier_p_is_accepted(self):
+        body = SPEC_TC.replace("Write tier: W\n", "Write tier: P\nTC2 is Tier P.\n")
+        self.assertIn("kind=spec", last_line(self.post("spec", body)))
+
+    def test_the_posted_body_with_its_footer_carries_no_standalone_p(self):
+        import _auto_ae  # noqa: PLC0415
+        self.assertFalse(_auto_ae.p_vetoed(self.post("spec", SPEC_TC, classes={"1": "W", "2": "W"})))
+
+    def test_a_case_map_id_p_in_the_footer_is_refused(self):
+        """Pass 1 (cross-family): the footer is appended after the body check."""
+        err = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", new=err), \
+             self.assertRaises(SystemExit) as raised:
+            self.post("spec", SPEC_TC, classes={"P": "ac"})
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("no production writes", err.getvalue())
+
+    def test_an_ack_reason_with_a_p_in_the_footer_is_refused(self):
+        """Pass 2 (cross-family): the ack reason lands in the footer too."""
+        err = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", new=err), \
+             self.assertRaises(SystemExit) as raised:
+            self.post("spec", SPEC_TC, ack="No Tier P")
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("the footer", err.getvalue())
+
+    def test_the_posted_comment_with_classes_and_an_ack_is_not_vetoed(self):
+        import _auto_ae  # noqa: PLC0415
+        posted = self.post("spec", SPEC_TC, classes={"1": "W", "2": "W"}, ack="ci not configured")
+        self.assertIn("ci not configured", posted)
+        self.assertFalse(_auto_ae.p_vetoed(posted))
 
     def test_a_p_declaration_is_accepted_by_the_poster(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
