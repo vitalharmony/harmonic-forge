@@ -179,7 +179,8 @@ class ViewTests(Fixture):
         with log.open("a", encoding="utf-8") as handle:
             handle.write('{"ts": "2026-10-0\n[1, 2]\n')
         code = dr.main(["--miss-log", str(log), "--registry", str(self.registry), "--views", str(self.views),
-                        "--out-dir", str(self.out), "--date", "2026-10-22"])
+                        "--out-dir", str(self.out), "--date", "2026-10-22",
+                        "--base-checks", str(self.tmp / "no-base-checks")])
         self.assertEqual(code, 0)
         report = (self.out / "2026-10-22.md").read_text(encoding="utf-8")
         self.assertIn("2 malformed miss-log line(s) skipped.", report)
