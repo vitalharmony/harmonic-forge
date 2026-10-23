@@ -33,6 +33,8 @@ Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import os
 import subprocess
@@ -66,6 +68,21 @@ def grant_path(key: str) -> Path:
     return state_dir() / f"{key.upper()}.json"
 
 
+@contextlib.contextmanager
+def grant_lock(key: str):
+    """Serialize every read-modify-write of one key's grant (preclose pass 1,
+    harmonic-forge#1169). Short: never held across the GitHub post. The hook,
+    `record` and `consume` all take it; the receipt lock does not cover them."""
+    path = state_dir() / f"{key.upper()}.json.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def reason_sha256(reason: str) -> str:
     return hashlib.sha256(reason.encode("utf-8")).hexdigest()
 
@@ -90,7 +107,8 @@ def write_pending(key: str, repo: str, issue: int, sha: str, reason: str,
         "session_id": session_id or "", "line": line, "status": "pending",
         "comment_url": None, "comment_id": None, "hook_version": HOOK_VERSION,
     }
-    imc_waiver.write_json_atomic(grant_path(key), grant)
+    with grant_lock(key):
+        imc_waiver.write_json_atomic(grant_path(key), grant)
     return grant
 
 
@@ -140,10 +158,20 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> d
     if grant.get("status") == "usable":
         return grant
     url = imc_waiver.post_and_confirm(grant["repo"], int(grant["issue"]), comment_body(grant), runner)
-    usable = {**grant, "status": "usable", "comment_url": url,
-              "comment_id": url.rsplit("#issuecomment-", 1)[1],
-              "recorded_at": imc_waiver._iso(moment)}
-    imc_waiver.write_json_atomic(grant_path(key), usable)
+    # The post ran outside the lock. Mark usable only the grant this run
+    # posted, and only if it is still pending (preclose pass 1, findings 2, 5).
+    with grant_lock(key):
+        current = imc_waiver.read_json(grant_path(key))
+        if current is None or current.get("granted_at") != grant.get("granted_at"):
+            raise SystemExit(f"force-grant: the FORCE grant for {key} was replaced during the "
+                             f"post (now granted {(current or {}).get('granted_at')}); record "
+                             "the newer grant instead.")
+        if current.get("status") != "pending":
+            return current
+        usable = {**current, "status": "usable", "comment_url": url,
+                  "comment_id": url.rsplit("#issuecomment-", 1)[1],
+                  "recorded_at": imc_waiver._iso(moment)}
+        imc_waiver.write_json_atomic(grant_path(key), usable)
     return usable
 
 
@@ -172,13 +200,28 @@ def require(repo: str, issue: int, head_sha: str, now: datetime | None = None) -
     return grant
 
 
-def consume(key: str, head_sha: str, now: datetime | None = None) -> dict:
-    grant = imc_waiver.read_json(grant_path(key))
-    if grant is None:
-        raise GrantRefused(f"no FORCE grant exists for {key}")
-    spent = {**grant, "status": "consumed", "consumed_at": imc_waiver._iso(now or imc_waiver._now()),
-             "consumed_sha": head_sha}
-    imc_waiver.write_json_atomic(grant_path(key), spent)
+def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | None = None) -> dict:
+    """Spend exactly the grant `require()` returned: same `granted_at`, still
+    usable and unexpired, bound to this head. Anything else refuses (preclose
+    pass 1, finding 1), so a newer grant is never spent in an older one's place."""
+    moment = now or imc_waiver._now()
+    with grant_lock(key):
+        grant = imc_waiver.read_json(grant_path(key))
+        if grant is None:
+            raise GrantRefused(f"no FORCE grant exists for {key}")
+        if grant.get("granted_at") != expected_granted_at:
+            raise GrantRefused(f"the FORCE grant for {key} was replaced (granted "
+                               f"{grant.get('granted_at')}, not {expected_granted_at})")
+        if grant.get("status") != "usable":
+            raise GrantRefused(f"the FORCE grant for {key} is {grant.get('status')}, not usable")
+        if _expired(grant, moment):
+            raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
+        if str(grant.get("sha")) != head_sha:
+            raise GrantRefused(f"the FORCE grant for {key} covers {str(grant.get('sha'))[:12]}, "
+                               f"not {head_sha[:12]}")
+        spent = {**grant, "status": "consumed", "consumed_at": imc_waiver._iso(moment),
+                 "consumed_sha": head_sha}
+        imc_waiver.write_json_atomic(grant_path(key), spent)
     return spent
 
 

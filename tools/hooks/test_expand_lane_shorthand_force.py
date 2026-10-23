@@ -24,6 +24,8 @@ HEAD = "c" * 40
 
 
 class ForceTrigger(unittest.TestCase):
+    real_covered_head = staticmethod(force_grant.covered_head)
+
     def setUp(self) -> None:
         self.state = Path(tempfile.mkdtemp())
         for target, attr, value in ((force_grant, "FORCE_STATE_DIR", self.state),
@@ -73,6 +75,24 @@ class ForceTrigger(unittest.TestCase):
         with mock.patch.object(force_grant, "covered_head", lambda repo, issue: None):
             self.assertIn("no preclose receipt", self.force("FORCE F1166: reason"))
         self.assertIsNone(self.grant())
+
+    def test_the_grant_binds_to_the_post_verdict_head_through_the_real_lookup(self) -> None:
+        """Preclose pass 1, finding 4: covered_head and force_head are not stubbed;
+        only the receipt read is, holding a pass at A and a post-verdict check at B."""
+        import preclose_check  # noqa: PLC0415
+        pass_sha, post_verdict_sha = "a" * 40, "b" * 40
+        receipt = {"reviewed_sha": pass_sha, "status": "complete",
+                   "pass_history": [{"sha": pass_sha, "surviving": 1}],
+                   "post_verdict_check": {"base_sha": pass_sha, "head_sha": post_verdict_sha}}
+        with mock.patch.object(force_grant, "covered_head", self.real_covered_head), \
+                mock.patch.object(preclose_check, "find_receipt", return_value=receipt):
+            self.force("FORCE F1166: post-verdict check clean")
+        self.assertEqual(self.grant()["sha"], post_verdict_sha)
+        receipt.pop("post_verdict_check")
+        with mock.patch.object(force_grant, "covered_head", self.real_covered_head), \
+                mock.patch.object(preclose_check, "find_receipt", return_value=receipt):
+            self.force("FORCE F1166: no post-verdict check")
+        self.assertEqual(self.grant()["sha"], pass_sha)
 
     def test_a_prompt_without_force_is_silent(self) -> None:
         self.assertEqual(self.force("BATCH F1166"), "")

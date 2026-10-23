@@ -1099,7 +1099,7 @@ def complete(args: argparse.Namespace) -> int:
             # Consumed only once the pass is recorded, so a crash before here
             # leaves the grant usable for the retry (harmonic-forge#1169).
             import force_grant  # noqa: PLC0415
-            grant = force_grant.consume(grant["key"], head_sha)
+            grant = force_grant.consume(grant["key"], grant["granted_at"], head_sha)
         emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", surviving, grant)
     receipt = read_receipt(path) or {}
     passes = preclose_passes.current(preclose_passes.history(receipt))

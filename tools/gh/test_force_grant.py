@@ -102,9 +102,59 @@ class RequireTests(Store):
             self.require(MOVED)
         with self.assertRaisesRegex(G.GrantRefused, "expired"):
             self.require(now=NOW + timedelta(hours=G.TTL_HOURS + 1))
-        G.consume(KEY, SHA, NOW)
+        G.consume(KEY, self.require()["granted_at"], SHA, NOW)
         with self.assertRaisesRegex(G.GrantRefused, "consumed"):
             self.require()
+
+
+class GrantIdentityTests(Store):
+    """Preclose pass 1, cluster 1: a grant write never lands on a grant it did not read."""
+
+    def test_consume_refuses_a_grant_replaced_after_require(self):
+        """Finding 1: a new FORCE line between require and consume is not spent."""
+        self.recorded()
+        token = G.require(REPO, ISSUE, SHA, NOW)["granted_at"]
+        self.pending(now=NOW + timedelta(minutes=1))
+        with self.assertRaisesRegex(G.GrantRefused, "replaced"):
+            G.consume(KEY, token, SHA, NOW)
+        self.assertEqual(json.loads(G.grant_path(KEY).read_text())["status"], "pending")
+
+    def test_record_refuses_when_the_grant_is_replaced_during_the_post(self):
+        """Finding 2: a corrected FORCE line during the post is not overwritten."""
+        self.pending()
+
+        def run(argv, **_kw):
+            if "--method" in argv:
+                holder["body"] = Path(argv[argv.index("-F") + 1].split("@", 1)[1]).read_text()
+                self.pending(now=NOW + timedelta(minutes=1))  # the operator's corrected line
+                return _done("https://github.com/vitalharmony/harmonic-forge/issues/1166#issuecomment-77")
+            return _done(holder["body"])
+
+        holder: dict = {}
+        with self.assertRaisesRegex(SystemExit, "replaced during the post"):
+            G.record(KEY, now=NOW, runner=run)
+        newer = json.loads(G.grant_path(KEY).read_text())
+        self.assertEqual((newer["status"], newer["granted_at"]), ("pending", "2026-10-23T12:01:00Z"))
+
+    def test_a_late_record_never_revives_a_consumed_grant(self):
+        """Finding 5: an overlapping record after consumption leaves it consumed."""
+        self.pending()
+
+        def run(argv, **_kw):
+            if "--method" in argv:
+                holder["body"] = Path(argv[argv.index("-F") + 1].split("@", 1)[1]).read_text()
+                return _done("https://github.com/vitalharmony/harmonic-forge/issues/1166#issuecomment-77")
+            # While this slow record waits on its refetch, another record and a
+            # forced completion run to the end.
+            G.record(KEY, now=NOW, runner=self.runner({}))
+            G.consume(KEY, G.require(REPO, ISSUE, SHA, NOW)["granted_at"], SHA, NOW)
+            return _done(holder["body"])
+
+        holder: dict = {}
+        G.record(KEY, now=NOW, runner=run)
+        self.assertEqual(json.loads(G.grant_path(KEY).read_text())["status"], "consumed")
+        with self.assertRaisesRegex(G.GrantRefused, "consumed"):
+            G.require(REPO, ISSUE, SHA, NOW)
 
 
 class PrecloseGateTests(Store):

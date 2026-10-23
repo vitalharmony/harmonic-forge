@@ -8,6 +8,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -32,6 +33,19 @@ class ForceGrantGate(base.ScratchRepo):
         args = {"repo": "vitalharmony/hrse", "issue": 1208, "base": "base", "head": "HEAD",
                 "tier": "fast", "force": True, "allow_dirty": False, "allow_repo_mismatch": False}
         return preclose.plan(base._Args(**args))
+
+    def test_a_forced_completion_emits_one_force_event_through_the_entry_point(self) -> None:
+        """Preclose pass 1, finding 3: the AC4 event is wired into complete()."""
+        store = Path(os.environ["HOME"]) / "telemetry"
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": str(store)}):
+            self.complete(force=True)
+        events = [json.loads(line) for path in store.rglob("*.jsonl")
+                  for line in path.read_text().splitlines() if line.strip()]
+        forced = [e for e in events if e.get("event_type") == "preclose.force"]
+        self.assertEqual(len(forced), 1)
+        self.assertEqual((forced[0]["attrs"]["granted"], forced[0]["attrs"]["mode"]), (True, "force"))
+        self.assertEqual(forced[0]["attrs"]["reason_comment_id"], "1")
+        self.assertNotIn('"reason": ', json.dumps(forced[0]))
 
     def test_a_force_with_no_grant_is_refused(self) -> None:
         with self.assertRaises(SystemExit) as refused:
