@@ -52,6 +52,8 @@ class BatchGateEndToEndTests(unittest.TestCase):
             f"import sys; sys.path.insert(0, {str(HOOK_DIR)!r})\n"
             f"from pathlib import Path\n"
             f"import batch_auth; batch_auth.STATE_PATH = Path({str(self.state_path)!r})\n"
+            # harmonic-forge#1178: the merge-time CI read, faked green offline.
+            f"batch_auth.merge_ci_state = lambda repo, number, run=None: ('green', 'faked')\n"
             f"import runpy; runpy.run_path({str(hook)!r}, run_name='__main__')\n"
         )
         payload = {"tool_name": "Bash", "tool_input": {"command": command}}
@@ -123,6 +125,8 @@ class HookOrderIndependenceTests(unittest.TestCase):
             f"import sys; sys.path.insert(0, {str(HOOK_DIR)!r})\n"
             f"from pathlib import Path\n"
             f"import batch_auth; batch_auth.STATE_PATH = Path({str(self.state_path)!r})\n"
+            # harmonic-forge#1178: the merge-time CI read, faked green offline.
+            f"batch_auth.merge_ci_state = lambda repo, number, run=None: ('green', 'faked')\n"
             f"import runpy; runpy.run_path({str(hook)!r}, run_name='__main__')\n"
         )
         payload = {"tool_name": "Bash", "tool_input": {"command": command}}

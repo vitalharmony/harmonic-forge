@@ -1115,6 +1115,49 @@ def _derived_merge_match(repo: str, number: int,
     return None
 
 
+#: harmonic-forge#1178: the whole merge-time CI read shares one budget. A
+#: PreToolUse hook that times out does not block, so a slow API must end in
+#: `ask` here, never in the hook runner's timeout.
+CI_READ_BUDGET_S = 10.0
+
+
+def _ci_runner(repo: str, deadline: float):
+    """`gate_ci`'s `run` contract, `(returncode, stdout-or-stderr)`, under the
+    repo's slot identity (harmonic-forge#804) and one shared deadline."""
+    env = _slot_env(repo)
+
+    def run(cmd: list[str]) -> tuple[int, str]:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return 1, "the merge-time CI read ran out of its budget"
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=left, env=env)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return 1, str(exc)
+        return result.returncode, result.stdout if result.returncode == 0 else result.stderr
+    return run
+
+
+def merge_ci_state(repo: str, number: int, run=None) -> tuple[str, str]:
+    """harmonic-forge#1178: `(state, detail)` for the PR's live head, judged by
+    `gate_ci`'s authorizing judge, the one the Lane 3 PASS gate uses. Only
+    `green` lets a BATCH merge through."""
+    gh_tools = str(Path(__file__).resolve().parent.parent / "gh")
+    if gh_tools not in sys.path:
+        sys.path.insert(0, gh_tools)
+    import gate_ci  # noqa: PLC0415
+    run = run or _ci_runner(repo, time.monotonic() + CI_READ_BUDGET_S)
+    code, out = run(["gh", "api", f"repos/{repo}/pulls/{number}", "--jq", ".head.sha"])
+    sha = (out or "").strip()
+    if code != 0 or len(sha) != 40:
+        return "unknown", f"could not read PR #{number}'s head: {sha[:120]}"
+    required = gate_ci.required_checks(repo, run=run)
+    if required is None:
+        return "unknown", f"could not read {repo}'s required checks"
+    state, detail = gate_ci.authorizing_conclusion(repo, sha, required, run=run)
+    return state, f"{sha[:12]}: {detail}"
+
+
 def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
     target_info = classify_pr_merge(tokens)
     if target_info is None:
@@ -1279,6 +1322,13 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             # Consumption now happens in batch_consume.py on PostToolUse,
             # which fires only after the tool ran, and only once the merge
             # or close is confirmed to have actually landed (AC3).
+            repo, number = classify_pr_merge(tokens)
+            ci, detail = merge_ci_state(repo, number)
+            if ci != "green":
+                return "ask", reason + (
+                    f"\n\n[BATCH] {key} is authorized, but CI on PR #{number} is {ci} "
+                    f"({detail}). Not merging on an unconcluded or failing CI "
+                    "(harmonic-forge#1178).")
             allow_reason = f"BATCH-authorized ({key})"
 
         if not covered:

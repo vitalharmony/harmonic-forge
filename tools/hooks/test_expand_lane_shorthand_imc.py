@@ -237,7 +237,9 @@ class Ac7DerivationTests(unittest.TestCase):
             state = Path(tmp) / "batch-authorized.json"
             ba.authorize(["F892"], actions=["gh pr merge", "gh pr merge"], state_path=state)
             carriers = ("fix/892-imc-waiver", "IMC waiver (harmonic-forge#892)")
-            with mock.patch.object(ba, "_pr_carriers", lambda repo, number: carriers):
+            with mock.patch.object(ba, "_pr_carriers", lambda repo, number: carriers), \
+                    mock.patch.object(ba, "merge_ci_state",  # harmonic-forge#1178, offline
+                                      lambda repo, number, run=None: ("green", "faked")):
                 verdict = ba.decide("gh pr merge 1000 --repo vitalharmony/harmonic-forge --squash",
                                     state_path=state)
         self.assertEqual(verdict[0], "allow", verdict)

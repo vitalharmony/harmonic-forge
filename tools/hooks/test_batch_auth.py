@@ -57,12 +57,21 @@ def consumed_one(command, state_path):
 _isatty_patcher = mock.patch("os.isatty", return_value=True)
 
 
+#: harmonic-forge#1178: a merge re-reads CI live. Every test module-wide gets
+#: a green fake so the allow tests stay network-free; BatchMergeCiTests drives
+#: the real function with a faked `run`, and DecideCiGuardTests sets CI_FAKE.
+_REAL_MERGE_CI_STATE = ba.merge_ci_state
+CI_FAKE = {"state": ("green", "faked")}
+
+
 def setUpModule():
     _isatty_patcher.start()
+    ba.merge_ci_state = lambda repo, number, run=None: CI_FAKE["state"]
 
 
 def tearDownModule():
     _isatty_patcher.stop()
+    ba.merge_ci_state = _REAL_MERGE_CI_STATE
 
 
 class StateFixture(unittest.TestCase):
@@ -561,6 +570,75 @@ class DecideAllowTests(StateFixture):
         )
         self.assertEqual(merge_result[0], "allow")
         self.assertEqual(close_result[0], "ask")
+
+
+SHA = "e" * 40
+
+
+def _fake_run(*, pulls=(0, SHA), protection=(1, "gh: Branch not protected (HTTP 404)"),
+              runs=(0, '{"id": 7, "name": "CI", "status": "completed", "conclusion": "success"}'),
+              jobs=(0, '{"name": "verify", "status": "completed", "conclusion": "success"}')):
+    """gate_ci's `run` contract, keyed on the endpoint each call names."""
+    def run(cmd):
+        url = next(part for part in cmd if part.startswith("repos/"))
+        if "/pulls/" in url:
+            return pulls
+        if "/protection" in url:
+            return protection
+        if "/jobs" in url:
+            return jobs
+        return runs
+    return run
+
+
+class BatchMergeCiTests(unittest.TestCase):
+    """harmonic-forge#1178: the merge-time CI judge, with `gh` faked."""
+
+    def state(self, **kw):
+        return _REAL_MERGE_CI_STATE("vitalharmony/harmonic-forge", 12, run=_fake_run(**kw))[0]
+
+    def test_a_concluded_green_head_is_green(self):
+        self.assertEqual(self.state(), "green")
+
+    def test_a_pending_head_is_not_green(self):
+        self.assertEqual(self.state(jobs=(0, '{"name": "verify", "status": "in_progress", '
+                                             '"conclusion": null}')), "pending")
+
+    def test_a_failed_head_is_red(self):
+        self.assertEqual(self.state(jobs=(0, '{"name": "verify", "status": "completed", '
+                                             '"conclusion": "failure"}')), "red")
+
+    def test_a_head_with_no_checks_is_not_green(self):
+        self.assertNotEqual(self.state(runs=(0, "")), "green")
+
+    def test_an_unreadable_head_or_protection_is_unknown(self):
+        self.assertEqual(self.state(pulls=(1, "HTTP 502")), "unknown")
+        self.assertEqual(self.state(protection=(1, "HTTP 500")), "unknown")
+
+    def test_an_exhausted_budget_reads_unknown(self):
+        expired = ba._ci_runner("vitalharmony/harmonic-forge", deadline=0.0)
+        self.assertEqual(expired(["gh", "api", "repos/x/y/pulls/1"])[0], 1)
+        self.assertEqual(_REAL_MERGE_CI_STATE("vitalharmony/harmonic-forge", 12, run=expired)[0],
+                         "unknown")
+
+
+class DecideCiGuardTests(StateFixture):
+    """harmonic-forge#1178: a live, linked BATCH grant still asks unless CI is green."""
+
+    def tearDown(self):
+        CI_FAKE["state"] = ("green", "faked")
+        super().tearDown()
+
+    def test_a_non_green_ci_asks_and_names_it(self):
+        ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
+        for state in ("pending", "red", "absent", "unknown"):
+            CI_FAKE["state"] = (state, "e" * 12 + ": detail")
+            with self.subTest(state=state):
+                result = ba.decide("gh pr merge 1202 --repo vitalharmony/hrse --squash",
+                                   state_path=self.state_path)
+                self.assertEqual(result[0], "ask")
+                self.assertIn(f"CI on PR #1202 is {state}", result[1])
 
 
 class DecideAskTests(StateFixture):
