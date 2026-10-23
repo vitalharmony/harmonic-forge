@@ -791,6 +791,70 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
     return " ".join(notes)
 
 
+#: `FORCE <KEY>: <reason>` (harmonic-forge#1169): uppercase, unindented, on the
+#: prompt's first line. A lowercase or misplaced FORCE is refused out loud.
+_FORCE_RE = re.compile(r"^FORCE[ \t]+([A-Za-z]\d{1,6})[ \t]*:[ \t]*(.*)$")
+_FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
+
+
+def _force_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+    import force_grant  # noqa: PLC0415
+
+    return force_grant
+
+
+def authorize_force(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
+    """Write a PENDING FORCE grant (harmonic-forge#1169 AC1). Nothing can use it
+    until `force_grant.py record` posts and refetches it (AC2). Returns a
+    receipt for `additionalContext`, or "" when no line looks like FORCE.
+    Every refusal says why and writes nothing. Never raises."""
+    try:
+        return _authorize_force(prompt, session_id, lane, now)
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
+        return f"FORCE REFUSED: the FORCE check failed ({type(exc).__name__}: {exc}). No grant written."
+
+
+def _authorize_force(prompt, session_id, lane, now) -> str:
+    lines = prompt.splitlines()
+    if not any(_FORCE_ANY_RE.match(line) for line in lines):
+        return ""
+    # The same placement rule IMC is honored by: the prompt's first line, typed
+    # unindented, uppercase. Anywhere else it is quotation (harmonic-forge#895).
+    first = next((i for i, text in enumerate(lines) if text.strip()), None)
+    match = _FORCE_RE.match(lines[first]) if first is not None else None
+    if match is None:
+        return ("FORCE REFUSED: FORCE is honored only as the prompt's first line, typed "
+                "unindented and uppercase, as `FORCE <KEY>: <reason>`. No grant written.")
+    if first not in dict(directive_lines(prompt)):
+        return "FORCE REFUSED: a FORCE line inside a fenced block or blockquote is quotation. No grant written."
+    key, reason = match.group(1).upper(), match.group(2).strip()
+    if not reason:
+        return f"FORCE REFUSED for {key}: the reason is empty. No grant written."
+    provenance = _provenance_refusal(prompt, first)
+    if provenance is not None:
+        return f"FORCE REFUSED for {key}: {provenance}. No grant written."
+    if lane != "1":
+        return f"FORCE REFUSED for {key}: LANE is {lane!r}, and FORCE is recorded only in a LANE=1 session."
+    imc = _imc_module()
+    target = imc.key_target(key)
+    if target is None:
+        return f"FORCE REFUSED for {key}: no repo maps to its prefix. No grant written."
+    repo, number = target
+    if not repo.lower().startswith(imc.VITALHARMONY):
+        return (f"FORCE REFUSED for {key}: {repo} is a cross-account repo, and FORCE fails closed "
+                "there. No grant written.")
+    grants = _force_module()
+    head = grants.covered_head(repo, number)
+    if not head:
+        return (f"FORCE REFUSED for {key}: {repo}#{number} has no preclose receipt, so there is "
+                "no head to bind the force to. No grant written.")
+    grant = grants.write_pending(key, repo, number, head, reason, session_id, lines[first], now)
+    return (f"FORCE: pending grant written for {key} at {head[:12]} (single use, until "
+            f"{grant['expires_at']}). Next: `python3 tools/gh/force_grant.py record --key {key}`, "
+            "then the non-force preflight and the --force run (harmonic-forge#1169).")
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -818,6 +882,14 @@ def main() -> None:
         imc_receipt = ""
     if imc_receipt:
         batch_receipt = " ".join(p for p in (batch_receipt, imc_receipt) if p)
+    # harmonic-forge#1169: FORCE writes only a pending grant; it mints nothing
+    # BATCH or IMC own, so it sits beside them and never replaces either.
+    try:
+        force_receipt = authorize_force(prompt, payload.get("session_id"), os.environ.get("LANE"))
+    except Exception:
+        force_receipt = ""
+    if force_receipt:
+        batch_receipt = " ".join(p for p in (batch_receipt, force_receipt) if p)
     try:
         doc_text = DOC_PATH.read_text(encoding="utf-8")
         expanded = annotate(prompt, doc_text)

@@ -155,6 +155,55 @@ def imc_refusal(repo: str, issue: int, what: str) -> None:
             f"{what}. This is an IMC stop: end the turn with the decision the operator owes.")
 
 
+def require_force_grant(repo: str, issue: int, head_sha: str) -> dict:
+    """harmonic-forge#1169 AC3: a plain --force needs the operator's usable FORCE
+    grant for exactly this head. Called only after `imc_refusal`, so a grant
+    can never reach past an IMC receipt, and never for --reforge or
+    --cluster-verdict, which take no grant."""
+    import force_grant  # noqa: PLC0415
+    try:
+        return force_grant.require(repo, issue, head_sha)
+    except force_grant.GrantRefused as exc:
+        raise SystemExit(f"preclose-check: --force on {repo}#{issue} refused: {exc} "
+                         "(harmonic-forge#1169).") from None
+
+
+def emit_force(repo: str, issue: int, head_sha: str, mode: str, surviving: int,
+               grant: dict | None) -> None:
+    """harmonic-forge#1169 AC4: one `preclose.force` event per forced completion.
+    Ids and hashes only (ADR-009): the reason is its grant comment's id and its
+    sha256, never the text. Never changes the outcome."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        import emit as telemetry_emit  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        moment = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        attrs = {"key": imc_waiver.issue_key(repo, issue) or "", "surviving": int(surviving),
+                 "granted": grant is not None, "mode": mode}
+        if grant is not None:
+            attrs["reason_comment_id"] = str(grant.get("comment_id") or "")
+            attrs["reason_sha256"] = str(grant.get("reason_sha256") or "")
+        event = {
+            "ts": moment, "source": "advisory", "repo": repo, "issue": issue, "sha": head_sha,
+            "account": origin.account, "org": origin.org,
+            "actor": "advisory:preclose-inspection", "event_type": "preclose.force",
+            "subject_kind": "preclose-force",
+            "subject_id": f"{repo}#{issue}@{head_sha[:12]}#force{moment}", "provenance": "manual",
+            "attrs": attrs,
+        }
+        counts = telemetry_emit.emit([event])
+        if counts.get("rejected"):
+            print(f"preclose-check: force telemetry rejected: {counts['rejected']}", file=sys.stderr)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - telemetry never changes the outcome
+        print(f"preclose-check: force telemetry not written: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+
+
 def imc_forced(repo: str, issue: int) -> bool:
     return imc_waiver.waiver_receipt(repo, issue) is not None
 
@@ -845,6 +894,10 @@ def plan(args: argparse.Namespace) -> int:
             f"{unmatched.get('key')}")
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force,
                    getattr(args, "reforge", False))
+    if args.force and not getattr(args, "reforge", False):
+        # After the cap's own refusals, so a force that is wrong for another
+        # reason still says so. Plan checks; only complete consumes (#1169).
+        require_force_grant(repo, args.issue, head_sha)
     if not args.force and not kill_receipt_ok(repo, args.issue, head_sha, args.base):
         raise SystemExit(
             f"preclose-check: no passing kill-check receipt covers {repo}#{args.issue} "
@@ -970,6 +1023,7 @@ def complete(args: argparse.Namespace) -> int:
     identity = local_change_identity(args.base, head_sha)
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force, reforge)
+    grant = require_force_grant(repo, args.issue, head_sha) if args.force and not reforge else None
     findings = load_findings(args.findings)
     require_wellformed_anchors(findings)
     require_mechanisms(findings)
@@ -1040,6 +1094,13 @@ def complete(args: argparse.Namespace) -> int:
     route = preclose_passes.cluster_message(read_receipt(path), repo, args.issue)
     if route:
         print(f"  {route}")
+    if args.force:
+        if grant is not None:
+            # Consumed only once the pass is recorded, so a crash before here
+            # leaves the grant usable for the retry (harmonic-forge#1169).
+            import force_grant  # noqa: PLC0415
+            grant = force_grant.consume(grant["key"], head_sha)
+        emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", surviving, grant)
     receipt = read_receipt(path) or {}
     passes = preclose_passes.current(preclose_passes.history(receipt))
     emit_pass(repo, args.issue, head_sha, passes[-1] if passes else {}, {
@@ -1345,6 +1406,11 @@ def cluster_verdict(args: argparse.Namespace) -> int:
                          extra={**preclose_passes.carried(prior), "mechanism_cluster": updated})
     print(f"preclose-check: mechanism-cluster verdict {args.cluster_verdict} recorded; not a pass.")
     print(f"  receipt: {path}")
+    if args.force:
+        # Measured, never granted: --cluster-verdict --force takes no grant
+        # (harmonic-forge#1169 AC4; covering it is harmonic-forge#1174).
+        emit_force(repo, args.issue, preclose_passes.reviewed_head(prior) or "", "cluster-verdict",
+                   int((passes[-1] if passes else {}).get("surviving") or 0), None)
     return 0
 
 

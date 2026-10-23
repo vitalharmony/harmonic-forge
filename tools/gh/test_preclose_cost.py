@@ -51,6 +51,8 @@ class CostCase(base.ScratchRepo):
                           envelope=self.envelope(fallback) if cross else None, not_triggered=not cross,
                           cross_family=False, force=False, own_model="claude-opus-5-5", tier="standard")
         args.__dict__.update(cost)
+        if args.force and not getattr(args, "reforge", False):
+            self.grant_force()
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             preclose.complete(args)
