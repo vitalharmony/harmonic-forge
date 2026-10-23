@@ -111,8 +111,12 @@ class Recorder:
     def add(self, **event: Any) -> None:
         self.pending.append({**self.where, **event})
 
-    def status(self, status: str, stage: str, *, pr: int | None = None, **attrs: Any) -> None:
+    def status(self, status: str, stage: str, *, pr: int | None = None, key: str | None = None, **attrs: Any) -> None:
+        """`key` tells apart repo-level statuses that can repeat within a run
+        (one per marker comment or foreign PR); event_id ignores attrs."""
         suffix = f":{pr}:{stage}" if pr is not None else (f"::{stage}" if status != "ok" else "")
+        if key is not None:
+            suffix += f":{key}"
         self.add(event_type="fetch.status", source="gh-pr", subject_id=f"{self.repo}:fetch:{self.started}{suffix}",
                  ts=self.started, attrs={"status": status, "stage": stage, "pr": pr, **attrs})
 
@@ -130,6 +134,17 @@ class Recorder:
 
 def _error_kind(exc: BaseException) -> str:
     return type(exc).__name__
+
+
+def _repo_or_none(value: str | None) -> str | None:
+    """`owner/name`, or None for marker text that is not one: untrusted
+    input is recorded, never raised (normalize_repo raises ManifestError)."""
+    if not value:
+        return None
+    try:
+        return normalize_repo(value)
+    except manifest.ManifestError:
+        return None
 
 
 def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict]], registry: list[str]) -> str | None:
@@ -214,28 +229,40 @@ def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict
     return None if failed else ci
 
 
-def marker_comments(gh: GhJson, repo: str) -> dict[int, list[dict]]:
-    """`{pr: [marker comment]}` from this repo's issue comments: Lane 1's
-    `lane-pr-link v1` marker is written on the issue and names `pr-repo`/`pr`."""
-    found: dict[int, list[dict]] = {}
+def marker_comments(gh: GhJson, repo: str) -> tuple[dict[tuple[str, int], list[dict]], list[object]]:
+    """`({(pr_repo, pr): [marker comment]}, [unreadable comment ids])` from this
+    repo's issue comments: Lane 1's `lane-pr-link v1` marker is written on the
+    issue and names `pr-repo`/`pr`. A marker that cannot be read is returned by
+    comment id, for a per-comment failure, never a failed listing."""
+    found: dict[tuple[str, int], list[dict]] = {}
+    unreadable: list[object] = []
     for comment in gh(f"repos/{repo}/issues/comments?per_page=100"):
-        fields = _parse_marker_fields(comment.get("body") or "")
-        if not fields or not fields.get("pr", "").isdigit():
-            continue
-        pr_repo = normalize_repo(fields.get("pr-repo") or repo)
-        found.setdefault((pr_repo, int(fields["pr"])), []).append(
-            {"id": comment["id"], "created_at": comment["created_at"], "fields": fields})
-    return found
+        try:
+            fields = _parse_marker_fields(comment.get("body") or "")
+            if not fields:
+                continue
+            pr_repo = _repo_or_none(fields.get("pr-repo")) if fields.get("pr-repo") else repo
+            if pr_repo is None or not fields.get("pr", "").isdigit():
+                unreadable.append(comment.get("id"))
+                continue
+            found.setdefault((pr_repo, int(fields["pr"])), []).append(
+                {"id": comment["id"], "created_at": comment["created_at"], "fields": fields})
+        except Exception:  # noqa: BLE001 -- one comment never fails the listing
+            unreadable.append(comment.get("id") if isinstance(comment, dict) else None)
+    return found, unreadable
 
 
 def record_marker(rec: Recorder, pr_repo: str, number: int, comment: dict) -> tuple[str | None, int | None]:
     """One `pr-link-marker` observation about `pr_repo#number`; returns its target."""
     fields = comment["fields"]
-    target = normalize_repo(fields["issue-repo"]) if fields.get("issue-repo") else None
+    target = _repo_or_none(fields.get("issue-repo"))
     issue = int(fields["issue"]) if fields.get("issue", "").isdigit() else None
+    attrs = {"link_kind": "marker", "target_repo": target, "target_issue": issue}
+    if target is None and fields.get("issue-repo"):
+        attrs["target_ref"] = fields["issue-repo"][:200]
     rec.add(event_type="pr.link.observed", source="gh-pr", provenance="pr-link-marker",
             subject_id=f"{pr_repo}#{number}:pr-link-marker:{comment['id']}", ts=comment["created_at"], pr=number,
-            attrs={"link_kind": "marker", "target_repo": target, "target_issue": issue})
+            attrs=attrs)
     return target, issue
 
 
@@ -252,7 +279,7 @@ def fetch_repo(repo: str, gh: GhJson, *, limit: int | None, started: str, regist
         return rec.totals
     try:
         merged = [p for p in gh(f"repos/{repo}/pulls?state=closed&per_page=100") if p.get("merged_at")]
-        markers = marker_comments(gh, repo)
+        markers, unreadable = marker_comments(gh, repo)
     except Exception as exc:  # noqa: BLE001
         rec.status("failed", "list", error_kind=_error_kind(exc))
         rec.flush()
@@ -260,14 +287,21 @@ def fetch_repo(repo: str, gh: GhJson, *, limit: int | None, started: str, regist
     # A marker on this repo's issue that names a PR in another repo is an
     # observation about that PR: record it here, attributed to the PR's repo,
     # since that repo's pass never reads this repo's comments.
+    for comment_id in unreadable:
+        rec.status("failed", "marker", key=f"comment-{comment_id}", error_kind="unreadable", comment_id=comment_id)
     for (pr_repo, number), comments in sorted(markers.items()):
         if pr_repo == repo:
             continue
-        other = Recorder(pr_repo, started, attribute(pr_repo, manifest_file))
-        for comment in comments:
-            record_marker(other, pr_repo, number, comment)
-        if other.flush():
-            rec.status("failed", "emit", error_kind="rejected", marker_pr=f"{pr_repo}#{number}")
+        try:
+            other = Recorder(pr_repo, started, attribute(pr_repo, manifest_file))
+            for comment in comments:
+                record_marker(other, pr_repo, number, comment)
+            if other.flush():
+                rec.status("failed", "emit", key=f"{pr_repo}#{number}", error_kind="rejected",
+                           marker_pr=f"{pr_repo}#{number}")
+        except Exception as exc:  # noqa: BLE001 -- one foreign PR never ends the run
+            rec.status("failed", "marker", key=f"{pr_repo}#{number}", error_kind=_error_kind(exc),
+                       marker_pr=f"{pr_repo}#{number}")
     merged.sort(key=lambda p: p["merged_at"], reverse=True)
     if limit is not None and len(merged) > limit:
         merged = merged[:limit]

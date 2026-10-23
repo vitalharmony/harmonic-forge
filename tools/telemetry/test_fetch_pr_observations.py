@@ -221,6 +221,42 @@ class FetchTests(unittest.TestCase):
                          [("capped", None)])
         self.assertIn(("ok", "repo"), [(s["status"], s["stage"]) for s in self.statuses()])
 
+    def test_a_malformed_marker_fails_only_its_comment(self) -> None:
+        routes = _routes()
+        routes["repos/vitalharmony/widget/issues/comments?"].append(
+            {"id": 888, "created_at": "2026-10-04T09:00:00Z", "body": marker("vitalharmony/widget", 8, "not a repo", 5)})
+        self.run_repo("vitalharmony/widget", FakeGh(routes))
+        self.assertEqual(sorted(e["pr"] for e in self.of("pr.merged")), [11, 12])
+        self.assertIn(("failed", "marker", 888),
+                      [(s["status"], s["stage"], s.get("comment_id")) for s in self.statuses()])
+        self.assertNotIn("list", [s["stage"] for s in self.statuses() if s["status"] == "failed"])
+
+    def test_a_malformed_issue_repo_on_a_cross_repo_marker_is_recorded_not_raised(self) -> None:
+        routes = _routes()
+        routes["repos/vitalharmony/widget/issues/comments?"].append(
+            {"id": 889, "created_at": "2026-10-04T09:00:00Z", "body": marker("bad repo!", 8, "secondorg/gadget", 42)})
+        self.run_repo("vitalharmony/widget", FakeGh(routes))
+        cross = [e for e in self.of("pr.link.observed") if e["subject_id"].startswith("secondorg/gadget#42:")]
+        self.assertEqual(len(cross), 1)
+        self.assertEqual((cross[0]["attrs"]["target_repo"], cross[0]["attrs"]["target_ref"]), (None, "bad repo!"))
+        self.assertEqual(sorted(e["pr"] for e in self.of("pr.merged") if e["repo"] == "vitalharmony/widget"), [11, 12])
+
+    def test_two_cross_repo_failures_in_one_run_are_two_statuses(self) -> None:
+        routes = _routes()
+        for cid, pr in ((901, 42), (902, 43)):
+            routes["repos/vitalharmony/widget/issues/comments?"].append(
+                {"id": cid, "created_at": "2026-10-04T09:00:00Z", "body": marker("vitalharmony/widget", 8, "secondorg/gadget", pr)})
+        real = fpo.record_marker
+
+        def failing(rec, pr_repo, number, comment):
+            if pr_repo == "secondorg/gadget":
+                raise RuntimeError("boom")
+            return real(rec, pr_repo, number, comment)
+        with mock.patch.object(fpo, "record_marker", failing):
+            self.run_repo("vitalharmony/widget", FakeGh(routes))
+        failed = sorted(s["marker_pr"] for s in self.statuses() if s["status"] == "failed" and s["stage"] == "marker")
+        self.assertEqual(failed, ["secondorg/gadget#42", "secondorg/gadget#43"])
+
     def test_second_account_with_zero_code_change(self) -> None:
         self.run_repo("secondorg/gadget", FakeGh(_routes("secondorg/gadget")))
         accounts = {(e["account"], e["org"]) for e in self.events()}
