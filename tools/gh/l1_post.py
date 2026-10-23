@@ -66,6 +66,7 @@ except ImportError:
 # uses -- a missing/broken import here must not block a real post over
 # a heading-strictness nicety.
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "hooks"))
+import check_receipt  # noqa: E402  (harmonic-forge#1134: reuse a same-SHA scratch receipt)
 try:
     from batch_auth import REPO_PREFIXES as _REPO_PREFIXES
 except ImportError:
@@ -2568,7 +2569,49 @@ def cheap_static_checks(sha: str, branch: str) -> None:
         fail(gate_ci.render_pending_refusal(sha, pending))
 
 
-def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], dict]:
+def _receipt_matches(repo_root: Path, sha: str) -> bool:
+    """True only for a receipt l1_post's own scratch check wrote for this repo,
+    SHA and current forge HEAD (harmonic-forge#1134 AC2)."""
+    origin = run("git", "remote", "get-url", "origin", cwd=repo_root)
+    slug = check_receipt.repo_slug(origin.stdout) if origin.returncode == 0 else None
+    if slug is None:
+        return False
+    data = check_receipt.lookup(slug, sha)
+    forge = check_receipt.forge_sha()
+    return bool(data and forge and data.get("repo") == slug and data.get("sha") == sha
+                and data.get("forge_sha") == forge and data.get("source") == check_receipt.L1_POST_SOURCE)
+
+
+#: Where a failed check's step logs are kept: the scratch worktree is removed.
+FAILED_CHECK_LOGS = Path.home() / ".cache" / "harmonic-forge" / "l1-post-failed-checks"
+
+
+def _keep_gate_logs(scratch: Path, sha: str) -> str | None:
+    """Copy the failed check's `logs/gate-steps` out before the worktree goes."""
+    src = scratch / "logs" / "gate-steps"
+    if not src.is_dir():
+        return None
+    try:
+        FAILED_CHECK_LOGS.mkdir(parents=True, exist_ok=True)
+        # A unique directory: two failures of one SHA never share a destination.
+        dest = tempfile.mkdtemp(prefix=f"{sha[:12]}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-",
+                                dir=FAILED_CHECK_LOGS)
+        shutil.copytree(src, dest, dirs_exist_ok=True)
+    except OSError as exc:
+        print(f"[l1-post] WARNING: failed check's step logs not kept ({exc})", file=sys.stderr)
+        return None
+    return dest
+
+
+def _dry_run_check(sha: str, branch: str) -> None:
+    _checks, _timing, check = static_checks(sha, branch, dry_run=True)
+    if check["result"] == "fail":
+        logs = check.get("logs")
+        fail("dry run: mise run check failed" + (f"; step logs kept at {logs}" if logs else "")
+             + "\n" + check.get("output", "")[-4000:])
+
+
+def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[str], tuple[str, str] | None, dict]:
     """Returns (check names, (local_check_started_at, local_check_finished_at),
     check) -- the second element brackets the `mise run check` call below in
     UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
@@ -2585,6 +2628,15 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
     repo_root = Path(repo_root_result.stdout.strip())
+    # harmonic-forge#1134: a passing check this tool's own scratch run recorded
+    # for this exact SHA and forge HEAD is reused, never a lane worktree's.
+    # No timing and a distinct result: no check ran in this attempt, and only
+    # the checks that did run are listed (no scratch worktree, so no clean-worktree).
+    if _receipt_matches(repo_root, sha):
+        print(f"[l1-post] dry run: check receipt found for {sha[:12]}; the real post reuses it"
+              if dry_run else f"[l1-post] check receipt found for {sha[:12]}; reusing it")
+        return (["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"],
+                None, {"result": "reused"})
     # harmonic-forge#949: the scratch copy and its install live under the
     # disk-backed, locked, reaped root, never the /tmp tmpfs.
     holder_cm = _scratch.scratch_dir(f"l1-post {branch}@{sha[:8]}", prefix="l1-post-")
@@ -2632,6 +2684,8 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
                         link.unlink()
                         link.symlink_to(real, target_is_directory=True)
         _, check_env = _private_check_tmp(holder)
+        check_env[check_receipt.SOURCE_ENV] = check_receipt.L1_POST_SOURCE
+        check_env[check_receipt.FORGE_SHA_ENV] = check_receipt.forge_sha() or ""
         # harmonic-forge#745 AC1: bracket the local pre-flight in UTC, not
         # wall-clock local time -- the reporter compares this against GitHub
         # API timestamps, which are always UTC.
@@ -2640,7 +2694,8 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str], di
         local_check_finished_at = datetime.now(UTC).isoformat()
         if checked.returncode:
             return ([], (local_check_started_at, local_check_finished_at),
-                    {"result": "fail", "output": checked.stdout + checked.stderr})
+                    {"result": "fail", "output": checked.stdout + checked.stderr,
+                     "logs": _keep_gate_logs(scratch, sha)})
         clean = run("git", "status", "--porcelain", cwd=scratch)
         if clean.returncode or clean.stdout.strip():
             fail("verification left the detached worktree dirty")
@@ -2825,7 +2880,7 @@ def _post_kind(
         checks, local_check_timing, check = static_checks(sha, branch)
         if attempt is not None:
             attempt["local_check_result"] = check["result"]
-            attempt["local_check_ms"] = _ms_between(*local_check_timing)
+            attempt["local_check_ms"] = _ms_between(*local_check_timing) if local_check_timing else None
         if check["result"] == "fail":
             if attempt is not None:
                 # The snapshot is taken AFTER the check, from the repo the PR
@@ -3391,12 +3446,11 @@ def main() -> None:
             ack_no_pr_required=args.ack_no_pr_required,
             grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)))
         if args.kind == "ready-for-l3":
-            # Only `mise run check` is skipped; its cheap prefix still runs.
-            steps.append(lambda: cheap_static_checks(sha, args.branch))
+            # harmonic-forge#1134 AC3: the dry run runs (or reuses) the check
+            # the real post runs, so a clean dry run predicts the real post.
+            steps.append(lambda: _dry_run_check(sha, args.branch))
     _collect(steps)
     if args.dry_run:
-        if args.kind == "ready-for-l3":
-            print("[l1-post] dry run: mise run check skipped; the real post runs it")
         _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
         return
     if args.kind == "carry-forward":
