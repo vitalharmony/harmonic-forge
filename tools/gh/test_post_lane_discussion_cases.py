@@ -140,6 +140,15 @@ class ASpecDeclaresItsWriteTier(Case):
         import _auto_ae  # noqa: PLC0415
         self.assertFalse(_auto_ae.p_vetoed(self.post("spec", SPEC_TC, classes={"1": "W", "2": "W"})))
 
+    def test_a_case_map_id_p_in_the_footer_is_refused(self):
+        """Pass 1 (cross-family): the footer is appended after the body check."""
+        err = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", new=err), \
+             self.assertRaises(SystemExit) as raised:
+            self.post("spec", SPEC_TC, classes={"P": "ac"})
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("no production writes", err.getvalue())
+
     def test_a_p_declaration_is_accepted_by_the_poster(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
 

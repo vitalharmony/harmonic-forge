@@ -579,8 +579,10 @@ def main() -> None:
         # said to drop it on the fourth rather than patch it again.
         case_fields = case_field("results", load_case_map(args.tc_results, CASE_RESULTS, "--tc-results"))
     elif artifact == "spec":
-        require_write_tier(body)
         case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
+        # harmonic-forge#1173 pass 1: the footer's case map is part of what
+        # auto-AE reads, so the veto sees it too (a case id `P` is a bare P).
+        require_write_tier(body + "\n" + case_fields)
     elif args.tc_results is not None or args.tc_classes is not None:
         print("[post-comment] WARNING: --tc-results/--tc-classes given, but this post is not a "
               "Lane 3 spec or gate report (a Lane 1/2 relay never is); the map was not recorded",
