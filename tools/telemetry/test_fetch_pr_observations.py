@@ -238,7 +238,9 @@ class FetchTests(unittest.TestCase):
         self.run_repo("vitalharmony/widget", FakeGh(routes))
         cross = [e for e in self.of("pr.link.observed") if e["subject_id"].startswith("secondorg/gadget#42:")]
         self.assertEqual(len(cross), 1)
-        self.assertEqual((cross[0]["attrs"]["target_repo"], cross[0]["attrs"]["target_ref"]), (None, "bad repo!"))
+        self.assertIsNone(cross[0]["attrs"]["target_repo"])
+        self.assertNotIn("target_ref", cross[0]["attrs"])
+        self.assertNotIn("bad repo!", json.dumps(cross[0]))
         self.assertEqual(sorted(e["pr"] for e in self.of("pr.merged") if e["repo"] == "vitalharmony/widget"), [11, 12])
 
     def test_two_cross_repo_failures_in_one_run_are_two_statuses(self) -> None:
@@ -256,6 +258,18 @@ class FetchTests(unittest.TestCase):
             self.run_repo("vitalharmony/widget", FakeGh(routes))
         failed = sorted(s["marker_pr"] for s in self.statuses() if s["status"] == "failed" and s["stage"] == "marker")
         self.assertEqual(failed, ["secondorg/gadget#42", "secondorg/gadget#43"])
+
+    def test_a_non_ascii_digit_marker_field_is_null_not_a_crash(self) -> None:
+        routes = _routes()
+        routes["repos/vitalharmony/widget/issues/comments?"].append(
+            {"id": 890, "created_at": "2026-10-04T09:00:00Z",
+             "body": marker("vitalharmony/widget", 7, "vitalharmony/widget", 11).replace("issue=7;", "issue=\u00b2;")})
+        self.run_repo("vitalharmony/widget", FakeGh(routes))
+        ok_prs = [s["pr"] for s in self.statuses() if s["status"] == "ok" and s["stage"] == "pr"]
+        self.assertIn(11, ok_prs)
+        odd = [e for e in self.of("pr.link.observed") if e["subject_id"].endswith(":pr-link-marker:890")]
+        self.assertEqual(len(odd), 1)
+        self.assertIsNone(odd[0]["attrs"]["target_issue"])
 
     def test_second_account_with_zero_code_change(self) -> None:
         self.run_repo("secondorg/gadget", FakeGh(_routes("secondorg/gadget")))

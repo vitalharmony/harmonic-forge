@@ -136,6 +136,12 @@ def _error_kind(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _int_or_none(value: str | None) -> int | None:
+    """An ASCII decimal marker field as int, else None: `str.isdigit()` accepts
+    characters such as '²' that `int()` rejects."""
+    return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]+", value) else None
+
+
 def _repo_or_none(value: str | None) -> str | None:
     """`owner/name`, or None for marker text that is not one: untrusted
     input is recorded, never raised (normalize_repo raises ManifestError)."""
@@ -242,7 +248,7 @@ def marker_comments(gh: GhJson, repo: str) -> tuple[dict[tuple[str, int], list[d
             if not fields:
                 continue
             pr_repo = _repo_or_none(fields.get("pr-repo")) if fields.get("pr-repo") else repo
-            if pr_repo is None or not fields.get("pr", "").isdigit():
+            if pr_repo is None or _int_or_none(fields.get("pr")) is None:
                 unreadable.append(comment.get("id"))
                 continue
             found.setdefault((pr_repo, int(fields["pr"])), []).append(
@@ -256,10 +262,10 @@ def record_marker(rec: Recorder, pr_repo: str, number: int, comment: dict) -> tu
     """One `pr-link-marker` observation about `pr_repo#number`; returns its target."""
     fields = comment["fields"]
     target = _repo_or_none(fields.get("issue-repo"))
-    issue = int(fields["issue"]) if fields.get("issue", "").isdigit() else None
+    issue = _int_or_none(fields.get("issue"))
+    # An unreadable issue-repo is recorded as a null target only: marker text
+    # is never stored (ADR-009: ids, kinds, timestamps and hashes, no bodies).
     attrs = {"link_kind": "marker", "target_repo": target, "target_issue": issue}
-    if target is None and fields.get("issue-repo"):
-        attrs["target_ref"] = fields["issue-repo"][:200]
     rec.add(event_type="pr.link.observed", source="gh-pr", provenance="pr-link-marker",
             subject_id=f"{pr_repo}#{number}:pr-link-marker:{comment['id']}", ts=comment["created_at"], pr=number,
             attrs=attrs)
