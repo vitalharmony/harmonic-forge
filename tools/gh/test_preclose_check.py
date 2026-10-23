@@ -259,6 +259,22 @@ class PanelSizingTests(unittest.TestCase):
     def test_ordinary_tooling_is_not_high_blast(self) -> None:
         self.assertFalse(preclose.blast_radius(["docs/ONTOLOGY.md", "scripts/1-one-off.py"]))
 
+    def test_authorization_surfaces_and_rule_text_are_high_blast(self) -> None:
+        """harmonic-forge#1176: R-0371's surfaces and the text the gates enforce."""
+        for path in ("tools/gh/_auto_ae.py", "tools/gh/_carry_forward.py", "tools/gh/_standing_grant.py",
+                     "tools/gh/imc_waiver.py", "tools/gh/force_grant.py", "tools/gh/preclose_check.py",
+                     "tools/gh/preclose_passes.py", "tools/gh/preclose_enrollment.py",
+                     "tools/gh/kill_check.py", "tools/gh/pitch_receipt.py", "tools/gh/sticky_receipt.py",
+                     "tools/gh/check_lane3_ready.py", "tools/runner/verdict.py", "tools/runner/te_queue.py",
+                     "tools/gate/hrse_gate_ae.py", "rules/lane-shorthand.md",
+                     "docs/decisions/ADR-001.md", "tools/rules/registry.toml",
+                     ".claude/skills/x/SKILL.md"):
+            self.assertTrue(preclose.blast_radius([path]), path)
+        self.assertIn("hook wiring", preclose.blast_radius([".claude/settings.json"])[0])
+        for path in ("tools/telemetry/emit.py", "README.md", "scripts/ordinary.py",
+                     "tools/gh/belt_report.py", "tools/gh/test_imc_waiver.py"):
+            self.assertFalse(preclose.blast_radius([path]), path)
+
     def test_tier_scales_an_ordinary_change(self) -> None:
         self.assertEqual(preclose.panel_size([], "fast", lines=5)[0], 1)
         self.assertEqual(preclose.panel_size([], "standard")[0], 3)
