@@ -145,7 +145,8 @@ class DryRunTests(Harness):
         self.assertIsNone(code)
         self.assertIn("dry run clean: ready-for-l3", out)
         self.posted.assert_not_called()
-        self.static.assert_not_called()
+        # harmonic-forge#1134 AC3: the dry run runs (or reuses) the check.
+        self.static.assert_called_once()
         receipts = self.receipts()
         self.assertEqual(len(receipts), 1)
         self.assertTrue(receipts[0].read_text().find('"key": "l1_post:') >= 0)
@@ -222,20 +223,31 @@ class DryRunTests(Harness):
         code, out, _ = self.run_main(*self.r4l3("--dry-run"))
         self.assertIsNone(code)
         self.assertIn("dry run: would open PR for fix/1115-x against main", out)
-        self.assertIn("mise run check skipped", out)
+        self.assertNotIn("mise run check skipped", out)
         self.open_pr.assert_not_called()
-        self.static.assert_not_called()
+        self.static.assert_called_once()
 
     def test_dry_run_ready_for_l3_runs_the_cheap_static_checks(self):
         """Pass 1 survivor 7: only `mise run check` is skipped. A branch that
         no longer resolves to the attested SHA is reported by the dry run, as
         the real post would refuse it."""
         self.cheap = False
+        # static_checks runs cheap_static_checks first; keep that real here.
+        self.static.side_effect = lambda sha, branch: (
+            L.cheap_static_checks(sha, branch), ([], ("t0", "t1"), {"result": "pass"}))[1]
         with mock.patch.object(L, "resolve_sha", side_effect=lambda value, *a, **k:
                                SHA_B if value == "fix/1115-x" else value):
             code, _, _ = self.run_main(*self.r4l3("--dry-run"))
         self.assertIn("no longer resolves to the attested SHA", code or "")
-        self.static.assert_not_called()
+        self.assertEqual(self.receipts(), [])
+
+    def test_dry_run_refuses_a_failing_check_and_names_the_kept_logs(self):
+        """harmonic-forge#1134 AC3."""
+        self.static.return_value = ([], ("t0", "t1"), {"result": "fail", "output": "step 25 FAILED",
+                                                      "logs": "/kept/logs"})
+        code, _, _ = self.run_main(*self.r4l3("--dry-run"))
+        self.assertIn("dry run: mise run check failed; step logs kept at /kept/logs", code or "")
+        self.assertIn("step 25 FAILED", code or "")
         self.assertEqual(self.receipts(), [])
 
     def _ae(self, *extra):
