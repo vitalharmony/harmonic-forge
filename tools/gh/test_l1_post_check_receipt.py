@@ -58,6 +58,26 @@ class ReceiptContentTests(unittest.TestCase):
         data = self._record({C.SOURCE_ENV: C.L1_POST_SOURCE})
         self.assertEqual(data["source"], C.L1_POST_SOURCE)
 
+    def test_forge_head_moved_during_check_records_no_forge_sha(self):
+        data = self._record({C.SOURCE_ENV: C.L1_POST_SOURCE, C.FORGE_SHA_ENV: "e" * 40})
+        self.assertIsNone(data["forge_sha"])
+
+    def test_forge_dirty_before_check_records_no_forge_sha(self):
+        data = self._record({C.SOURCE_ENV: C.L1_POST_SOURCE, C.FORGE_SHA_ENV: ""})
+        self.assertIsNone(data["forge_sha"])
+
+    def test_forge_unmoved_records_the_pre_check_value(self):
+        data = self._record({C.SOURCE_ENV: C.L1_POST_SOURCE, C.FORGE_SHA_ENV: FORGE})
+        self.assertEqual(data["forge_sha"], FORGE)
+
+    def test_a_dirty_forge_tree_has_no_identity(self):
+        outputs = {("status", "--porcelain"): " M tools/x.py", ("rev-parse", "HEAD"): FORGE}
+        with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
+            self.assertIsNone(C.forge_sha())
+        outputs[("status", "--porcelain")] = ""
+        with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
+            self.assertEqual(C.forge_sha(), FORGE)
+
     def test_lookup_none_for_missing_empty_and_unparseable(self):
         self.assertIsNone(C.lookup(SLUG, SHA))
         path = C.receipt_path(SLUG, SHA)
@@ -116,8 +136,10 @@ class ReuseTests(unittest.TestCase):
         self.write()
         result, ran_check = self.static()
         self.assertFalse(ran_check)
-        self.assertEqual(result[0][0], "mise-check:receipt")
-        self.assertEqual(result[2], {"result": "pass"})
+        # Only what ran is listed, and the attempt cannot read as a fresh 0 ms pass.
+        self.assertEqual(result[0], ["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"])
+        self.assertIsNone(result[1])
+        self.assertEqual(result[2], {"result": "reused"})
 
     def test_a_lane_worktree_receipt_still_runs_the_check(self):
         self.write(source="check")
@@ -146,6 +168,48 @@ class KeptLogsTests(unittest.TestCase):
                 kept = L._keep_gate_logs(Path(scratch), SHA)
             self.assertIsNotNone(kept)
             self.assertEqual((Path(kept) / "25.log").read_text(encoding="utf-8"), "boom")
+
+    def test_two_failures_in_one_second_keep_both(self):
+        with TemporaryDirectory() as scratch, TemporaryDirectory() as keep:
+            steps = Path(scratch) / "logs" / "gate-steps"
+            steps.mkdir(parents=True)
+            (steps / "25.log").write_text("boom", encoding="utf-8")
+            with mock.patch.object(L, "FAILED_CHECK_LOGS", Path(keep)):
+                first, second = L._keep_gate_logs(Path(scratch), SHA), L._keep_gate_logs(Path(scratch), SHA)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(first, second)
+
+    def test_a_failed_check_returns_a_kept_logs_path_that_exists(self):
+        """AC3 kill check: static_checks' own fail branch carries the kept path."""
+        with TemporaryDirectory() as holder, TemporaryDirectory() as keep:
+            holder_path = Path(holder)
+
+            def fake_run(*argv, cwd=None, env=None):
+                if argv[:3] == ("git", "rev-parse", "--show-toplevel"):
+                    return _done(holder)
+                if argv[:3] == ("git", "worktree", "add"):
+                    steps = holder_path / "wt" / "logs" / "gate-steps"
+                    steps.mkdir(parents=True)
+                    (steps / "25.log").write_text("boom", encoding="utf-8")
+                    return _done()
+                if argv[:3] == ("mise", "run", "check"):
+                    return _done("step 25 FAILED", code=1)
+                return _done()
+
+            holder_cm = mock.MagicMock()
+            holder_cm.__enter__.return_value = holder_path
+            with mock.patch.object(L, "run", side_effect=fake_run), \
+                    mock.patch.object(L, "cheap_static_checks"), \
+                    mock.patch.object(L, "_receipt_matches", return_value=False), \
+                    mock.patch.object(L, "resolve_sha", return_value=SHA), \
+                    mock.patch.object(L, "_source_repo_is_hrse", return_value=False), \
+                    mock.patch.object(L, "_private_check_tmp", return_value=(holder_path, {})), \
+                    mock.patch.object(L._scratch, "scratch_dir", return_value=holder_cm), \
+                    mock.patch.object(L, "FAILED_CHECK_LOGS", Path(keep)):
+                _checks, _timing, check = L.static_checks(SHA, "fix/1134-x")
+            self.assertEqual(check["result"], "fail")
+            self.assertTrue((Path(check["logs"]) / "25.log").is_file())
 
     def test_no_logs_dir_returns_none(self):
         with TemporaryDirectory() as scratch:

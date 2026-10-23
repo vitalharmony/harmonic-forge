@@ -37,6 +37,9 @@ STORE = Path.home() / ".cache" / "harmonic-forge" / "check-receipts"
 #: that run's receipt is reusable; a lane worktree's check is another environment.
 SOURCE_ENV = "HF_CHECK_RECEIPT_SOURCE"
 L1_POST_SOURCE = "l1-post-scratch"
+#: The forge HEAD `l1_post` read before its check started (empty when the forge
+#: tree was dirty): the receipt names that, never the HEAD at record time.
+FORGE_SHA_ENV = "HF_CHECK_RECEIPT_FORGE_SHA"
 FORGE_ROOT = Path.home() / "harmonic-forge"
 BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)-")
 ZERO = "0" * 40
@@ -61,11 +64,23 @@ def receipt_path(slug: str, sha: str) -> Path:
 
 def forge_sha() -> str | None:
     """The `~/harmonic-forge` HEAD a check ran against: a consumer repo's check
-    runs forge scripts, so a forge change can change its result."""
+    runs forge scripts, so a forge change can change its result. None when it
+    cannot be read or the forge tree is dirty: then HEAD does not name the code."""
     try:
+        if _git("status", "--porcelain", cwd=str(FORGE_ROOT)):
+            return None
         return _git("rev-parse", "HEAD", cwd=str(FORGE_ROOT))
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def _recorded_forge_sha() -> str | None:
+    """The forge identity to write: the value read before the check when
+    `l1_post` passed one, and only if forge is still there now; else HEAD now."""
+    if FORGE_SHA_ENV not in os.environ:
+        return forge_sha()
+    before = os.environ[FORGE_SHA_ENV] or None
+    return before if before and forge_sha() == before else None
 
 
 def lookup(slug: str, sha: str) -> dict | None:
@@ -94,7 +109,7 @@ def record(repo_root: str = ".", head: str | None = None) -> int:
         path = receipt_path(slug, sha)
         path.parent.mkdir(parents=True, exist_ok=True)
         source = L1_POST_SOURCE if os.environ.get(SOURCE_ENV) == L1_POST_SOURCE else "check"
-        path.write_text(json.dumps({"repo": slug, "sha": sha, "forge_sha": forge_sha(),
+        path.write_text(json.dumps({"repo": slug, "sha": sha, "forge_sha": _recorded_forge_sha(),
                                     "source": source}) + "\n", encoding="utf-8")
     except (OSError, subprocess.CalledProcessError) as exc:
         print(f"check-receipt: WARNING no receipt recorded ({exc})", file=sys.stderr)
