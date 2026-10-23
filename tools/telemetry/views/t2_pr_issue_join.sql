@@ -67,7 +67,32 @@ LEFT JOIN newest n ON n.repo = p.repo AND n.pr = p.pr
 ORDER BY p.repo, p.pr;
 
 CREATE OR REPLACE VIEW pr_join_coverage AS
-WITH months AS (
+WITH ev AS (SELECT *, CAST(replace(ts, 'Z', '') AS TIMESTAMP) AS t_at FROM events),
+repo_status AS (
+  SELECT repo, t_at, a_status, a_oldest_merged_at FROM ev
+  WHERE event_type = 'fetch.status' AND a_pr IS NULL AND a_status IN ('ok', 'failed', 'capped')),
+capped_runs AS (
+  -- A capped run in force: no later run finished ok without a cap.
+  SELECT c.repo, c.t_at, c.a_oldest_merged_at FROM repo_status c
+  WHERE c.a_status = 'capped'
+    AND NOT EXISTS (SELECT 1 FROM repo_status o
+                    WHERE o.repo = c.repo AND o.a_status = 'ok' AND o.t_at > c.t_at
+                      AND NOT EXISTS (SELECT 1 FROM repo_status x
+                                      WHERE x.repo = o.repo AND x.a_status = 'capped' AND x.t_at = o.t_at))),
+capped AS (
+  -- It caveats months up to its oldest kept PR (every month when it kept none).
+  SELECT repo,
+         max(coalesce(strftime(CAST(replace(a_oldest_merged_at, 'Z', '') AS TIMESTAMP), '%Y-%m'), '9999-12'))
+           AS through
+  FROM capped_runs GROUP BY repo),
+failed_runs AS (
+  -- A repo-level failure with no later repo-level ok.
+  SELECT f.repo, f.t_at FROM repo_status f
+  WHERE f.a_status = 'failed'
+    AND NOT EXISTS (SELECT 1 FROM repo_status o
+                    WHERE o.repo = f.repo AND o.a_status = 'ok' AND o.t_at > f.t_at)),
+repo_failed AS (SELECT DISTINCT repo FROM failed_runs),
+pr_months AS (
   SELECT repo, strftime(merged_at, '%Y-%m') AS month,
          count(*) FILTER (WHERE state = 'joined') AS joined,
          count(*) FILTER (WHERE state = 'unjoined') AS unjoined,
@@ -75,30 +100,17 @@ WITH months AS (
          -- A per-PR fetch failure caveats the month of the PR it names.
          bool_or(fetch_failed) AS pr_failed
   FROM pr_issue_join GROUP BY 1, 2),
-ev AS (SELECT *, CAST(replace(ts, 'Z', '') AS TIMESTAMP) AS t_at FROM events),
-repo_status AS (
-  SELECT repo, t_at, a_status, a_oldest_merged_at FROM ev
-  WHERE event_type = 'fetch.status' AND a_pr IS NULL AND a_status IN ('ok', 'failed', 'capped')),
-capped AS (
-  -- A capped run caveats months up to its oldest kept PR (every month when it
-  -- kept none), until a later run finishes ok without a cap.
-  SELECT c.repo,
-         max(coalesce(strftime(CAST(replace(c.a_oldest_merged_at, 'Z', '') AS TIMESTAMP), '%Y-%m'), '9999-12'))
-           AS through
-  FROM repo_status c
-  WHERE c.a_status = 'capped'
-    AND NOT EXISTS (SELECT 1 FROM repo_status o
-                    WHERE o.repo = c.repo AND o.a_status = 'ok' AND o.t_at > c.t_at
-                      AND NOT EXISTS (SELECT 1 FROM repo_status x
-                                      WHERE x.repo = o.repo AND x.a_status = 'capped' AND x.t_at = o.t_at))
-  GROUP BY c.repo),
-repo_failed AS (
-  -- A repo-level failure with no later repo-level ok caveats every month.
-  SELECT f.repo FROM repo_status f
-  WHERE f.a_status = 'failed'
-    AND NOT EXISTS (SELECT 1 FROM repo_status o
-                    WHERE o.repo = f.repo AND o.a_status = 'ok' AND o.t_at > f.t_at)
-  GROUP BY f.repo)
+status_months AS (
+  -- A failed or capped run that left no PR rows still gets a row for its own
+  -- month, so the repo shows as unknown instead of vanishing with its caveat.
+  SELECT DISTINCT repo, strftime(t_at, '%Y-%m') AS month FROM failed_runs
+  UNION
+  SELECT DISTINCT repo, strftime(t_at, '%Y-%m') FROM capped_runs),
+months AS (
+  SELECT * FROM pr_months
+  UNION ALL
+  SELECT s.repo, s.month, 0, 0, 0, false FROM status_months s
+  WHERE NOT EXISTS (SELECT 1 FROM pr_months p WHERE p.repo = s.repo AND p.month = s.month))
 SELECT m.repo, m.month,
        CASE WHEN m.joined + m.unjoined = 0 THEN NULL
             ELSE round(100.0 * m.joined / (m.joined + m.unjoined), 1) END AS pct_joined,

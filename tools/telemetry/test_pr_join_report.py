@@ -168,6 +168,25 @@ class CoverageTests(Fixture):
         self.write([ev("fetch.status", RUN2, status="ok", stage="repo")], name="b.jsonl")
         self.assertEqual(self.coverage()[0][6], "")
 
+    def test_a_status_only_failed_repo_still_shows(self) -> None:
+        self.write([ev("fetch.status", RUN1, status="failed", stage="list")])
+        self.assertEqual([r[:7] for r in self.coverage()], [(REPO, "2026-10", None, 0, 0, 0, "fetch failed")])
+
+    def test_a_status_only_capped_run_that_kept_nothing_still_shows(self) -> None:
+        self.write([ev("fetch.status", RUN1, status="capped", stage="list", oldest_merged_at=None)])
+        self.assertEqual([r[:7] for r in self.coverage()], [(REPO, "2026-10", None, 0, 0, 0, "capped")])
+
+    def test_a_cleared_failure_leaves_no_status_only_row(self) -> None:
+        self.write([ev("fetch.status", RUN1, status="failed", stage="list"),
+                    ev("fetch.status", RUN2, status="ok", stage="repo")])
+        self.assertEqual(self.coverage(), [])
+
+    def test_a_status_only_second_account_repo_shows_under_its_own_repo(self) -> None:
+        other = "secondorg/gadget"
+        self.write([ev("fetch.status", RUN1, status="failed", stage="list", repo=other, account="secondaccount")]
+                   + merged(1, "2026-10-01T00:00:00Z"))
+        self.assertEqual({(r[0], r[6]) for r in self.coverage()}, {(other, "fetch failed"), (REPO, "")})
+
     def test_a_repo_failure_with_no_later_ok_caveats_every_month(self) -> None:
         self.write(merged(1, "2026-10-01T00:00:00Z") + [ev("fetch.status", RUN2, status="failed", stage="list")])
         self.assertEqual(self.coverage()[0][6], "fetch failed")
