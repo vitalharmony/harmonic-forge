@@ -126,6 +126,20 @@ class ASpecDeclaresItsWriteTier(Case):
     def test_one_declaration_is_accepted(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC)))
 
+    def test_a_w_spec_saying_no_tier_p_is_refused(self):
+        """harmonic-forge#1173: hrse#2491's spec, refused by auto-AE's veto."""
+        err = self.refused(SPEC_TC.replace("Write tier: W\n", "Write tier: W\nNo Tier P. Nothing touches production.\n"))
+        self.assertIn("No Tier P", err)
+        self.assertIn("no production writes", err)
+
+    def test_a_p_spec_mentioning_tier_p_is_accepted(self):
+        body = SPEC_TC.replace("Write tier: W\n", "Write tier: P\nTC2 is Tier P.\n")
+        self.assertIn("kind=spec", last_line(self.post("spec", body)))
+
+    def test_the_posted_body_with_its_footer_carries_no_standalone_p(self):
+        import _auto_ae  # noqa: PLC0415
+        self.assertFalse(_auto_ae.p_vetoed(self.post("spec", SPEC_TC, classes={"1": "W", "2": "W"})))
+
     def test_a_p_declaration_is_accepted_by_the_poster(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
 

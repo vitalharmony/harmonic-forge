@@ -50,17 +50,30 @@ import check_lane3_ready
 
 # harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
 # poster checks with the same one and the two cannot drift.
-from _auto_ae import declared_tier
+from _auto_ae import _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
 
 
 def require_write_tier(body: str) -> None:
-    """Refuse a Lane 3 spec with no single unfenced `Write tier: R|W|P` line."""
-    if declared_tier(body) is None:
+    """Refuse a Lane 3 spec with no single unfenced `Write tier: R|W|P` line,
+    and an R or W spec that auto-AE's Tier P veto would refuse anyway."""
+    tier = declared_tier(body)
+    if tier is None:
         print("[post-comment] refused: the Lane 3 spec has no single unfenced "
               "`Write tier: R|W|P` declaration (none, or two that disagree). Add one "
               "line, e.g. `Write tier: W`, naming the ceiling of every case's tier "
               "(harmonic-forge#947; auto-AE reads it from the spec).", file=sys.stderr)
+        raise SystemExit(2)
+    # harmonic-forge#1173: the veto is auto-AE's own predicate, never a list of
+    # spellings, so a negation ("No Tier P.") is refused here, where Lane 3 can
+    # reword it, instead of silently costing an operator AE later.
+    if tier in ("R", "W") and p_vetoed(body):
+        match = _P_TOKEN.search(body)
+        at = repr(body[max(0, match.start() - 30):match.end() + 10]) if match else "(a quoted --tier p)"
+        print(f"[post-comment] refused: the Lane 3 spec declares Write tier {tier} but "
+              f"contains a standalone capital P, near {at}. Auto-AE refuses any such "
+              "spec. Remove every standalone P: write \"no production writes\", not "
+              "\"No Tier P\" (harmonic-forge#1173).", file=sys.stderr)
         raise SystemExit(2)
 
 # harmonic-forge#691 (AC1'). This is the THIRD marker-posting tool -- the
