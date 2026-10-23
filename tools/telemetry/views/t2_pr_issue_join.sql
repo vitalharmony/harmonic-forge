@@ -2,30 +2,46 @@
 -- three-state view over harmonic-forge#1166's observation events. Nothing is
 -- stamped: a later observation changes the answer on the next run.
 -- Reads only the `events` table pr_join_report.py registers.
-CREATE OR REPLACE VIEW pr_issue_join AS
+
+-- One row per merged PR. Identity is (repo, pr) only: the same event can sit
+-- in the `unresolved` partition and in the real account's, and is still one PR.
+CREATE OR REPLACE VIEW pr_merged AS
+SELECT repo, pr,
+       coalesce(max(account) FILTER (WHERE account <> 'unresolved'), 'unresolved') AS account,
+       coalesce(max(org) FILTER (WHERE org <> 'unresolved'), 'unresolved') AS org,
+       min(CAST(replace(ts, 'Z', '') AS TIMESTAMP)) AS merged_at
+FROM events WHERE event_type = 'pr.merged' GROUP BY repo, pr;
+
+-- Every PR -> issue join edge. A PR may join several issues; the medians
+-- need every edge, the per-PR state needs only whether one exists.
+CREATE OR REPLACE VIEW pr_issue_edges AS
 WITH ev AS (
   SELECT *, CAST(replace(ts, 'Z', '') AS TIMESTAMP) AS t_at FROM events),
-prs AS (
-  SELECT repo, account, org, pr, min(t_at) AS merged_at
-  FROM ev WHERE event_type = 'pr.merged' GROUP BY repo, account, org, pr),
 links AS (
   SELECT repo, pr, provenance, a_link_kind, a_target_issue AS issue
   FROM ev
   WHERE event_type = 'pr.link.observed' AND a_target_issue IS NOT NULL
     AND lower(a_target_repo) = lower(repo)),
 closed AS (
-  SELECT repo, issue, min(t_at) AS closed_at
-  FROM ev WHERE event_type = 'issue.closed' GROUP BY repo, issue),
-joins AS (
+  -- Every closure, not the first: a reopened issue closed again after the
+  -- merge still qualifies.
+  SELECT repo, issue, t_at AS closed_at FROM ev WHERE event_type = 'issue.closed')
+SELECT DISTINCT e.repo, e.pr, e.issue, p.merged_at
+FROM (
   SELECT l.repo, l.pr, l.issue FROM links l
   WHERE l.provenance IN ('git-subject', 'pr-link-marker')
   UNION
   SELECT l.repo, l.pr, l.issue
-  FROM links l JOIN prs p ON p.repo = l.repo AND p.pr = l.pr
+  FROM links l JOIN pr_merged p ON p.repo = l.repo AND p.pr = l.pr
   JOIN closed c ON c.repo = l.repo AND c.issue = l.issue
   WHERE l.provenance = 'timeline' AND l.a_link_kind = 'cross-referenced'
-    AND c.closed_at >= p.merged_at AND c.closed_at <= p.merged_at + INTERVAL 24 HOUR),
-joined AS (SELECT repo, pr, min(issue) AS issue FROM joins GROUP BY repo, pr),
+    AND c.closed_at >= p.merged_at AND c.closed_at <= p.merged_at + INTERVAL 24 HOUR) e
+JOIN pr_merged p ON p.repo = e.repo AND p.pr = e.pr;
+
+CREATE OR REPLACE VIEW pr_issue_join AS
+WITH ev AS (
+  SELECT *, CAST(replace(ts, 'Z', '') AS TIMESTAMP) AS t_at FROM events),
+joined AS (SELECT repo, pr, min(issue) AS issue FROM pr_issue_edges GROUP BY repo, pr),
 connected AS (
   SELECT DISTINCT repo, pr FROM ev
   WHERE event_type = 'pr.link.observed' AND a_link_kind = 'connected'),
@@ -42,8 +58,9 @@ newest AS (
 SELECT p.repo, p.account, p.org, p.pr, p.merged_at, j.issue,
        CASE WHEN j.issue IS NOT NULL THEN 'joined'
             WHEN c.pr IS NOT NULL OR n.pr IS NULL OR n.failed THEN 'unresolved'
-            ELSE 'unjoined' END AS state
-FROM prs p
+            ELSE 'unjoined' END AS state,
+       coalesce(n.failed, false) AS fetch_failed
+FROM pr_merged p
 LEFT JOIN joined j ON j.repo = p.repo AND j.pr = p.pr
 LEFT JOIN connected c ON c.repo = p.repo AND c.pr = p.pr
 LEFT JOIN newest n ON n.repo = p.repo AND n.pr = p.pr
@@ -54,16 +71,27 @@ WITH months AS (
   SELECT repo, strftime(merged_at, '%Y-%m') AS month,
          count(*) FILTER (WHERE state = 'joined') AS joined,
          count(*) FILTER (WHERE state = 'unjoined') AS unjoined,
-         count(*) FILTER (WHERE state = 'unresolved') AS unresolved
+         count(*) FILTER (WHERE state = 'unresolved') AS unresolved,
+         -- A per-PR fetch failure caveats the month of the PR it names.
+         bool_or(fetch_failed) AS pr_failed
   FROM pr_issue_join GROUP BY 1, 2),
 ev AS (SELECT *, CAST(replace(ts, 'Z', '') AS TIMESTAMP) AS t_at FROM events),
-capped AS (
-  SELECT repo, max(strftime(CAST(replace(a_oldest_merged_at, 'Z', '') AS TIMESTAMP), '%Y-%m')) AS through
-  FROM ev WHERE event_type = 'fetch.status' AND a_status = 'capped' AND a_oldest_merged_at IS NOT NULL
-  GROUP BY repo),
 repo_status AS (
-  SELECT repo, t_at, a_status FROM ev
-  WHERE event_type = 'fetch.status' AND a_pr IS NULL AND a_status IN ('ok', 'failed')),
+  SELECT repo, t_at, a_status, a_oldest_merged_at FROM ev
+  WHERE event_type = 'fetch.status' AND a_pr IS NULL AND a_status IN ('ok', 'failed', 'capped')),
+capped AS (
+  -- A capped run caveats months up to its oldest kept PR (every month when it
+  -- kept none), until a later run finishes ok without a cap.
+  SELECT c.repo,
+         max(coalesce(strftime(CAST(replace(c.a_oldest_merged_at, 'Z', '') AS TIMESTAMP), '%Y-%m'), '9999-12'))
+           AS through
+  FROM repo_status c
+  WHERE c.a_status = 'capped'
+    AND NOT EXISTS (SELECT 1 FROM repo_status o
+                    WHERE o.repo = c.repo AND o.a_status = 'ok' AND o.t_at > c.t_at
+                      AND NOT EXISTS (SELECT 1 FROM repo_status x
+                                      WHERE x.repo = o.repo AND x.a_status = 'capped' AND x.t_at = o.t_at))
+  GROUP BY c.repo),
 repo_failed AS (
   -- A repo-level failure with no later repo-level ok caveats every month.
   SELECT f.repo FROM repo_status f
@@ -77,7 +105,7 @@ SELECT m.repo, m.month,
        m.joined, m.unjoined, m.unresolved,
        concat_ws('; ',
          CASE WHEN c.through IS NOT NULL AND m.month <= c.through THEN 'capped' END,
-         CASE WHEN f.repo IS NOT NULL THEN 'fetch failed' END) AS caveat
+         CASE WHEN f.repo IS NOT NULL OR m.pr_failed THEN 'fetch failed' END) AS caveat
 FROM months m
 LEFT JOIN capped c ON c.repo = m.repo
 LEFT JOIN repo_failed f ON f.repo = m.repo
@@ -89,9 +117,8 @@ opened AS (
   SELECT repo, issue, min(t_at) AS opened_at
   FROM ev WHERE event_type = 'issue.opened' GROUP BY repo, issue),
 pairs AS (
-  -- One pair per (repo, issue): the earliest joined merge.
-  SELECT j.repo, j.issue, min(j.merged_at) AS merged_at
-  FROM pr_issue_join j WHERE j.state = 'joined' GROUP BY j.repo, j.issue),
+  -- One pair per (repo, issue) over every join edge: the earliest joined merge.
+  SELECT repo, issue, min(merged_at) AS merged_at FROM pr_issue_edges GROUP BY repo, issue),
 hours AS (
   SELECT p.repo, (epoch(p.merged_at) - epoch(o.opened_at)) / 3600.0 AS h
   FROM pairs p JOIN opened o ON o.repo = p.repo AND o.issue = p.issue),

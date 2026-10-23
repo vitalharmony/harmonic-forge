@@ -115,6 +115,18 @@ class JoinTests(Fixture):
         self.write([ev("issue.closed", "2026-10-01T12:00:00Z", issue=30)], name="b.jsonl")
         self.assertEqual(self.states()[10], ("joined", 30))
 
+    def test_one_pr_in_two_partitions_is_one_pr(self) -> None:
+        self.write(merged(13, "2026-10-01T00:00:00Z") + [ev("pr.merged", "2026-10-01T00:00:00Z", pr=13, account="unresolved")]
+                   + [subject(13, 7, "2026-10-01T00:00:00Z")] + merged(14, "2026-10-01T00:00:00Z"))
+        self.assertEqual(self.states(), {13: ("joined", 7), 14: ("unjoined", None)})
+        self.assertEqual(self.coverage()[0][2:5], (50.0, 1, 1))
+
+    def test_a_reclosure_within_24_hours_joins(self) -> None:
+        self.write(merged(15, "2026-10-05T10:00:00Z") + [ev("pr.link.observed", "2026-10-05T00:00:00Z", pr=15,
+                   provenance="timeline", link_kind="cross-referenced", target_repo=REPO, target_issue=40),
+                   ev("issue.closed", "2026-09-01T00:00:00Z", issue=40), ev("issue.closed", "2026-10-05T12:00:00Z", issue=40)])
+        self.assertEqual(self.states()[15], ("joined", 40))
+
     def test_a_cross_repo_target_never_joins(self) -> None:
         self.write(merged(11, "2026-10-01T00:00:00Z") + [subject(11, 7, "2026-10-01T00:00:00Z", target="other/repo")])
         self.assertEqual(self.states()[11][0], "unjoined")
@@ -137,6 +149,24 @@ class CoverageTests(Fixture):
                    + [ev("fetch.status", RUN1, status="capped", stage="list", oldest_merged_at="2026-10-15T00:00:00Z")])
         caveats = {r[1]: r[6] for r in self.coverage()}
         self.assertEqual(caveats, {"2026-09": "capped", "2026-10": "capped", "2026-11": ""})
+
+    def test_a_per_pr_failure_caveats_its_month(self) -> None:
+        self.write([ev("pr.merged", "2026-10-01T00:00:00Z", pr=1),
+                    ev("fetch.status", RUN1, status="failed", stage="timeline", pr=1)] + merged(2, "2026-11-01T00:00:00Z"))
+        self.assertEqual({r[1]: r[6] for r in self.coverage()}, {"2026-10": "fetch failed", "2026-11": ""})
+
+    def test_a_capped_run_that_kept_nothing_caveats_every_month(self) -> None:
+        self.write(merged(1, "2026-09-15T00:00:00Z") + merged(2, "2026-10-15T00:00:00Z")
+                   + [ev("fetch.status", RUN1, status="capped", stage="list", oldest_merged_at=None)])
+        self.assertEqual({r[1]: r[6] for r in self.coverage()}, {"2026-09": "capped", "2026-10": "capped"})
+
+    def test_a_later_uncapped_ok_run_clears_the_capped_caveat(self) -> None:
+        self.write(merged(1, "2026-09-15T00:00:00Z")
+                   + [ev("fetch.status", RUN1, status="capped", stage="list", oldest_merged_at="2026-10-15T00:00:00Z"),
+                      ev("fetch.status", RUN1, status="ok", stage="repo")])
+        self.assertEqual(self.coverage()[0][6], "capped")
+        self.write([ev("fetch.status", RUN2, status="ok", stage="repo")], name="b.jsonl")
+        self.assertEqual(self.coverage()[0][6], "")
 
     def test_a_repo_failure_with_no_later_ok_caveats_every_month(self) -> None:
         self.write(merged(1, "2026-10-01T00:00:00Z") + [ev("fetch.status", RUN2, status="failed", stage="list")])
@@ -163,6 +193,16 @@ class MedianTests(Fixture):
         self.assertEqual(self.medians()["all"], (None, 19))
         self.write(self.pairs(20), name="b.jsonl")
         self.assertEqual(self.medians()["all"], (24.0, 20))
+
+    def test_a_pr_joined_to_two_issues_pairs_both(self) -> None:
+        events = self.pairs(19)
+        events += merged(800, "2026-10-02T00:00:00Z") + [
+            subject(800, 700, "2026-10-02T00:00:00Z"),
+            ev("pr.link.observed", "2026-10-02T00:00:00Z", pr=800, provenance="pr-link-marker", link_kind="marker",
+               target_repo=REPO, target_issue=701),
+            ev("issue.opened", "2026-10-01T00:00:00Z", issue=700), ev("issue.opened", "2026-10-01T00:00:00Z", issue=701)]
+        self.write(events)
+        self.assertEqual(self.medians()["all"], (24.0, 21))
 
     def test_earliest_merge_per_issue(self) -> None:
         events = self.pairs(20)
