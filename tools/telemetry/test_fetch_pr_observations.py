@@ -21,8 +21,9 @@ import emit  # noqa: E402
 import fetch_pr_observations as fpo  # noqa: E402
 
 STARTED = "2026-10-23T00:00:00Z"
-MARKER = ("<!-- lane-pr-link v1; issue-repo=vitalharmony/widget; issue=7; issue-node-id=I_x; "
-          "pr-repo=vitalharmony/widget; pr=11; pr-node-id=PR_x; head-sha=abc; -->")
+def marker(issue_repo: str, issue: int, pr_repo: str, pr: int) -> str:
+    return (f"<!-- lane-pr-link v1; issue-repo={issue_repo}; issue={issue}; issue-node-id=I_x; "
+            f"pr-repo={pr_repo}; pr={pr}; pr-node-id=PR_x; head-sha=abc; -->")
 
 
 def _manifest(tmp: Path, entries: list[tuple[str, str, str, str]]) -> Path:
@@ -63,7 +64,7 @@ def _routes(repo: str = "vitalharmony/widget", *, timeline=None) -> dict[str, ob
             {"number": 13, "title": "Closed unmerged", "merged_at": None},
         ],
         f"repos/{repo}/issues/comments?": [
-            {"id": 501, "created_at": "2026-10-01T09:00:00Z", "body": MARKER},
+            {"id": 501, "created_at": "2026-10-01T09:00:00Z", "body": marker(repo, 7, repo, 11)},
             {"id": 502, "created_at": "2026-10-01T09:30:00Z", "body": "unrelated"},
         ],
         f"repos/{repo}/issues/11/timeline": [
@@ -190,6 +191,35 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(len(capped), 1)
         self.assertEqual((capped[0]["merged_seen"], capped[0]["oldest_merged_at"]), (1, "2026-10-02T10:00:00Z"))
         self.assertEqual([e["pr"] for e in self.of("pr.merged")], [12])
+
+    def test_a_marker_naming_another_repos_pr_is_recorded_for_that_pr(self) -> None:
+        routes = _routes()
+        routes["repos/vitalharmony/widget/issues/comments?"].append(
+            {"id": 777, "created_at": "2026-10-04T09:00:00Z",
+             "body": marker("vitalharmony/widget", 8, "secondorg/gadget", 42)})
+        self.run_repo("vitalharmony/widget", FakeGh(routes))
+        cross = [e for e in self.of("pr.link.observed") if e["subject_id"].startswith("secondorg/gadget#42:")]
+        self.assertEqual(len(cross), 1)
+        self.assertEqual((cross[0]["account"], cross[0]["repo"]), ("secondaccount", "secondorg/gadget"))
+        self.assertEqual((cross[0]["attrs"]["target_repo"], cross[0]["attrs"]["target_issue"]),
+                         ("vitalharmony/widget", 8))
+        self.assertIsNone(cross[0].get("issue"))
+
+    def test_an_emit_rejection_fails_the_pr_instead_of_ok(self) -> None:
+        routes = _routes()
+        routes["repos/vitalharmony/widget/commits/sha11/check-runs"] = [
+            {"total_count": 1, "check_runs": [{"id": 9002, "name": "x" * 300, "status": "completed",
+                                               "conclusion": "success", "completed_at": "2026-10-01T10:10:00Z"}]}]
+        self.run_repo("vitalharmony/widget", FakeGh(routes))
+        ok_prs = [s["pr"] for s in self.statuses() if s["status"] == "ok" and s["stage"] == "pr"]
+        self.assertNotIn(11, ok_prs)
+        self.assertIn(("emit", 11), [(s["stage"], s["pr"]) for s in self.statuses() if s["status"] == "failed"])
+
+    def test_limit_zero_records_the_cap_without_crashing(self) -> None:
+        self.run_repo("vitalharmony/widget", FakeGh(_routes()), limit=0)
+        self.assertEqual([(s["status"], s["oldest_merged_at"]) for s in self.statuses() if s["status"] == "capped"],
+                         [("capped", None)])
+        self.assertIn(("ok", "repo"), [(s["status"], s["stage"]) for s in self.statuses()])
 
     def test_second_account_with_zero_code_change(self) -> None:
         self.run_repo("secondorg/gadget", FakeGh(_routes("secondorg/gadget")))

@@ -116,22 +116,25 @@ class Recorder:
         self.add(event_type="fetch.status", source="gh-pr", subject_id=f"{self.repo}:fetch:{self.started}{suffix}",
                  ts=self.started, attrs={"status": status, "stage": stage, "pr": pr, **attrs})
 
-    def flush(self) -> None:
+    def flush(self) -> int:
+        """Emit what is pending; returns how many events emit() rejected."""
         if not self.pending:
-            return
+            return 0
         counts = emit.emit(self.pending)
         self.pending = []
         self.totals["written"] += counts["written"]
         self.totals["duplicate"] += counts["duplicate"]
         self.totals["rejected"] += len(counts["rejected"])
+        return len(counts["rejected"])
 
 
 def _error_kind(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict]], registry: list[str]) -> None:
-    """Every observation for one merged PR; each step fails on its own."""
+def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict]], registry: list[str]) -> str | None:
+    """Every observation for one merged PR; each step fails on its own.
+    Returns the PR's CI summary when every step succeeded, else None."""
     repo, number = rec.repo, pr["number"]
     sha = pr.get("merge_commit_sha") or ""
     rec.add(event_type="pr.merged", source="gh-pr", subject_id=f"{repo}#{number}", ts=pr["merged_at"],
@@ -149,13 +152,8 @@ def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict
         if target == repo:
             targets.add(int(match.group("issue")))
 
-    for comment in markers.get(number, []):
-        fields = comment["fields"]
-        target = normalize_repo(fields["issue-repo"]) if fields.get("issue-repo") else None
-        issue = int(fields["issue"]) if fields.get("issue", "").isdigit() else None
-        rec.add(event_type="pr.link.observed", source="gh-pr", provenance="pr-link-marker",
-                subject_id=f"{repo}#{number}:pr-link-marker:{comment['id']}", ts=comment["created_at"], pr=number,
-                attrs={"link_kind": "marker", "target_repo": target, "target_issue": issue})
+    for comment in markers.get((repo, number), []):
+        target, issue = record_marker(rec, repo, number, comment)
         if target == repo and issue is not None:
             targets.add(issue)
 
@@ -213,8 +211,7 @@ def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict
             rec.status("failed", "ci", pr=number, error_kind=_error_kind(exc))
             failed = True
 
-    if not failed:
-        rec.status("ok", "pr", pr=number, ci=ci)
+    return None if failed else ci
 
 
 def marker_comments(gh: GhJson, repo: str) -> dict[int, list[dict]]:
@@ -225,11 +222,21 @@ def marker_comments(gh: GhJson, repo: str) -> dict[int, list[dict]]:
         fields = _parse_marker_fields(comment.get("body") or "")
         if not fields or not fields.get("pr", "").isdigit():
             continue
-        if normalize_repo(fields.get("pr-repo") or repo) != repo:
-            continue
-        found.setdefault(int(fields["pr"]), []).append(
+        pr_repo = normalize_repo(fields.get("pr-repo") or repo)
+        found.setdefault((pr_repo, int(fields["pr"])), []).append(
             {"id": comment["id"], "created_at": comment["created_at"], "fields": fields})
     return found
+
+
+def record_marker(rec: Recorder, pr_repo: str, number: int, comment: dict) -> tuple[str | None, int | None]:
+    """One `pr-link-marker` observation about `pr_repo#number`; returns its target."""
+    fields = comment["fields"]
+    target = normalize_repo(fields["issue-repo"]) if fields.get("issue-repo") else None
+    issue = int(fields["issue"]) if fields.get("issue", "").isdigit() else None
+    rec.add(event_type="pr.link.observed", source="gh-pr", provenance="pr-link-marker",
+            subject_id=f"{pr_repo}#{number}:pr-link-marker:{comment['id']}", ts=comment["created_at"], pr=number,
+            attrs={"link_kind": "marker", "target_repo": target, "target_issue": issue})
+    return target, issue
 
 
 def fetch_repo(repo: str, gh: GhJson, *, limit: int | None, started: str, registry: list[str],
@@ -250,15 +257,35 @@ def fetch_repo(repo: str, gh: GhJson, *, limit: int | None, started: str, regist
         rec.status("failed", "list", error_kind=_error_kind(exc))
         rec.flush()
         return rec.totals
+    # A marker on this repo's issue that names a PR in another repo is an
+    # observation about that PR: record it here, attributed to the PR's repo,
+    # since that repo's pass never reads this repo's comments.
+    for (pr_repo, number), comments in sorted(markers.items()):
+        if pr_repo == repo:
+            continue
+        other = Recorder(pr_repo, started, attribute(pr_repo, manifest_file))
+        for comment in comments:
+            record_marker(other, pr_repo, number, comment)
+        if other.flush():
+            rec.status("failed", "emit", error_kind="rejected", marker_pr=f"{pr_repo}#{number}")
     merged.sort(key=lambda p: p["merged_at"], reverse=True)
     if limit is not None and len(merged) > limit:
         merged = merged[:limit]
-        rec.status("capped", "list", merged_seen=len(merged), oldest_merged_at=merged[-1]["merged_at"])
+        rec.status("capped", "list", merged_seen=len(merged),
+                   oldest_merged_at=merged[-1]["merged_at"] if merged else None)
     for pr in merged:
+        ci = None
         try:
-            observe_pr(rec, gh, pr, markers, registry)
+            ci = observe_pr(rec, gh, pr, markers, registry)
         except Exception as exc:  # noqa: BLE001 -- one PR never ends the backfill
             rec.status("failed", "pr", pr=pr.get("number"), error_kind=_error_kind(exc))
+        rejected = rec.flush()
+        # The per-PR ok follows the flush, so an observation emit() refused is
+        # a failure, never a fully observed PR.
+        if rejected:
+            rec.status("failed", "emit", pr=pr.get("number"), error_kind="rejected", rejected_count=rejected)
+        elif ci is not None:
+            rec.status("ok", "pr", pr=pr.get("number"), ci=ci)
         rec.flush()
     rec.status("ok", "repo", merged_seen=len(merged))
     rec.flush()
