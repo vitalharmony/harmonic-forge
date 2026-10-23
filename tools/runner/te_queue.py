@@ -251,7 +251,9 @@ def outcome_record(issue: int, run_id: str, reason: str | None) -> dict:
 REARMED_BY = {
     "check-fail": "lane1", "kill-check-fail": "lane1",
     "preclose-survivor": "lane1", "self-flag": "lane1",
-    "tool-refusal": "runner", "budget": "runner",
+    # harmonic-forge#1163: a refusal the handoff can fix (a hook-blocked
+    # command) is re-armed by a new Lane 1 post too, not only a runner change.
+    "tool-refusal": "either", "budget": "runner",
 }
 
 
@@ -274,6 +276,11 @@ def unchanged(item: dict) -> str | None:
         except kill_runner.RunnerError as exc:  # undecidable: never worked on a guess
             raise QueueError(f"kill bundle of F{issue} unreadable: {exc}") from exc
         after = "a new Lane 1 handoff or rework, or a changed kill bundle"
+    elif rule == "either":
+        if (lane1_marker_id(issue) != last.get("lane1_marker_id")
+                or runner_tree() != last.get("runner_tree")):
+            return None
+        after = "a new Lane 1 handoff or rework, or a change to tools/runner/"
     else:
         if runner_tree() != last.get("runner_tree"):
             return None
@@ -355,6 +362,14 @@ def first_failure(issue: int) -> tuple[str, str] | None:
     calls = section(body, "Delegated Judgment Calls")
     if (calls or "").strip().lower() != "none":
         return "ineligible", "Delegated Judgment Calls is not none"
+    # harmonic-forge#1163: a third pass never runs (preclose_driver._step_passes),
+    # so an item whose preclose is complete is refused here, before a run's
+    # preflight stops every item over it.
+    import preclose_driver  # noqa: PLC0415
+    import preclose_passes  # noqa: PLC0415
+    held = preclose_driver.passes_held(REPO, issue)
+    if held >= preclose_passes.MAX_PASSES:
+        return "ineligible", f"preclose complete: {held} passes held; it lands outside the runner"
     pinned = DIGEST_RE.search(body)
     if not pinned:
         return "ineligible", "the handoff pins no kill-bundle-sha256"
