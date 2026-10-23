@@ -1,0 +1,8 @@
+[Unit]
+Description=Harmonic Forge: weekly improvement-detector report, read-only (harmonic-forge#1159)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/telemetry/detector_report.py
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-detector-report.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-detector-report.log

@@ -28,6 +28,10 @@ GH_PROJECT_NUMBER = "3"
 description = "Run every test under tools/ (harmonic-forge#293). Dependency-free — stdlib unittest, no install step."
 run = "python3 tools/run_tests.py"
 
+[tasks.detector-report]
+description = "Write the weekly improvement-detector report once (harmonic-forge#1159): every tools/telemetry/views/d*_*.sql over the miss logs and the rule registry, to ~/Harmonic_Projects/reports/detectors/<date>.md. Read-only; files nothing. Needs duckdb (pip install --user duckdb==1.5.6)."
+run = "python3 tools/telemetry/detector_report.py"
+
 [tasks.lane-launcher-source-check]
 description = "Verify the installed lane1/lane2/lane3 commands all resolve to this canonical tools/lane source (harmonic-forge#645). Read-only developer-machine check."
 run = "python3 tools/lane/check_installed_lane_sources.py --bin-dir \"$HOME/.local/bin\""
