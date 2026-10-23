@@ -171,12 +171,36 @@ class ViewTests(Fixture):
         self.assertIn("## d9_probe", report)
         self.assertLess(report.index("## d1_enforcement_gap"), report.index("## d9_probe"))
 
+    def test_malformed_log_line_is_skipped_and_counted(self) -> None:
+        log = self.write_log(BASE_MISSES)
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write('{"ts": "2026-10-0\n[1, 2]\n')
+        code = dr.main(["--miss-log", str(log), "--registry", str(self.registry), "--views", str(self.views),
+                        "--out-dir", str(self.out), "--date", "2026-10-22"])
+        self.assertEqual(code, 0)
+        report = (self.out / "2026-10-22.md").read_text(encoding="utf-8")
+        self.assertIn("2 malformed miss-log line(s) skipped.", report)
+        self.assertIsNotNone(self.row_of(report, "R-9001"))
+
+    def test_unregistered_rule_is_suppressed_and_counted(self) -> None:
+        report = self.run_report(BASE_MISSES + [_miss("R-9999"), _miss("R-9999")])
+        self.assertNotIn("R-9999", report)
+        self.assertIn("3 candidate(s) suppressed (protected target).", report)
+
     def test_report_files_nothing_outside_out_dir(self) -> None:
         before = sorted(p for p in self.tmp.rglob("*") if p.is_file())
         self.run_report(BASE_MISSES)
         after = sorted(p for p in self.tmp.rglob("*") if p.is_file())
         self.assertEqual(set(after) - set(before) - {self.tmp / "protocol-failures.jsonl"},
                          {self.out / "2026-10-22.md"})
+
+
+class DateArgumentTests(unittest.TestCase):
+    def test_date_that_is_a_path_is_refused(self) -> None:
+        from unittest import mock
+        import io
+        with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
+            dr.main(["--date", "../../escape", "--out-dir", "/nonexistent-never-written"])
 
 
 class MissingDuckdbTests(unittest.TestCase):

@@ -74,6 +74,14 @@ def rule_hook_rows(rules: list[dict], targets: dict) -> list[tuple]:
     return rows
 
 
+def with_unregistered(hooks: list[tuple], misses: list[tuple]) -> list[tuple]:
+    """A cited rule id the registry does not hold cannot be checked against
+    protected_targets.json, so it gets a protected row: counted, never named."""
+    known = {h[0] for h in hooks}
+    cited = {m.group(0) for r in misses if (m := RULE_ID_RE.search(r[3]))}
+    return hooks + [(rule_id, 0, "", True) for rule_id in sorted(cited - known)]
+
+
 def partition(record: dict) -> tuple[str, str, str]:
     """`(account, org, repo)`; never guessed beyond what the record names."""
     repo = record.get("repo")
@@ -83,15 +91,25 @@ def partition(record: dict) -> tuple[str, str, str]:
     return UNRESOLVED, UNRESOLVED, UNRESOLVED
 
 
-def read_misses(logs: list[Path]) -> list[dict]:
-    rows = []
+def read_misses(logs: list[Path]) -> tuple[list[dict], int]:
+    """`(records, malformed)`. A torn append must not stop every later
+    report, so a line that is not a JSON object is skipped and counted."""
+    rows, malformed = [], 0
     for log in logs:
         if not log.is_file():
             continue
         for line in log.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                record = None
+            if isinstance(record, dict):
+                rows.append(record)
+            else:
+                malformed += 1
+    return rows, malformed
 
 
 def miss_rows(records: list[dict], account: str | None, org: str | None, repo: str | None) -> list[tuple]:
@@ -151,11 +169,12 @@ def run_views(misses: list[tuple], hooks: list[tuple], views_dir: Path) -> list[
     return results
 
 
-def render(results: list[dict], unresolved: int, day: str) -> str:
+def render(results: list[dict], unresolved: int, malformed: int, day: str) -> str:
     out = [f"# Detector report — {day}", "",
            "Read-only (harmonic-forge#1159). Lane 1 decides what becomes a Tooling Exception; "
            "this report files nothing.", "",
-           f"{unresolved} in-force miss(es) with an unresolved rule_ref.", ""]
+           f"{unresolved} in-force miss(es) with an unresolved rule_ref.", "",
+           f"{malformed} malformed miss-log line(s) skipped.", ""]
     for result in results:
         out += [f"## {result['name']}", ""]
         if result["rows"]:
@@ -178,7 +197,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--protected", type=Path, default=None,
                         help="protected_targets.json (default: <views>/protected_targets.json)")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--date", default=date.today().isoformat())
+    # A date, never a path: the report name must stay inside --out-dir.
+    parser.add_argument("--date", type=lambda value: date.fromisoformat(value).isoformat(),
+                        default=date.today().isoformat(), help="YYYY-MM-DD")
     parser.add_argument("--account", help="keep rows of this account (and unresolved ones)")
     parser.add_argument("--org", help="keep rows of this org (and unresolved ones)")
     parser.add_argument("--repo", help="keep rows of this repo name (and unresolved ones)")
@@ -191,9 +212,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     targets = json.loads((args.protected or args.views / "protected_targets.json").read_text(encoding="utf-8"))
-    misses = miss_rows(read_misses(args.miss_log or DEFAULT_LOGS), args.account, args.org, args.repo)
-    hooks = rule_hook_rows(query_rules.load_rules(args.registry), targets)
-    report = render(run_views(misses, hooks, args.views), unresolved_rule_refs(misses), args.date)
+    records, malformed = read_misses(args.miss_log or DEFAULT_LOGS)
+    misses = miss_rows(records, args.account, args.org, args.repo)
+    hooks = with_unregistered(rule_hook_rows(query_rules.load_rules(args.registry), targets), misses)
+    report = render(run_views(misses, hooks, args.views), unresolved_rule_refs(misses), malformed, args.date)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     target = args.out_dir / f"{args.date}.md"
     target.write_text(report, encoding="utf-8")

@@ -16,5 +16,6 @@ SELECT m.rule_id, m.misses, m.operator_caught, m.last_miss,
        CASE WHEN coalesce(h.hook_count, 0) = 0 THEN 'no hook' ELSE 'hook not binding' END AS section,
        coalesce(h.scripts, '') AS hooks
 FROM misses m LEFT JOIN rule_hooks h ON h.rule_id = m.rule_id
-WHERE m.misses >= 2 AND NOT coalesce(h.protected, false)
+-- A rule id missing from the registry cannot be checked, so it is protected.
+WHERE m.misses >= 2 AND NOT coalesce(h.protected, true)
 ORDER BY section DESC, m.misses DESC, m.rule_id;
