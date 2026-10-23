@@ -98,13 +98,21 @@ class Check(unittest.TestCase):
                 mock.patch.object(te_queue, "tier", return_value=seams["tier"]), \
                 mock.patch.object(te_queue, "handoff", return_value=seams["handoff"]), \
                 mock.patch.object(te_queue, "receipt", return_value=seams["receipt"]), \
-                mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle):
+                mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle), \
+                mock.patch("preclose_driver.passes_held", return_value=seams.get("passes", 0)):
             return te_queue.first_failure(7)
 
     def test_fully_eligible(self):
         self.assertIsNone(self.failure())
         with mock.patch.object(te_queue, "first_failure", return_value=None):
             self.assertEqual(te_queue.check(self.queue), [{"id": "F7", "eligible": True}])
+
+    def test_a_preclose_complete_item_is_ineligible(self):
+        """harmonic-forge#1163 AC2: two passes held refuses before any run."""
+        reason, detail = self.failure(passes=2)
+        self.assertEqual(reason, "ineligible")
+        self.assertIn("preclose complete", detail)
+        self.assertIsNone(self.failure(passes=1))
 
     def test_missing_label_is_ineligible(self):
         self.assertEqual(self.failure(labels=["tooling"])[0], "ineligible")
@@ -246,12 +254,22 @@ class Unchanged(unittest.TestCase):
         (self.bundle / "files" / "k.py").write_text("x = 1\n")
         self.assertIsNone(te_queue.unchanged(self.item("kill-check-fail")))
 
-    def test_tool_refusal_rearms_only_on_runner_change(self):
+    def test_tool_refusal_rearms_on_a_lane1_post_or_runner_change(self):
+        """harmonic-forge#1163 AC1: each trigger alone re-arms; neither does not."""
+        self.assertIsNotNone(te_queue.unchanged(self.item("tool-refusal")))  # neither
+        self.comments.append({"id": 12, "user": {"login": "vitalharmony"},
+                              "body": "x\n<!-- l1-post v1; kind=handoff; plan-first=false -->"})
+        self.assertIsNone(te_queue.unchanged(self.item("tool-refusal")))  # marker alone
+        self.comments.pop()
+        self.tree = "bbbb"
+        self.assertIsNone(te_queue.unchanged(self.item("tool-refusal")))  # runner alone
+
+    def test_budget_still_rearms_only_on_runner_change(self):
         self.comments.append({"id": 12, "user": {"login": "vitalharmony"},
                               "body": "x\n<!-- l1-post v1; kind=rework; plan-first=false -->"})
-        self.assertIsNotNone(te_queue.unchanged(self.item("tool-refusal")))
+        self.assertIsNotNone(te_queue.unchanged(self.item("budget")))
         self.tree = "bbbb"
-        self.assertIsNone(te_queue.unchanged(self.item("tool-refusal")))
+        self.assertIsNone(te_queue.unchanged(self.item("budget")))
 
     def test_an_unparseable_comments_body_is_undecidable(self):
         import json as _json  # noqa: PLC0415
