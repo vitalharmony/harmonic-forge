@@ -90,6 +90,11 @@ try:
     import handoff_owed as _handoff_owed
 except ImportError:
     _handoff_owed = None
+# harmonic-forge#1126 AC2: a verified post owes its task-list entry an update.
+try:
+    import tasklist_owed as _tasklist_owed
+except ImportError:
+    _tasklist_owed = None
 
 # harmonic-forge#838: a sibling module, imported by path so the check works
 # however this file is loaded (tests load it by file location).
@@ -2937,6 +2942,8 @@ def _post_kind(
                    **({"prod_run": _prod_run.footer_field(issue, sha, prod_run)} if prod_run else {}),
                    "sha": sha, "branch": branch, "body_sha256": digest, "checks": checks,
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
+    if _tasklist_owed is not None:
+        _tasklist_owed.record_post(repo, issue, kind)
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
         # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one

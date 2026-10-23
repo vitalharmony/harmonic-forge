@@ -2794,9 +2794,9 @@ hooks = []
 id = "R-0413"
 file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
-statement = "Each task-list entry is a concrete step, never a whole issue; an entry leaves only when its issue closes and reads `waiting on <lane> <step>` while another lane holds it; with no active step nothing is `in_progress`, and the belt watch is never listed. The list is updated inside the action that changes it. While working, at most one entry is in_progress."
-text_sha = "15b54c5d21ecfecf"
-hooks = []
+statement = "A lane's task list holds one entry per issue it holds until that issue closes; the shape and rules are tools/hooks/tasklist_hold.py's docstring, which the hooks enforce."
+text_sha = "0c80174afa079e4c"
+hooks = ["tools/hooks/tasklist_hold.py", "tools/hooks/record_tasklist_post.py"]
 
 [[rule]]
 id = "R-0416"
