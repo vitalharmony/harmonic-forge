@@ -54,7 +54,7 @@ from _auto_ae import _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
 
 
-def require_write_tier(body: str) -> None:
+def require_write_tier(body: str, body_len: int | None = None) -> None:
     """Refuse a Lane 3 spec with no single unfenced `Write tier: R|W|P` line,
     and an R or W spec that auto-AE's Tier P veto would refuse anyway."""
     tier = declared_tier(body)
@@ -70,8 +70,10 @@ def require_write_tier(body: str) -> None:
     if tier in ("R", "W") and p_vetoed(body):
         match = _P_TOKEN.search(body)
         at = repr(body[max(0, match.start() - 30):match.end() + 10]) if match else "(a quoted --tier p)"
+        where = ("the footer (from --tc-classes or --ack-no-pr-required)"
+                 if match and body_len is not None and match.start() >= body_len else "the spec")
         print(f"[post-comment] refused: the Lane 3 spec declares Write tier {tier} but "
-              f"contains a standalone capital P, near {at}. Auto-AE refuses any such "
+              f"{where} contains a standalone capital P, near {at}. Auto-AE refuses any such "
               "spec. Remove every standalone P: write \"no production writes\", not "
               "\"No Tier P\" (harmonic-forge#1173).", file=sys.stderr)
         raise SystemExit(2)
@@ -580,9 +582,6 @@ def main() -> None:
         case_fields = case_field("results", load_case_map(args.tc_results, CASE_RESULTS, "--tc-results"))
     elif artifact == "spec":
         case_fields = case_field("classes", load_case_map(args.tc_classes, CASE_CLASSES, "--tc-classes"))
-        # harmonic-forge#1173 pass 1: the footer's case map is part of what
-        # auto-AE reads, so the veto sees it too (a case id `P` is a bare P).
-        require_write_tier(body + "\n" + case_fields)
     elif args.tc_results is not None or args.tc_classes is not None:
         print("[post-comment] WARNING: --tc-results/--tc-classes given, but this post is not a "
               "Lane 3 spec or gate report (a Lane 1/2 relay never is); the map was not recorded",
@@ -593,15 +592,16 @@ def main() -> None:
     require_round_approval(args.repo, args.issue, body)
     lane = os.environ.get("LANE")
     posted_by = f"LANE{lane}" if lane else "LANE-unset"
-    url, _ = comment_body(
-        args.repo,
-        args.issue,
-        body.rstrip("\n") + footer(
-            args.kind, body, posted_by,
-            ack_no_pr_required=args.ack_no_pr_required if override_used else None,
-            case_fields=case_fields,
-        ),
+    final = body.rstrip("\n") + footer(
+        args.kind, body, posted_by,
+        ack_no_pr_required=args.ack_no_pr_required if override_used else None,
+        case_fields=case_fields,
     )
+    # harmonic-forge#1173 sticky-wicket PATCH: auto-AE reads the posted comment,
+    # so the tier and the P veto run on exactly that string, footer and all.
+    if artifact == "spec":
+        require_write_tier(final, body_len=len(body.rstrip("\n")))
+    url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
     #: `LANE` env var the footer above already used -- `"l1"`/`"l2"`/`"l3"`
