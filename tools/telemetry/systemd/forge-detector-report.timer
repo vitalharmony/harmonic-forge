@@ -1,0 +1,9 @@
+[Unit]
+Description=Write the improvement-detector report weekly for Lane 1 to read (harmonic-forge#1159)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+{
+  "rule_ids": [],
+  "statement_regex": "preclose|deny.?(list|manifest|check)|te-runner|\\bIMC\\b",
+  "hook_basenames": ["deny_check.py", "preclose_check.py", "preclose_passes.py", "block_missing_preclose_inspection.py"],
+  "test_modules": ["test_deny_check", "test_preclose_check", "test_preclose_passes", "test_te_run", "test_te_queue"]
+}
