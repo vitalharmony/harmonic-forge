@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -33,9 +34,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(ROOT / "tools" / "rules"))
 sys.path.insert(0, str(ROOT / "tools" / "memory"))
+sys.path.insert(0, str(ROOT / "tools" / "runner"))
 
 import query_rules  # noqa: E402
 from capture_failure import default_log_path  # noqa: E402
+from te_run import BASE_CHECK_ROOT  # noqa: E402
 
 INSTALL_HINT = "pip install --user duckdb==1.5.6"
 UNRESOLVED = "unresolved"
@@ -80,6 +83,48 @@ def with_unregistered(hooks: list[tuple], misses: list[tuple]) -> list[tuple]:
     known = {h[0] for h in hooks}
     cited = {m.group(0) for r in misses if (m := RULE_ID_RE.search(r[3]))}
     return hooks + [(rule_id, 0, "", True) for rule_id in sorted(cited - known)]
+
+
+TEST_ID_RE = re.compile(r"^\S+ \((test_\w+)\.\w+(?:\.\w+)*\)$")
+
+
+def read_base_checks(root: Path) -> list[tuple]:
+    """`(sha, complete, failures, mtime)` per cached `<sha>/result.json`, in
+    te_run.previous_base's order source (file mtime). A missing cache is empty."""
+    rows = []
+    for path in sorted(root.glob("*/result.json")) if root.is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            rows.append((str(data.get("sha") or path.parent.name), bool(data.get("complete")),
+                         [str(f) for f in data.get("failures") or []], mtime))
+    return rows
+
+
+def tracked_modules(repo_root: Path) -> dict[str, int]:
+    """`{module basename: tracked file count}` for every tools/**/test_*.py."""
+    listed = subprocess.run(["git", "-C", str(repo_root), "ls-files", "tools/**/test_*.py"],
+                            capture_output=True, text=True, check=False).stdout.split()
+    counts: dict[str, int] = {}
+    for path in set(listed):  # an unmerged index lists a path once per stage
+        counts[Path(path).stem] = counts.get(Path(path).stem, 0) + 1
+    return counts
+
+
+def base_check_protected_rows(checks: list[tuple], targets: dict, modules: dict[str, int]) -> list[tuple]:
+    """Protected when the module is a protected target, or the id cannot be
+    resolved to exactly one tracked module (unparseable, zero or several)."""
+    protected_modules = set(targets.get("test_modules", []))
+    tests = sorted({test for check in checks for test in check[2]})
+    rows = []
+    for test in tests:
+        match = TEST_ID_RE.match(test)
+        module = match.group(1) if match else None
+        rows.append((test, module is None or module in protected_modules or modules.get(module, 0) != 1))
+    return rows
 
 
 def partition(record: dict) -> tuple[str, str, str]:
@@ -131,30 +176,39 @@ def unresolved_rule_refs(rows: list[tuple]) -> int:
     return sum(1 for r in rows if r[2] in IN_FORCE and not RULE_ID_RE.search(r[3]))
 
 
-def _register(con, misses: list[tuple], hooks: list[tuple]) -> None:
-    con.execute("CREATE OR REPLACE TABLE misses_raw (ts VARCHAR, caught_by VARCHAR, rule_existed VARCHAR, "
-                "rule_ref VARCHAR, lane VARCHAR, issue VARCHAR, account VARCHAR, org VARCHAR, repo VARCHAR, "
-                "account_note VARCHAR)")
-    if misses:
-        con.executemany(f"INSERT INTO misses_raw VALUES ({', '.join('?' * len(MISS_COLUMNS))})", misses)
-    con.execute("CREATE OR REPLACE TABLE rule_hooks (rule_id VARCHAR, hook_count INTEGER, scripts VARCHAR, "
-                "protected BOOLEAN)")
-    if hooks:
-        con.executemany("INSERT INTO rule_hooks VALUES (?, ?, ?, ?)", hooks)
+TABLE_DDL = {
+    "misses_raw": "ts VARCHAR, caught_by VARCHAR, rule_existed VARCHAR, rule_ref VARCHAR, lane VARCHAR, "
+                  "issue VARCHAR, account VARCHAR, org VARCHAR, repo VARCHAR, account_note VARCHAR",
+    "rule_hooks": "rule_id VARCHAR, hook_count INTEGER, scripts VARCHAR, protected BOOLEAN",
+    "base_checks": "sha VARCHAR, complete BOOLEAN, failures VARCHAR[], mtime DOUBLE",
+    "base_check_protected": "test VARCHAR, protected BOOLEAN",
+}
+# Tables whose last column is `protected`: cleared to count suppression.
+PROTECTED_TABLES = ("rule_hooks", "base_check_protected")
 
 
-def run_views(misses: list[tuple], hooks: list[tuple], views_dir: Path) -> list[dict]:
+def _register(con, tables: dict[str, list[tuple]]) -> None:
+    for name, ddl in TABLE_DDL.items():
+        con.execute(f"CREATE OR REPLACE TABLE {name} ({ddl})")
+        rows = tables.get(name) or []
+        if rows:
+            con.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' * len(rows[0]))})", rows)
+
+
+def run_views(tables: dict[str, list[tuple]], views_dir: Path) -> list[dict]:
     """One result per `d*_*.sql`, in name order: columns, rows, suppressed."""
     import duckdb
 
+    cleared = {name: [r[:-1] + (False,) for r in rows] if name in PROTECTED_TABLES else rows
+               for name, rows in tables.items()}
     results = []
     for sql_file in sorted(views_dir.glob("d*_*.sql")):
         name = sql_file.stem
         sql = sql_file.read_text(encoding="utf-8")
         counts = []
-        for table_hooks in (hooks, [h[:3] + (False,) for h in hooks]):
+        for variant in (tables, cleared):
             con = duckdb.connect(":memory:")
-            _register(con, misses, table_hooks)
+            _register(con, variant)
             con.execute(sql)
             cursor = con.execute(f"SELECT * FROM {name}")
             if not counts:
@@ -196,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--views", type=Path, default=DEFAULT_VIEWS)
     parser.add_argument("--protected", type=Path, default=None,
                         help="protected_targets.json (default: <views>/protected_targets.json)")
+    parser.add_argument("--base-checks", type=Path, default=BASE_CHECK_ROOT,
+                        help="te-runner base-check cache (default: te_run.BASE_CHECK_ROOT)")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     # A date, never a path: the report name must stay inside --out-dir.
     parser.add_argument("--date", type=lambda value: date.fromisoformat(value).isoformat(),
@@ -215,7 +271,10 @@ def main(argv: list[str] | None = None) -> int:
     records, malformed = read_misses(args.miss_log or DEFAULT_LOGS)
     misses = miss_rows(records, args.account, args.org, args.repo)
     hooks = with_unregistered(rule_hook_rows(query_rules.load_rules(args.registry), targets), misses)
-    report = render(run_views(misses, hooks, args.views), unresolved_rule_refs(misses), malformed, args.date)
+    checks = read_base_checks(args.base_checks)
+    tables = {"misses_raw": misses, "rule_hooks": hooks, "base_checks": checks,
+              "base_check_protected": base_check_protected_rows(checks, targets, tracked_modules(ROOT))}
+    report = render(run_views(tables, args.views), unresolved_rule_refs(misses), malformed, args.date)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     target = args.out_dir / f"{args.date}.md"
     target.write_text(report, encoding="utf-8")

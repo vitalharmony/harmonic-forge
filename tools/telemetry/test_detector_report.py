@@ -8,6 +8,7 @@ command; the pure-Python parts run everywhere.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -98,6 +99,8 @@ class Fixture(unittest.TestCase):
     def run_report(self, records: list[dict], *extra: str) -> str:
         log = self.write_log(records)
         missing = self.tmp / "absent" / "protocol-failures.jsonl"
+        if "--base-checks" not in extra:  # never the real te-runner cache
+            extra = ("--base-checks", str(self.tmp / "no-base-checks"), *extra)
         code = dr.main(["--miss-log", str(log), "--miss-log", str(missing), "--registry", str(self.registry),
                         "--views", str(self.views), "--out-dir", str(self.out), "--date", "2026-10-22", *extra])
         self.assertEqual(code, 0)
@@ -176,7 +179,8 @@ class ViewTests(Fixture):
         with log.open("a", encoding="utf-8") as handle:
             handle.write('{"ts": "2026-10-0\n[1, 2]\n')
         code = dr.main(["--miss-log", str(log), "--registry", str(self.registry), "--views", str(self.views),
-                        "--out-dir", str(self.out), "--date", "2026-10-22"])
+                        "--out-dir", str(self.out), "--date", "2026-10-22",
+                        "--base-checks", str(self.tmp / "no-base-checks")])
         self.assertEqual(code, 0)
         report = (self.out / "2026-10-22.md").read_text(encoding="utf-8")
         self.assertIn("2 malformed miss-log line(s) skipped.", report)
@@ -201,6 +205,93 @@ class DateArgumentTests(unittest.TestCase):
         import io
         with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
             dr.main(["--date", "../../escape", "--out-dir", "/nonexistent-never-written"])
+
+
+def _base_check(sha: str, failures: list[str], *, complete: bool = True) -> dict:
+    """The exact shape te_run.base_check caches (a schema change fails here)."""
+    return {"sha": sha, "steps": [{"name": "run_tests", "rc": 1 if failures else 0}], "step_failures": [],
+            "complete": complete, "test_rc": 1 if failures else 0, "failures": failures,
+            "module_errors": [], "ran": 10, "printed_ran": True}
+
+
+T_LANE = "test_a (test_lane_refresh.Cls.test_a)"
+T_OTHER = "test_b (test_detector_report.Cls.test_b)"
+T_DENY = "test_c (test_deny_check.Cls.test_c)"
+T_BAD = "not a parseable id"
+
+
+@needs_duckdb
+class BaseCheckViewTests(Fixture):
+    def write_checks(self, checks: list[dict]) -> Path:
+        root = self.tmp / "base-check"
+        for when, check in enumerate(checks):  # oldest first
+            path = root / check["sha"] / "result.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(check), encoding="utf-8")
+            os.utime(path, (1_000_000 + when, 1_000_000 + when))
+        return root
+
+    def report(self, checks: list[dict]) -> str:
+        return self.run_report([], "--base-checks", str(self.write_checks(checks)))
+
+    @staticmethod
+    def d2_row(report: str, test: str) -> str | None:
+        return next((line for line in report.splitlines() if line.startswith(f"| {test} |")), None)
+
+    def test_three_check_streak_is_listed_with_n(self) -> None:
+        report = self.report([_base_check(s, [T_LANE]) for s in ("a1", "a2", "a3")])
+        self.assertEqual(self.d2_row(report, T_LANE), f"| {T_LANE} | 3 |")
+
+    def test_passed_in_newest_check_is_absent(self) -> None:
+        report = self.report([_base_check("a1", [T_LANE]), _base_check("a2", [T_LANE]), _base_check("a3", [])])
+        self.assertIsNone(self.d2_row(report, T_LANE))
+
+    def test_a_gap_breaks_the_streak(self) -> None:
+        report = self.report([_base_check("a1", [T_LANE]), _base_check("a2", []),
+                              _base_check("a3", [T_LANE]), _base_check("a4", [T_LANE])])
+        self.assertEqual(self.d2_row(report, T_LANE), f"| {T_LANE} | 2 |")
+
+    def test_incomplete_check_is_ignored(self) -> None:
+        report = self.report([_base_check("a1", [T_LANE]), _base_check("a2", [T_LANE], complete=False)])
+        self.assertIsNone(self.d2_row(report, T_LANE))
+
+    def test_protected_test_is_suppressed_and_counted(self) -> None:
+        checks = [_base_check(s, [T_DENY, T_BAD, T_OTHER]) for s in ("a1", "a2")]
+        report = self.report(checks)
+        self.assertNotIn(T_DENY, report)
+        self.assertNotIn(T_BAD, report)
+        self.assertIsNotNone(self.d2_row(report, T_OTHER))
+        section = report[report.index("## d2_persistent_base_failure"):]
+        self.assertIn("2 candidate(s) suppressed (protected target).", section)
+
+    def test_mtime_tie_is_broken_by_sha(self) -> None:
+        x, y = T_LANE, T_OTHER
+        root = self.write_checks([_base_check("o", [x, y]), _base_check("a", [x]), _base_check("b", [y]),
+                                  _base_check("n", [x, y])])
+        for sha in ("a", "b"):
+            os.utime(root / sha / "result.json", (1_000_001.5, 1_000_001.5))
+        # Tied a and b: sha "a" sorts newer, so x fails in n and a (streak 2)
+        # and y is broken at a; the reverse tiebreak would list y instead.
+        report = self.run_report([], "--base-checks", str(root))
+        self.assertEqual(self.d2_row(report, x), f"| {x} | 2 |")
+        self.assertIsNone(self.d2_row(report, y))
+
+    def test_empty_cache_renders_an_empty_section(self) -> None:
+        report = self.run_report([], "--base-checks", str(self.tmp / "absent"))
+        self.assertIn("## d2_persistent_base_failure\n\nNo rows.", report)
+
+
+class BaseCheckProtectedTests(unittest.TestCase):
+    def test_module_resolution(self) -> None:
+        targets = {"test_modules": ["test_deny_check"]}
+        modules = {"test_lane_refresh": 1, "test_deny_check": 1, "test_twice": 2}
+        checks = [("s", True, [T_LANE, T_DENY, T_BAD, "x (test_twice.C.m)", "y (test_gone.C.m)"], 0.0)]
+        got = dict(dr.base_check_protected_rows(checks, targets, modules))
+        self.assertEqual(got, {T_LANE: False, T_DENY: True, T_BAD: True,
+                               "x (test_twice.C.m)": True, "y (test_gone.C.m)": True})
+
+    def test_tracked_modules_reads_git(self) -> None:
+        self.assertEqual(dr.tracked_modules(dr.ROOT).get("test_detector_report"), 1)
 
 
 class MissingDuckdbTests(unittest.TestCase):
