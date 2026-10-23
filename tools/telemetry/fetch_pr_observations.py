@@ -138,8 +138,9 @@ def _error_kind(exc: BaseException) -> str:
 
 def _int_or_none(value: str | None) -> int | None:
     """An ASCII decimal marker field as int, else None: `str.isdigit()` accepts
-    characters such as '²' that `int()` rejects."""
-    return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]+", value) else None
+    characters such as '²' that `int()` rejects, and a value past 18 digits is
+    no issue or PR number (and past 4,300 `int()` raises)."""
+    return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]{1,18}", value) else None
 
 
 def _repo_or_none(value: str | None) -> str | None:

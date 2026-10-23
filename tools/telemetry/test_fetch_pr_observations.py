@@ -259,6 +259,11 @@ class FetchTests(unittest.TestCase):
         failed = sorted(s["marker_pr"] for s in self.statuses() if s["status"] == "failed" and s["stage"] == "marker")
         self.assertEqual(failed, ["secondorg/gadget#42", "secondorg/gadget#43"])
 
+    def test_an_oversized_marker_number_is_null_not_a_crash(self) -> None:
+        self.assertIsNone(fpo._int_or_none("9" * 5000))
+        self.assertIsNone(fpo._int_or_none("9" * 19))
+        self.assertEqual(fpo._int_or_none("42"), 42)
+
     def test_a_non_ascii_digit_marker_field_is_null_not_a_crash(self) -> None:
         routes = _routes()
         routes["repos/vitalharmony/widget/issues/comments?"].append(
