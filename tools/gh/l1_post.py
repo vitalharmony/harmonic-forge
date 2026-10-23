@@ -2604,14 +2604,14 @@ def _keep_gate_logs(scratch: Path, sha: str) -> str | None:
 
 
 def _dry_run_check(sha: str, branch: str) -> None:
-    _checks, _timing, check = static_checks(sha, branch)
+    _checks, _timing, check = static_checks(sha, branch, dry_run=True)
     if check["result"] == "fail":
         logs = check.get("logs")
         fail("dry run: mise run check failed" + (f"; step logs kept at {logs}" if logs else "")
              + "\n" + check.get("output", "")[-4000:])
 
 
-def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str] | None, dict]:
+def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[str], tuple[str, str] | None, dict]:
     """Returns (check names, (local_check_started_at, local_check_finished_at),
     check) -- the second element brackets the `mise run check` call below in
     UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
@@ -2633,7 +2633,8 @@ def static_checks(sha: str, branch: str) -> tuple[list[str], tuple[str, str] | N
     # No timing and a distinct result: no check ran in this attempt, and only
     # the checks that did run are listed (no scratch worktree, so no clean-worktree).
     if _receipt_matches(repo_root, sha):
-        print(f"[l1-post] check receipt found for {sha[:12]}; reusing it")
+        print(f"[l1-post] dry run: check receipt found for {sha[:12]}; the real post reuses it"
+              if dry_run else f"[l1-post] check receipt found for {sha[:12]}; reusing it")
         return (["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"],
                 None, {"result": "reused"})
     # harmonic-forge#949: the scratch copy and its install live under the

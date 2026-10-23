@@ -76,7 +76,9 @@ def forge_sha() -> str | None:
 
 def _recorded_forge_sha() -> str | None:
     """The forge identity to write: the value read before the check when
-    `l1_post` passed one, and only if forge is still there now; else HEAD now."""
+    `l1_post` passed one, and only if forge is still there now; else HEAD now.
+    It brackets the check, so a forge edit made and reverted inside one run (ABA)
+    is not seen; a fresh check has the same exposure (#1134 Out of scope)."""
     if FORGE_SHA_ENV not in os.environ:
         return forge_sha()
     before = os.environ[FORGE_SHA_ENV] or None

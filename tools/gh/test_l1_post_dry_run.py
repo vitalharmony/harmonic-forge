@@ -233,7 +233,7 @@ class DryRunTests(Harness):
         the real post would refuse it."""
         self.cheap = False
         # static_checks runs cheap_static_checks first; keep that real here.
-        self.static.side_effect = lambda sha, branch: (
+        self.static.side_effect = lambda sha, branch, dry_run=False: (
             L.cheap_static_checks(sha, branch), ([], ("t0", "t1"), {"result": "pass"}))[1]
         with mock.patch.object(L, "resolve_sha", side_effect=lambda value, *a, **k:
                                SHA_B if value == "fix/1115-x" else value):

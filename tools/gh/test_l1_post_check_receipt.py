@@ -6,6 +6,8 @@ operator's real ~/.cache receipts or runs a real check.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -140,6 +142,17 @@ class ReuseTests(unittest.TestCase):
         self.assertEqual(result[0], ["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"])
         self.assertIsNone(result[1])
         self.assertEqual(result[2], {"result": "reused"})
+
+    def test_dry_run_reuse_prints_the_ac3_line(self):
+        self.write()
+        out = io.StringIO()
+        with mock.patch.object(L, "run", side_effect=lambda *a, cwd=None, env=None: _done(
+                self.tmp.name if a[:3] == ("git", "rev-parse", "--show-toplevel")
+                else "https://github.com/vitalharmony/harmonic-forge.git")), \
+                contextlib.redirect_stdout(out):
+            L.static_checks(SHA, "fix/1134-x", dry_run=True)
+        self.assertIn(f"dry run: check receipt found for {SHA[:12]}; the real post reuses it",
+                      out.getvalue())
 
     def test_a_lane_worktree_receipt_still_runs_the_check(self):
         self.write(source="check")
