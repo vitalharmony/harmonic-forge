@@ -105,7 +105,8 @@ status_months AS (
   -- month, so the repo shows as unknown instead of vanishing with its caveat.
   SELECT DISTINCT repo, strftime(t_at, '%Y-%m') AS month FROM failed_runs
   UNION
-  SELECT DISTINCT repo, strftime(t_at, '%Y-%m') FROM capped_runs),
+  -- Only a cap that kept nothing: a cap that kept PRs caveats their months.
+  SELECT DISTINCT repo, strftime(t_at, '%Y-%m') FROM capped_runs WHERE a_oldest_merged_at IS NULL),
 months AS (
   SELECT * FROM pr_months
   UNION ALL

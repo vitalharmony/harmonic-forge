@@ -176,6 +176,11 @@ class CoverageTests(Fixture):
         self.write([ev("fetch.status", RUN1, status="capped", stage="list", oldest_merged_at=None)])
         self.assertEqual([r[:7] for r in self.coverage()], [(REPO, "2026-10", None, 0, 0, 0, "capped")])
 
+    def test_a_cap_that_kept_prs_adds_no_status_only_row(self) -> None:
+        self.write(merged(1, "2026-09-15T00:00:00Z")
+                   + [ev("fetch.status", RUN1, status="capped", stage="list", oldest_merged_at="2026-09-15T00:00:00Z")])
+        self.assertEqual({r[1]: r[6] for r in self.coverage()}, {"2026-09": "capped"})
+
     def test_a_cleared_failure_leaves_no_status_only_row(self) -> None:
         self.write([ev("fetch.status", RUN1, status="failed", stage="list"),
                     ev("fetch.status", RUN2, status="ok", stage="repo")])
