@@ -512,7 +512,11 @@ def force_head(receipt: dict | None) -> str | None:
     if not receipt:
         return None
     check = receipt.get("post_verdict_check")
-    if isinstance(check, dict) and check.get("head_sha"):
+    latest = current(history(receipt))
+    # Only a check on the current epoch's latest pass counts: one carried
+    # across a reforge names an old head (F1169 preclose pass 2).
+    if (isinstance(check, dict) and check.get("head_sha") and latest
+            and check.get("base_sha") == latest[-1].get("sha")):
         return str(check["head_sha"])
     passes = history(receipt)
     if passes and passes[-1].get("sha"):

@@ -168,8 +168,21 @@ def require_force_grant(repo: str, issue: int, head_sha: str) -> dict:
                          "(harmonic-forge#1169).") from None
 
 
+def reserve_force_grant(repo: str, issue: int, head_sha: str) -> dict:
+    """Spend the grant BEFORE anything is recorded (F1169 sticky-wicket after
+    pass 2): a refused spend writes no forced pass. A crash after this costs
+    one retyped FORCE line, the fail-closed trade."""
+    import force_grant  # noqa: PLC0415
+    grant = require_force_grant(repo, issue, head_sha)
+    try:
+        return force_grant.consume(grant["key"], grant["granted_at"], head_sha)
+    except force_grant.GrantRefused as exc:
+        raise SystemExit(f"preclose-check: --force on {repo}#{issue} refused: {exc} "
+                         "(harmonic-forge#1169).") from None
+
+
 def emit_force(repo: str, issue: int, head_sha: str, mode: str, surviving: int,
-               grant: dict | None) -> None:
+               grant: dict | None, outcome: str = "recorded") -> None:
     """harmonic-forge#1169 AC4: one `preclose.force` event per forced completion.
     Ids and hashes only (ADR-009): the reason is its grant comment's id and its
     sha256, never the text. Never changes the outcome."""
@@ -182,7 +195,7 @@ def emit_force(repo: str, issue: int, head_sha: str, mode: str, surviving: int,
         origin = archive.origin_for_repo(repo)
         moment = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         attrs = {"key": imc_waiver.issue_key(repo, issue) or "", "surviving": int(surviving),
-                 "granted": grant is not None, "mode": mode}
+                 "granted": grant is not None, "mode": mode, "outcome": outcome}
         if grant is not None:
             attrs["reason_comment_id"] = str(grant.get("comment_id") or "")
             attrs["reason_sha256"] = str(grant.get("reason_sha256") or "")
@@ -1023,66 +1036,71 @@ def complete(args: argparse.Namespace) -> int:
     identity = local_change_identity(args.base, head_sha)
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force, reforge)
-    grant = require_force_grant(repo, args.issue, head_sha) if args.force and not reforge else None
-    findings = load_findings(args.findings)
-    require_wellformed_anchors(findings)
-    require_mechanisms(findings)
-    mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
-                  for finding in surviving_findings(findings)]
-    required, why, surviving, reasons = gate_decision(args)
-    if required and args.envelope:
-        require_recorded_envelope(args.envelope)
-    provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
-    check_provenance(required, provenance)
-    if provenance.startswith(PROVENANCE_TRIGGERED[1]):
-        imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
-                    "could not run is an IMC stop, never a pass")
-    # The call ran whenever an envelope is recorded, a fallback included: a
-    # call that timed out still spent its wall-clock (#889 preclose pass 1).
-    ran = bool(args.envelope)
-    cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
-                 "cross_family_ran": ran,
-                 "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-    if ran:
-        cost["cross_family_tokens"] = "unavailable"
-        cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
-    prior = find_receipt(repo, args.issue)
-    size = prior.get("refuters", 0) if prior else 0
-    # The tier rides on the pass entry, the single carrier every reader uses
-    # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
-    # last pass's.
-    # The planned receipt's tier is the one that sized this panel, so it
-    # wins over a --tier given only at --complete (#889 post-verdict check).
-    # Whenever a plan sized this panel, its recorded tier is the label, "unset"
-    # included: --tier given at --complete can never relabel a planned pass.
-    if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
-        cost["tier"] = prior["tier"]
-    else:
-        cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
-    # harmonic-forge#890: the arm rides on the pass entry, read from the
-    # issue's newest enrollment event and nowhere else. No enrollment -> no
-    # arm key, never a synthesized value a report would trust.
+    grant = reserve_force_grant(repo, args.issue, head_sha) if args.force and not reforge else None
     try:
-        enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
-    except preclose_enrollment.EnrollmentUnreadable as exc:
-        # The panel has already run: record the pass, without an arm, and say
-        # why. Never crash here (#890 reforged pass 2, fail-crashed).
-        print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
-              file=sys.stderr)
-        enrolled = None
-    if enrolled:
-        cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
-                     "arm_assigned": enrolled.get("assigned"),
-                     "arm_overridden": preclose_enrollment.overridden(enrolled)})
-        if enrolled.get("reason"):
-            cost["arm_reason"] = enrolled["reason"]
-    path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-        **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
-                                 current_branch(), reforge, cost),
-        "cross_family_required": required,
-        "cross_family_reason": why,
-        "provenance": provenance,
-    })
+        findings = load_findings(args.findings)
+        require_wellformed_anchors(findings)
+        require_mechanisms(findings)
+        mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
+                      for finding in surviving_findings(findings)]
+        required, why, surviving, reasons = gate_decision(args)
+        if required and args.envelope:
+            require_recorded_envelope(args.envelope)
+        provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
+        check_provenance(required, provenance)
+        if provenance.startswith(PROVENANCE_TRIGGERED[1]):
+            imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
+                        "could not run is an IMC stop, never a pass")
+        # The call ran whenever an envelope is recorded, a fallback included: a
+        # call that timed out still spent its wall-clock (#889 preclose pass 1).
+        ran = bool(args.envelope)
+        cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
+                     "cross_family_ran": ran,
+                     "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+        if ran:
+            cost["cross_family_tokens"] = "unavailable"
+            cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
+        prior = find_receipt(repo, args.issue)
+        size = prior.get("refuters", 0) if prior else 0
+        # The tier rides on the pass entry, the single carrier every reader uses
+        # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
+        # last pass's.
+        # The planned receipt's tier is the one that sized this panel, so it
+        # wins over a --tier given only at --complete (#889 post-verdict check).
+        # Whenever a plan sized this panel, its recorded tier is the label, "unset"
+        # included: --tier given at --complete can never relabel a planned pass.
+        if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
+            cost["tier"] = prior["tier"]
+        else:
+            cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
+        # harmonic-forge#890: the arm rides on the pass entry, read from the
+        # issue's newest enrollment event and nowhere else. No enrollment -> no
+        # arm key, never a synthesized value a report would trust.
+        try:
+            enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+        except preclose_enrollment.EnrollmentUnreadable as exc:
+            # The panel has already run: record the pass, without an arm, and say
+            # why. Never crash here (#890 reforged pass 2, fail-crashed).
+            print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
+                  file=sys.stderr)
+            enrolled = None
+        if enrolled:
+            cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
+                         "arm_assigned": enrolled.get("assigned"),
+                         "arm_overridden": preclose_enrollment.overridden(enrolled)})
+            if enrolled.get("reason"):
+                cost["arm_reason"] = enrolled["reason"]
+        path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
+            **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
+                                     current_branch(), reforge, cost),
+            "cross_family_required": required,
+            "cross_family_reason": why,
+            "provenance": provenance,
+        })
+    except BaseException:
+        if grant is not None:
+            emit_force(repo, args.issue, head_sha, "force", 0, grant, outcome="reserved-not-recorded")
+        raise
     print(f"preclose-check: recorded pass "
           f"{len(preclose_passes.current(preclose_passes.history(read_receipt(path))))} of at most "
           f"{preclose_passes.MAX_PASSES} for {repo}#{args.issue} at {head_sha[:12]}")
@@ -1095,11 +1113,6 @@ def complete(args: argparse.Namespace) -> int:
     if route:
         print(f"  {route}")
     if args.force:
-        if grant is not None:
-            # Consumed only once the pass is recorded, so a crash before here
-            # leaves the grant usable for the retry (harmonic-forge#1169).
-            import force_grant  # noqa: PLC0415
-            grant = force_grant.consume(grant["key"], grant["granted_at"], head_sha)
         emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", surviving, grant)
     receipt = read_receipt(path) or {}
     passes = preclose_passes.current(preclose_passes.history(receipt))

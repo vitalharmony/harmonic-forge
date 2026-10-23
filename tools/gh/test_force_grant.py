@@ -157,6 +157,22 @@ class GrantIdentityTests(Store):
             G.require(REPO, ISSUE, SHA, NOW)
 
 
+class ForceHeadEpochTests(unittest.TestCase):
+    """F1169 pass 2: a post-verdict check carried across a reforge never binds."""
+
+    def test_a_carried_post_verdict_check_yields_to_the_current_pass(self):
+        import preclose_passes  # noqa: PLC0415
+        receipt = {"reviewed_sha": "b" * 40, "status": "complete",
+                   "pass_history": [{"sha": "a" * 40, "surviving": 2, "epoch": 0},
+                                    {"sha": "a" * 40, "surviving": 2, "epoch": 0},
+                                    {"sha": "b" * 40, "surviving": 1, "epoch": 1},
+                                    {"sha": "b" * 40, "surviving": 1, "epoch": 1}],
+                   "post_verdict_check": {"base_sha": "a" * 40, "head_sha": "c" * 40}}
+        self.assertEqual(preclose_passes.force_head(receipt), "b" * 40)
+        receipt["post_verdict_check"] = {"base_sha": "b" * 40, "head_sha": "d" * 40}
+        self.assertEqual(preclose_passes.force_head(receipt), "d" * 40)
+
+
 class PrecloseGateTests(Store):
     """AC3/AC4 inside preclose_check: the gate and the event."""
 

@@ -90,5 +90,53 @@ class ForceGrantGate(base.ScratchRepo):
         self.assertEqual(self.grant()["status"], "usable")
 
 
+class ReserveBeforeWrite(base.ScratchRepo):
+    """F1169 sticky-wicket after pass 2: the grant is spent before any forced
+    pass is recorded, so a refused spend records nothing."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.commit("scripts/ordinary.py")
+        self.plan(tier="fast")
+        self.complete()
+
+    def store(self) -> Path:
+        return Path(os.environ["HOME"]) / ".claude/state/force/H1208.json"
+
+    def passes(self) -> int:
+        receipt = json.loads(next((Path(os.environ["HOME"]) / ".claude/state/preclose").glob("*1208.json")).read_text())
+        return len(receipt.get("pass_history", []))
+
+    def test_an_expired_grant_records_no_forced_pass(self) -> None:
+        self.grant_force()
+        grant = json.loads(self.store().read_text())
+        self.store().write_text(json.dumps({**grant, "expires_at": "2001-01-01T00:00:00Z"}))
+        before = self.passes()
+        with mock.patch.object(self, "grant_force"), self.assertRaises(SystemExit) as refused:
+            self.complete(force=True)
+        self.assertIn("expired", str(refused.exception))
+        self.assertEqual(self.passes(), before)
+
+    def test_a_second_complete_on_one_grant_is_refused_before_any_write(self) -> None:
+        self.grant_force()
+        self.complete(force=True)
+        after_first = self.passes()
+        with mock.patch.object(self, "grant_force"), self.assertRaises(SystemExit) as refused:
+            self.complete(force=True)
+        self.assertIn("consumed", str(refused.exception))
+        self.assertEqual(self.passes(), after_first)
+
+    def test_a_write_failure_after_the_reserve_spends_the_grant_and_says_so(self) -> None:
+        self.grant_force()
+        events: list = []
+        with mock.patch.object(preclose, "write_receipt", side_effect=OSError("disk")), \
+                mock.patch.object(preclose, "emit_force",
+                                  side_effect=lambda *a, **k: events.append(k.get("outcome"))), \
+                self.assertRaises(OSError):
+            self.complete(force=True)
+        self.assertEqual(json.loads(self.store().read_text())["status"], "consumed")
+        self.assertEqual(events, ["reserved-not-recorded"])
+
+
 if __name__ == "__main__":
     unittest.main()
