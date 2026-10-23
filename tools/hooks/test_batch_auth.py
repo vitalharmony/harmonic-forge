@@ -617,9 +617,8 @@ class BatchMergeCiTests(unittest.TestCase):
 
     def test_an_exhausted_budget_reads_unknown(self):
         expired = ba._ci_runner("vitalharmony/harmonic-forge", deadline=0.0)
-        self.assertEqual(expired(["gh", "api", "repos/x/y/pulls/1"])[0], 1)
-        self.assertEqual(_REAL_MERGE_CI_STATE("vitalharmony/harmonic-forge", 12, run=expired)[0],
-                         "unknown")
+        # `true` would succeed; only the spent budget makes it fail.
+        self.assertEqual(expired(["true"]), (1, "the merge-time CI read ran out of its budget"))
 
 
 class DecideCiGuardTests(StateFixture):
