@@ -1229,9 +1229,11 @@ def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) ->
 
 
 def _canonical_case_id(case: str) -> str:
-    """`P2`, `TC2` and `2` are one case: the footer and Tier P branches
-    compare live ids against the sweep's canonical TC numbers."""
-    return re.sub(r"(?i)^(?:tc|p)[- ]?", "", case.strip()).lower()
+    """`P2`, `TC2`, `TC02` and `2` are one case: the footer and Tier P branches
+    compare live ids against the sweep's canonical TC numbers. Delegates to the
+    one canonicalizer, so the by-name check and the live-case checks agree on
+    every id (F1179 reforge pass 1, survivor 2)."""
+    return ae_by_name.canonical_id(case)
 
 
 def _canonical_live_ids(live) -> set[str]:

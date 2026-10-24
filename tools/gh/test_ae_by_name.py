@@ -29,6 +29,10 @@ SPEC_CASES = {
     "**AE by name:** TC1:; TC2: install\n": None,
     "**AE by name:** TC1: x;\n": None,
     "**AE by name:** none\n**AE by name:** TC1: x\n": None,
+    "**AE-by-name:** TC1: the lookup\n": None,
+    "**AE_by_name:** TC1: the lookup\n": None,
+    "**AE **by** name:** TC1: the lookup\n": None,
+    "**AEbyname:** TC1: the lookup\n": None,
     "```\n**AE by name:** nonsense\n```\n**AE by name:** none\n": set(),
 }
 
@@ -65,6 +69,13 @@ class OneGrammarEveryEntryPoint(unittest.TestCase):
                    "**AE by name:** TC1\n**AE by name:** TC2\n"):
             with self.subTest(ae=ae), self.assertRaises(SystemExit):
                 L.validate_ae_by_name("**AE by name:** TC1: x\n", ae, None)
+
+    def test_one_canonicalizer_for_every_caller(self) -> None:
+        """Reforge pass 1, survivor 2: the live-case checks agree with the by-name check."""
+        for case in ("TC01", "TC1", "tc 1", "P1", "1", "TC-001"):
+            with self.subTest(case=case):
+                self.assertEqual(L._canonical_case_id(case), "1")
+                self.assertEqual(L._canonical_case_id(case), G.canonical_id(case))
 
     def test_carried_ids_are_canonical(self) -> None:
         self.assertEqual(G.carried("2. TC02 — carried forward, not re-run: x\n"), {"2"})

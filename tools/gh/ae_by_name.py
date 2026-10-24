@@ -35,7 +35,9 @@ import re
 #: The exact line. Case-insensitive, as the first version was.
 _LINE = re.compile(r"(?i)^[ \t]*\*\*AE by name:\*\*[ \t]*(.*?)[ \t]*$")
 #: Any mention of the flag. A mention that is not `_LINE` is a near miss.
-_MENTION = re.compile(r"(?i)\bAE[ \t]+by[ \t]+name\b")
+#: Separator variants count too: `AE-by-name`, `AE_by_name`, `**AE **by** name`
+#: and `AEbyname` are mentions, so they parse or refuse (F1179 reforge pass 1).
+_MENTION = re.compile(r"(?i)\bAE[\W_]*by[\W_]*name\b")
 _CASE = re.compile(r"(?i)^(?:TC|P)[- ]?(\d+)$")
 #: A sweep's carried-forward case (R-0366): `n. TCn — carried forward, …`.
 _CARRIED = re.compile(r"(?im)^[ \t]*(?:\d+\.|[-*])[ \t]*TC[- ]?(\d+)[ \t]*[:—-]+[ \t]*carried forward")
@@ -45,12 +47,19 @@ class ByNameError(ValueError):
     """The body's `AE by name` line does not parse. The message says why."""
 
 
+def canonical_id(case: str) -> str:
+    """The one case-id canonicalizer, for every caller (F1179 reforge pass 1):
+    the `TC`/`P` prefix dropped, and a numeric id without leading zeros, so
+    `TC01`, `tc 1`, `P1` and `1` are all `1`. A non-numeric id is lowercased."""
+    bare = re.sub(r"(?i)^(?:tc|p)[- ]?", "", case.strip())
+    return str(int(bare)) if bare.isdigit() else bare.lower()
+
+
 def canonical(case: str) -> str:
     """`TC01` -> `1`. Raises ByNameError for anything that is not a case id."""
-    match = _CASE.match(case.strip())
-    if not match:
+    if not _CASE.match(case.strip()):
         raise ByNameError(f"{case.strip()!r} is not a case id like TC2")
-    return str(int(match.group(1)))
+    return canonical_id(case)
 
 
 def _value(body: str, where: str) -> str | None:
