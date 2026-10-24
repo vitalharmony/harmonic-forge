@@ -62,6 +62,12 @@ def require_ae_by_name(body: str) -> None:
     spec, `none` or `TCn: <what>` entries joined by `; `."""
     import l1_post  # noqa: PLC0415
     values = l1_post._by_name_values(body)
+    misses = l1_post._by_name_near_misses(body)
+    if misses:
+        print(f"[post-comment] refused: {misses[0]!r} mentions `AE by name` but is not the line; "
+              "write it exactly as `**AE by name:** none` or `**AE by name:** TC1: <what>; TC2: "
+              "<what>` (harmonic-forge#1179).", file=sys.stderr)
+        raise SystemExit(2)
     if len(values) > 1 or (values and not _SPEC_BY_NAME_VALUE.match(values[0].strip())):
         print("[post-comment] refused: a Lane 3 spec carries at most one `**AE by name:**` line, "
               "`none` or `TC1: <what>; TC2: <what>` (harmonic-forge#1179).", file=sys.stderr)

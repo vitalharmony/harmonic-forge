@@ -377,14 +377,14 @@ class LeadOnBothHalves(unittest.TestCase):
         for f in (self.ae_file, self.sweep_file):
             f.unlink(missing_ok=True)
 
-    def _run(self, ae_body: str, sweep_body: str):
+    def _run(self, ae_body: str, sweep_body: str, extra: list[str] | None = None):
         self.ae_file.write_text(ae_body)
         self.sweep_file.write_text(sweep_body)
         argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge",
                 "--issue", "1", "--kind", "ae-and-sweep",
                 "--sha", FAKE_SHA, "--branch", "x",
                 "--ae-file", str(self.ae_file), "--sweep-file", str(self.sweep_file),
-                "--spec-comment", "999"]
+                "--spec-comment", "999"] + (extra or [])
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "comment_body",
                           side_effect=lambda r, i, b: (self.posted.append(b) or ("u", len(self.posted)))), \
@@ -461,16 +461,18 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         """The spec `_spec_body` returns; a test may route it through the real one."""
         return self.spec
 
-    def _run(self, ae_body: str, sweep_body: str):
+    def _run(self, ae_body: str, sweep_body: str, extra: list[str] | None = None):
         with patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)):
-            super()._run(ae_body, sweep_body)
+            super()._run(ae_body, sweep_body, extra)
 
-    def _standalone(self, kind: str, body: str, spec_comment: bool = True) -> None:
+    def _standalone(self, kind: str, body: str, spec_comment: bool = True,
+                    extra: list[str] | None = None) -> None:
         self.ae_file.write_text(body)
         argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
                 "--kind", kind, "--sha", FAKE_SHA, "--branch", "x", "--file", str(self.ae_file)]
         if spec_comment:
             argv += ["--spec-comment", "999"]
+        argv += extra or []
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)), \
              patch.object(post, "comment_body",
@@ -868,6 +870,47 @@ class AeByNameThroughMain(ExternalCallsThroughMain):
         self._on_thread(LIVE_SWEEP, "sweep")
         self._run(_flag(self.ae), LIVE_SWEEP)
         self.assertEqual(len(self.posted), 2)
+
+    # F1179 preclose pass 1, survivor 1: a near miss is refused, never read as absent.
+    def test_a_near_miss_flag_line_refuses(self) -> None:
+        for line in ("- **AE by name:** TC1: the advisory lookup",
+                     "**AE by name**: TC1: the advisory lookup",
+                     "**Needing AE by name:** TC1 runs the advisory lookup"):
+            with self.subTest(line=line):
+                self.spec = LIVE_SPEC.replace("\n\n", "\n\n" + line + "\n", 1)
+                self._refused(lambda: self._run(self.ae, LIVE_SWEEP), "near-miss")
+
+    # Survivor 2: a first standalone AE defers carried-forward cases to its sweep.
+    def test_a_first_standalone_partial_ae_posts_and_its_sweep_carries_the_rest(self) -> None:
+        partial = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1")
+        self._standalone("ae", partial)
+        self.assertEqual(len(self.posted), 1)
+        self._on_thread(partial, "ae")
+        carried = LIVE_SWEEP.replace("- TC2: ready, offline fixtures",
+                                     "- TC2: carried forward, not re-run: issuecomment-1; code unchanged")
+        self._standalone("sweep", carried)
+        self.assertEqual(len(self.posted), 2)
+
+    # Survivor 4: the standalone AE-side check is live (a malformed line still refuses).
+    def test_a_standalone_ae_with_a_malformed_by_name_line_is_refused(self) -> None:
+        bad = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1 and TC2")
+        self._refused(lambda: self._standalone("ae", bad), "case id")
+
+    # Survivor 3 (AC5, R-0377): a production run's second AE posts with ae-and-sweep.
+    def test_a_standalone_prod_run_ae_after_a_sweep_is_refused_toward_ae_and_sweep(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _flag(self.ae),
+                                               extra=["--prod-run", "count-label=Interpretation"]),
+                      "ae-and-sweep --prod-run")
+
+    def test_an_ae_and_sweep_prod_run_after_a_sweep_posts(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._run(_flag(self.ae), LIVE_SWEEP, extra=["--prod-run", "count-label=Interpretation"])
+        self.assertEqual(len(self.posted), 2)
+
+    # Survivor 5: the dry run applies the same by-name check.
+    def test_the_dry_run_applies_the_by_name_check(self) -> None:
+        self._refused(lambda: self._run(self.ae, LIVE_SWEEP, extra=["--dry-run"]), "AE by name")
 
 
 # Only this class's own cases: the inherited AC9 cases run once, in their own class.

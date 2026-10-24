@@ -28,6 +28,12 @@ class SpecAeByName(unittest.TestCase):
         self.refused("**AE by name:** TC1:\n")
         self.refused("**AE by name:** none\n**AE by name:** TC1: x\n")
 
+    def test_a_near_miss_line_is_refused(self) -> None:
+        """F1179 preclose pass 1, survivor 1: never read as absent."""
+        self.refused("- **AE by name:** TC1: the advisory lookup\n")
+        self.refused("**AE by name**: TC1: the advisory lookup\n")
+        self.refused("**Needing AE by name:** TC1 runs the advisory lookup\n")
+
     def test_a_fenced_example_is_not_the_line(self) -> None:
         self.ok("```\n**AE by name:** nonsense\n```\n**AE by name:** none\n")
 

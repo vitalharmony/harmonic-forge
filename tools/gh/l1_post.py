@@ -1164,7 +1164,9 @@ def refuse_orphan_ae(repo: str, issue: int, sha: str) -> None:
     if _newest_on_sha(repo, issue, sha, "sweep") is not None:
         fail(f"a sweep is already posted on {sha[:12]}; a standalone AE now would leave it before "
              "the newest AE. Post the new AE with `--kind ae-and-sweep` so a sweep follows it "
-             "(R-0208, harmonic-forge#1179)")
+             "(R-0208, harmonic-forge#1179). A production run's second AE (R-0377: a dry run and "
+             "its `--mode apply` are two AEs) posts the same way, with `--kind ae-and-sweep "
+             "--prod-run`, because check_lane3_ready requires a sweep after the newest AE")
 
 
 def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str,
@@ -1185,6 +1187,11 @@ def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body
 #: structured line (`**AE by name:** TC1, TC2`). The prose **Authorized:** line
 #: is never read for this.
 _BY_NAME = re.compile(r"(?i)^[ \t]*\*\*AE by name:\*\*[ \t]*(.*?)[ \t]*$")
+#: Any unfenced line that mentions the flag. One that misses `_BY_NAME` is a
+#: near miss (`- **AE by name:**`, `**AE by name**:`, `**Needing AE by
+#: name:**`): refused, never read as absent, which would flag nothing and let
+#: the hrse#2512 failure through (F1179 preclose pass 1, survivor 1).
+_BY_NAME_MENTION = re.compile(r"(?i)\bAE[ \t]+by[ \t]+name\b")
 _BY_NAME_ID = re.compile(r"(?i)^(?:TC|P)[- ]?(\d+)$")
 _CARRIED_CASE = re.compile(r"(?im)^[ \t]*(?:\d+\.|[-*])[ \t]*TC[- ]?(\d+)[ \t]*[:—-]+[ \t]*carried forward")
 
@@ -1202,6 +1209,18 @@ def _by_name_values(body: str) -> list[str]:
     return values
 
 
+def _by_name_near_misses(body: str) -> list[str]:
+    """Every unfenced line that mentions `AE by name` but is not the exact line."""
+    misses, fenced = [], False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced and _BY_NAME_MENTION.search(line) and not _BY_NAME.match(line):
+            misses.append(line.strip())
+    return misses
+
+
 def _by_name_ids(entries: list[str], where: str) -> set[str]:
     ids = set()
     for entry in entries:
@@ -1214,7 +1233,13 @@ def _by_name_ids(entries: list[str], where: str) -> set[str]:
 
 
 def spec_ae_by_name(spec_body: str) -> set[str]:
-    """The case ids the spec flags; an absent line or `none` flags nothing."""
+    """The case ids the spec flags; an absent line or `none` flags nothing.
+    A near-miss line refuses: it is never read as absent."""
+    misses = _by_name_near_misses(spec_body)
+    if misses:
+        fail(f"the spec carries a near-miss `AE by name` line ({misses[0]!r}); write it exactly as "
+             "`**AE by name:** none` or `**AE by name:** TC1: <what>; TC2: <what>`, then re-post the "
+             "spec (harmonic-forge#1179)")
     values = _by_name_values(spec_body)
     if not values or values[0].strip().lower() == "none":
         return set()
@@ -1223,11 +1248,23 @@ def spec_ae_by_name(spec_body: str) -> set[str]:
 
 def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) -> None:
     """Every flagged case is named on the AE's line or carried forward in the
-    sweep (R-0366); anything else is refused, by id."""
+    sweep (R-0366); anything else is refused, by id.
+
+    `sweep_body=None` is a standalone AE before its sweep exists: only the
+    AE's line is checked (at most one, every entry a case id). Which flagged
+    cases the sweep carries forward is not known yet, so the set rule is left
+    to the sweep side, which always runs it (F1179 preclose pass 1, survivor 2)."""
     flagged = spec_ae_by_name(spec_body)
     if not flagged:
         return
     values = _by_name_values(ae_body)
+    if sweep_body is None:
+        if len(values) > 1:
+            fail(f"the AE carries {len(values)} `**AE by name:**` lines; it takes at most one "
+                 "(harmonic-forge#1179)")
+        if values and values[0].strip().lower() != "none":
+            _by_name_ids(values[0].split(","), "the AE's")
+        return
     if len(values) != 1:
         fail(f"the spec flags {', '.join('TC' + i for i in sorted(flagged, key=int))} for the AE by "
              f"name, so the AE needs exactly one `**AE by name:** TC1, TC2` line (found {len(values)}) "
