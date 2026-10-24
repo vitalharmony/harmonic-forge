@@ -11,6 +11,7 @@ receipt shape rather than each against its own mock.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -376,10 +377,18 @@ class MechanismClusterTests(ScratchRepo):
         self.assertIn("--force --reforge", preclose_passes.refusal(
             receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
             main_ref="base", force=True, repo=REPO, issue=ISSUE))
+        # harmonic-forge#1169: --force --reforge takes no grant. The refused
+        # plain forces above left one on disk; remove it so this proves that.
+        for grant in (Path(os.environ["HOME"]) / ".claude/state/force").glob("*.json"):
+            grant.unlink()
         self.plan(tier="fast", force=True, reforge=True)
-        preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
-                                findings=self.findings_file(self.findings("new")), envelope=None,
-                                not_triggered=True, cross_family=False, force=True, reforge=True))
+        with patch.object(preclose, "emit_force") as emitted:
+            preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
+                                    findings=self.findings_file(self.findings("new")), envelope=None,
+                                    not_triggered=True, cross_family=False, force=True, reforge=True))
+        # F1169 pass 2: the ungranted reforge force is measured, ungranted.
+        self.assertEqual(emitted.call_count, 1)
+        self.assertEqual((emitted.call_args.args[3], emitted.call_args.args[5]), ("reforge", None))
         self.assertNotIn("mechanism_cluster", self.receipt())
 
     def test_pass_two_cluster_does_not_create_the_early_route(self) -> None:
@@ -408,6 +417,24 @@ class MechanismClusterTests(ScratchRepo):
         self.assertEqual(after["reviewed_sha"], before["reviewed_sha"])
         self.assertEqual(after["status"], before["status"])
         self.assertEqual(after["refuters"], before["refuters"])
+
+    def test_a_forced_cluster_verdict_emits_one_ungranted_force_event(self) -> None:
+        """F1169 pass 2: the --cluster-verdict --force site is measured."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'),
+            stderr="")
+        url = "https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"
+        with patch.object(preclose, "run", return_value=api):
+            preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                           comment_url=url, force=False))
+            with patch.object(preclose, "emit_force") as emitted:
+                preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="REFORGE",
+                                               comment_url=url, force=True))
+        self.assertEqual(emitted.call_count, 1)
+        self.assertEqual((emitted.call_args.args[3], emitted.call_args.args[5]),
+                         ("cluster-verdict", None))
 
     def test_cluster_verdict_refuses_foreign_comment_api_failure_and_overwrite(self) -> None:
         self.run_pass("scripts/a.py", self.findings("same", "same"))

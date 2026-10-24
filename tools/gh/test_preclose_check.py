@@ -108,6 +108,20 @@ class ScratchRepo(unittest.TestCase):
         git("add", "-A", cwd=self.repo)
         git("commit", "-qm", f"add {relpath}", cwd=self.repo)
 
+    def grant_force(self, issue: int = 1208, head: str = "HEAD") -> None:
+        """harmonic-forge#1169: an operator --force needs a usable FORCE grant
+        for the head. Tests about other concerns get one, in the scratch HOME
+        setUp points at, never the operator's real store."""
+        sha = subprocess.run(("git", "rev-parse", head), cwd=self.repo, check=True,
+                             capture_output=True, text=True).stdout.strip()
+        store = Path(os.environ["HOME"]) / ".claude" / "state" / "force"
+        store.mkdir(parents=True, exist_ok=True)
+        (store / f"H{issue}.json").write_text(json.dumps({
+            "key": f"H{issue}", "repo": "vitalharmony/hrse", "issue": issue, "sha": sha,
+            "reason": "test", "reason_sha256": "0" * 64, "status": "usable",
+            "granted_at": "2000-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z",
+            "comment_id": "1", "comment_url": "https://example/1#issuecomment-1"}))
+
     def findings_file(self, findings: list) -> str:
         path = Path(tempfile.mkdtemp()) / "findings.json"
         self.addCleanup(lambda: path.unlink(missing_ok=True))
@@ -134,6 +148,8 @@ class ScratchRepo(unittest.TestCase):
             else:
                 body["exit_code"] = 1
             Path(envelope).write_text(json.dumps(body))
+        if force:
+            self.grant_force()
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
@@ -146,6 +162,8 @@ class ScratchRepo(unittest.TestCase):
         args = {"repo": "vitalharmony/hrse", "issue": 1208, "base": "base", "head": "HEAD",
                 "tier": None, "force": False, "allow_dirty": False, "allow_repo_mismatch": False}
         args.update(overrides)
+        if args.get("force") and not args.get("reforge"):
+            self.grant_force(args["issue"])
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             preclose.plan(_Args(**args))

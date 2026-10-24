@@ -504,6 +504,26 @@ def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int) 
     return POST_VERDICT_REQUIRED.format(repo=repo, issue=issue)
 
 
+def force_head(receipt: dict | None) -> str | None:
+    """The head an operator --force covers (harmonic-forge#1169): the latest
+    post-verdict check's head when one exists (the PATCH path, where --force is
+    what covers the final head), else the latest pass's head, else the
+    reviewed head. None for no receipt."""
+    if not receipt:
+        return None
+    check = receipt.get("post_verdict_check")
+    latest = current(history(receipt))
+    # Only a check on the current epoch's latest pass counts: one carried
+    # across a reforge names an old head (F1169 preclose pass 2).
+    if (isinstance(check, dict) and check.get("head_sha") and latest
+            and check.get("base_sha") == latest[-1].get("sha")):
+        return str(check["head_sha"])
+    passes = history(receipt)
+    if passes and passes[-1].get("sha"):
+        return str(passes[-1]["sha"])
+    return reviewed_head(receipt)
+
+
 def reviewed_head(receipt: dict | None) -> str | None:
     """The head the receipt currently vouches for. The post-verdict write keeps
     it unchanged, so recording the check never lets the merge hook accept the

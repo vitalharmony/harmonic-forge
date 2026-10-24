@@ -343,7 +343,10 @@ class KillCheckTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             preclose.plan(args)
         args.force = True
-        with contextlib.redirect_stdout(io.StringIO()):
+        # The operator's FORCE grant (harmonic-forge#1169) is tested in
+        # test_preclose_force.py; here only the kill-receipt bypass is.
+        with contextlib.redirect_stdout(io.StringIO()), \
+                patch.object(preclose, "require_force_grant", return_value={}):
             self.assertEqual(preclose.plan(args), 0)
         args.force = False
         with self.assertRaises(SystemExit):
