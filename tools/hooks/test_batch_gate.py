@@ -53,7 +53,7 @@ class BatchGateEndToEndTests(unittest.TestCase):
             f"from pathlib import Path\n"
             f"import batch_auth; batch_auth.STATE_PATH = Path({str(self.state_path)!r})\n"
             # harmonic-forge#1178: the merge-time CI read, faked green offline.
-            f"batch_auth.merge_ci_state = lambda repo, number, run=None: ('green', 'faked')\n"
+            f"batch_auth.merge_ci_state = lambda repo, number, run=None: ('green', 'faked', 'ffffffffffffffffffffffffffffffffffffffff')\n"
             f"import runpy; runpy.run_path({str(hook)!r}, run_name='__main__')\n"
         )
         payload = {"tool_name": "Bash", "tool_input": {"command": command}}
@@ -71,7 +71,7 @@ class BatchGateEndToEndTests(unittest.TestCase):
         dedicated coverage of that fixed behavior)."""
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 395, state_path=self.state_path)
-        _rc, out = self._run(GATE, "gh pr merge 395 --repo vitalharmony/hrse")
+        _rc, out = self._run(GATE, "gh pr merge 395 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse")
         decision = json.loads(out)["hookSpecificOutput"]["permissionDecision"]
         self.assertEqual(decision, "allow")
 
@@ -115,7 +115,7 @@ class HookOrderIndependenceTests(unittest.TestCase):
         self.state_path = Path(self.tmpdir.name) / "batch-authorized.json"
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 395, state_path=self.state_path)
-        self.command = "gh pr merge 395 --repo vitalharmony/hrse"
+        self.command = "gh pr merge 395 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -126,7 +126,7 @@ class HookOrderIndependenceTests(unittest.TestCase):
             f"from pathlib import Path\n"
             f"import batch_auth; batch_auth.STATE_PATH = Path({str(self.state_path)!r})\n"
             # harmonic-forge#1178: the merge-time CI read, faked green offline.
-            f"batch_auth.merge_ci_state = lambda repo, number, run=None: ('green', 'faked')\n"
+            f"batch_auth.merge_ci_state = lambda repo, number, run=None: ('green', 'faked', 'ffffffffffffffffffffffffffffffffffffffff')\n"
             f"import runpy; runpy.run_path({str(hook)!r}, run_name='__main__')\n"
         )
         payload = {"tool_name": "Bash", "tool_input": {"command": command}}

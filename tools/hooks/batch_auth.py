@@ -1117,8 +1117,13 @@ def _derived_merge_match(repo: str, number: int,
 
 #: harmonic-forge#1178: the whole merge-time CI read shares one budget. A
 #: PreToolUse hook that times out does not block, so a slow API must end in
-#: `ask` here, never in the hook runner's timeout.
-CI_READ_BUDGET_S = 10.0
+#: `ask` here, never in the hook runner's timeout. The budget is measured
+#: from hook start (`_HOOK_T0`, this module's import), not from inside
+#: `merge_ci_state`, and sits under the smallest host timeout: Codex runs
+#: batch_gate with `"timeout": 10` (`.codex/hooks.json`), so 7s leaves room for
+#: interpreter startup and the reply (F1178 preclose pass 1, survivor 1).
+CI_READ_BUDGET_S = 7.0
+_HOOK_T0 = time.monotonic()
 
 
 def _ci_runner(repo: str, deadline: float):
@@ -1138,24 +1143,40 @@ def _ci_runner(repo: str, deadline: float):
     return run
 
 
-def merge_ci_state(repo: str, number: int, run=None) -> tuple[str, str]:
-    """harmonic-forge#1178: `(state, detail)` for the PR's live head, judged by
-    `gate_ci`'s authorizing judge, the one the Lane 3 PASS gate uses. Only
-    `green` lets a BATCH merge through."""
+def merge_ci_state(repo: str, number: int, run=None) -> tuple[str, str, str | None]:
+    """harmonic-forge#1178: `(state, detail, head_sha)` for the PR's live head,
+    judged by `gate_ci`'s authorizing judge, the one the Lane 3 PASS gate uses.
+    Only `green` lets a BATCH merge through, and only for a merge pinned to
+    `head_sha` (decide()). `head_sha` is None when the head could not be read."""
     gh_tools = str(Path(__file__).resolve().parent.parent / "gh")
     if gh_tools not in sys.path:
         sys.path.insert(0, gh_tools)
     import gate_ci  # noqa: PLC0415
-    run = run or _ci_runner(repo, time.monotonic() + CI_READ_BUDGET_S)
+    run = run or _ci_runner(repo, _HOOK_T0 + CI_READ_BUDGET_S)
     code, out = run(["gh", "api", f"repos/{repo}/pulls/{number}", "--jq", ".head.sha"])
     sha = (out or "").strip()
     if code != 0 or len(sha) != 40:
-        return "unknown", f"could not read PR #{number}'s head: {sha[:120]}"
+        return "unknown", f"could not read PR #{number}'s head: {sha[:120]}", None
     required = gate_ci.required_checks(repo, run=run)
     if required is None:
-        return "unknown", f"could not read {repo}'s required checks"
+        return "unknown", f"could not read {repo}'s required checks", sha
     state, detail = gate_ci.authorizing_conclusion(repo, sha, required, run=run)
-    return state, f"{sha[:12]}: {detail}"
+    return state, f"{sha[:12]}: {detail}", sha
+
+
+def _pinned_head(tokens: list[str]) -> str | None:
+    """The `--match-head-commit` value of a `gh pr merge` segment, else None.
+    The REST merge form is never bound: where gh puts its `sha=` field depends
+    on other flags (the same rule block_missing_preclose_inspection holds)."""
+    rest = strip_invocation_prefix(tokens)[1:]
+    if rest[:2] != ["pr", "merge"]:
+        return None
+    for i, token in enumerate(rest):
+        if token == "--match-head-commit" and i + 1 < len(rest):
+            return rest[i + 1]
+        if token.startswith("--match-head-commit="):
+            return token.split("=", 1)[1]
+    return None
 
 
 def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
@@ -1323,12 +1344,23 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             # which fires only after the tool ran, and only once the merge
             # or close is confirmed to have actually landed (AC3).
             repo, number = classify_pr_merge(tokens)
-            ci, detail = merge_ci_state(repo, number)
+            ci, detail, judged = merge_ci_state(repo, number)
             if ci != "green":
                 return "ask", reason + (
                     f"\n\n[BATCH] {key} is authorized, but CI on PR #{number} is {ci} "
                     f"({detail}). Not merging on an unconcluded or failing CI "
                     "(harmonic-forge#1178).")
+            # F1178 preclose pass 1, survivor 2: green is a fact about one SHA,
+            # so the merge must be pinned to it, or a push after this read
+            # merges a head whose CI was never judged.
+            pinned = _pinned_head(tokens)
+            if not judged or pinned != judged:
+                return "ask", reason + (
+                    f"\n\n[BATCH] {key} is authorized and CI is green on PR #{number}'s head "
+                    f"`{(judged or '?')[:12]}`, but the merge is "
+                    + (f"pinned to `{pinned[:12]}`" if pinned else "not pinned")
+                    + f". Re-run it with `--match-head-commit {judged or '<head sha>'}` so "
+                    "the merged SHA is the one judged (harmonic-forge#1178).")
             allow_reason = f"BATCH-authorized ({key})"
 
         if not covered:

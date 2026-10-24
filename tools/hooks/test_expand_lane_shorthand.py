@@ -878,9 +878,9 @@ class BatchWiringTests(unittest.TestCase):
             # TtyGateCliTests in test_batch_auth.py is what proves the gate itself.
             with mock.patch("os.isatty", return_value=True):
                 ba.link_pr("F495", "vitalharmony/hrse", 42, state_path=tmp)
-            merge_cmd = "gh pr merge 42 --repo vitalharmony/hrse"
+            merge_cmd = "gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"
             with mock.patch.object(ba, "merge_ci_state",  # harmonic-forge#1178, offline
-                                   lambda repo, number, run=None: ("green", "faked")):
+                                   lambda repo, number, run=None: ("green", "faked", "ffffffffffffffffffffffffffffffffffffffff")):
                 self.assertEqual(ba.decide(merge_cmd, state_path=tmp)[0], "allow")
             # `decide()` is read-only as of harmonic-forge#552 AC1 — it no
             # longer consumes, so spending the slot now takes an explicit

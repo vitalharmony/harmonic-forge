@@ -61,7 +61,9 @@ _isatty_patcher = mock.patch("os.isatty", return_value=True)
 #: a green fake so the allow tests stay network-free; BatchMergeCiTests drives
 #: the real function with a faked `run`, and DecideCiGuardTests sets CI_FAKE.
 _REAL_MERGE_CI_STATE = ba.merge_ci_state
-CI_FAKE = {"state": ("green", "faked")}
+#: The SHA the green fake judged; an allow test pins its merge to it (F1178 survivor 2).
+JUDGED = "f" * 40
+CI_FAKE = {"state": ("green", "faked", JUDGED)}
 
 
 def setUpModule():
@@ -488,13 +490,13 @@ class ClassifyTests(unittest.TestCase):
 
     def test_pr_merge_cli_form_without_delete_branch(self):
         """Every `gh pr merge`, not just --delete-branch, is now covered."""
-        tokens = "gh pr merge 993 --repo vitalharmony/hrse --squash".split()
+        tokens = "gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash".split()
         self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
 
     def test_pr_merge_with_match_head_commit_keeps_its_target(self):
         """harmonic-forge#1077: the gated merge carries `--match-head-commit`;
         an all-digit SHA value is never read as the PR number."""
-        for cmd in ("gh pr merge 993 --repo vitalharmony/hrse --squash --match-head-commit abc123",
+        for cmd in ("gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash --match-head-commit abc123",
                     "gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse",
                     "gh pr merge --match-head-commit=1234567 993 --repo vitalharmony/hrse"):
             with self.subTest(cmd=cmd):
@@ -515,7 +517,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"))
 
     def test_pr_merge_via_gh_as_wrapper_is_classified(self):
-        tokens = "gh-as vitalharmony gh pr merge 993 --repo vitalharmony/hrse --squash".split()
+        tokens = "gh-as vitalharmony gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash".split()
         self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
 
     def test_issue_close_via_gha_wrapper_is_classified(self):
@@ -540,7 +542,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"))
 
     def test_pr_merge_via_nice_prefix_is_classified(self):
-        tokens = "nice gh pr merge 993 --repo vitalharmony/hrse --squash".split()
+        tokens = "nice gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash".split()
         self.assertEqual(ba.classify_pr_merge(tokens), ("vitalharmony/hrse", 993))
 
 
@@ -549,7 +551,7 @@ class DecideAllowTests(StateFixture):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         result = ba.decide(
-            "gh pr merge 1202 --repo vitalharmony/hrse --squash", state_path=self.state_path
+            "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash", state_path=self.state_path
         )
         self.assertEqual(result[0], "allow")
         self.assertIn("H395", result[1])
@@ -562,7 +564,7 @@ class DecideAllowTests(StateFixture):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         merge_result = ba.decide(
-            "gh pr merge 1202 --repo vitalharmony/hrse --squash", state_path=self.state_path
+            "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash", state_path=self.state_path
         )
         close_result = ba.decide(
             "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
@@ -615,6 +617,22 @@ class BatchMergeCiTests(unittest.TestCase):
         self.assertEqual(self.state(pulls=(1, "HTTP 502")), "unknown")
         self.assertEqual(self.state(protection=(1, "HTTP 500")), "unknown")
 
+    def test_the_budget_counts_from_hook_start(self):
+        """F1178 survivor 1: time spent before the CI read counts against it."""
+        with mock.patch.object(ba, "_HOOK_T0", time.monotonic() - ba.CI_READ_BUDGET_S - 1):
+            state, detail, judged = _REAL_MERGE_CI_STATE("vitalharmony/harmonic-forge", 12)
+        self.assertEqual((state, judged), ("unknown", None))
+        self.assertIn("budget", detail)
+
+    def test_the_budget_sits_under_every_host_batch_gate_timeout(self):
+        """F1178 survivor 1: a hook that times out does not block, so the CI
+        budget must end before the smallest host timeout, with room to spare."""
+        hooks = json.loads((Path(ba.__file__).resolve().parents[2] / ".codex" / "hooks.json").read_text())
+        timeouts = [h.get("timeout") for group in hooks.get("hooks", {}).values() for entry in group
+                    for h in entry.get("hooks", []) if "batch_gate" in h.get("command", "")]
+        self.assertTrue(timeouts, "no batch_gate hook found in .codex/hooks.json")
+        self.assertLess(ba.CI_READ_BUDGET_S + 2, min(timeouts))
+
     def test_an_exhausted_budget_reads_unknown(self):
         expired = ba._ci_runner("vitalharmony/harmonic-forge", deadline=0.0)
         # `true` would succeed; only the spent budget makes it fail.
@@ -625,19 +643,52 @@ class DecideCiGuardTests(StateFixture):
     """harmonic-forge#1178: a live, linked BATCH grant still asks unless CI is green."""
 
     def tearDown(self):
-        CI_FAKE["state"] = ("green", "faked")
+        CI_FAKE["state"] = ("green", "faked", JUDGED)
         super().tearDown()
 
     def test_a_non_green_ci_asks_and_names_it(self):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         for state in ("pending", "red", "absent", "unknown"):
-            CI_FAKE["state"] = (state, "e" * 12 + ": detail")
+            CI_FAKE["state"] = (state, "e" * 12 + ": detail", "e" * 40)
             with self.subTest(state=state):
-                result = ba.decide("gh pr merge 1202 --repo vitalharmony/hrse --squash",
+                result = ba.decide("gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash",
                                    state_path=self.state_path)
                 self.assertEqual(result[0], "ask")
                 self.assertIn(f"CI on PR #1202 is {state}", result[1])
+
+    def _grant(self):
+        ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
+
+    def test_green_ci_still_asks_for_an_unpinned_merge(self):
+        """F1178 survivor 2: green is a fact about one SHA."""
+        self._grant()
+        result = ba.decide("gh pr merge 1202 --repo vitalharmony/hrse --squash",
+                           state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+        self.assertIn(f"--match-head-commit {JUDGED}", result[1])
+
+    def test_green_ci_asks_for_a_merge_pinned_to_another_sha(self):
+        self._grant()
+        result = ba.decide("gh pr merge 1202 --repo vitalharmony/hrse --match-head-commit " + "a" * 40,
+                           state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+        self.assertIn("pinned to `aaaaaaaaaaaa`", result[1])
+
+    def test_green_ci_allows_a_merge_pinned_to_the_judged_sha(self):
+        self._grant()
+        for form in (f"--match-head-commit {JUDGED}", f"--match-head-commit={JUDGED}"):
+            with self.subTest(form=form):
+                result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash {form}",
+                                   state_path=self.state_path)
+                self.assertEqual(result[0], "allow")
+
+    def test_the_rest_merge_form_is_never_bound_so_it_asks(self):
+        self._grant()
+        result = ba.decide(f"gh api repos/vitalharmony/hrse/pulls/1202/merge -X PUT -f sha={JUDGED}",
+                           state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
 
 
 class DecideAskTests(StateFixture):
@@ -650,13 +701,13 @@ class DecideAskTests(StateFixture):
 
     def test_pr_merge_with_no_authorization_asks(self):
         result = ba.decide(
-            "gh pr merge 993 --repo vitalharmony/hrse --squash", state_path=self.state_path
+            "gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash", state_path=self.state_path
         )
         self.assertEqual(result[0], "ask")
 
     def test_pr_merge_delete_branch_reason_mentions_stacked_child(self):
         result = ba.decide(
-            "gh pr merge 993 --repo vitalharmony/hrse --delete-branch",
+            "gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --delete-branch",
             state_path=self.state_path,
         )
         self.assertEqual(result[0], "ask")
@@ -675,7 +726,7 @@ class DecideAskTests(StateFixture):
 
     def test_gh_as_wrapped_pr_merge_with_no_authorization_asks(self):
         result = ba.decide(
-            "gh-as vitalharmony gh pr merge 993 --repo vitalharmony/hrse --squash",
+            "gh-as vitalharmony gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash",
             state_path=self.state_path,
         )
         self.assertEqual(result[0], "ask")
@@ -690,7 +741,7 @@ class DecideAskTests(StateFixture):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         result = ba.decide(
-            "gh-as vitalharmony gh pr merge 1202 --repo vitalharmony/hrse",
+            "gh-as vitalharmony gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
             state_path=self.state_path,
         )
         self.assertEqual(result[0], "allow")
@@ -720,7 +771,7 @@ class DecideAskTests(StateFixture):
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
         result = ba.decide(
-            "gha vh pr merge 1202 --repo vitalharmony/hrse",
+            "gha vh pr merge 1202 --repo vitalharmony/hrse --match-head-commit ffffffffffffffffffffffffffffffffffffffff",
             state_path=self.state_path,
         )
         self.assertEqual(result[0], "allow")
@@ -735,7 +786,7 @@ class DecideAskTests(StateFixture):
         """The PR-number gap: without link_pr(), no PR merge ever allows."""
         ba.authorize(["F334"], state_path=self.state_path)
         result = ba.decide(
-            "gh pr merge 5001 --repo vitalharmony/harmonic-forge", state_path=self.state_path
+            "gh pr merge 5001 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge", state_path=self.state_path
         )
         self.assertEqual(result[0], "ask")
 
@@ -763,7 +814,7 @@ class DecideAskTests(StateFixture):
         ).isoformat()
         ba._save(state, self.state_path)
         merge_result = ba.decide(
-            "gh pr merge 1202 --repo vitalharmony/hrse", state_path=self.state_path
+            "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse", state_path=self.state_path
         )
         close_result = ba.decide(
             "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed",
@@ -825,7 +876,7 @@ class ConsumptionTests(StateFixture):
         super().setUp()
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
-        self.command = "gh pr merge 1202 --repo vitalharmony/hrse"
+        self.command = "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"
 
     def test_a_second_identical_command_still_allows(self):
         """Idempotent per command hash -- hook order independence."""
@@ -911,7 +962,7 @@ class InvocationPrefixTests(StateFixture):
             "env -u FOO gh issue close 700 --repo vitalharmony/hrse",
             "command gh issue close 700 --repo vitalharmony/hrse",
             "nohup gh issue close 700 --repo vitalharmony/hrse",
-            "VAR=x gh pr merge 993 --repo vitalharmony/hrse",
+            "VAR=x gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
         ):
             with self.subTest(cmd=cmd):
                 result = ba.decide(cmd, state_path=self.state_path)
@@ -923,9 +974,9 @@ class InvocationPrefixTests(StateFixture):
         prefix-stripping behavior is exercised through merge instead, the
         only command class it can still apply to."""
         for cmd in (
-            "env GH_HOST=x gh pr merge 700 --repo vitalharmony/hrse",
-            "command gh pr merge 700 --repo vitalharmony/hrse",
-            "nohup gh pr merge 700 --repo vitalharmony/hrse",
+            "env GH_HOST=x gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
+            "command gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
+            "nohup gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
         ):
             with self.subTest(cmd=cmd):
                 ba.authorize(["H700"], state_path=self.state_path)
@@ -962,7 +1013,7 @@ class LockingTests(StateFixture):
         try:
             start = time.monotonic()
             result = ba.decide(
-                "gh pr merge 1600 --repo vitalharmony/hrse",
+                "gh pr merge 1600 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
                 state_path=self.state_path,
             )
             elapsed = time.monotonic() - start
@@ -987,7 +1038,7 @@ class LockingTests(StateFixture):
         """
         ba.authorize(["H500"], state_path=self.state_path)
         ba.link_pr("H500", "vitalharmony/hrse", 1500, state_path=self.state_path)
-        base_cmd = "gh pr merge 1500 --repo vitalharmony/hrse"
+        base_cmd = "gh pr merge 1500 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"
         cmd_a, cmd_b = base_cmd, base_cmd + " "  # distinct hashes, same target
 
         entered_save = threading.Event()
@@ -1080,7 +1131,7 @@ class CrossRepoMergeArityTests(unittest.TestCase):
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         for repo, pr in (("o/a", 1), ("o/b", 2), ("o/c", 3)):
             ba.link_pr("F1", repo, pr, state_path=self.tmp)
-            verdict, _ = ba.decide(f"gh pr merge {pr} --repo {repo}",
+            verdict, _ = ba.decide(f"gh pr merge {pr} --repo {repo} --match-head-commit ffffffffffffffffffffffffffffffffffffffff",
                                 state_path=self.tmp)
             self.assertEqual(verdict, "allow", f"{repo}#{pr}")
 
@@ -1132,7 +1183,7 @@ class NoExecutionPathTests(StateFixture):
         super().setUp()
         ba.authorize(["H395"], state_path=self.state_path)
         ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
-        self.command = "gh pr merge 1202 --repo vitalharmony/hrse --squash"
+        self.command = "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash"
 
     def _merge_target(self):
         state = ba._load(self.state_path)
@@ -1223,7 +1274,7 @@ class AllocationKeyedOnRepoAndPrTests(unittest.TestCase):
         """AC4's named regression, and why the #549 clause had to go with it."""
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        consume_ok("gh pr merge 1 --repo o/a", self.tmp)
+        consume_ok("gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a", self.tmp)
         self.assertTrue(self._merge_targets()[0]["consumed"])
 
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
@@ -1257,22 +1308,22 @@ class AllocationKeyedOnRepoAndPrTests(unittest.TestCase):
                                        "consumed_by": None, "pr_number": 1,
                                        "repo": "o/a"})
         self.tmp.write_text(json.dumps(state))
-        verdict, reason = ba.decide("gh pr merge 1 --repo o/a", state_path=self.tmp)
+        verdict, reason = ba.decide("gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a", state_path=self.tmp)
         self.assertEqual(verdict, "allow", reason)
 
     def test_all_slots_consumed_asks(self):
         """Not a widening: spent is still spent for a different command."""
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        consume_ok("gh pr merge 1 --repo o/a", self.tmp)
-        verdict, reason = ba.decide("gh pr merge 1 --repo o/a --squash",
+        consume_ok("gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a", self.tmp)
+        verdict, reason = ba.decide("gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a --squash",
                                     state_path=self.tmp)
         self.assertEqual(verdict, "ask", reason)
 
     def test_an_identical_retry_is_still_idempotent(self):
         ba.authorize(["F1"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        cmd = "gh pr merge 1 --repo o/a"
+        cmd = "gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a"
         self.assertEqual(ba.decide(cmd, state_path=self.tmp)[0], "allow")
         consume_ok(cmd, self.tmp)
         self.assertEqual(ba.decide(cmd, state_path=self.tmp)[0], "allow")
@@ -1280,7 +1331,7 @@ class AllocationKeyedOnRepoAndPrTests(unittest.TestCase):
     def test_relink_does_not_touch_an_unrelated_key(self):
         ba.authorize(["F1", "F2"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
-        consume_ok("gh pr merge 1 --repo o/a", self.tmp)
+        consume_ok("gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a", self.tmp)
         ba.link_pr("F1", "o/a", 1, state_path=self.tmp)
         self.assertEqual(len(self._merge_targets("F2")), 1)
         self.assertFalse(self._merge_targets("F2")[0]["consumed"])
@@ -1319,14 +1370,14 @@ class AskDiagnosticTests(unittest.TestCase):
         (`issue_key`/repo-prefix lookup) was `gh issue close`-only and is now
         dead code, removed along with the rest of that branch -- a merge
         with no live grant at all gets the merge-specific no-grant message."""
-        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
+        reason = self._reason("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse")
         self.assertIn("No live authorization has a merge target at all", reason)
 
     def test_expired_names_the_expiry_time(self):
         ba.authorize(["H9"], actions=["gh pr merge"], ttl_hours=-1,
                   state_path=self.tmp)
         ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
-        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
+        reason = self._reason("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse")
         self.assertIn("EXPIRED", reason)
 
     def test_an_unlinked_pr_names_link_pr_and_tells_the_session_not_to_run_it(self):
@@ -1334,7 +1385,7 @@ class AskDiagnosticTests(unittest.TestCase):
         diagnostic must not hand a session a runnable command -- that was
         the confused-deputy remediation loop the finding named."""
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
-        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse")
+        reason = self._reason("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse")
         self.assertIn("not linked", reason)
         self.assertIn("link-pr", reason)
         self.assertIn("ask the operator", reason.lower())
@@ -1343,10 +1394,10 @@ class AskDiagnosticTests(unittest.TestCase):
     def test_a_consumed_target_says_consumed_not_missing(self):
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
         ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
-        self.assertEqual(ba.decide("gh pr merge 42 --repo vitalharmony/hrse",
+        self.assertEqual(ba.decide("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse",
                                 state_path=self.tmp)[0], "allow")
-        consume_ok("gh pr merge 42 --repo vitalharmony/hrse", self.tmp)
-        reason = self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash")
+        consume_ok("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse", self.tmp)
+        reason = self._reason("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash")
         self.assertIn("CONSUMED", reason)
 
     def test_an_unmapped_repo_no_longer_applies_to_merge_diagnosis(self):
@@ -1355,7 +1406,7 @@ class AskDiagnosticTests(unittest.TestCase):
         on linked (repo, pr_number) pairs, not a repo-prefix table), so an
         unmapped repo produces the ordinary no-live-grant message, not a
         shorthand-specific one -- and never a bare `None`."""
-        reason = self._reason("gh pr merge 9 --repo someorg/unmapped")
+        reason = self._reason("gh pr merge 9 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo someorg/unmapped")
         self.assertIn("No live authorization has a merge target at all", reason)
         self.assertNotIn("None", reason)
 
@@ -1367,16 +1418,16 @@ class AskDiagnosticTests(unittest.TestCase):
         distinguishable state to this set."""
         seen = set()
         self.tmp.write_text("{}")
-        seen.add(self._reason("gh pr merge 9 --repo vitalharmony/hrse"))
+        seen.add(self._reason("gh pr merge 9 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"))
         ba.authorize(["H9"], actions=["gh pr merge"], state_path=self.tmp)
-        seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse"))
+        seen.add(self._reason("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"))
         ba.link_pr("H9", "vitalharmony/hrse", 42, state_path=self.tmp)
-        consume_ok("gh pr merge 42 --repo vitalharmony/hrse", self.tmp)
-        seen.add(self._reason("gh pr merge 42 --repo vitalharmony/hrse --squash"))
+        consume_ok("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse", self.tmp)
+        seen.add(self._reason("gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash"))
         ba.authorize(["H8"], actions=["gh pr merge"], ttl_hours=-1,
                   state_path=self.tmp)
         ba.link_pr("H8", "vitalharmony/hrse", 43, state_path=self.tmp)
-        seen.add(self._reason("gh pr merge 43 --repo vitalharmony/hrse"))
+        seen.add(self._reason("gh pr merge 43 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse"))
         self.assertEqual(len(seen), 4, seen)
 
 
@@ -1400,7 +1451,7 @@ class DerivationTests(StateFixture):
     def setUp(self):
         super().setUp()
         ba.authorize(["F552"], state_path=self.state_path)
-        self.command = ("gh pr merge 561 --repo vitalharmony/harmonic-forge "
+        self.command = ("gh pr merge 561 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge "
                         "--squash")
 
     def decide(self):
@@ -1416,7 +1467,7 @@ class DerivationTests(StateFixture):
         ba.authorize(["H1754"], state_path=self.state_path)
         self.carriers = ("feat/1754-prompt-cache-parity", "no issue reference here")
         self.assertEqual(
-            ba.decide("gh pr merge 1758 --repo vitalharmony/hrse --squash",
+            ba.decide("gh pr merge 1758 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash",
                       state_path=self.state_path)[0], "allow")
 
     def test_a_cross_repo_title_reference_wins_over_the_prs_own_repo(self):
@@ -1429,7 +1480,7 @@ class DerivationTests(StateFixture):
         self.carriers = ("l2/f552-hrse-wiring",
                          "feat(batch): hrse wiring (harmonic-forge#552)")
         self.assertEqual(
-            ba.decide("gh pr merge 1799 --repo vitalharmony/hrse --squash",
+            ba.decide("gh pr merge 1799 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash",
                       state_path=self.state_path)[0], "allow")
 
     def test_neither_carrier_parses_asks(self):
@@ -1630,8 +1681,8 @@ class PrecloseRegressionTests(StateFixture):
                    state_path=self.state_path)
         ba.link_pr("F274", "vitalharmony/harmonic-forge", 274,
                    state_path=self.state_path)
-        command = ("gh pr merge 273 --repo vitalharmony/harmonic-forge --squash "
-                   "&& gh pr merge 274 --repo vitalharmony/harmonic-forge --squash")
+        command = ("gh pr merge 273 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash "
+                   "&& gh pr merge 274 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash")
         self.assertEqual(sorted(consume_ok(command, self.state_path)),
                          ["F273", "F274"])
         state = ba._load(self.state_path)
@@ -1647,7 +1698,7 @@ class PrecloseRegressionTests(StateFixture):
         ba.authorize(["F552"], state_path=self.state_path)
         ba.link_pr("F552", "vitalharmony/harmonic-forge", 561,
                    state_path=self.state_path)
-        command = ("gh pr merge 561 --repo vitalharmony/harmonic-forge --squash "
+        command = ("gh pr merge 561 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash "
                    "&& gh issue close 552 --repo vitalharmony/harmonic-forge")
         self.assertEqual(consume_ok(command, self.state_path), ["F552"])
         state = ba._load(self.state_path)
@@ -1700,7 +1751,7 @@ class PrecloseRegressionTests(StateFixture):
         ba.authorize(["F549"], state_path=self.state_path)
         self.carriers = ("fix/batch-auth", "fix(hooks): supersedes #549")
         self.assertEqual(
-            ba.decide("gh pr merge 900 --repo vitalharmony/harmonic-forge --squash",
+            ba.decide("gh pr merge 900 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash",
                       state_path=self.state_path)[0], "ask")
 
     def test_the_documented_trailing_parenthetical_still_resolves(self):
@@ -1711,7 +1762,7 @@ class PrecloseRegressionTests(StateFixture):
                          "feat(platform): declare the platform skills HRSE2 "
                          "consumes, in a tracked manifest (harmonic-forge#544)")
         self.assertEqual(
-            ba.decide("gh pr merge 1753 --repo vitalharmony/hrse --squash",
+            ba.decide("gh pr merge 1753 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash",
                       state_path=self.state_path)[0], "allow")
 
     def test_derivation_never_crosses_the_account_boundary(self):
@@ -1721,7 +1772,7 @@ class PrecloseRegressionTests(StateFixture):
         ba.authorize(["H395"], state_path=self.state_path)
         self.carriers = ("l2/h395-port", "chore: port the fix (hrse#395)")
         self.assertEqual(
-            ba.decide("gh pr merge 7 --repo kenekted/mve --squash",
+            ba.decide("gh pr merge 7 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo kenekted/mve --squash",
                       state_path=self.state_path)[0], "ask")
 
     def test_a_corrected_title_takes_effect_within_the_cache_ttl(self):
@@ -1959,7 +2010,7 @@ class PruneTests(StateFixture):
         state = ba._load(self.state_path)
         self.assertIn("H9", state)
         reason, message = ba.decide(
-            "gh pr merge 9 --repo vitalharmony/hrse", state_path=self.state_path)
+            "gh pr merge 9 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse", state_path=self.state_path)
         self.assertEqual(reason, "ask")
         self.assertIn("EXPIRED", message)
 
@@ -1988,7 +2039,7 @@ class RevokeTests(StateFixture):
         """AC5: standing down a batch that mostly landed is the normal case."""
         ba.authorize(["F1"], state_path=self.state_path)
         ba.link_pr("F1", "vitalharmony/harmonic-forge", 1, state_path=self.state_path)
-        consumed_one("gh pr merge 1 --repo vitalharmony/harmonic-forge",
+        consumed_one("gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge",
                       self.state_path)
         before = ba._load(self.state_path)
         changed = ba.revoke(["F1"], state_path=self.state_path)
@@ -2011,7 +2062,7 @@ class RevokeTests(StateFixture):
         ba.link_pr("F1", "vitalharmony/harmonic-forge", 42, state_path=self.state_path)
         ba.revoke(["F1"], state_path=self.state_path)
         reason, _ = ba.decide(
-            "gh pr merge 42 --repo vitalharmony/harmonic-forge",
+            "gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge",
             state_path=self.state_path)
         self.assertEqual(reason, "ask")
 
@@ -2354,7 +2405,7 @@ class ImcLifecycleTests(unittest.TestCase):
         state["F11"]["expires_at"] = (self.now - timedelta(days=6)).isoformat()
         ba._save(state, self.state_path)
         with mock.patch.object(ba, "action_landed", return_value=False):
-            self.run_hook("gh pr merge 5 --repo vitalharmony/harmonic-forge --squash")
+            self.run_hook("gh pr merge 5 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash")
         state = ba._load(self.state_path)
         self.assertNotIn("F10", state)
         self.assertIn("F11", state)
