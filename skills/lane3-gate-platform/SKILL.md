@@ -47,6 +47,10 @@ Read this list once, up front, instead:
   backend is down" when it's just the other checkout's.
 - The spec heading is exactly `## Lane 3 Test Spec — H<N>` (or the repo's own
   prefix) — the mechanical heading check refuses anything looser.
+- Anything the AE must name — an install, a free lookup outside the
+  `External calls:` grammar, a widened scope — goes on the spec's one
+  `**AE by name:** TC1: <what>; TC2: <what>` line (or `none`), never only in
+  prose; Lane 1's AE is refused unless it answers each one (harmonic-forge#1179).
 - Queueing (R-0116): a mid-turn trigger queues behind current work, but a
   gate that's blocked on HITL/AE counts as finished for queueing purposes —
   pick up the next queued issue rather than sitting idle on the blocked one.

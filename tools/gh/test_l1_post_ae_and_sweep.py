@@ -519,8 +519,14 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         self._on_thread(LIVE_SWEEP.replace("paid-api:tavily", "message:slack"), "sweep", "b" * 40)
         self._refused(lambda: self._standalone("ae", _ae("llm:anthropic")), "paid-api:tavily")
 
-    def test_a_standalone_ae_equal_to_the_newest_sweep_on_its_sha_posts(self) -> None:
+    def test_a_standalone_ae_after_a_sweep_on_its_sha_is_refused(self) -> None:
+        """harmonic-forge#1179 AC3: it would leave the newest sweep before it
+        (R-0208), even when its calls equal the sweep's."""
         self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic; paid-api:tavily")),
+                      "ae-and-sweep")
+
+    def test_the_first_standalone_ae_on_a_sha_still_posts(self) -> None:
         self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
         self.assertEqual(len(self.posted), 1)
 
@@ -535,10 +541,6 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         sweep = LIVE_SWEEP + "  External calls: paid-api:serp\n"  # TC2 is `ac`
         self._run(_ae("llm:anthropic; paid-api:tavily"), sweep)
         self.assertEqual(len(self.posted), 2)
-        self.posted.clear()
-        self._on_thread(sweep, "sweep")
-        self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
-        self.assertEqual(len(self.posted), 1)
         self.posted.clear()
         self.thread.clear()
         self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
@@ -818,6 +820,60 @@ class ProdRunFooterTests(MainIntegrationTests):
         self.assertIn("valid only for --kind ae", str(ctx.exception))
         mock_run.assert_not_called()
 
+
+
+FLAGGED = "**AE by name:** TC1: the advisory lookup; TC2: the scratch install\n"
+
+
+def _flag(body: str) -> str:
+    return body.replace("**Next:**", FLAGGED.replace("TC1: the advisory lookup; TC2: the scratch install",
+                                                     "TC1, TC2") + "**Next:**", 1)
+
+
+class AeByNameThroughMain(ExternalCallsThroughMain):
+    """harmonic-forge#1179 AC2/AC3: the AE answers the spec's flags by id."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.spec = LIVE_SPEC.replace("\n\n", "\n\n" + FLAGGED + "\n", 1)
+        self.ae = _ae("llm:anthropic; paid-api:tavily")
+
+    def test_an_ae_naming_every_flagged_case_posts(self) -> None:
+        self._run(_flag(self.ae), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_an_ae_omitting_a_flagged_case_is_refused_by_id(self) -> None:
+        partial = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1")
+        self._refused(lambda: self._run(partial, LIVE_SWEEP), "TC2", "harmonic-forge#1179")
+        self._refused(lambda: self._run(self.ae, LIVE_SWEEP), "AE by name")
+
+    def test_a_flagged_case_carried_forward_needs_no_name(self) -> None:
+        partial = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1")
+        carried = LIVE_SWEEP.replace("- TC2: ready, offline fixtures",
+                                     "- TC2: carried forward, not re-run: issuecomment-1; code unchanged")
+        self._run(partial, carried)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_the_sweep_side_refuses_an_earlier_ae_that_omitted_a_case(self) -> None:
+        """The first AE needs no --spec-comment, so the sweep is where it is caught."""
+        self._on_thread(_flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1"), "ae")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), "TC2")
+
+    def test_an_unflagged_spec_needs_no_line(self) -> None:
+        self.spec = LIVE_SPEC
+        self._run(self.ae, LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_ae_and_sweep_on_a_sha_that_already_has_a_sweep_posts(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._run(_flag(self.ae), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+
+# Only this class's own cases: the inherited AC9 cases run once, in their own class.
+for _name in [n for n in vars(ExternalCallsThroughMain) if n.startswith("test_")]:
+    if _name not in vars(AeByNameThroughMain):
+        setattr(AeByNameThroughMain, _name, None)
 
 if __name__ == "__main__":
     unittest.main()

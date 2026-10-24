@@ -54,6 +54,20 @@ from _auto_ae import _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
 
 
+_SPEC_BY_NAME_VALUE = re.compile(r"(?i)^(?:none|TC\d+:[ \t]*\S[^;]*(?:;[ \t]*TC\d+:[ \t]*\S[^;]*)*)$")
+
+
+def require_ae_by_name(body: str) -> None:
+    """harmonic-forge#1179 AC1: at most one unfenced `**AE by name:**` line on a
+    spec, `none` or `TCn: <what>` entries joined by `; `."""
+    import l1_post  # noqa: PLC0415
+    values = l1_post._by_name_values(body)
+    if len(values) > 1 or (values and not _SPEC_BY_NAME_VALUE.match(values[0].strip())):
+        print("[post-comment] refused: a Lane 3 spec carries at most one `**AE by name:**` line, "
+              "`none` or `TC1: <what>; TC2: <what>` (harmonic-forge#1179).", file=sys.stderr)
+        raise SystemExit(2)
+
+
 def require_write_tier(body: str, body_len: int | None = None) -> None:
     """Refuse a Lane 3 spec with no single unfenced `Write tier: R|W|P` line,
     and an R or W spec that auto-AE's Tier P veto would refuse anyway."""
@@ -601,6 +615,7 @@ def main() -> None:
     # so the tier and the P veto run on exactly that string, footer and all.
     if artifact == "spec":
         require_write_tier(final, body_len=len(body.rstrip("\n")))
+        require_ae_by_name(final)
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME

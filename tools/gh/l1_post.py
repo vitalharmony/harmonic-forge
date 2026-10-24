@@ -1159,6 +1159,14 @@ def _latest_sweep_calls(repo: str, issue: int, sha: str, spec_comment: int | Non
     return sweep_external_calls(body, spec_live_ids(spec), spec_is_tier_p(spec))
 
 
+def refuse_orphan_ae(repo: str, issue: int, sha: str) -> None:
+    """harmonic-forge#1179 AC3: `--kind ae` only, never the shared publish path."""
+    if _newest_on_sha(repo, issue, sha, "sweep") is not None:
+        fail(f"a sweep is already posted on {sha[:12]}; a standalone AE now would leave it before "
+             "the newest AE. Post the new AE with `--kind ae-and-sweep` so a sweep follows it "
+             "(R-0208, harmonic-forge#1179)")
+
+
 def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str,
                                      live_ids: set[str], tier_p: bool = False) -> None:
     """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
@@ -1170,6 +1178,67 @@ def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body
         fail(f"no AE is posted on {sha[:12]} -- the AE goes first and its `{AE_CALLS_LABEL}:` "
              "field must equal this sweep's external calls (R-0208, harmonic-forge#1115)")
     validate_external_calls_match(ae_external_calls(ae_body), swept)
+
+
+#: harmonic-forge#1179: a spec flags the cases that need the AE to name them
+#: (`**AE by name:** TC1: <what>; TC2: <what>`), and the AE answers on its own
+#: structured line (`**AE by name:** TC1, TC2`). The prose **Authorized:** line
+#: is never read for this.
+_BY_NAME = re.compile(r"(?i)^[ \t]*\*\*AE by name:\*\*[ \t]*(.*?)[ \t]*$")
+_BY_NAME_ID = re.compile(r"(?i)^(?:TC|P)[- ]?(\d+)$")
+_CARRIED_CASE = re.compile(r"(?im)^[ \t]*(?:\d+\.|[-*])[ \t]*TC[- ]?(\d+)[ \t]*[:—-]+[ \t]*carried forward")
+
+
+def _by_name_values(body: str) -> list[str]:
+    """Every unfenced `**AE by name:**` value in `body`."""
+    values, fenced = [], False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        match = None if fenced else _BY_NAME.match(line)
+        if match:
+            values.append(match.group(1))
+    return values
+
+
+def _by_name_ids(entries: list[str], where: str) -> set[str]:
+    ids = set()
+    for entry in entries:
+        match = _BY_NAME_ID.match(entry.strip())
+        if not match:
+            fail(f"{where} `**AE by name:**` entry {entry.strip()!r} is not a case id like TC2 "
+                 "(harmonic-forge#1179)")
+        ids.add(match.group(1))
+    return ids
+
+
+def spec_ae_by_name(spec_body: str) -> set[str]:
+    """The case ids the spec flags; an absent line or `none` flags nothing."""
+    values = _by_name_values(spec_body)
+    if not values or values[0].strip().lower() == "none":
+        return set()
+    return _by_name_ids([entry.split(":", 1)[0] for entry in values[0].split(";")], "the spec's")
+
+
+def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) -> None:
+    """Every flagged case is named on the AE's line or carried forward in the
+    sweep (R-0366); anything else is refused, by id."""
+    flagged = spec_ae_by_name(spec_body)
+    if not flagged:
+        return
+    values = _by_name_values(ae_body)
+    if len(values) != 1:
+        fail(f"the spec flags {', '.join('TC' + i for i in sorted(flagged, key=int))} for the AE by "
+             f"name, so the AE needs exactly one `**AE by name:** TC1, TC2` line (found {len(values)}) "
+             "(harmonic-forge#1179)")
+    answered = set() if values[0].strip().lower() == "none" else _by_name_ids(values[0].split(","), "the AE's")
+    carried = set(_CARRIED_CASE.findall(sweep_body or ""))
+    missing = flagged - answered - carried
+    if missing:
+        fail("the AE does not name the spec's by-name case(s) "
+             f"{', '.join('TC' + i for i in sorted(missing, key=int))} on its `**AE by name:**` line, "
+             "and the sweep does not carry them forward (harmonic-forge#1179)")
 
 
 def _canonical_case_id(case: str) -> str:
@@ -3333,6 +3402,7 @@ def main() -> None:
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
+            lambda: validate_ae_by_name(spec_once(), ae_body, sweep_body),  # harmonic-forge#1179
             lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
                 ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()),
                                               spec_is_tier_p(spec_once()))),
@@ -3427,16 +3497,26 @@ def main() -> None:
         # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(
             repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))
+        # harmonic-forge#1179: the sweep always has the spec, so a first AE
+        # posted without --spec-comment cannot skip the by-name check here.
+        steps.append(lambda: validate_ae_by_name(
+            spec_once(), _newest_on_sha(repo, args.issue, sha, "ae") or "", body))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),
             lambda: validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required),
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
+            # harmonic-forge#1179 AC3: a standalone AE after a sweep on this SHA
+            # would leave the newest sweep before it (R-0208).
+            lambda: refuse_orphan_ae(repo, args.issue, sha),
             # harmonic-forge#1115 AC9: the field is required; equals the newest sweep on this SHA.
             lambda: validate_ae_external_calls(
                 body, _latest_sweep_calls(repo, args.issue, sha, args.spec_comment)),
         ]
+        if args.spec_comment:
+            steps.append(lambda: validate_ae_by_name(
+                _spec_body(repo, args.spec_comment, args.issue), body, None))
     if args.dry_run:
         if args.kind == "carry-forward":
             steps.append(lambda: refuse_carry_forward(_carry_forward.validate(

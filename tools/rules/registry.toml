@@ -2190,7 +2190,7 @@ id = "R-0336"
 file = "rules/testing-gate.md"
 anchor = "gate-readiness-sweep"
 statement = "An AE leads with Authorized (which spec, which branch and SHA) and Next, above any evidence; it reports no finding and is not asked for one. Its external calls are a structured `External calls authorized:` field equal to the sweep's live-case `External calls:` union, never read from prose."
-text_sha = "260e57a27f38755b"
+text_sha = "470e5c78cff0bed4"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-post --kind ae", "l1-post --kind ae-and-sweep"], wired_in = "hrse" }]
 
 [[rule]]
