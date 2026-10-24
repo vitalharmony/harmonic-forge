@@ -496,7 +496,7 @@ class ClassifyTests(unittest.TestCase):
     def test_pr_merge_with_match_head_commit_keeps_its_target(self):
         """harmonic-forge#1077: the gated merge carries `--match-head-commit`;
         an all-digit SHA value is never read as the PR number."""
-        for cmd in ("gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash --match-head-commit abc123",
+        for cmd in ("gh pr merge 993 --repo vitalharmony/hrse --squash --match-head-commit abc123",
                     "gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse",
                     "gh pr merge --match-head-commit=1234567 993 --repo vitalharmony/hrse"):
             with self.subTest(cmd=cmd):
@@ -633,6 +633,25 @@ class BatchMergeCiTests(unittest.TestCase):
         self.assertTrue(timeouts, "no batch_gate hook found in .codex/hooks.json")
         self.assertLess(ba.CI_READ_BUDGET_S + 2, min(timeouts))
 
+    def test_the_carrier_and_cwd_reads_draw_on_the_hook_budget(self):
+        """F1178 pass 2, survivor 2: no PreToolUse read outlives the one budget."""
+        spent = time.monotonic() - ba.CI_READ_BUDGET_S - 1
+        with mock.patch.object(ba, "_HOOK_T0", spent), \
+             mock.patch.object(ba.subprocess, "run", side_effect=AssertionError("ran past the budget")):
+            self.assertIsNone(ba._pr_carriers("vitalharmony/hrse", 1202,
+                                              cache_path=Path(tempfile.mkdtemp()) / "c.json"))
+            self.assertIsNone(ba.cwd_repo("/tmp", runner=mock.Mock(side_effect=AssertionError("ran"))))
+
+    def test_the_carrier_read_timeout_is_what_is_left_of_the_budget(self):
+        seen = {}
+        def fake_run(argv, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        with mock.patch.object(ba, "_HOOK_T0", time.monotonic()), \
+             mock.patch.object(ba.subprocess, "run", side_effect=fake_run):
+            ba._pr_carriers("vitalharmony/hrse", 1202, cache_path=Path(tempfile.mkdtemp()) / "c.json")
+        self.assertLessEqual(seen["timeout"], ba.CI_READ_BUDGET_S)
+
     def test_an_exhausted_budget_reads_unknown(self):
         expired = ba._ci_runner("vitalharmony/harmonic-forge", deadline=0.0)
         # `true` would succeed; only the spent budget makes it fail.
@@ -683,6 +702,20 @@ class DecideCiGuardTests(StateFixture):
                 result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash {form}",
                                    state_path=self.state_path)
                 self.assertEqual(result[0], "allow")
+
+    def test_a_repeated_pin_asks_whatever_the_order(self):
+        """F1178 pass 2, survivor 1: gh keeps the last of a repeated flag, so a
+        repeat is never bound, even when one of the pins is the judged SHA."""
+        self._grant()
+        other = "a" * 40
+        for pins in (f"--match-head-commit {JUDGED} --match-head-commit {other}",
+                     f"--match-head-commit {other} --match-head-commit {JUDGED}",
+                     f"--match-head-commit={JUDGED} --match-head-commit {JUDGED}"):
+            with self.subTest(pins=pins):
+                result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse {pins}",
+                                   state_path=self.state_path)
+                self.assertEqual(result[0], "ask")
+                self.assertIn("pinned 2 times", result[1])
 
     def test_the_rest_merge_form_is_never_bound_so_it_asks(self):
         self._grant()

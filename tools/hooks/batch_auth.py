@@ -590,15 +590,26 @@ _ORIGIN_SLUG = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/
                           re.IGNORECASE)
 
 
+def _hook_seconds_left() -> float:
+    """What is left of the one PreToolUse time budget (harmonic-forge#1178
+    sticky-wicket PATCH): every subprocess the hook runs before deciding draws
+    on `_HOOK_T0 + CI_READ_BUDGET_S`, so no single read can outlast Codex's
+    10 s batch_gate timeout, which would let the merge through unjudged."""
+    return max(0.0, _HOOK_T0 + CI_READ_BUDGET_S - time.monotonic())
+
+
 def cwd_repo(cwd: str | None, runner=subprocess.run) -> str | None:
     """`owner/repo` of the checkout at `cwd`, from `git remote get-url origin`
     (the repo a bare `gh issue close N` acts on), parsed as
     `check_receipt.repo_slug` parses remotes. None when unresolvable."""
     if not cwd:
         return None
+    left = _hook_seconds_left()
+    if left <= 0:
+        return None
     try:
         found = runner(["git", "-C", cwd, "remote", "get-url", "origin"],
-                       capture_output=True, text=True, check=False, timeout=10)
+                       capture_output=True, text=True, check=False, timeout=left)
     except (OSError, subprocess.SubprocessError):
         return None
     if getattr(found, "returncode", 1) != 0:
@@ -1017,6 +1028,9 @@ def _pr_carriers(repo: str, pr_number: int,
     cached = _carrier_cache_read(key, path)
     if cached is not None:
         return cached
+    left = _hook_seconds_left()
+    if left <= 0:
+        return None
     try:
         result = subprocess.run(
             ["gh", "api", f"repos/{repo}/pulls/{pr_number}",
@@ -1029,7 +1043,7 @@ def _pr_carriers(repo: str, pr_number: int,
              # it asserted only the first three argv entries and stubbed the
              # rest, so the wrong field name was invisible to 90 green tests.
              "--jq", ".head.ref, .title"],
-            capture_output=True, text=True, timeout=30, env=_slot_env(repo),  # harmonic-forge#804
+            capture_output=True, text=True, timeout=left, env=_slot_env(repo),  # harmonic-forge#804, #1178
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1164,19 +1178,29 @@ def merge_ci_state(repo: str, number: int, run=None) -> tuple[str, str, str | No
     return state, f"{sha[:12]}: {detail}", sha
 
 
-def _pinned_head(tokens: list[str]) -> str | None:
-    """The `--match-head-commit` value of a `gh pr merge` segment, else None.
-    The REST merge form is never bound: where gh puts its `sha=` field depends
-    on other flags (the same rule block_missing_preclose_inspection holds)."""
+def _pinned_heads(tokens: list[str]) -> list[str]:
+    """Every `--match-head-commit` value of a `gh pr merge` segment, in both
+    spellings. The REST merge form is never bound and yields none: where gh
+    puts its `sha=` field depends on other flags (the same rule
+    block_missing_preclose_inspection holds)."""
     rest = strip_invocation_prefix(tokens)[1:]
     if rest[:2] != ["pr", "merge"]:
-        return None
+        return []
+    pins = []
     for i, token in enumerate(rest):
         if token == "--match-head-commit" and i + 1 < len(rest):
-            return rest[i + 1]
-        if token.startswith("--match-head-commit="):
-            return token.split("=", 1)[1]
-    return None
+            pins.append(rest[i + 1])
+        elif token.startswith("--match-head-commit="):
+            pins.append(token.split("=", 1)[1])
+    return pins
+
+
+def _pinned_head(tokens: list[str]) -> str | None:
+    """The merge's one pin, or None. gh keeps the LAST value of a repeated
+    flag, so a repeat is never bound: the hook could judge one SHA while gh
+    merges another (F1178 preclose pass 2, survivor 1)."""
+    pins = _pinned_heads(tokens)
+    return pins[0] if len(pins) == 1 else None
 
 
 def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
@@ -1358,7 +1382,9 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
                 return "ask", reason + (
                     f"\n\n[BATCH] {key} is authorized and CI is green on PR #{number}'s head "
                     f"`{(judged or '?')[:12]}`, but the merge is "
-                    + (f"pinned to `{pinned[:12]}`" if pinned else "not pinned")
+                    + (f"pinned to `{pinned[:12]}`" if pinned else
+                       f"pinned {len(_pinned_heads(tokens))} times (one pin only; gh keeps the last)"
+                       if len(_pinned_heads(tokens)) > 1 else "not pinned")
                     + f". Re-run it with `--match-head-commit {judged or '<head sha>'}` so "
                     "the merged SHA is the one judged (harmonic-forge#1178).")
             allow_reason = f"BATCH-authorized ({key})"
