@@ -54,23 +54,16 @@ from _auto_ae import _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
 
 
-_SPEC_BY_NAME_VALUE = re.compile(r"(?i)^(?:none|TC\d+:[ \t]*\S[^;]*(?:;[ \t]*TC\d+:[ \t]*\S[^;]*)*)$")
-
-
 def require_ae_by_name(body: str) -> None:
-    """harmonic-forge#1179 AC1: at most one unfenced `**AE by name:**` line on a
-    spec, `none` or `TCn: <what>` entries joined by `; `."""
-    import l1_post  # noqa: PLC0415
-    values = l1_post._by_name_values(body)
-    misses = l1_post._by_name_near_misses(body)
-    if misses:
-        print(f"[post-comment] refused: {misses[0]!r} mentions `AE by name` but is not the line; "
-              "write it exactly as `**AE by name:** none` or `**AE by name:** TC1: <what>; TC2: "
-              "<what>` (harmonic-forge#1179).", file=sys.stderr)
-        raise SystemExit(2)
-    if len(values) > 1 or (values and not _SPEC_BY_NAME_VALUE.match(values[0].strip())):
-        print("[post-comment] refused: a Lane 3 spec carries at most one `**AE by name:**` line, "
-              "`none` or `TC1: <what>; TC2: <what>` (harmonic-forge#1179).", file=sys.stderr)
+    """harmonic-forge#1179 AC1: the spec's `**AE by name:**` line parses, with
+    the same grammar l1_post re-applies at AE time (`ae_by_name.py`)."""
+    import ae_by_name  # noqa: PLC0415
+    try:
+        ae_by_name.parse_spec(body)
+    except ae_by_name.ByNameError as exc:
+        print(f"[post-comment] refused: {exc}; a Lane 3 spec carries at most one line, "
+              "`**AE by name:** none` or `**AE by name:** TC1: <what>; TC2: <what>` "
+              "(harmonic-forge#1179).", file=sys.stderr)
         raise SystemExit(2)
 
 

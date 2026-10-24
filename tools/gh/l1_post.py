@@ -1182,68 +1182,23 @@ def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body
     validate_external_calls_match(ae_external_calls(ae_body), swept)
 
 
-#: harmonic-forge#1179: a spec flags the cases that need the AE to name them
-#: (`**AE by name:** TC1: <what>; TC2: <what>`), and the AE answers on its own
-#: structured line (`**AE by name:** TC1, TC2`). The prose **Authorized:** line
-#: is never read for this.
-_BY_NAME = re.compile(r"(?i)^[ \t]*\*\*AE by name:\*\*[ \t]*(.*?)[ \t]*$")
-#: Any unfenced line that mentions the flag. One that misses `_BY_NAME` is a
-#: near miss (`- **AE by name:**`, `**AE by name**:`, `**Needing AE by
-#: name:**`): refused, never read as absent, which would flag nothing and let
-#: the hrse#2512 failure through (F1179 preclose pass 1, survivor 1).
-_BY_NAME_MENTION = re.compile(r"(?i)\bAE[ \t]+by[ \t]+name\b")
-_BY_NAME_ID = re.compile(r"(?i)^(?:TC|P)[- ]?(\d+)$")
-_CARRIED_CASE = re.compile(r"(?im)^[ \t]*(?:\d+\.|[-*])[ \t]*TC[- ]?(\d+)[ \t]*[:—-]+[ \t]*carried forward")
-
-
-def _by_name_values(body: str) -> list[str]:
-    """Every unfenced `**AE by name:**` value in `body`."""
-    values, fenced = [], False
-    for line in body.splitlines():
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        match = None if fenced else _BY_NAME.match(line)
-        if match:
-            values.append(match.group(1))
-    return values
-
-
-def _by_name_near_misses(body: str) -> list[str]:
-    """Every unfenced line that mentions `AE by name` but is not the exact line."""
-    misses, fenced = [], False
-    for line in body.splitlines():
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        if not fenced and _BY_NAME_MENTION.search(line) and not _BY_NAME.match(line):
-            misses.append(line.strip())
-    return misses
-
-
-def _by_name_ids(entries: list[str], where: str) -> set[str]:
-    ids = set()
-    for entry in entries:
-        match = _BY_NAME_ID.match(entry.strip())
-        if not match:
-            fail(f"{where} `**AE by name:**` entry {entry.strip()!r} is not a case id like TC2 "
-                 "(harmonic-forge#1179)")
-        ids.add(match.group(1))
-    return ids
+#: harmonic-forge#1179: the `**AE by name:**` grammar lives in one module,
+#: `ae_by_name.py`, used here at AE and sweep time and by
+#: post_lane_discussion.py at spec-post time, so the two can never disagree
+#: (reforged after preclose pass 2: each file once re-matched the line with
+#: its own regex). The prose **Authorized:** line is never read for this.
+import ae_by_name  # noqa: E402
 
 
 def spec_ae_by_name(spec_body: str) -> set[str]:
-    """The case ids the spec flags; an absent line or `none` flags nothing.
-    A near-miss line refuses: it is never read as absent."""
-    misses = _by_name_near_misses(spec_body)
-    if misses:
-        fail(f"the spec carries a near-miss `AE by name` line ({misses[0]!r}); write it exactly as "
-             "`**AE by name:** none` or `**AE by name:** TC1: <what>; TC2: <what>`, then re-post the "
-             "spec (harmonic-forge#1179)")
-    values = _by_name_values(spec_body)
-    if not values or values[0].strip().lower() == "none":
-        return set()
-    return _by_name_ids([entry.split(":", 1)[0] for entry in values[0].split(";")], "the spec's")
+    """The canonical case ids the spec flags. A line that does not parse
+    refuses: it is never read as absent."""
+    try:
+        return ae_by_name.parse_spec(spec_body)
+    except ae_by_name.ByNameError as exc:
+        fail(f"{exc}; re-post the spec with `**AE by name:** none` or "
+             "`**AE by name:** TC1: <what>; TC2: <what>` (harmonic-forge#1179)")
+    return set()  # unreachable: fail() raises
 
 
 def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) -> None:
@@ -1251,31 +1206,26 @@ def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) ->
     sweep (R-0366); anything else is refused, by id.
 
     `sweep_body=None` is a standalone AE before its sweep exists: only the
-    AE's line is checked (at most one, every entry a case id). Which flagged
-    cases the sweep carries forward is not known yet, so the set rule is left
-    to the sweep side, which always runs it (F1179 preclose pass 1, survivor 2)."""
+    AE's line is checked. Which flagged cases the sweep carries forward is not
+    known yet, so the set rule is left to the sweep side, which always runs it."""
     flagged = spec_ae_by_name(spec_body)
     if not flagged:
         return
-    values = _by_name_values(ae_body)
-    if sweep_body is None:
-        if len(values) > 1:
-            fail(f"the AE carries {len(values)} `**AE by name:**` lines; it takes at most one "
-                 "(harmonic-forge#1179)")
-        if values and values[0].strip().lower() != "none":
-            _by_name_ids(values[0].split(","), "the AE's")
+    try:
+        answered = ae_by_name.parse_ae(ae_body)
+    except ae_by_name.ByNameError as exc:
+        fail(f"{exc} (harmonic-forge#1179)")
         return
-    if len(values) != 1:
-        fail(f"the spec flags {', '.join('TC' + i for i in sorted(flagged, key=int))} for the AE by "
-             f"name, so the AE needs exactly one `**AE by name:** TC1, TC2` line (found {len(values)}) "
-             "(harmonic-forge#1179)")
-    answered = set() if values[0].strip().lower() == "none" else _by_name_ids(values[0].split(","), "the AE's")
-    carried = set(_CARRIED_CASE.findall(sweep_body or ""))
-    missing = flagged - answered - carried
+    if sweep_body is None:
+        return
+    if answered is None:
+        fail(f"the spec flags {ae_by_name.label(flagged)} for the AE by name, so the AE needs one "
+             "`**AE by name:** TC1, TC2` line (harmonic-forge#1179)")
+        return
+    missing = flagged - answered - ae_by_name.carried(sweep_body)
     if missing:
-        fail("the AE does not name the spec's by-name case(s) "
-             f"{', '.join('TC' + i for i in sorted(missing, key=int))} on its `**AE by name:**` line, "
-             "and the sweep does not carry them forward (harmonic-forge#1179)")
+        fail(f"the AE does not name the spec's by-name case(s) {ae_by_name.label(missing)} on its "
+             "`**AE by name:**` line, and the sweep does not carry them forward (harmonic-forge#1179)")
 
 
 def _canonical_case_id(case: str) -> str:

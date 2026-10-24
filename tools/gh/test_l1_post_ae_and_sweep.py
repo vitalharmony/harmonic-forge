@@ -878,7 +878,7 @@ class AeByNameThroughMain(ExternalCallsThroughMain):
                      "**Needing AE by name:** TC1 runs the advisory lookup"):
             with self.subTest(line=line):
                 self.spec = LIVE_SPEC.replace("\n\n", "\n\n" + line + "\n", 1)
-                self._refused(lambda: self._run(self.ae, LIVE_SWEEP), "near-miss")
+                self._refused(lambda: self._run(self.ae, LIVE_SWEEP), "is not the line")
 
     # Survivor 2: a first standalone AE defers carried-forward cases to its sweep.
     def test_a_first_standalone_partial_ae_posts_and_its_sweep_carries_the_rest(self) -> None:
