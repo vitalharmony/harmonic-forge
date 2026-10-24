@@ -1101,6 +1101,10 @@ def complete(args: argparse.Namespace) -> int:
         if grant is not None:
             emit_force(repo, args.issue, head_sha, "force", 0, grant, outcome="reserved-not-recorded")
         raise
+    # Emitted straight after the durable write, before any output that can
+    # fail (F1169 post-verdict check: a broken stdout skipped it).
+    if args.force:
+        emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", surviving, grant)
     print(f"preclose-check: recorded pass "
           f"{len(preclose_passes.current(preclose_passes.history(read_receipt(path))))} of at most "
           f"{preclose_passes.MAX_PASSES} for {repo}#{args.issue} at {head_sha[:12]}")
@@ -1112,8 +1116,6 @@ def complete(args: argparse.Namespace) -> int:
     route = preclose_passes.cluster_message(read_receipt(path), repo, args.issue)
     if route:
         print(f"  {route}")
-    if args.force:
-        emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", surviving, grant)
     receipt = read_receipt(path) or {}
     passes = preclose_passes.current(preclose_passes.history(receipt))
     emit_pass(repo, args.issue, head_sha, passes[-1] if passes else {}, {

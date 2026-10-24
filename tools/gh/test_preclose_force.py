@@ -137,6 +137,24 @@ class ReserveBeforeWrite(base.ScratchRepo):
         self.assertEqual(json.loads(self.store().read_text())["status"], "consumed")
         self.assertEqual(events, ["reserved-not-recorded"])
 
+    def test_a_print_failure_after_the_write_still_emits_the_recorded_event(self) -> None:
+        """F1169 post-verdict check: a closed stdout after the receipt write."""
+        self.grant_force()
+        events: list = []
+        real_print = print
+
+        def broken(*args, **kwargs):
+            if str(args[0] if args else "").startswith("preclose-check: recorded pass"):
+                raise BrokenPipeError("closed stdout")
+            return real_print(*args, **kwargs)
+
+        with mock.patch("builtins.print", side_effect=broken), \
+                mock.patch.object(preclose, "emit_force",
+                                  side_effect=lambda *a, **k: events.append(k.get("outcome", "recorded"))), \
+                self.assertRaises(BrokenPipeError):
+            self.complete(force=True)
+        self.assertEqual(events, ["recorded"])
+
 
 if __name__ == "__main__":
     unittest.main()
