@@ -192,7 +192,10 @@ to sticky-wicket. `--plan` and `--complete` refuse until `--cluster-verdict`
 records PATCH; REFORGE refuses an ordinary pass and proceeds only under the
 operator's `--force --reforge`, which starts a new epoch. An unresolved
 cluster may be bypassed by the operator's `--force` (with or without
-`--reforge`). The cluster and verdict survive planned and completed receipt
+`--reforge`). Each override needs the operator's FORCE grant of its own
+mode (`rules/lane-shorthand.md` § FORCE, R-0418): `FORCE <KEY>: …` for
+`--force`, `FORCE <KEY> reforge <sha>: …` for `--force --reforge`, and
+`FORCE <KEY> cluster: …` for `--cluster-verdict --force`. The cluster and verdict survive planned and completed receipt
 writes and do not count as a pass.
 
 **At most two passes per issue** (operator ruling 2026-09-30,

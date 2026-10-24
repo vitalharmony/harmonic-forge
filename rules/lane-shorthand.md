@@ -331,6 +331,31 @@ the receipt and the public `## IMC waiver` comment are an audit trail, not
 proof against a session that can write files.
 <!-- /R-0384 -->
 
+## `FORCE` — the operator's preclose override
+
+Grammar: **`FORCE` + issue key + optional mode + `:` + reason**, as the
+prompt's first line, typed unindented and uppercase. Three modes:
+
+| Line | Grant | Authorizes |
+|---|---|---|
+| `FORCE F1169: <reason>` | `plain`, bound to the covered head | `preclose_check.py --complete --force` |
+| `FORCE F1174 reforge <sha>: <reason>` | `reforge`, bound to the typed 12–40 hex SHA prefix | `--plan`/`--complete --force --reforge` on a head starting with it |
+| `FORCE F1174 cluster: <reason>` | `cluster`, bound to the covered head | `--cluster-verdict --force` |
+
+<!-- R-0418 -->
+The hook writes one grant per issue (`force_grant.py`, 1h TTL) only for an
+operator-typed first line passing R-0117; a later FORCE line replaces the
+grant and its receipt names the one replaced. An unknown mode, a reforge
+with no SHA or a malformed one, or a cluster with a SHA refuses and writes
+nothing. Each override requires and consumes the grant of its own mode: a
+plain grant never authorizes `--reforge` or a cluster bypass, and a grant
+bound to another head refuses. A grant written before harmonic-forge#1174
+has no mode and is plain. `--cluster-verdict --force` reserves its grant
+only after every validation, so a mistyped comment URL never spends it.
+The grant file and the public comment are an audit trail, not proof
+against a session that can write the grant store.
+<!-- /R-0418 -->
+
 ## Operator → lane triggers
 
 <!-- R-0343 -->

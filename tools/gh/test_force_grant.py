@@ -199,5 +199,55 @@ class PrecloseGateTests(Store):
         self.assertEqual((reforged["attrs"]["granted"], reforged["attrs"]["mode"]), (False, "reforge"))
 
 
+
+class ModeBindingTests(Store):
+    """harmonic-forge#1174 AC2: each override needs a grant of its own mode."""
+
+    def usable(self, mode: str = "plain", sha: str | None = SHA, prefix: str | None = None) -> dict:
+        G.write_pending(KEY, REPO, ISSUE, sha, "r", "s1", "FORCE line", NOW, mode=mode, sha_prefix=prefix)
+        return G.record(KEY, now=NOW, runner=self.runner({}))
+
+    def test_plain_grant_does_not_authorize_reforge(self):
+        self.usable()
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, SHA, NOW, mode="reforge")
+        self.assertIn("plain force, not a reforge one", str(ctx.exception))
+
+    def test_reforge_grant_does_not_authorize_plain_force(self):
+        self.usable("reforge", None, SHA[:12])
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, SHA, NOW)
+
+    def test_reforge_grant_matches_its_prefix_only(self):
+        self.usable("reforge", None, SHA[:12])
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="reforge")["mode"], "reforge")
+
+    def test_reforge_grant_for_another_head_is_refused(self):
+        self.usable("reforge", None, SHA[:12])
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, MOVED, NOW, mode="reforge")
+        self.assertIn("names aaaaaaaaaaaa", str(ctx.exception))
+
+    def test_cluster_grant_binds_the_full_sha(self):
+        self.usable("cluster")
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="cluster")["mode"], "cluster")
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, MOVED, NOW, mode="cluster")
+
+    def test_a_grant_with_no_mode_reads_as_plain(self):
+        self.usable()
+        path = G.grant_path(KEY)
+        data = json.loads(path.read_text()); data.pop("mode", None); data.pop("sha_prefix", None)
+        path.write_text(json.dumps(data))
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW)["key"], KEY)
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, SHA, NOW, mode="reforge")
+
+    def test_consume_checks_the_mode_too(self):
+        grant = self.usable("cluster")
+        with self.assertRaises(G.GrantRefused):
+            G.consume(KEY, grant["granted_at"], SHA, NOW, mode="plain")
+        self.assertEqual(G.consume(KEY, grant["granted_at"], SHA, NOW, mode="cluster")["status"], "consumed")
+
 if __name__ == "__main__":
     unittest.main()

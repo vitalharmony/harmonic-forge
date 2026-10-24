@@ -184,3 +184,14 @@ R-0375's same-issue sentence splits by lane (a rework amends Lane 2's task, a FA
 amends Lane 1's and never reaches Lane 2, R-0207). It must fire mid-task without
 being consulted, so it stays inline.
 """
+
+[[increase]]
+date = "2026-10-23"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 4288
+why = """
+Cumulative since the last baseline: 2862 (entry above) plus harmonic-forge#1174 (1426):
+the FORCE section (R-0418), its three modes and their bindings. Lane 1 names the
+exact FORCE line in the turn it asks the operator for one, so the grammar must be
+loaded without being consulted, beside BATCH and IMC.
+"""

@@ -793,7 +793,30 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
 
 #: `FORCE <KEY>: <reason>` (harmonic-forge#1169): uppercase, unindented, on the
 #: prompt's first line. A lowercase or misplaced FORCE is refused out loud.
-_FORCE_RE = re.compile(r"^FORCE[ \t]+([A-Za-z]\d{1,6})[ \t]*:[ \t]*(.*)$")
+#: harmonic-forge#1174: `FORCE <KEY> [reforge <sha> | cluster]: <reason>`. The
+#: tokens between the key and the colon are captured loosely and validated in
+#: `_force_mode`, so a malformed mode gets its own refusal, never the
+#: "first line" message.
+_FORCE_RE = re.compile(r"^FORCE[ \t]+([A-Za-z]\d{1,6})((?:[ \t]+[^ \t:]+)*?)[ \t]*:[ \t]*(.*)$")
+_FORCE_SHA_RE = re.compile(r"^[0-9a-f]{12,40}$")
+
+
+def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
+    """`(mode, sha_prefix)` for a FORCE line's mode tokens, or a refusal reason."""
+    if not tokens:
+        return "plain", None
+    word, rest = tokens[0], tokens[1:]
+    if word == "reforge":
+        if len(rest) != 1:
+            return "a reforge FORCE names the head it approves: `FORCE <KEY> reforge <sha>: <reason>`"
+        if not _FORCE_SHA_RE.match(rest[0].lower()):
+            return f"{rest[0]!r} is not a 12-40 character hex commit SHA"
+        return "reforge", rest[0].lower()
+    if word == "cluster":
+        if rest:
+            return "a cluster FORCE takes no SHA: `FORCE <KEY> cluster: <reason>`"
+        return "cluster", None
+    return f"unknown FORCE mode {word!r}: the modes are `reforge <sha>` and `cluster` (lowercase)"
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
 
 
@@ -828,7 +851,11 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
                 "unindented and uppercase, as `FORCE <KEY>: <reason>`. No grant written.")
     if first not in dict(directive_lines(prompt)):
         return "FORCE REFUSED: a FORCE line inside a fenced block or blockquote is quotation. No grant written."
-    key, reason = match.group(1).upper(), match.group(2).strip()
+    key, reason = match.group(1).upper(), match.group(3).strip()
+    mode = _force_mode(match.group(2).split())
+    if isinstance(mode, str):
+        return f"FORCE REFUSED for {key}: {mode}. No grant written (harmonic-forge#1174)."
+    mode, sha_prefix = mode
     if not reason:
         return f"FORCE REFUSED for {key}: the reason is empty. No grant written."
     provenance = _provenance_refusal(prompt, first)
@@ -845,14 +872,25 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
         return (f"FORCE REFUSED for {key}: {repo} is a cross-account repo, and FORCE fails closed "
                 "there. No grant written.")
     grants = _force_module()
-    head = grants.covered_head(repo, number)
-    if not head:
-        return (f"FORCE REFUSED for {key}: {repo}#{number} has no preclose receipt, so there is "
-                "no head to bind the force to. No grant written.")
-    grant = grants.write_pending(key, repo, number, head, reason, session_id, lines[first], now)
-    return (f"FORCE: pending grant written for {key} at {head[:12]} (single use, until "
-            f"{grant['expires_at']}). Next: `python3 tools/gh/force_grant.py record --key {key}`, "
-            "then the non-force preflight and the --force run (harmonic-forge#1169).")
+    head = None
+    if mode != "reforge":
+        # A reforge binds the head the operator typed; it may start before
+        # that head has any receipt (harmonic-forge#1174).
+        head = grants.covered_head(repo, number)
+        if not head:
+            return (f"FORCE REFUSED for {key}: {repo}#{number} has no preclose receipt, so there is "
+                    "no head to bind the force to. No grant written.")
+    previous = grants.read_grant(key)
+    grant = grants.write_pending(key, repo, number, head, reason, session_id, lines[first], now,
+                                 mode=mode, sha_prefix=sha_prefix)
+    bound = (head or sha_prefix or "")[:12]
+    replaced = ""
+    if previous:
+        replaced = (f" It replaces the {previous.get('mode') or 'plain'} grant at "
+                    f"{str(previous.get('sha') or previous.get('sha_prefix') or '?')[:12]}.")
+    return (f"FORCE: pending {mode} grant written for {key} at {bound} (single use, until "
+            f"{grant['expires_at']}).{replaced} Next: `python3 tools/gh/force_grant.py record --key "
+            f"{key}`, then the non-force preflight and the --force run (harmonic-forge#1169, #1174).")
 
 
 def main() -> None:
