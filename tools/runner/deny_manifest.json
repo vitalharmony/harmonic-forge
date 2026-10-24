@@ -140,6 +140,9 @@
         "./**/tools/gh/_carry_forward.py",
         "./**/tools/gh/force_grant.py",
         "./**/tools/gh/check_lane3_ready.py",
+        "./**/tools/gh/_prod_run.py",
+        "./**/tools/gh/_exempt_conflict.py",
+        "./**/tools/gh/gate_ci.py",
         "./**/tools/gh/preclose_check.py",
         "./**/tools/gh/preclose_passes.py",
         "./**/tools/gh/preclose_enrollment.py",
@@ -155,7 +158,7 @@
         "./**/docs/decisions/**"
       ],
       "regexes": [
-        "(^|/)tools/gh/(_auto_ae|_carry_forward|_standing_grant|imc_waiver|force_grant|preclose_check|preclose_passes|preclose_enrollment|kill_check|pitch_receipt|sticky_receipt|check_lane3_ready)\\.py$",
+        "(^|/)tools/gh/(_auto_ae|_carry_forward|_standing_grant|imc_waiver|force_grant|preclose_check|preclose_passes|preclose_enrollment|kill_check|pitch_receipt|sticky_receipt|check_lane3_ready|_prod_run|_exempt_conflict|gate_ci)\\.py$",
         "(^|/)tools/runner/",
         "(^|/)tools/gate/",
         "(^|/)(rules|docs/decisions)/"

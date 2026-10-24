@@ -265,7 +265,8 @@ class PanelSizingTests(unittest.TestCase):
                      "tools/gh/imc_waiver.py", "tools/gh/force_grant.py", "tools/gh/preclose_check.py",
                      "tools/gh/preclose_passes.py", "tools/gh/preclose_enrollment.py",
                      "tools/gh/kill_check.py", "tools/gh/pitch_receipt.py", "tools/gh/sticky_receipt.py",
-                     "tools/gh/check_lane3_ready.py", "tools/runner/verdict.py", "tools/runner/te_queue.py",
+                     "tools/gh/check_lane3_ready.py", "tools/gh/_prod_run.py",
+                     "tools/gh/_exempt_conflict.py", "tools/gh/gate_ci.py", "tools/runner/verdict.py", "tools/runner/te_queue.py",
                      "tools/gate/hrse_gate_ae.py", "rules/lane-shorthand.md",
                      "docs/decisions/ADR-001.md", "tools/rules/registry.toml",
                      ".claude/skills/x/SKILL.md"):

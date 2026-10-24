@@ -97,7 +97,7 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # harmonic-forge#1176: R-0371's enumerated authorization surfaces.
     (re.compile(r"(^|/)tools/gh/(_auto_ae|_carry_forward|_standing_grant|imc_waiver|force_grant|"
                 r"preclose_check|preclose_passes|preclose_enrollment|kill_check|pitch_receipt|"
-                r"sticky_receipt|check_lane3_ready)\.py$"),
+                r"sticky_receipt|check_lane3_ready|_prod_run|_exempt_conflict|gate_ci)\.py$"),
      "authorization surface (R-0371) — mints, waives or gates a merge"),
     (re.compile(r"(^|/)tools/runner/"), "unattended runner — decides what is proposed for merge"),
     (re.compile(r"(^|/)tools/gate/"), "production gate — mints a production-run grant from the AE"),
