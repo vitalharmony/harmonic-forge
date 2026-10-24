@@ -83,6 +83,9 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # where they are SWITCHED ON. The module's own motivating incident ("a hook
     # that locked out Bash") edits wiring, not implementation.
     (re.compile(r"(^|/)\.claude/settings(\.local)?\.json$"), "hook wiring — arms/disarms every hook"),
+    # harmonic-forge#1176: after the specific settings entry, so its reason wins.
+    (re.compile(r"(^|/)\.claude/"), "Claude Code rules, skills and agents — loaded by every session"),
+    (re.compile(r"(^|/)(rules|docs/decisions)/"), "rule and decision text — what every gate enforces"),
     (re.compile(r"(^|/)\.codex/hooks\.json$"), "hook wiring — Codex"),
     (re.compile(r"(^|/)agents/[^/]+\.md$"), "agent definitions — carry executable hooks: frontmatter"),
     (re.compile(r"(^|/)\.githooks/"), "git hooks — core.hooksPath, fire on every commit"),
@@ -91,6 +94,13 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(^|/)\.github/workflows/"), "CI — gates every merge"),
     (re.compile(r"(^|/)(scripts|tools/gh)/l1_post\.py$"), "Lane 1 posting gate"),
     (re.compile(r"(^|/)(scripts|tools/gh)/post_lane1_issue\.py$"), "Lane 1 issue-body write path"),
+    # harmonic-forge#1176: R-0371's enumerated authorization surfaces.
+    (re.compile(r"(^|/)tools/gh/(_auto_ae|_carry_forward|_standing_grant|imc_waiver|force_grant|"
+                r"preclose_check|preclose_passes|preclose_enrollment|kill_check|pitch_receipt|"
+                r"sticky_receipt|check_lane3_ready|_prod_run|_exempt_conflict|gate_ci)\.py$"),
+     "authorization surface (R-0371) — mints, waives or gates a merge"),
+    (re.compile(r"(^|/)tools/runner/"), "unattended runner — decides what is proposed for merge"),
+    (re.compile(r"(^|/)tools/gate/"), "production gate — mints a production-run grant from the AE"),
     (re.compile(r"(^|/)scripts/.*migrat"), "migration — touches live data"),
     (re.compile(r"(^|/)backend/app/"), "application code — not tooling at all"),
     (re.compile(r"(^|/)frontend/src/"), "application code — not tooling at all"),
