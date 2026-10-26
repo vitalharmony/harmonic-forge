@@ -214,9 +214,12 @@ class ModeBindingTests(Store):
         self.assertIn("plain force, not a reforge one", str(ctx.exception))
 
     def test_reforge_grant_does_not_authorize_plain_force(self):
-        self.usable("reforge", None, SHA[:12])
-        with self.assertRaises(G.GrantRefused):
+        # The grant also carries the head's full SHA, so only the mode check can
+        # refuse: without it the plain branch's SHA match would pass (kill check 2).
+        self.usable("reforge", SHA, SHA[:12])
+        with self.assertRaises(G.GrantRefused) as ctx:
             G.require(REPO, ISSUE, SHA, NOW)
+        self.assertIn("authorizes a reforge force, not a plain one", str(ctx.exception))
 
     def test_reforge_grant_matches_its_prefix_only(self):
         self.usable("reforge", None, SHA[:12])
