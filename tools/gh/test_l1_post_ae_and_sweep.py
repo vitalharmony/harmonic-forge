@@ -42,7 +42,12 @@ _CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("
 # harmonic-forge#1115 AC9: a standalone AE or sweep reads the thread for the
 # other half; an empty fake thread, never a real `gh api` call from a test.
 import check_lane3_ready as _lane3_ready  # noqa: E402
-_SWEEP_CALLS_PATCH = _ci_mock.patch.object(_lane3_ready, "fetch_comments", return_value=[])
+# harmonic-forge#1179: the thread holds one Lane 3 spec, id 999, the spec the
+# tests name, so `_spec_body`'s newest-spec check passes; no footer, so no
+# other reader of the thread sees an AE or a sweep in it.
+_SWEEP_CALLS_PATCH = _ci_mock.patch.object(
+    _lane3_ready, "fetch_comments",
+    return_value=[{"id": 999, "body": "## Lane 3 Test Spec\n"}])
 
 # harmonic-forge#1115: these tests check the AE/sweep logic, not the dry-run
 # preflight gate (test_l1_post_dry_run.py owns that). With no session id the
@@ -247,7 +252,7 @@ class MainIntegrationTests(unittest.TestCase):
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
              patch.object(post, "write_receipt"), \
-             patch.object(check_lane3_ready, "fetch_comments", return_value=[]), \
+             patch.object(check_lane3_ready, "fetch_comments", return_value=[{"id": 999, "body": "## Lane 3 Test Spec\n"}]), \
              patch.object(_auto_ae, "auto_ae_refusal", return_value="auto-AE is off") as refusal, \
              patch.object(sys, "argv", self._argv()):
             with self.assertRaises(SystemExit):
@@ -265,7 +270,7 @@ class MainIntegrationTests(unittest.TestCase):
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
              patch.object(post, "write_receipt"), \
-             patch.object(check_lane3_ready, "fetch_comments", return_value=[]), \
+             patch.object(check_lane3_ready, "fetch_comments", return_value=[{"id": 999, "body": "## Lane 3 Test Spec\n"}]), \
              patch.object(sys, "argv", argv):
             with self.assertRaises(SystemExit) as ctx:
                 post.main()
@@ -377,14 +382,14 @@ class LeadOnBothHalves(unittest.TestCase):
         for f in (self.ae_file, self.sweep_file):
             f.unlink(missing_ok=True)
 
-    def _run(self, ae_body: str, sweep_body: str):
+    def _run(self, ae_body: str, sweep_body: str, extra: list[str] | None = None):
         self.ae_file.write_text(ae_body)
         self.sweep_file.write_text(sweep_body)
         argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge",
                 "--issue", "1", "--kind", "ae-and-sweep",
                 "--sha", FAKE_SHA, "--branch", "x",
                 "--ae-file", str(self.ae_file), "--sweep-file", str(self.sweep_file),
-                "--spec-comment", "999"]
+                "--spec-comment", "999"] + (extra or [])
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "comment_body",
                           side_effect=lambda r, i, b: (self.posted.append(b) or ("u", len(self.posted)))), \
@@ -461,16 +466,18 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         """The spec `_spec_body` returns; a test may route it through the real one."""
         return self.spec
 
-    def _run(self, ae_body: str, sweep_body: str):
+    def _run(self, ae_body: str, sweep_body: str, extra: list[str] | None = None):
         with patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)):
-            super()._run(ae_body, sweep_body)
+            super()._run(ae_body, sweep_body, extra)
 
-    def _standalone(self, kind: str, body: str, spec_comment: bool = True) -> None:
+    def _standalone(self, kind: str, body: str, spec_comment: bool = True,
+                    extra: list[str] | None = None) -> None:
         self.ae_file.write_text(body)
         argv = ["l1_post.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
                 "--kind", kind, "--sha", FAKE_SHA, "--branch", "x", "--file", str(self.ae_file)]
         if spec_comment:
             argv += ["--spec-comment", "999"]
+        argv += extra or []
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "_spec_body", side_effect=lambda repo, comment, issue: self._spec(repo, comment, issue)), \
              patch.object(post, "comment_body",
@@ -519,8 +526,14 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         self._on_thread(LIVE_SWEEP.replace("paid-api:tavily", "message:slack"), "sweep", "b" * 40)
         self._refused(lambda: self._standalone("ae", _ae("llm:anthropic")), "paid-api:tavily")
 
-    def test_a_standalone_ae_equal_to_the_newest_sweep_on_its_sha_posts(self) -> None:
+    def test_a_standalone_ae_after_a_sweep_on_its_sha_is_refused(self) -> None:
+        """harmonic-forge#1179 AC3: it would leave the newest sweep before it
+        (R-0208), even when its calls equal the sweep's."""
         self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _ae("llm:anthropic; paid-api:tavily")),
+                      "ae-and-sweep")
+
+    def test_the_first_standalone_ae_on_a_sha_still_posts(self) -> None:
         self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
         self.assertEqual(len(self.posted), 1)
 
@@ -535,10 +548,6 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
         sweep = LIVE_SWEEP + "  External calls: paid-api:serp\n"  # TC2 is `ac`
         self._run(_ae("llm:anthropic; paid-api:tavily"), sweep)
         self.assertEqual(len(self.posted), 2)
-        self.posted.clear()
-        self._on_thread(sweep, "sweep")
-        self._standalone("ae", _ae("llm:anthropic; paid-api:tavily"))
-        self.assertEqual(len(self.posted), 1)
         self.posted.clear()
         self.thread.clear()
         self._on_thread(_ae("llm:anthropic; paid-api:tavily"), "ae")
@@ -639,8 +648,16 @@ class ExternalCallsThroughMain(LeadOnBothHalves):
     def test_this_issues_spec_comment_is_accepted(self) -> None:
         self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
                                   "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/1"})
+        self.thread.append({"id": 999, "body": LIVE_SPEC})
         self._run(_ae("llm:anthropic; paid-api:tavily"), LIVE_SWEEP)
         self.assertEqual(len(self.posted), 2)
+
+    # harmonic-forge#1179 sticky-wicket PATCH, survivor 1: only the newest spec counts.
+    def test_an_older_spec_comment_refuses_on_every_path(self) -> None:
+        self._via_real_spec_body({"body": LIVE_SPEC, "issue_url":
+                                  "https://api.github.com/repos/vitalharmony/harmonic-forge/issues/1"})
+        self.thread += [{"id": 999, "body": LIVE_SPEC}, {"id": 1000, "body": LIVE_SPEC}]
+        self._every_path_refuses("--spec-comment 999 is not the newest Lane 3 spec")
 
     # Sticky-wicket PATCH 3 (F1115 survivor 3): only a Tier P spec canonicalizes P<n>.
     def test_a_non_tier_p_sweep_with_a_leading_p1_sub_bullet_attributes_calls_correctly(self) -> None:
@@ -818,6 +835,105 @@ class ProdRunFooterTests(MainIntegrationTests):
         self.assertIn("valid only for --kind ae", str(ctx.exception))
         mock_run.assert_not_called()
 
+
+
+FLAGGED = "**AE by name:** TC1: the advisory lookup; TC2: the scratch install\n"
+
+
+def _flag(body: str) -> str:
+    return body.replace("**Next:**", FLAGGED.replace("TC1: the advisory lookup; TC2: the scratch install",
+                                                     "TC1, TC2") + "**Next:**", 1)
+
+
+class AeByNameThroughMain(ExternalCallsThroughMain):
+    """harmonic-forge#1179 AC2/AC3: the AE answers the spec's flags by id."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.spec = LIVE_SPEC.replace("\n\n", "\n\n" + FLAGGED + "\n", 1)
+        self.ae = _ae("llm:anthropic; paid-api:tavily")
+
+    def test_an_ae_naming_every_flagged_case_posts(self) -> None:
+        self._run(_flag(self.ae), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_an_ae_omitting_a_flagged_case_is_refused_by_id(self) -> None:
+        partial = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1")
+        self._refused(lambda: self._run(partial, LIVE_SWEEP), "TC2", "harmonic-forge#1179")
+        self._refused(lambda: self._run(self.ae, LIVE_SWEEP), "AE by name")
+
+    def test_a_flagged_case_carried_forward_needs_no_name(self) -> None:
+        partial = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1")
+        carried = LIVE_SWEEP.replace("- TC2: ready, offline fixtures",
+                                     "- TC2: carried forward, not re-run: issuecomment-1; code unchanged")
+        self._run(partial, carried)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_the_sweep_side_refuses_an_earlier_ae_that_omitted_a_case(self) -> None:
+        """The first AE needs no --spec-comment, so the sweep is where it is caught."""
+        self._on_thread(_flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1"), "ae")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP), "TC2")
+
+    def test_an_unflagged_spec_needs_no_line(self) -> None:
+        self.spec = LIVE_SPEC
+        self._run(self.ae, LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    def test_ae_and_sweep_on_a_sha_that_already_has_a_sweep_posts(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._run(_flag(self.ae), LIVE_SWEEP)
+        self.assertEqual(len(self.posted), 2)
+
+    # F1179 preclose pass 1, survivor 1: a near miss is refused, never read as absent.
+    def test_a_near_miss_flag_line_refuses(self) -> None:
+        for line in ("- **AE by name:** TC1: the advisory lookup",
+                     "**AE by name**: TC1: the advisory lookup",
+                     "**Needing AE by name:** TC1 runs the advisory lookup"):
+            with self.subTest(line=line):
+                self.spec = LIVE_SPEC.replace("\n\n", "\n\n" + line + "\n", 1)
+                self._refused(lambda: self._run(self.ae, LIVE_SWEEP), "is not the line")
+
+    # Sticky-wicket PATCH (reforge pass 2, survivor 2): a standalone AE has no
+    # sweep to carry anything forward, so it must name every flagged case.
+    def test_a_standalone_ae_omitting_a_flagged_case_is_refused_by_id(self) -> None:
+        partial = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1")
+        self._refused(lambda: self._standalone("ae", partial), "TC2", "ae-and-sweep")
+        self.assertEqual(self.posted, [])
+
+    def test_a_standalone_ae_without_a_by_name_line_is_refused(self) -> None:
+        self._refused(lambda: self._standalone("ae", self.ae), "TC1", "TC2")
+        self.assertEqual(self.posted, [])
+
+    def test_a_standalone_ae_naming_every_flagged_case_posts(self) -> None:
+        self._standalone("ae", _flag(self.ae))
+        self.assertEqual(len(self.posted), 1)
+
+    # Survivor 4: the standalone AE-side check is live (a malformed line still refuses).
+    def test_a_standalone_ae_with_a_malformed_by_name_line_is_refused(self) -> None:
+        bad = _flag(self.ae).replace("**AE by name:** TC1, TC2", "**AE by name:** TC1 and TC2")
+        self._refused(lambda: self._standalone("ae", bad), "case id")
+
+    # Survivor 3 (AC5, R-0377): a production run's second AE posts with ae-and-sweep.
+    def test_a_standalone_prod_run_ae_after_a_sweep_is_refused_toward_ae_and_sweep(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._refused(lambda: self._standalone("ae", _flag(self.ae),
+                                               extra=["--prod-run", "count-label=Interpretation"]),
+                      "ae-and-sweep --prod-run")
+
+    def test_an_ae_and_sweep_prod_run_after_a_sweep_posts(self) -> None:
+        self._on_thread(LIVE_SWEEP, "sweep")
+        self._run(_flag(self.ae), LIVE_SWEEP, extra=["--prod-run", "count-label=Interpretation"])
+        self.assertEqual(len(self.posted), 2)
+
+    # Survivor 5: the dry run applies the same by-name check.
+    def test_the_dry_run_applies_the_by_name_check(self) -> None:
+        self._refused(lambda: self._run(self.ae, LIVE_SWEEP, extra=["--dry-run"]), "AE by name")
+
+
+# Only this class's own cases: the inherited AC9 cases run once, in their own class.
+for _name in [n for n in vars(ExternalCallsThroughMain) if n.startswith("test_")]:
+    if _name not in vars(AeByNameThroughMain):
+        setattr(AeByNameThroughMain, _name, None)
 
 if __name__ == "__main__":
     unittest.main()

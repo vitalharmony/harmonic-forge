@@ -428,6 +428,14 @@ def _spec_body(repo: str, spec_comment, issue: int) -> str:
     if not _auto_ae._is_spec({"body": body}):
         fail(f"--spec-comment {spec_comment} carries no Lane 3 spec marker (a `kind=spec` footer "
              "or a `Lane 3 Test Spec` heading) -- name this issue's Lane 3 spec (harmonic-forge#1115)")
+    # harmonic-forge#1179 sticky-wicket PATCH: an older spec would let its
+    # flags (or their absence) decide what the AE must answer.
+    import check_lane3_ready  # noqa: PLC0415
+    specs = [c for c in check_lane3_ready.fetch_comments(repo, issue) if _auto_ae._is_spec(c)]
+    newest = max(specs, key=lambda c: c["id"])["id"] if specs else None
+    if newest is None or int(newest) != int(spec_comment):
+        fail(f"--spec-comment {spec_comment} is not the newest Lane 3 spec on {repo}#{issue} "
+             f"(newest: {newest}) -- name the current spec (harmonic-forge#1179)")
     return body
 
 
@@ -1159,6 +1167,16 @@ def _latest_sweep_calls(repo: str, issue: int, sha: str, spec_comment: int | Non
     return sweep_external_calls(body, spec_live_ids(spec), spec_is_tier_p(spec))
 
 
+def refuse_orphan_ae(repo: str, issue: int, sha: str) -> None:
+    """harmonic-forge#1179 AC3: `--kind ae` only, never the shared publish path."""
+    if _newest_on_sha(repo, issue, sha, "sweep") is not None:
+        fail(f"a sweep is already posted on {sha[:12]}; a standalone AE now would leave it before "
+             "the newest AE. Post the new AE with `--kind ae-and-sweep` so a sweep follows it "
+             "(R-0208, harmonic-forge#1179). A production run's second AE (R-0377: a dry run and "
+             "its `--mode apply` are two AEs) posts the same way, with `--kind ae-and-sweep "
+             "--prod-run`, because check_lane3_ready requires a sweep after the newest AE")
+
+
 def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body: str,
                                      live_ids: set[str], tier_p: bool = False) -> None:
     """harmonic-forge#1115 AC9, the sweep side: R-0208 posts the AE first, so
@@ -1172,10 +1190,63 @@ def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body
     validate_external_calls_match(ae_external_calls(ae_body), swept)
 
 
+#: harmonic-forge#1179: the `**AE by name:**` grammar lives in one module,
+#: `ae_by_name.py`, used here at AE and sweep time and by
+#: post_lane_discussion.py at spec-post time, so the two can never disagree
+#: (reforged after preclose pass 2: each file once re-matched the line with
+#: its own regex). The prose **Authorized:** line is never read for this.
+import ae_by_name  # noqa: E402
+
+
+def spec_ae_by_name(spec_body: str) -> set[str]:
+    """The canonical case ids the spec flags. A line that does not parse
+    refuses: it is never read as absent."""
+    try:
+        return ae_by_name.parse_spec(spec_body)
+    except ae_by_name.ByNameError as exc:
+        fail(f"{exc}; re-post the spec with `**AE by name:** none` or "
+             "`**AE by name:** TC1: <what>; TC2: <what>` (harmonic-forge#1179)")
+    return set()  # unreachable: fail() raises
+
+
+def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) -> None:
+    """Every flagged case is named on the AE's line or carried forward in the
+    sweep (R-0366); anything else is refused, by id.
+
+    `sweep_body=None` is a standalone AE before its sweep exists. The orphan
+    guard (AC3) means no sweep is on that SHA yet, so nothing can be carried
+    forward: every flagged case must be on the AE's line."""
+    flagged = spec_ae_by_name(spec_body)
+    if not flagged:
+        return
+    try:
+        answered = ae_by_name.parse_ae(ae_body)
+    except ae_by_name.ByNameError as exc:
+        fail(f"{exc} (harmonic-forge#1179)")
+        return
+    if sweep_body is None:
+        missing = flagged - (answered or set())
+        if missing:
+            fail(f"the spec flags {ae_by_name.label(missing)} for the AE by name, and this "
+                 "standalone AE does not name them on an `**AE by name:**` line; name them, or "
+                 "post `ae-and-sweep` to carry them forward (harmonic-forge#1179)")
+        return
+    if answered is None:
+        fail(f"the spec flags {ae_by_name.label(flagged)} for the AE by name, so the AE needs one "
+             "`**AE by name:** TC1, TC2` line (harmonic-forge#1179)")
+        return
+    missing = flagged - answered - ae_by_name.carried(sweep_body)
+    if missing:
+        fail(f"the AE does not name the spec's by-name case(s) {ae_by_name.label(missing)} on its "
+             "`**AE by name:**` line, and the sweep does not carry them forward (harmonic-forge#1179)")
+
+
 def _canonical_case_id(case: str) -> str:
-    """`P2`, `TC2` and `2` are one case: the footer and Tier P branches
-    compare live ids against the sweep's canonical TC numbers."""
-    return re.sub(r"(?i)^(?:tc|p)[- ]?", "", case.strip()).lower()
+    """`P2`, `TC2`, `TC02` and `2` are one case: the footer and Tier P branches
+    compare live ids against the sweep's canonical TC numbers. Delegates to the
+    one canonicalizer, so the by-name check and the live-case checks agree on
+    every id (F1179 reforge pass 1, survivor 2)."""
+    return ae_by_name.canonical_id(case)
 
 
 def _canonical_live_ids(live) -> set[str]:
@@ -3333,6 +3404,7 @@ def main() -> None:
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
+            lambda: validate_ae_by_name(spec_once(), ae_body, sweep_body),  # harmonic-forge#1179
             lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
                 ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()),
                                               spec_is_tier_p(spec_once()))),
@@ -3427,16 +3499,26 @@ def main() -> None:
         # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(
             repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))
+        # harmonic-forge#1179: the sweep always has the spec, so a first AE
+        # posted without --spec-comment cannot skip the by-name check here.
+        steps.append(lambda: validate_ae_by_name(
+            spec_once(), _newest_on_sha(repo, args.issue, sha, "ae") or "", body))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),
             lambda: validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required),
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
+            # harmonic-forge#1179 AC3: a standalone AE after a sweep on this SHA
+            # would leave the newest sweep before it (R-0208).
+            lambda: refuse_orphan_ae(repo, args.issue, sha),
             # harmonic-forge#1115 AC9: the field is required; equals the newest sweep on this SHA.
             lambda: validate_ae_external_calls(
                 body, _latest_sweep_calls(repo, args.issue, sha, args.spec_comment)),
         ]
+        if args.spec_comment:
+            steps.append(lambda: validate_ae_by_name(
+                _spec_body(repo, args.spec_comment, args.issue), body, None))
     if args.dry_run:
         if args.kind == "carry-forward":
             steps.append(lambda: refuse_carry_forward(_carry_forward.validate(

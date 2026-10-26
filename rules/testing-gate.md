@@ -146,6 +146,15 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      equal the union of the sweep's live-case sets on the same SHA, checked
      at AE time and at sweep time. The **Authorized:** line is for humans;
      no tool reads it for calls.
+
+     **What a spec needs the AE to name, it flags on one line
+     (harmonic-forge#1179):** `**AE by name:** none` or
+     `**AE by name:** TC1: <what>; TC2: <what>` (an install, a free lookup
+     outside the call grammar, a widened scope). The AE answers on its own
+     `**AE by name:** TC1, TC2` line. `l1_post.py` refuses an AE or sweep
+     that leaves a flagged case neither named nor carried forward. A
+     standalone `--kind ae` after a sweep on the same SHA is refused: post
+     `--kind ae-and-sweep`, so a sweep always follows the newest AE.
 <!-- /R-0336 -->
 <!-- R-0366 -->
    - **A partial AE carries the other cases forward.** When an AE
