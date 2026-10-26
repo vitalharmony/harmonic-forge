@@ -111,6 +111,9 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "validate_sweep"), \
              unittest.mock.patch.object(L, "validate_ae_external_calls"), \
              unittest.mock.patch.object(L, "validate_sticky_wicket"), \
+             unittest.mock.patch(  # F1179: spec 42 is the newest; never a real gh call
+                 "check_lane3_ready.fetch_comments",
+                 return_value=[{"id": 42, "body": "## Lane 3 Test Spec\n"}]), \
              unittest.mock.patch.object(L, "run", return_value=unittest.mock.Mock(
                  returncode=0, stdout=json.dumps({  # F1115 PATCH 2: body + issue_url
                      "body": "## Lane 3 Test Spec\n\n<!-- l1-post v1; kind=spec; classes=1:ac -->",

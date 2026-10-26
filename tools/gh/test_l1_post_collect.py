@@ -173,7 +173,10 @@ class ValidatorOrderTests(unittest.TestCase):
                    # F1115 PATCH 1: the live-id resolver reads a real footer; the
                    # validator order, not the spec, is under test here.
                    mock.patch.object(l1_post, "spec_live_ids", return_value=set()),
-                   mock.patch.object(l1_post, "spec_is_tier_p", return_value=False)]
+                   mock.patch.object(l1_post, "spec_is_tier_p", return_value=False),
+                   # F1179: spec 9 is the issue's newest spec; never a real gh call.
+                   mock.patch("check_lane3_ready.fetch_comments",
+                              return_value=[{"id": 9, "body": "## Lane 3 Test Spec\n"}])]
         for name in {n for names in ORDER.values() for n in names}:
             patches.append(mock.patch.object(
                 l1_post, name, side_effect=lambda *a, _n=name, **k: calls.append(_n) or "spec"))
