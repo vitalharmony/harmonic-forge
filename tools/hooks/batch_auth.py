@@ -1178,44 +1178,50 @@ def merge_ci_state(repo: str, number: int, run=None) -> tuple[str, str, str | No
     return state, f"{sha[:12]}: {detail}", sha
 
 
-def _pinned_heads(tokens: list[str]) -> list[str]:
-    """Every `--match-head-commit` value of a `gh pr merge` segment, in both
-    spellings. The REST merge form is never bound and yields none: where gh
-    puts its `sha=` field depends on other flags (the same rule
-    block_missing_preclose_inspection holds)."""
-    rest = strip_invocation_prefix(tokens)[1:]
-    if rest[:2] != ["pr", "merge"]:
-        return []
-    pins = []
-    i = 2
-    while i < len(rest):
-        token = rest[i]
-        if token == "--":
-            # After `--` gh reads no flags; a pin there is not enforced, so
-            # the merge is ambiguous and must ask (F1178 post-verdict check).
-            return ["", ""]
-        if token == "--match-head-commit":
-            if i + 1 < len(rest):
-                pins.append(rest[i + 1])
-            i += 2
-            continue
-        if token.startswith("--match-head-commit="):
-            pins.append(token.split("=", 1)[1])
-        elif token in _PR_MERGE_VALUE_FLAGS:
-            # The next token is this flag's value, never a flag of its own:
-            # `--body --match-head-commit=X` sets the body, not a pin.
-            i += 2
-            continue
-        i += 1
-    return pins
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+_MERGE_METHODS = frozenset({"--squash", "--merge", "--rebase"})
+#: The one bound merge form (harmonic-forge#1178, operator ruling 2026-10-26,
+#: option a). Anything else asks.
+CANONICAL_MERGE = ("gh pr merge <N> --repo <owner/repo> [--squash|--merge|--rebase] "
+                   "[--delete-branch] --match-head-commit <40-hex sha>")
 
 
 def _pinned_head(tokens: list[str]) -> str | None:
-    """The merge's one pin, or None. gh keeps the LAST value of a repeated
-    flag, so a repeat is never bound: the hook could judge one SHA while gh
-    merges another (F1178 preclose pass 2, survivor 1)."""
-    pins = _pinned_heads(tokens)
-    return pins[0] if len(pins) == 1 else None
+    """The SHA a merge is pinned to, only when the command is exactly the
+    canonical form, every token a standalone long flag in a closed set, each at
+    most once. Anything else (a short flag or cluster, `--`, `=` forms, a body
+    or subject, a repeat, an unknown flag) is None, so decide() asks.
+
+    The hook never models gh's flag grammar: three preclose rounds each found
+    one more spelling that a scanner read differently from gh (a repeated pin,
+    a value flag's value, a short-flag cluster). Accepting one closed shape
+    makes the hook's reading and gh's the same by construction."""
+    rest = strip_invocation_prefix(tokens)[1:]
+    if rest[:2] != ["pr", "merge"] or len(rest) < 3 or not rest[2].isdigit():
+        return None
+    seen: dict[str, str] = {}
+    i = 3
+    while i < len(rest):
+        token = rest[i]
+        if token in seen:
+            return None
+        if token in ("--repo", "--match-head-commit"):
+            if i + 1 >= len(rest):
+                return None
+            seen[token] = rest[i + 1]
+            i += 2
+        elif token in _MERGE_METHODS or token == "--delete-branch":
+            seen[token] = ""
+            i += 1
+        else:
+            return None
+    methods = [m for m in _MERGE_METHODS if m in seen]
+    repo, pin = seen.get("--repo", ""), seen.get("--match-head-commit", "")
+    # At most one method: with none, a non-interactive gh refuses to merge at all.
+    if len(methods) > 1 or not _REPO_RE.match(repo) or not _SHA40_RE.match(pin):
+        return None
+    return pin
 
 
 def _match_pr_merge(tokens: list[str], state: dict) -> tuple[str, dict, dict] | None:
@@ -1398,10 +1404,9 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
                     f"\n\n[BATCH] {key} is authorized and CI is green on PR #{number}'s head "
                     f"`{(judged or '?')[:12]}`, but the merge is "
                     + (f"pinned to `{pinned[:12]}`" if pinned else
-                       f"pinned {len(_pinned_heads(tokens))} times (one pin only; gh keeps the last)"
-                       if len(_pinned_heads(tokens)) > 1 else "not pinned")
-                    + f". Re-run it with `--match-head-commit {judged or '<head sha>'}` so "
-                    "the merged SHA is the one judged (harmonic-forge#1178).")
+                       f"not in the one bound form `{CANONICAL_MERGE}`")
+                    + f". Re-run it in that form with `--match-head-commit {judged or '<head sha>'}` "
+                    "so the merged SHA is the one judged (harmonic-forge#1178).")
             allow_reason = f"BATCH-authorized ({key})"
 
         if not covered:

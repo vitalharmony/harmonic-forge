@@ -708,51 +708,37 @@ class DecideCiGuardTests(StateFixture):
 
     def test_green_ci_allows_a_merge_pinned_to_the_judged_sha(self):
         self._grant()
-        for form in (f"--match-head-commit {JUDGED}", f"--match-head-commit={JUDGED}"):
-            with self.subTest(form=form):
-                result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash {form}",
-                                   state_path=self.state_path)
-                self.assertEqual(result[0], "allow")
+        for cmd in (f"gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit {JUDGED}",
+                    f"gh pr merge 1202 --match-head-commit {JUDGED} --repo vitalharmony/hrse",
+                    f"gh pr merge 1202 --repo vitalharmony/hrse --rebase --delete-branch "
+                    f"--match-head-commit {JUDGED}"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.decide(cmd, state_path=self.state_path)[0], "allow")
 
-    def test_a_repeated_pin_asks_whatever_the_order(self):
-        """F1178 pass 2, survivor 1: gh keeps the last of a repeated flag, so a
-        repeat is never bound, even when one of the pins is the judged SHA."""
+    def test_only_the_canonical_form_binds(self):
+        """F1178, operator ruling 2026-10-26 (option a): the hook never models
+        gh's flag grammar; anything outside the one closed form asks. Each case
+        here is a spelling a preclose round found the scanner reading differently
+        from gh: a repeat, an `=` form, another flag's value, a short-flag
+        cluster, `--`, an unknown flag."""
         self._grant()
         other = "a" * 40
-        for pins in (f"--match-head-commit {JUDGED} --match-head-commit {other}",
+        base = "gh pr merge 1202 --repo vitalharmony/hrse --squash"
+        for tail in (f"--match-head-commit {JUDGED} --match-head-commit {other}",
                      f"--match-head-commit {other} --match-head-commit {JUDGED}",
-                     f"--match-head-commit={JUDGED} --match-head-commit {JUDGED}"):
-            with self.subTest(pins=pins):
-                result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse {pins}",
-                                   state_path=self.state_path)
+                     f"--match-head-commit={JUDGED}",
+                     f"--body --match-head-commit={JUDGED}",
+                     f"-b done --match-head-commit {JUDGED}",
+                     f"-sb --match-head-commit {JUDGED}",
+                     f"-sd --match-head-commit {JUDGED}",
+                     f"-- --match-head-commit {JUDGED}",
+                     f"--auto --match-head-commit {JUDGED}",
+                     f"--match-head-commit {JUDGED[:12]}",
+                     f"--merge --match-head-commit {JUDGED}"):
+            with self.subTest(tail=tail):
+                result = ba.decide(f"{base} {tail}", state_path=self.state_path)
                 self.assertEqual(result[0], "ask")
-                self.assertIn("pinned 2 times", result[1])
-
-    def test_a_pin_spelled_as_another_flags_value_is_not_a_pin(self):
-        """F1178 post-verdict check: gh reads `--body --match-head-commit=X` as
-        the body, so X is enforced nowhere and the merge must ask."""
-        self._grant()
-        for flag in ("--body", "-b", "--subject", "-t", "--author-email", "-A", "--body-file", "-F"):
-            with self.subTest(flag=flag):
-                result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash "
-                                   f"{flag} --match-head-commit={JUDGED}",
-                                   state_path=self.state_path)
-                self.assertEqual(result[0], "ask")
-
-    def test_a_real_pin_after_another_flags_value_still_binds(self):
-        self._grant()
-        result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash "
-                           f"--body done --match-head-commit {JUDGED}",
-                           state_path=self.state_path)
-        self.assertEqual(result[0], "allow")
-
-    def test_a_pin_after_the_end_of_flags_asks(self):
-        """After `--` gh reads no flags, so the pin there is not enforced."""
-        self._grant()
-        result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash "
-                           f"-- --match-head-commit {JUDGED}",
-                           state_path=self.state_path)
-        self.assertEqual(result[0], "ask")
+                self.assertIn("one bound form", result[1])
 
     def test_the_rest_merge_form_is_never_bound_so_it_asks(self):
         self._grant()
