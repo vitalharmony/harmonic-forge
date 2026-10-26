@@ -428,6 +428,14 @@ def _spec_body(repo: str, spec_comment, issue: int) -> str:
     if not _auto_ae._is_spec({"body": body}):
         fail(f"--spec-comment {spec_comment} carries no Lane 3 spec marker (a `kind=spec` footer "
              "or a `Lane 3 Test Spec` heading) -- name this issue's Lane 3 spec (harmonic-forge#1115)")
+    # harmonic-forge#1179 sticky-wicket PATCH: an older spec would let its
+    # flags (or their absence) decide what the AE must answer.
+    import check_lane3_ready  # noqa: PLC0415
+    specs = [c for c in check_lane3_ready.fetch_comments(repo, issue) if _auto_ae._is_spec(c)]
+    newest = max(specs, key=lambda c: c["id"])["id"] if specs else None
+    if newest is None or int(newest) != int(spec_comment):
+        fail(f"--spec-comment {spec_comment} is not the newest Lane 3 spec on {repo}#{issue} "
+             f"(newest: {newest}) -- name the current spec (harmonic-forge#1179)")
     return body
 
 
@@ -1205,9 +1213,9 @@ def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) ->
     """Every flagged case is named on the AE's line or carried forward in the
     sweep (R-0366); anything else is refused, by id.
 
-    `sweep_body=None` is a standalone AE before its sweep exists: only the
-    AE's line is checked. Which flagged cases the sweep carries forward is not
-    known yet, so the set rule is left to the sweep side, which always runs it."""
+    `sweep_body=None` is a standalone AE before its sweep exists. The orphan
+    guard (AC3) means no sweep is on that SHA yet, so nothing can be carried
+    forward: every flagged case must be on the AE's line."""
     flagged = spec_ae_by_name(spec_body)
     if not flagged:
         return
@@ -1217,6 +1225,11 @@ def validate_ae_by_name(spec_body: str, ae_body: str, sweep_body: str | None) ->
         fail(f"{exc} (harmonic-forge#1179)")
         return
     if sweep_body is None:
+        missing = flagged - (answered or set())
+        if missing:
+            fail(f"the spec flags {ae_by_name.label(missing)} for the AE by name, and this "
+                 "standalone AE does not name them on an `**AE by name:**` line; name them, or "
+                 "post `ae-and-sweep` to carry them forward (harmonic-forge#1179)")
         return
     if answered is None:
         fail(f"the spec flags {ae_by_name.label(flagged)} for the AE by name, so the AE needs one "
