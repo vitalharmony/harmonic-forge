@@ -76,8 +76,19 @@ def tearDownModule():
     ba.merge_ci_state = _REAL_MERGE_CI_STATE
 
 
+
+def _fresh_hook_deadline(case) -> None:
+    """batch_auth's subprocess deadline is `_HOOK_T0 + CI_READ_BUDGET_S`, with
+    `_HOOK_T0` taken at import: right for a hook, one process per call, but in a
+    long test run the budget is spent before these tests start, so every gh call
+    is skipped (F1178: the gate's full suite). Restart the clock per test."""
+    patcher = mock.patch.object(ba, "_HOOK_T0", time.monotonic())
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
 class StateFixture(unittest.TestCase):
     def setUp(self):
+        _fresh_hook_deadline(self)
         self.tmpdir = tempfile.TemporaryDirectory()
         self.state_path = Path(self.tmpdir.name) / "batch-authorized.json"
         # AC5 derivation shells out to `gh` on the no-link path, which most of
@@ -1632,6 +1643,7 @@ class CarrierCacheTests(unittest.TestCase):
     """
 
     def setUp(self):
+        _fresh_hook_deadline(self)
         self.tmpdir = tempfile.TemporaryDirectory()
         self.cache_path = Path(self.tmpdir.name) / "pr-carriers.json"
         self.calls = []
@@ -1850,6 +1862,7 @@ class RegistrationScopeTests(unittest.TestCase):
     """
 
     def setUp(self):
+        _fresh_hook_deadline(self)
         self.tmpdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tmpdir.name) / "settings.json"
 
@@ -2306,6 +2319,7 @@ class ImcLifecycleTests(unittest.TestCase):
     `imc_waiver.IMC_STATE_DIR` and `ba.STATE_PATH` are patched."""
 
     def setUp(self):
+        _fresh_hook_deadline(self)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import imc_waiver
         import batch_consume
