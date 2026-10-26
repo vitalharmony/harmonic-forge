@@ -1187,11 +1187,26 @@ def _pinned_heads(tokens: list[str]) -> list[str]:
     if rest[:2] != ["pr", "merge"]:
         return []
     pins = []
-    for i, token in enumerate(rest):
-        if token == "--match-head-commit" and i + 1 < len(rest):
-            pins.append(rest[i + 1])
-        elif token.startswith("--match-head-commit="):
+    i = 2
+    while i < len(rest):
+        token = rest[i]
+        if token == "--":
+            # After `--` gh reads no flags; a pin there is not enforced, so
+            # the merge is ambiguous and must ask (F1178 post-verdict check).
+            return ["", ""]
+        if token == "--match-head-commit":
+            if i + 1 < len(rest):
+                pins.append(rest[i + 1])
+            i += 2
+            continue
+        if token.startswith("--match-head-commit="):
             pins.append(token.split("=", 1)[1])
+        elif token in _PR_MERGE_VALUE_FLAGS:
+            # The next token is this flag's value, never a flag of its own:
+            # `--body --match-head-commit=X` sets the body, not a pin.
+            i += 2
+            continue
+        i += 1
     return pins
 
 

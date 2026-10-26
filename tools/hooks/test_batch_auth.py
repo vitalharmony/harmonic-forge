@@ -717,6 +717,32 @@ class DecideCiGuardTests(StateFixture):
                 self.assertEqual(result[0], "ask")
                 self.assertIn("pinned 2 times", result[1])
 
+    def test_a_pin_spelled_as_another_flags_value_is_not_a_pin(self):
+        """F1178 post-verdict check: gh reads `--body --match-head-commit=X` as
+        the body, so X is enforced nowhere and the merge must ask."""
+        self._grant()
+        for flag in ("--body", "-b", "--subject", "-t", "--author-email", "-A", "--body-file", "-F"):
+            with self.subTest(flag=flag):
+                result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash "
+                                   f"{flag} --match-head-commit={JUDGED}",
+                                   state_path=self.state_path)
+                self.assertEqual(result[0], "ask")
+
+    def test_a_real_pin_after_another_flags_value_still_binds(self):
+        self._grant()
+        result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash "
+                           f"--body done --match-head-commit {JUDGED}",
+                           state_path=self.state_path)
+        self.assertEqual(result[0], "allow")
+
+    def test_a_pin_after_the_end_of_flags_asks(self):
+        """After `--` gh reads no flags, so the pin there is not enforced."""
+        self._grant()
+        result = ba.decide(f"gh pr merge 1202 --repo vitalharmony/hrse --squash "
+                           f"-- --match-head-commit {JUDGED}",
+                           state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+
     def test_the_rest_merge_form_is_never_bound_so_it_asks(self):
         self._grant()
         result = ba.decide(f"gh api repos/vitalharmony/hrse/pulls/1202/merge -X PUT -f sha={JUDGED}",
