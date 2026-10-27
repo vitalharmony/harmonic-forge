@@ -496,6 +496,10 @@ correctly. Apply this both when reviewing Lane 2 and when writing
 Load-Bearing Assumptions in a handoff.
 <!-- /R-0105 -->
 
+<!-- R-0419 -->
+Before a gated or irreversible step (a check, kill check, push, merge, post, FORCE request, cross-family call or agent launch), list its requirements from the tool's own `--help`, receipt and refusal source, and confirm each with a read-only probe; a requirement that cannot be confirmed means the step does not run. A refusal from a step that was never probed is a protocol failure, captured as one.
+<!-- /R-0419 -->
+
 ## Advisory triggers
 
 <!-- R-0106 -->

@@ -2823,3 +2823,11 @@ text_sha = "1a7008632ab842b9"
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
 ]
+
+[[rule]]
+id = "R-0419"
+file = "rules/universal-lane1.md"
+anchor = "verification-standard"
+statement = "Before a gated or irreversible step, Lane 1 confirms each of its requirements with a read-only probe; an unconfirmable requirement means the step does not run, and a refusal from an unprobed step is captured as a protocol failure."
+text_sha = "40ffb7709bb9edf1"
+hooks = []
