@@ -1181,6 +1181,7 @@ def merge_ci_state(repo: str, number: int, run=None) -> tuple[str, str, str | No
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 _MERGE_METHODS = frozenset({"--squash", "--merge", "--rebase"})
+_PLAIN_COMMAND_RE = re.compile(r"[A-Za-z0-9_./=-]+(?: [A-Za-z0-9_./=-]+)*")
 #: The one bound merge form (harmonic-forge#1178, operator ruling 2026-10-26,
 #: option a). Anything else asks.
 CANONICAL_MERGE = ("gh pr merge <N> --repo <owner/repo> [--squash|--merge|--rebase] "
@@ -1398,10 +1399,13 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             # F1178 preclose pass 1, survivor 2: green is a fact about one SHA,
             # so the merge must be pinned to it, or a push after this read
             # merges a head whose CI was never judged.
-            # F1178 post-verdict check 3: the tokenizer reads a mid-word `#` as
-            # a comment and bash does not, so `<sha>#x --match-head-commit
-            # <other>` bound one SHA while gh enforced the other.
-            pinned = None if "#" in command else _pinned_head(tokens)
+            # F1178 post-verdict checks 3 and 4: the segmenter and bash read a
+            # mid-word `#` and a backslash-newline differently, so one SHA was
+            # bound while gh enforced another. Only a string bash cannot read
+            # two ways binds: plain characters, and its whitespace split is the
+            # hook's own token list.
+            plain = _PLAIN_COMMAND_RE.fullmatch(command) and command.split() == tokens
+            pinned = _pinned_head(tokens) if plain else None
             if not judged or pinned != judged:
                 return "ask", reason + (
                     f"\n\n[BATCH] {key} is authorized and CI is green on PR #{number}'s head "
