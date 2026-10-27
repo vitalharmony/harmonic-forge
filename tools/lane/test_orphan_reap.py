@@ -90,14 +90,36 @@ class ScanTests(unittest.TestCase):  # AC1
         self.fake.add(801, 2102, session=800)
         self.fake.add(802, 2102, session=999)  # unrelated orphan: still selected
         self.fake.lock.write_text("pid 800 l1-post br@aaaa")
-        self.assertEqual(self.scan(), {802})
+        with self.held_lock():
+            self.assertEqual(self.scan(), {802})
+
+    def test_released_lock_protects_nothing(self):
+        """The text names only the last holder: once the flock is released, the
+        recorded pid (still alive, same start time) protects nothing."""
+        self.fake.add(800, 2102)
+        self.fake.lock.write_text("pid 800 l1-post br@aaaa")
+        self.assertEqual(self.scan(), {800})
+        with self.held_lock():
+            self.assertEqual(self.scan(), set())
+
+    def held_lock(self):
+        import contextlib
+        import fcntl
+
+        @contextlib.contextmanager
+        def held():
+            with open(self.fake.lock) as handle:  # a separate open file description
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                yield
+        return held()
 
     def test_stale_lock_pid_protects_nothing(self):
         """A pid started after the lock was written is a reused pid."""
         self.fake.add(800, 2102, age_s=60)
         self.fake.lock.write_text("pid 800 l1-post br@aaaa")
         os.utime(self.fake.lock, (self.fake.btime + UPTIME - 3600,) * 2)
-        self.assertEqual(self.scan(), {800})
+        with self.held_lock():  # held, so only the start-time guard can reject it
+            self.assertEqual(self.scan(), {800})
 
     def test_systemd_run_service_not_selected(self):
         self.fake.add(900, 2102, cgroup="0::/user.slice/user-1000.slice/user@1000.service/"

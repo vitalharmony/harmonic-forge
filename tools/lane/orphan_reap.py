@@ -29,6 +29,7 @@ injectable, so the tests run on fixture trees.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -138,15 +139,24 @@ def boot_time(proc_root: Path) -> float | None:
 
 
 def live_holder(procs: dict[int, "Proc"], lock: Path, proc_root: Path, hz: int) -> int | None:
-    """The lock's recorded pid, only while that pid is the process that wrote
-    it: one started after the lock was last written is a reused pid
-    (``_scratch.py`` never clears the pid on release)."""
+    """The lock's recorded pid, only while the flock is actually held and that
+    pid is the process that wrote it: ``_scratch.py`` never clears the pid on
+    release, so the text alone names only the last holder, and a pid started
+    after the lock was written is a reused one."""
     pid = scratch_holder(lock)
     if pid is None or pid not in procs:
         return None
     btime = boot_time(proc_root)
     try:
         written = lock.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        with lock.open() as handle:
+            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return None  # nobody holds the flock: the recorded pid is stale
+    except BlockingIOError:
+        pass  # held right now, so the recorded holder is current
     except OSError:
         return None
     if btime is None or btime + procs[pid].start_ticks / hz > written + 1:
