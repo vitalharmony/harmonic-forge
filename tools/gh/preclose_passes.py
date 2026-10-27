@@ -402,11 +402,14 @@ def stop_rule_shadow(findings: list, threat_model: str | None, prior_blocking: l
         reasons.append({"anchor": finding.get("anchor"), "class": cls, "why": why})
     passed = {entry.get("anchor") for entry in (reverify or [])
               if isinstance(entry, dict) and entry.get("head") == head
+              and isinstance(entry.get("command"), str) and entry["command"].strip()
               and isinstance(entry.get("exit_status"), int)
               and not isinstance(entry.get("exit_status"), bool) and entry["exit_status"] == 0}
     for anchor in prior_blocking:
         if anchor not in passed:
             reasons.append({"anchor": anchor, "class": "unknown", "why": "no-passing-reverify"})
+        else:
+            reasons.append({"anchor": anchor, "class": "reverified", "why": "passing-reverify"})
     if threat_model is not None and model is None:
         reasons.append({"anchor": None, "class": "unknown", "why": f"unknown-threat-model:{threat_model}"})
     if threat_model is None:
@@ -428,11 +431,22 @@ def shadow_error(why: str, threat_model: str | None = None) -> dict:
 
 
 def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
-    """Anchors the newest recorded pass of this epoch's shadow classed blocking."""
-    passes = [] if reforge else current(history(receipt))
-    shadow = (passes[-1].get("stop_rule_shadow") or {}) if passes else {}
-    return [r.get("anchor") for r in shadow.get("reasons", [])
-            if r.get("class") == "blocking" and r.get("anchor")]
+    """Every finding an earlier pass of this epoch left unresolved: classed
+    blocking or unknown (a reproduced finding with no threat model or tag is
+    unknown, never cleared), and not re-verified by a later pass. Read across
+    all the epoch's passes, so an UNKNOWN pass never drops an obligation; a
+    pass recorded without a shadow carries forward nothing it could clear."""
+    outstanding: dict[str, None] = {}
+    for entry in ([] if reforge else current(history(receipt))):
+        for reason in (entry.get("stop_rule_shadow") or {}).get("reasons", []):
+            anchor = reason.get("anchor")
+            if not anchor:
+                continue
+            if reason.get("class") in ("blocking", "unknown"):
+                outstanding[anchor] = None
+            elif reason.get("class") in ("reverified", "non-blocking"):
+                outstanding.pop(anchor, None)
+    return list(outstanding)
 
 
 def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int,

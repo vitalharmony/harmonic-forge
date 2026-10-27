@@ -88,10 +88,49 @@ class DecisionTests(unittest.TestCase):  # AC1, AC6
             {"anchor": "p:1", "command": "t", "exit_status": 0, "head": "h"}]), "ACCEPT")
 
     def test_dismissed_findings_are_not_classified(self):
+        """Through the caller's own filter: a dismissed reproduced finding must
+        not turn ACCEPT into CONTINUE."""
         dismissed = {**finding(REPRODUCED, "good-faith"), "dismissed": "no scenario"}
-        shadow = passes.stop_rule_shadow([], "good-faith", [], None, "h")
+        args = mock.Mock(threat_model="good-faith", reverify=None)
+        shadow = preclose.stop_rule_shadow(args, [dismissed, finding(NOT_REPRODUCED, "good-faith", "b:2")],
+                                           None, "h")
         self.assertEqual(shadow["decision"], "ACCEPT")
-        self.assertEqual(preclose.surviving_findings([dismissed]), [])
+        self.assertNotIn("tools/x.py:1", [r["anchor"] for r in shadow["reasons"]])
+
+    def test_reverify_entry_needs_its_command(self):
+        clean = [finding(NOT_REPRODUCED, "good-faith")]
+        for entry in ({"anchor": "p:1", "exit_status": 0, "head": "h"},
+                      {"anchor": "p:1", "command": "  ", "exit_status": 0, "head": "h"}):
+            with self.subTest(entry=entry):
+                self.assertEqual(self.decide(clean, prior=["p:1"], reverify=[entry]), "UNKNOWN")
+
+    def test_an_unknown_reproduced_finding_is_carried_forward(self):
+        """Pass 1 without a threat model: its reproduced finding is unknown, and
+        pass 2 with a model still owes its re-verification."""
+        pass1 = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "p:1")], None, [], None, "h1")
+        receipt = {"pass_history": [{"sha": "h1", "epoch": 0, "stop_rule_shadow": pass1}]}
+        owed = passes.prior_blocking(receipt)
+        self.assertEqual(owed, ["p:1"])
+        self.assertEqual(self.decide([finding(NOT_REPRODUCED, "good-faith", "q:2")], prior=owed,
+                                     head="h2"), "UNKNOWN")
+
+    def test_an_unknown_pass_never_drops_an_earlier_obligation(self):
+        pass1 = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "p:1")], "good-faith",
+                                        [], None, "h1")
+        pass2 = passes.shadow_error("shadow-error:RuntimeError", "good-faith")
+        receipt = {"pass_history": [{"sha": "h1", "epoch": 0, "stop_rule_shadow": pass1},
+                                    {"sha": "h2", "epoch": 0, "stop_rule_shadow": pass2}]}
+        self.assertEqual(passes.prior_blocking(receipt), ["p:1"])
+
+    def test_a_passing_reverify_clears_the_obligation(self):
+        pass1 = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "p:1")], "good-faith",
+                                        [], None, "h1")
+        pass2 = passes.stop_rule_shadow([], "good-faith", ["p:1"], [
+            {"anchor": "p:1", "command": "t", "exit_status": 0, "head": "h2"}], "h2")
+        self.assertEqual(pass2["decision"], "ACCEPT")
+        receipt = {"pass_history": [{"sha": "h1", "epoch": 0, "stop_rule_shadow": pass1},
+                                    {"sha": "h2", "epoch": 0, "stop_rule_shadow": pass2}]}
+        self.assertEqual(passes.prior_blocking(receipt), [])
 
 
 class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
@@ -214,6 +253,44 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
             preclose.emit_shadow("vitalharmony/hrse", 1208, "a" * 40,
                                  passes.shadow_error("x"), {"site": "pass"}, "2026-10-27T00:00:00Z")
         self.assertIn("shadow telemetry not written", err.getvalue())
+
+    def test_post_verdict_records_and_emits_the_shadow(self):
+        """The decision point itself: post_verdict() writes the shadow on the
+        check and emits one event, with prior obligations carried in."""
+        findings = Path(tempfile.mkdtemp()) / "pv.json"
+        findings.write_text("[]")
+        prior = {"pass_history": [{"sha": "b" * 40, "epoch": 0, "stop_rule_shadow":
+                                   passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "p:1")],
+                                                           "good-faith", [], None, "b" * 40)}]}
+        args = mock.Mock(repo="vitalharmony/harmonic-forge", issue=1189, base="b", head="HEAD",
+                         main="origin/main", envelope="e.jsonl", own_model="claude-opus-5-5",
+                         findings=str(findings), cross_family_ms="300", threat_model="good-faith",
+                         reverify=None)
+        written = {}
+        with mock.patch.object(preclose, "require_writable"), \
+                mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
+                mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
+                mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="b" * 40)), \
+                mock.patch.object(preclose, "find_receipt", return_value=prior), \
+                mock.patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
+                mock.patch.object(passes, "current", side_effect=lambda h: h * 2 if len(h) == 1 else h), \
+                mock.patch.object(passes, "accepts_entry", return_value=True), \
+                mock.patch.object(preclose, "local_patch_id", return_value="p"), \
+                mock.patch.object(preclose, "require_recorded_envelope"), \
+                mock.patch.object(preclose, "compute_provenance",
+                                  return_value=preclose.PROVENANCE_TRIGGERED[0] + " (codex)"), \
+                mock.patch.object(preclose, "check_provenance"), \
+                mock.patch.object(preclose, "write_receipt",
+                                  side_effect=lambda *a, **k: written.update(k["extra"]) or Path("r")), \
+                mock.patch.object(preclose, "emit_shadow") as emitted, \
+                contextlib.redirect_stdout(io.StringIO()):
+            preclose.post_verdict(args)
+        shadow = written["post_verdict_check"]["stop_rule_shadow"]
+        self.assertEqual(shadow["decision"], "UNKNOWN")  # p:1 owed, no --reverify
+        self.assertIn("no-passing-reverify", [r["why"] for r in shadow["reasons"]])
+        self.assertEqual(emitted.call_count, 1)
+        self.assertEqual(emitted.call_args.args[4]["site"], "post-verdict")
 
     def test_post_verdict_fields_carry_shadow(self):
         fields = passes.post_verdict_fields({}, "b" * 40, "c" * 40, "p", CROSS, 0, 300,
