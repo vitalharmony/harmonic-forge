@@ -279,7 +279,7 @@ class ClearAfterModelSwitch(Base):
 
     def test_a_failure_never_escapes_main(self):
         import io
-        with mock.patch.object(sm, "predecessor_model", side_effect=RuntimeError), \
+        with mock.patch.object(record_session_model, "_write_record", side_effect=RuntimeError), \
              mock.patch("sys.stdin", io.StringIO(json.dumps(
                  {"session_id": "x", "source": "clear"}))):
             record_session_model.main()
