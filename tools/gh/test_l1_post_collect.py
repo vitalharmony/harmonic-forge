@@ -116,7 +116,8 @@ class MainCollectTests(unittest.TestCase):
                                   side_effect=lambda *a: l1_post.fail("Tier is not set on the board"))
         quiet = [mock.patch.object(l1_post, name) for name in (
             "validate_milestone_set", "validate_tooling_exception_labelled",
-            "validate_pitch_inspected", "validate_sticky_wicket")]
+            "validate_pitch_inspected", "validate_te_lead_fields", "validate_sticky_wicket",
+            "issue_labels")]
         message = self._main("handoff", "## Handoff: F35\n\nno sections\n", extra=[board, *quiet])
         self.assertIn("problems:", message)
         self.assertIn("Tier is not set on the board", message)
@@ -135,7 +136,7 @@ ORDER = {
     "handoff": ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
                 "validate_board_fields_set", "validate_milestone_set",
                 "validate_milestone_current", "validate_tooling_exception_labelled", "validate_pitch_inspected",
-                "validate_sticky_wicket", "validate_lead"],
+                "validate_te_lead_fields", "validate_sticky_wicket", "validate_lead"],
     "rework": ["validate_milestone_current", "validate_sticky_wicket", "validate_lead"],
     "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
     "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep",
@@ -174,6 +175,8 @@ class ValidatorOrderTests(unittest.TestCase):
                    # validator order, not the spec, is under test here.
                    mock.patch.object(l1_post, "spec_live_ids", return_value=set()),
                    mock.patch.object(l1_post, "spec_is_tier_p", return_value=False),
+                   # F1192: the handoff validators share one live label read.
+                   mock.patch.object(l1_post, "issue_labels", return_value=[]),
                    # F1179: spec 9 is the issue's newest spec; never a real gh call.
                    mock.patch("check_lane3_ready.fetch_comments",
                               return_value=[{"id": 9, "body": "## Lane 3 Test Spec\n"}])]
