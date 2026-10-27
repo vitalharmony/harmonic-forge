@@ -139,6 +139,26 @@ class AllowsTheCanonicalCalls(unittest.TestCase):
                 result = _run("Monitor", calls["monitor"], lane=lane)
                 self.assertEqual(json.loads(result.stdout), {})
 
+    def test_repo_scoped_canonical_monitor_is_allowed(self):
+        """harmonic-forge#1199 AC7: any canonical command for the session's
+        workspace, scoped or unscoped, arms."""
+        # The hook runs on the fixture manifest, whose vh workspace holds o/alpha.
+        monitor = dict(belt_plan.canonical_calls("1", "vh")["monitor"])
+        monitor["command"] += " --scope-repo o/alpha"
+        self.assertEqual(json.loads(_run("Monitor", monitor, lane="1").stdout), {})
+
+    def test_repo_scoped_monitor_outside_the_workspace_is_denied(self):
+        """harmonic-forge#1199 AC7: a scope repo from another workspace is not canonical."""
+        monitor = dict(belt_plan.canonical_calls("1", "vh")["monitor"])
+        monitor["command"] += " --scope-repo o/beta"  # leasepal's repo
+        self.assertEqual(_decision(_run("Monitor", monitor, lane="1")), "deny")
+
+    def test_repo_scoped_monitor_with_a_wrong_timeout_is_denied(self):
+        monitor = dict(belt_plan.canonical_calls("1", "vh")["monitor"])
+        monitor["command"] += " --scope-repo o/alpha"
+        monitor["timeout_ms"] = 300000
+        self.assertEqual(_decision(_run("Monitor", monitor, lane="1")), "deny")
+
     def test_home_spellings_are_equivalent(self):
         monitor = belt_plan.canonical_calls("3", "vh")["monitor"]
         cmd = monitor["command"]
