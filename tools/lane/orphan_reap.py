@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -62,6 +64,7 @@ class Proc:
     start_ticks: int
     cpu_ticks: int
     cgroup: str
+    session: int = 0
     children: list[int] = field(default_factory=list)
 
 
@@ -80,7 +83,8 @@ def read_proc(proc_root: Path, pid: int) -> Proc | None:
     try:
         # comm is parenthesised and may hold spaces: split after the last ")".
         rest = stat[stat.rindex(")") + 2:].split()
-        ppid, utime, stime, start = int(rest[1]), int(rest[11]), int(rest[12]), int(rest[19])
+        ppid, session = int(rest[1]), int(rest[3])
+        utime, stime, start = int(rest[11]), int(rest[12]), int(rest[19])
         uid = int(next(line.split()[1] for line in status.splitlines() if line.startswith("Uid:")))
     except (ValueError, IndexError, StopIteration):
         return None
@@ -91,7 +95,7 @@ def read_proc(proc_root: Path, pid: int) -> Proc | None:
         cwd = ""
     return Proc(pid=pid, ppid=ppid, uid=uid, comm=(_read(base / "comm") or "").strip(),
                 cmdline=cmdline, cwd=cwd, start_ticks=start, cpu_ticks=utime + stime,
-                cgroup=(_read(base / "cgroup") or "").strip())
+                cgroup=(_read(base / "cgroup") or "").strip(), session=session)
 
 
 def processes(proc_root: Path) -> dict[int, Proc]:
@@ -129,15 +133,45 @@ def scratch_holder(lock: Path) -> int | None:
     return int(text[1]) if len(text) >= 2 and text[0] == "pid" and text[1].isdigit() else None
 
 
+def boot_time(proc_root: Path) -> float | None:
+    for line in (_read(proc_root / "stat") or "").splitlines():
+        if line.startswith("btime "):
+            return float(line.split()[1])
+    return None
+
+
+def live_holder(procs: dict[int, "Proc"], lock: Path, proc_root: Path, hz: int) -> int | None:
+    """The lock's recorded pid, only while that pid is the process that wrote
+    it: one started after the lock was last written is a reused pid
+    (``_scratch.py`` never clears the pid on release)."""
+    pid = scratch_holder(lock)
+    if pid is None or pid not in procs:
+        return None
+    btime = boot_time(proc_root)
+    try:
+        written = lock.stat().st_mtime
+    except OSError:
+        return None
+    if btime is None or btime + procs[pid].start_ticks / hz > written + 1:
+        return None
+    return pid
+
+
 def in_user_service(proc: Proc, uid: int) -> bool:
     """A member of an active ``--user`` ``.service`` unit, from its cgroup path."""
+    manager = f"user@{uid}.service"
     for line in proc.cgroup.splitlines():
-        path = line.split(":", 2)[-1]
-        parts = [part for part in path.split("/") if part]
-        if f"user@{uid}.service" in parts and parts and parts[-1].endswith(".service") \
-                and parts[-1] != f"user@{uid}.service":
+        parts = [part for part in line.split(":", 2)[-1].split("/") if part]
+        if manager in parts and any(part.endswith(".service")
+                                    for part in parts[parts.index(manager) + 1:]):
             return True
     return False
+
+
+def is_live_check(proc: "Proc") -> bool:
+    """A ``mise run check`` process by its argv, not by a substring."""
+    words = proc.cmdline.split()
+    return len(words) >= 3 and Path(words[0]).name == "mise" and words[1:3] == ["run", "check"]
 
 
 def agent_origin(proc: Proc, origin_dirs: tuple[Path, ...]) -> bool:
@@ -147,18 +181,22 @@ def agent_origin(proc: Proc, origin_dirs: tuple[Path, ...]) -> bool:
 
 
 def scan(proc_root: Path = Path("/proc"), uid: int | None = None, lock: Path = SCRATCH_LOCK,
-         origin_dirs: tuple[Path, ...] = ORIGIN_DIRS) -> list[Proc]:
-    """AC1: the candidates, before the age and CPU predicates."""
+         origin_dirs: tuple[Path, ...] = ORIGIN_DIRS, hz: int | None = None) -> list[Proc]:
+    """AC1: the candidates, before the age and CPU predicates. Work of the
+    scratch holder or a live check is protected by tree and by session: a
+    reparented subprocess has left the tree but keeps its session."""
     uid = os.getuid() if uid is None else uid
+    hz = hz or os.sysconf("SC_CLK_TCK")
     procs = processes(proc_root)
     managers = user_managers(procs, uid)
-    holder = scratch_holder(lock)
-    protected = descendants(procs, {holder} if holder else set())
-    checks = {p.pid for p in procs.values() if "mise run check" in p.cmdline}
-    protected |= descendants(procs, checks)
+    holder = live_holder(procs, lock, proc_root, hz)
+    roots = ({holder} if holder else set()) | {p.pid for p in procs.values() if is_live_check(p)}
+    protected = descendants(procs, roots)
+    sessions = {procs[r].session for r in roots if procs[r].session}
     return [p for p in procs.values()
             if p.uid == uid and p.ppid in managers and agent_origin(p, origin_dirs)
-            and p.pid not in protected and not in_user_service(p, uid)]
+            and p.pid not in protected and p.session not in sessions
+            and not in_user_service(p, uid)]
 
 
 def classify(lifetime_pct: float, sample_pct: float) -> str | None:
@@ -170,16 +208,36 @@ def classify(lifetime_pct: float, sample_pct: float) -> str | None:
     return None
 
 
+_PYTHON3 = re.compile(r"^python3(\.\d+)?$")
+#: podman-compose global options that take a value (the subcommand follows them).
+_COMPOSE_VALUE_OPTS = {"-f", "--file", "-p", "--project-name", "--env-file", "--profile",
+                       "--podman-path", "--in-pod", "--pod-args"}
+
+
+def _compose_subcommand(args: list[str]) -> str | None:
+    i = 0
+    while i < len(args):
+        if args[i] in _COMPOSE_VALUE_OPTS:
+            i += 2
+        elif args[i].startswith("-"):
+            i += 1
+        else:
+            return args[i]
+    return None
+
+
 def allowlisted(cmdline: str) -> bool:
-    """AC4: exactly two stoppable classes."""
+    """AC4: exactly two stoppable classes, matched on argv: a ``podman-compose``
+    whose subcommand is ``up``, and ``python3 -c``."""
     words = cmdline.split()
     if not words:
         return False
     name = Path(words[0]).name
-    if name == "podman-compose" or (name.startswith("python") and len(words) > 1
-                                     and Path(words[1]).name == "podman-compose"):
-        return "up" in words
-    return name.startswith("python3") and len(words) > 1 and words[1] == "-c"
+    if name == "podman-compose":
+        return _compose_subcommand(words[1:]) == "up"
+    if _PYTHON3.match(name) and len(words) > 1 and Path(words[1]).name == "podman-compose":
+        return _compose_subcommand(words[2:]) == "up"
+    return bool(_PYTHON3.match(name)) and len(words) > 1 and words[1] == "-c"
 
 
 def load_state(path: Path) -> dict:
@@ -187,7 +245,10 @@ def load_state(path: Path) -> dict:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) and all(isinstance(v, (int, float)) for v in data.values()) else {}
+    def valid(value: object) -> bool:
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value > 0)
+    return data if isinstance(data, dict) and all(valid(v) for v in data.values()) else {}
 
 
 def save_state(path: Path, state: dict) -> None:
@@ -198,27 +259,48 @@ def save_state(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def _pidfd_signal(pid: int, sig: int) -> None:
-    fd = os.pidfd_open(pid)
-    try:
-        signal.pidfd_send_signal(fd, sig)
-    finally:
-        os.close(fd)
+def _same(proc_root: Path, pid: int, start: int) -> bool:
+    """Still the identified process, still in an allowlisted class."""
+    current = read_proc(proc_root, pid)
+    return current is not None and current.start_ticks == start and allowlisted(current.cmdline)
 
 
-def stop(proc_root: Path, pid: int, start: int, *, send: Callable[[int, int], None] = _pidfd_signal,
+def stop(proc_root: Path, pid: int, start: int, *,
+         open_fd: Callable[[int], int] | None = None,
+         send: Callable[[int, int], None] | None = None,
+         close: Callable[[int], None] = os.close,
          sleep: Callable[[float], None] = time.sleep, wait_s: float = KILL_WAIT_S) -> str:
-    """SIGTERM, then SIGKILL after ``wait_s``, each only while (pid, start) still match."""
-    current = read_proc(proc_root, pid)
-    if current is None or current.start_ticks != start:
-        return "gone-or-reused"
-    send(pid, signal.SIGTERM)
-    sleep(wait_s)
-    current = read_proc(proc_root, pid)
-    if current is None or current.start_ticks != start:
-        return "terminated"
-    send(pid, signal.SIGKILL)
-    return "killed"
+    """SIGTERM, then SIGKILL after ``wait_s``. The pidfd is opened first and
+    held for both signals, so a reused pid can never receive one; identity and
+    class are checked through it before each signal. A process that is gone
+    is not an error."""
+    # Resolved here, not at import: a Python without pidfd support still runs
+    # the scan and report; its stop raises OSError, which run() records.
+    open_fd = open_fd or getattr(os, "pidfd_open", None)
+    send = send or getattr(signal, "pidfd_send_signal", None)
+    if open_fd is None or send is None:
+        raise OSError("pidfd_open is not available on this Python")
+    try:
+        fd = open_fd(pid)
+    except ProcessLookupError:
+        return "gone"
+    try:
+        if not _same(proc_root, pid, start):
+            return "gone-or-reused"
+        try:
+            send(fd, signal.SIGTERM)
+        except ProcessLookupError:
+            return "terminated"
+        sleep(wait_s)
+        if not _same(proc_root, pid, start):
+            return "terminated"
+        try:
+            send(fd, signal.SIGKILL)
+        except ProcessLookupError:
+            return "terminated"
+        return "killed"
+    finally:
+        close(fd)
 
 
 def notify(summary: str, topic_file: str | None) -> None:
@@ -255,13 +337,14 @@ def run(*, proc_root: Path = Path("/proc"), execute: bool = False, age_hours: fl
         grace_hours: float = 1, sample_seconds: float = 60, state_path: Path = STATE_PATH,
         lock: Path = SCRATCH_LOCK, origin_dirs: tuple[Path, ...] = ORIGIN_DIRS,
         now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
-        send: Callable[[int, int], None] = _pidfd_signal, ntfy: Callable[[str], None] | None = None,
+        stop_fn: Callable[..., str] | None = None, ntfy: Callable[[str], None] | None = None,
         events: Callable[[list[dict]], None] = emit_events, uptime: float | None = None,
-        hz: int | None = None) -> list[dict]:
+        hz: int | None = None, uid: int | None = None) -> list[dict]:
     hz = hz or os.sysconf("SC_CLK_TCK")
+    stop_fn = stop_fn or (lambda pid, start: stop(proc_root, pid, start, sleep=sleep))
     if uptime is None:
         uptime = float((_read(proc_root / "uptime") or "0").split()[0])
-    candidates = scan(proc_root, lock=lock, origin_dirs=origin_dirs)
+    candidates = scan(proc_root, uid=uid, lock=lock, origin_dirs=origin_dirs, hz=hz)
     aged = [c for c in candidates if uptime - c.start_ticks / hz >= age_hours * 3600]
     before = {c.pid: c.cpu_ticks for c in aged}
     if sample_seconds:
@@ -283,9 +366,14 @@ def run(*, proc_root: Path = Path("/proc"), execute: bool = False, age_hours: fl
         key = f"{c.pid}:{c.start_ticks}"
         first = seen_before.get(key)
         action = "reported"
-        if allowlisted(c.cmdline) and first is not None and now() - first >= grace_hours * 3600:
-            action = stop(proc_root, c.pid, c.start_ticks, send=send, sleep=sleep) if execute \
-                else "would-stop"
+        if allowlisted(after.cmdline) and first is not None and now() - first >= grace_hours * 3600:
+            if not execute:
+                action = "would-stop"
+            else:
+                try:
+                    action = stop_fn(c.pid, c.start_ticks)
+                except OSError as exc:  # one failed stop never loses the run's reports
+                    action = f"stop-error:{type(exc).__name__}"
         state.setdefault(key, now())
         found.append({"pid": c.pid, "ppid": c.ppid, "start": c.start_ticks, "age_s": int(age_s),
                       "cpu_pct": round(sample, 2), "class": cls, "action": action})
