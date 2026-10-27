@@ -1758,7 +1758,7 @@ class SweepForFlagIsUnrecognizedTests(unittest.TestCase):
         self.assertNotIn("RETIRED", err.getvalue())
 
     def test_lane3_table_holds_only_the_queue_belt(self):
-        entries = watch_lane_posts.CANONICAL_BELTS["3"]
+        entries = [e for e in watch_lane_posts.CANONICAL_BELTS["3"] if not e.get("repo")]
         # harmonic-forge#917: one belt per workspace, each with its own lock.
         self.assertEqual([e["lock"] for e in entries],
                          [f"belt-lane3-{ws}.lock" for ws in watch_lane_posts.manifest_workspaces()])
@@ -2134,7 +2134,7 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         """harmonic-forge#917: belt_id carries the workspace, so two workspaces'
         Lane 2 belts never share watermarks, seen-sets or tick logs."""
         logs = {}
-        for entry in watch_lane_posts.CANONICAL_BELTS["2"]:
+        for entry in [e for e in watch_lane_posts.CANONICAL_BELTS["2"] if not e.get("repo")]:
             outcome, err = self._run(list(entry["argv"]), {"LANE": "2"})
             self.assertEqual(outcome, "looped", err)
             line = next(l for l in err.splitlines() if "tick log:" in l)

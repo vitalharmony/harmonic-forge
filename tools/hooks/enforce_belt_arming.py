@@ -178,7 +178,14 @@ def _session_calls(belt_plan, lane: str,
     """
     try:
         workspace = belt_plan.workspace_for(payload.get("cwd"))
-        return belt_plan.canonical_calls(lane, workspace), None
+        calls = belt_plan.canonical_calls(lane, workspace)
+        # harmonic-forge#1199 AC7: every canonical Monitor for this workspace,
+        # unscoped and each repo-scoped one, with its own timeout.
+        calls["monitor_entries"] = [calls["monitor"]] + [
+            belt_plan.canonical_calls(lane, workspace, entry["repo"])["monitor"]
+            for entry in belt_plan.CANONICAL_BELTS[lane]
+            if entry["workspace"] == workspace and entry.get("repo")]
+        return calls, None
     except (belt_plan.ManifestError, KeyError) as exc:
         why = str(exc)
         return {"monitor": f"(no canonical belt here: {why})",
@@ -603,7 +610,10 @@ def decide(payload: dict[str, Any], lane: str | None,
                            "another checkout, and the watcher scopes itself from where it runs "
                            "(harmonic-forge#917, #922). Run the canonical command directly, "
                            "from the checkout the session is in.")
-        if _normalize_command(command) != _normalize_command(calls["monitor"]["command"]):
+        matched = next((entry for entry in calls["monitor_entries"]
+                        if _normalize_command(command) == _normalize_command(entry["command"])),
+                       None)
+        if matched is None:
             return _reason(lane, calls,
                            "Denied: this Monitor runs watch_lane_posts.py but is not "
                            f"LANE={lane}'s canonical belt command for this checkout's "
@@ -616,7 +626,7 @@ def decide(payload: dict[str, Any], lane: str | None,
         # lifetime that nothing checks against each other. The poller's deadline
         # is only trustworthy if the Monitor it runs inside is actually given
         # the matching timeout, so both are compared or neither means anything.
-        expected_timeout = calls["monitor"]["timeout_ms"]
+        expected_timeout = matched["timeout_ms"]
         actual_timeout = tool_input.get("timeout_ms")
         if actual_timeout != expected_timeout:
             return _reason(lane, calls,

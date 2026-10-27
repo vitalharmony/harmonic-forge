@@ -629,6 +629,13 @@ def _fail_owed_to_l1(self_lane: str | None, detail: str, body: str) -> bool:
 #: edit to one constant with its rationale attached.
 _OVERLAP_MINUTES = 15
 
+#: harmonic-forge#1199 AC8. A watermark older than this means the belt was not
+#: watching that target in the interim (e.g. a repo-scoped belt ran instead),
+#: so the target starts fresh and primes rather than replaying the gap. Both
+#: shorter constants (`_OVERLAP_MINUTES`, `MONITOR_LIFETIME_S`) are under a
+#: normal gap between arms and would prime away #697's re-arm delivery.
+_WATERMARK_STALE_HOURS = 24
+
 #: Belt state, alongside `batch_auth`'s `~/.claude/state/batch-authorized.json`.
 #: PERSISTENT, unlike the in-memory `since` this replaces: a restart previously
 #: reset the window to `now`, silently skipping everything posted while the
@@ -1483,6 +1490,12 @@ def manifest_worktree_roots(account: str, workspace: str | None = None) -> list[
     return roots
 
 
+def _scope_roots(repo: str, account: str, workspace: str | None) -> set[str]:
+    """The checkout root(s) of one repo, for a repo-scoped belt (harmonic-forge#1199)."""
+    return {str(p.checkout) for p in _manifest_projects(account, workspace)
+            if p.repo == repo and p.checkout is not None}
+
+
 def _manifest_projects(account: str, workspace: str | None = None) -> list:
     try:
         projects = onboard_manifest.load()
@@ -1775,6 +1788,9 @@ def comment_watch_cycle(
         account = _account_of(repo)
         target = f"{repo}#{issue}"
         mark = watermarks.get(account, _wm_key(repo, issue))
+        stale = mark is not None and mark < _parse_iso(now) - dt.timedelta(hours=_WATERMARK_STALE_HOURS)
+        if stale:  # harmonic-forge#1199 AC8: a fresh start, not a replay
+            mark = None
         comments = _fetch_comments(
             repo, issue,
             query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
@@ -1784,7 +1800,7 @@ def comment_watch_cycle(
                   "watermark held, window will be re-read", file=sys.stderr)
             fetch_failed = True
             continue
-        priming = (allow_priming and mark is None
+        priming = ((allow_priming or stale) and mark is None
                    and target not in primed_targets)
         emitted_here = False
         suppressed: list[str] = []
@@ -2281,11 +2297,34 @@ def _build_canonical_belts(workspaces: list[str]) -> dict[str, list[dict[str, An
     exact-argv matcher below needs no special case and two workspaces' belts for one
     lane run side by side instead of contending for one machine-wide lock.
     """
-    return {lane: [{"argv": [*argv, "--workspace", ws],
+    belts: dict[str, list[dict[str, Any]]] = {}
+    for lane, argv in _BELT_ARGV.items():
+        entries = [{"argv": [*argv, "--workspace", ws],
                     "lock": f"belt-lane{lane}-{ws}.lock",
                     "workspace": ws}
                    for ws in workspaces]
-            for lane, argv in _BELT_ARGV.items()}
+        # harmonic-forge#1199: one repo-scoped entry per repo in each
+        # workspace, after every unscoped entry (which stay byte-identical).
+        # A scoped belt has its own lock and holds the workspace lock shared,
+        # so it excludes the unscoped belt for the same lane and workspace.
+        for ws in workspaces:
+            for repo in _workspace_repos(ws):
+                owner, name = repo.split("/", 1)
+                entries.append({"argv": [*argv, "--workspace", ws, "--scope-repo", repo],
+                                "lock": f"belt-lane{lane}-{ws}~{owner}__{name}.lock",
+                                "workspace": ws, "repo": repo,
+                                "workspace_lock": f"belt-lane{lane}-{ws}.lock"})
+        belts[lane] = entries
+    return belts
+
+
+def _workspace_repos(workspace: str) -> list[str]:
+    """Every onboarded repo in `workspace`, on the canonical belts' accounts."""
+    try:
+        return manifest_repos(_BELT_ARGV["1"][_BELT_ARGV["1"].index("--account-repos") + 1],
+                              workspace)
+    except Exception:  # noqa: BLE001 -- a table build never fails a belt; no scoped entries
+        return []
 
 
 CANONICAL_BELTS: dict[str, list[dict[str, Any]]] = _build_canonical_belts(manifest_workspaces())
@@ -2362,6 +2401,9 @@ def _enforce_canonical_belt(
             f"--workspace {entry['workspace']} is not this checkout's workspace "
             f"({here}); a belt watches only its own workspace (harmonic-forge#917). "
             "Run `python3 ~/harmonic-forge/tools/lane/belt_plan.py` for the right command.")
+    if entry.get("repo") and entry["repo"] not in _workspace_repos(here):
+        parser.error(f"--scope-repo {entry['repo']} is not a repo in workspace {here} "
+                     "(harmonic-forge#1199)")
     return entry
 
 
@@ -2458,7 +2500,7 @@ def _parse_lock_holder(raw: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _acquire_belt_lock(lock_name: str):
+def _acquire_belt_lock(lock_name: str, workspace_lock: str | None = None):
     """harmonic-forge#651 AC2. Exclusive, non-blocking `flock` on
     `BELT_LOCK_DIR/lock_name`, released automatically on process exit or
     crash (`flock` semantics -- no PID-file staleness window). On
@@ -2474,10 +2516,30 @@ def _acquire_belt_lock(lock_name: str):
       refusal to STDOUT (so the arming session sees another session owns
       the belt), then exit 4.
 
-    Returns the open file handle; keep it referenced for the process
+    harmonic-forge#1199: a repo-scoped belt (`workspace_lock` given) first
+    holds its workspace's lock SHARED, writing no holder record there, and then
+    its own lock exclusively as above. An unscoped belt holds the workspace
+    lock exclusively, so the two exclude each other (AC6). An unscoped arm
+    refused by scoped holders (no holder record) never runs the reclaim: it
+    names the scoped lock files and exits 4.
+
+    Returns the open file handle(s); keep them referenced for the process
     lifetime so the lock is held.
     """
     BELT_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    if workspace_lock is not None:
+        shared = open(BELT_LOCK_DIR / workspace_lock, "a+")
+        try:
+            fcntl.flock(shared.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            shared.seek(0)
+            holder = _parse_lock_holder(shared.read().strip()) or {}
+            print(f"belt already running for lock {workspace_lock} (pid "
+                  f"{holder.get('pid')} since {holder.get('start')}, session "
+                  f"{holder.get('session_pid')}): the unscoped belt for this lane and "
+                  "workspace excludes a repo-scoped one (harmonic-forge#1199)")
+            sys.exit(4)
+        return shared, _acquire_belt_lock(lock_name)
     path = BELT_LOCK_DIR / lock_name
     fh = open(path, "a+")
     try:
@@ -2490,6 +2552,14 @@ def _acquire_belt_lock(lock_name: str):
         holder_start = holder.get("start") if holder else None
         holder_session = holder.get("session_pid") if holder else None
 
+        scoped = sorted(BELT_LOCK_DIR.glob(f"{Path(lock_name).stem}~*.lock"))
+        if holder is None and scoped:
+            # harmonic-forge#1199 AC6: repo-scoped belts hold this lock shared
+            # and leave no holder record -- never reclaim, never SIGTERM.
+            print(f"belt lock {lock_name} is held by repo-scoped belt(s) "
+                  f"({', '.join(p.name for p in scoped)}); the unscoped belt for this "
+                  "lane and workspace cannot run beside them (harmonic-forge#1199)")
+            sys.exit(4)
         if holder_session and not _proc_alive(holder_session):
             if holder_pid:
                 try:
@@ -2625,6 +2695,9 @@ def _build_parser() -> argparse.ArgumentParser:
                              "projects.toml projects in this workspace (harmonic-forge#917). "
                              "Every canonical belt carries one; belt_plan.py resolves it from "
                              "the session's checkout.")
+    parser.add_argument("--scope-repo", metavar="OWNER/REPO", default=None,
+                        help="narrow --account-repos/--all-worktrees to this one repo "
+                             "(harmonic-forge#1199). Unlike --repo, a filter, never a union.")
     parser.add_argument("--repo", action="append", metavar="OWNER/REPO",
                         help="owner/repo for a manual --issues override, or the repo(s) "
                              "--queue-for scans. Repeatable: a lane carries work in hrse "
@@ -2764,7 +2837,8 @@ def _main() -> int:
         parser.error("--queue-for requires --repo or --account-repos")
     _belt_lock_entry = _enforce_canonical_belt(parser, args)
     _check_git_staleness(parser)
-    _belt_lock_handle = _acquire_belt_lock(_belt_lock_entry["lock"])  # noqa: F841
+    _belt_lock_handle = _acquire_belt_lock(  # noqa: F841
+        _belt_lock_entry["lock"], _belt_lock_entry.get("workspace_lock"))
     # Union, not replacement: an explicitly named --worktrees path stays
     # watched. It no longer doubles as a repo-root seed (harmonic-forge#594) --
     # roots are named to --all-worktrees, so --worktrees has one job again.
@@ -2788,6 +2862,12 @@ def _main() -> int:
                 effective_account_repos, args.workspace)
         except AccountReposUnavailable as exc:
             parser.error(str(exc))
+    if repo_roots is not None and args.scope_repo:
+        # harmonic-forge#1199 AC3: only the scoped repo's roots.
+        scoped_roots = _scope_roots(args.scope_repo, effective_account_repos, args.workspace)
+        repo_roots = [r for r in repo_roots if r in scoped_roots]
+        if not repo_roots:
+            parser.error(f"--scope-repo {args.scope_repo}: no checkout root in this workspace")
     if repo_roots is not None:
         try:
             args.worktrees = current_worktrees()
@@ -2811,6 +2891,10 @@ def _main() -> int:
         print(f"[watch_lane_posts] --account-repos {effective_account_repos}: "
               f"{len(derived)} non-archived repo(s)", file=sys.stderr)
         repos = sorted(set(repos) | set(derived))
+    if args.scope_repo:
+        repos = [r for r in repos if r == args.scope_repo]
+        if not repos:
+            parser.error(f"--scope-repo {args.scope_repo} is not among this belt's repos")
     if len(repos) > 1 and args.issues:
         parser.error("--issues takes a single --repo: an issue number means nothing "
                      "without exactly one repo to resolve it against")
@@ -2854,6 +2938,10 @@ def _main() -> int:
         # first arm, harmonic-forge#697); that announcement is the upgrade
         # boundary, deliberately not a state copy (harmonic-forge#917 sticky-wicket).
         belt_id += f"@{args.workspace}"
+    if args.scope_repo:
+        # harmonic-forge#1199 AC4: its own state; nothing copied from `@ws`.
+        owner, _, name = args.scope_repo.partition("/")
+        belt_id += f"~{owner}__{name}"
     watermarks = Watermarks(_BELT_STATE / "watermarks" / belt_id)
     seen = SeenSet(_BELT_STATE / f"seen-{belt_id}.tsv")
     #: harmonic-forge#1007: which queued markers this belt offered, to which

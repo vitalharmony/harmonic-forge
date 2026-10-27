@@ -72,7 +72,11 @@ def _canonical_entries() -> list[tuple[str, list[str]]]:
     for lane in ("1", "2", "3"):
         # harmonic-forge#917: one entry per lane per workspace, so a second entry
         # is another workspace's belt, not a sweep.
+        # harmonic-forge#1199: the docs show the unscoped belts; each repo-scoped
+        # entry is derived from one (test_scoped_entries_derive_from_unscoped).
         for entry in watch_lane_posts.CANONICAL_BELTS[lane]:
+            if entry.get("repo"):
+                continue
             entries.append((f"lane{lane}-{entry['workspace']}", entry["argv"]))
     return entries
 
@@ -192,9 +196,31 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
                         "--sweep-for", argv,
                         f"{name} still shows a runnable --sweep-for example")
 
+    def test_scoped_entries_derive_from_unscoped(self):
+        """harmonic-forge#1199 AC9: every repo-scoped entry is its workspace's
+        unscoped argv plus `--scope-repo <repo>`, with its own lock and the
+        workspace lock shared; every workspace repo has one per lane."""
+        for lane, entries in watch_lane_posts.CANONICAL_BELTS.items():
+            unscoped = {e["workspace"]: e for e in entries if not e.get("repo")}
+            scoped = [e for e in entries if e.get("repo")]
+            for ws in unscoped:
+                self.assertEqual(sorted(e["repo"] for e in scoped if e["workspace"] == ws),
+                                 watch_lane_posts._workspace_repos(ws))
+            for entry in scoped:
+                with self.subTest(lane=lane, repo=entry["repo"]):
+                    base = unscoped[entry["workspace"]]
+                    self.assertEqual(entry["argv"], [*base["argv"], "--scope-repo", entry["repo"]])
+                    self.assertEqual(entry["workspace_lock"], base["lock"])
+                    owner, name = entry["repo"].split("/")
+                    self.assertEqual(entry["lock"],
+                                     f"belt-lane{lane}-{entry['workspace']}~{owner}__{name}.lock")
+
+    def test_skill_names_the_repo_flag(self):
+        self.assertIn("belt_plan.py --repo", _SKILL_MD.read_text(encoding="utf-8"))
+
     def test_lane3_table_holds_only_the_queue_belt(self):
         """harmonic-forge#659 AC1; one queue belt per workspace since harmonic-forge#917."""
-        entries = watch_lane_posts.CANONICAL_BELTS["3"]
+        entries = [e for e in watch_lane_posts.CANONICAL_BELTS["3"] if not e.get("repo")]
         self.assertEqual([e["workspace"] for e in entries],
                          watch_lane_posts.manifest_workspaces())
         for entry in entries:
