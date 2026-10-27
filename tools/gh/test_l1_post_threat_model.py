@@ -130,8 +130,8 @@ class ThreatModelTests(unittest.TestCase):
 class TemplateTests(unittest.TestCase):  # AC5
     def test_template_carries_line_and_visible_table(self):
         text = (ROOT.parent.parent / "templates" / "lane1-handoff.md").read_text()
-        self.assertIn("**Threat model:**", text)
         visible = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+        self.assertIn("**Threat model:**", visible)
         self.assertIn("| Third parties", visible)
         self.assertIn("hostile-author", visible)
 
