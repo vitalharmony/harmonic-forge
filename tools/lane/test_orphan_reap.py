@@ -174,6 +174,14 @@ class RunTests(unittest.TestCase):  # AC2-AC4
         self.assertEqual(found[0]["action"], "reported")
         self.assertEqual(self.sent, [])
 
+    def test_stop_refuses_a_reused_pid(self):
+        """stop() itself checks the start time before the first signal."""
+        start = self.fake.add(500, 2102, cmdline="python3 -c x")
+        sent = []
+        self.assertEqual(reap.stop(self.fake.root, 500, start + 1, send=lambda p, s: sent.append(s),
+                                   sleep=lambda s: None), "gone-or-reused")
+        self.assertEqual(sent, [])
+
     def test_recheck_before_sigkill(self):
         start = self.fake.add(500, 2102, cmdline="python3 -c x")
         sent = []
@@ -189,7 +197,9 @@ class RunTests(unittest.TestCase):  # AC2-AC4
 
     def test_corrupt_state_stops_nothing(self):
         self.fake.add(500, 2102, cmdline="python3 -c x")
-        for corrupt in ("{not json", '["500:1"]', '{"x": "yesterday"}'):
+        start = int((UPTIME - 10 * 3600) * HZ)
+        for corrupt in ("{not json", '["500:1"]', '{"x": "yesterday"}',
+                        json.dumps({f"500:{start}": "yesterday"})):  # the real key, a bad value
             with self.subTest(corrupt=corrupt):
                 self.state.write_text(corrupt)
                 self.clock[0] += 10 * 3600
