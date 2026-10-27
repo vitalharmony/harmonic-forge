@@ -2813,3 +2813,13 @@ anchor = "the-filing-bar"
 statement = "A substantive tooling or process change is filed before it is implemented, including in files Lane 1 may edit directly."
 text_sha = "a5fa850bb8baeecb"
 hooks = []
+
+[[rule]]
+id = "R-0418"
+file = "rules/lane-shorthand.md"
+anchor = "force"
+statement = "An operator-typed first-line FORCE <KEY> [reforge <sha> | cluster]: <reason> writes one 1h grant of that mode; each preclose override (--force, --force --reforge, --cluster-verdict --force) requires and consumes a grant of its own mode bound to its head (a reforge grant to the typed SHA prefix), an unknown or malformed mode writes nothing, and a cluster grant is reserved only after every validation (harmonic-forge#1174)."
+text_sha = "1a7008632ab842b9"
+hooks = [
+  { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+]

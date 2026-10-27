@@ -96,12 +96,21 @@ def covered_head(repo: str, issue: int) -> str | None:
     return preclose_passes.force_head(preclose_check.find_receipt(repo, issue))
 
 
-def write_pending(key: str, repo: str, issue: int, sha: str, reason: str,
-                  session_id: str | None, line: str, now: datetime | None = None) -> dict:
-    """The hook's write. A new FORCE line replaces any earlier grant for the key."""
+def read_grant(key: str) -> dict | None:
+    """The current grant file for the key, or None."""
+    return imc_waiver.read_json(grant_path(key))
+
+
+def write_pending(key: str, repo: str, issue: int, sha: str | None, reason: str,
+                  session_id: str | None, line: str, now: datetime | None = None,
+                  mode: str = "plain", sha_prefix: str | None = None) -> dict:
+    """The hook's write. A new FORCE line replaces any earlier grant for the key.
+    `mode` is plain, reforge or cluster (harmonic-forge#1174): plain and cluster
+    bind the full `sha`; reforge binds the operator-typed `sha_prefix`."""
     moment = now or imc_waiver._now()
     grant = {
         "key": key.upper(), "repo": repo, "issue": issue, "sha": sha, "reason": reason,
+        "mode": mode, "sha_prefix": sha_prefix,
         "reason_sha256": reason_sha256(reason), "granted_at": imc_waiver._iso(moment),
         "expires_at": imc_waiver._iso(moment + timedelta(hours=TTL_HOURS)),
         "session_id": session_id or "", "line": line, "status": "pending",
@@ -123,13 +132,13 @@ def comment_body(grant: dict) -> str:
         f"- **Who:** the operator, through a typed prompt that passed the BATCH provenance "
         f"check (R-0117), in session `{grant.get('session_id') or 'unknown'}`.",
         f"- **When:** `{grant.get('granted_at')}`, usable until `{grant.get('expires_at')}`.",
-        f"- **What it authorizes:** one plain `preclose_check.py --force` for "
-        f"{grant['repo']}#{grant['issue']} at `{grant['sha'][:12]}`, single use. Never "
-        "`--reforge` or `--cluster-verdict`, and never past an IMC receipt.",
+        f"- **What it authorizes:** {_authorizes(grant)} for "
+        f"{grant['repo']}#{grant['issue']} at `{_bound(grant)[:12]}`, single use, and nothing "
+        "else: never another mode, and never past an IMC receipt.",
         f"- **Reason:** {grant['reason']}",
         "",
         f"<!-- force-grant key={grant['key']} granted_at={grant.get('granted_at')} "
-        f"sha={grant['sha']} -->",
+        f"sha={_bound(grant)} mode={grant.get('mode') or 'plain'} -->",
     ])
 
 
@@ -175,7 +184,50 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> d
     return usable
 
 
-def require(repo: str, issue: int, head_sha: str, now: datetime | None = None) -> dict:
+#: harmonic-forge#1174: what each mode authorizes, for the public comment.
+_AUTHORIZES = {"plain": "one plain `preclose_check.py --force`",
+               "reforge": "one `preclose_check.py --force --reforge`",
+               "cluster": "one `preclose_check.py --cluster-verdict ... --force`"}
+
+
+def _mode(grant: dict) -> str:
+    """A grant with no `mode` (F1169-era) is plain."""
+    return grant.get("mode") or "plain"
+
+
+def _authorizes(grant: dict) -> str:
+    return _AUTHORIZES.get(_mode(grant), _AUTHORIZES["plain"])
+
+
+def _bound(grant: dict) -> str:
+    return str((grant.get("sha_prefix") if _mode(grant) == "reforge" else grant.get("sha")) or "")
+
+
+def _scope(grant: dict) -> str:
+    """What a grant is bound to, for the CLI: a reforge binds a prefix and a
+    cluster grant may bind nothing, so `sha` alone printed None (F1174)."""
+    bound = _bound(grant)
+    return f"({_mode(grant)}) at {bound[:12]}" if bound else f"({_mode(grant)})"
+
+
+def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str) -> str | None:
+    """Why this grant does not cover a `mode` force at `head_sha`, or None."""
+    if _mode(grant) != mode:
+        return (f"the FORCE grant for {key} authorizes a {_mode(grant)} force, not a {mode} one; "
+                f"the operator types `FORCE {key}{'' if mode == 'plain' else ' ' + mode} ...: <reason>`")
+    if mode == "reforge":
+        prefix = str(grant.get("sha_prefix") or "")
+        if len(prefix) < 12 or not head_sha or not head_sha.startswith(prefix):
+            return f"the reforge grant for {key} names {prefix[:12] or '?'}, not {head_sha[:12]}"
+        return None
+    if not head_sha or str(grant.get("sha")) != head_sha:
+        return (f"the FORCE grant for {key} covers {str(grant.get('sha'))[:12]}, not "
+                f"{head_sha[:12]}: the head moved after the grant")
+    return None
+
+
+def require(repo: str, issue: int, head_sha: str, now: datetime | None = None,
+            mode: str = "plain") -> dict:
     """AC3: the usable grant covering exactly this force, or GrantRefused."""
     key = imc_waiver.issue_key(repo, issue)
     if key is None:
@@ -194,13 +246,14 @@ def require(repo: str, issue: int, head_sha: str, now: datetime | None = None) -
                            f"`python3 tools/gh/force_grant.py record --key {key}` first")
     if _expired(grant, now or imc_waiver._now()):
         raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
-    if not head_sha or str(grant.get("sha")) != head_sha:
-        raise GrantRefused(f"the FORCE grant for {key} covers {str(grant.get('sha'))[:12]}, not "
-                           f"{head_sha[:12]}: the head moved after the grant")
+    refusal = _binding_refusal(grant, key, head_sha, mode)
+    if refusal:
+        raise GrantRefused(refusal)
     return grant
 
 
-def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | None = None) -> dict:
+def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | None = None,
+            mode: str = "plain") -> dict:
     """Spend exactly the grant `require()` returned: same `granted_at`, still
     usable and unexpired, bound to this head. Anything else refuses (preclose
     pass 1, finding 1), so a newer grant is never spent in an older one's place."""
@@ -216,9 +269,9 @@ def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | N
             raise GrantRefused(f"the FORCE grant for {key} is {grant.get('status')}, not usable")
         if _expired(grant, moment):
             raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
-        if str(grant.get("sha")) != head_sha:
-            raise GrantRefused(f"the FORCE grant for {key} covers {str(grant.get('sha'))[:12]}, "
-                               f"not {head_sha[:12]}")
+        refusal = _binding_refusal(grant, key, head_sha, mode)
+        if refusal:
+            raise GrantRefused(refusal)
         spent = {**grant, "status": "consumed", "consumed_at": imc_waiver._iso(moment),
                  "consumed_sha": head_sha}
         imc_waiver.write_json_atomic(grant_path(key), spent)
@@ -234,13 +287,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "record":
         grant = record(args.key)
-        print(f"force-grant: {grant['key']} usable for {grant['repo']}#{grant['issue']} at "
-              f"{grant['sha'][:12]} until {grant['expires_at']} -- {grant['comment_url']}")
+        print(f"force-grant: {grant['key']} usable for {grant['repo']}#{grant['issue']} "
+              f"{_scope(grant)} until {grant['expires_at']} -- {grant['comment_url']}")
         return 0
     grant = imc_waiver.read_json(grant_path(args.key))
     print(f"force-grant: {args.key.upper()}: " + (
         "none" if grant is None else
-        f"{grant.get('status')} at {str(grant.get('sha'))[:12]}, expires {grant.get('expires_at')}"))
+        f"{grant.get('status')} {_scope(grant)}, expires {grant.get('expires_at')}"))
     return 0
 
 

@@ -165,27 +165,27 @@ def imc_refusal(repo: str, issue: int, what: str) -> None:
             f"{what}. This is an IMC stop: end the turn with the decision the operator owes.")
 
 
-def require_force_grant(repo: str, issue: int, head_sha: str) -> dict:
+def require_force_grant(repo: str, issue: int, head_sha: str, mode: str = "plain") -> dict:
     """harmonic-forge#1169 AC3: a plain --force needs the operator's usable FORCE
     grant for exactly this head. Called only after `imc_refusal`, so a grant
     can never reach past an IMC receipt, and never for --reforge or
     --cluster-verdict, which take no grant."""
     import force_grant  # noqa: PLC0415
     try:
-        return force_grant.require(repo, issue, head_sha)
+        return force_grant.require(repo, issue, head_sha, mode=mode)
     except force_grant.GrantRefused as exc:
         raise SystemExit(f"preclose-check: --force on {repo}#{issue} refused: {exc} "
                          "(harmonic-forge#1169).") from None
 
 
-def reserve_force_grant(repo: str, issue: int, head_sha: str) -> dict:
+def reserve_force_grant(repo: str, issue: int, head_sha: str, mode: str = "plain") -> dict:
     """Spend the grant BEFORE anything is recorded (F1169 sticky-wicket after
     pass 2): a refused spend writes no forced pass. A crash after this costs
     one retyped FORCE line, the fail-closed trade."""
     import force_grant  # noqa: PLC0415
-    grant = require_force_grant(repo, issue, head_sha)
+    grant = require_force_grant(repo, issue, head_sha, mode)
     try:
-        return force_grant.consume(grant["key"], grant["granted_at"], head_sha)
+        return force_grant.consume(grant["key"], grant["granted_at"], head_sha, mode=mode)
     except force_grant.GrantRefused as exc:
         raise SystemExit(f"preclose-check: --force on {repo}#{issue} refused: {exc} "
                          "(harmonic-forge#1169).") from None
@@ -917,10 +917,12 @@ def plan(args: argparse.Namespace) -> int:
             f"{unmatched.get('key')}")
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force,
                    getattr(args, "reforge", False))
-    if args.force and not getattr(args, "reforge", False):
+    if args.force:
         # After the cap's own refusals, so a force that is wrong for another
         # reason still says so. Plan checks; only complete consumes (#1169).
-        require_force_grant(repo, args.issue, head_sha)
+        # A reforge needs its own reforge grant (harmonic-forge#1174).
+        require_force_grant(repo, args.issue, head_sha,
+                            "reforge" if getattr(args, "reforge", False) else "plain")
     if not args.force and not kill_receipt_ok(repo, args.issue, head_sha, args.base):
         raise SystemExit(
             f"preclose-check: no passing kill-check receipt covers {repo}#{args.issue} "
@@ -1046,7 +1048,8 @@ def complete(args: argparse.Namespace) -> int:
     identity = local_change_identity(args.base, head_sha)
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force, reforge)
-    grant = reserve_force_grant(repo, args.issue, head_sha) if args.force and not reforge else None
+    grant = (reserve_force_grant(repo, args.issue, head_sha, "reforge" if reforge else "plain")
+             if args.force else None)
     try:
         findings = load_findings(args.findings)
         require_wellformed_anchors(findings)
@@ -1109,7 +1112,8 @@ def complete(args: argparse.Namespace) -> int:
         })
     except BaseException:
         if grant is not None:
-            emit_force(repo, args.issue, head_sha, "force", 0, grant, outcome="reserved-not-recorded")
+            emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", 0, grant,
+                       outcome="reserved-not-recorded")
         raise
     # Emitted straight after the durable write, before any output that can
     # fail (F1169 post-verdict check: a broken stdout skipped it).
@@ -1426,16 +1430,33 @@ def cluster_verdict(args: argparse.Namespace) -> int:
     if not isinstance(canonical, str) or not canonical:
         raise SystemExit("preclose-check: verified comment has no html_url")
     updated = {**cluster, "verdict": args.cluster_verdict, "comment_url": canonical}
-    path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
-                         prior.get("refuters", 0), status=prior.get("status", "complete"),
-                         extra={**preclose_passes.carried(prior), "mechanism_cluster": updated})
+    # harmonic-forge#1174: spent after every validation above, immediately
+    # before the receipt write, so a bad --comment-url never burns the grant.
+    grant = None
+    head = ""
+    surviving = int((passes[-1] if passes else {}).get("surviving") or 0)
+    if args.force:
+        import force_grant  # noqa: PLC0415
+        # The event names the head the grant covered, never the receipt's key.
+        head = force_grant.covered_head(repo, args.issue) or ""
+        if not head:
+            raise SystemExit(f"preclose-check: --cluster-verdict --force on {repo}#{args.issue} "
+                             "refused: no head for the grant to cover (harmonic-forge#1174).")
+        grant = reserve_force_grant(repo, args.issue, head, "cluster")
+    try:
+        path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
+                             prior.get("refuters", 0), status=prior.get("status", "complete"),
+                             extra={**preclose_passes.carried(prior), "mechanism_cluster": updated})
+    except BaseException:
+        if grant is not None:
+            emit_force(repo, args.issue, head, "cluster-verdict", surviving, grant,
+                       outcome="reserved-not-recorded")
+        raise
+    if args.force:
+        # harmonic-forge#1174 AC3: measured as granted, with its cluster grant.
+        emit_force(repo, args.issue, head, "cluster-verdict", surviving, grant)
     print(f"preclose-check: mechanism-cluster verdict {args.cluster_verdict} recorded; not a pass.")
     print(f"  receipt: {path}")
-    if args.force:
-        # Measured, never granted: --cluster-verdict --force takes no grant
-        # (harmonic-forge#1169 AC4; covering it is harmonic-forge#1174).
-        emit_force(repo, args.issue, preclose_passes.reviewed_head(prior) or "", "cluster-verdict",
-                   int((passes[-1] if passes else {}).get("surviving") or 0), None)
     return 0
 
 

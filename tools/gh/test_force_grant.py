@@ -199,5 +199,65 @@ class PrecloseGateTests(Store):
         self.assertEqual((reforged["attrs"]["granted"], reforged["attrs"]["mode"]), (False, "reforge"))
 
 
+
+class ModeBindingTests(Store):
+    """harmonic-forge#1174 AC2: each override needs a grant of its own mode."""
+
+    def usable(self, mode: str = "plain", sha: str | None = SHA, prefix: str | None = None) -> dict:
+        G.write_pending(KEY, REPO, ISSUE, sha, "r", "s1", "FORCE line", NOW, mode=mode, sha_prefix=prefix)
+        return G.record(KEY, now=NOW, runner=self.runner({}))
+
+    def test_plain_grant_does_not_authorize_reforge(self):
+        self.usable()
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, SHA, NOW, mode="reforge")
+        self.assertIn("plain force, not a reforge one", str(ctx.exception))
+
+    def test_reforge_grant_does_not_authorize_plain_force(self):
+        # The grant also carries the head's full SHA, so only the mode check can
+        # refuse: without it the plain branch's SHA match would pass (kill check 2).
+        self.usable("reforge", SHA, SHA[:12])
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, SHA, NOW)
+        self.assertIn("authorizes a reforge force, not a plain one", str(ctx.exception))
+
+    def test_reforge_grant_matches_its_prefix_only(self):
+        self.usable("reforge", None, SHA[:12])
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="reforge")["mode"], "reforge")
+
+    def test_reforge_grant_for_another_head_is_refused(self):
+        self.usable("reforge", None, SHA[:12])
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, MOVED, NOW, mode="reforge")
+        self.assertIn("names aaaaaaaaaaaa", str(ctx.exception))
+
+    def test_scope_names_what_each_mode_binds(self):
+        """F1174 pass 1: the CLI sliced `sha`, None for a reforge grant."""
+        self.assertEqual(G._scope({"mode": "reforge", "sha": None, "sha_prefix": SHA[:12]}),
+                         f"(reforge) at {SHA[:12]}")
+        self.assertEqual(G._scope({"mode": "cluster", "sha": None}), "(cluster)")
+        self.assertEqual(G._scope({"sha": SHA}), f"(plain) at {SHA[:12]}")
+
+    def test_cluster_grant_binds_the_full_sha(self):
+        self.usable("cluster")
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="cluster")["mode"], "cluster")
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, MOVED, NOW, mode="cluster")
+
+    def test_a_grant_with_no_mode_reads_as_plain(self):
+        self.usable()
+        path = G.grant_path(KEY)
+        data = json.loads(path.read_text()); data.pop("mode", None); data.pop("sha_prefix", None)
+        path.write_text(json.dumps(data))
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW)["key"], KEY)
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, SHA, NOW, mode="reforge")
+
+    def test_consume_checks_the_mode_too(self):
+        grant = self.usable("cluster")
+        with self.assertRaises(G.GrantRefused):
+            G.consume(KEY, grant["granted_at"], SHA, NOW, mode="plain")
+        self.assertEqual(G.consume(KEY, grant["granted_at"], SHA, NOW, mode="cluster")["status"], "consumed")
+
 if __name__ == "__main__":
     unittest.main()

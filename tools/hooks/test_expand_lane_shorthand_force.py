@@ -44,7 +44,7 @@ class ForceTrigger(unittest.TestCase):
 
     def test_a_typed_first_line_writes_a_pending_grant_bound_to_the_head(self) -> None:
         receipt = self.force("FORCE F1166: both post-verdict findings fixed")
-        self.assertIn("pending grant written for F1166", receipt)
+        self.assertIn("pending plain grant written for F1166", receipt)
         grant = self.grant()
         self.assertEqual((grant["status"], grant["sha"], grant["repo"], grant["issue"]),
                          ("pending", HEAD, "vitalharmony/harmonic-forge", 1166))
@@ -97,6 +97,50 @@ class ForceTrigger(unittest.TestCase):
     def test_a_prompt_without_force_is_silent(self) -> None:
         self.assertEqual(self.force("BATCH F1166"), "")
 
+
+
+class ForceModes(ForceTrigger):
+    """harmonic-forge#1174 AC1: `FORCE <KEY> [reforge <sha> | cluster]: <reason>`."""
+
+    def test_a_cluster_grant_records_its_mode(self) -> None:
+        receipt = self.force("FORCE F1166: x".replace(":", " cluster:", 1))
+        self.assertIn("pending cluster grant", receipt)
+        self.assertEqual((self.grant()["mode"], self.grant()["sha"]), ("cluster", HEAD))
+
+    def test_a_reforge_grant_binds_the_typed_sha_not_the_covered_head(self) -> None:
+        with mock.patch.object(force_grant, "covered_head", lambda repo, issue: None):
+            receipt = self.force("FORCE F1166 reforge ABCDEF123456: new approach")
+        self.assertIn("pending reforge grant", receipt)
+        grant = self.grant()
+        self.assertEqual((grant["mode"], grant["sha_prefix"], grant["sha"]),
+                         ("reforge", "abcdef123456", None))
+
+    def test_reforge_without_sha_refuses(self) -> None:
+        self.assertIn("names the head it approves", self.force("FORCE F1166 reforge: new approach"))
+        self.assertIsNone(self.grant())
+
+    def test_cluster_with_sha_refuses(self) -> None:
+        self.assertIn("takes no SHA", self.force("FORCE F1166 cluster abcdef123456: x"))
+        self.assertIsNone(self.grant())
+
+    def test_unknown_mode_refuses_and_writes_nothing(self) -> None:
+        self.assertIn("unknown FORCE mode", self.force("FORCE F1166 rebase: x"))
+        self.assertIsNone(self.grant())
+
+    def test_malformed_modes_get_their_own_refusal(self) -> None:
+        for line in ("FORCE F1166 reforge abc12z456789: x", "FORCE F1166 reforge2: x",
+                     "FORCE F1166 reforge " + "a" * 41 + ": x", "FORCE F1166 Reforge abcdef123456: x",
+                     "FORCE F1166 REFORGE abcdef123456: x", "FORCE F1166 reforge abc123: x"):
+            with self.subTest(line=line):
+                receipt = self.force(line)
+                self.assertIn("FORCE REFUSED for F1166", receipt)
+                self.assertNotIn("first line", receipt)
+                self.assertIsNone(self.grant())
+
+    def test_a_replaced_grant_is_named(self) -> None:
+        self.force("FORCE F1166: first")
+        receipt = self.force("FORCE F1166 cluster: second")
+        self.assertIn("replaces the plain grant at cccccccccccc", receipt)
 
 if __name__ == "__main__":
     unittest.main()

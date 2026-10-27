@@ -377,18 +377,22 @@ class MechanismClusterTests(ScratchRepo):
         self.assertIn("--force --reforge", preclose_passes.refusal(
             receipt, preclose.run("git", "rev-parse", "HEAD").stdout.strip(),
             main_ref="base", force=True, repo=REPO, issue=ISSUE))
-        # harmonic-forge#1169: --force --reforge takes no grant. The refused
-        # plain forces above left one on disk; remove it so this proves that.
-        for grant in (Path(os.environ["HOME"]) / ".claude/state/force").glob("*.json"):
-            grant.unlink()
+        # harmonic-forge#1174: --force --reforge needs its own reforge grant.
+        # The refused plain forces above left a plain one on disk; it must not
+        # authorize the reforge.
+        with self.assertRaises(SystemExit) as no_reforge_grant:
+            preclose.plan(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD", tier="fast",
+                                force=True, reforge=True, allow_dirty=False, allow_repo_mismatch=False))
+        self.assertIn("plain force, not a reforge one", str(no_reforge_grant.exception))
         self.plan(tier="fast", force=True, reforge=True)
         with patch.object(preclose, "emit_force") as emitted:
             preclose.complete(_Args(repo=REPO, issue=ISSUE, base="base", head="HEAD",
                                     findings=self.findings_file(self.findings("new")), envelope=None,
                                     not_triggered=True, cross_family=False, force=True, reforge=True))
-        # F1169 pass 2: the ungranted reforge force is measured, ungranted.
+        # harmonic-forge#1174 AC3: the reforge force is measured as granted.
         self.assertEqual(emitted.call_count, 1)
-        self.assertEqual((emitted.call_args.args[3], emitted.call_args.args[5]), ("reforge", None))
+        self.assertEqual(emitted.call_args.args[3], "reforge")
+        self.assertEqual(emitted.call_args.args[5]["mode"], "reforge")
         self.assertNotIn("mechanism_cluster", self.receipt())
 
     def test_pass_two_cluster_does_not_create_the_early_route(self) -> None:
@@ -418,8 +422,15 @@ class MechanismClusterTests(ScratchRepo):
         self.assertEqual(after["status"], before["status"])
         self.assertEqual(after["refuters"], before["refuters"])
 
-    def test_a_forced_cluster_verdict_emits_one_ungranted_force_event(self) -> None:
-        """F1169 pass 2: the --cluster-verdict --force site is measured."""
+    def cluster_grant(self) -> None:
+        """harmonic-forge#1174: --cluster-verdict --force needs a cluster grant
+        bound to the head a force covers."""
+        import force_grant  # noqa: PLC0415
+        self.grant_force(ISSUE, mode="cluster", sha=force_grant.covered_head(REPO, ISSUE))
+
+    def test_a_forced_cluster_verdict_emits_one_granted_force_event(self) -> None:
+        """F1169 pass 2: the --cluster-verdict --force site is measured;
+        harmonic-forge#1174 AC3: as granted, with its cluster grant."""
         self.run_pass("scripts/a.py", self.findings("same", "same"))
         api = subprocess.CompletedProcess([], 0, stdout=(
             '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
@@ -429,12 +440,78 @@ class MechanismClusterTests(ScratchRepo):
         with patch.object(preclose, "run", return_value=api):
             preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
                                            comment_url=url, force=False))
+            self.cluster_grant()
             with patch.object(preclose, "emit_force") as emitted:
                 preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="REFORGE",
                                                comment_url=url, force=True))
         self.assertEqual(emitted.call_count, 1)
-        self.assertEqual((emitted.call_args.args[3], emitted.call_args.args[5]),
-                         ("cluster-verdict", None))
+        self.assertEqual(emitted.call_args.args[3], "cluster-verdict")
+        self.assertEqual(emitted.call_args.args[5]["mode"], "cluster")
+        import force_grant  # noqa: PLC0415
+        self.assertEqual(emitted.call_args.args[2], force_grant.covered_head(REPO, ISSUE))
+
+    def test_the_cluster_event_names_the_covered_head_not_the_receipt_head(self) -> None:
+        """F1174 pass 1 (cross-family): on the PATCH path the covered head is the
+        post-verdict head, not the receipt's; the event names what was granted."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        url = "https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'), stderr="")
+        import force_grant  # noqa: PLC0415
+        covered = "c" * 40
+        with patch.object(force_grant, "covered_head", return_value=covered):
+            self.grant_force(ISSUE, mode="cluster", sha=covered)
+            with patch.object(preclose, "run", return_value=api), \
+                    patch.object(preclose, "emit_force") as emitted:
+                preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                               comment_url=url, force=True))
+        self.assertEqual(emitted.call_args.args[2], covered)
+
+    def test_a_cluster_write_failure_after_the_reserve_says_so(self) -> None:
+        """F1174 pass 1: a failed receipt write after the grant is spent still
+        emits one event, as reserved-not-recorded."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        url = "https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'), stderr="")
+        self.cluster_grant()
+        with patch.object(preclose, "run", return_value=api), \
+                patch.object(preclose, "write_receipt", side_effect=OSError("disk")), \
+                patch.object(preclose, "emit_force") as emitted, self.assertRaises(OSError):
+            preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                           comment_url=url, force=True))
+        self.assertEqual(emitted.call_count, 1)
+        self.assertEqual(emitted.call_args.kwargs["outcome"], "reserved-not-recorded")
+
+    def test_cluster_verdict_force_needs_a_cluster_grant(self) -> None:
+        """harmonic-forge#1174 AC2: no grant, or a plain one, refuses; nothing is written."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        url = "https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'), stderr="")
+        before = self.receipt()
+        import force_grant  # noqa: PLC0415
+        self.grant_force(ISSUE, sha=force_grant.covered_head(REPO, ISSUE))
+        with patch.object(preclose, "run", return_value=api), self.assertRaises(SystemExit) as ctx:
+            preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                           comment_url=url, force=True))
+        self.assertIn("plain force, not a cluster one", str(ctx.exception))
+        self.assertEqual(self.receipt(), before)
+
+    def test_bad_comment_url_keeps_the_cluster_grant(self) -> None:
+        """harmonic-forge#1174: the grant is spent only after every validation."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        self.cluster_grant()
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 404")
+        with patch.object(preclose, "run", return_value=failed), self.assertRaises(SystemExit):
+            preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                           comment_url="https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99",
+                                           force=True))
+        grant = json.loads((Path(os.environ["HOME"]) / ".claude/state/force/H1208.json").read_text())
+        self.assertEqual(grant["status"], "usable")
 
     def test_cluster_verdict_refuses_foreign_comment_api_failure_and_overwrite(self) -> None:
         self.run_pass("scripts/a.py", self.findings("same", "same"))
@@ -480,6 +557,7 @@ class MechanismClusterTests(ScratchRepo):
             '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'),
             stderr="")
         args.force = True
+        self.cluster_grant()
         args.cluster_verdict = "REFORGE"
         with patch.object(preclose, "run", return_value=api):
             preclose.cluster_verdict(args)
@@ -499,6 +577,7 @@ class MechanismClusterTests(ScratchRepo):
         patch_args = _Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
                            comment_url="https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99",
                            force=False)
+        self.cluster_grant()
         reforge_args = _Args(repo=f"https://github.com/{REPO}.git", issue=ISSUE,
                              cluster_verdict="REFORGE",
                              comment_url=patch_args.comment_url, force=True)
@@ -581,6 +660,19 @@ class PreclosePassOneFixTests(ScratchRepo):
         stored = preclose.find_receipt(REPO, ISSUE)
         self.assertEqual(stored["pass_count"], 1)
         self.assertEqual(len(stored["pass_history"]), 3)
+
+    def test_a_reforge_write_failure_emits_reforge_not_force(self) -> None:
+        """F1174 pass 1: the crash path named every forced pass "force"."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.commit("scripts/new.py")
+        self.plan(tier="fast", reforge=True, force=True)
+        with patch.object(preclose, "write_receipt", side_effect=OSError("disk")), \
+                patch.object(preclose, "emit_force") as emitted, self.assertRaises(OSError):
+            self.complete_reforge()
+        self.assertEqual(emitted.call_args.args[3], "reforge")
+        self.assertEqual(emitted.call_args.kwargs["outcome"], "reserved-not-recorded")
 
     def test_reforge_without_force_is_refused(self) -> None:
         """F834 pass 2 / sticky-wicket: no branch-name fence; reforge is operator-only."""
