@@ -15,10 +15,7 @@
 - Acceptance criteria: The widget returns 2.; Nothing else changes.
 - Diff: 2 files changed, 10 insertions(+)
 - Kill checks: AC1 base 1 / head 0; AC2 base 1 / head 0. Check: new failures none; base failures none
-- Preclose survivors: none
-- Provenance: Red-team provenance: cross-family (codex / gpt-6.1-sol) — 3 of 3 confirmed
-- CI: pending — approve workflows, as of 2026-10-20T11:00:00Z, not authoritative: re-read live at BATCH time
-- Preclose summary: https://github.com/vitalharmony/harmonic-forge/pull/101#issuecomment-1
+- Merge: not authorized (pending: verify: queued), as of 2026-10-20T11:00:00Z, not authoritative: re-read live at BATCH time
 - [ ] scope
 - [ ] containment
 - [ ] honesty

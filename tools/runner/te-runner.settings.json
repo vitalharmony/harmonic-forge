@@ -114,5 +114,48 @@
       "Edit(./**/mise/tasks/**)",
       "Edit(~/.local/share/te-runner/kill-bundles/**)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json, sys; d = json.load(sys.stdin); c = (d.get('tool_input') or {}).get('command'); s = 'python3 -c ' + chr(39) + 'print(' + chr(34) + 'te-runner-hook-probe' + chr(34) + ')' + chr(39); print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': 'te-runner-hook-probe sentinel'}})) if c == s else None\""
+          }
+        ]
+      }
+    ]
   }
 }

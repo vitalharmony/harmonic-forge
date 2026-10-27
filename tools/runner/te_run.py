@@ -8,25 +8,34 @@ statuses: the agent is never given the queue path. Per item:
 
 1. re-check eligibility (`te_queue.first_failure`); an ineligible item is
    reduced and set aside without a checkout;
-2. create `fix/<N>-te-runner` from `origin/main` in a fresh `git clone
-   --shared` (an existing checkout, local branch, `refs/te-runner/<N>` or
-   runner-fork branch of that name blocks the item, never reused). The agent
-   and every run of its code (the check steps, the kill-check tests, the
-   preclose refuters, the cross-family reviewer) run inside `sandbox.py`'s
-   allowlist `bwrap` boundary (harmonic-forge#1098);
-3. run `claude -p` in it with `te-runner.settings.json`, the runner's own key
-   and gh config (`preclose_driver.runner_env`), and stream-json with hook
-   events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit` and
-   `Stop` hook events each appear and `init.apiKeySource` is not `none`;
+2. archive an earlier attempt's local traces (`archive_previous_attempt`,
+   harmonic-forge#1195): its clone becomes a patch under
+   `TE_RUNNER_HOME/archive/<N>/<k>/`, `refs/te-runner/<N>` moves to
+   `refs/te-runner-archive/<N>/<k>` and its local branch is deleted. An open
+   runner PR for the issue still blocks it. Then create `fix/<N>-te-runner`
+   (attempt 1) or `fix/<N>-te-runner-a<k>` from `origin/main` in a fresh `git
+   clone --shared`; a runner-fork branch is never deleted or force-pushed, so
+   a name that exists there moves on to the next attempt. The agent and every
+   run of its code (the check steps, the kill-check tests) run inside
+   `sandbox.py`'s allowlist `bwrap` boundary (harmonic-forge#1098);
+3. run `claude -p --max-turns 60` in it, under an `AGENT_TIMEOUT_S` wall
+   timeout, with `te-runner.settings.json` (its hooks passed explicitly), the
+   runner's own key and gh config (`sandbox.runner_env`), and stream-json with
+   hook events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit`
+   and `Stop` hook events each appear and `init.apiKeySource` is not `none`.
+   A wall timeout or `error_max_turns` sets the item aside as `budget`, and
+   the run goes on to the next item;
 4. the check (`CHECK_STEPS`), `kill_runner.py run`, then `kill_check.py` over checks
    generated from the bundle and the agent's own diff reversed (operator
-   ruling on this issue), `deny_check.py diff`, and `preclose_driver.py run`
-   exactly once (any non-zero exit sets the item aside; never retried);
-5. `verdict.reduce` over the facts. Only `green` is pushed to the
-   `runner-fork` remote and opened as a PR from the runner identity;
-   `pushed_sha` is saved before the push. The live PR is then read into the
-   facts and reduced again, and the preclose summary is attached as a PR
-   comment. The runner never merges, closes, labels or comments on an issue.
+   ruling on this issue), and `deny_check.py diff`;
+5. `verdict.reduce` over the facts: machine checks only, no model verdict
+   (harmonic-forge#1195). Only `green` is pushed to the `runner-fork` remote
+   and opened as a PR from the runner identity; `pushed_sha` is saved before
+   the push. The live PR is then read into the facts and reduced again, and
+   its CI is read through `gate_ci.authorizing_conclusion` into
+   `verdict.merge_authorization`: pending CI opens the PR but never
+   authorizes a merge, and red CI sets the item aside. The runner never
+   merges, closes, labels or comments on an issue.
 
 `deny_check.py boundary` runs once at start: a failure aborts the run. Then
 `preflight.py`'s checks run (harmonic-forge#1112 AC9); any failure aborts
@@ -64,6 +73,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import stat
 import sys
@@ -74,9 +84,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "lane"))
 sys.path.insert(0, str(HERE.parent / "telemetry"))
+sys.path.insert(0, str(HERE.parent / "gh"))
 import acceptance  # noqa: E402
 import deny_check  # noqa: E402
-import preclose_driver  # noqa: E402
+import gate_ci  # noqa: E402
 import preflight  # noqa: E402
 import provision  # noqa: E402
 import sandbox  # noqa: E402
@@ -87,7 +98,6 @@ import verdict  # noqa: E402
 SOURCE = HERE.parent.parent
 provision_clone = provision.provision_clone
 SETTINGS = HERE / "te-runner.settings.json"
-PRECLOSE_DRIVER = HERE / "preclose_driver.py"
 WORKTREE_ROOT = Path.home() / "Harmonic_Projects" / ".worktrees"
 RUNNER_LOGIN = deny_check.RUNNER_LOGIN
 FORK_URL = f"https://github.com/{RUNNER_LOGIN}/harmonic-forge.git"
@@ -98,6 +108,14 @@ SELF_FLAG = "TE-RUNNER-SELF-FLAG:"
 UPSTREAM_URL = "https://github.com/vitalharmony/harmonic-forge.git"
 TE_RUNNER_HOME = Path.home() / ".local" / "share" / "te-runner"
 RUNS_ROOT = TE_RUNNER_HOME / "runs"
+#: Earlier attempts' local traces, one renamed directory per attempt (#1195).
+ARCHIVE_ROOT = TE_RUNNER_HOME / "archive"
+#: The agent's bounds (harmonic-forge#1195): turns, then wall seconds.
+MAX_TURNS = 60
+AGENT_TIMEOUT_S = 1200
+#: Result subtypes that are the `budget` clause, and the detail each carries.
+BUDGET_SUBTYPES = {"error_max_budget_usd": "budget exceeded",
+                   "error_max_turns": f"agent hit --max-turns {MAX_TURNS}"}
 BASE_CHECK_ROOT = TE_RUNNER_HOME / "base-check"
 KEEP_RUNS = 10
 CLAUDE = "claude"
@@ -109,8 +127,8 @@ STDERR_TAIL_LINES, STDERR_TAIL_CHARS = 20, 2000
 RECONCILED = "recovery (push attempted):"
 #: Every `done` item carries these keys (AC3); work_item fills what it learned.
 DONE_KEYS = {"reason": "", "verdict": None, "facts": None, "ac_titles": [], "diff_stat": "",
-             "head_sha": "", "branch": "", "pr": "", "pushed_sha": "", "preclose_summary": "",
-             "live_read_at": ""}
+             "head_sha": "", "branch": "", "pr": "", "pushed_sha": "", "merge": None,
+             "attempt": 0, "live_read_at": ""}
 
 
 class Abort(Exception):
@@ -119,6 +137,11 @@ class Abort(Exception):
 
 class Blocked(Exception):
     """This item cannot proceed; the note says why."""
+
+
+class ItemTimeout(Exception):
+    """The agent ran past AGENT_TIMEOUT_S and was killed; the item is set aside
+    as `budget` and the run goes on."""
 
 
 def log(step: str, message: str) -> None:
@@ -241,8 +264,8 @@ def agent_prompt(issue: int, body: str, handoff: str) -> str:
             "Set environment variables inside `python3` (`os.environ`), never as a command "
             "prefix: `FOO=1 python3 ...` is refused. `pytest` is not installed: run tests with "
             "`python3 -m unittest` or `python3 tools/run_tests.py`.\n\n"
-            "The harness runs the kill checks, `mise run check`, the deny check and the preclose "
-            "check after you finish. You do not run them and cannot see them: skip any handoff "
+            "The harness runs the kill checks, `mise run check` and the deny check "
+            "after you finish. You do not run them and cannot see them: skip any handoff "
             "step that names them (the kill-check bundle, `preclose-check`).\n\n"
             "An acceptance criterion that needs a deployed or live measurement: implement it "
             "and name it in your final message. That alone is not a reason to self-flag.\n\n"
@@ -255,7 +278,7 @@ def claude_argv(budget: str) -> list[str]:
     return [CLAUDE, "-p", "--output-format", "stream-json", "--verbose",
             "--include-hook-events", "--settings", str(SETTINGS),
             "--permission-mode", "dontAsk", "--permission-prompts", "none",
-            "--max-budget-usd", budget]
+            "--max-budget-usd", budget, "--max-turns", str(MAX_TURNS)]
 
 
 def parse_stream(text: str) -> dict:
@@ -305,11 +328,7 @@ def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
                             inputs=(source_objects(),))
     except sandbox.SandboxError as exc:
         raise Abort(str(exc)) from exc
-    try:
-        done = subprocess.run(argv, cwd=clone, env=env, input=prompt,
-                              capture_output=True, text=True, errors="replace")
-    except OSError as exc:
-        raise Blocked(f"claude did not start: {exc}") from exc
+    done = _agent_process(argv, clone, env, prompt, log_path)
     log_path.write_text(done.stdout, encoding="utf-8")
     log_path.with_suffix(log_path.suffix + ".stderr").write_text(done.stderr or "",
                                                                  encoding="utf-8")
@@ -325,6 +344,31 @@ def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
         tail = stderr_tail(done.stderr or "")
         log("agent", f"claude exited {done.returncode}" + (f"; stderr: {tail}" if tail else ""))
     return parsed
+
+
+def _agent_process(argv: list[str], clone: Path, env: dict[str, str], prompt: str,
+                   log_path: Path) -> subprocess.CompletedProcess:
+    """The agent under AGENT_TIMEOUT_S (harmonic-forge#1195). It runs in its own
+    session, and a timeout kills the whole process group: `bwrap
+    --die-with-parent` ends only bwrap's own child, never the commands the
+    agent started, which would outlive the item."""
+    try:
+        proc = subprocess.Popen(argv, cwd=clone, env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                errors="replace", start_new_session=True)
+    except OSError as exc:
+        raise Blocked(f"claude did not start: {exc}") from exc
+    try:
+        stdout, stderr = proc.communicate(prompt, timeout=AGENT_TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, _stderr = proc.communicate()
+        log_path.write_text(stdout or "", encoding="utf-8")
+        raise ItemTimeout(f"agent wall timeout after {AGENT_TIMEOUT_S}s") from exc
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def stderr_tail(text: str) -> str:
@@ -460,23 +504,6 @@ def deny_hits(base: str, head: str) -> list[str]:
     except (ValueError, KeyError, TypeError):
         return ["deny-check printed no result"]
 
-
-def preclose_fact(issue: int, base: str, head: str, tier: str, env: dict[str, str],
-                  out: Path, harness: Path | None = None) -> dict:
-    """Exactly one driver run; any non-zero exit sets the item aside (operator
-    ruling, harmonic-forge#1059): the runner never retries it."""
-    result = run([sys.executable, str(PRECLOSE_DRIVER), "run",
-                  "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
-                  "--source-repo", str(SOURCE), "--tier", tier, "--out", str(out),
-                  *(["--harness-results", str(harness)] if harness else [])],
-                 cwd=SOURCE, env=env)
-    keep(out.parent, "preclose_driver", result)
-    if result.returncode:
-        return {"status": f"driver exit {result.returncode}", "survivors": 0, "provenance": ""}
-    try:
-        return json.loads((out / "preclose.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"status": "driver wrote no preclose.json", "survivors": 0, "provenance": ""}
 
 
 # --- the base-relative check (AC4) --------------------------------------------------
@@ -650,20 +677,25 @@ def judge_check(head: dict, base: dict) -> tuple[int, list[str], list[str]]:
 # --- the PR ------------------------------------------------------------------------
 
 def live_facts(pr: str, head: str, env: dict[str, str]) -> dict:
-    result = run(["gh", "pr", "view", pr, "--repo", te_queue.REPO, "--json",
-                  "headRefOid,statusCheckRollup"], env=env)
+    """The PR's existence and head only: CI is `ci_state`'s (harmonic-forge#1195)."""
+    result = run(["gh", "pr", "view", pr, "--repo", te_queue.REPO, "--json", "headRefOid"],
+                 env=env)
     try:
         data = json.loads(result.stdout) if not result.returncode else None
     except ValueError:
         data = None
     if not isinstance(data, dict):
-        return {"pr_exists": False, "head_sha_matches": False, "ci": "pending"}
-    states = [str(c.get("conclusion") or c.get("state") or "").upper()
-              for c in data.get("statusCheckRollup") or [] if isinstance(c, dict)]
-    ci = ("red" if any(s in ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT") for s in states)
-          else "green" if states and all(s in ("SUCCESS", "NEUTRAL", "SKIPPED") for s in states)
-          else "pending")
-    return {"pr_exists": True, "head_sha_matches": data.get("headRefOid") == head, "ci": ci}
+        return {"pr_exists": False, "head_sha_matches": False}
+    return {"pr_exists": True, "head_sha_matches": data.get("headRefOid") == head}
+
+
+def ci_state(head: str, env: dict[str, str]) -> tuple[str, str]:
+    """The head's CI, through gate_ci's authorizing read and nowhere else (#1195)."""
+    def gh(argv: list[str]) -> tuple[int, str]:
+        result = run(argv, env=env, timeout=60)
+        return result.returncode, result.stdout if not result.returncode else result.stderr
+    required = gate_ci.required_checks(te_queue.REPO, run=gh)
+    return gate_ci.authorizing_conclusion(te_queue.REPO, head, required or set(), run=gh)
 
 
 def open_pr(item: dict, state: dict, queue: Path, issue: int, head: str,
@@ -732,27 +764,170 @@ def emit_event(issue: int, head: str, extra: dict, cost: object) -> None:
 # the same function per queued item, so a guard added here is a preflight
 # failure with no change to the preflight. Each guard raises Blocked.
 
-def _guard_reuse(issue: int, env: dict[str, str] | None, source: Path) -> None:
-    # Every trace an earlier run of this issue leaves counts: its checkout, a
-    # local branch, the pinned head ref. A re-queued issue whose clone was
-    # deleted must not run the agent again.
-    branch = f"fix/{issue}-te-runner"
-    clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
-    if clone.exists() or any(not run(["git", "rev-parse", "--verify", "--quiet", ref],
-                                     cwd=source).returncode
-                             for ref in (f"refs/heads/{branch}", f"refs/te-runner/{issue}")):
-        raise Blocked(f"branch {branch}, refs/te-runner/{issue} or checkout {clone} "
-                      "already exists; never reused")
+def attempt_branch(issue: int, attempt: int) -> str:
+    """Attempt 1 keeps the original name; later ones are suffixed (#1195)."""
+    return f"fix/{issue}-te-runner" + ("" if attempt == 1 else f"-a{attempt}")
+
+
+def _runner_pr(issue: int, entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    name = str(entry.get("headRefName") or "")
+    return (str(entry.get("title") or "").endswith(f"(harmonic-forge#{issue})")
+            or re.fullmatch(rf"fix/{issue}-te-runner(-a\d+)?", name) is not None)
+
+
+def open_runner_prs(issue: int, env: dict[str, str] | None, source: Path) -> list[dict]:
+    """The runner identity's open PRs for this issue; Blocked when unreadable."""
+    listed = run(["gh", "pr", "list", "--repo", te_queue.REPO, "--author", RUNNER_LOGIN,
+                  "--state", "open", "--search", f"{issue} in:title",
+                  "--json", "number,title,headRefName"], cwd=source, env=env, timeout=60)
+    try:
+        prs = json.loads(listed.stdout) if not listed.returncode else None
+    except ValueError:
+        prs = None
+    if not isinstance(prs, list):
+        raise Blocked(f"cannot list the runner's open PRs: {listed.stderr.strip()[:150]}")
+    return [p for p in prs if _runner_pr(issue, p)]
+
+
+def _guard_open_pr(issue: int, env: dict[str, str] | None, source: Path) -> None:
+    # An open runner PR is work under review: a new attempt never competes with it.
+    open_prs = open_runner_prs(issue, env, source)
+    if open_prs:
+        raise Blocked(f"runner PR #{open_prs[0].get('number')} for harmonic-forge#{issue} "
+                      "is open; no new attempt")
+
+
+def _fork_has(branch: str, env: dict[str, str] | None, source: Path) -> bool:
+    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
+                 cwd=source, env=env, timeout=60)
+    if remote.returncode:
+        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
+    return bool(remote.stdout.strip())
 
 
 def _guard_fork_branch(issue: int, env: dict[str, str] | None, source: Path) -> None:
-    branch = f"fix/{issue}-te-runner"
-    remote = run(["git", "ls-remote", "--heads", FORK_URL, f"refs/heads/{branch}"],
-                 cwd=source, env=env)
-    if remote.returncode:
-        raise Blocked(f"cannot read the runner fork for {branch}: {remote.stderr.strip()[:150]}")
-    if remote.stdout.strip():
-        raise Blocked(f"branch {branch} already exists on the runner fork; never reused")
+    # Read-only: the fork must be readable to choose the attempt's branch name.
+    _fork_has(attempt_branch(issue, 1), env, source)
+
+
+# --- archive-and-new-attempt (harmonic-forge#1195) ---------------------------------
+#
+# An earlier attempt's LOCAL traces (its clone, `refs/te-runner/<N>`, a local
+# `fix/<N>-te-runner*` branch) are archived, never reused. Crash rule: the
+# attempt's directory is written as `.tmp-<k>-<pid>` and renamed into
+# `archive/<N>/<k>/` LAST, and only renamed (all-digit) directories count, so
+# a half-written archive never advances the attempt number.
+
+def archived_attempts(issue: int) -> int:
+    root = ARCHIVE_ROOT / str(issue)
+    if not root.is_dir():
+        return 0
+    return sum(1 for d in root.iterdir() if d.is_dir() and d.name.isdigit())
+
+
+def _ref_sha(ref: str, source: Path) -> str:
+    found = run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=source)
+    return found.stdout.strip() if not found.returncode else ""
+
+
+def _local_branches(issue: int, source: Path) -> list[str]:
+    listed = run(["git", "for-each-ref", "--format=%(refname)",
+                  f"refs/heads/fix/{issue}-te-runner", f"refs/heads/fix/{issue}-te-runner-a*"],
+                 cwd=source)
+    if listed.returncode:
+        raise Blocked(f"cannot list local branches: {listed.stderr.strip()[:150]}")
+    return [line for line in listed.stdout.split() if line]
+
+
+def _clone_git(clone: Path, *args: str) -> subprocess.CompletedProcess:
+    """git in the agent's clone, inside the boundary: its .git/config is
+    agent-writable and must never run as the operator (#1098)."""
+    try:
+        argv = sandbox.wrap(["git", "-C", str(clone), "--no-pager", *args], clone,
+                            inputs=(source_objects(),))
+    except sandbox.SandboxError as exc:
+        raise Blocked(f"cannot archive {clone}: {exc}") from exc
+    try:
+        return subprocess.run(argv, cwd=clone, capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Blocked(f"cannot archive {clone}: git {args[0]}: {exc}") from exc
+
+
+def _archive_clone(clone: Path, tmp: Path) -> None:
+    """The clone's committed and uncommitted work as patches, refusing when the
+    clone has work and the patches came out empty (the reset script's rule)."""
+    results = {name: _clone_git(clone, *args) for name, args in (
+        ("commits", ("log", "-p", "--binary", "--format=fuller", "HEAD", "--not", "--remotes")),
+        ("uncommitted", ("diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD")),
+        ("status", ("status", "--porcelain", "--untracked-files=all")),
+        ("count", ("rev-list", "--count", "HEAD", "--not", "--remotes")))}
+    failed = [f"{name}: {r.stderr.decode('utf-8', 'replace').strip()[:100]}"
+              for name, r in results.items() if r.returncode]
+    if failed:
+        raise Blocked(f"cannot archive {clone}: {'; '.join(failed)}")
+    (tmp / "commits.patch").write_bytes(results["commits"].stdout)
+    (tmp / "uncommitted.patch").write_bytes(results["uncommitted"].stdout)
+    (tmp / "status.txt").write_bytes(results["status"].stdout)
+    has_work = (results["status"].stdout.strip()
+                or int(results["count"].stdout.decode().strip() or "0") > 0)
+    if has_work and not (results["commits"].stdout.strip() or results["uncommitted"].stdout.strip()):
+        raise Blocked(f"{clone} has work but its archive came out empty; not removed")
+
+
+def _finish_stale(issue: int, k: int) -> None:
+    """A crash left `.tmp-*` dirs. With no live trace left, the newest one for
+    attempt k holds what was archived before the crash: rename it into place."""
+    root = ARCHIVE_ROOT / str(issue)
+    stale = sorted(root.glob(f".tmp-{k}-*"), key=lambda d: d.stat().st_mtime)
+    if stale and not (root / str(k)).exists():
+        os.rename(stale.pop(), root / str(k))
+    for leftover in root.glob(".tmp-*"):
+        shutil.rmtree(leftover, ignore_errors=True)
+
+
+def archive_previous_attempt(issue: int, env: dict[str, str] | None,
+                             source: Path | None = None) -> tuple[int, str]:
+    """Archive the last attempt's local traces and return the new attempt's
+    `(number, branch)`. The runner fork is only read, never written."""
+    source = Path(source or SOURCE)
+    root = ARCHIVE_ROOT / str(issue)
+    root.mkdir(parents=True, exist_ok=True)
+    clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
+    live_ref = f"refs/te-runner/{issue}"
+    k = archived_attempts(issue) + 1  # the attempt whose traces these are
+    head = _ref_sha(live_ref, source)
+    branches = _local_branches(issue, source)
+    if not (clone.exists() or head or branches):
+        _finish_stale(issue, k)
+    else:
+        # Live traces remain, so any `.tmp-*` is incomplete: redo it from them.
+        for stale in root.glob(".tmp-*"):
+            shutil.rmtree(stale, ignore_errors=True)
+        tmp = root / f".tmp-{k}-{os.getpid()}"
+        tmp.mkdir()
+        if clone.exists():
+            _archive_clone(clone, tmp)
+        shas = {b: _ref_sha(b, source) for b in branches}
+        pinned = head or next((sha for sha in shas.values() if sha), "")
+        (tmp / "traces.json").write_text(json.dumps(
+            {"attempt": k, "ref": head, "branches": shas, "clone": str(clone)}, indent=1) + "\n",
+            encoding="utf-8")
+        if pinned:
+            git("update-ref", f"refs/te-runner-archive/{issue}/{k}", pinned, cwd=source)
+        if head:
+            git("update-ref", "-d", live_ref, cwd=source)
+        for branch in branches:  # after the ref is archived
+            git("update-ref", "-d", branch, cwd=source)
+        if clone.exists():
+            shutil.rmtree(clone)
+        os.rename(tmp, root / str(k))  # last: the archive counts only once complete
+        log("archive", f"harmonic-forge#{issue} attempt {k} archived under {root / str(k)}")
+    attempt = archived_attempts(issue) + 1
+    while _fork_has(attempt_branch(issue, attempt), env, source):
+        attempt += 1  # a fork branch is never deleted or force-pushed
+    return attempt, attempt_branch(issue, attempt)
 
 
 def _guard_bundle_pin(issue: int, env: dict[str, str] | None, source: Path) -> None:
@@ -765,11 +940,11 @@ def _guard_origin_fetch(issue: int, env: dict[str, str] | None, source: Path) ->
     # is a refusal before spend, never a mid-item stop (post-verdict gap 3).
     fetched = run(["git", "fetch", "-q", "origin", "main"], cwd=source, env=env)
     if fetched.returncode:
-        raise preclose_driver.DriverError(
+        raise sandbox.RunnerEnvError(
             f"git fetch origin main failed: {fetched.stderr.strip()[:200]}")
 
 
-ITEM_GUARDS = (_guard_reuse, _guard_fork_branch, _guard_bundle_pin, _guard_origin_fetch)
+ITEM_GUARDS = (_guard_open_pr, _guard_fork_branch, _guard_bundle_pin, _guard_origin_fetch)
 
 
 def item_preconditions(issue: int, env: dict[str, str] | None = None,
@@ -779,7 +954,7 @@ def item_preconditions(issue: int, env: dict[str, str] | None = None,
     for guard in ITEM_GUARDS:
         try:
             guard(issue, env, Path(source or SOURCE))
-        except (Blocked, preclose_driver.DriverError, te_queue.QueueError) as exc:
+        except (Blocked, sandbox.RunnerEnvError, te_queue.QueueError) as exc:
             # QueueError: _guard_bundle_pin reads the handoff (cross-family
             # finding 2); one guard's refusal never hides another's.
             problems.append(str(exc))
@@ -799,7 +974,7 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     problems = item_preconditions(issue, env)
     if problems:
         raise Blocked("; ".join(problems))
-    branch = f"fix/{issue}-te-runner"
+    attempt, branch = archive_previous_attempt(issue, env)
     clone = WORKTREE_ROOT / f"harmonic-forge-{issue}r-impl"
     git("fetch", "-q", "origin", "main")
     base = git("rev-parse", "origin/main")
@@ -815,7 +990,7 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         # agent work exists yet.
         shutil.rmtree(clone, ignore_errors=True)
         raise Blocked(f"cannot provision {clone}: {exc}") from exc
-    log("clone", f"{clone} on {branch} from {base[:12]}")
+    log("clone", f"{clone} on {branch} (attempt {attempt}) from {base[:12]}")
     # Kept after the item (AC7): never a temporary directory.
     scratch = run_dir / str(issue)
     scratch.mkdir(parents=True, exist_ok=True)
@@ -825,8 +1000,20 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         raise Blocked("the handoff pins no kill-bundle-sha256")
     pin = pinned.group(1)
     bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
-    parsed = run_agent(clone, agent_prompt(issue, body, handoff),
-                       budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts")
+    try:
+        parsed = run_agent(clone, agent_prompt(issue, body, handoff),
+                           budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts")
+    except ItemTimeout as exc:
+        # Set aside as `budget`; the queue moves on. The head is still pinned so
+        # the next attempt archives this one's work.
+        git("fetch", "-q", str(clone), "HEAD")
+        head = git("rev-parse", "FETCH_HEAD")
+        git("update-ref", f"refs/te-runner/{issue}", head)
+        log("agent", str(exc))
+        facts = {"eligible": True, "deny_hits": [], "permission_denials": 0,
+                 "budget_exceeded": True, "budget_detail": "agent wall timeout"}
+        return {"head_sha": head, "branch": branch, "attempt": attempt, "ac_titles": titles,
+                "facts": facts, "verdict": verdict.reduce(facts)}
     result = parsed["result"]
     # The head is read through SOURCE, never the clone's own git, and pinned
     # by a ref so a gc in SOURCE cannot prune it before the push (#1098).
@@ -850,35 +1037,17 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     log("kill", f"{len(kill)} check(s), receipt {'ok' if receipt_ok else 'failed'}")
     hits = deny_hits(base, head)
     log("deny", f"{len(hits)} hit(s)")
-    # The harness's own results, for the cross-family brief's evidence (AC14).
-    harness = scratch / "harness-results.json"
-    harness.write_text(json.dumps({"kill": kill, "kill_receipt": receipt_ok,
-                                   "deny_hits": hits, "check": {
-        "check_rc": check_rc, "new_failures": new_failures, "base_failures": base_failures}},
-        indent=1) + "\n", encoding="utf-8")
-    # Sticky-wicket patch 6: once the check, the deny check or the kill receipt
-    # failed the item cannot go green, so no paid refuter or cross-family call
-    # runs; the preclose fact says why, and the reducer still lists every
-    # failed clause (AC8).
-    if check_rc or hits or not kill or not receipt_ok:
-        preclose = {"status": "skipped: earlier clause failed", "survivors": 0, "provenance": ""}
-    else:
-        preclose = preclose_fact(issue, base, head, te_queue.tier(issue) or "standard", env,
-                                 scratch / "preclose", harness)
-    log("preclose", preclose.get("status", "?"))
-    summary_path = scratch / "preclose" / "summary.md"
-    summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
     facts = {"eligible": True, "deny_hits": hits,
              "permission_denials": len(result.get("permission_denials") or []),
-             "budget_exceeded": result.get("subtype") == "error_max_budget_usd",
+             "budget_exceeded": result.get("subtype") in BUDGET_SUBTYPES,
+             "budget_detail": BUDGET_SUBTYPES.get(result.get("subtype"), ""),
              "self_flag": self_flag(result), "check_rc": check_rc,
              "check_new_failures": new_failures, "check_base_failures": base_failures,
              "kill": kill, "kill_receipt": receipt_ok,
-             "preclose": preclose,
              # Every clause but the PR's: a branch is pushed only on green.
-             "live": {"pr_exists": True, "head_sha_matches": True, "ci": "pending"}}
+             "live": {"pr_exists": True, "head_sha_matches": True}}
     outcome = verdict.reduce(facts)
-    extra = {"head_sha": head, "branch": branch,
+    extra = {"head_sha": head, "branch": branch, "attempt": attempt,
              "diff_stat": (git("diff", "--stat", base, head).splitlines() or [""])[-1].strip(),
              "ac_titles": titles, "total_cost_usd": result.get("total_cost_usd")}
     if outcome["state"] == "green":
@@ -887,12 +1056,12 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         facts["live"] = live_facts(pr, head, env)
         extra["live_read_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         outcome = verdict.reduce(facts)
-        if summary:
-            posted = run(["gh", "pr", "comment", pr, "--repo", te_queue.REPO, "--body",
-                          summary], env=env)
-            url = posted.stdout.strip().splitlines()[-1] if posted.stdout.strip() else ""
-            # The report links the summary (harmonic-forge#1056 AC3).
-            extra["preclose_summary"] = url if url.startswith("https://") else ""
+        # Opening the PR never waited on CI; merging does (harmonic-forge#1195).
+        merge = verdict.merge_authorization(*ci_state(head, env))
+        extra["merge"] = merge
+        log("merge", f"{'authorized' if merge['authorized'] else 'not authorized'} "
+                     f"({merge['ci']}: {merge['detail']})")
+        outcome = verdict.with_merge(outcome, merge)
     return {**extra, "facts": facts, "verdict": outcome}
 
 
@@ -932,12 +1101,12 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
     if problems:
         log("boundary", "; ".join(problems))
         return 3
-    env = preclose_driver.runner_env()
+    env = sandbox.runner_env()
     token = runner_token()
     if token is None:
         return 3
     # Only the agent (and the probe) holds the runner token; the shared env
-    # feeds the oracle, kill checks, preclose and the PR, and stays token-free.
+    # feeds the oracle, kill checks and the PR, and stays token-free.
     agent_env = {**env, "GH_TOKEN": token}
     if not probe(agent_env):
         return 3
@@ -1004,8 +1173,8 @@ def _run_queue(queue: Path, budget: str, max_steps: int) -> int:
 
 def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
                   agent_env: dict[str, str]) -> dict:
-    """AC9's checks, AC12's per-item preconditions and AC15's rehearsal; every
-    one runs and every failure is logged."""
+    """AC9's checks and AC12's per-item preconditions; every one runs and every
+    failure is logged."""
     scratch = run_dir / "preflight"
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
@@ -1039,7 +1208,6 @@ def run_preflight(state: dict, run_dir: Path, env: dict[str, str],
          ("permission-probe", permissions), ("base-check", base_run),
          ("kill-baselines", lambda: preflight.kill_baselines(issues, SOURCE, base, scratch)),
          ("codex", lambda: preflight.codex_parity(scratch, env)),
-         ("rehearsal", lambda: preflight.rehearsal(scratch, env)),
          ("per-item", lambda: [line for issue in issues for line in preflight.item_failures(
              issue, SOURCE, base, scratch / f"item-{issue}", env)])],
         [("base-regression", lambda: preflight.base_regression(current, previous_base(base)))],
@@ -1056,7 +1224,7 @@ def preflight_only(queue: Path) -> int:
     run_dir = RUNS_ROOT / new_run_id()
     run_dir.mkdir(parents=True, exist_ok=True)
     prune_runs(RUNS_ROOT)
-    env = preclose_driver.runner_env()
+    env = sandbox.runner_env()
     token = runner_token()
     if token is None:
         return 3
@@ -1082,7 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--max-budget-usd must be a finite positive number and "
                              "--max-steps positive")
         return run_queue(Path(args.queue), args.max_budget_usd, args.max_steps)
-    except (ValueError, OSError, te_queue.QueueError, preclose_driver.DriverError,
+    except (ValueError, OSError, te_queue.QueueError, sandbox.RunnerEnvError,
             deny_check.DenyError) as exc:
         log("error", str(exc))
         return 2

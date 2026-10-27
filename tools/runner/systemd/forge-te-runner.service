@@ -4,6 +4,12 @@ OnFailure=forge-te-runner-alert.service
 
 [Service]
 Type=oneshot
+# The run's wall bound (harmonic-forge#1195). systemd ignores RuntimeMaxSec= on a
+# oneshot unit (`systemd-analyze verify` says so), whose start timeout is off by
+# default, so TimeoutStartSec= is the bound that takes effect; RuntimeMaxSec=
+# states the same bound and applies should the unit ever leave oneshot.
+TimeoutStartSec=4h
+RuntimeMaxSec=4h
 # The unit owns its PATH: `claude` lives in ~/.local/bin (harmonic-forge#1107), and
 # the lanes' codex in ~/.npm-global/bin, ahead of /usr/local/bin's (harmonic-forge#1112).
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin

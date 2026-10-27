@@ -101,7 +101,6 @@ class KillBaselines(Base):
                 mock.patch.object(preflight.te_queue, "bundle_dir", return_value=bundle), \
                 mock.patch.object(preflight, "permission_probe", return_value=[]), \
                 mock.patch.object(preflight, "codex_parity", return_value=[]), \
-                mock.patch.object(preflight, "rehearsal", return_value=[]), \
                 mock.patch.object(preflight, "item_failures", return_value=[]), \
                 mock.patch.object(te_run, "base_check",
                                   return_value={"sha": self.base, "failures": [], "ran": 1,
@@ -122,7 +121,6 @@ class KillBaselines(Base):
                 mock.patch.object(preflight, "permission_probe", return_value=[]), \
                 mock.patch.object(preflight, "kill_baselines", return_value=[]), \
                 mock.patch.object(preflight, "codex_parity", return_value=["codex differs"]), \
-                mock.patch.object(preflight, "rehearsal", return_value=[]), \
                 mock.patch.object(preflight, "item_failures", return_value=["F7 item bad"]), \
                 mock.patch.object(te_run, "base_check",
                                   return_value={"sha": self.base, "failures": [], "ran": 1,
@@ -138,29 +136,6 @@ class KillBaselines(Base):
 
 ISSUE_BODY = "## Acceptance criteria\n\n1. The widget returns 2.\n"
 
-FAKE_CLAUDE = """#!/usr/bin/env python3
-import json, sys
-sys.stdin.read()
-print(json.dumps({"is_error": False, "result": "", "structured_output": {"findings": []}}))
-"""
-
-# A fixture reviewer: writes a real-shaped envelope whose one verdict is
-# FAKE_VERDICT, so the real classifier labels it.
-FAKE_CROSS = """#!/usr/bin/env bash
-set -eu
-python3 - "$@" <<'PY'
-import json, os, sys
-pairs = dict(zip(sys.argv[1::2], sys.argv[2::2]))
-envelope = {"family": "codex", "caller_family": "claude", "posture": "verify", "status": "ok",
-            "exit_code": 0, "verify_model": "gpt-6-sol",
-            "report": {"summary": "s", "findings": [], "assumptions": [
-                {"assumption": "VALUE is 2", "verdict": os.environ["FAKE_VERDICT"],
-                 "evidence": "$ cat rehearsal.py\\nVALUE = 2"}]}}
-open(pairs["--out"], "w").write(json.dumps(envelope) + "\\n")
-PY
-"""
-
-
 class ItemChecks(Base):
     """AC12: the preflight calls the pipeline's own per-item preconditions."""
 
@@ -174,7 +149,8 @@ class ItemChecks(Base):
         self.base = sh("git", "rev-parse", "HEAD", cwd=self.src)
         self.seams = {"first_failure": None, "bundle_pin": "a" * 64,
                       "snapshot_bundle": self.tmp / "snap", "body": ISSUE_BODY,
-                      "handoff": f"the handoff\nkill-bundle-sha256: {'a' * 64}\n"}
+                      "handoff": f"the handoff\nkill-bundle-sha256: {'a' * 64}\n",
+                      "open_prs": []}
         self.fork = self.tmp / "fork.git"
         sh("git", "init", "-q", "--bare", "-b", "main", str(self.fork), cwd=self.tmp)
         (self.tmp / "wt").mkdir()
@@ -203,32 +179,31 @@ class ItemChecks(Base):
                 mock.patch.object(preflight.te_queue, "bundle_pin", **seam(seams["bundle_pin"])), \
                 mock.patch.object(preflight.te_queue, "snapshot_bundle",
                                   **seam(seams["snapshot_bundle"])), \
-                mock.patch.object(preflight.preclose_driver, "passes_held", return_value=0), \
-                mock.patch.object(preflight.preclose_driver, "issue_body",
-                                  return_value=seams["body"]), \
+                mock.patch.object(preflight.acceptance, "issue_body", **seam(seams["body"])), \
+                mock.patch.object(te_run, "open_runner_prs", **seam(seams["open_prs"])), \
                 mock.patch.object(preflight.te_queue, "handoff", **seam(seams["handoff"])), \
                 mock.patch.object(te_run, "SOURCE", self.src), \
                 mock.patch.object(te_run, "WORKTREE_ROOT", self.tmp / "wt"), \
-                mock.patch.object(te_run, "FORK_URL", str(self.fork)):
+                mock.patch.object(te_run, "FORK_URL", str(seams.get("fork", self.fork))):
             return preflight.item_failures(7, self.src, self.base, self.tmp / "item", {})
 
     def test_clean_item_has_no_failures(self):
         self.assertEqual(self.failures(), [])
-        # The driver's export step ran: a git repository at the base.
-        head = self.tmp / "item" / "driver" / "head"
-        self.assertEqual(sh("git", "rev-parse", "HEAD", cwd=head), self.base)
 
-    def test_new_driver_error_is_reported(self):
-        # A DriverError path added to the driver's read-only steps reaches the
-        # preflight with no change to the preflight's code.
-        def new_step(ctx):
-            raise preflight.preclose_driver.DriverError("a brand-new refusal")
-        steps = (*preflight.preclose_driver.READ_ONLY_STEPS, new_step)
-        with mock.patch.object(preflight.preclose_driver, "READ_ONLY_STEPS", steps):
-            failures = self.failures(body="## Problem\n\nno criteria\n")
-        self.assertTrue(any("a brand-new refusal" in f for f in failures), failures)
-        # ...beside the step that also failed: every refusal, never the first.
-        self.assertTrue(any("acceptance criteria" in f for f in failures), failures)
+    def test_no_acceptance_section_is_refused_before_spend(self):
+        """harmonic-forge#1195 AC12: (e)'s acceptance step, via acceptance.py."""
+        failures = self.failures(body="## Problem\n\nno criteria\n")
+        self.assertTrue(any("F7 acceptance:" in f and "no acceptance criteria section" in f
+                            for f in failures), failures)
+
+    def test_empty_acceptance_section_is_refused_before_spend(self):
+        failures = self.failures(body="## Acceptance criteria\n\nprose only\n\n## Next\n")
+        self.assertTrue(any("F7 acceptance:" in f and "lists no criteria" in f
+                            for f in failures), failures)
+
+    def test_an_unreadable_issue_body_is_a_refusal(self):
+        found = self.failures(body=preflight.sandbox.RunnerEnvError("gh down"))
+        self.assertTrue(any("F7 acceptance:" in f and "gh down" in f for f in found), found)
 
     def test_kill_bundle_and_queue_refusals_are_both_listed(self):
         failures = self.failures(
@@ -241,57 +216,51 @@ class ItemChecks(Base):
                         failures)
 
 
-    def test_reused_branch_is_reported_before_any_spend(self):
-        # Sticky-wicket patch 4: work_item's branch, checkout, pinned-ref and
-        # fork-branch guards run in the preflight too.
+    def test_earlier_attempt_traces_are_not_a_refusal(self):
+        """harmonic-forge#1195: a re-run archives an earlier attempt instead of
+        refusing, so its local and fork traces no longer fail the preflight."""
         sh("git", "branch", "fix/7-te-runner", cwd=self.src)
         sh("git", "update-ref", "refs/te-runner/7", "HEAD", cwd=self.src)
         sh("git", "push", "-q", str(self.fork), "HEAD:refs/heads/fix/7-te-runner", cwd=self.src)
-        failures = self.failures()
-        self.assertTrue(any("item preconditions" in f and "never reused" in f
+        self.assertEqual(self.failures(), [])
+
+    def test_an_open_runner_pr_is_reported_before_any_spend(self):
+        failures = self.failures(open_prs=[{"number": 12, "title": "te-runner: x "
+                                            "(harmonic-forge#7)", "headRefName": "fix/7-te-runner"}])
+        self.assertTrue(any("item preconditions" in f and "runner PR #12" in f
                             for f in failures), failures)
-        self.assertTrue(any("already exists on the runner fork" in f for f in failures),
-                        failures)
+
+    def test_an_unreadable_fork_is_reported(self):
+        failures = self.failures(fork=self.tmp / "no-fork.git")
+        self.assertTrue(any("cannot read the runner fork" in f for f in failures), failures)
 
     def test_failing_origin_fetch_is_listed_with_the_others(self):
         # Post-verdict gap 3: the origin fetch work_item needs is a
         # precondition; its failure is listed beside every other refusal.
         sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
-        sh("git", "branch", "fix/7-te-runner", cwd=self.src)
-        failures = self.failures()
+        failures = self.failures(open_prs=[{"number": 3, "title": "(harmonic-forge#7)"}])
         self.assertTrue(any("item preconditions" in f and "fetch origin main failed" in f
                             for f in failures), failures)
-        self.assertTrue(any("item preconditions" in f and "never reused" in f
+        self.assertTrue(any("item preconditions" in f and "runner PR #3" in f
                             for f in failures), failures)
 
     def test_handoff_queue_error_is_listed_and_later_guards_still_run(self):
         # Cross-family finding 2: _guard_bundle_pin's handoff() can raise
         # QueueError; it is one refusal, and the guards before and after it
         # still report theirs.
-        sh("git", "branch", "fix/7-te-runner", cwd=self.src)
         sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
-        failures = self.failures(handoff=preflight.te_queue.QueueError("handoff unreadable"))
+        failures = self.failures(handoff=preflight.te_queue.QueueError("handoff unreadable"),
+                                 open_prs=[{"number": 3, "title": "(harmonic-forge#7)"}])
         self.assertTrue(any("item preconditions" in f and "handoff unreadable" in f
                             for f in failures), failures)
-        self.assertTrue(any("item preconditions" in f and "never reused" in f
+        self.assertTrue(any("item preconditions" in f and "runner PR #3" in f
                             for f in failures), failures)
         self.assertTrue(any("item preconditions" in f and "fetch origin main failed" in f
                             for f in failures), failures)
 
-    def test_headless_plan_refuses_a_foreign_origin(self):
-        # Cross-family finding 3: the interactive plan's origin/repo identity
-        # check needs no head, so the headless plan refuses it too.
-        sh("git", "config", "remote.origin.url",
-           "https://github.com/vitalharmony/hrse.git", cwd=self.src)
-        sh("git", "config", f"url.{self.origin}.insteadOf",
-           "https://github.com/vitalharmony/hrse.git", "--add", cwd=self.src)
-        failures = self.failures()
-        self.assertTrue(any("preclose driver" in f and "plan refused" in f
-                            and "vitalharmony/hrse" in f for f in failures), failures)
-
-    def test_failing_origin_fetch_raises_driver_error(self):
+    def test_failing_origin_fetch_raises_runner_env_error(self):
         sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"), cwd=self.src)
-        with self.assertRaises(preflight.preclose_driver.DriverError):
+        with self.assertRaises(preflight.sandbox.RunnerEnvError):
             te_run._guard_origin_fetch(7, {}, self.src)
 
     def test_new_blocked_in_item_preconditions_is_reported(self):
@@ -304,59 +273,6 @@ class ItemChecks(Base):
             failures = self.failures()
         self.assertTrue(any("item preconditions" in f and "a brand-new block" in f
                             for f in failures), failures)
-
-    def test_headless_plan_refusal_is_reported(self):
-        # Sticky-wicket patch 3: with no head the plan step still runs plan's
-        # head-independent refusals, so an IMC hook record with no matching
-        # receipt fails the preflight, before any agent spend.
-        pc = preflight.preclose_driver.preclose_check
-        with mock.patch.object(pc.imc_waiver, "unmatched_hook_record",
-                               return_value={"granted_at": "2026-10-20T00:00:00Z", "key": "F7"}):
-            failures = self.failures()
-        self.assertTrue(any("preclose driver" in f and "plan refused" in f
-                            and "IMC hook record" in f for f in failures), failures)
-
-    def test_headless_plan_refuses_a_dirty_worktree(self):
-        # Post-verdict gap 2: the interactive plan refuses uncommitted or
-        # untracked paths; the headless plan refuses them too.
-        (self.src / "stray.py").write_text("x = 1\n")
-        failures = self.failures()
-        self.assertTrue(any("preclose driver" in f and "plan refused" in f
-                            and "uncommitted/untracked" in f for f in failures), failures)
-
-    def test_headless_plan_that_cannot_run_is_a_failure(self):
-        # A step that cannot run is listed as a failure, never passed.
-        pc = preflight.preclose_driver.preclose_check
-        with mock.patch.object(pc, "receipt_dir", side_effect=RuntimeError("no home")):
-            failures = self.failures()
-        self.assertTrue(any("plan not checked before spend" in f for f in failures), failures)
-
-
-class Rehearsal(Base):
-    """AC15: one refuter and one cross-family verify call on a fixed fixture."""
-
-    def setUp(self):
-        super().setUp()
-        bin_dir = self.tmp / "bin"
-        bin_dir.mkdir()
-        (bin_dir / "claude").write_text(FAKE_CLAUDE)
-        (bin_dir / "claude").chmod(0o755)
-        (self.tmp / "cross.sh").write_text(FAKE_CROSS)
-        patcher = mock.patch.object(preflight.preclose_driver, "CROSS_FAMILY",
-                                    self.tmp / "cross.sh")
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
-
-    def test_confirmed_known_true_assumption_passes(self):
-        self.assertEqual(preflight.rehearsal(self.tmp, {**self.env, "FAKE_VERDICT": "confirmed"}),
-                         [])
-
-    def test_uncheckable_reviewer_fails_the_preflight(self):
-        failures = preflight.rehearsal(self.tmp, {**self.env, "FAKE_VERDICT": "uncheckable"})
-        self.assertTrue(any("cross-family rehearsal" in f and "in-family fallback" in f
-                            for f in failures), failures)
-
 
 class Pieces(unittest.TestCase):
     def test_parse_probe_lists_attempts_and_denials(self):
@@ -393,31 +309,83 @@ class Pieces(unittest.TestCase):
             self.assertIn(cmd, text)
 
 
+SENTINEL = preflight.SENTINEL_COMMAND
+SENTINEL_HOOK_EVENT = {"type": "system", "subtype": "hook_response", "hook_event": "PreToolUse",
+                       "output": '{"hookSpecificOutput": {"permissionDecision": "deny"}}'}
+
+
 class ProbeFailure(Base):
     """Preclose survivor 5: a probe that attempted every command but failed
-    proves nothing ran."""
+    proves nothing ran. harmonic-forge#1195: the sentinel must be denied by
+    the settings' own hook."""
 
-    def probe(self, result: dict, rc: int = 0) -> list[str]:
+    def probe(self, result: dict, rc: int = 0, *, sentinel_denied: bool = True,
+              hook_event: bool = True, extra_denied: tuple[str, ...] = ()) -> tuple[list, list]:
         commands = ["mkdir -p x"]
+        denials = [{"tool_name": "Bash", "tool_input": {"command": c}}
+                   for c in ((SENTINEL,) if sentinel_denied else ()) + extra_denied]
         lines = [{"type": "assistant", "message": {"content": [
-                     {"type": "tool_use", "name": "Bash", "input": {"command": commands[0]}}]}},
-                 {"type": "result", "permission_denials": [], **result}]
+                     {"type": "tool_use", "name": "Bash", "input": {"command": c}}
+                     for c in (*commands, SENTINEL)]}},
+                 *([SENTINEL_HOOK_EVENT] if hook_event else []),
+                 {"type": "result", "permission_denials": denials, **result}]
         done = subprocess.CompletedProcess([], rc, "\n".join(map(json.dumps, lines)), "")
-        with mock.patch.object(preflight, "_run", return_value=done):
-            return preflight.permission_probe(commands, self.tmp, self.tmp / "t", {},
-                                              self.tmp / "settings.json", ())
+        with mock.patch.object(preflight, "_run", return_value=done) as ran:
+            failures = preflight.permission_probe(commands, self.tmp, self.tmp / "t", {},
+                                                  self.tmp / "settings.json", ())
+        return failures, ran.call_args
 
     def test_a_clean_probe_passes(self):
-        self.assertEqual(self.probe({"subtype": "success", "is_error": False}), [])
+        failures, call = self.probe({"subtype": "success", "is_error": False})
+        self.assertEqual(failures, [])
+        argv = call.args[0]
+        self.assertIn("--bare", argv)
+        self.assertIn("--include-hook-events", argv)
+        self.assertTrue(call.kwargs["stdin"].rstrip().endswith(f"`{SENTINEL}`"))
+
+    def test_sentinel_not_denied_fails(self):
+        failures, _ = self.probe({"subtype": "success", "is_error": False},
+                                 sentinel_denied=False)
+        self.assertTrue(any("sentinel" in f and "not denied" in f for f in failures), failures)
+
+    def test_no_hook_response_for_the_deny_fails(self):
+        failures, _ = self.probe({"subtype": "success", "is_error": False}, hook_event=False)
+        self.assertTrue(any("hook_response" in f for f in failures), failures)
+
+    def test_any_other_denial_still_fails(self):
+        failures, _ = self.probe({"subtype": "success", "is_error": False},
+                                 extra_denied=("mkdir -p x",))
+        self.assertEqual(failures, ["permission probe: denied `mkdir -p x`"])
 
     def test_is_error_with_no_denials_fails(self):
-        failures = self.probe({"subtype": "success", "is_error": True})
+        failures, _ = self.probe({"subtype": "success", "is_error": True})
         self.assertTrue(any("is_error" in f for f in failures), failures)
 
     def test_non_zero_exit_or_error_subtype_fails(self):
-        self.assertTrue(self.probe({"subtype": "success", "is_error": False}, rc=1))
-        failures = self.probe({"subtype": "error_during_execution", "is_error": False})
+        self.assertTrue(self.probe({"subtype": "success", "is_error": False}, rc=1)[0])
+        failures, _ = self.probe({"subtype": "error_during_execution", "is_error": False})
         self.assertTrue(any("error_during_execution" in f for f in failures), failures)
+
+    def test_settings_carry_the_sentinel_hook(self):
+        """The committed settings deny exactly the sentinel through their hook."""
+        settings = json.loads(te_run.SETTINGS.read_text())
+        self.assertEqual(sorted(settings["hooks"]),
+                         sorted(("SessionStart", "UserPromptSubmit", "Stop", "PreToolUse")))
+        [entry] = settings["hooks"]["PreToolUse"]
+        self.assertEqual(entry["matcher"], "Bash")
+        hook = entry["hooks"][0]["command"]
+        for command, denied in ((SENTINEL, True), ("git status", False), (SENTINEL + " ", False)):
+            with self.subTest(command=command):
+                out = subprocess.run(["sh", "-c", hook], capture_output=True, text=True,
+                                     input=json.dumps({"tool_input": {"command": command}}))
+                self.assertEqual(out.returncode, 0)
+                if denied:
+                    decision = json.loads(out.stdout)["hookSpecificOutput"]
+                    self.assertEqual(decision["permissionDecision"], "deny")
+                else:
+                    self.assertEqual(out.stdout, "")
+        for event in te_run.REQUIRED_HOOKS:
+            self.assertEqual(settings["hooks"][event][0]["hooks"][0]["command"], "true")
 
 
 if __name__ == "__main__":

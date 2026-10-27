@@ -119,15 +119,15 @@ def add(path: Path, keys: list[str], checks=None) -> list[str]:
 
 def add_context() -> tuple[Path, str, dict]:
     """(SOURCE, its `origin/main` SHA, the runner's env) for the add-time checks."""
-    import preclose_driver  # noqa: PLC0415 -- imports this module's siblings
+    import sandbox  # noqa: PLC0415 -- the runner's credential boundary
     source = HERE.parent.parent
     base = subprocess.run(["git", "-C", str(source), "rev-parse", "--verify", "origin/main"],
                           capture_output=True, text=True)
     if base.returncode:
         raise QueueError(f"cannot resolve origin/main in {source}: {base.stderr.strip()}")
     try:
-        env = preclose_driver.runner_env()
-    except preclose_driver.DriverError as exc:
+        env = sandbox.runner_env()
+    except sandbox.RunnerEnvError as exc:
         raise QueueError(str(exc)) from exc
     return source, base.stdout.strip(), env
 
@@ -249,8 +249,7 @@ def outcome_record(issue: int, run_id: str, reason: str | None) -> dict:
 #: Which change re-arms each verdict reason (AC2); a reason absent here is
 #: never gated, because the existing eligibility clauses re-check it.
 REARMED_BY = {
-    "check-fail": "lane1", "kill-check-fail": "lane1",
-    "preclose-survivor": "lane1", "self-flag": "lane1",
+    "check-fail": "lane1", "kill-check-fail": "lane1", "self-flag": "lane1",
     # harmonic-forge#1163: a refusal the handoff can fix (a hook-blocked
     # command) is re-armed by a new Lane 1 post too, not only a runner change.
     "tool-refusal": "either", "budget": "runner",
@@ -362,14 +361,6 @@ def first_failure(issue: int) -> tuple[str, str] | None:
     calls = section(body, "Delegated Judgment Calls")
     if (calls or "").strip().lower() != "none":
         return "ineligible", "Delegated Judgment Calls is not none"
-    # harmonic-forge#1163: a third pass never runs (preclose_driver._step_passes),
-    # so an item whose preclose is complete is refused here, before a run's
-    # preflight stops every item over it.
-    import preclose_driver  # noqa: PLC0415
-    import preclose_passes  # noqa: PLC0415
-    held = preclose_driver.passes_held(REPO, issue)
-    if held >= preclose_passes.MAX_PASSES:
-        return "ineligible", f"preclose complete: {held} passes held; it lands outside the runner"
     pinned = DIGEST_RE.search(body)
     if not pinned:
         return "ineligible", "the handoff pins no kill-bundle-sha256"

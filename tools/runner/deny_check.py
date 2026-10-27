@@ -157,10 +157,37 @@ def diff_hits(base: str, head: str) -> list[str]:
     return sorted(set(hits))
 
 
+#: The exact command the settings' own PreToolUse hook denies, so the preflight
+#: probe proves the hooks enforce under `--bare`, not merely that they are
+#: present (harmonic-forge#1195).
+SENTINEL_COMMAND = "python3 -c 'print(\"te-runner-hook-probe\")'"
+#: Reads the hook's stdin JSON and denies SENTINEL_COMMAND, rebuilt from
+#: chr() so the hook's own text never needs nested quoting.
+SENTINEL_HOOK = (
+    "python3 -c \"import json, sys; d = json.load(sys.stdin); "
+    "c = (d.get('tool_input') or {}).get('command'); "
+    "s = 'python3 -c ' + chr(39) + 'print(' + chr(34) + 'te-runner-hook-probe' + chr(34) + ')' "
+    "+ chr(39); "
+    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', "
+    "'permissionDecision': 'deny', 'permissionDecisionReason': 'te-runner-hook-probe sentinel'}"
+    "})) if c == s else None\"")
+#: G3's REQUIRED_HOOKS, each an inline no-op: the hooks are passed in
+#: `--settings` explicitly, never left to project-settings discovery (#1195).
+NOOP_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop")
+
+
+def hooks() -> dict:
+    block: dict = {event: [{"hooks": [{"type": "command", "command": "true"}]}]
+                   for event in NOOP_HOOK_EVENTS}
+    block["PreToolUse"] = [{"matcher": "Bash",
+                            "hooks": [{"type": "command", "command": SENTINEL_HOOK}]}]
+    return block
+
+
 def render_settings() -> str:
     regexes()  # the diff check's half must be valid before the settings half ships
     deny = [f"Bash({cmd}:*)" for cmd in DENY_BASH] + [f"Edit({g})" for g in globs()]
-    settings = {"permissions": {"allow": list(ALLOW), "deny": deny}}
+    settings = {"permissions": {"allow": list(ALLOW), "deny": deny}, "hooks": hooks()}
     return json.dumps(settings, indent=2) + "\n"
 
 

@@ -2,8 +2,7 @@
 """The one boundary every run of the agent's code goes through (harmonic-forge#1098).
 
 The te-runner's agent, and everything that executes the agent's code (`mise
-run check`, the kill-check tests, the preclose refuters, the cross-family
-reviewer), runs under `bwrap`. The boundary is an allowlist (sticky-wicket
+run check`, the kill-check tests, the codex parity check), runs under `bwrap`. The boundary is an allowlist (sticky-wicket
 ruling, issue comment 6284219941): nothing is visible unless named here.
 
 - the system directories, read-only;
@@ -39,6 +38,7 @@ from __future__ import annotations
 import os
 import pwd
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -56,6 +56,10 @@ CLAUDE_INSTALL = HOME / ".local" / "share" / "claude"
 CLAUDE_STATE = CLAUDE_HOME / "state"
 TRANSCRIPTS = CLAUDE_HOME / "projects"
 RUNNER_GH = HOME / ".config" / "te-runner" / "gh"
+#: The runner's own API key (F1055 AC6). Its env never carries the operator's
+#: GitHub tokens.
+RUNNER_KEY = HOME / ".config" / "te-runner" / "anthropic-key"
+STRIPPED = ("GH_TOKEN", "GITHUB_TOKEN")
 #: The `~/harmonic-forge` link the operator's hooks name the trusted checkout by.
 TRUSTED_LINK = HOME / "harmonic-forge"
 REVIEWER_RO = (HOME / ".npm-global",)
@@ -68,6 +72,27 @@ BWRAP = "bwrap"
 
 class SandboxError(Exception):
     """The boundary cannot be put in place, so nothing is launched."""
+
+
+class RunnerEnvError(Exception):
+    """The runner's own credentials are unusable; the message says why."""
+
+
+def runner_env() -> dict[str, str]:
+    """F1055 AC6's env: the runner's own key and gh config, the operator's
+    tokens stripped, for this process tree. A missing or loosely permissioned
+    key refuses the run; there is no fallback to the operator's login.
+    Moved here with the refuter panel's removal (harmonic-forge#1195)."""
+    try:
+        mode = stat.S_IMODE(RUNNER_KEY.stat().st_mode)
+    except OSError as exc:
+        raise RunnerEnvError(f"runner key {RUNNER_KEY} unreadable: {exc}") from exc
+    if mode != 0o600:
+        raise RunnerEnvError(f"runner key {RUNNER_KEY} has mode {oct(mode)}, not 0o600")
+    env = {k: v for k, v in os.environ.items() if k not in STRIPPED}
+    env["ANTHROPIC_API_KEY"] = RUNNER_KEY.read_text(encoding="utf-8").strip()
+    env["GH_CONFIG_DIR"] = str(RUNNER_GH)
+    return env
 
 
 def require_bwrap() -> str:

@@ -10,8 +10,8 @@ own `sync_rules.py` (tree code, possibly the agent's) runs only inside the
 oracle boundary. Only `git config`, which executes no tree code, runs
 in-process.
 
-It lives outside `te_run` because `te_run` imports `preclose_driver`, and both
-call it.
+It lives outside `te_run` so that `te_run` and the preflight's probe clone
+share one implementation.
 """
 from __future__ import annotations
 

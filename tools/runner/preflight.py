@@ -2,16 +2,20 @@
 """The te-runner's preflight (harmonic-forge#1112 AC9).
 
 Runs before the first item (`te_run.py run`) and on its own
-(`te_run.py preflight --queue FILE`). Six checks, each independent: every one
+(`te_run.py preflight --queue FILE`). Five checks, each independent: every one
 runs and every failure is listed, never only the first, so one run surfaces
 every stage that cannot work before any agent spend.
 
 a. permission probe: `claude -p` with the agent's settings, inside the agent's
    boundary, on a cheap model with a budget of at most $0.10, runs each queued
-   item's verification commands plus `PROBE_COMMANDS`. Any
-   `permission_denials` entry fails, and so does a command the probe never
-   attempted (undecidable is a failure), a non-zero claude exit, a result
-   event with `is_error` true, or a result subtype other than `success`.
+   item's verification commands plus `PROBE_COMMANDS`, with `--bare`
+   (harmonic-forge#1195: bare mode skips discovered hooks, so the settings'
+   own `hooks` block must be what enforces). `SENTINEL_COMMAND` must be
+   denied, in `permission_denials` and by a `PreToolUse` `hook_response`
+   event: hook presence alone is not the evidence. Any other denial fails,
+   and so does a command the probe never attempted (undecidable is a
+   failure), a non-zero claude exit, a result event with `is_error` true, or
+   a result subtype other than `success`.
 b. base check: the runner's per-step check (`te_run.CHECK_STEPS`) on the base.
    Any step other than the test step failing on the base is fatal, and so is
    a base run that crashed (`base_problems`): the head is judged absolutely on
@@ -23,13 +27,10 @@ c. kill-bundle baselines: every queued item's bundle checks run on the base in
    import or collection error, or an output naming no test failure is fatal.
 d. reviewer codex: `codex --version` inside the reviewer boundary must equal
    the operator's `~/.npm-global/bin/codex --version`.
-e. rehearsal (AC15): one refuter call (`claude -p --json-schema
-   FINDINGS_SCHEMA`, which must return `structured_output`) and one
-   cross-family `verify` call on a fixed fixture with a known-true
-   assumption, whose label must start `Red-team provenance: cross-family (`.
-f. per item (AC12): `item_failures`, the pipeline's own read-only
+e. per item (AC12): `item_failures`, the pipeline's own read-only
    preconditions: `te_queue` eligibility, the kill-bundle snapshot and pin
-   check, `preclose_driver.read_only_preconditions` and
+   check, `acceptance.acceptance_criteria` (an issue body with no acceptance
+   section, or one listing no criteria, is refused before spend) and
    `te_run.item_preconditions`.
 
 `preflight.json` in the run dir records every check's outcome.
@@ -47,7 +48,8 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import preclose_driver  # noqa: E402
+import acceptance  # noqa: E402
+import deny_check  # noqa: E402
 import sandbox  # noqa: E402
 import te_queue  # noqa: E402
 
@@ -76,6 +78,9 @@ PROBE_COMMANDS = (
     "mise tasks ls",
     "mise run check --help",
 )
+#: Denied by te-runner.settings.json's own PreToolUse hook, never by its
+#: permissions (harmonic-forge#1195): the probe must see it denied.
+SENTINEL_COMMAND = deny_check.SENTINEL_COMMAND
 OPERATOR_CODEX = sandbox.HOME / ".npm-global" / "bin" / "codex"
 #: An output carrying any of these failed before its tests could run.
 COLLECTION_ERRORS = ("ModuleNotFoundError", "ImportError", "SyntaxError",
@@ -117,7 +122,13 @@ def probe_prompt(commands: list[str]) -> str:
 
 def parse_probe(stdout: str) -> tuple[list[str], list[str], dict | None]:
     """(attempted Bash commands, denied commands, result event)."""
-    attempted, denied, result = [], [], None
+    attempted, denied, result, _hooks = parse_probe_hooks(stdout)
+    return attempted, denied, result
+
+
+def parse_probe_hooks(stdout: str) -> tuple[list[str], list[str], dict | None, list[dict]]:
+    """`parse_probe` plus every `PreToolUse` `hook_response` event."""
+    attempted, denied, result, hooks = [], [], None, []
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -132,21 +143,26 @@ def parse_probe(stdout: str) -> tuple[list[str], list[str], dict | None]:
                     attempted.append(str((part.get("input") or {}).get("command", "")))
         elif event.get("type") == "result":
             result = event
+        elif (event.get("type") == "system" and event.get("subtype") == "hook_response"
+              and (event.get("hook_event") or event.get("hook_name")) == "PreToolUse"):
+            hooks.append(event)
     for denial in (result or {}).get("permission_denials") or []:
         tool_input = denial.get("tool_input") if isinstance(denial, dict) else None
         denied.append(str((tool_input or {}).get("command") or denial))
-    return attempted, denied, result
+    return attempted, denied, result, hooks
 
 
 def permission_probe(commands: list[str], clone: Path, transcripts: Path, agent_env: dict,
                      settings: Path, inputs: tuple[Path, ...]) -> list[str]:
-    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
+    argv = ["claude", "-p", "--bare", "--output-format", "stream-json", "--verbose",
+            "--include-hook-events",
             "--settings", str(settings), "--permission-mode", "dontAsk",
             "--permission-prompts", "none", "--model", PROBE_MODEL,
             "--max-budget-usd", PROBE_BUDGET]
     wrapped = sandbox.wrap(argv, clone, transcripts, profile="agent", inputs=inputs)
+    commands = [c for c in commands if c != SENTINEL_COMMAND] + [SENTINEL_COMMAND]
     done = _run(wrapped, cwd=clone, env=agent_env, stdin=probe_prompt(commands))
-    attempted, denied, result = parse_probe(done.stdout)
+    attempted, denied, result, hooks = parse_probe_hooks(done.stdout)
     if result is None:
         return [f"permission probe: no result event (exit {done.returncode}): "
                 f"{done.stderr.strip()[-200:]}"]
@@ -160,7 +176,14 @@ def permission_probe(commands: list[str], clone: Path, transcripts: Path, agent_
     if result.get("subtype") != "success":
         failures.append(f"permission probe: result subtype {result.get('subtype')!r}, "
                         "not 'success'")
-    failures += [f"permission probe: denied `{command}`" for command in denied]
+    if SENTINEL_COMMAND not in denied:
+        failures.append(f"permission probe: the sentinel `{SENTINEL_COMMAND}` was not denied "
+                        "(the settings' PreToolUse hook did not enforce under --bare)")
+    if not any("deny" in json.dumps(event) for event in hooks):
+        failures.append("permission probe: no PreToolUse hook_response event carries the "
+                        "sentinel's deny")
+    failures += [f"permission probe: denied `{command}`" for command in denied
+                 if command != SENTINEL_COMMAND]
     failures += [f"permission probe: never attempted `{command}`" for command in commands
                  if command not in attempted]
     return failures
@@ -243,7 +266,7 @@ def item_failures(issue: int, source: Path, base: str, scratch: Path, env: dict)
     """Every read-only per-item precondition the pipeline checks before it
     spends (harmonic-forge#1112 AC12), by calling the pipeline's own functions:
     `te_queue` eligibility, the kill-bundle snapshot and pin check,
-    `preclose_driver.read_only_preconditions` and `te_run.item_preconditions`
+    `acceptance.acceptance_criteria` and `te_run.item_preconditions`
     (work_item's own guards). Every refusal is listed, each
     prefixed with the item; a raising check is a refusal, never a stop.
     `te_queue.py add` runs this too (AC15)."""
@@ -258,85 +281,22 @@ def item_failures(issue: int, source: Path, base: str, scratch: Path, env: dict)
         te_queue.snapshot_bundle(issue, te_queue.bundle_pin(issue), scratch / "kill")
         return []
 
-    def driver() -> list[str]:
-        ctx = preclose_driver.preconditions_context(te_queue.REPO, issue, base, source,
-                                                    scratch / "driver", env)
-        return preclose_driver.read_only_preconditions(ctx)
+    def criteria() -> list[str]:
+        acceptance.acceptance_criteria(te_queue.REPO, issue, env)  # raises on a refusal
+        return []
 
     def guards() -> list[str]:
         import te_run  # noqa: PLC0415 -- te_run imports this module
         return te_run.item_preconditions(issue, env, source)
 
     for name, check in (("eligibility", eligibility), ("kill bundle", bundle),
-                        ("preclose driver", driver), ("item preconditions", guards)):
+                        ("acceptance", criteria), ("item preconditions", guards)):
         try:
             found = check()
         except Exception as exc:  # noqa: BLE001 -- one check never hides another
             found = [str(exc)]
         failures += [f"F{issue} {name}: {line}" for line in found]
     return failures
-
-
-#: The rehearsal's fixed fixture: one file, one known-true assumption (AC15).
-REHEARSAL_FILE, REHEARSAL_TEXT = "rehearsal.py", "VALUE = 2\n"
-REHEARSAL_ASSUMPTION = f"The file {REHEARSAL_FILE} at HEAD assigns VALUE the integer 2."
-
-
-def rehearsal(scratch: Path, env: dict) -> list[str]:
-    """One refuter call and one cross-family `verify` call on a fixed fixture
-    with a known-true assumption (harmonic-forge#1112 AC15), through the
-    driver's own functions. Fails unless the classifier's label is the
-    cross-family one: a reviewer that cannot check a known-true assumption
-    will check nothing on a real item either."""
-    root = scratch / "rehearsal"
-    shutil.rmtree(root, ignore_errors=True)
-    source = root / "source"
-    source.mkdir(parents=True)
-    (source / REHEARSAL_FILE).write_text(REHEARSAL_TEXT, encoding="utf-8")
-    for argv in (["git", "init", "-q", "-b", "main"], ["git", "add", REHEARSAL_FILE],
-                 ["git", "-c", "user.name=te-runner", "-c", "user.email=te-runner@localhost",
-                  "commit", "-q", "-m", "rehearsal fixture"]):
-        done = _run(argv, cwd=source, timeout=60)
-        if done.returncode:
-            return [f"rehearsal: fixture setup failed: {done.stderr.strip()[-200:]}"]
-    failures: list[str] = []
-    try:
-        tree = root / "head"
-        preclose_driver.export_head(source, "HEAD", tree, provision_links=False)  # not a forge tree
-        objects = (preclose_driver.source_objects(source),)
-    except preclose_driver.DriverError as exc:
-        return [f"rehearsal: cannot export the fixture: {exc}"]
-    try:
-        preclose_driver.run_refuter("preflight", "Return an empty findings list.", tree, env,
-                                    PROBE_MODEL, PROBE_BUDGET, objects)
-    except preclose_driver.DriverError as exc:
-        failures.append(f"refuter: {exc}")
-    failures += verify_rehearsal(root, tree, env, objects)
-    return failures
-
-
-def verify_rehearsal(root: Path, tree: Path, env: dict, objects: tuple[Path, ...]) -> list[str]:
-    try:
-        brief = root / "brief.md"
-        built = preclose_driver.call(
-            [sys.executable, str(preclose_driver.BRIEF_BUILDER),
-             "--artifact", str(tree / REHEARSAL_FILE),
-             "--intent", "Rehearse the cross-family verify call before a run.",
-             "--question", "Is the assumption true of the working directory?",
-             "--assumption", REHEARSAL_ASSUMPTION, "--evidence", REHEARSAL_FILE,
-             "--out", str(brief)], env=env)
-        if built.returncode:
-            return [f"cross-family rehearsal: brief refused: {built.stderr.strip()[-200:]}"]
-        envelope, _ms = preclose_driver.cross_family_verify(tree, root, brief, env, objects)
-        label = preclose_driver.provenance_label(envelope, preclose_driver.DEFAULT_MODEL, env)
-    except preclose_driver.DriverError as exc:
-        return [f"cross-family rehearsal: {exc}"]
-    if not label.startswith(CROSS_FAMILY_LABEL):
-        return [f"cross-family rehearsal: a known-true assumption got {label!r}"]
-    return []
-
-
-CROSS_FAMILY_LABEL = "Red-team provenance: cross-family ("
 
 
 def run_all(checks: list[tuple[str, Callable[[], list[str]]]],
