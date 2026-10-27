@@ -48,7 +48,9 @@ class ThreatModelTests(unittest.TestCase):
         self.assertIn("hostile-author: <R-0371 kind>", message)
 
     def test_unfilled_field_refused(self):  # AC1
-        self._refused(_handoff("{good-faith | hostile-author: <R-0371 kind>}"), _ctx())
+        message = self._refused(_handoff("{good-faith | hostile-author: <R-0371 kind>}"), _ctx())
+        self.assertIn("no filled `Threat model:` line", message)  # the unfilled rule, not the vocabulary
+        self.assertIn("hostile-author: <R-0371 kind>", message)
 
     def test_good_faith_accepted(self):
         post.validate_te_lead_fields(_handoff("good-faith"), _ctx())
@@ -106,6 +108,14 @@ class ThreatModelTests(unittest.TestCase):
             post.validate_tooling_exception_labelled(body, "vitalharmony/harmonic-forge", 1192, once())
             post.validate_pitch_inspected("vitalharmony/harmonic-forge", 1192, once())
             post.validate_te_lead_fields(body, post.LeadCtx("vitalharmony/harmonic-forge", 1192, once()))
+        self.assertEqual(labels.call_count, 1)
+
+    def test_failed_label_read_is_not_retried(self):  # AC7, the failure path
+        once = post._once(lambda: post.issue_labels("vitalharmony/harmonic-forge", 1192))
+        with mock.patch.object(post, "issue_labels", side_effect=SystemExit("cannot read labels")) as labels:
+            for _ in range(3):
+                with self.assertRaises(SystemExit):
+                    once()
         self.assertEqual(labels.call_count, 1)
 
     def test_main_shares_one_label_read(self):  # AC7, the wiring itself

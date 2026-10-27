@@ -4,7 +4,7 @@
 
 **Scope:** {what this handoff covers, e.g. "guard only, purge is separate"}
 **Next:** {what Lane 2 does with this, e.g. "Implement #N" once posted}
-**Threat model:** {good-faith | hostile-author: <R-0371 kind>} (required on a tooling-exception issue)
+**Threat model:** {good-faith | hostile-author: <R-0371 kind>}
 
 <!-- hrse#1703: `l1_post.py --kind handoff` refuses a post whose lead region
 (everything above the first heading after this one) lacks these two labelled

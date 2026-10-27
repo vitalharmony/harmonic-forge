@@ -399,9 +399,22 @@ def _collect(steps: list) -> list:
 
 
 def _once(fetch):
-    """`fetch()` on first call, its result after: one spec fetch per post."""
+    """`fetch()` on first call, its result after: one fetch per post. A
+    refusal is cached too, so a failed read is not retried by every later
+    step `_collect` runs (harmonic-forge#1192 AC7)."""
     cache: list = []
-    return lambda: cache[0] if cache else (cache.append(fetch()) or cache[0])
+
+    def get():
+        if not cache:
+            try:
+                cache.append((True, fetch()))
+            except SystemExit as exc:
+                cache.append((False, exc))
+        ok, value = cache[0]
+        if not ok:
+            raise value
+        return value
+    return get
 
 
 def _spec_body(repo: str, spec_comment, issue: int) -> str:
