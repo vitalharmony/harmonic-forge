@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -146,6 +147,34 @@ class LockTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertIn(f"pid {os.getpid()}", out)  # names the holder
 
+    def test_scoped_arm_reclaims_a_dead_session_unscoped_holder(self):
+        """Pass-2 survivor 2: an orphaned unscoped belt no longer blocks scoped arms forever."""
+        import fcntl
+        held = open(self.dir / "belt-lane1-vh.lock", "a+")
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        held.write(json.dumps({"pid": 4242, "start": "x", "session_pid": 4243}))
+        held.flush()
+
+        def fake_kill(pid, sig):
+            if pid == 4243 and sig == 0:
+                raise ProcessLookupError  # the holder's session is dead
+            if pid == 4242 and sig != 0:
+                fcntl.flock(held.fileno(), fcntl.LOCK_UN)  # the holder exits on SIGTERM
+        with patch("watch_lane_posts.os.kill", side_effect=fake_kill) as kill:
+            result, _ = self._acquire("belt-lane1-vh~o__forge.lock", "belt-lane1-vh.lock")
+        self.assertIsInstance(result, tuple)
+        self.assertIn((4242, signal.SIGTERM), [c.args for c in kill.call_args_list])
+
+    def test_unscoped_refusal_names_a_dead_scoped_holder(self):
+        held = [self._acquire("belt-lane1-vh~o__forge.lock", "belt-lane1-vh.lock")]
+        (self.dir / "belt-lane1-vh~o__forge.lock").write_text(
+            json.dumps({"pid": 777, "start": "x", "session_pid": 778}))
+        with patch("watch_lane_posts._proc_alive", side_effect=lambda pid: pid != 778):
+            code, out = self._acquire("belt-lane1-vh.lock")
+        self.assertEqual(code, 4)
+        self.assertIn("pid 777 (session dead: stop it)", out)
+        self.assertTrue(held)
+
     def test_unscoped_refused_while_scoped_run_without_reclaim(self):  # AC6
         # A past unscoped belt's holder record, left in the workspace lock file.
         (self.dir / "belt-lane1-vh.lock").write_text(json.dumps(
@@ -156,7 +185,8 @@ class LockTests(unittest.TestCase):
         with patch("watch_lane_posts.os.kill") as kill:
             code, out = self._acquire("belt-lane1-vh.lock")
         self.assertEqual(code, 4)
-        kill.assert_not_called()
+        # Liveness probes (signal 0) are allowed; no real signal is ever sent.
+        self.assertEqual([c for c in kill.call_args_list if c.args[1] != 0], [])
         self.assertIn("belt-lane1-vh~o__forge.lock", out)
         self.assertIn("belt-lane1-vh~o__hrse.lock", out)
 
@@ -193,6 +223,18 @@ class StaleWatermarkTests(unittest.TestCase):  # AC8
         lines = self._cycle(mark_age_hours=48, post_ages_hours=[2])                # delivered
         self.assertTrue(lines)
         self.assertFalse([line for line in lines if "PRIMED" in line], lines)
+
+    def test_the_skipped_interval_is_named(self):
+        """Option A: a clamp is never silent; a fresh watermark prints nothing."""
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self._cycle(mark_age_hours=48, post_ages_hours=[2])
+        self.assertIn("are not replayed", err.getvalue())
+        self.assertIn("2026-10-26T12:00:00Z", err.getvalue())  # the horizon
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self._cycle(mark_age_hours=1, post_ages_hours=[0.5])
+        self.assertNotIn("not replayed", err.getvalue())
 
     def test_fresh_watermark_still_delivers(self):
         lines = self._cycle(mark_age_hours=1, post_ages_hours=[0.5])

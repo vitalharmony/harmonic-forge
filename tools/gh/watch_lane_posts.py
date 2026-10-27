@@ -1790,8 +1790,12 @@ def comment_watch_cycle(
         mark = watermarks.get(account, _wm_key(repo, issue))
         horizon = _parse_iso(now) - dt.timedelta(hours=_WATERMARK_STALE_HOURS)
         if mark is not None and mark < horizon:
-            # harmonic-forge#1199 AC8: nothing older than the horizon replays,
-            # and everything inside it is still read and delivered.
+            # harmonic-forge#1199 AC8 (operator option A): nothing older than
+            # the horizon replays, everything inside it is still read and
+            # delivered, and the skipped interval is named, never silent.
+            print(f"[watch_lane_posts] {target}: watermark {mark:%Y-%m-%dT%H:%M:%SZ} is older "
+                  f"than {_WATERMARK_STALE_HOURS}h; posts before {horizon:%Y-%m-%dT%H:%M:%SZ} "
+                  "are not replayed", file=sys.stderr)
             mark = horizon
         comments = _fetch_comments(
             repo, issue,
@@ -2536,6 +2540,33 @@ def _acquire_belt_lock(lock_name: str, workspace_lock: str | None = None):
         except BlockingIOError:
             shared.seek(0)
             holder = _parse_lock_holder(shared.read().strip()) or {}
+            # An unscoped holder whose session is dead is reclaimed exactly as
+            # the unscoped path reclaims one (pass-2 survivor 2): SIGTERM its
+            # pid, then retry the shared lock for up to 5 s.
+            if holder.get("session_pid") and not _proc_alive(holder["session_pid"]):
+                if holder.get("pid"):
+                    try:
+                        os.kill(holder["pid"], signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    try:
+                        fcntl.flock(shared.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(0.2)
+                else:
+                    print(f"[watch_lane_posts] belt lock {workspace_lock}: holder pid "
+                          f"{holder.get('pid')} would not release after SIGTERM -- exiting",
+                          file=sys.stderr)
+                    sys.exit(4)
+                print(f"[watch_lane_posts] belt lock {workspace_lock}: prior holder's session "
+                      f"(pid {holder['session_pid']}) was dead -- reclaimed", file=sys.stderr)
+                shared.seek(0)
+                shared.truncate()
+                shared.flush()
+                return shared, _acquire_belt_lock(lock_name)
             print(f"belt already running for lock {workspace_lock} (pid "
                   f"{holder.get('pid')} since {holder.get('start')}, session "
                   f"{holder.get('session_pid')}): the unscoped belt for this lane and "
@@ -2564,8 +2595,16 @@ def _acquire_belt_lock(lock_name: str, workspace_lock: str | None = None):
         if holder is None and scoped:
             # harmonic-forge#1199 AC6: repo-scoped belts hold this lock shared
             # and leave no holder record -- never reclaim, never SIGTERM.
+            # AC6: never SIGTERM a scoped holder from here; name each one and
+            # whether its session is dead, so an orphan is never silent.
+            def _who(path: Path) -> str:
+                rec = _parse_lock_holder(path.read_text().strip()) if path.exists() else None
+                if not rec:
+                    return path.name
+                dead = rec.get("session_pid") and not _proc_alive(rec["session_pid"])
+                return f"{path.name} pid {rec.get('pid')}" + (" (session dead: stop it)" if dead else "")
             print(f"belt lock {lock_name} is held by repo-scoped belt(s) "
-                  f"({', '.join(p.name for p in scoped)}); the unscoped belt for this "
+                  f"({', '.join(_who(p) for p in scoped)}); the unscoped belt for this "
                   "lane and workspace cannot run beside them (harmonic-forge#1199)")
             sys.exit(4)
         if holder_session and not _proc_alive(holder_session):
