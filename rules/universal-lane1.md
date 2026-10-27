@@ -507,16 +507,18 @@ The advisory roles are read-only advice, never implementation authority.
   build-vs-adopt choices, positioning, or genuinely ambiguous scope.
 <!-- /R-0107 -->
 <!-- R-0108 -->
-- `sticky-wicket` — after two consecutive same-class Lane 2 completion →
-  Lane 3 FAIL (or Lane 1 declined-completion) cycles on one issue; or, on
-  Tooling Exception work, after two preclose passes on one issue that both
-  left surviving findings (harmonic-forge#834). The preclose verdict is patch
-  (the operator `--force`s the final head) or reforge (a new approach whose
-  count restarts, started only by the operator's `--force --reforge`); any
-  other wish for a third pass goes to the operator. Rounds are counted
-  exactly as R-0236 counts them. A PATCH verdict is applied
-  without asking, and the operator's FORCE is requested only after the
-  post-verdict check covers the final head.
+- `sticky-wicket` — when R-0236's round count reaches two on one issue
+  (rounds are counted exactly as R-0236 counts them, FAIL and BLOCKED gate
+  results and declined completions alike; R-0237 alone governs declining
+  for unrelated causes); or, on Tooling Exception work, after two preclose
+  passes on one issue that both left surviving findings (harmonic-forge#834)
+  — preclose passes are counted by this clause, not by R-0236. The preclose
+  verdict is patch (the operator `--force`s the final head) or reforge (a
+  new approach whose count restarts, started only by the operator's
+  `--force --reforge`); any other wish for a third pass goes to the
+  operator. A PATCH verdict is applied without asking, and the operator's
+  FORCE is requested only after the post-verdict check covers the final
+  head.
 <!-- /R-0108 -->
 <!-- R-0109 -->
 - `pitch-inspection` — before a Lane 1 handoff when alternatives were

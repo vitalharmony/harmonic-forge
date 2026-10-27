@@ -935,8 +935,8 @@ hooks = []
 id = "R-0108"
 file = "rules/universal-lane1.md"
 anchor = "advisory-triggers"
-statement = "Use sticky-wicket after two consecutive same-class Lane 2 completion to Lane 3 FAIL cycles on one issue (rounds counted as R-0236 counts them), or after two preclose passes on one Tooling Exception issue that both left surviving findings; a PATCH verdict is applied without asking, and FORCE is requested only after the post-verdict check covers the final head."
-text_sha = "e6d4732f05036ba8"
+statement = "Use sticky-wicket when R-0236's round count reaches two on one issue (rounds counted exactly as R-0236 counts them), or after two preclose passes on one Tooling Exception issue that both left surviving findings (preclose passes counted by R-0108, not R-0236); a PATCH verdict is applied without asking, and FORCE is requested only after the post-verdict check covers the final head."
+text_sha = "01796886b88b45cd"
 hooks = []
 
 [[rule]]
