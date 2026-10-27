@@ -1788,9 +1788,11 @@ def comment_watch_cycle(
         account = _account_of(repo)
         target = f"{repo}#{issue}"
         mark = watermarks.get(account, _wm_key(repo, issue))
-        stale = mark is not None and mark < _parse_iso(now) - dt.timedelta(hours=_WATERMARK_STALE_HOURS)
-        if stale:  # harmonic-forge#1199 AC8: a fresh start, not a replay
-            mark = None
+        horizon = _parse_iso(now) - dt.timedelta(hours=_WATERMARK_STALE_HOURS)
+        if mark is not None and mark < horizon:
+            # harmonic-forge#1199 AC8: nothing older than the horizon replays,
+            # and everything inside it is still read and delivered.
+            mark = horizon
         comments = _fetch_comments(
             repo, issue,
             query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
@@ -1800,7 +1802,7 @@ def comment_watch_cycle(
                   "watermark held, window will be re-read", file=sys.stderr)
             fetch_failed = True
             continue
-        priming = ((allow_priming or stale) and mark is None
+        priming = (allow_priming and mark is None
                    and target not in primed_targets)
         emitted_here = False
         suppressed: list[str] = []
@@ -2539,6 +2541,12 @@ def _acquire_belt_lock(lock_name: str, workspace_lock: str | None = None):
                   f"{holder.get('session_pid')}): the unscoped belt for this lane and "
                   "workspace excludes a repo-scoped one (harmonic-forge#1199)")
             sys.exit(4)
+        # No exclusive holder can exist while this shared lock is held, so any
+        # record in the file is a past unscoped belt's: clear it, so a later
+        # unscoped arm sees "no holder" and refuses rather than reclaiming.
+        shared.seek(0)
+        shared.truncate()
+        shared.flush()
         return shared, _acquire_belt_lock(lock_name)
     path = BELT_LOCK_DIR / lock_name
     fh = open(path, "a+")

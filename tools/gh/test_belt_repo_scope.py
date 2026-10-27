@@ -147,6 +147,9 @@ class LockTests(unittest.TestCase):
         self.assertIn(f"pid {os.getpid()}", out)  # names the holder
 
     def test_unscoped_refused_while_scoped_run_without_reclaim(self):  # AC6
+        # A past unscoped belt's holder record, left in the workspace lock file.
+        (self.dir / "belt-lane1-vh.lock").write_text(json.dumps(
+            {"pid": 999999, "start": "old run", "session_pid": 999998}))
         held = [self._acquire("belt-lane1-vh~o__forge.lock", "belt-lane1-vh.lock"),
                 self._acquire("belt-lane1-vh~o__hrse.lock", "belt-lane1-vh.lock")]
         self.assertTrue(all(isinstance(h[0], tuple) for h in held))
@@ -161,7 +164,7 @@ class LockTests(unittest.TestCase):
 class StaleWatermarkTests(unittest.TestCase):  # AC8
     HANDOFF = "## Handoff\n\n<!-- l1-post v1; kind=handoff; posted-by=LANE1 -->"
 
-    def _cycle(self, mark_age_hours, post_age_hours):
+    def _cycle(self, mark_age_hours, post_ages_hours):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
         now = dt.datetime(2026, 10, 27, 12, 0, tzinfo=dt.timezone.utc)
@@ -170,23 +173,29 @@ class StaleWatermarkTests(unittest.TestCase):  # AC8
         marks.advance(watch_lane_posts._account_of(repo), watch_lane_posts._wm_key(repo, issue),
                       now - dt.timedelta(hours=mark_age_hours))
         seen = SeenSet(root / "seen.tsv")
-        posted = (now - dt.timedelta(hours=post_age_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        comment = {"id": 77, "created_at": posted, "updated_at": posted,
-                   "html_url": "https://example/77", "body": self.HANDOFF,
-                   "user": {"login": "vitalharmony"}}
-        with patch("watch_lane_posts._fetch_comments", return_value=[comment]):
+        comments = []
+        for n, age in enumerate(post_ages_hours):
+            posted = (now - dt.timedelta(hours=age)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            comments.append({"id": 70 + n, "created_at": posted, "updated_at": posted,
+                             "html_url": f"https://example/{70 + n}", "body": self.HANDOFF,
+                             "user": {"login": "vitalharmony"}})
+
+        def fetch(_repo, _issue, since):  # what GitHub does with `since`
+            return [c for c in comments if c["updated_at"] >= since]
+        with patch("watch_lane_posts._fetch_comments", side_effect=fetch):
             lines, _failed = watch_lane_posts.comment_watch_cycle(
                 [(repo, issue)], {"l1"}, now.strftime("%Y-%m-%dT%H:%M:%SZ"), marks, seen,
                 set(), allow_priming=False, deferred_advances=[])
         return lines
 
-    def test_stale_watermark_primes_instead_of_replaying(self):
-        lines = self._cycle(mark_age_hours=48, post_age_hours=30)
+    def test_stale_watermark_skips_only_posts_older_than_the_horizon(self):
+        self.assertEqual(self._cycle(mark_age_hours=48, post_ages_hours=[30]), [])  # not replayed
+        lines = self._cycle(mark_age_hours=48, post_ages_hours=[2])                # delivered
         self.assertTrue(lines)
-        self.assertTrue(all("PRIMED" in line for line in lines), lines)  # announced, not replayed
+        self.assertFalse([line for line in lines if "PRIMED" in line], lines)
 
     def test_fresh_watermark_still_delivers(self):
-        lines = self._cycle(mark_age_hours=1, post_age_hours=0.5)
+        lines = self._cycle(mark_age_hours=1, post_ages_hours=[0.5])
         self.assertTrue(lines)
         self.assertFalse([line for line in lines if "PRIMED" in line], lines)
 
