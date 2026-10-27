@@ -12,7 +12,7 @@ A candidate is a process of this user that is
       ``systemd-run --user``, parented to the user manager by design).
 
 An orphan is a candidate older than ``--age-hours`` that is idle (lifetime and
-a 60 s sample both under 1% CPU) or runaway (both over 50%). One shared sample
+a 60 s sample both under 1% CPU) or runaway (the sample over 50%). One shared sample
 covers every candidate in a run.
 
 Each orphan is reported as one telemetry event (never its cmdline), and a run
@@ -197,10 +197,12 @@ def scan(proc_root: Path = Path("/proc"), uid: int | None = None, lock: Path = S
 
 
 def classify(lifetime_pct: float, sample_pct: float) -> str | None:
-    """AC2: idle, runaway, or neither."""
+    """AC2: idle (lifetime and sample), runaway (sample), or neither."""
     if lifetime_pct < IDLE_PCT and sample_pct < IDLE_PCT:
         return "idle"
-    if lifetime_pct > RUNAWAY_PCT and sample_pct > RUNAWAY_PCT:
+    # AC2 as amended (1B): the sample alone. The lifetime average divides by
+    # boot-clock age, which counts suspended time, so it reads low after a suspend.
+    if sample_pct > RUNAWAY_PCT:
         return "runaway"
     return None
 

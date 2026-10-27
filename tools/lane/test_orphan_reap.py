@@ -139,7 +139,8 @@ class PredicateTests(unittest.TestCase):  # AC2
     def test_runaway_predicate(self):
         self.assertEqual(reap.classify(94.0, 90.0), "runaway")
         self.assertIsNone(reap.classify(94.0, 10.0))
-        self.assertIsNone(reap.classify(30.0, 90.0))
+        # 1B: a host that suspended reads a low lifetime; the busy sample decides.
+        self.assertEqual(reap.classify(30.0, 90.0), "runaway")
 
 
 class RunTests(unittest.TestCase):  # AC2-AC3, report-only
