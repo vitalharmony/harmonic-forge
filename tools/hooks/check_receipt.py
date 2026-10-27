@@ -137,6 +137,34 @@ def labels(slug: str, issue: str) -> list[str] | None:
         return None
 
 
+def push_refusal(slug: str, branch: str, sha: str,
+                 cache: dict[str, list[str] | None] | None = None) -> str | None:
+    """Why pushing `sha` to `branch` of `slug` is refused, or None to allow.
+
+    harmonic-forge#1135 AC1: the one answer pre-push and the PreToolUse hook
+    (`block_unchecked_push.py`) share. A TE branch with no check receipt for
+    `sha` is refused; anything else, including an unreadable label, allows.
+    """
+    cache = {} if cache is None else cache
+    match = BRANCH_ISSUE.match(branch)
+    if not match:
+        return None
+    issue = match.group(1)
+    if issue not in cache:
+        cache[issue] = labels(slug, issue)
+    found = cache[issue]
+    if found is None:
+        print(f"pre-push: WARNING could not read the labels of issue {issue}; "
+              f"{branch} is pushed unchecked (mistake-detector, fails open)", file=sys.stderr)
+        return None
+    if "tooling-exception" not in found:
+        return None
+    if receipt_path(slug, sha).exists():
+        return None
+    return (f"{branch}@{sha[:12]} is a Tooling Exception branch with no "
+            "passing 'mise run check' receipt; run it, then push")
+
+
 def _refuses(slug: str, line: str, cache: dict[str, list[str] | None]) -> bool:
     """True when this pre-push line is a TE branch with no receipt for its SHA."""
     parts = line.split()
@@ -145,24 +173,10 @@ def _refuses(slug: str, line: str, cache: dict[str, list[str] | None]) -> bool:
     _local_ref, local_sha, remote_ref, _remote_sha = parts
     if local_sha == ZERO:
         return False  # a branch deletion
-    branch = remote_ref.removeprefix("refs/heads/")
-    match = BRANCH_ISSUE.match(branch)
-    if not match:
+    reason = push_refusal(slug, remote_ref.removeprefix("refs/heads/"), local_sha, cache)
+    if reason is None:
         return False
-    issue = match.group(1)
-    if issue not in cache:
-        cache[issue] = labels(slug, issue)
-    found = cache[issue]
-    if found is None:
-        print(f"pre-push: WARNING could not read the labels of issue {issue}; "
-              f"{branch} is pushed unchecked (mistake-detector, fails open)", file=sys.stderr)
-        return False
-    if "tooling-exception" not in found:
-        return False
-    if receipt_path(slug, local_sha).exists():
-        return False
-    print(f"pre-push: {branch}@{local_sha[:12]} is a Tooling Exception branch with no "
-          "passing 'mise run check' receipt; run it, then push", file=sys.stderr)
+    print(f"pre-push: {reason}", file=sys.stderr)
     return True
 
 
