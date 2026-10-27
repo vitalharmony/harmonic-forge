@@ -192,6 +192,95 @@ def settings_model(cwd: str, home: Path | None = None) -> str | None:
     return None
 
 
+def _proc_argv_parent(proc_root: str, pid: int) -> tuple[list[str], int]:
+    with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
+        argv = [a.decode(errors="replace") for a in fh.read().split(b"\0") if a]
+    with open(f"{proc_root}/{pid}/status") as fh:
+        parent = next((int(line.split()[1]) for line in fh
+                       if line.startswith("PPid:")), 0)
+    return argv, parent
+
+
+def claude_pid(proc_root: str = "/proc", pid: int | None = None) -> int | None:
+    """The nearest ancestor whose argv[0] basename is `claude`, or None.
+
+    harmonic-forge#1211: argv[0], never `/proc/<pid>/exe`, which resolves to
+    `versions/<n>` rather than anything named `claude`.
+    """
+    current = os.getpid() if pid is None else pid
+    for _ in range(12):
+        try:
+            argv, parent = _proc_argv_parent(proc_root, current)
+        except (OSError, ValueError):
+            return None
+        if argv and os.path.basename(argv[0]) == "claude":
+            return current
+        if parent <= 1:
+            return None
+        current = parent
+    return None
+
+
+def process_start(pid: int, proc_root: str = "/proc") -> str | None:
+    """Field 22 of `/proc/<pid>/stat` (start time), which tells a reused PID apart."""
+    try:
+        with open(f"{proc_root}/{pid}/stat") as fh:
+            stat = fh.read()
+    except OSError:
+        return None
+    # comm (field 2) may hold spaces; the fields after it start past the last ')'.
+    fields = stat[stat.rfind(")") + 2:].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def pointer_dir(record_dir: Path | None = None) -> Path:
+    return (record_dir or SESSION_MODEL_DIR) / "by-pid"
+
+
+def write_pointer(pid: int, transcript_path: str, model: str | None = None, *,
+                  record_dir: Path | None = None, proc_root: str = "/proc") -> Path | None:
+    """Record this Claude Code process's current transcript and resolved model.
+
+    `model` is what this start recorded, so a second `/clear` before any
+    prompt (a transcript with no model entry yet) still inherits it. Written
+    to a temp file and renamed, so a reader never sees it half-written. Pointers are
+    never deleted (harmonic-forge#1211 pass 2): a stale one is rejected by the
+    start-time check, and deleting safely would need a lock.
+    """
+    start = process_start(pid, proc_root)
+    if start is None or not transcript_path:
+        return None
+    path = pointer_dir(record_dir) / str(pid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"transcript": transcript_path, "start": start,
+                               "model": model}), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def predecessor_model(pid: int | None, *, record_dir: Path | None = None,
+                      proc_root: str = "/proc") -> str | None:
+    """The model of the transcript this process ran before a `/clear` or compaction.
+
+    harmonic-forge#1211: a new session's model attachment lands after its
+    first prompt, so the predecessor's newest entry is the current model.
+    A pointer whose recorded start time differs from the live process is a
+    reused PID and is ignored.
+    """
+    if pid is None:
+        return None
+    try:
+        data = json.loads((pointer_dir(record_dir) / str(pid)).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("start") != process_start(pid, proc_root):
+        return None
+    inherited = data.get("model")
+    return (transcript_model(data.get("transcript") or "")
+            or (inherited if isinstance(inherited, str) and inherited.strip() else None))
+
+
 def launch_model(environ: dict | None = None, proc_root: str = "/proc",
                  pid: int | None = None) -> str | None:
     """The model a session was launched with, when nothing has recorded it yet.
@@ -210,11 +299,7 @@ def launch_model(environ: dict | None = None, proc_root: str = "/proc",
     current = os.getpid() if pid is None else pid
     for _ in range(12):
         try:
-            with open(f"{proc_root}/{current}/cmdline", "rb") as fh:
-                argv = [a.decode(errors="replace") for a in fh.read().split(b"\0") if a]
-            with open(f"{proc_root}/{current}/status") as fh:
-                parent = next((int(line.split()[1]) for line in fh
-                               if line.startswith("PPid:")), 0)
+            argv, parent = _proc_argv_parent(proc_root, current)
         except (OSError, ValueError):
             return None
         for i, arg in enumerate(argv):
