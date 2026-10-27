@@ -26,7 +26,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage: cross_family_call.sh --caller claude|codex --families 2 \
-         --posture read-only|probe|verify --brief PATH [--cwd PATH] [--out PATH]
+         --posture read-only|probe|verify --brief PATH [--cwd PATH] [--out PATH] [--issue KEY]
 
   --caller    which CLI is making this call (determines target order)
   --families  2 (the caller's sibling; the only value, harmonic-forge#1113)
@@ -37,11 +37,14 @@ Usage: cross_family_call.sh --caller claude|codex --families 2 \
               conversation -- see ADR-007)
   --cwd       isolated scratch directory; required for probe and verify
   --out       atomically write the complete JSON-lines envelope to PATH
+  --issue     the issue this call serves (F123 or owner/repo#N), recorded in
+              the Codex thread's attribution sidecar (harmonic-forge#1188);
+              absent, the calling session's latest sidecar issue is used
 EOF
   exit 2
 }
 
-caller="" families="" posture="" brief="" cwd="" out=""
+caller="" families="" posture="" brief="" cwd="" out="" issue=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --caller) caller="${2:-}"; shift 2 ;;
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --brief) brief="${2:-}"; shift 2 ;;
     --cwd) cwd="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
+    --issue) issue="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "cross_family_call: unrecognized argument: $1" >&2; usage ;;
   esac
@@ -582,6 +586,7 @@ for family in "${targets[@]}"; do
   prompt_file="$(mktemp -p "$scratch")"
   prompt_text "$posture" "$brief" "$family" >"$prompt_file"
   exit_code=0
+  call_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Run in the background and wait, so a trapped signal runs at once and is
   # forwarded (see INV-B above); the call shape of each `invoke_*` is unchanged.
   case "$family" in
@@ -592,6 +597,19 @@ for family in "${targets[@]}"; do
   wait "$reviewer_pid" || exit_code=$?
   reviewer_pid=""
   rm -f "$prompt_file"
+  # harmonic-forge#1188 AC8: after a successful Codex call, map its thread id
+  # (the first `thread.started` event, live probe 1) to the caller's issue in
+  # a sidecar keyed by that thread, dated at the call's start so every model
+  # call in the rollout joins to it. Never fails the call.
+  if [ "$family" = codex ] && [ "$exit_code" -eq 0 ]; then
+    { thread_id="$(jq -r 'select(type == "object" and .type == "thread.started") | .thread_id' \
+                     "$tmp_out" 2>/dev/null | head -n 1)"
+      [ -n "$thread_id" ] && python3 "$script_dir/../telemetry/attrib.py" append \
+        --session-id "$thread_id" --thread-id "$thread_id" --issue "$issue" --lane "${LANE:-}" \
+        --trigger "cross-family:$posture" --ts "$call_started" \
+        --parent-session-id "${CLAUDE_CODE_SESSION_ID:-}" >/dev/null 2>&1
+    } || true
+  fi
 
   # Buffered, not streamed: a half-written envelope emitted before the failure
   # would be worse than none, because it parses as truncated JSON rather than

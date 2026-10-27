@@ -37,7 +37,9 @@
       "archive",
       "gate-run",
       "te-runner",
-      "orphan-reap"
+      "orphan-reap",
+      "llm-usage",
+      "operator-attention"
     ],
     "account": "string: registry account, or 'unresolved'",
     "org": "string: owner segment of the normalized repo, or 'unresolved'",

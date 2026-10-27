@@ -1,0 +1,9 @@
+[Unit]
+Description=Harvest LLM usage every 15 minutes; a watermark keeps each run to new lines (harmonic-forge#1188)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
