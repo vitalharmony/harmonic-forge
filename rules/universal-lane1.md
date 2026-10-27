@@ -513,7 +513,12 @@ The advisory roles are read-only advice, never implementation authority.
   left surviving findings (harmonic-forge#834). The preclose verdict is patch
   (the operator `--force`s the final head) or reforge (a new approach whose
   count restarts, started only by the operator's `--force --reforge`); any
-  other wish for a third pass goes to the operator.
+  other wish for a third pass goes to the operator. A round is counted as
+  R-0236 counts it: a Lane 1 rework that answers no gate result (a declined
+  completion) is a round of its own, as a gate result is; the rework answering
+  a non-PASS gate result belongs to that round. A PATCH verdict is applied
+  without asking, and the operator's FORCE is requested only after the
+  post-verdict check covers the final head.
 <!-- /R-0108 -->
 <!-- R-0109 -->
 - `pitch-inspection` — before a Lane 1 handoff when alternatives were
