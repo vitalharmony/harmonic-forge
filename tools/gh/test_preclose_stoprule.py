@@ -137,8 +137,10 @@ class DecisionTests(unittest.TestCase):  # AC1, AC6
     def test_a_non_blocking_finding_at_the_same_anchor_clears_nothing(self):
         pass1 = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "x.py:10")], "good-faith",
                                         [], None, "h1")
+        # Pass 2's only record of the anchor is the non-blocking finding (no
+        # carried obligation re-listed), so nothing else can keep it open.
         pass2 = passes.stop_rule_shadow([finding(NOT_REPRODUCED, "good-faith", "x.py:10")],
-                                        "good-faith", ["x.py:10"], None, "h2")
+                                        "good-faith", [], None, "h2")
         receipt = {"pass_history": [{"sha": "h1", "epoch": 0, "stop_rule_shadow": pass1},
                                     {"sha": "h2", "epoch": 0, "stop_rule_shadow": pass2}]}
         self.assertEqual(passes.prior_blocking(receipt), ["x.py:10"])
