@@ -73,9 +73,9 @@ class ThreatModelTests(unittest.TestCase):
         post.validate_te_lead_fields(_handoff("hostile-author: whatever"), _ctx(labels={"bug"}))
 
     def test_good_faith_never_reads_the_tier(self):  # AC6: tier() is lazy
-        ctx = post.LeadCtx("vitalharmony/harmonic-forge", 1192, TE)
         with mock.patch.object(post, "resolve_board_tier") as tier, \
                 mock.patch.object(post, "resolve_project_board") as board:
+            ctx = post.LeadCtx("vitalharmony/harmonic-forge", 1192, TE)
             post.validate_te_lead_fields(_handoff("good-faith"), ctx)
         tier.assert_not_called()
         board.assert_not_called()
