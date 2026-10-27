@@ -2,11 +2,13 @@
 """Tests for the Tooling Exception Threat model lead field (harmonic-forge#1192)."""
 import importlib.util
 import re
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT))  # l1_post imports its siblings; run from any cwd
 
 
 def load(name: str):
