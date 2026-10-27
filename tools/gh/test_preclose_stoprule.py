@@ -145,7 +145,7 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
 
     def _observed(self, code, out):
         """Exit code, stdout (temp paths masked) and pass_count."""
-        masked = re.sub(r"\b[0-9a-f]{12}\b", "<sha>", re.sub(r"/tmp/[^/\s]+", "<tmp>", out))
+        masked = re.sub(r"\b[0-9a-f]{12}\b", "<sha>", re.sub(r"/tmp/\S*", "<tmp>", out))
         return code, masked, self.receipt().get("pass_count")
 
     def _reference(self, **kwargs):
