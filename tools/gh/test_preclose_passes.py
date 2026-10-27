@@ -450,6 +450,24 @@ class MechanismClusterTests(ScratchRepo):
         import force_grant  # noqa: PLC0415
         self.assertEqual(emitted.call_args.args[2], force_grant.covered_head(REPO, ISSUE))
 
+    def test_the_cluster_event_names_the_covered_head_not_the_receipt_head(self) -> None:
+        """F1174 pass 1 (cross-family): on the PATCH path the covered head is the
+        post-verdict head, not the receipt's; the event names what was granted."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        url = "https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'), stderr="")
+        import force_grant  # noqa: PLC0415
+        covered = "c" * 40
+        with patch.object(force_grant, "covered_head", return_value=covered):
+            self.grant_force(ISSUE, mode="cluster", sha=covered)
+            with patch.object(preclose, "run", return_value=api), \
+                    patch.object(preclose, "emit_force") as emitted:
+                preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                               comment_url=url, force=True))
+        self.assertEqual(emitted.call_args.args[2], covered)
+
     def test_a_cluster_write_failure_after_the_reserve_says_so(self) -> None:
         """F1174 pass 1: a failed receipt write after the grant is spent still
         emits one event, as reserved-not-recorded."""
