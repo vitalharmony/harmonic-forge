@@ -1,0 +1,9 @@
+[Unit]
+Description=Scan for orphaned agent processes daily (harmonic-forge#1181)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

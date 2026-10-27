@@ -1,0 +1,10 @@
+[Unit]
+Description=Harmonic Forge: report orphaned agent processes (report-only) (harmonic-forge#1181)
+
+[Service]
+Type=oneshot
+# The ntfy topic lives in a file, never in this unit: NTFY_TOPIC_FILE names it.
+Environment=NTFY_TOPIC_FILE=%h/.local/share/te-runner/ntfy-topic
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/lane/orphan_reap.py
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-orphan-reap.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-orphan-reap.log
