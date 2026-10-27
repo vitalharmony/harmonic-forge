@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Orphaned agent processes: find, report, and stop only an allowlist
-(harmonic-forge#1181 AC1-AC4). Deterministic and LLM-free.
+"""Orphaned agent processes: find and report them (harmonic-forge#1181 AC1-AC3).
+Deterministic and LLM-free. Report-only: nothing is ever signalled.
 
 A candidate is a process of this user that is
   (a) reparented to the systemd user manager,
@@ -16,27 +16,23 @@ a 60 s sample both under 1% CPU) or runaway (both over 50%). One shared sample
 covers every candidate in a run.
 
 Each orphan is reported as one telemetry event (never its cmdline), and a run
-that found any sends one ntfy summary. Only two classes are ever stopped: a
-``podman-compose ... up`` and a ``python3 -c`` process, and only once an
-earlier run reported the same (pid, start time) at least ``--grace-hours``
-ago. Signals go through pidfd after a start-time check, re-checked before
-SIGKILL. Everything else is report-only. ``--dry-run`` is the default; the
-timer unit passes ``--execute``.
+that found any sends one ntfy summary.
 
-Process facts come from ``/proc`` only. ``proc_root`` and the signal and
-clock functions are injectable, so the tests run on fixture trees and never
-touch a real process.
+The AC4 auto-stop was deleted on the operator's ruling after a sticky-wicket
+REFORGE (comment 6440699722): /proc identity cannot be checked and signalled
+atomically. A future kill path stops a process's own systemd scope as a unit
+(AC7), recorded at spawn, never inferred from /proc.
+
+Process facts come from ``/proc`` only. ``proc_root`` and the clock are
+injectable, so the tests run on fixture trees.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
-import signal
 import sys
-import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -44,12 +40,10 @@ from pathlib import Path
 from typing import Callable
 
 HERE = Path(__file__).resolve().parent
-STATE_PATH = Path.home() / ".cache" / "harmonic-forge" / "orphan_reap_state.json"
 SCRATCH_LOCK = Path.home() / ".cache" / "hrse-scratch" / ".lock"
 ORIGIN_DIRS = (Path.home() / ".cache" / "hrse-scratch", Path.home() / "Harmonic_Projects" / ".worktrees")
 SNAPSHOT_MARK = "/.claude/shell-snapshots/"
 IDLE_PCT, RUNAWAY_PCT = 1.0, 50.0
-KILL_WAIT_S = 30
 NTFY_TOPIC_FILE_ENV = "NTFY_TOPIC_FILE"
 
 
@@ -208,101 +202,6 @@ def classify(lifetime_pct: float, sample_pct: float) -> str | None:
     return None
 
 
-_PYTHON3 = re.compile(r"^python3(\.\d+)?$")
-#: podman-compose global options that take a value (the subcommand follows them).
-_COMPOSE_VALUE_OPTS = {"-f", "--file", "-p", "--project-name", "--env-file", "--profile",
-                       "--podman-path", "--in-pod", "--pod-args"}
-
-
-def _compose_subcommand(args: list[str]) -> str | None:
-    i = 0
-    while i < len(args):
-        if args[i] in _COMPOSE_VALUE_OPTS:
-            i += 2
-        elif args[i].startswith("-"):
-            i += 1
-        else:
-            return args[i]
-    return None
-
-
-def allowlisted(cmdline: str) -> bool:
-    """AC4: exactly two stoppable classes, matched on argv: a ``podman-compose``
-    whose subcommand is ``up``, and ``python3 -c``."""
-    words = cmdline.split()
-    if not words:
-        return False
-    name = Path(words[0]).name
-    if name == "podman-compose":
-        return _compose_subcommand(words[1:]) == "up"
-    if _PYTHON3.match(name) and len(words) > 1 and Path(words[1]).name == "podman-compose":
-        return _compose_subcommand(words[2:]) == "up"
-    return bool(_PYTHON3.match(name)) and len(words) > 1 and words[1] == "-c"
-
-
-def load_state(path: Path) -> dict:
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    def valid(value: object) -> bool:
-        return (isinstance(value, (int, float)) and not isinstance(value, bool)
-                and math.isfinite(value) and value > 0)
-    return data if isinstance(data, dict) and all(valid(v) for v in data.values()) else {}
-
-
-def save_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".orphan_reap_state.")
-    with os.fdopen(fd, "w") as handle:
-        json.dump(state, handle, sort_keys=True)
-    os.replace(tmp, path)
-
-
-def _same(proc_root: Path, pid: int, start: int) -> bool:
-    """Still the identified process, still in an allowlisted class."""
-    current = read_proc(proc_root, pid)
-    return current is not None and current.start_ticks == start and allowlisted(current.cmdline)
-
-
-def stop(proc_root: Path, pid: int, start: int, *,
-         open_fd: Callable[[int], int] | None = None,
-         send: Callable[[int, int], None] | None = None,
-         close: Callable[[int], None] = os.close,
-         sleep: Callable[[float], None] = time.sleep, wait_s: float = KILL_WAIT_S) -> str:
-    """SIGTERM, then SIGKILL after ``wait_s``. The pidfd is opened first and
-    held for both signals, so a reused pid can never receive one; identity and
-    class are checked through it before each signal. A process that is gone
-    is not an error."""
-    # Resolved here, not at import: a Python without pidfd support still runs
-    # the scan and report; its stop raises OSError, which run() records.
-    open_fd = open_fd or getattr(os, "pidfd_open", None)
-    send = send or getattr(signal, "pidfd_send_signal", None)
-    if open_fd is None or send is None:
-        raise OSError("pidfd_open is not available on this Python")
-    try:
-        fd = open_fd(pid)
-    except ProcessLookupError:
-        return "gone"
-    try:
-        if not _same(proc_root, pid, start):
-            return "gone-or-reused"
-        try:
-            send(fd, signal.SIGTERM)
-        except ProcessLookupError:
-            return "terminated"
-        sleep(wait_s)
-        if not _same(proc_root, pid, start):
-            return "terminated"
-        try:
-            send(fd, signal.SIGKILL)
-        except ProcessLookupError:
-            return "terminated"
-        return "killed"
-    finally:
-        close(fd)
-
-
 def notify(summary: str, topic_file: str | None) -> None:
     """One ntfy POST; the topic is read from its file and never printed."""
     if not topic_file:
@@ -333,15 +232,13 @@ def emit_events(orphans: list[dict]) -> None:
         print(f"orphan_reap: telemetry not written: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def run(*, proc_root: Path = Path("/proc"), execute: bool = False, age_hours: float = 6,
-        grace_hours: float = 1, sample_seconds: float = 60, state_path: Path = STATE_PATH,
+def run(*, proc_root: Path = Path("/proc"), age_hours: float = 6, sample_seconds: float = 60,
         lock: Path = SCRATCH_LOCK, origin_dirs: tuple[Path, ...] = ORIGIN_DIRS,
-        now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
-        stop_fn: Callable[..., str] | None = None, ntfy: Callable[[str], None] | None = None,
+        sleep: Callable[[float], None] = time.sleep, ntfy: Callable[[str], None] | None = None,
         events: Callable[[list[dict]], None] = emit_events, uptime: float | None = None,
         hz: int | None = None, uid: int | None = None) -> list[dict]:
+    """Find and report orphans. Report-only: nothing is ever signalled."""
     hz = hz or os.sysconf("SC_CLK_TCK")
-    stop_fn = stop_fn or (lambda pid, start: stop(proc_root, pid, start, sleep=sleep))
     if uptime is None:
         uptime = float((_read(proc_root / "uptime") or "0").split()[0])
     candidates = scan(proc_root, uid=uid, lock=lock, origin_dirs=origin_dirs, hz=hz)
@@ -349,8 +246,6 @@ def run(*, proc_root: Path = Path("/proc"), execute: bool = False, age_hours: fl
     before = {c.pid: c.cpu_ticks for c in aged}
     if sample_seconds:
         sleep(sample_seconds)  # one shared sample for every candidate (AC2)
-    state = load_state(state_path)
-    seen_before = dict(state)
     found = []
     for c in aged:
         after = read_proc(proc_root, c.pid)
@@ -363,44 +258,24 @@ def run(*, proc_root: Path = Path("/proc"), execute: bool = False, age_hours: fl
         cls = classify(lifetime, sample)
         if cls is None:
             continue
-        key = f"{c.pid}:{c.start_ticks}"
-        first = seen_before.get(key)
-        action = "reported"
-        if allowlisted(after.cmdline) and first is not None and now() - first >= grace_hours * 3600:
-            if not execute:
-                action = "would-stop"
-            else:
-                try:
-                    action = stop_fn(c.pid, c.start_ticks)
-                except OSError as exc:  # one failed stop never loses the run's reports
-                    action = f"stop-error:{type(exc).__name__}"
-        state.setdefault(key, now())
         found.append({"pid": c.pid, "ppid": c.ppid, "start": c.start_ticks, "age_s": int(age_s),
-                      "cpu_pct": round(sample, 2), "class": cls, "action": action})
-    live = {f"{c.pid}:{c.start_ticks}" for c in candidates}
-    save_state(state_path, {k: v for k, v in state.items() if k in live})
+                      "cpu_pct": round(sample, 2), "class": cls, "action": "reported"})
     if found:
         events(found)
         summary = f"{len(found)} orphaned agent process(es): " + ", ".join(
-            f"{o['pid']} {o['class']} {o['action']}" for o in found)
+            f"{o['pid']} {o['class']}" for o in found)
         (ntfy or (lambda s: notify(s, os.environ.get(NTFY_TOPIC_FILE_ENV))))(summary)
     return found
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", default=True,
-                      help="report only (the default for a manual run)")
-    mode.add_argument("--execute", action="store_true", help="stop allowlisted orphans past grace")
     parser.add_argument("--age-hours", type=float, default=6)
-    parser.add_argument("--grace-hours", type=float, default=1)
     parser.add_argument("--sample-seconds", type=float, default=60)
     args = parser.parse_args(argv)
-    found = run(execute=args.execute, age_hours=args.age_hours, grace_hours=args.grace_hours,
-                sample_seconds=args.sample_seconds)
+    found = run(age_hours=args.age_hours, sample_seconds=args.sample_seconds)
     for o in found:
-        print(f"{o['pid']}\t{o['class']}\t{o['action']}\tage {o['age_s']}s\tcpu {o['cpu_pct']}%")
+        print(f"{o['pid']}\t{o['class']}\tage {o['age_s']}s\tcpu {o['cpu_pct']}%")
     if not found:
         print("orphan_reap: no orphans")
     return 0

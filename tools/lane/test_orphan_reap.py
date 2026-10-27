@@ -135,176 +135,32 @@ class PredicateTests(unittest.TestCase):  # AC2
         self.assertIsNone(reap.classify(94.0, 10.0))
         self.assertIsNone(reap.classify(30.0, 90.0))
 
-    def test_allowlist_exactly_two(self):
-        self.assertTrue(reap.allowlisted("podman-compose -f x.yml up -d hrse-web"))
-        self.assertTrue(reap.allowlisted("/usr/bin/python3 /usr/bin/podman-compose up -d"))
-        self.assertTrue(reap.allowlisted("python3 -c import glob"))
-        self.assertTrue(reap.allowlisted("python3.13 -c x"))
-        for cmd in ("podman-compose down", "podman-compose logs up", "podman-compose -f up down",
-                    "python3-foo -c x", "python3 script.py", "bash -c sleep 1", "node x.js",
-                    "uvicorn app:app", ""):
-            with self.subTest(cmd=cmd):
-                self.assertFalse(reap.allowlisted(cmd))
 
-
-class RunTests(unittest.TestCase):  # AC2-AC4
+class RunTests(unittest.TestCase):  # AC2-AC3, report-only
     def setUp(self):
         self.fake = FakeProc()
         manager(self.fake)
-        self.state = self.fake.root / "state.json"
-        self.sent, self.ntfy, self.events = [], [], []
-        self.clock = [1_000_000.0]
+        self.ntfy, self.events = [], []
 
-    def run_once(self, execute=True, sample=60, burn=None):
+    def run_once(self, sample=60, burn=None, events=None):
         def sleep(seconds):
             if seconds == sample and burn:
                 for pid, cpu in burn.items():
                     self.fake.burn(pid, cpu)
-        def stop_fn(pid, start):
-            return reap.stop(self.fake.root, pid, start, open_fd=lambda p: p,
-                             send=lambda fd, s: self.sent.append((fd, s)), close=lambda fd: None,
-                             sleep=lambda s: None)
-        return reap.run(proc_root=self.fake.root, execute=execute, sample_seconds=sample,
-                        state_path=self.state, lock=self.fake.lock, origin_dirs=(self.fake.origin,),
-                        now=lambda: self.clock[0], sleep=sleep, stop_fn=stop_fn,
-                        ntfy=self.ntfy.append, events=self.events.extend, uptime=UPTIME, hz=HZ, uid=UID)
+        return reap.run(proc_root=self.fake.root, sample_seconds=sample, lock=self.fake.lock,
+                        origin_dirs=(self.fake.origin,), sleep=sleep, ntfy=self.ntfy.append,
+                        events=events or self.events.extend, uptime=UPTIME, hz=HZ, uid=UID)
 
-    def fake_stop(self, pid, start, on_send=None, open_fd=None):
-        sent = []
-
-        def send(fd, sig):
-            sent.append(sig)
-            if on_send:
-                on_send(sig)
-        result = reap.stop(self.fake.root, pid, start, open_fd=open_fd or (lambda p: p), send=send,
-                           close=lambda fd: None, sleep=lambda s: None)
-        return result, sent
-
-    def test_no_stop_on_first_report(self):
+    def test_report_only_never_signals(self):
+        """The auto-stop was deleted: no signal API is reachable from a run."""
         self.fake.add(500, 2102, cmdline="python3 -c x")
-        found = self.run_once()
+        from unittest import mock
+        with mock.patch.object(reap.os, "kill") as kill:
+            found = self.run_once()
+        kill.assert_not_called()
         self.assertEqual(found[0]["action"], "reported")
-        self.assertEqual(self.sent, [])
-
-    def test_stop_after_grace_on_a_later_run(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        self.run_once()
-        self.clock[0] += 2 * 3600
-        found = self.run_once()
-        self.assertIn(found[0]["action"], ("terminated", "killed"))
-        self.assertEqual(self.sent[0], (500, signal.SIGTERM))
-
-    def test_not_stopped_inside_grace(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        self.run_once()
-        self.clock[0] += 0.5 * 3600
-        self.run_once()
-        self.assertEqual(self.sent, [])
-
-    def test_pid_reuse_not_stopped(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        self.run_once()
-        state = json.loads(self.state.read_text())
-        (key,) = state
-        state = {"500:1": state[key]}  # the earlier sighting was a different start time
-        self.state.write_text(json.dumps(state))
-        self.clock[0] += 2 * 3600
-        found = self.run_once()
-        self.assertEqual(found[0]["action"], "reported")
-        self.assertEqual(self.sent, [])
-
-    def test_stop_refuses_a_reused_pid(self):
-        """stop() checks the start time, through the held pidfd, before the first signal."""
-        start = self.fake.add(500, 2102, cmdline="python3 -c x")
-        result, sent = self.fake_stop(500, start + 1)
-        self.assertEqual(result, "gone-or-reused")
-        self.assertEqual(sent, [])
-
-    def test_pidfd_opened_before_the_identity_check(self):
-        """The fd is taken first: a pid that changes identity after the open is
-        never signalled, because the check reads through the same moment."""
-        start = self.fake.add(500, 2102, cmdline="python3 -c x")
-        order = []
-
-        def open_fd(pid):
-            order.append("open")
-            return pid
-        real_same = reap._same
-        try:
-            reap._same = lambda *a: order.append("check") or real_same(*a)
-            self.fake_stop(500, start, open_fd=open_fd)
-        finally:
-            reap._same = real_same
-        self.assertEqual(order[:2], ["open", "check"])
-
-    def test_a_process_that_execs_is_not_stopped(self):
-        start = self.fake.add(500, 2102, cmdline="python3 -c x")
-        (self.fake.root / "500" / "cmdline").write_text("node\0server.js")
-        result, sent = self.fake_stop(500, start)
-        self.assertEqual(sent, [])
-
-    def test_an_exited_process_is_not_an_error(self):
-        start = self.fake.add(500, 2102, cmdline="python3 -c x")
-
-        def gone(pid):
-            raise ProcessLookupError(pid)
-        self.assertEqual(self.fake_stop(500, start, open_fd=gone)[0], "gone")
-
-    def test_a_stop_error_never_loses_the_run(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        self.fake.add(501, 2102, cmdline="bash -c sleep 9")
-        self.run_once()
-        self.clock[0] += 2 * 3600
-
-        def boom(pid, start):
-            raise OSError("pidfd")
-        found = reap.run(proc_root=self.fake.root, execute=True, sample_seconds=0,
-                         state_path=self.state, lock=self.fake.lock, origin_dirs=(self.fake.origin,),
-                         now=lambda: self.clock[0], sleep=lambda s: None, stop_fn=boom,
-                         ntfy=self.ntfy.append, events=self.events.extend, uptime=UPTIME, hz=HZ, uid=UID)
-        self.assertEqual({o["pid"]: o["action"] for o in found}[500], "stop-error:OSError")
-        self.assertEqual(len(self.ntfy), 2)
-
-    def test_recheck_before_sigkill(self):
-        start = self.fake.add(500, 2102, cmdline="python3 -c x")
-
-        def reuse(sig):
-            if sig == signal.SIGTERM:  # the pid exits and is reused while we wait
-                (self.fake.root / "500" / "stat").write_text(
-                    "500 (bash) S 1 0 500 " + " ".join(["0"] * 15) + " 9\n")
-        result, sent = self.fake_stop(500, start, on_send=reuse)
-        self.assertEqual(sent, [signal.SIGTERM])
-        self.assertEqual(result, "terminated")
-
-    def test_corrupt_state_stops_nothing(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        start = int((UPTIME - 10 * 3600) * HZ)
-        for corrupt in ("{not json", '["500:1"]', '{"x": "yesterday"}',
-                        json.dumps({f"500:{start}": "yesterday"}),  # the real key, a bad value
-                        json.dumps({f"500:{start}": True}),
-                        f'{{"500:{start}": -Infinity}}'):
-            with self.subTest(corrupt=corrupt):
-                self.state.write_text(corrupt)
-                self.clock[0] += 10 * 3600
-                self.run_once()
-                self.assertEqual(self.sent, [])
-                self.state.unlink()
-
-    def test_non_allowlisted_is_report_only(self):
-        self.fake.add(500, 2102, cmdline="node server.js")
-        self.run_once()
-        self.clock[0] += 48 * 3600
-        found = self.run_once()
-        self.assertEqual(found[0]["action"], "reported")
-        self.assertEqual(self.sent, [])
-
-    def test_dry_run_never_signals(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        self.run_once(execute=False)
-        self.clock[0] += 2 * 3600
-        found = self.run_once(execute=False)
-        self.assertEqual(found[0]["action"], "would-stop")
-        self.assertEqual(self.sent, [])
+        self.assertFalse(hasattr(reap, "stop"))
+        self.assertNotIn("pidfd", (HERE / "orphan_reap.py").read_text())
 
     def test_young_process_not_an_orphan(self):
         self.fake.add(500, 2102, cmdline="python3 -c x", age_s=3600)
@@ -316,36 +172,36 @@ class RunTests(unittest.TestCase):  # AC2-AC4
         found = self.run_once(burn={500: 55})
         self.assertEqual(found[0]["class"], "runaway")
 
-    def test_one_event_per_orphan_without_cmdline(self):
+    def test_one_event_per_orphan_and_one_ntfy(self):
         self.fake.add(500, 2102, cmdline="python3 -c secret-token-here")
         self.fake.add(501, 2102, cmdline="bash -c sleep 99")
         self.run_once()
-        self.assertEqual(len(self.events), 2)
         self.assertEqual({e["pid"] for e in self.events}, {500, 501})
-        self.assertNotIn("secret-token-here", json.dumps(self.events))
         self.assertEqual(len(self.ntfy), 1)
+        self.assertNotIn("secret-token-here", self.ntfy[0])
 
     def test_no_ntfy_when_nothing_found(self):
         self.run_once()
         self.assertEqual(self.ntfy, [])
         self.assertEqual(self.events, [])
 
-    def test_state_write_is_atomic(self):
-        self.state.write_text('{"keep": 1.0}')
+    def test_real_telemetry_event_passes_the_schema_without_cmdline(self):
+        """The real emit path, into a temporary store: the event validates
+        against schema_v1.json (orphan-reap is a known source) and carries no
+        cmdline."""
+        self.fake.add(500, 2102, cmdline="python3 -c secret-token-here")
+        store = Path(tempfile.mkdtemp())
         from unittest import mock
-        with mock.patch.object(reap.os, "replace", side_effect=OSError("disk")):
-            with self.assertRaises(OSError):
-                reap.save_state(self.state, {"new": 2.0})
-        self.assertEqual(json.loads(self.state.read_text()), {"keep": 1.0})
-
-    def test_state_written_atomically_and_pruned(self):
-        self.fake.add(500, 2102, cmdline="python3 -c x")
-        self.run_once()
-        self.assertEqual(len(json.loads(self.state.read_text())), 1)
-        import shutil
-        shutil.rmtree(self.fake.root / "500")
-        self.run_once()
-        self.assertEqual(json.loads(self.state.read_text()), {})
+        sys.path.insert(0, str(HERE.parent / "telemetry"))
+        import emit
+        with mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": str(store)}):
+            emit.validate  # the module the real path uses
+            self.run_once(events=reap.emit_events)
+        lines = [json.loads(l) for f in store.rglob("*.jsonl") for l in f.read_text().splitlines() if l]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["source"], "orphan-reap")
+        self.assertEqual(lines[0]["attrs"]["pid"], 500)
+        self.assertNotIn("secret-token-here", json.dumps(lines))
 
 
 class DelegationTests(unittest.TestCase):  # AC6
