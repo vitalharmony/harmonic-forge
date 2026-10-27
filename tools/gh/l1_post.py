@@ -399,9 +399,22 @@ def _collect(steps: list) -> list:
 
 
 def _once(fetch):
-    """`fetch()` on first call, its result after: one spec fetch per post."""
+    """`fetch()` on first call, its result after: one fetch per post. A
+    refusal is cached too, so a failed read is not retried by every later
+    step `_collect` runs (harmonic-forge#1192 AC7)."""
     cache: list = []
-    return lambda: cache[0] if cache else (cache.append(fetch()) or cache[0])
+
+    def get():
+        if not cache:
+            try:
+                cache.append((True, fetch()))
+            except SystemExit as exc:
+                cache.append((False, exc))
+        ok, value = cache[0]
+        if not ok:
+            raise value
+        return value
+    return get
 
 
 def _spec_body(repo: str, spec_comment, issue: int) -> str:
@@ -748,6 +761,80 @@ LEAD_FIELDS = {
     # harmonic-forge#1036: which SHA now carries which PASS, and what follows.
     "carry-forward": ("Target", "Carried", "Next"),
 }
+
+#: harmonic-forge#1192: the closed vocabulary of authorization kinds a
+#: `hostile-author` threat model may name, one per mechanism R-0371
+#: enumerates (`3-lane-protocol.md` R-0371). Eligibility is the declared
+#: mechanism, never a file path. The threat models themselves:
+#:
+#:   actor        | good-faith                        | hostile-author
+#:   operator     | trusted                           | trusted
+#:   author       | makes mistakes, never evades      | may craft inputs to pass
+#:   third party  | untrusted data                    | untrusted data
+#:
+#: Trusted in both: checked-in code and rules at origin/main, structured
+#: GitHub API fields, git objects, and receipts this repo's tools write under
+#: ~/.claude/state/. Untrusted in both: free text written by others, fetched
+#: pages, third-party CLI stdout. Good-faith never excuses injection through a
+#: parser or subprocess; it only excludes the author evading their own guard.
+R0371_KINDS = ("ae-or-ready-for-l3", "batch-merge-grant", "preclose-inspected-gate",
+               "model-tier-gate", "auto-ae", "review-waiver", "deny-hook-relaxation")
+
+
+class LeadCtx:
+    """What a Tooling Exception lead-field checker may consult: the issue, its
+    labels (read once per post) and its board Tier, resolved on first use only."""
+
+    def __init__(self, repo: str, issue: int, labels) -> None:
+        self.repo, self.issue, self.labels = repo, issue, frozenset(labels)
+        self._tier: list = []
+
+    def tier(self) -> str | None:
+        if not self._tier:
+            board = resolve_project_board(self.repo, Path.cwd())
+            self._tier.append(None if board is None
+                              else resolve_board_tier(self.repo, board[0], board[1], self.issue))
+        return self._tier[0]
+
+
+def _check_threat_model(value: str, ctx: LeadCtx) -> str | None:
+    value = value.strip()
+    if value == "good-faith":
+        return None
+    kind = value[len("hostile-author:"):].strip() if value.startswith("hostile-author:") else None
+    if kind not in R0371_KINDS:
+        return (f"Threat model `{value}` is not `good-faith` or `hostile-author: <kind>` with "
+                f"<kind> one of {', '.join(R0371_KINDS)} (R-0371)")
+    if ctx.tier() != "deep":
+        return (f"Threat model `hostile-author` needs board Tier `deep` (R-0371: an "
+                f"authorization mechanism is Tier deep); {ctx.repo}#{ctx.issue} is {ctx.tier()!r}")
+    return None
+
+
+#: harmonic-forge#1192 AC6: lead fields a `tooling-exception` handoff must
+#: carry, label -> checker(value, ctx) returning a refusal reason or None.
+#: Later fields (the Recognizer, the redesign check) are rows here.
+TE_LEAD_FIELDS = {"Threat model": _check_threat_model}
+THREAT_MODEL_FORMS = "`**Threat model:** good-faith` or `**Threat model:** hostile-author: <R-0371 kind>`"
+
+
+def validate_te_lead_fields(body: str, ctx: LeadCtx) -> None:
+    if "tooling-exception" not in ctx.labels:
+        return
+    region = lead_region(body)
+    reasons = []
+    for label, checker in TE_LEAD_FIELDS.items():
+        match = re.search(LEAD_LABEL.format(label=label), region)
+        if not match or not is_substantive(match.group("text")):
+            reasons.append(f"the lead has no filled `{label}:` line"
+                           + (f" -- write {THREAT_MODEL_FORMS}" if label == "Threat model" else ""))
+            continue
+        reason = checker(match.group("text").strip().strip("*").strip(), ctx)
+        if reason:
+            reasons.append(reason)
+    if reasons:
+        fail(f"tooling-exception handoff on {ctx.repo}#{ctx.issue} (harmonic-forge#1192): "
+             + "; ".join(reasons))
 
 #: Where the lead has to be, and what the cap (below) measures. `<details>`
 #: first, because that is the one thing a lead must not sit inside; then the
@@ -1763,7 +1850,7 @@ def issue_is_open(repo: str, issue: int) -> None:
 _TOOLING_EXCEPTION_MENTION = re.compile(r"\btooling[\s,-]+exception\b", re.IGNORECASE)
 
 
-def validate_tooling_exception_labelled(body: str, repo: str, issue: int) -> None:
+def validate_tooling_exception_labelled(body: str, repo: str, issue: int, labels=None) -> None:
     """harmonic-forge#778 AC1, second half: `gh_issue.py` catches this at
     FILING time; this catches the case gh_issue#769/#772/#774 actually were
     -- a Tooling Exception handoff posted onto an issue filed some other way
@@ -1775,7 +1862,7 @@ def validate_tooling_exception_labelled(body: str, repo: str, issue: int) -> Non
     next_field = match.group("text") if match else ""
     if not _TOOLING_EXCEPTION_MENTION.search(next_field):
         return
-    if "tooling-exception" not in issue_labels(repo, issue):
+    if "tooling-exception" not in (issue_labels(repo, issue) if labels is None else labels):
         fail(
             f"this handoff's Next line declares Tooling Exception but "
             f"{repo}#{issue} does not carry the tooling-exception label "
@@ -1817,12 +1904,12 @@ def validate_sticky_wicket(repo: str, issue: int, *, kind: str | None = None,
         fail(reason)
 
 
-def validate_pitch_inspected(repo: str, issue: int) -> None:
+def validate_pitch_inspected(repo: str, issue: int, labels=None) -> None:
     """harmonic-forge#838 AC3: R-0238 trigger 4. Unconditional, unlike the
     Next-field check above: the labels are read live at post time, so a label
     added after the draft was written still triggers it, whatever the draft
     says."""
-    reason = pitch_receipt.refusal(repo, issue, issue_labels(repo, issue))
+    reason = pitch_receipt.refusal(repo, issue, issue_labels(repo, issue) if labels is None else labels)
     if reason:
         fail(reason)
 
@@ -3474,6 +3561,7 @@ def main() -> None:
     # one refusal naming all of them. The reserved-marker check is collected
     # too, so it never hides the others (harmonic-forge#1115 AC1).
     steps = [lambda: reject_reserved_marker(body)]
+    labels_once = _once(lambda: issue_labels(repo, args.issue))
     if args.kind == "handoff":
         steps += [
             lambda: validate_handoff(body, args.mutates_live or args.cross_repo),
@@ -3485,8 +3573,10 @@ def main() -> None:
             lambda: validate_board_fields_set(repo, args.issue),
             lambda: validate_milestone_set(repo, args.issue),
             lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack),
-            lambda: validate_tooling_exception_labelled(body, repo, args.issue),
-            lambda: validate_pitch_inspected(repo, args.issue),
+            # harmonic-forge#1192 AC7: one label read per post, shared.
+            lambda: validate_tooling_exception_labelled(body, repo, args.issue, labels_once()),
+            lambda: validate_pitch_inspected(repo, args.issue, labels_once()),
+            lambda: validate_te_lead_fields(body, LeadCtx(repo, args.issue, labels_once())),
         ]
     if args.kind == "rework":
         steps.append(lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack))

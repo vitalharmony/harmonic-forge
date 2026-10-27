@@ -168,6 +168,10 @@ the call gets no retry budget of its own and does not extend it.
      added late)? A TC that only exercises the happy path proves nothing.
      For Tooling Exception work, every AC-bearing mechanism also needs a
      listed kill check: the stub that removes it and the test that must fail.
+   - **The declared threat model** (harmonic-forge#1192). Check the
+     handoff's Threat model line against the design: hostile-author only
+     when the change mints, relaxes or bypasses one of R-0371's enumerated
+     authorizations; anything else is good-faith.
 7. **Reject open-grammar recognizers unless the authoritative signal is
    unavailable** (harmonic-forge#845). If correctness requires recognizing
    every spelling of input in a grammar this repo does not own—shell command

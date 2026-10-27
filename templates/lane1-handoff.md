@@ -4,6 +4,7 @@
 
 **Scope:** {what this handoff covers, e.g. "guard only, purge is separate"}
 **Next:** {what Lane 2 does with this, e.g. "Implement #N" once posted}
+**Threat model:** {good-faith | hostile-author: <R-0371 kind>}
 
 <!-- hrse#1703: `l1_post.py --kind handoff` refuses a post whose lead region
 (everything above the first heading after this one) lacks these two labelled
@@ -11,6 +12,25 @@ lines, unfilled, or over the byte cap — keep each to one line, and keep the
 placeholder braces on the SAME line as their closing brace (a wrapped
 placeholder isn't detected as one; harmonic-forge#382 already found this
 once for the other headings below). -->
+
+### Threat models (R-0371; harmonic-forge#1192)
+
+A `tooling-exception` handoff declares one. `hostile-author` only when the
+change mints, relaxes or bypasses one of R-0371's authorizations
+(`ae-or-ready-for-l3`, `batch-merge-grant`, `preclose-inspected-gate`,
+`model-tier-gate`, `auto-ae`, `review-waiver`, `deny-hook-relaxation`), and
+then the board Tier is `deep`. Everything else is `good-faith`.
+
+| Actor | good-faith | hostile-author |
+|---|---|---|
+| Operator: chat typed at `UserPromptSubmit`, receipts the operator authorizes | trusted | trusted |
+| Author: the session that writes the inputs this tool reads (handoff bodies, flags, receipts, branch content) | makes mistakes, does not evade the check | may craft inputs to pass the check |
+| Third parties: free text in issue, PR and comment bodies written by others, fetched pages, third-party CLI stdout | untrusted data | untrusted data |
+
+Trusted in both: checked-in code and rules at `origin/main`, structured GitHub
+API fields, git objects, and receipts this repo's tools write under
+`~/.claude/state/`. Good-faith never excuses injection through a parser or
+subprocess; it only excludes the author evading their own guard.
 
 ### Issue
 - GitHub: {url}
