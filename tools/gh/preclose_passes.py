@@ -431,21 +431,20 @@ def shadow_error(why: str, threat_model: str | None = None) -> dict:
 
 
 def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
-    """Every finding an earlier pass of this epoch left unresolved: classed
-    blocking or unknown (a reproduced finding with no threat model or tag is
-    unknown, never cleared), and not re-verified by a later pass. Read across
-    all the epoch's passes, so an UNKNOWN pass never drops an obligation; a
-    pass recorded without a shadow carries forward nothing it could clear."""
+    """Every anchor any record of this epoch classed blocking or unknown, on a
+    pass or on the post-verdict check. Never cleared from history: a clear is
+    valid only for the head it ran on, and an anchor does not identify a
+    finding, so each decision re-verifies them all through its own --reverify
+    (sticky-wicket PATCH, harmonic-forge#1189). Missing input is UNKNOWN."""
+    records = [entry.get("stop_rule_shadow") for entry in ([] if reforge else current(history(receipt)))]
+    check = (receipt or {}).get("post_verdict_check")
+    if not reforge and isinstance(check, dict):
+        records.append(check.get("stop_rule_shadow"))
     outstanding: dict[str, None] = {}
-    for entry in ([] if reforge else current(history(receipt))):
-        for reason in (entry.get("stop_rule_shadow") or {}).get("reasons", []):
-            anchor = reason.get("anchor")
-            if not anchor:
-                continue
-            if reason.get("class") in ("blocking", "unknown"):
-                outstanding[anchor] = None
-            elif reason.get("class") in ("reverified", "non-blocking"):
-                outstanding.pop(anchor, None)
+    for shadow in records:
+        for reason in (shadow or {}).get("reasons", []):
+            if reason.get("anchor") and reason.get("class") in ("blocking", "unknown"):
+                outstanding[reason["anchor"]] = None
     return list(outstanding)
 
 

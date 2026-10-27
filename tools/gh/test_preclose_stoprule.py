@@ -122,7 +122,8 @@ class DecisionTests(unittest.TestCase):  # AC1, AC6
                                     {"sha": "h2", "epoch": 0, "stop_rule_shadow": pass2}]}
         self.assertEqual(passes.prior_blocking(receipt), ["p:1"])
 
-    def test_a_passing_reverify_clears_the_obligation(self):
+    def test_a_reverify_holds_for_its_own_head_only(self):
+        """Sticky-wicket PATCH: a reverify on h2 clears nothing for h3."""
         pass1 = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "p:1")], "good-faith",
                                         [], None, "h1")
         pass2 = passes.stop_rule_shadow([], "good-faith", ["p:1"], [
@@ -130,7 +131,26 @@ class DecisionTests(unittest.TestCase):  # AC1, AC6
         self.assertEqual(pass2["decision"], "ACCEPT")
         receipt = {"pass_history": [{"sha": "h1", "epoch": 0, "stop_rule_shadow": pass1},
                                     {"sha": "h2", "epoch": 0, "stop_rule_shadow": pass2}]}
-        self.assertEqual(passes.prior_blocking(receipt), [])
+        self.assertEqual(passes.prior_blocking(receipt), ["p:1"])
+        self.assertEqual(self.decide([], prior=passes.prior_blocking(receipt), head="h3"), "UNKNOWN")
+
+    def test_a_non_blocking_finding_at_the_same_anchor_clears_nothing(self):
+        pass1 = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "x.py:10")], "good-faith",
+                                        [], None, "h1")
+        pass2 = passes.stop_rule_shadow([finding(NOT_REPRODUCED, "good-faith", "x.py:10")],
+                                        "good-faith", ["x.py:10"], None, "h2")
+        receipt = {"pass_history": [{"sha": "h1", "epoch": 0, "stop_rule_shadow": pass1},
+                                    {"sha": "h2", "epoch": 0, "stop_rule_shadow": pass2}]}
+        self.assertEqual(passes.prior_blocking(receipt), ["x.py:10"])
+        self.assertEqual(self.decide([], prior=passes.prior_blocking(receipt), head="h3"), "UNKNOWN")
+
+    def test_obligations_on_the_post_verdict_check_are_read(self):
+        check = passes.stop_rule_shadow([finding(REPRODUCED, "good-faith", "pv:1")], "good-faith",
+                                        [], None, "h3")
+        receipt = {"pass_history": [{"sha": "h1", "epoch": 0}],
+                   "post_verdict_check": {"head_sha": "h3", "stop_rule_shadow": check}}
+        self.assertEqual(passes.prior_blocking(receipt), ["pv:1"])
+        self.assertEqual(self.decide([], prior=passes.prior_blocking(receipt), head="h4"), "UNKNOWN")
 
 
 class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
