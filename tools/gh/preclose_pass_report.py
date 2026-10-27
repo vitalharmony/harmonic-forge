@@ -123,6 +123,10 @@ def rows(directory: Path, since: datetime | None = None, archive: Path | None = 
             "entries": passes,
             "post_verdict_surviving": (receipt.get("post_verdict_check") or {}).get("surviving")
             if isinstance(receipt.get("post_verdict_check"), dict) else None,
+            # harmonic-forge#1189: the stop-rule shadow on the post-verdict check.
+            "post_verdict_shadow": ((receipt.get("post_verdict_check") or {}).get("stop_rule_shadow")
+                                    or {}).get("decision")
+            if isinstance(receipt.get("post_verdict_check"), dict) else None,
             # Every pass of every epoch: a reforged issue's earlier epoch was
             # spent too (#889 preclose pass 1), unlike the cap's current().
             "costs": [_cost_row(issue, f"{number}" if not int(p.get("epoch") or 0)
@@ -308,6 +312,64 @@ def render_by_arm(table: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _hours(start: object, end: object) -> float | None:
+    try:
+        a = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (b - a).total_seconds() / 3600
+
+
+def shadow_stats(table: list[dict]) -> dict:
+    """harmonic-forge#1189 AC5. Hours from pass 2 to the first shadow ACCEPT
+    (at or after pass 2), and the 1.49h baseline's own endpoints: pass 2 to the
+    last pass, over issues with three or more passes. UNKNOWN is counted on its
+    own and never read as ACCEPT."""
+    to_accept, to_last = [], []
+    counts = {"ACCEPT": 0, "CONTINUE": 0, "UNKNOWN": 0, "none": 0}
+    for row in table:
+        passes = [e for e in row.get("entries", []) if isinstance(e, dict)]
+        for entry in passes:
+            decision = (entry.get("stop_rule_shadow") or {}).get("decision")
+            counts[decision if decision in counts else "none"] += 1
+        if len(passes) < 2:
+            continue
+        start = passes[1].get("completed_at")
+        if len(passes) >= 3:
+            hours = _hours(start, passes[-1].get("completed_at"))
+            if hours is not None:
+                to_last.append(hours)
+        accept = next((e for e in passes[1:]
+                       if (e.get("stop_rule_shadow") or {}).get("decision") == "ACCEPT"), None)
+        if accept is not None:
+            hours = _hours(start, accept.get("completed_at"))
+            if hours is not None:
+                to_accept.append(hours)
+    return {"counts": counts, "to_accept": to_accept, "to_last": to_last}
+
+
+def render_shadow(table: list[dict]) -> str:
+    """The stop-rule shadow against what actually happened (harmonic-forge#1189 AC5)."""
+    lines = ["issue | shadow per pass | passes | forced | post-verdict (shadow)",
+             "--- | --- | --- | --- | ---"]
+    for row in table:
+        decisions = [(e.get("stop_rule_shadow") or {}).get("decision") or "-"
+                     for e in row.get("entries", []) if isinstance(e, dict)]
+        post = (f"yes ({row.get('post_verdict_shadow') or '-'})"
+                if row.get("post_verdict_check") else "no")
+        lines.append(f"{row['issue']} | {' '.join(decisions) or '-'} | {row['passes']} | "
+                     f"{'yes' if row['forced'] else 'no'} | {post}")
+    stats = shadow_stats(table)
+    c = stats["counts"]
+    med = (lambda v: f"{statistics.median(v):.2f}h (n={len(v)})" if v else "n/a (n=0)")
+    lines += ["", f"shadow decisions: {c['ACCEPT']} ACCEPT, {c['CONTINUE']} CONTINUE, "
+                  f"{c['UNKNOWN']} UNKNOWN, {c['none']} not recorded",
+              f"median pass 2 -> first shadow ACCEPT: {med(stats['to_accept'])}",
+              f"median pass 2 -> last pass (3+ passes, the baseline's endpoints): {med(stats['to_last'])}"]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dir", type=Path, default=Path.home() / ".claude" / "state" / "preclose")
@@ -316,17 +378,21 @@ def main() -> None:
     parser.add_argument("--since", help="Only receipts written on or after this date (YYYY-MM-DD).")
     parser.add_argument("--by-arm", action="store_true",
                         help="The A/B comparison by panel arm (harmonic-forge#890).")
+    parser.add_argument("--shadow", action="store_true",
+                        help="The stop-rule shadow against the actual outcome (harmonic-forge#1189).")
     args = parser.parse_args()
     since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None
-    print(report(args.dir, since, args.archive, by_arm=args.by_arm))
+    print(report(args.dir, since, args.archive, by_arm=args.by_arm, shadow=args.shadow))
 
 
-def report(directory: Path, since: datetime | None, archive: Path, by_arm: bool = False) -> str:
+def report(directory: Path, since: datetime | None, archive: Path, by_arm: bool = False,
+           shadow: bool = False) -> str:
     """The table plus any undercount warning, all on stdout, so a report
     redirected to a file carries its own caveat (F838 sticky-wicket PATCH)."""
     skipped: list[str] = []
     found = rows(directory, since, archive, skipped)
-    table = render_by_arm(found) if by_arm else render(found) + "\n\n" + render_costs(found)
+    table = (render_shadow(found) if shadow else render_by_arm(found) if by_arm
+             else render(found) + "\n\n" + render_costs(found))
     warnings = []
     if not any(archive.glob("**/preclose-receipts/*.jsonl.gz")):
         warnings.append(f"WARNING: no receipt archive under {archive}; issues closed before "

@@ -63,8 +63,11 @@ class CostCase(base.ScratchRepo):
         return preclose.preclose_passes.history(receipt)[-1]
 
     def events(self) -> list[dict]:
-        return [json.loads(line) for path in self.store.rglob("*.jsonl")
-                for line in path.read_text().splitlines() if line.strip()]
+        # The pass events only: a completion also records the stop-rule
+        # shadow's own event (harmonic-forge#1189).
+        return [event for event in (json.loads(line) for path in self.store.rglob("*.jsonl")
+                                    for line in path.read_text().splitlines() if line.strip())
+                if event.get("event_type") == "preclose.pass.completed"]
 
 
 class TC1CostIsRequired(CostCase):

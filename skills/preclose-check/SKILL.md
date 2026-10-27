@@ -105,6 +105,14 @@ not proof against a session that can write files.
    `mechanism` names the approach that failed, not the symptom, and is
    required for every survivor when `--complete` records the pass; `--gate`,
    `--post-verdict`, and dismissed findings do not require it.
+   Where a refuter gave them, also copy `repro` (`{command, reproduced,
+   exit_status, ran_at_sha}`) and `threat` (`good-faith` | `hostile-author`)
+   onto the finding (optional; harmonic-forge#1189). They feed only the
+   stop-rule shadow that `--complete` and `--post-verdict` record, together
+   with `--threat-model good-faith|hostile-author` (the declared model; absent
+   means `UNKNOWN`) and `--reverify <json>` (a list of `{anchor, command,
+   exit_status, head}` re-verifying the previous pass's blocking findings).
+   The shadow never changes an exit code, a refusal or a printed verdict.
    Then run:
 
    ```
