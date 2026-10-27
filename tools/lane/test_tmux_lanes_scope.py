@@ -112,6 +112,13 @@ class TmuxLanesScopeTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.tmp_path = Path(self._tmp.name).resolve()
 
+
+    def _socket_dir(self):
+        """A short TMUX_TMPDIR (harmonic-forge#1211): tmux's socket path must fit sun_path
+        (~107 bytes), and l1-post's private TMPDIR under ~/.cache/hrse-scratch does not."""
+        path = tempfile.mkdtemp(prefix="tmx", dir="/tmp")
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
     def test_dry_run_prints_the_launch_dirs_and_writes_nothing(self):
         repo = _repo(self.tmp_path, "proj")
         done = _run(self.tmp_path, "--session", "t1", "--project", str(repo), "--dry-run")
@@ -226,7 +233,7 @@ class TmuxLanesScopeTests(unittest.TestCase):
         `-t` target the script passes, with its variables filled in, against a real private tmux."""
         if shutil.which("tmux") is None:
             self.skipTest("tmux not installed")
-        env = {**os.environ, "TMUX_TMPDIR": str(self.tmp_path)}
+        env = {**os.environ, "TMUX_TMPDIR": self._socket_dir()}
         env.pop("TMUX", None)
 
         def tmux(*argv):
@@ -263,7 +270,7 @@ class TmuxLanesScopeTests(unittest.TestCase):
         and read the session options back, so the target form and the strings are checked by tmux."""
         if shutil.which("tmux") is None:
             self.skipTest("tmux not installed")
-        env = _tmux_env(self.tmp_path)
+        env = _tmux_env(self._socket_dir())
         match = re.search(r"^set_window_titles\(\) \{\n(?P<body>.*?)\n\}$", SCRIPT.read_text(), re.S | re.M)
         assert match, "set_window_titles() not found in the launcher"
 
