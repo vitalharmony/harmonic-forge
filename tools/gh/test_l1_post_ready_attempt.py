@@ -139,7 +139,9 @@ class StaticChecksFailureTests(unittest.TestCase):
              mock.patch.object(L, "resolve_sha", return_value=SHA), \
              mock.patch.object(L, "refresh_main", return_value="b" * 40), \
              mock.patch.object(L, "_source_repo_is_hrse", return_value=False), \
-             mock.patch.object(L, "_private_check_tmp", return_value=(None, {})):
+             mock.patch.object(L, "_private_check_tmp", return_value=(None, {})), \
+             mock.patch.object(L._scratch, "scratch_dir",  # harmonic-forge#1206: never the real lock
+                               side_effect=lambda *a, **k: contextlib.nullcontext(Path(tmp))):
             checks, timing, check = L.static_checks(SHA, "br")
         self.assertEqual(check["result"], "fail")
         self.assertIn("FAIL: test_x", check["output"])
