@@ -130,6 +130,19 @@ Mechanism: <the approach that fails, not the symptom>
 Why it survives the diff: <what in the change permits it>
 ```
 
+When you can, also give (requested, not required; harmonic-forge#1189 records
+them for a shadow stop rule and they change nothing about the bar above):
+
+```
+Repro: <the command you ran> — reproduced: true|false, exit status: <int>, at <sha>
+Threat: good-faith | hostile-author
+```
+
+`reproduced` says whether the failure happened; the exit status is recorded
+beside it (a test written to expect the failure exits 0 when it reproduces).
+`Threat` is the least capable author who could cause the failure: a mistake
+(`good-faith`) or a crafted input (`hostile-author`).
+
 Then a single closing line naming how many findings met the bar and how many
 you discarded for failing it. Nothing else — no summary of the change, no
 restatement of what it does well, no next steps.

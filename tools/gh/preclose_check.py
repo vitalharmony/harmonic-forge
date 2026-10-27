@@ -1017,6 +1017,61 @@ def _merge_base(base: str, head: str) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
+def stop_rule_shadow(args: argparse.Namespace, findings: list, prior: dict | None,
+                    head_sha: str, reforge: bool = False) -> dict:
+    """harmonic-forge#1189 AC3: the stop-rule shadow, computed so that nothing
+    in it can change an exit code, a refusal or a printed line. `--reverify` is
+    read and parsed only here, after the cap check and the grant reservation."""
+    threat_model = getattr(args, "threat_model", None)
+    try:
+        reverify = None
+        if getattr(args, "reverify", None):
+            try:
+                reverify = json.loads(Path(args.reverify).read_text())
+            except (OSError, ValueError):
+                return preclose_passes.shadow_error("reverify-unparseable", threat_model)
+            if not isinstance(reverify, list):
+                return preclose_passes.shadow_error("reverify-unparseable", threat_model)
+        return preclose_passes.stop_rule_shadow(
+            surviving_findings(findings), threat_model,
+            preclose_passes.prior_blocking(prior, reforge), reverify, head_sha)
+    except Exception as exc:  # noqa: BLE001 - the shadow never decides
+        return preclose_passes.shadow_error(f"shadow-error:{type(exc).__name__}", threat_model)
+
+
+def emit_shadow(repo: str, issue: int, head_sha: str, shadow: dict, labels: dict, ts: str) -> None:
+    """harmonic-forge#1189 AC4: one ``preclose.stoprule.shadow`` event per
+    recorded decision. Ids and counts only (ADR-009). Never fails the pass."""
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        import emit as telemetry_emit  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        counts: dict[str, int] = {}
+        for reason in shadow.get("reasons", []):
+            key = "n_" + str(reason.get("class")).replace("-", "_")
+            counts[key] = counts.get(key, 0) + 1
+        attrs = {**labels, "decision": shadow.get("decision"), "rule_version": shadow.get("rule_version"),
+                 "threat_model": shadow.get("threat_model") or "none", **counts}
+        event = {
+            "ts": ts, "source": "advisory", "repo": repo, "issue": issue, "sha": head_sha,
+            "account": origin.account, "org": origin.org, "actor": "advisory:preclose-inspection",
+            "event_type": "preclose.stoprule.shadow", "subject_kind": "preclose-shadow",
+            "subject_id": f"{repo}#{issue}@{head_sha[:12]}#{labels.get('site')}{labels.get('pass', '')}",
+            "provenance": "manual", "attrs": attrs,
+        }
+        result = telemetry_emit.emit([event])
+        if result.get("rejected"):
+            print(f"preclose-check: shadow telemetry rejected: {result['rejected']}", file=sys.stderr)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - telemetry never changes the outcome
+        print(f"preclose-check: shadow telemetry not written: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+
+
 @serialized_receipt
 def complete(args: argparse.Namespace) -> int:
     """Mark the pass done -- separate from planning, on purpose.
@@ -1103,9 +1158,10 @@ def complete(args: argparse.Namespace) -> int:
                          "arm_overridden": preclose_enrollment.overridden(enrolled)})
             if enrolled.get("reason"):
                 cost["arm_reason"] = enrolled["reason"]
+        shadow = stop_rule_shadow(args, findings, prior, head_sha, reforge)
         path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
             **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
-                                     current_branch(), reforge, cost),
+                                     current_branch(), reforge, cost, shadow),
             "cross_family_required": required,
             "cross_family_reason": why,
             "provenance": provenance,
@@ -1119,6 +1175,9 @@ def complete(args: argparse.Namespace) -> int:
     # fail (F1169 post-verdict check: a broken stdout skipped it).
     if args.force:
         emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", surviving, grant)
+    emit_shadow(repo, args.issue, head_sha, shadow,
+                {"site": "pass", "pass": len(preclose_passes.current(preclose_passes.history(
+                    read_receipt(path) or {}))), "forced": bool(args.force)}, cost["completed_at"])
     print(f"preclose-check: recorded pass "
           f"{len(preclose_passes.current(preclose_passes.history(read_receipt(path))))} of at most "
           f"{preclose_passes.MAX_PASSES} for {repo}#{args.issue} at {head_sha[:12]}")
@@ -1325,6 +1384,13 @@ def main() -> None:
     parser.add_argument("--own-model",
                         help="The calling session's model (harmonic-forge#848). Required with "
                              "--complete and --post-verdict.")
+    parser.add_argument("--threat-model", choices=("good-faith", "hostile-author"), default=None,
+                        help="With --complete/--post-verdict: the declared threat model for the "
+                             "stop-rule shadow (harmonic-forge#1189 AC6). Absent, the shadow is UNKNOWN.")
+    parser.add_argument("--reverify",
+                        help="With --complete/--post-verdict: JSON list of {anchor, command, "
+                             "exit_status, head} re-verifying prior blocking findings. Read only by "
+                             "the stop-rule shadow; a bad file never refuses (harmonic-forge#1189).")
     parser.add_argument("--cross-family", action="store_true",
                         help="Operator asked for the cross-family branch (gate criterion 3).")
     parser.add_argument("--force", action="store_true",
@@ -1507,13 +1573,17 @@ def post_verdict(args: argparse.Namespace) -> int:
                          f"got {provenance!r}. Retry the call; a fallback is not a check.")
     surviving = len(surviving_findings(load_findings(args.findings)))
     cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    shadow = stop_rule_shadow(args, load_findings(args.findings), prior, head_sha)
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
     # head (harmonic-forge#838 plan review).
     path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
                          prior.get("refuters", 0), status=prior.get("status", "complete"),
                          extra=preclose_passes.post_verdict_fields(
-                             prior, base_sha, head_sha, patch, provenance, surviving, cross_ms))
+                             prior, base_sha, head_sha, patch, provenance, surviving, cross_ms,
+                             shadow))
+    emit_shadow(repo, args.issue, head_sha, shadow, {"site": "post-verdict", "forced": False},
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     print(f"preclose-check: post-verdict check recorded for {repo}#{args.issue}, "
           f"{base_sha[:12]}..{head_sha[:12]} ({surviving} surviving finding(s)); not a pass.")
     print(f"  receipt: {path}")

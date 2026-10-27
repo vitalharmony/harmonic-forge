@@ -50,6 +50,12 @@ import subprocess
 
 MAX_PASSES = 2
 
+#: harmonic-forge#1189: the stop rule, recorded in shadow beside the cap and
+#: FORCE and never consulted by them. Bump on any change to its classification.
+SHADOW_RULE_VERSION = 1
+#: Which finding threat tags each declared threat model contains.
+THREAT_MODELS = {"good-faith": {"good-faith"}, "hostile-author": {"good-faith", "hostile-author"}}
+
 STICKY_WICKET = (
     "Two preclose passes are complete, and both left surviving findings. Do not run a "
     "third. Invoke the sticky-wicket agent on this issue: 'patch' means one cross-family "
@@ -356,9 +362,82 @@ def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_
     return None
 
 
+def _wellformed_repro(repro: object) -> bool:
+    return (isinstance(repro, dict) and isinstance(repro.get("reproduced"), bool)
+            and isinstance(repro.get("exit_status"), int)
+            and not isinstance(repro.get("exit_status"), bool))
+
+
+def _classify(finding: dict, model: set[str] | None) -> tuple[str, str]:
+    """(class, why) for one surviving finding: blocking, non-blocking or unknown.
+    `reproduced` decides; `exit_status` is recorded and never interpreted (a
+    test that expects failure exits 0 when it reproduces)."""
+    repro, threat = finding.get("repro"), finding.get("threat")
+    if threat is not None and threat not in THREAT_MODELS["hostile-author"]:
+        return "unknown", f"unknown-threat-tag:{threat}"
+    if model is not None and threat is not None and threat not in model:
+        return "non-blocking", "threat-outside-model"
+    if not _wellformed_repro(repro):
+        return "unknown", "no-repro" if repro is None else "malformed-repro"
+    if not repro["reproduced"]:
+        return "non-blocking", "not-reproduced"
+    if threat is None:
+        return "unknown", "no-threat-tag"
+    if model is None:
+        return "unknown", "no-threat-model"
+    return "blocking", "reproduced-within-model"
+
+
+def stop_rule_shadow(findings: list, threat_model: str | None, prior_blocking: list[str],
+                     reverify: list | None, head: str) -> dict:
+    """harmonic-forge#1189 AC1: what "zero blocking findings" would decide for
+    the newest pass. Pure. ACCEPT only when every surviving finding is
+    non-blocking, a threat model is declared, and every prior blocking finding
+    has a passing re-verification on this head; CONTINUE when any finding is
+    blocking; UNKNOWN otherwise. Missing or malformed input never ACCEPTs."""
+    model = THREAT_MODELS.get(threat_model) if threat_model else None
+    reasons = []
+    for finding in findings:
+        cls, why = _classify(finding, model)
+        reasons.append({"anchor": finding.get("anchor"), "class": cls, "why": why})
+    passed = {entry.get("anchor") for entry in (reverify or [])
+              if isinstance(entry, dict) and entry.get("head") == head
+              and isinstance(entry.get("exit_status"), int)
+              and not isinstance(entry.get("exit_status"), bool) and entry["exit_status"] == 0}
+    for anchor in prior_blocking:
+        if anchor not in passed:
+            reasons.append({"anchor": anchor, "class": "unknown", "why": "no-passing-reverify"})
+    if threat_model is not None and model is None:
+        reasons.append({"anchor": None, "class": "unknown", "why": f"unknown-threat-model:{threat_model}"})
+    if threat_model is None:
+        reasons.append({"anchor": None, "class": "unknown", "why": "no-threat-model"})
+    classes = {r["class"] for r in reasons}
+    decision = ("CONTINUE" if "blocking" in classes
+                else "UNKNOWN" if "unknown" in classes else "ACCEPT")
+    return {"decision": decision, "reasons": reasons, "threat_model": threat_model,
+            "threat_model_source": "flag" if threat_model is not None else None,
+            "rule_version": SHADOW_RULE_VERSION}
+
+
+def shadow_error(why: str, threat_model: str | None = None) -> dict:
+    """An UNKNOWN shadow for an input or code failure; the pass still records (AC3)."""
+    return {"decision": "UNKNOWN", "reasons": [{"anchor": None, "class": "unknown", "why": why}],
+            "threat_model": threat_model,
+            "threat_model_source": "flag" if threat_model is not None else None,
+            "rule_version": SHADOW_RULE_VERSION}
+
+
+def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
+    """Anchors the newest recorded pass of this epoch's shadow classed blocking."""
+    passes = [] if reforge else current(history(receipt))
+    shadow = (passes[-1].get("stop_rule_shadow") or {}) if passes else {}
+    return [r.get("anchor") for r in shadow.get("reasons", [])
+            if r.get("class") == "blocking" and r.get("anchor")]
+
+
 def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int,
            mechanisms: list[str] | None = None, branch: str | None = None,
-           reforge: bool = False, cost: dict | None = None) -> dict:
+           reforge: bool = False, cost: dict | None = None, shadow: dict | None = None) -> dict:
     """The receipt fields for a newly completed pass (AC1). ``cost`` is the
     pass's measured cost and counts (harmonic-forge#889), merged into its
     ``pass_history`` entry."""
@@ -369,7 +448,8 @@ def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int
     distinct = sorted(set(mechanisms or []))
     everything = everything + [{"sha": sha, "change_identity": identity, "surviving": int(surviving),
                                 "mechanisms": distinct, "branch": branch, "epoch": epoch,
-                                **(cost or {})}]
+                                **(cost or {}),
+                                **({"stop_rule_shadow": shadow} if shadow is not None else {})}]
     extra = _post_verdict(receipt)
     existing = _mechanism_cluster(receipt, epoch)
     if existing:
@@ -540,7 +620,7 @@ def reviewed_identity(receipt: dict | None) -> dict | None:
 
 def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
                         current_patch_id: str | None, provenance: str, surviving: int,
-                        cross_family_ms: int | None = None) -> dict:
+                        cross_family_ms: int | None = None, shadow: dict | None = None) -> dict:
     """The receipt with the check added and every pass left exactly as it was.
     The check is one cross-family refuter, so its only cost figure is that
     call's wall-clock (harmonic-forge#889); Codex reports no tokens."""
@@ -549,4 +629,6 @@ def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
     if cross_family_ms is not None:
         check.update({"cross_family_ms": int(cross_family_ms),
                       "cross_family_tokens": "unavailable"})
+    if shadow is not None:  # harmonic-forge#1189 AC2
+        check["stop_rule_shadow"] = shadow
     return {**carried(receipt), "post_verdict_check": check}
