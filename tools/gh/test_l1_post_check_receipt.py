@@ -49,12 +49,20 @@ class ReceiptContentTests(unittest.TestCase):
         with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]), \
                 mock.patch.object(C, "forge_sha", return_value=FORGE), \
                 mock.patch.dict(os.environ, env, clear=False):
-            os.environ.pop(C.SOURCE_ENV, None) if not env else None
+            # harmonic-forge#1213: l1-post exports both receipt vars into the
+            # check it runs; drop whichever this case did not pass explicitly.
+            for key in (C.SOURCE_ENV, C.FORGE_SHA_ENV):
+                if key not in env:
+                    os.environ.pop(key, None)
             C.record(".")
         return json.loads(C.receipt_path(SLUG, SHA).read_text(encoding="utf-8"))
 
     def test_record_writes_repo_sha_forge_and_source(self):
         self.assertEqual(self._record({}), {"repo": SLUG, "sha": SHA, "forge_sha": FORGE, "source": "check"})
+
+    def test_inherited_forge_sha_does_not_leak_into_a_case_that_did_not_pass_it(self):
+        with mock.patch.dict(os.environ, {C.FORGE_SHA_ENV: "d" * 40, C.SOURCE_ENV: C.L1_POST_SOURCE}):
+            self.assertEqual(self._record({}), {"repo": SLUG, "sha": SHA, "forge_sha": FORGE, "source": "check"})
 
     def test_l1_post_scratch_source(self):
         data = self._record({C.SOURCE_ENV: C.L1_POST_SOURCE})
