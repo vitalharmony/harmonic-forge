@@ -172,6 +172,102 @@ class RecordHookMain(Base):
             record_session_model.main()
 
 
+class ClearAfterModelSwitch(Base):
+    """harmonic-forge#1211: `/model opus` on a `--model sonnet` launch, then `/clear`."""
+
+    PID = 10
+
+    def setUp(self):
+        super().setUp()
+        self.proc = self.root / "proc"
+        self.set_start("111")
+        for patch in (mock.patch.object(sm, "claude_pid", return_value=self.PID),
+                      mock.patch.object(sm, "launch_model", return_value="sonnet")):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def set_start(self, start):
+        d = self.proc / str(self.PID)
+        d.mkdir(parents=True, exist_ok=True)
+        fields = ["S", "1"] + ["0"] * 17 + [start, "0"]
+        (d / "stat").write_text(f"{self.PID} (claude code) " + " ".join(fields) + "\n")
+
+    def start(self, source, session_id, transcript):
+        return record_session_model.record(
+            {"session_id": session_id, "source": source, "transcript_path": transcript},
+            record_dir=self.records, proc_root=str(self.proc))
+
+    def predecessor(self):
+        """The pre-clear session: launched sonnet, switched to opus in-session."""
+        path = self.root / "before.jsonl"
+        path.write_text("".join(json.dumps(e) + "\n" for e in
+                                (assistant("claude-sonnet-5"), ATTACHMENT_OPUS)))
+        self.start("startup", "before", str(path))
+
+    def test_first_prompt_after_clear_resolves_the_switched_model(self):
+        self.predecessor()
+        after = self.transcript(user("first prompt after /clear"))
+        self.start("clear", "after", after)
+        self.assertEqual(sm.family(self.current(after, session_id="after")), "opus")
+
+    def test_compact_also_carries_the_model(self):
+        self.predecessor()
+        self.start("compact", "after", self.transcript(user("x")))
+        self.assertEqual(sm.family(sm.recorded_model("after", self.records)), "opus")
+
+    def test_startup_records_the_launch_model_as_before(self):
+        self.predecessor()
+        self.start("startup", "fresh", self.transcript(user("x")))
+        self.assertEqual(sm.recorded_model("fresh", self.records), "sonnet")
+
+    def test_resume_ignores_the_pointer(self):
+        self.predecessor()
+        self.start("resume", "resumed", self.transcript(user("x")))
+        self.assertEqual(sm.recorded_model("resumed", self.records), "sonnet")
+
+    def test_reused_pid_falls_back_to_the_launch_model(self):
+        self.predecessor()
+        self.set_start("999")
+        self.start("clear", "after", self.transcript(user("x")))
+        self.assertEqual(sm.recorded_model("after", self.records), "sonnet")
+
+    def test_missing_pointer_falls_back_to_the_launch_model(self):
+        self.start("clear", "after", self.transcript(user("x")))
+        self.assertEqual(sm.recorded_model("after", self.records), "sonnet")
+
+    def test_each_start_repoints_at_its_own_transcript(self):
+        self.predecessor()
+        after = self.transcript(user("x"), assistant("claude-haiku-4-5"))
+        self.start("clear", "after", after)
+        self.assertEqual(sm.predecessor_model(self.PID, record_dir=self.records,
+                                              proc_root=str(self.proc)), "claude-haiku-4-5")
+
+    def test_a_failure_never_escapes_main(self):
+        import io
+        with mock.patch.object(sm, "predecessor_model", side_effect=RuntimeError), \
+             mock.patch("sys.stdin", io.StringIO(json.dumps(
+                 {"session_id": "x", "source": "clear"}))):
+            record_session_model.main()
+
+
+class ProcHelpers(unittest.TestCase):
+    def test_claude_pid_matches_argv0_basename(self):
+        root = LaunchModelTests._proc(None, {30: (["python3"], 20),
+                                             20: (["/home/u/.local/bin/claude", "--model", "x"], 1)})
+        self.assertEqual(sm.claude_pid(root, pid=30), 20)
+
+    def test_claude_pid_none_without_a_claude_ancestor(self):
+        root = LaunchModelTests._proc(None, {30: (["python3"], 1)})
+        self.assertIsNone(sm.claude_pid(root, pid=30))
+
+    def test_process_start_reads_field_22_past_a_spaced_comm(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "5").mkdir()
+        (root / "5" / "stat").write_text("5 (a ) b) S " + " ".join(str(i) for i in range(4, 30)))
+        self.assertEqual(sm.process_start(5, str(root)), "22")
+
+
 class LaunchModelTests(unittest.TestCase):
     """harmonic-forge#656 follow-up: SessionStart carries no model in 2.1.270."""
 

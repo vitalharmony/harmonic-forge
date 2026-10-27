@@ -8,6 +8,13 @@ and be blocked on its first `deep` trigger. Writes the payload `model` to
 `~/.cache/harmonic-forge/session_model/<session_id>`; `session_model.
 current_model` reads it after the transcript and before settings.
 
+harmonic-forge#1211: after `/model`, a `/clear` or compaction would record the
+stale launch flag. On those sources the predecessor transcript's newest model
+(the one the session is actually on) is recorded first; each start also points
+`by-pid/<claude pid>` at its own transcript for the next one. `resume` is
+excluded: a new `--resume` process has no predecessor, and a resumed transcript
+already carries its model.
+
 Silent, and never fails the session: any error is swallowed. Claude Code only.
 """
 
@@ -20,9 +27,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import session_model  # noqa: E402
 
+#: Sources that continue the same process's work in a new session id.
+CONTINUING_SOURCES = frozenset({"clear", "compact"})
 
-def record(payload: dict, record_dir: Path | None = None) -> Path | None:
-    model = payload.get("model") or session_model.launch_model()
+
+def record(payload: dict, record_dir: Path | None = None,
+           proc_root: str = "/proc") -> Path | None:
+    pid = session_model.claude_pid(proc_root)
+    session_model.prune_pointers(record_dir, proc_root)
+    model = None
+    if payload.get("source") in CONTINUING_SOURCES:
+        model = session_model.predecessor_model(pid, record_dir=record_dir,
+                                                proc_root=proc_root)
+    model = model or payload.get("model") or session_model.launch_model()
+    transcript = payload.get("transcript_path")
+    if pid is not None and isinstance(transcript, str):
+        session_model.write_pointer(pid, transcript, record_dir=record_dir,
+                                    proc_root=proc_root)
     if not isinstance(model, str) or not model.strip():
         return None
     path = session_model.record_path(payload.get("session_id") or "", record_dir)
