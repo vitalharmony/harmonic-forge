@@ -734,7 +734,8 @@ class DecideCiGuardTests(StateFixture):
                      f"-- --match-head-commit {JUDGED}",
                      f"--auto --match-head-commit {JUDGED}",
                      f"--match-head-commit {JUDGED[:12]}",
-                     f"--merge --match-head-commit {JUDGED}"):
+                     f"--merge --match-head-commit {JUDGED}",
+                     f"--match-head-commit {JUDGED}#x --match-head-commit {other}"):
             with self.subTest(tail=tail):
                 result = ba.decide(f"{base} {tail}", state_path=self.state_path)
                 self.assertEqual(result[0], "ask")

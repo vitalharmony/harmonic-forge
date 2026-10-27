@@ -1398,7 +1398,10 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             # F1178 preclose pass 1, survivor 2: green is a fact about one SHA,
             # so the merge must be pinned to it, or a push after this read
             # merges a head whose CI was never judged.
-            pinned = _pinned_head(tokens)
+            # F1178 post-verdict check 3: the tokenizer reads a mid-word `#` as
+            # a comment and bash does not, so `<sha>#x --match-head-commit
+            # <other>` bound one SHA while gh enforced the other.
+            pinned = None if "#" in command else _pinned_head(tokens)
             if not judged or pinned != judged:
                 return "ask", reason + (
                     f"\n\n[BATCH] {key} is authorized and CI is green on PR #{number}'s head "
