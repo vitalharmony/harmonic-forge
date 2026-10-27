@@ -231,8 +231,8 @@ class ClearAfterModelSwitch(Base):
         self.start("clear", "after", self.transcript(user("x")))
         self.assertEqual(sm.recorded_model("after", self.records), "sonnet")
 
-    def test_predecessor_model_ignores_a_reused_pid_unpruned(self):
-        """The guard holds on its own, not only because record() prunes first."""
+    def test_predecessor_model_ignores_a_reused_pid(self):
+        """A stale pointer is never deleted, so the start-time guard alone rejects it."""
         self.predecessor()
         self.set_start("999")
         self.assertIsNone(sm.predecessor_model(self.PID, record_dir=self.records,
@@ -264,13 +264,6 @@ class ClearAfterModelSwitch(Base):
         with mock.patch.object(sm, "write_pointer", side_effect=PermissionError):
             self.start("startup", "fresh", self.transcript(user("x")))
         self.assertEqual(sm.recorded_model("fresh", self.records), "sonnet")
-
-    def test_prune_keeps_an_unreadable_pointer(self):
-        """Pass 1 survivor 2: a half-written pointer is not a dead one."""
-        self.predecessor()
-        (self.records / "by-pid" / str(self.PID)).write_text("")
-        sm.prune_pointers(self.records, str(self.proc))
-        self.assertTrue((self.records / "by-pid" / str(self.PID)).exists())
 
     def test_pointer_write_leaves_no_temp_file(self):
         self.predecessor()

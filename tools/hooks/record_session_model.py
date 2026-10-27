@@ -48,7 +48,6 @@ def record(payload: dict, record_dir: Path | None = None,
     # so it can never cost a session its record (harmonic-forge#1211 pass 1).
     try:
         pid = pid if pid is not None else session_model.claude_pid(proc_root)
-        session_model.prune_pointers(record_dir, proc_root)
         transcript = payload.get("transcript_path")
         if pid is not None and isinstance(transcript, str):
             session_model.write_pointer(pid, transcript, model.strip() if isinstance(model, str) else None,

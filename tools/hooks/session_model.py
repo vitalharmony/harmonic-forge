@@ -243,7 +243,9 @@ def write_pointer(pid: int, transcript_path: str, model: str | None = None, *,
 
     `model` is what this start recorded, so a second `/clear` before any
     prompt (a transcript with no model entry yet) still inherits it. Written
-    to a temp file and renamed, so a concurrent prune never reads it half-written.
+    to a temp file and renamed, so a reader never sees it half-written. Pointers are
+    never deleted (harmonic-forge#1211 pass 2): a stale one is rejected by the
+    start-time check, and deleting safely would need a lock.
     """
     start = process_start(pid, proc_root)
     if start is None or not transcript_path:
@@ -255,27 +257,6 @@ def write_pointer(pid: int, transcript_path: str, model: str | None = None, *,
                                "model": model}), encoding="utf-8")
     os.replace(tmp, path)
     return path
-
-
-def prune_pointers(record_dir: Path | None = None, proc_root: str = "/proc") -> None:
-    """Drop pointers whose process is gone or whose PID was reused."""
-    try:
-        entries = list(pointer_dir(record_dir).iterdir())
-    except OSError:
-        return
-    for path in entries:
-        if not path.name.isdigit():
-            continue  # a temp file mid-rename, or something that is not ours
-        try:
-            start = json.loads(path.read_text(encoding="utf-8")).get("start")
-            live = process_start(int(path.name), proc_root)
-        except (OSError, ValueError, AttributeError):
-            continue  # unreadable is not dead; predecessor_model ignores it anyway
-        if live is None or live != start:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def predecessor_model(pid: int | None, *, record_dir: Path | None = None,
