@@ -59,6 +59,7 @@ class Proc:
     cpu_ticks: int
     cgroup: str
     session: int = 0
+    argv: list[str] = field(default_factory=list)
     children: list[int] = field(default_factory=list)
 
 
@@ -82,14 +83,16 @@ def read_proc(proc_root: Path, pid: int) -> Proc | None:
         uid = int(next(line.split()[1] for line in status.splitlines() if line.startswith("Uid:")))
     except (ValueError, IndexError, StopIteration):
         return None
-    cmdline = (_read(base / "cmdline") or "").replace("\0", " ").strip()
+    raw = _read(base / "cmdline") or ""
+    argv = [a for a in raw.split("\0") if a]  # NUL-separated: keeps argv boundaries
+    cmdline = " ".join(argv)
     try:
         cwd = os.readlink(base / "cwd")
     except OSError:
         cwd = ""
     return Proc(pid=pid, ppid=ppid, uid=uid, comm=(_read(base / "comm") or "").strip(),
                 cmdline=cmdline, cwd=cwd, start_ticks=start, cpu_ticks=utime + stime,
-                cgroup=(_read(base / "cgroup") or "").strip(), session=session)
+                cgroup=(_read(base / "cgroup") or "").strip(), session=session, argv=argv)
 
 
 def processes(proc_root: Path) -> dict[int, Proc]:
@@ -164,7 +167,7 @@ def in_user_service(proc: Proc, uid: int) -> bool:
 
 def is_live_check(proc: "Proc") -> bool:
     """A ``mise run check`` process by its argv, not by a substring."""
-    words = proc.cmdline.split()
+    words = proc.argv
     return len(words) >= 3 and Path(words[0]).name == "mise" and words[1:3] == ["run", "check"]
 
 
@@ -205,6 +208,7 @@ def classify(lifetime_pct: float, sample_pct: float) -> str | None:
 def notify(summary: str, topic_file: str | None) -> None:
     """One ntfy POST; the topic is read from its file and never printed."""
     if not topic_file:
+        print(f"orphan_reap: ntfy not sent: {NTFY_TOPIC_FILE_ENV} is not set", file=sys.stderr)
         return
     try:
         topic = Path(topic_file).read_text().strip()
@@ -240,7 +244,10 @@ def run(*, proc_root: Path = Path("/proc"), age_hours: float = 6, sample_seconds
     """Find and report orphans. Report-only: nothing is ever signalled."""
     hz = hz or os.sysconf("SC_CLK_TCK")
     if uptime is None:
-        uptime = float((_read(proc_root / "uptime") or "0").split()[0])
+        text = _read(proc_root / "uptime")
+        if not text:
+            raise SystemExit("orphan_reap: cannot read /proc/uptime; no ages, so no report")
+        uptime = float(text.split()[0])
     candidates = scan(proc_root, uid=uid, lock=lock, origin_dirs=origin_dirs, hz=hz)
     aged = [c for c in candidates if uptime - c.start_ticks / hz >= age_hours * 3600]
     before = {c.pid: c.cpu_ticks for c in aged}

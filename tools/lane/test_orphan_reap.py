@@ -31,7 +31,7 @@ class FakeProc:
 
     def add(self, pid, ppid, comm="bash", cmdline="bash", cwd=None, age_s=10 * 3600,
             cpu_s=0.0, cgroup="0::/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope",
-            uid=UID, session=None):
+            uid=UID, session=None, argv=None):
         d = self.root / str(pid)
         d.mkdir()
         start = int((UPTIME - age_s) * HZ)
@@ -40,7 +40,7 @@ class FakeProc:
         (d / "stat").write_text(f"{pid} ({comm}) " + " ".join(map(str, fields)) + "\n")
         (d / "status").write_text(f"Name:\t{comm}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")
         (d / "comm").write_text(comm + "\n")
-        (d / "cmdline").write_text(cmdline.replace(" ", "\0"))
+        (d / "cmdline").write_text("\0".join(argv) if argv else cmdline.replace(" ", "\0"))
         (d / "cgroup").write_text(cgroup + "\n")
         os.symlink(str(cwd or self.origin / "w"), d / "cwd")
         return start
@@ -114,6 +114,12 @@ class ScanTests(unittest.TestCase):  # AC1
         self.fake.add(1001, 2102, session=1000)
         self.assertEqual(self.scan(), {1001})
 
+    def test_check_with_a_space_in_its_path_recognized(self):
+        """argv is read NUL-separated, so a path holding a space stays one word."""
+        self.fake.add(1000, 2102, argv=["/opt/tool suite/mise", "run", "check"], cwd=self.fake.root)
+        self.fake.add(1001, 2102, session=1000)
+        self.assertEqual(self.scan(), set())
+
     def test_service_subgroup_not_selected(self):
         self.fake.add(900, 2102, cgroup="0::/user.slice/user-1000.slice/user@1000.service/"
                                         "app.slice/hrse-pc.service/payload")
@@ -179,6 +185,21 @@ class RunTests(unittest.TestCase):  # AC2-AC3, report-only
         self.assertEqual({e["pid"] for e in self.events}, {500, 501})
         self.assertEqual(len(self.ntfy), 1)
         self.assertNotIn("secret-token-here", self.ntfy[0])
+
+    def test_missing_topic_file_is_reported(self):
+        import io
+        from unittest import mock
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            reap.notify("1 orphaned agent process(es)", None)
+        self.assertIn("ntfy not sent", err.getvalue())
+
+    def test_unreadable_uptime_fails_closed(self):
+        (self.fake.root / "uptime").unlink()
+        with self.assertRaises(SystemExit):
+            reap.run(proc_root=self.fake.root, sample_seconds=0, lock=self.fake.lock,
+                     origin_dirs=(self.fake.origin,), sleep=lambda s: None,
+                     ntfy=self.ntfy.append, events=self.events.extend, hz=HZ, uid=UID)
 
     def test_no_ntfy_when_nothing_found(self):
         self.run_once()
