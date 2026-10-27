@@ -231,6 +231,13 @@ class ClearAfterModelSwitch(Base):
         self.start("clear", "after", self.transcript(user("x")))
         self.assertEqual(sm.recorded_model("after", self.records), "sonnet")
 
+    def test_predecessor_model_ignores_a_reused_pid_unpruned(self):
+        """The guard holds on its own, not only because record() prunes first."""
+        self.predecessor()
+        self.set_start("999")
+        self.assertIsNone(sm.predecessor_model(self.PID, record_dir=self.records,
+                                               proc_root=str(self.proc)))
+
     def test_missing_pointer_falls_back_to_the_launch_model(self):
         self.start("clear", "after", self.transcript(user("x")))
         self.assertEqual(sm.recorded_model("after", self.records), "sonnet")
