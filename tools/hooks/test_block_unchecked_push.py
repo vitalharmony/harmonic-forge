@@ -112,10 +112,12 @@ class Allows(Base):
         _git(self.repo, "config", "remote.origin.push", "refs/heads/*:refs/heads/*")
         self.assertIsNone(self.decide(f"git push origin {TE_BRANCH}"))
 
-    def test_non_push_fast_exits_without_spawning_git(self):
-        with mock.patch.object(B.subprocess, "run") as run:
+    def test_non_push_fast_exits_without_parsing_or_spawning_git(self):
+        with mock.patch.object(B.subprocess, "run") as run, \
+             mock.patch.object(B, "_judged_pushes") as judged:
             self.assertIsNone(self.decide("ls -la"))
         run.assert_not_called()
+        judged.assert_not_called()
 
     def test_own_fault_never_blocks(self):
         with mock.patch.object(B, "decide", side_effect=RuntimeError), \

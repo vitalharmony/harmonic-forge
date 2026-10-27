@@ -19,9 +19,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-#: Options under which pre-push does not apply or the refspecs are not ours to model.
-ALLOW_OPTIONS = frozenset({"--dry-run", "-n", "--no-verify", "--all", "--mirror",
-                           "--tags", "--delete", "-d", "--prune"})
+#: The only options this hook models. Any other option (`--dry-run`,
+#: `--no-verify`, `--all`, `--mirror`, `--tags`, `--delete`, ...) means pre-push
+#: does not apply or the refspecs are not ours to read, so the push is allowed.
+MODELLED_OPTIONS = frozenset({"-u", "--set-upstream", "-f", "--force", "--force-with-lease"})
 
 
 def _git(cwd: str, *args: str) -> str | None:
@@ -50,13 +51,9 @@ def _judged_pushes(command: str, cwd: str):
 
 def _refspecs(cwd: str, args: list[str]):
     """(remote, [(src, dst)]) for one push, or None when it is not modelled."""
-    if any(a in ALLOW_OPTIONS or a.startswith("--push-option") for a in args):
-        return None
-    positional = [a for a in args if not a.startswith("-")]
-    if any(a.startswith("-") and a not in ("-u", "--set-upstream", "--force-with-lease",
-                                           "-f", "--force") and not a.startswith("--force-with-lease=")
-           for a in args):
+    if any(a.startswith("-") and a.split("=", 1)[0] not in MODELLED_OPTIONS for a in args):
         return None  # an option this hook does not model: allow, pre-push still runs
+    positional = [a for a in args if not a.startswith("-")]
     if positional:
         remote, specs = positional[0], positional[1:]
     else:
