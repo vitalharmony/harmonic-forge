@@ -1,6 +1,7 @@
 """harmonic-forge#975: the pre-push gate for Tooling Exception branches."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
@@ -124,6 +125,15 @@ class Main(Base):
 
 
 class Record(Base):
+    def setUp(self):
+        super().setUp()
+        # harmonic-forge#1213: l1-post exports both receipt vars into its check.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for key in (C.SOURCE_ENV, C.FORGE_SHA_ENV):
+            os.environ.pop(key, None)
+
     def _repo(self, root: Path):
         run = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)  # noqa: E731
         run("init", "-q")
