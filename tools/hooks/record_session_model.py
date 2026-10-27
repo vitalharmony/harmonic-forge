@@ -33,17 +33,32 @@ CONTINUING_SOURCES = frozenset({"clear", "compact"})
 
 def record(payload: dict, record_dir: Path | None = None,
            proc_root: str = "/proc") -> Path | None:
-    pid = session_model.claude_pid(proc_root)
-    session_model.prune_pointers(record_dir, proc_root)
+    pid = None
     model = None
     if payload.get("source") in CONTINUING_SOURCES:
-        model = session_model.predecessor_model(pid, record_dir=record_dir,
-                                                proc_root=proc_root)
+        try:
+            pid = session_model.claude_pid(proc_root)
+            model = session_model.predecessor_model(pid, record_dir=record_dir,
+                                                    proc_root=proc_root)
+        except Exception:  # noqa: BLE001 -- the pointer is best-effort; the record is not
+            model = None
     model = model or payload.get("model") or session_model.launch_model()
-    transcript = payload.get("transcript_path")
-    if pid is not None and isinstance(transcript, str):
-        session_model.write_pointer(pid, transcript, record_dir=record_dir,
-                                    proc_root=proc_root)
+    path = _write_record(payload, model, record_dir)
+    # Pointer bookkeeping runs after the record and in its own failure boundary,
+    # so it can never cost a session its record (harmonic-forge#1211 pass 1).
+    try:
+        pid = pid if pid is not None else session_model.claude_pid(proc_root)
+        session_model.prune_pointers(record_dir, proc_root)
+        transcript = payload.get("transcript_path")
+        if pid is not None and isinstance(transcript, str):
+            session_model.write_pointer(pid, transcript, model.strip() if isinstance(model, str) else None,
+                                        record_dir=record_dir, proc_root=proc_root)
+    except Exception:  # noqa: BLE001
+        pass
+    return path
+
+
+def _write_record(payload: dict, model, record_dir: Path | None) -> Path | None:
     if not isinstance(model, str) or not model.strip():
         return None
     path = session_model.record_path(payload.get("session_id") or "", record_dir)

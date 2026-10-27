@@ -237,16 +237,23 @@ def pointer_dir(record_dir: Path | None = None) -> Path:
     return (record_dir or SESSION_MODEL_DIR) / "by-pid"
 
 
-def write_pointer(pid: int, transcript_path: str, *, record_dir: Path | None = None,
-                  proc_root: str = "/proc") -> Path | None:
-    """Record this Claude Code process's current transcript, for a later `/clear`."""
+def write_pointer(pid: int, transcript_path: str, model: str | None = None, *,
+                  record_dir: Path | None = None, proc_root: str = "/proc") -> Path | None:
+    """Record this Claude Code process's current transcript and resolved model.
+
+    `model` is what this start recorded, so a second `/clear` before any
+    prompt (a transcript with no model entry yet) still inherits it. Written
+    to a temp file and renamed, so a concurrent prune never reads it half-written.
+    """
     start = process_start(pid, proc_root)
     if start is None or not transcript_path:
         return None
     path = pointer_dir(record_dir) / str(pid)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"transcript": transcript_path, "start": start}),
-                    encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"transcript": transcript_path, "start": start,
+                               "model": model}), encoding="utf-8")
+    os.replace(tmp, path)
     return path
 
 
@@ -257,13 +264,18 @@ def prune_pointers(record_dir: Path | None = None, proc_root: str = "/proc") -> 
     except OSError:
         return
     for path in entries:
+        if not path.name.isdigit():
+            continue  # a temp file mid-rename, or something that is not ours
         try:
             start = json.loads(path.read_text(encoding="utf-8")).get("start")
             live = process_start(int(path.name), proc_root)
         except (OSError, ValueError, AttributeError):
-            start, live = None, None
+            continue  # unreadable is not dead; predecessor_model ignores it anyway
         if live is None or live != start:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def predecessor_model(pid: int | None, *, record_dir: Path | None = None,
@@ -283,7 +295,9 @@ def predecessor_model(pid: int | None, *, record_dir: Path | None = None,
         return None
     if not isinstance(data, dict) or data.get("start") != process_start(pid, proc_root):
         return None
-    return transcript_model(data.get("transcript") or "")
+    inherited = data.get("model")
+    return (transcript_model(data.get("transcript") or "")
+            or (inherited if isinstance(inherited, str) and inherited.strip() else None))
 
 
 def launch_model(environ: dict | None = None, proc_root: str = "/proc",

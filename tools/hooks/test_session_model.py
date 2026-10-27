@@ -249,6 +249,34 @@ class ClearAfterModelSwitch(Base):
         self.assertEqual(sm.predecessor_model(self.PID, record_dir=self.records,
                                               proc_root=str(self.proc)), "claude-haiku-4-5")
 
+    def test_second_clear_before_any_prompt_keeps_the_switched_model(self):
+        """Pass 1 survivor 1: the first clear's transcript has no model entry yet."""
+        self.predecessor()
+        self.start("clear", "after", self.transcript(user("x")))
+        second = self.root / "second.jsonl"
+        second.write_text(json.dumps(user("y")) + "\n")
+        self.start("clear", "after2", str(second))
+        self.assertEqual(sm.family(sm.recorded_model("after2", self.records)), "opus")
+
+    def test_pointer_failure_never_costs_the_record(self):
+        """Pass 1 survivor 3: a bad by-pid entry or write failure must not skip the record."""
+        (self.records / "by-pid" / "notapid").mkdir(parents=True)
+        with mock.patch.object(sm, "write_pointer", side_effect=PermissionError):
+            self.start("startup", "fresh", self.transcript(user("x")))
+        self.assertEqual(sm.recorded_model("fresh", self.records), "sonnet")
+
+    def test_prune_keeps_an_unreadable_pointer(self):
+        """Pass 1 survivor 2: a half-written pointer is not a dead one."""
+        self.predecessor()
+        (self.records / "by-pid" / str(self.PID)).write_text("")
+        sm.prune_pointers(self.records, str(self.proc))
+        self.assertTrue((self.records / "by-pid" / str(self.PID)).exists())
+
+    def test_pointer_write_leaves_no_temp_file(self):
+        self.predecessor()
+        self.assertEqual(sorted(p.name for p in (self.records / "by-pid").iterdir()),
+                         [str(self.PID)])
+
     def test_a_failure_never_escapes_main(self):
         import io
         with mock.patch.object(sm, "predecessor_model", side_effect=RuntimeError), \
