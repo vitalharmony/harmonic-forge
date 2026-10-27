@@ -231,6 +231,13 @@ class ModeBindingTests(Store):
             G.require(REPO, ISSUE, MOVED, NOW, mode="reforge")
         self.assertIn("names aaaaaaaaaaaa", str(ctx.exception))
 
+    def test_scope_names_what_each_mode_binds(self):
+        """F1174 pass 1: the CLI sliced `sha`, None for a reforge grant."""
+        self.assertEqual(G._scope({"mode": "reforge", "sha": None, "sha_prefix": SHA[:12]}),
+                         f"(reforge) at {SHA[:12]}")
+        self.assertEqual(G._scope({"mode": "cluster", "sha": None}), "(cluster)")
+        self.assertEqual(G._scope({"sha": SHA}), f"(plain) at {SHA[:12]}")
+
     def test_cluster_grant_binds_the_full_sha(self):
         self.usable("cluster")
         self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="cluster")["mode"], "cluster")

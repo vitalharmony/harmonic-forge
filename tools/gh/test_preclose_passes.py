@@ -447,6 +447,25 @@ class MechanismClusterTests(ScratchRepo):
         self.assertEqual(emitted.call_count, 1)
         self.assertEqual(emitted.call_args.args[3], "cluster-verdict")
         self.assertEqual(emitted.call_args.args[5]["mode"], "cluster")
+        import force_grant  # noqa: PLC0415
+        self.assertEqual(emitted.call_args.args[2], force_grant.covered_head(REPO, ISSUE))
+
+    def test_a_cluster_write_failure_after_the_reserve_says_so(self) -> None:
+        """F1174 pass 1: a failed receipt write after the grant is spent still
+        emits one event, as reserved-not-recorded."""
+        self.run_pass("scripts/a.py", self.findings("same", "same"))
+        url = "https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"
+        api = subprocess.CompletedProcess([], 0, stdout=(
+            '{"issue_url":"https://api.github.com/repos/vitalharmony/hrse/issues/1208",'
+            '"html_url":"https://github.com/vitalharmony/hrse/issues/1208#issuecomment-99"}'), stderr="")
+        self.cluster_grant()
+        with patch.object(preclose, "run", return_value=api), \
+                patch.object(preclose, "write_receipt", side_effect=OSError("disk")), \
+                patch.object(preclose, "emit_force") as emitted, self.assertRaises(OSError):
+            preclose.cluster_verdict(_Args(repo=REPO, issue=ISSUE, cluster_verdict="PATCH",
+                                           comment_url=url, force=True))
+        self.assertEqual(emitted.call_count, 1)
+        self.assertEqual(emitted.call_args.kwargs["outcome"], "reserved-not-recorded")
 
     def test_cluster_verdict_force_needs_a_cluster_grant(self) -> None:
         """harmonic-forge#1174 AC2: no grant, or a plain one, refuses; nothing is written."""
@@ -623,6 +642,19 @@ class PreclosePassOneFixTests(ScratchRepo):
         stored = preclose.find_receipt(REPO, ISSUE)
         self.assertEqual(stored["pass_count"], 1)
         self.assertEqual(len(stored["pass_history"]), 3)
+
+    def test_a_reforge_write_failure_emits_reforge_not_force(self) -> None:
+        """F1174 pass 1: the crash path named every forced pass "force"."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.commit("scripts/new.py")
+        self.plan(tier="fast", reforge=True, force=True)
+        with patch.object(preclose, "write_receipt", side_effect=OSError("disk")), \
+                patch.object(preclose, "emit_force") as emitted, self.assertRaises(OSError):
+            self.complete_reforge()
+        self.assertEqual(emitted.call_args.args[3], "reforge")
+        self.assertEqual(emitted.call_args.kwargs["outcome"], "reserved-not-recorded")
 
     def test_reforge_without_force_is_refused(self) -> None:
         """F834 pass 2 / sticky-wicket: no branch-name fence; reforge is operator-only."""

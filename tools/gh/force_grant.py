@@ -203,6 +203,13 @@ def _bound(grant: dict) -> str:
     return str((grant.get("sha_prefix") if _mode(grant) == "reforge" else grant.get("sha")) or "")
 
 
+def _scope(grant: dict) -> str:
+    """What a grant is bound to, for the CLI: a reforge binds a prefix and a
+    cluster grant may bind nothing, so `sha` alone printed None (F1174)."""
+    bound = _bound(grant)
+    return f"({_mode(grant)}) at {bound[:12]}" if bound else f"({_mode(grant)})"
+
+
 def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str) -> str | None:
     """Why this grant does not cover a `mode` force at `head_sha`, or None."""
     if _mode(grant) != mode:
@@ -280,13 +287,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "record":
         grant = record(args.key)
-        print(f"force-grant: {grant['key']} usable for {grant['repo']}#{grant['issue']} at "
-              f"{grant['sha'][:12]} until {grant['expires_at']} -- {grant['comment_url']}")
+        print(f"force-grant: {grant['key']} usable for {grant['repo']}#{grant['issue']} "
+              f"{_scope(grant)} until {grant['expires_at']} -- {grant['comment_url']}")
         return 0
     grant = imc_waiver.read_json(grant_path(args.key))
     print(f"force-grant: {args.key.upper()}: " + (
         "none" if grant is None else
-        f"{grant.get('status')} at {str(grant.get('sha'))[:12]}, expires {grant.get('expires_at')}"))
+        f"{grant.get('status')} {_scope(grant)}, expires {grant.get('expires_at')}"))
     return 0
 
 

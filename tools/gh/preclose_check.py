@@ -1112,7 +1112,8 @@ def complete(args: argparse.Namespace) -> int:
         })
     except BaseException:
         if grant is not None:
-            emit_force(repo, args.issue, head_sha, "force", 0, grant, outcome="reserved-not-recorded")
+            emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", 0, grant,
+                       outcome="reserved-not-recorded")
         raise
     # Emitted straight after the durable write, before any output that can
     # fail (F1169 post-verdict check: a broken stdout skipped it).
@@ -1432,19 +1433,30 @@ def cluster_verdict(args: argparse.Namespace) -> int:
     # harmonic-forge#1174: spent after every validation above, immediately
     # before the receipt write, so a bad --comment-url never burns the grant.
     grant = None
+    head = ""
+    surviving = int((passes[-1] if passes else {}).get("surviving") or 0)
     if args.force:
         import force_grant  # noqa: PLC0415
-        grant = reserve_force_grant(repo, args.issue, force_grant.covered_head(repo, args.issue) or "",
-                                    "cluster")
-    path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
-                         prior.get("refuters", 0), status=prior.get("status", "complete"),
-                         extra={**preclose_passes.carried(prior), "mechanism_cluster": updated})
-    print(f"preclose-check: mechanism-cluster verdict {args.cluster_verdict} recorded; not a pass.")
-    print(f"  receipt: {path}")
+        # The event names the head the grant covered, never the receipt's key.
+        head = force_grant.covered_head(repo, args.issue) or ""
+        if not head:
+            raise SystemExit(f"preclose-check: --cluster-verdict --force on {repo}#{args.issue} "
+                             "refused: no head for the grant to cover (harmonic-forge#1174).")
+        grant = reserve_force_grant(repo, args.issue, head, "cluster")
+    try:
+        path = write_receipt(repo, args.issue, preclose_passes.reviewed_head(prior),
+                             prior.get("refuters", 0), status=prior.get("status", "complete"),
+                             extra={**preclose_passes.carried(prior), "mechanism_cluster": updated})
+    except BaseException:
+        if grant is not None:
+            emit_force(repo, args.issue, head, "cluster-verdict", surviving, grant,
+                       outcome="reserved-not-recorded")
+        raise
     if args.force:
         # harmonic-forge#1174 AC3: measured as granted, with its cluster grant.
-        emit_force(repo, args.issue, preclose_passes.reviewed_head(prior) or "", "cluster-verdict",
-                   int((passes[-1] if passes else {}).get("surviving") or 0), grant)
+        emit_force(repo, args.issue, head, "cluster-verdict", surviving, grant)
+    print(f"preclose-check: mechanism-cluster verdict {args.cluster_verdict} recorded; not a pass.")
+    print(f"  receipt: {path}")
     return 0
 
 
