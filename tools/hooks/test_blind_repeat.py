@@ -68,6 +68,13 @@ class Blocks(Base):
         self.record_failure("grep -n nothing f")
         self.assertIsNotNone(self.refused("grep -n nothing f"))
 
+    def test_refusal_skips_the_documented_exit_code_line(self):
+        """The documented PostToolUseFailure `error` shape (code.claude.com hooks)."""
+        self.record_failure("npm test", error="Exit code 1\nError: Cannot find module 'express'")
+        reason = self.refused("npm test")
+        self.assertIn("Cannot find module", reason)
+        self.assertNotIn("Exit code 1", reason)
+
     def test_refusal_names_the_recorded_failure(self):
         self.record_failure("make x", error="make: *** No rule to make target 'x'.")
         self.assertIn("No rule to make target", self.refused("make x"))

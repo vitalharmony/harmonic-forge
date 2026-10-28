@@ -73,9 +73,14 @@ def _first_failure_line(payload: dict) -> str:
     response = payload.get("tool_response")
     candidates = [payload.get("error"),
                   response.get("stderr") if isinstance(response, dict) else response]
+    # The documented PostToolUseFailure payload carries `error`, e.g.
+    # "Exit code 1\nError: Cannot find module 'express'": the exit-code line
+    # says nothing the refusal does not already, so the first other line wins.
     for text in candidates:
         if isinstance(text, str) and text.strip():
-            return text.strip().splitlines()[0][:200]
+            lines = [ln for ln in text.strip().splitlines() if ln.strip()]
+            useful = [ln for ln in lines if not ln.startswith("Exit code ")]
+            return (useful or lines)[0][:200]
     return ""
 
 
