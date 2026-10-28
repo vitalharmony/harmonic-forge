@@ -78,6 +78,41 @@ class Denies(Base):
         self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class Pass1Fixes(Base):
+    def test_bare_head_resolves_to_the_checked_out_branch(self):
+        _git(self.repo, "checkout", "-q", TE_BRANCH)
+        self.assertIsNotNone(self.decide("git push -u origin HEAD"))
+        self.assertIsNotNone(self.decide("git push origin @"))
+
+    def test_no_refspec_uses_push_upstream(self):
+        _git(self.repo, "checkout", "-q", TE_BRANCH)
+        _git(self.repo, "config", "push.default", "current")
+        _git(self.repo, "update-ref", f"refs/remotes/origin/{TE_BRANCH}", "HEAD")
+        _git(self.repo, "config", f"branch.{TE_BRANCH}.remote", "origin")
+        _git(self.repo, "config", f"branch.{TE_BRANCH}.merge", f"refs/heads/{TE_BRANCH}")
+        self.assertIsNotNone(self.decide("git push"))
+
+    def test_an_expansion_after_a_literal_push_still_judges_it(self):
+        self.assertIsNotNone(self.decide(f'git push origin {TE_BRANCH}; echo "rc=$?"'))
+
+    def test_an_expansion_in_the_push_itself_allows(self):
+        self.assertIsNone(self.decide("git push origin $BRANCH"))
+
+    def test_push_url_decides_the_slug(self):
+        _git(self.repo, "remote", "set-url", "--push", "origin", "https://github.com/someone/pushed.git")
+        self.decide(f"git push origin {TE_BRANCH}")
+        self.assertEqual(self.slugs, [C.repo_slug("https://github.com/someone/pushed.git")])
+
+    def test_one_refs_fault_does_not_skip_the_next(self):
+        real = C.push_refusal
+        def flaky(slug, branch, sha, cache=None):
+            if branch == "main":
+                raise RuntimeError("boom")
+            return real(slug, branch, sha, cache)
+        with mock.patch.object(C, "push_refusal", side_effect=flaky):
+            self.assertIsNotNone(self.decide(f"git push origin main {TE_BRANCH}"))
+
+
 class Allows(Base):
     def test_push_after_another_command_is_left_to_pre_push(self):
         self.assertIsNone(self.decide(f"mise run check && git push origin {TE_BRANCH}"))
@@ -133,7 +168,10 @@ class Wired(unittest.TestCase):
         settings = json.loads((Path(__file__).resolve().parents[2] / ".claude" / "settings.json").read_text())
         hooks = [h for e in settings["hooks"]["PreToolUse"] if e.get("matcher") == "Bash" for h in e["hooks"]]
         entry = next(h for h in hooks if "block_unchecked_push.py" in h.get("command", ""))
-        self.assertLessEqual(entry.get("timeout", 60), 5)
+        # pass 1 survivor 2: above check_receipt.labels()' 20 s gh call, so the
+        # hook reaches a verdict instead of being killed into an unjudged allow.
+        self.assertGreaterEqual(entry.get("timeout", 60), 25)
+        self.assertLessEqual(entry.get("timeout", 60), 60)
 
 
 class SharedAnswer(unittest.TestCase):

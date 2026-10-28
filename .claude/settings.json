@@ -76,7 +76,7 @@
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_unchecked_push.py\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },

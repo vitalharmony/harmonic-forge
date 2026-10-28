@@ -37,10 +37,15 @@ def _git(cwd: str, *args: str) -> str | None:
 def _judged_pushes(command: str, cwd: str):
     """Yield (cwd, push args) for each push this hook judges; see AC2."""
     from shell_parse import command_segments  # noqa: PLC0415
-    if any(char in command for char in "(){}`$"):
-        return  # a subshell, group or expansion: not a literal form
+    if any(char in command for char in "(){}"):
+        return  # AC2: a subshell or group anywhere is not a literal form
+    # pass 1 survivor 3: an expansion elsewhere (`; echo rc=$?`) must not stop
+    # the judging of a fully literal leading push, so `$` and backticks are
+    # checked only inside the segments this hook reads (below).
     here = cwd
     for segment in command_segments(command):
+        if any("$" in token or "`" in token for token in segment):
+            return  # a non-literal path or refspec in a judged segment
         if segment[:1] == ["cd"] and len(segment) == 2:
             here = os.path.normpath(os.path.join(here, os.path.expanduser(segment[1])))
             continue
@@ -75,7 +80,12 @@ def _refspecs(cwd: str, args: list[str]):
         src, _, dst = spec.partition(":")
         if not src:
             continue  # `:branch` is a deletion
-        pairs.append((src, (dst or src).removeprefix("refs/heads/")))
+        if not dst:
+            # pass 1 survivor 1: a colonless HEAD, @ or short name pushes to the
+            # branch git resolves it to, which is what pre-push sees.
+            full = _git(cwd, "rev-parse", "--symbolic-full-name", src) or src
+            dst = full
+        pairs.append((src, dst.removeprefix("refs/heads/")))
     return remote, pairs
 
 
@@ -91,14 +101,17 @@ def decide(payload: dict) -> str | None:
         if parsed is None:
             continue
         remote, pairs = parsed
-        slug = check_receipt.repo_slug(_git(here, "remote", "get-url", remote) or "")
+        # pass 1 survivor 4: the push URL, which is where the push goes.
+        slug = check_receipt.repo_slug(_git(here, "remote", "get-url", "--push", remote) or "")
         if not slug:
             continue
         for src, dst in pairs:
-            sha = _git(here, "rev-parse", f"{src}^{{commit}}")
-            if not sha:
+            # pass 1 survivor 5: one ref's fault skips that ref, never the rest.
+            try:
+                sha = _git(here, "rev-parse", f"{src}^{{commit}}")
+                reason = check_receipt.push_refusal(slug, dst, sha) if sha else None
+            except Exception:  # noqa: BLE001 -- that ref is left to pre-push
                 continue
-            reason = check_receipt.push_refusal(slug, dst, sha)
             if reason:
                 return f"{reason}. Run `mise run check` in that worktree first (harmonic-forge#1135)."
     return None
