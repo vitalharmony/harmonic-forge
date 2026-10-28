@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -30,6 +31,9 @@ STALE_FILE_SECONDS = 24 * 60 * 60
 #: AC3: one unchanged retry, matched by exact whole-string equality only.
 FLAKY_COMMANDS = ("mise run check", "mise run check-full")
 STORE_ENV = "BLIND_REPEAT_DIR"
+#: pass 2 survivor 2: bounds on the out-of-repo files a key reads.
+NAMED_FILES_MAX = 20
+NAMED_FILE_BYTES_MAX = 1 << 20
 
 
 def store_dir() -> Path:
@@ -59,20 +63,62 @@ def state_key(command: str, cwd: str) -> str | None:
         digest.update(part + b"\0")
     # pass 1 survivor 2: a git read that fails or times out means the tree is
     # undecidable, so there is no key (allow), never an empty-digest key.
-    diff = _git(cwd, "diff", "HEAD", "--binary")
-    untracked = _git(cwd, "ls-files", "--others", "--exclude-standard", "-z")
     toplevel = _git(cwd, "rev-parse", "--show-toplevel")
-    if diff is None or untracked is None or toplevel is None:
+    if toplevel is None or not toplevel.strip():
+        return None
+    root = toplevel.strip().decode()
+    # pass 2 survivor 1: both reads run from the repo top, so untracked paths
+    # are top-relative and cover the whole tree, whatever the cwd.
+    diff = _git(root, "diff", "HEAD", "--binary")
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if diff is None or untracked is None:
         return None
     digest.update(diff)
-    root = toplevel.strip().decode() or cwd
     for name in sorted(n for n in untracked.split(b"\0") if n):
         digest.update(name + b"\0")
         try:
             digest.update(hashlib.sha256((Path(root) / name.decode()).read_bytes()).digest())
         except OSError:
-            pass
+            return None  # pass 2 survivor 1: an unreadable file is an undecidable tree
+    named = _named_outside_files(command, cwd, root)
+    if named is None:
+        return None
+    digest.update(named)
     return digest.hexdigest()
+
+
+def _named_outside_files(command: str, cwd: str, root: str) -> bytes | None:
+    """pass 2 survivor 2: the contents of existing files outside the repo that
+    the command names (a token, or a `--flag=value` value), so fixing an
+    out-of-repo `--file` body changes the key. This only adds state to the
+    key, so it can turn a refusal into an allow, never the reverse; it reads
+    no command meaning (AC2). An unsplittable command or an unreadable file
+    is undecidable (None, allow)."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    top = os.path.realpath(root) + os.sep
+    out = hashlib.sha256()
+    seen = 0
+    for token in tokens:
+        candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+        if not candidate or "\0" in candidate:
+            continue
+        path = os.path.realpath(os.path.join(cwd, os.path.expanduser(candidate)))
+        if path.startswith(top) or not os.path.isfile(path):
+            continue
+        seen += 1
+        if seen > NAMED_FILES_MAX:
+            return None
+        try:
+            if os.path.getsize(path) > NAMED_FILE_BYTES_MAX:
+                return None
+            with open(path, "rb") as fh:
+                out.update(path.encode() + b"\0" + hashlib.sha256(fh.read()).digest())
+        except OSError:
+            return None
+    return out.digest()
 
 
 def _first_failure_line(payload: dict) -> str:

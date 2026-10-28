@@ -190,7 +190,52 @@ class Pass1Fixes(Base):
         self.assertIsNotNone(self.refused("mise run check"))
 
 
+class Pass2Fixes(Base):
+    def test_untracked_edit_from_a_subdirectory_clears(self):
+        """pass 2 survivor 1: untracked paths are read from the repo top."""
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (sub / "new.txt").write_text("a")
+        (self.repo / "other.txt").write_text("a")
+        self.record_failure("make x", cwd=sub)
+        self.assertIsNotNone(self.refused("make x", cwd=sub))
+        (sub / "new.txt").write_text("b")
+        self.assertIsNone(self.refused("make x", cwd=sub))
+        self.record_failure("make x", cwd=sub)
+        (self.repo / "other.txt").write_text("b")  # outside the cwd, inside the repo
+        self.assertIsNone(self.refused("make x", cwd=sub))
+
+    def test_an_unreadable_untracked_file_gives_no_key(self):
+        (self.repo / "locked.txt").write_text("a")
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
+            self.assertIsNone(R.state_key("make x", str(self.repo)))
+
+    def test_fixing_a_named_file_outside_the_repo_clears(self):
+        """pass 2 survivor 2: an out-of-repo `--file` body is part of the key."""
+        body = self.root / "body.md"
+        body.write_text("draft 1")
+        command = f"python3 tools/gh/l1_post.py --issue 1 --file {body}"
+        self.record_failure(command)
+        self.assertIsNotNone(self.refused(command))
+        body.write_text("draft 2")
+        self.assertIsNone(self.refused(command))
+        flag = f"python3 tools/gh/l1_post.py --issue 1 --file={body}"
+        self.record_failure(flag)
+        body.write_text("draft 3")
+        self.assertIsNone(self.refused(flag))
+
+
 class Hygiene(Base):
+    def test_other_sessions_young_files_are_kept(self):
+        """pass 2 survivor 3: the prune removes only files older than 24 h."""
+        young = R.session_file("live-session")
+        young.parent.mkdir(parents=True, exist_ok=True)
+        young.write_text("")
+        recent = time.time() - R.STALE_FILE_SECONDS + 60
+        os.utime(young, (recent, recent))
+        self.record_failure("make x")
+        self.assertTrue(young.exists())
+
     def test_other_sessions_stale_files_are_pruned(self):
         stale = R.session_file("old-session")
         stale.parent.mkdir(parents=True, exist_ok=True)
