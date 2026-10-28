@@ -98,8 +98,7 @@ class Check(unittest.TestCase):
                 mock.patch.object(te_queue, "tier", return_value=seams["tier"]), \
                 mock.patch.object(te_queue, "handoff", return_value=seams["handoff"]), \
                 mock.patch.object(te_queue, "receipt", return_value=seams["receipt"]), \
-                mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle), \
-                mock.patch("preclose_driver.passes_held", return_value=seams.get("passes", 0)):
+                mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle):
             return te_queue.first_failure(7)
 
     def test_fully_eligible(self):
@@ -107,12 +106,10 @@ class Check(unittest.TestCase):
         with mock.patch.object(te_queue, "first_failure", return_value=None):
             self.assertEqual(te_queue.check(self.queue), [{"id": "F7", "eligible": True}])
 
-    def test_a_preclose_complete_item_is_ineligible(self):
-        """harmonic-forge#1163 AC2: two passes held refuses before any run."""
-        reason, detail = self.failure(passes=2)
-        self.assertEqual(reason, "ineligible")
-        self.assertIn("preclose complete", detail)
-        self.assertIsNone(self.failure(passes=1))
+    def test_held_preclose_passes_no_longer_refuse(self):
+        """harmonic-forge#1195: the MAX_PASSES refusal is gone with the panel."""
+        with mock.patch.dict("sys.modules", {"preclose" "_driver": None}):
+            self.assertIsNone(self.failure())
 
     def test_missing_label_is_ineligible(self):
         self.assertEqual(self.failure(labels=["tooling"])[0], "ineligible")
@@ -324,7 +321,7 @@ class AddTimeChecks(Check):
                 subprocess.run(argv, cwd=src, check=True, capture_output=True)
         base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
                               capture_output=True, text=True).stdout.strip()
-        import preclose_driver as driver  # noqa: PLC0415 -- the module preflight calls
+        import acceptance  # noqa: PLC0415 -- the module preflight calls
         import te_run  # noqa: PLC0415 -- its item_preconditions are preflight's too
         seams = self.seams
         with mock.patch.object(te_queue, "labels", return_value=seams["labels"]), \
@@ -333,10 +330,8 @@ class AddTimeChecks(Check):
                 mock.patch.object(te_queue, "receipt", return_value=seams["receipt"]), \
                 mock.patch.object(te_queue, "bundle_dir", return_value=self.bundle), \
                 mock.patch.object(te_queue, "add_context", return_value=(src, base, {})), \
-                mock.patch.object(driver, "passes_held", return_value=0), \
-                mock.patch.object(driver.provision, "provision_clone"), \
                 mock.patch.object(te_run, "item_preconditions", return_value=[]), \
-                mock.patch.object(driver, "issue_body", return_value=body):
+                mock.patch.object(acceptance, "issue_body", return_value=body):
             return te_queue.add(self.queue, [key])
 
     def test_item_with_no_acceptance_section_is_refused(self):

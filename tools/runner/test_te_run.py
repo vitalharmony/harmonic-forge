@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 import warnings
 from pathlib import Path
@@ -28,8 +29,6 @@ import te_run  # noqa: E402
 
 def NO_CHECKS(issue: int) -> list[str]:  # noqa: N802 -- add-time checks have their own tests
     return []
-
-REAL_PRECLOSE_FACT = te_run.preclose_fact
 
 ISSUE = ("Body.\n\n## Acceptance criteria\n\n1. The widget returns 2. More text.\n"
          "2. Nothing else changes.\n\n## Notes\n")
@@ -63,6 +62,13 @@ FAKE_CLAUDE = textwrap.dedent("""\
         Path(os.environ["FAKE_UNTRACKED"]).write_text("[tasks.check]\\nrun = 'true'\\n")
     if os.environ.get("FAKE_TAMPER_BUNDLE"):  # the agent rewrites Lane 1's tests on disk
         Path(os.environ["FAKE_TAMPER_BUNDLE"]).write_text(json.dumps([{"ac": "AC1", "test": ["true"]}]))
+    if os.environ.get("FAKE_SLEEP_FOR") and os.environ["FAKE_SLEEP_FOR"] in prompt:
+        # An agent that hangs, with a child of its own (harmonic-forge#1195 AC7).
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)",
+                                  os.environ["FAKE_SLEEP_MARKER"]])
+        Path("spawned.pid").write_text(str(child.pid))  # the clone is writable
+        import time
+        time.sleep(120)
     drop = os.environ.get("FAKE_DROP_HOOK", "")
     print(json.dumps({"type": "system", "subtype": "init",
                       "apiKeySource": os.environ.get("FAKE_KEYSOURCE", "ANTHROPIC_API_KEY")}))
@@ -71,7 +77,8 @@ FAKE_CLAUDE = textwrap.dedent("""\
             for sub in ("hook_started", "hook_response"):
                 print(json.dumps({"type": "system", "subtype": sub, "hook_event": hook,
                                   "hook_name": hook}))
-    print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+    print(json.dumps({"type": "result", "subtype": os.environ.get("FAKE_SUBTYPE", "success"),
+                      "is_error": False,
                       "result": os.environ.get("FAKE_FINAL", "done"), "total_cost_usd": 0.2,
                       "permission_denials": []}))
 """)
@@ -99,11 +106,11 @@ FAKE_GH = textwrap.dedent("""\
                               f"refs/heads/{branch}"], capture_output=True, text=True).stdout.strip()
         (here / "pr_head").write_text(sha)
         print("https://github.com/vitalharmony/harmonic-forge/pull/9999")
-    elif args[:2] == ["pr", "comment"]:
-        print("https://github.com/vitalharmony/harmonic-forge/pull/9999#issuecomment-77")
+    elif args[:2] == ["pr", "list"]:  # the open-runner-PR guard (harmonic-forge#1195)
+        print(os.environ.get("FAKE_OPEN_PRS", "[]"))
+        sys.exit(int(os.environ.get("FAKE_PR_LIST_RC", "0")))
     elif args[:2] == ["pr", "view"]:
-        print(json.dumps({"headRefOid": (here / "pr_head").read_text(),
-                          "statusCheckRollup": [{"conclusion": "SUCCESS"}]}))
+        print(json.dumps({"headRefOid": (here / "pr_head").read_text()}))
 """)
 
 FAKE_MISE = "#!/bin/sh\nprintf '%b' \"${FAKE_MISE_OUT:-}\"\nexit ${FAKE_MISE_RC:-0}\n"
@@ -184,11 +191,12 @@ class Pipeline(unittest.TestCase):
             "GH_TOKEN": "operator-token", "GITHUB_TOKEN": "operator-token",
             "HRSE_SCRATCH_ROOT": private_scratch_root(self),
             "STUB_BWRAP_LOG": str(self.tmp / "bwrap.jsonl")}))
-        pd, tq = te_run.preclose_driver, te_run.te_queue
+        sb, tq = te_run.sandbox, te_run.te_queue
         for target, name, value in (
                 (te_run, "SOURCE", src), (te_run, "WORKTREE_ROOT", self.tmp / "wt"),
                 (te_run, "FORK_URL", str(self.fork)), (te_run, "CLAUDE", str(self.bin / "claude")),
-                (pd, "RUNNER_KEY", key), (pd, "RUNNER_GH", self.tmp / "runner-gh")):
+                (sb, "RUNNER_KEY", key), (sb, "RUNNER_GH", self.tmp / "runner-gh"),
+                (te_run, "ARCHIVE_ROOT", self.tmp / "archive")):
             self.enter(mock.patch.object(target, name, value))
         self.enter(mock.patch.object(te_run.deny_check, "boundary", return_value=[]))
         # The fixture repo has no sync_rules.py; linking has its own tests (#1127).
@@ -215,9 +223,13 @@ class Pipeline(unittest.TestCase):
         self.enter(mock.patch.object(tq, "lane1_marker_id", return_value=11))
         self.enter(mock.patch.object(tq, "runner_tree", return_value="tree0"))
         self.enter(mock.patch.object(te_run, "kill_receipt", return_value=True))
-        self.enter(mock.patch.object(te_run, "preclose_fact", return_value={
-            "status": "complete", "survivors": 0,
-            "provenance": "Red-team provenance: cross-family (codex) — 1/1"}))
+        # CI through gate_ci's authorizing read only (harmonic-forge#1195 AC4).
+        self.ci = ("green", "verify:success")
+        self.ci_reads = []
+        self.enter(mock.patch.object(te_run.gate_ci, "required_checks", return_value=set()))
+        self.enter(mock.patch.object(te_run.gate_ci, "authorizing_conclusion",
+                                     lambda repo, sha, required, run=None:
+                                     self.ci_reads.append((repo, sha)) or self.ci))
         self.events = []
         self.enter(mock.patch.object(te_run, "emit_event",
                                      lambda *a: self.events.append(a)))
@@ -263,8 +275,13 @@ class Pipeline(unittest.TestCase):
             self.assertIn(key, item)
         self.assertEqual(item["pr"], "https://github.com/vitalharmony/harmonic-forge/pull/9999")
         self.assertEqual(item["pushed_sha"], item["head_sha"])
-        self.assertEqual(item["facts"]["live"], {"pr_exists": True, "head_sha_matches": True,
-                                                 "ci": "green"})
+        self.assertEqual(item["facts"]["live"], {"pr_exists": True, "head_sha_matches": True})
+        self.assertNotIn("preclose", item["facts"])
+        self.assertEqual(item["merge"], {"authorized": True, "ci": "green",
+                                         "detail": "verify:success", "set_aside": False})
+        self.assertEqual(item["attempt"], 1)
+        self.assertEqual(self.ci_reads, [("vitalharmony/harmonic-forge", item["head_sha"])])
+        self.assertFalse([c for c in self.gh_calls() if c[:2] == ["pr", "comment"]])
         self.assertEqual(item["facts"]["kill"], [{"ac": "AC1", "base_rc": 1, "head_rc": 0}])
         self.assertEqual(item["ac_titles"], ["The widget returns 2.", "Nothing else changes."])
         self.assertIn("refs/heads/fix/7-te-runner", self.fork_branches())
@@ -275,21 +292,62 @@ class Pipeline(unittest.TestCase):
         self.assertNotRegex(body.lower(), r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #?\d")
         self.assertEqual(len(self.events), 1)
 
-    def test_green_item_records_the_summary_link_and_live_read_time(self):
-        def fact(issue, base, head, tier, env, out, harness=None):
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "summary.md").write_text("## Preclose pass\n")
-            return {"status": "complete", "survivors": 0,
-                    "provenance": "Red-team provenance: cross-family (codex) — 1/1"}
-        with mock.patch.object(te_run, "preclose_fact", fact):
-            self.assertEqual(self.drive(), 0)
+    def test_pending_ci_opens_the_pr_but_never_authorizes_merge(self):
+        """harmonic-forge#1195 AC4."""
+        self.ci = ("pending", "verify: queued")
+        self.assertEqual(self.drive(), 0)
         item = self.item()
-        self.assertEqual(item["preclose_summary"],
-                         "https://github.com/vitalharmony/harmonic-forge/pull/9999#issuecomment-77")
+        self.assertEqual(item["pr"], "https://github.com/vitalharmony/harmonic-forge/pull/9999")
+        self.assertEqual(item["verdict"]["state"], "green")
+        self.assertFalse(item["merge"]["authorized"])
+        self.assertEqual(item["merge"]["ci"], "pending")
+        self.assertIn("queued", item["merge"]["detail"])
         self.assertRegex(item["live_read_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        comment = next(c for c in self.gh_calls() if c[:2] == ["pr", "comment"])
-        self.assertIn("--repo", comment)
 
+    def test_absent_or_unknown_ci_leaves_the_item_open_and_unauthorized(self):
+        for state in ("absent", "unknown"):
+            with self.subTest(state=state):
+                self.setUp_queue_fresh()
+                self.ci = (state, "no verify run")
+                self.drive()
+                item = self.item()
+                self.assertEqual(item["verdict"]["state"], "green")
+                self.assertFalse(item["merge"]["authorized"])
+
+    def test_red_ci_sets_the_item_aside_as_check_fail(self):
+        self.ci = ("red", "verify:failure")
+        self.drive()
+        item = self.item()
+        self.assertEqual(item["pr"], "https://github.com/vitalharmony/harmonic-forge/pull/9999")
+        self.assertEqual((item["verdict"]["state"], item["reason"]), ("set-aside", "check-fail"))
+        self.assertIn("CI is red", item["note"])
+        self.assertFalse(item["merge"]["authorized"])
+
+    def test_ci_is_read_only_through_gate_ci(self):
+        """AC4: no hand-rolled CI rollup is left in the runner."""
+        runner = Path(te_run.__file__).resolve().parent
+        for path in runner.glob("*.py"):
+            if path.name.startswith("test_"):
+                continue
+            text = path.read_text()
+            with self.subTest(path=path.name):
+                self.assertNotIn("statusCheck" "Rollup", text)  # split: AC4 greps for it
+                expected = 1 if path.name == "te_run.py" else 0
+                self.assertEqual(text.count("gate_ci.authorizing_conclusion("), expected)
+
+    def test_ci_state_passes_the_runner_env_to_gate_ci(self):
+        seen = []
+
+        def conclusion(repo, sha, required, run=None):
+            seen.append(run(["gh", "api", "user"]))
+            return "green", "ok"
+        with mock.patch.object(te_run.gate_ci, "authorizing_conclusion", conclusion), \
+                mock.patch.object(te_run, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, "out", "")) as ran:
+            self.assertEqual(te_run.ci_state("a" * 40, {"GH_CONFIG_DIR": "/runner"}),
+                             ("green", "ok"))
+        self.assertEqual(seen, [(0, "out")])
+        self.assertEqual(ran.call_args.kwargs["env"], {"GH_CONFIG_DIR": "/runner"})
     def test_every_finished_item_carries_the_runs_id(self):
         te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
         with mock.patch.object(te_run.te_queue, "issue_number",
@@ -544,64 +602,62 @@ class Pipeline(unittest.TestCase):
     def test_failed_receipt_keeps_kill_facts(self):
         # harmonic-forge#1147 AC6 (F1073, run 7): the receipt failed, but the
         # facts it judged stay on the item, so the report names each check
-        # instead of "no kill checks ran"; no paid preclose runs.
-        with mock.patch.object(te_run, "kill_receipt", return_value=False), \
-                mock.patch.object(te_run, "preclose_fact") as preclose:
+        # instead of "no kill checks ran".
+        with mock.patch.object(te_run, "kill_receipt", return_value=False):
             self.drive()
         item = self.item()
         self.assertEqual(item["reason"], "kill-check-fail")
         self.assertEqual(item["facts"]["kill"], [{"ac": "AC1", "base_rc": 1, "head_rc": 0}])
         self.assertIs(item["facts"]["kill_receipt"], False)
         self.assertNotIn("no kill checks ran", item["note"])
-        preclose.assert_not_called()
 
-    def test_preclose_is_skipped_once_an_earlier_clause_failed(self):
-        # Sticky-wicket patch 6: no paid refuters or cross-family call once
-        # the item cannot go green; every failed clause is still listed (AC8).
+    def test_every_failed_clause_is_listed(self):
+        # AC8: the reducer lists every failed clause, with no model clause left.
         cases = ({"kill_receipt": False}, {"deny_hits": ["tools/hooks/x.py"]})
         for patched in cases:
             self.setUp_queue_fresh()
-            fact = mock.MagicMock(return_value={"status": "complete", "survivors": 0,
-                                                "provenance": "Red-team provenance: x"})
-            with mock.patch.object(te_run, "preclose_fact", fact), \
-                    mock.patch.multiple(te_run, **{k: mock.MagicMock(return_value=v)
-                                                   for k, v in patched.items()}):
+            with mock.patch.multiple(te_run, **{k: mock.MagicMock(return_value=v)
+                                                for k, v in patched.items()}):
                 self.drive()
-            item = self.item()
-            fact.assert_not_called()
-            self.assertEqual(item["facts"]["preclose"]["status"], "skipped: earlier clause failed")
-            reasons = [r["reason"] for r in item["verdict"]["reasons"]]
-            self.assertIn("preclose-survivor", reasons, patched)
-            self.assertGreaterEqual(len(reasons), 2, patched)
+            reasons = [r["reason"] for r in self.item()["verdict"]["reasons"]]
+            self.assertNotIn("preclose-survivor", reasons, patched)
+            self.assertTrue(reasons, patched)
+    def test_agent_wall_timeout_sets_aside_as_budget_and_the_run_goes_on(self):
+        """harmonic-forge#1195 AC7: a hung agent is killed with everything it
+        started, set aside as `budget`, and the next item still runs."""
+        te_run.te_queue.add(self.queue, ["F8"], checks=NO_CHECKS)
+        marker = f"te-runner-timeout-stub-{os.getpid()}-{id(self)}"
+        started = time.monotonic()
+        with mock.patch.object(te_run, "AGENT_TIMEOUT_S", 8), \
+                mock.patch.object(te_run.te_queue, "issue_number",
+                                  side_effect=lambda key: int(key[1:])):
+            self.drive(FAKE_SLEEP_FOR="harmonic-forge#7 ", FAKE_SLEEP_MARKER=marker)
+        # A child left alive holds the agent's stdout open, and the runner would
+        # wait on it (the child sleeps 120s): the kill must take the whole group.
+        self.assertLess(time.monotonic() - started, 90, "the run waited on the agent's child")
+        # Non-vacuous: the hung agent did start a child before it was killed.
+        self.assertTrue((self.tmp / "wt" / "harmonic-forge-7r-impl" / "spawned.pid").is_file())
+        first, second = self.item("F7"), self.item("F8")
+        self.assertEqual((first["status"], first["reason"]), ("done", "budget"), first)
+        self.assertEqual(first["note"], "agent wall timeout")
+        self.assertEqual(first["verdict"]["state"], "set-aside")
+        self.assertEqual(second["status"], "done", second)
+        self.assertEqual(second["verdict"]["state"], "green", second)
+        survivors = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        self.assertEqual(survivors.stdout, "", "the agent's child outlived the timeout")
+        self.assertEqual(survivors.returncode, 1)
 
-    def test_preclose_driver_failure_sets_aside_and_is_not_retried(self):
-        # A real stub driver behind preclose_fact: it writes a PASSING
-        # preclose.json and still exits non-zero. Each item is set aside, and
-        # the driver runs exactly once per item (operator ruling, #1059).
-        driver = self.tmp / "driver.py"
-        driver.write_text(textwrap.dedent("""\
-            import json, os, sys
-            from pathlib import Path
-            with open(os.environ["FAKE_DRIVER_LOG"], "a") as log:
-                log.write("run\\n")
-            out = Path(sys.argv[sys.argv.index("--out") + 1])
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "preclose.json").write_text(json.dumps({"status": "complete", "survivors": 0,
-                "provenance": "Red-team provenance: cross-family (codex) — 1/1"}))
-            sys.exit(int(os.environ["FAKE_DRIVER_RC"]))
-        """))
-        calls = self.tmp / "driver.log"
-        for rc in ("2", "4"):
-            calls.write_text("")
-            self.setUp_queue_fresh()
-            with mock.patch.object(te_run, "preclose_fact", REAL_PRECLOSE_FACT), \
-                    mock.patch.object(te_run, "PRECLOSE_DRIVER", driver):
-                self.drive(FAKE_DRIVER_RC=rc, FAKE_DRIVER_LOG=str(calls))
-            self.assertEqual(calls.read_text().count("run"), 1, rc)
-            item = self.item()
-            self.assertEqual(item["reason"], "preclose-survivor", rc)
-            self.assertEqual(item["facts"]["preclose"]["status"], f"driver exit {rc}")
+    def test_error_max_turns_is_budget(self):
+        self.drive(FAKE_SUBTYPE="error_max_turns")
+        item = self.item()
+        self.assertEqual(item["reason"], "budget")
+        self.assertIn("--max-turns 60", item["note"])
+        self.assertFalse(self.fork_branches())
 
+    def test_error_max_budget_is_still_budget(self):
+        self.drive(FAKE_SUBTYPE="error_max_budget_usd")
+        self.assertEqual((self.item()["reason"], self.item()["note"]),
+                         ("budget", "budget exceeded"))
     def setUp_queue_fresh(self):
         self.queue.unlink()
         te_run.te_queue.add(self.queue, ["F7"], checks=NO_CHECKS)
@@ -612,6 +668,10 @@ class Pipeline(unittest.TestCase):
             if "fix/7-te-runner" in sh("git", "branch", "--list", "fix/7-te-runner", cwd=self.src) \
             else None
         sh("git", "update-ref", "-d", "refs/te-runner/7", cwd=self.src)
+        for ref in sh("git", "for-each-ref", "--format=%(refname)", "refs/te-runner-archive",
+                      cwd=self.src).split():
+            sh("git", "update-ref", "-d", ref, cwd=self.src)
+        shutil.rmtree(self.tmp / "archive", ignore_errors=True)
         for ref in sh("git", "for-each-ref", "--format=%(refname)", "refs/heads", cwd=self.fork).split():
             sh("git", "update-ref", "-d", ref, cwd=self.fork)
 
@@ -632,7 +692,7 @@ class Pipeline(unittest.TestCase):
 
     def test_child_env_has_no_gh_token(self):
         # harmonic-forge#1107 AC5: the agent carries the runner token; every
-        # oracle, kill, preclose and PR env carries none.
+        # oracle, kill and PR env carries none.
         envs = []
         real_run = te_run.run
 
@@ -640,14 +700,7 @@ class Pipeline(unittest.TestCase):
             envs.append((argv, kw.get("env")))
             return real_run(argv, **kw)
 
-        fact_envs = []
-
-        def fact(*args, **kw):
-            fact_envs.append(args[4])
-            return {"status": "complete", "survivors": 0,
-                    "provenance": "Red-team provenance: cross-family (codex) — 1/1"}
         with mock.patch.object(te_run, "run", spy), \
-                mock.patch.object(te_run, "preclose_fact", fact), \
                 mock.patch.object(te_run, "kill_facts", wraps=te_run.kill_facts) as kills:
             self.assertEqual(self.drive(), 0)
         env = self.observed()[0]["env"]
@@ -655,11 +708,11 @@ class Pipeline(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertEqual(env["GH_CONFIG_DIR"], str(self.tmp / "runner-gh"))
         self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-runner")
-        self.assertTrue(envs and fact_envs and kills.call_args_list)
+        self.assertTrue(envs and kills.call_args_list)
         for argv, child in envs:  # env=None is the harness's own host git
             if child is not None:
                 self.assertNotIn("GH_TOKEN", child, argv)
-        for child in fact_envs + [c.args[3] for c in kills.call_args_list]:
+        for child in [c.args[3] for c in kills.call_args_list]:
             self.assertNotIn("GH_TOKEN", child)
         pr_calls = [c for c in self.gh_env() if c["argv"][:1] == ["pr"]]
         self.assertTrue(pr_calls)
@@ -737,7 +790,7 @@ class Pipeline(unittest.TestCase):
         log_path = self.tmp / "s" / "stream.jsonl"
         log_path.parent.mkdir()
         done = subprocess.CompletedProcess([], 0, "", "warn: x\n")
-        with mock.patch.object(te_run.subprocess, "run", return_value=done), \
+        with mock.patch.object(te_run, "_agent_process", return_value=done), \
                 mock.patch.object(te_run, "source_objects", return_value=self.tmp), \
                 self.assertRaises(te_run.Abort):
             te_run.run_agent(self.tmp, "p", "1", {}, log_path, self.tmp / "t")
@@ -762,7 +815,7 @@ class Pipeline(unittest.TestCase):
         self.assertTrue((self.tmp / "s2" / "stream.jsonl.stderr").exists())
 
     def test_missing_or_loose_key_file_refuses(self):
-        key = te_run.preclose_driver.RUNNER_KEY
+        key = te_run.sandbox.RUNNER_KEY
         key.chmod(0o644)
         self.assertEqual(te_run.main(["run", "--queue", str(self.queue),
                                       "--max-budget-usd", "1"]), 2)
@@ -782,7 +835,11 @@ class Pipeline(unittest.TestCase):
                      ["--settings", str(te_run.SETTINGS)]):
             i = argv.index(pair[0])
             self.assertEqual(argv[i:i + 2], pair)
+        i = argv.index("--max-turns")  # harmonic-forge#1195 AC7
+        self.assertEqual(argv[i:i + 2], ["--max-turns", "60"])
         self.assertNotIn("--bare", argv)
+        i = argv.index("--setting-sources")  # harmonic-forge#1195 rework
+        self.assertEqual(argv[i:i + 2], ["--setting-sources", ""])
         self.assertEqual(Path(self.observed()[0]["cwd"]),
                          (self.tmp / "wt" / "harmonic-forge-7r-impl").resolve())
 
@@ -830,24 +887,148 @@ class Pipeline(unittest.TestCase):
         self.assertEqual([s["statuses"] for s in seen],
                          [["in_progress", "pending"], ["done", "in_progress"]])
 
-    def test_existing_branch_blocks_the_item_and_is_never_reused(self):
-        sh("git", "branch", "fix/7-te-runner", cwd=self.src)
-        self.assertEqual(self.drive(), 3)
+    def clone_path(self) -> Path:
+        return self.tmp / "wt" / "harmonic-forge-7r-impl"
+
+    def earlier_attempt(self) -> str:
+        """Every local trace of attempt 1 plus its fork branch: a clone with a
+        commit and an uncommitted file, the pinned ref and a local branch."""
+        clone = self.clone_path()
+        sh("git", "clone", "-q", "--shared", str(self.src), str(clone), cwd=self.tmp)
+        sh("git", "checkout", "-q", "-b", "fix/7-te-runner", cwd=clone)
+        (clone / "widget.py").write_text("def widget():\n    return 3\n")
+        commit(clone, "attempt 1")
+        (clone / "notes.txt").write_text("uncommitted\n")
+        sh("git", "fetch", "-q", str(clone), "HEAD", cwd=self.src)
+        head = sh("git", "rev-parse", "FETCH_HEAD", cwd=self.src)
+        sh("git", "update-ref", "refs/te-runner/7", head, cwd=self.src)
+        sh("git", "branch", "fix/7-te-runner", head, cwd=self.src)
+        sh("git", "push", "-q", str(self.fork), f"{head}:refs/heads/fix/7-te-runner",
+           cwd=self.src)
+        return head
+
+    def test_an_earlier_attempt_is_archived_and_attempt_2_runs(self):
+        """harmonic-forge#1195 AC9."""
+        old = self.earlier_attempt()
+        self.assertEqual(self.drive(), 0)
+        item = self.item()
+        self.assertEqual((item["attempt"], item["branch"]), (2, "fix/7-te-runner-a2"))
+        self.assertEqual(item["verdict"]["state"], "green", item)
+        archive = self.tmp / "archive" / "7" / "1"
+        self.assertIn(b"attempt 1", (archive / "commits.patch").read_bytes())
+        self.assertIn(b"return 3", (archive / "commits.patch").read_bytes())
+        self.assertIn(b"notes.txt", (archive / "status.txt").read_bytes())
+        traces = json.loads((archive / "traces.json").read_text())
+        self.assertEqual((traces["attempt"], traces["ref"]), (1, old))
+        self.assertEqual(sh("git", "rev-parse", "refs/te-runner-archive/7/1", cwd=self.src), old)
+        self.assertNotEqual(sh("git", "rev-parse", "refs/te-runner/7", cwd=self.src), old)
+        self.assertEqual(sh("git", "branch", "--list", "fix/7-te-runner*", cwd=self.src), "")
+        # The fork's attempt-1 branch is untouched; attempt 2 is pushed beside it.
+        self.assertEqual(sh("git", "rev-parse", "refs/heads/fix/7-te-runner", cwd=self.fork), old)
+        self.assertIn("refs/heads/fix/7-te-runner-a2", self.fork_branches())
+        self.assertFalse(list((self.tmp / "archive" / "7").glob(".tmp-*")))
+        create = next(c for c in self.gh_calls() if c[:2] == ["pr", "create"])
+        self.assertEqual(create[create.index("--head") + 1],
+                         "vitalharmony-runner:fix/7-te-runner-a2")
+
+    def test_an_open_runner_pr_still_refuses_and_archives_nothing(self):
+        self.earlier_attempt()
+        open_pr = json.dumps([{"number": 41, "title": "te-runner: x (harmonic-forge#7)",
+                               "headRefName": "fix/7-te-runner"}])
+        self.assertEqual(self.drive(FAKE_OPEN_PRS=open_pr), 3)
         self.assertEqual(self.item()["status"], "blocked")
-        self.assertIn("never reused", self.item()["note"])
+        self.assertIn("runner PR #41", self.item()["note"])
+        self.assertTrue(self.clone_path().exists())
+        self.assertFalse((self.tmp / "archive" / "7").exists())
         self.assertEqual(self.observed(), [])
 
-    def test_pinned_head_ref_blocks_a_requeued_item_whose_clone_was_deleted(self):
-        sh("git", "update-ref", "refs/te-runner/7", "HEAD", cwd=self.src)
-        self.assertEqual(self.drive(), 3)
-        self.assertIn("refs/te-runner/7", self.item()["note"])
+    def test_another_issues_open_pr_does_not_refuse(self):
+        open_pr = json.dumps([{"number": 5, "title": "te-runner: y (harmonic-forge#77)",
+                               "headRefName": "fix/77-te-runner"}])
+        self.assertEqual(self.drive(FAKE_OPEN_PRS=open_pr), 0)
+
+    def test_unreadable_pr_list_blocks_the_item(self):
+        self.assertEqual(self.drive(FAKE_PR_LIST_RC="1"), 3)
+        self.assertIn("cannot list the runner's open PRs", self.item()["note"])
         self.assertEqual(self.observed(), [])
 
-    def test_branch_on_the_runner_fork_blocks_the_item(self):
+    def test_a_fork_branch_alone_moves_to_the_next_attempt(self):
         sh("git", "push", "-q", str(self.fork), "HEAD:refs/heads/fix/7-te-runner", cwd=self.src)
-        self.assertEqual(self.drive(), 3)
-        self.assertIn("already exists on the runner fork", self.item()["note"])
-        self.assertEqual(self.observed(), [])
+        before = sh("git", "rev-parse", "refs/heads/fix/7-te-runner", cwd=self.fork)
+        self.assertEqual(self.drive(), 0)
+        self.assertEqual(self.item()["branch"], "fix/7-te-runner-a2")
+        self.assertEqual(sh("git", "rev-parse", "refs/heads/fix/7-te-runner", cwd=self.fork),
+                         before)
+        self.assertEqual(te_run.archived_attempts(7), 0)
+
+    def test_a_fork_name_already_taken_increments_the_attempt(self):
+        self.earlier_attempt()
+        sh("git", "push", "-q", str(self.fork), "HEAD:refs/heads/fix/7-te-runner-a2",
+           cwd=self.src)
+        self.assertEqual(self.drive(), 0)
+        self.assertEqual((self.item()["attempt"], self.item()["branch"]),
+                         (3, "fix/7-te-runner-a3"))
+
+    def test_a_crash_before_the_rename_never_advances_the_attempt(self):
+        """AC9's crash rule: killed between the ref move and the clone removal."""
+        old = self.earlier_attempt()
+        real_rmtree = shutil.rmtree
+        clone = self.clone_path()
+
+        def crash(path, *args, **kw):
+            if Path(path) == clone:
+                raise KeyboardInterrupt("killed")
+            return real_rmtree(path, *args, **kw)
+        with mock.patch.object(te_run.shutil, "rmtree", crash), \
+                self.assertRaises(KeyboardInterrupt):
+            te_run.archive_previous_attempt(7, None, self.src)
+        root = self.tmp / "archive" / "7"
+        self.assertFalse((root / "1").exists())
+        self.assertEqual(len(list(root.glob(".tmp-1-*"))), 1)
+        self.assertEqual(te_run.archived_attempts(7), 0)
+        self.assertEqual(sh("git", "rev-parse", "refs/te-runner-archive/7/1", cwd=self.src), old)
+        # The next run resumes to the same, consistent attempt number.
+        self.assertEqual(te_run.archive_previous_attempt(7, None, self.src),
+                         (2, "fix/7-te-runner-a2"))
+        self.assertTrue((root / "1" / "commits.patch").is_file())
+        self.assertIn(b"return 3", (root / "1" / "commits.patch").read_bytes())
+        self.assertFalse(list(root.glob(".tmp-*")))
+        self.assertFalse(clone.exists())
+
+    def test_a_crash_after_the_clone_removal_keeps_the_archive(self):
+        self.earlier_attempt()
+        with mock.patch.object(te_run.os, "rename", side_effect=KeyboardInterrupt("killed")), \
+                self.assertRaises(KeyboardInterrupt):
+            te_run.archive_previous_attempt(7, None, self.src)
+        self.assertEqual(te_run.archived_attempts(7), 0)
+        self.assertFalse(self.clone_path().exists())
+        self.assertEqual(te_run.archive_previous_attempt(7, None, self.src)[0], 2)
+        patch = self.tmp / "archive" / "7" / "1" / "commits.patch"
+        self.assertIn(b"return 3", patch.read_bytes())
+
+    def test_a_clone_with_work_and_an_empty_archive_is_refused(self):
+        self.earlier_attempt()
+        empty = subprocess.CompletedProcess([], 0, b"", b"")
+        status = subprocess.CompletedProcess([], 0, b"?? notes.txt\n", b"")
+        with mock.patch.object(te_run, "_clone_git",
+                               side_effect=lambda clone, *a: status if a[0] == "status" else empty), \
+                self.assertRaisesRegex(te_run.Blocked, "archive came out empty"):
+            te_run.archive_previous_attempt(7, None, self.src)
+        self.assertTrue(self.clone_path().exists())
+        self.assertEqual(te_run.archived_attempts(7), 0)
+
+    def test_archive_git_runs_inside_the_boundary(self):
+        self.earlier_attempt()
+        log = self.tmp / "bwrap.jsonl"
+        log.write_text("")
+        te_run.archive_previous_attempt(7, None, self.src)
+        wrapped = [json.loads(l) for l in log.read_text().splitlines()]
+        self.assertTrue(any("--no-pager" in w and "log" in w for w in wrapped), wrapped)
+    def test_a_pinned_ref_alone_is_archived(self):
+        sh("git", "update-ref", "refs/te-runner/7", "HEAD", cwd=self.src)
+        self.assertEqual(self.drive(), 0)
+        self.assertEqual(self.item()["branch"], "fix/7-te-runner-a2")
+        self.assertTrue((self.tmp / "archive" / "7" / "1" / "traces.json").is_file())
 
     def test_unreadable_runner_fork_blocks_the_item(self):
         with mock.patch.object(te_run, "FORK_URL", str(self.tmp / "no-such-fork.git")):
@@ -1131,6 +1312,13 @@ class RealPipeline(Pipeline):
 # Only the green path runs under real bwrap; Pipeline's other tests use the stub.
 for _name in [n for n in vars(Pipeline) if n.startswith("test_")]:
     setattr(RealPipeline, _name, unittest.skip("covered under the stub bwrap")(lambda self: None))
+
+# harmonic-forge#1195: the timeout's process-tree kill and the archive's
+# in-boundary git are what real bwrap changes, so both run under it too.
+RealPipeline.test_real_bwrap_agent_wall_timeout_leaves_no_process = \
+    Pipeline.test_agent_wall_timeout_sets_aside_as_budget_and_the_run_goes_on
+RealPipeline.test_real_bwrap_earlier_attempt_is_archived = \
+    Pipeline.test_an_earlier_attempt_is_archived_and_attempt_2_runs
 
 
 def shadow_repo(case: unittest.TestCase) -> tuple[Path, str, str, Path]:
@@ -1567,14 +1755,43 @@ class Settings(unittest.TestCase):
         self.assertEqual(argv[at + 1], str(clone.resolve() / "mise.toml"))
 
 
+class LaunchBase(unittest.TestCase):
+    """harmonic-forge#1195 rework: one launch mode for the agent and the probe."""
+
+    def test_base_loads_no_settings_file_and_passes_the_runner_settings(self):
+        base = te_run.launch_base()
+        self.assertEqual(base[:2], [te_run.CLAUDE, "-p"])
+        i = base.index("--setting-sources")
+        self.assertEqual(base[i:i + 2], ["--setting-sources", ""])
+        j = base.index("--settings")
+        self.assertEqual(base[j:j + 2], ["--settings", str(te_run.SETTINGS)])
+        self.assertLess(i, j)
+
+    def test_base_never_contains_bare(self):
+        for settings in (None, Path("/x/settings.json")):
+            self.assertNotIn("--bare", te_run.launch_base(settings))
+        self.assertNotIn("--bare", te_run.claude_argv("1"))
+
+    def test_agent_argv_starts_from_the_base(self):
+        base = te_run.launch_base()
+        argv = te_run.claude_argv("2")
+        self.assertEqual(argv[:len(base)], base)
+        self.assertEqual(argv[len(base):], ["--max-budget-usd", "2", "--max-turns", "60"])
+
+    def test_a_settings_path_replaces_only_the_settings_value(self):
+        default, other = te_run.launch_base(), te_run.launch_base(Path("/x/s.json"))
+        j = default.index("--settings")
+        self.assertEqual(other[j + 1], "/x/s.json")
+        self.assertEqual(default[:j + 1] + default[j + 2:], other[:j + 1] + other[j + 2:])
+
+
 class Prompt(unittest.TestCase):
     def test_prompt_names_harness_owned_steps_and_refusal_policy(self):
         text = te_run.agent_prompt(7, "BODY", "HANDOFF")
         for phrase in ("`mkdir`", "`git checkout`", "`mise tasks`",
                        "A refusal is never a reason to stop",
                        "commit what exists",
-                       "The harness runs the kill checks, `mise run check`, the deny check and "
-                       "the preclose check",
+                       "The harness runs the kill checks, `mise run check` and the deny check",
                        "cannot see them",
                        "`os.environ`", "never as a command prefix",
                        "`pytest` is not installed", "`python3 -m unittest`",

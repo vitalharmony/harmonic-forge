@@ -18,7 +18,6 @@ import report  # noqa: E402
 GOLDEN = Path(__file__).resolve().parent / "testdata" / "report_golden.md"
 NOW = dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=dt.timezone.utc)
 RUN = "run-20261020T120000Z"
-CROSS = "Red-team provenance: cross-family (codex / gpt-6.1-sol) — 3 of 3 confirmed"
 
 
 def green(key: str, pr: str) -> dict:
@@ -26,12 +25,13 @@ def green(key: str, pr: str) -> dict:
             "verdict": {"state": "green", "reason": None, "detail": "all clauses passed"},
             "facts": {"kill": [{"ac": "AC1", "base_rc": 1, "head_rc": 0},
                                {"ac": "AC2", "base_rc": 1, "head_rc": 0}],
-                      "preclose": {"status": "complete", "survivors": 0, "provenance": CROSS},
-                      "live": {"pr_exists": True, "head_sha_matches": True, "ci": "pending"}},
+                      "live": {"pr_exists": True, "head_sha_matches": True}},
             "ac_titles": ["The widget returns 2.", "Nothing else changes."],
             "diff_stat": "2 files changed, 10 insertions(+)", "head_sha": "a" * 40,
             "branch": f"fix/{key[1:]}-te-runner", "pr": pr, "pushed_sha": "a" * 40,
-            "preclose_summary": pr + "#issuecomment-1", "live_read_at": "2026-10-20T11:00:00Z",
+            "merge": {"authorized": False, "ci": "pending", "set_aside": False,
+                      "detail": "verify: queued"},
+            "live_read_at": "2026-10-20T11:00:00Z",
             "run_id": RUN}
 
 
@@ -85,12 +85,23 @@ class Render(unittest.TestCase):
 
     def test_card_fields(self):
         text = self.render(QUEUE)
-        for field in ("AC1 base 1 / head 0", "Preclose survivors: none", CROSS,
-                      "pending — approve workflows, as of 2026-10-20T11:00:00Z, "
-                      "not authoritative: re-read live at BATCH time",
-                      "https://github.com/vitalharmony/harmonic-forge/pull/101#issuecomment-1",
+        for field in ("AC1 base 1 / head 0",
+                      "Merge: not authorized (pending: verify: queued), as of "
+                      "2026-10-20T11:00:00Z, not authoritative: re-read live at BATCH time",
                       "The widget returns 2.", "2 files changed"):
             self.assertIn(field, text)
+        for gone in ("Preclose", "Provenance"):  # harmonic-forge#1195 AC6
+            self.assertNotIn(gone, text)
+
+    def test_merge_line_states(self):
+        """harmonic-forge#1195: authorized only when the recorded merge says so."""
+        self.assertEqual(report.merge_line({"authorized": True, "ci": "green",
+                                            "detail": "verify:success"}),
+                         "Merge: authorized (green: verify:success)")
+        self.assertEqual(report.merge_line({}),
+                         "Merge: not authorized (unknown: no merge authorization recorded)")
+        self.assertTrue(report.merge_line({"authorized": "yes", "ci": "green", "detail": ""})
+                        .startswith("Merge: not authorized"))
 
     def test_set_aside_entries_name_decision_and_recommendation(self):
         text = self.render(QUEUE)

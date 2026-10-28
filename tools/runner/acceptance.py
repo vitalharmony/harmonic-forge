@@ -1,8 +1,8 @@
 """The one acceptance-section matcher the te-runner uses (harmonic-forge#1112 AC11).
 
-`preclose_driver.acceptance_criteria`, `te_run.ac_titles` and the preclose
-brief's one-assumption-per-criterion list (AC14) all read an issue body through
-here, so a body one of them accepts is a body every one of them accepts.
+`acceptance_criteria` (preflight (f)'s before-spend refusal) and
+`te_run.ac_titles` both read an issue body through here, so a body one of them
+accepts is a body every one of them accepts.
 
 The heading is case-insensitive and anchored: `## Acceptance criteria`,
 `## Acceptance`, `### acceptance criteria (amended)`, with an optional trailing
@@ -15,6 +15,9 @@ level.
 from __future__ import annotations
 
 import re
+import subprocess
+
+import sandbox
 
 HEADING = re.compile(r"^(#{1,6})\s*Acceptance(\s+criteria)?\s*(\(.*\))?\s*:?\s*$",
                      re.IGNORECASE)
@@ -66,3 +69,26 @@ def items(text: str | None) -> list[str]:
         if match:
             found.append(match.group(1).strip())
     return found
+
+
+def issue_body(repo: str, issue: int, env: dict[str, str]) -> str:
+    try:
+        result = subprocess.run(["gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".body"],
+                                env=env, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise sandbox.RunnerEnvError(f"cannot read {repo}#{issue}: {exc}") from exc
+    if result.returncode:
+        raise sandbox.RunnerEnvError(f"cannot read {repo}#{issue}: {result.stderr.strip()}")
+    return result.stdout
+
+
+def acceptance_criteria(repo: str, issue: int, env: dict[str, str]) -> str:
+    """The acceptance section through the shared matcher (harmonic-forge#1112 AC11)."""
+    text = section(issue_body(repo, issue, env))
+    if not text:
+        raise sandbox.RunnerEnvError(f"{repo}#{issue} has no acceptance criteria section")
+    # A section with no criterion items is refused, never one blanket
+    # assumption (harmonic-forge#1112 sticky-wicket patch 1).
+    if not items(text):
+        raise sandbox.RunnerEnvError(f"{repo}#{issue}'s acceptance section lists no criteria")
+    return text

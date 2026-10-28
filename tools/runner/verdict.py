@@ -18,7 +18,7 @@ Clauses run in a fixed order and the first hit wins `reason` and `detail`;
 walk at its clause:
 
     ineligible, deny-path, tool-refusal, budget, self-flag, check-fail,
-    kill-check-fail, preclose-survivor
+    kill-check-fail
 
 `green` only when no clause hits. Every clause fails closed: a fact that is
 missing, `None` or of the wrong type sets the item aside with the reason of
@@ -29,26 +29,31 @@ Facts (a plain dict; unknown keys are ignored):
 - `eligible: bool` -- false is `ineligible`.
 - `deny_hits: list[str]` -- non-empty is `deny-path`.
 - `permission_denials: int` -- above zero is `tool-refusal`.
-- `budget_exceeded: bool` -- true is `budget`.
+- `budget_exceeded: bool` -- true is `budget`; an optional `budget_detail`
+  string names the bound (the budget, `--max-turns`, the agent wall timeout).
 - `self_flag: str` -- the agent's "I cannot do this honestly" line;
   non-blank is `self-flag`, and an empty or blank string means no flag.
   `None` is a gap like any other fact (AC3), never "no flag": the harness
   writes `""` when the agent raised none.
-- `check_rc: int` and `live: {"pr_exists": bool, "head_sha_matches": bool,
-  "ci": "green"|"pending"|"red"}` -- a non-zero `check_rc`, a missing PR, a
-  PR whose head is not the SHA that was checked, or `ci == "red"` is
-  `check-fail` (G8: completion is verified against live GitHub). `pending`
-  passes: upstream Actions wait for the operator's approval on a fork PR, so
-  it surfaces on the review card and CI is re-read live at BATCH time.
+- `check_rc: int` and `live: {"pr_exists": bool, "head_sha_matches": bool}`
+  -- a non-zero `check_rc`, a missing PR, or a PR whose head is not the SHA
+  that was checked is `check-fail` (G8: completion is verified against live
+  GitHub). CI is not read here: `reduce` decides pre-PR eligibility only, and
+  CI is `merge_authorization`'s input (harmonic-forge#1195).
 - `kill: list[{"ac": str, "base_rc": int, "head_rc": int}]` -- passes only
   when the list is non-empty and every check failed on the base
   (`base_rc != 0`) and passed on the head (`head_rc == 0`); otherwise
   `kill-check-fail`.
-- `preclose: {"status": str, "survivors": int, "provenance": str}` -- passes
-  only when `status == "complete"`, `survivors == 0` and `provenance` starts
-  with `Red-team provenance: cross-family (`. An in-family fallback or a
-  missing receipt is `preclose-survivor`: IMC's rule (R-0384) applied to the
-  runner, since nothing but the operator settles its output.
+
+No model verdict is an input (harmonic-forge#1195): the refuter panel and the
+cross-family check are out of the accept path, and `self_flag` can only set an
+item aside, never make it green.
+
+`merge_authorization(state, detail)` is the second, separate decision: whether
+a PR that is open may be merged. Only gate_ci's `green` authorizes; `pending`,
+`absent` and `unknown` leave the item open and unauthorized, and `red` also
+sets it aside as `check-fail`. The runner never merges; BATCH's own
+concluded-green check (harmonic-forge#1178) stays the merge gate.
 
 `detail` is one line of at most 200 characters, the telemetry `attrs` limit
 (`tools/telemetry/schema_v1.json`).
@@ -57,22 +62,19 @@ from __future__ import annotations
 
 SET_ASIDE_REASONS: tuple[str, ...] = (
     "ineligible", "deny-path", "check-fail", "kill-check-fail",
-    "preclose-survivor", "budget", "tool-refusal", "self-flag",
+    "budget", "tool-refusal", "self-flag",
 )
 
 #: The order clauses are tried in; the first hit wins.
 PRECEDENCE: tuple[str, ...] = (
     "ineligible", "deny-path", "tool-refusal", "budget", "self-flag",
-    "check-fail", "kill-check-fail", "preclose-survivor",
+    "check-fail", "kill-check-fail",
 )
 
-#: Mirrors `tools/gh/preclose_check.py`'s `PROVENANCE_TRIGGERED[0]`. Restated,
-#: not imported, so this module stays pure (importing preclose_check runs its
-#: own path and hook imports).
-CROSS_FAMILY_PREFIX = "Red-team provenance: cross-family ("
-
 DETAIL_LIMIT = 200
-CI_STATES = ("green", "pending", "red")
+#: `tools/gh/gate_ci`'s five states. Restated, not imported, so this module
+#: stays pure.
+CI_STATES = ("green", "pending", "red", "absent", "unknown")
 
 
 class _Gap(Exception):
@@ -127,7 +129,10 @@ def _tool_refusal(facts: dict) -> str | None:
 
 
 def _budget(facts: dict) -> str | None:
-    return "budget exceeded" if _bool(facts, "budget_exceeded") else None
+    if not _bool(facts, "budget_exceeded"):
+        return None
+    detail = facts.get("budget_detail")  # optional: which bound was hit
+    return detail if isinstance(detail, str) and detail.strip() else "budget exceeded"
 
 
 def _self_flag(facts: dict) -> str | None:
@@ -144,10 +149,7 @@ def _check_fail(facts: dict) -> str | None:
         return "no PR exists on GitHub"
     if not _bool(live, "head_sha_matches"):
         return "PR head is not the checked SHA"
-    ci = _str(live, "ci", "live.ci")
-    if ci not in CI_STATES:
-        raise _Gap(f"live.ci is not one of {', '.join(CI_STATES)}")
-    return "CI is red" if ci == "red" else None
+    return None
 
 
 def _kill_check_fail(facts: dict) -> str | None:
@@ -174,19 +176,6 @@ def _kill_check_fail(facts: dict) -> str | None:
     return None if receipt_ok else "kill-check receipt failed"
 
 
-def _preclose_survivor(facts: dict) -> str | None:
-    preclose = _dict(facts, "preclose")
-    status = _str(preclose, "status", "preclose.status")
-    survivors = _int(preclose, "survivors", "preclose.survivors")
-    provenance = _str(preclose, "provenance", "preclose.provenance")
-    if status != "complete":
-        return f"preclose pass not complete (status {status})"
-    if survivors:
-        return f"{survivors} preclose finding(s) survived"
-    if not provenance.startswith(CROSS_FAMILY_PREFIX):
-        return "preclose pass is not cross-family"
-    return None
-
 
 _CLAUSES = {
     "ineligible": _ineligible,
@@ -196,7 +185,6 @@ _CLAUSES = {
     "self-flag": _self_flag,
     "check-fail": _check_fail,
     "kill-check-fail": _kill_check_fail,
-    "preclose-survivor": _preclose_survivor,
 }
 
 
@@ -230,3 +218,25 @@ def reduce(facts: object) -> dict:
     if hits:
         return _set_aside(hits[0]["reason"], hits[0]["detail"], hits)
     return {"state": "green", "reason": None, "detail": "all clauses passed", "reasons": []}
+
+
+def merge_authorization(state: object, detail: object) -> dict:
+    """Whether an open PR may be merged, from gate_ci's CI state. Pure.
+
+    Only `green` authorizes. A state outside `CI_STATES` is a gap and is not
+    authorized. `set_aside` is true only for `red` (`check-fail`)."""
+    ci = state if isinstance(state, str) else "unknown"
+    if ci not in CI_STATES:
+        detail, ci = f"unrecognized CI state {state!r}: {detail}", "unknown"
+    return {"authorized": ci == "green", "ci": ci, "detail": one_line(str(detail)),
+            "set_aside": ci == "red"}
+
+
+def with_merge(outcome: dict, merge: dict) -> dict:
+    """`outcome` with red CI added as `check-fail`; anything else unchanged. Pure."""
+    if not merge.get("set_aside"):
+        return outcome
+    hit = {"reason": "check-fail", "detail": one_line(f"CI is red: {merge.get('detail', '')}")}
+    reasons = [*outcome.get("reasons", []), hit]
+    first = reasons[0]
+    return _set_aside(first["reason"], first["detail"], reasons)

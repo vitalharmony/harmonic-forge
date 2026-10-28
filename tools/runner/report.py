@@ -9,8 +9,8 @@
 `render` reads the queue file and nothing else: each item's harness-written
 keys (harmonic-forge#1055) and the reducer's `verdict` (harmonic-forge#1051).
 The only free text it carries is the reducer's own `detail`, already capped at
-200 characters. It reads no model output, pastes no gate, check or refuter
-output, and names no lane status token.
+200 characters. It reads no model output, pastes no gate or check output, and
+names no lane status token.
 
 The layout, in order:
 1. a header with counts;
@@ -21,9 +21,9 @@ The layout, in order:
 5. a fenced block holding the BATCH line and one close line per green PR.
 
 That block is inert data: a BATCH line in a file mints no grant (R-0117), and
-BATCH grants no close (harmonic-forge#612/#911). A card's CI state is what the
-harness read at run time, labelled as not authoritative: CI is re-read live
-when BATCH is typed.
+BATCH grants no close (harmonic-forge#612/#911). A card's merge line is the
+harness's `verdict.merge_authorization` at run time (harmonic-forge#1195),
+labelled as not authoritative: CI is re-read live when BATCH is typed.
 
 `notify` sends one line with `curl` to `https://ntfy.sh/<topic>`. The topic is
 read from `NTFY_TOPIC_FILE` or `~/.local/share/te-runner/ntfy-topic` and is
@@ -48,7 +48,6 @@ DEFAULT_TOPIC_FILE = Path.home() / ".local" / "share" / "te-runner" / "ntfy-topi
 STATUS_TOKEN = re.compile(r"\bL[1-3][BDSPF]\b")
 MAX_ITEM_LINES = 12
 DETAIL_LIMIT = 200
-CI_LABEL = {"green": "green", "pending": "pending — approve workflows", "red": "red"}
 #: What the operator decides for each set-aside reason, and Lane 1's recommendation.
 DECISIONS = {
     "ineligible": ("whether to fix the eligibility gap or drop the issue from the pilot",
@@ -65,8 +64,6 @@ DECISIONS = {
                    "route it to Lane 1; do not re-queue unchanged"),
     "kill-check-fail": ("whether Lane 1's oracle or the agent's change is wrong",
                         "Lane 1 reviews the kill-check results before any re-run"),
-    "preclose-survivor": ("what the preclose panel found",
-                          "read the preclose summary; Lane 1 fixes or reforges"),
     "unstamped": ("which run produced this item (it carries no run id)",
                   "read it in the queue file before acting; it is never proposed for merge"),
     "blocked": ("why the run could not proceed (the queue file's note)",
@@ -113,25 +110,28 @@ def card(item: dict) -> list[str]:
     facts = item.get("facts") or {}
     kills = "; ".join(f"{clean(k.get('ac'), 40)} base {k.get('base_rc')} / head {k.get('head_rc')}"
                       for k in facts.get("kill") or []) or "none recorded"
-    preclose = facts.get("preclose") or {}
-    survivors = preclose.get("survivors")
-    live = facts.get("live") or {}
-    ci = CI_LABEL.get(live.get("ci"), "unknown")
+    merge = item.get("merge") if isinstance(item.get("merge"), dict) else {}
     titles = "; ".join(clean(t, 80) for t in item.get("ac_titles") or []) or "none recorded"
     return [
         f"### {issue_key(item)} — {item.get('pr') or 'no PR recorded'}",
         f"- Acceptance criteria: {clean(titles, 400)}",
         f"- Diff: {clean(item.get('diff_stat'), 120) or 'none recorded'}",
         f"- Kill checks: {clean(kills, 400)}. {check_line(facts)}",
-        f"- Preclose survivors: {'none' if survivors == 0 else clean(survivors, 20)}",
-        f"- Provenance: {clean(preclose.get('provenance'), 160) or 'none recorded'}",
-        f"- CI: {ci}, as of {clean(item.get('live_read_at'), 30) or 'unknown'}, "
+        f"- {merge_line(merge)}, as of {clean(item.get('live_read_at'), 30) or 'unknown'}, "
         "not authoritative: re-read live at BATCH time",
-        f"- Preclose summary: {item.get('preclose_summary') or 'not recorded'}",
         "- [ ] scope",
         "- [ ] containment",
         "- [ ] honesty",
     ]
+
+
+def merge_line(merge: dict) -> str:
+    """`Merge: authorized | not authorized (<ci>: <detail>)` (harmonic-forge#1195)."""
+    if not merge:
+        return "Merge: not authorized (unknown: no merge authorization recorded)"
+    verdict = "authorized" if merge.get("authorized") is True else "not authorized"
+    return (f"Merge: {verdict} ({clean(merge.get('ci'), 20) or 'unknown'}: "
+            f"{clean(merge.get('detail'), 160) or 'no detail'})")
 
 
 def check_line(facts: dict) -> str:
