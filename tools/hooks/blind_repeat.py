@@ -57,9 +57,15 @@ def state_key(command: str, cwd: str) -> str | None:
     digest = hashlib.sha256()
     for part in (command.encode(), os.path.realpath(cwd).encode(), head.strip()):
         digest.update(part + b"\0")
-    digest.update(_git(cwd, "diff", "HEAD", "--binary") or b"")
-    untracked = _git(cwd, "ls-files", "--others", "--exclude-standard", "-z") or b""
-    root = (_git(cwd, "rev-parse", "--show-toplevel") or b"").strip().decode() or cwd
+    # pass 1 survivor 2: a git read that fails or times out means the tree is
+    # undecidable, so there is no key (allow), never an empty-digest key.
+    diff = _git(cwd, "diff", "HEAD", "--binary")
+    untracked = _git(cwd, "ls-files", "--others", "--exclude-standard", "-z")
+    toplevel = _git(cwd, "rev-parse", "--show-toplevel")
+    if diff is None or untracked is None or toplevel is None:
+        return None
+    digest.update(diff)
+    root = toplevel.strip().decode() or cwd
     for name in sorted(n for n in untracked.split(b"\0") if n):
         digest.update(name + b"\0")
         try:
@@ -110,12 +116,17 @@ def record(payload: dict, now: float | None = None) -> None:
     now = time.time() if now is None else now
     path = session_file(session)
     path.parent.mkdir(parents=True, exist_ok=True)
-    kept = [r for r in _read(path) if now - r.get("t", 0) < TTL_SECONDS]
-    kept.append({"key": key, "t": now, "line": _first_failure_line(payload),
-                 "flaky": command in FLAKY_COMMANDS})
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text("".join(json.dumps(r) + "\n" for r in kept), encoding="utf-8")
-    os.replace(tmp, path)
+    # pass 1 survivor 3: one O_APPEND write per record, never a
+    # read-modify-replace, so concurrent failures cannot overwrite each other.
+    # Expired records are filtered at read time (refusal); a session's file is
+    # removed by the stale-file prune below once the session has ended.
+    line = json.dumps({"key": key, "t": now, "line": _first_failure_line(payload),
+                       "flaky": command in FLAKY_COMMANDS}) + "\n"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
     for other in store_dir().glob("*.jsonl"):  # AC7: other sessions' stale files
         try:
             if other != path and now - other.stat().st_mtime > STALE_FILE_SECONDS:

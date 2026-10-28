@@ -164,6 +164,32 @@ class FailOpen(Base):
             record_failed_command.main()
 
 
+class Pass1Fixes(Base):
+    def test_a_git_failure_allows_instead_of_keying_an_empty_tree(self):
+        self.record_failure("make x")
+        real = R._git
+        def failing(cwd, *args):
+            return None if args[:1] == ("diff",) else real(cwd, *args)
+        with mock.patch.object(R, "_git", side_effect=failing):
+            self.assertIsNone(self.refused("make x"))
+
+    def test_concurrent_failures_are_all_kept(self):
+        import threading
+        commands = [f"cmd {i}" for i in range(12)]
+        threads = [threading.Thread(target=self.record_failure, args=(c,)) for c in commands]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        for c in commands:
+            self.assertIsNotNone(self.refused(c), c)
+
+    def test_flaky_count_survives_concurrent_writes(self):
+        import threading
+        threads = [threading.Thread(target=self.record_failure, args=("mise run check",)) for _ in range(2)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertIsNotNone(self.refused("mise run check"))
+
+
 class Hygiene(Base):
     def test_other_sessions_stale_files_are_pruned(self):
         stale = R.session_file("old-session")
