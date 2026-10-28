@@ -58,7 +58,10 @@ def key_for(repo: str, issue: int | str) -> str | None:
         return None
     try:
         return batch_auth.issue_key(repo, issue)
-    except Exception:
+    except Exception as exc:
+        # issue_key returns None for an unknown repo and never raises for one
+        # (batch_auth.py:347-348), so a raise here is a real failure (AC6).
+        print(f"[tasklist_owed] key resolve failed for {repo}#{issue}: {exc}", file=sys.stderr)
         return None
 
 

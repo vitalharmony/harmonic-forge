@@ -1433,10 +1433,11 @@ class CommentWatchCycleTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_comments", return_value=[comment]), \
                 patch.object(watch_lane_posts._tasklist_owed, "record_if_stale",
                              side_effect=RuntimeError("boom")):
-            _lines, fetch_failed = watch_lane_posts.comment_watch_cycle(
+            lines, fetch_failed = watch_lane_posts.comment_watch_cycle(
                 self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed,
                 self_lane="l2")
         self.assertFalse(fetch_failed)
+        self.assertTrue(lines, "the event must still be emitted when the marker step raises")
 
     def test_a_failed_tasklist_import_is_named_on_stderr(self):
         """harmonic-forge#1221 AC6 (pass-1 survivor 1)."""
@@ -1446,6 +1447,24 @@ class CommentWatchCycleTests(unittest.TestCase):
         done = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True,
                               text=True, cwd=Path(__file__).resolve().parents[2])
         self.assertEqual(done.stdout.strip(), "None")
+        self.assertIn("task-list markers off", done.stderr)
+
+    def test_a_broken_tasklist_module_is_named_and_the_belt_still_loads(self):
+        """harmonic-forge#1221 AC6 (pass-2 survivor 1): a module that raises a
+        non-ImportError at import turns markers off; it never stops the belt."""
+        with tempfile.TemporaryDirectory() as scratch:
+            (Path(scratch) / "tasklist_owed.py").write_text("raise RuntimeError('broken')\n")
+            root = Path(__file__).resolve().parents[2]
+            code = ("import sys, importlib.util; "
+                    f"spec = importlib.util.spec_from_file_location('tasklist_owed', {str(Path(scratch) / 'tasklist_owed.py')!r}); "
+                    "mod = importlib.util.module_from_spec(spec); "
+                    "sys.meta_path.insert(0, type('F', (), {'find_spec': staticmethod("
+                    "lambda n, p=None, t=None: spec if n == 'tasklist_owed' else None)})()); "
+                    f"sys.path.insert(0, {str(root / 'tools/gh')!r}); import watch_lane_posts; "
+                    "print(watch_lane_posts._tasklist_owed)")
+            done = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True,
+                                  text=True, cwd=root)
+        self.assertEqual(done.stdout.strip(), "None", done.stderr)
         self.assertIn("task-list markers off", done.stderr)
 
     def test_a_failed_fetch_reports_fetch_failed_true(self):

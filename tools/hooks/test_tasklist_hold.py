@@ -623,6 +623,15 @@ class OtherLanePostTests(Base):
             self.assertIsNone(owed.key_for("nobody/nothing", 1))
         self.assertEqual(err.getvalue(), "")
 
+    def test_a_raising_resolver_is_named_on_stderr(self):
+        """AC6 (pass-2 survivor 2)."""
+        import batch_auth  # noqa: PLC0415
+        err = io.StringIO()
+        with mock.patch.object(batch_auth, "issue_key", side_effect=RuntimeError("boom")), \
+                mock.patch("sys.stderr", err):
+            self.assertIsNone(owed.key_for("vitalharmony/hrse", 2384))
+        self.assertIn("key resolve failed", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
