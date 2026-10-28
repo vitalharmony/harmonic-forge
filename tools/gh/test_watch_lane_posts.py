@@ -1438,6 +1438,16 @@ class CommentWatchCycleTests(unittest.TestCase):
                 self_lane="l2")
         self.assertFalse(fetch_failed)
 
+    def test_a_failed_tasklist_import_is_named_on_stderr(self):
+        """harmonic-forge#1221 AC6 (pass-1 survivor 1)."""
+        code = ("import sys; sys.modules['tasklist_owed'] = None; "
+                "sys.path.insert(0, 'tools/gh'); import watch_lane_posts; "
+                "print(watch_lane_posts._tasklist_owed)")
+        done = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True,
+                              text=True, cwd=Path(__file__).resolve().parents[2])
+        self.assertEqual(done.stdout.strip(), "None")
+        self.assertIn("task-list markers off", done.stderr)
+
     def test_a_failed_fetch_reports_fetch_failed_true(self):
         """harmonic-forge#638 preclose finding 2 -- 'I do not know' must never
         read as 'nothing found' for backoff purposes."""

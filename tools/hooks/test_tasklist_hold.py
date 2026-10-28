@@ -608,6 +608,21 @@ class OtherLanePostTests(Base):
         self.assertFalse(self.stale(created_at="not-a-date"))
         self.assertEqual(owed.markers(SESSION), [])
 
+    def test_a_resolver_that_cannot_load_is_named_on_stderr(self):
+        """AC6 (pass-1 survivor 2): a batch_auth import failure is logged, not
+        mistaken for an unknown repo."""
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"batch_auth": None}), \
+                mock.patch("sys.stderr", err):
+            self.assertIsNone(owed.key_for("vitalharmony/hrse", 2384))
+        self.assertIn("key resolver unavailable", err.getvalue())
+
+    def test_an_unknown_repo_stays_silent(self):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            self.assertIsNone(owed.key_for("nobody/nothing", 1))
+        self.assertEqual(err.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

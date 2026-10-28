@@ -235,7 +235,9 @@ import staleness_ff  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 try:
     import tasklist_owed as _tasklist_owed  # noqa: E402
-except ImportError:
+except ImportError as _exc:
+    print(f"[watch_lane_posts] task-list markers off: tasklist_owed did not import: {_exc}",
+          file=sys.stderr)
     _tasklist_owed = None
 
 from belt_mechanics import (  # noqa: E402

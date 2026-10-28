@@ -51,6 +51,12 @@ def key_for(repo: str, issue: int | str) -> str | None:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import batch_auth  # noqa: PLC0415
+    except Exception as exc:
+        # harmonic-forge#1221 AC6: a resolver that cannot load is a failure,
+        # not an unknown repo, so it is named; an unknown repo stays silent.
+        print(f"[tasklist_owed] key resolver unavailable: {exc}", file=sys.stderr)
+        return None
+    try:
         return batch_auth.issue_key(repo, issue)
     except Exception:
         return None
