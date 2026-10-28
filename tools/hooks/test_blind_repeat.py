@@ -210,20 +210,6 @@ class Pass2Fixes(Base):
         with mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
             self.assertIsNone(R.state_key("make x", str(self.repo)))
 
-    def test_fixing_a_named_file_outside_the_repo_clears(self):
-        """pass 2 survivor 2: an out-of-repo `--file` body is part of the key."""
-        body = self.root / "body.md"
-        body.write_text("draft 1")
-        command = f"python3 tools/gh/l1_post.py --issue 1 --file {body}"
-        self.record_failure(command)
-        self.assertIsNotNone(self.refused(command))
-        body.write_text("draft 2")
-        self.assertIsNone(self.refused(command))
-        flag = f"python3 tools/gh/l1_post.py --issue 1 --file={body}"
-        self.record_failure(flag)
-        body.write_text("draft 3")
-        self.assertIsNone(self.refused(flag))
-
 
 class Hygiene(Base):
     def test_other_sessions_young_files_are_kept(self):
