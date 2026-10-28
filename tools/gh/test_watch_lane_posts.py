@@ -3023,7 +3023,7 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
 
     def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
         self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
-        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.0", "Platform"}))
+        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.1", "Platform"}))
 
     def test_an_edited_list_takes_effect_without_a_restart(self):
         # Preclose pass 1 survivor: the list was cached for the process's life.
