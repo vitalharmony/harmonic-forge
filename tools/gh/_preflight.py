@@ -9,6 +9,20 @@ real run in a session that has no receipt for it. `l1_post.py`'s preflight form
 is a clean `--dry-run` of the same post, keyed by `digest_key` to that post's
 arguments (harmonic-forge#1115); `--help` no longer counts for it.
 
+harmonic-forge#1215: every preflight is a read-only probe of the run's own
+requirements, bound to that run's argument digest. The inventory:
+
+| Step | Preflight |
+|---|---|
+| `l1_post.py` | a clean `--dry-run` of the same post (#1115) |
+| `preclose_check.py --force` | the same command without `--force` (already a real run; exempt from the digest rule by name) |
+| `lane1_rebase.py` | `--check <repo> <issue> <branch>`: `ls-remote`, no fetch, lock or prune; digest includes origin's branch SHA. `--help` unlocks nothing |
+| `kill_check.py run` | `run --validate` with the same arguments: schema plus `git apply --check` on a throwaway index; digest includes the checks file |
+| `cross_family_call.sh` | none separate: it validates its own arguments before any call |
+| `mise run check` / `check-full` | none: no requirement beyond the tree; repeats are harmonic-forge#1216's |
+| `gh pr merge` | none: pre-gated by `block_irreversible_ops.py` before it runs |
+| `git push` of a TE branch | none here: harmonic-forge#1135's PreToolUse refusal |
+
 The session is `CLAUDE_CODE_SESSION_ID`, the key `handoff_owed.session_id()`
 already reads. An empty value (a non-Claude caller, CI) is not enforced: an
 unidentified caller is never blocked. The id is hashed into the path, so no

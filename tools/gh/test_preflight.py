@@ -66,13 +66,15 @@ class PreflightTests(unittest.TestCase):
 
     # --- the three tools --------------------------------------------------
 
-    def test_lane1_rebase_refuses_then_allows_after_help(self) -> None:
+    def test_lane1_rebase_help_no_longer_unlocks_a_run(self) -> None:
+        """harmonic-forge#1215 AC1: the preflight is `--check`, never `--help`."""
         argv = (REBASE, "/nonexistent", "1", "feat/x")
         first = self.run_tool(*argv)
         self.assertEqual(first.returncode, 1)
         self.assertIn(NEEDLE, first.stderr)
+        self.assertIn("--check /nonexistent 1 feat/x", first.stderr)
         self.assertEqual(self.run_tool(REBASE, "--help").returncode, 0)
-        self.assertNotIn(NEEDLE, self.run_tool(*argv).stderr)
+        self.assertIn(NEEDLE, self.run_tool(*argv).stderr)
 
     def _preclose(self, *extra, issue="1", session="session-a"):
         return self.run_tool(PRECLOSE, "--repo", "vitalharmony/harmonic-forge",
@@ -126,8 +128,7 @@ class PreflightTests(unittest.TestCase):
             done = subprocess.run([sys.executable, str(tool), "--help"], capture_output=True,
                                   text=True, env=env, timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn("receipt not written", done.stderr)
-            self.assertNotIn("Traceback", done.stderr)
+            self.assertNotIn("Traceback", done.stderr)  # --help records nothing since #1215
 
     def test_record_never_raises_when_replace_and_cleanup_fail(self) -> None:
         """Sticky PATCH: os.replace and the cleanup unlink both fail; no raise."""

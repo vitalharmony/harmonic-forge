@@ -30,6 +30,12 @@ def git(cwd: Path, *args: str) -> str:
 
 class KillCheckTests(unittest.TestCase):
     def setUp(self) -> None:
+        # harmonic-forge#1215: these exercise `run`, not its preflight gate, so
+        # an inherited session id must not make them depend on live receipts.
+        session = patch.dict(os.environ)
+        session.start()
+        self.addCleanup(session.stop)
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
         # is refused under /tmp (harmonic-forge#949).
         (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
@@ -79,6 +85,74 @@ class KillCheckTests(unittest.TestCase):
 
     def receipt(self) -> dict:
         return kill.read_receipt(REPO, ISSUE)
+
+    # --- harmonic-forge#1215 AC2: `run --validate` is run's read-only preflight ---
+
+    def _validate(self, checks: str | None = None) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                return kill.validate(argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main",
+                                                        head="HEAD", checks=checks or str(self.checks_file),
+                                                        timeout=300))
+            except SystemExit as exc:
+                return 1 if exc.code else 0
+
+    def _in_session(self):
+        session = patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "test-1215",
+                                          "PREFLIGHT_RECEIPT_DIR": str(self.root / "receipts")})
+        session.start()
+        self.addCleanup(session.stop)
+
+    def test_run_needs_validate_in_a_session(self) -> None:
+        self._in_session()
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(self.execute(), 1)
+        self.assertIn("--validate", err.getvalue())
+        self.assertIsNone(self.receipt())
+        self.assertEqual(self._validate(), 0)
+        self.assertEqual(self.execute(), 0)
+
+    def test_changed_checks_need_a_new_validate(self) -> None:
+        self._in_session()
+        self.assertEqual(self._validate(), 0)
+        self.write_checks(test=["python3", "-c", "import check"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.execute(), 1)
+
+    def test_an_edited_patch_needs_a_new_validate(self) -> None:
+        """pass 1 survivor 1: patch contents are in the digest."""
+        self._in_session()
+        self.assertEqual(self._validate(), 0)
+        self.patch_file.write_text(self.patch_file.read_text().replace("return 2", "return 3"))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.execute(), 1)
+
+    def test_a_changed_base_needs_a_new_validate(self) -> None:
+        self._in_session()
+        self.assertEqual(self._validate(), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = kill.run(argparse.Namespace(repo=REPO, issue=ISSUE, base="HEAD~1", head="HEAD",
+                                               checks=str(self.checks_file), timeout=300))
+        self.assertEqual(code, 1)
+
+    def test_validate_refuses_a_malformed_checks_file(self) -> None:
+        self._in_session()
+        self.checks_file.write_text(json.dumps([{"ac": "AC1", "mechanism": "m",
+                                                 "patch": str(self.patch_file), "test": "python3 check.py"}]))
+        self.assertEqual(self._validate(), 1)
+        self.assertFalse((self.root / "receipts").exists())
+
+    def test_validate_refuses_a_patch_that_does_not_apply(self) -> None:
+        self._in_session()
+        bad = self.root / "bad.patch"
+        bad.write_text("--- a/f.py\n+++ b/f.py\n@@ -1,2 +1,2 @@\n def f():\n-    return 9\n+    return 2\n")
+        self.write_checks(patch_path=str(bad))
+        self.assertEqual(self._validate(), 1)
+        self.assertFalse((self.root / "receipts").exists())
+
+    def test_validate_runs_no_test(self) -> None:
+        with patch.object(kill, "one_check", side_effect=AssertionError("ran a test")):
+            self.assertEqual(self._validate(), 0)
 
     def test_killed_same_length_stub_and_receipt(self) -> None:
         leftovers = self.record_leftovers()
@@ -394,6 +468,12 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
     FILES = 700
 
     def setUp(self) -> None:
+        # harmonic-forge#1215: these exercise `run`, not its preflight gate, so
+        # an inherited session id must not make them depend on live receipts.
+        session = patch.dict(os.environ)
+        session.start()
+        self.addCleanup(session.stop)
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
         # is refused under /tmp (harmonic-forge#949).
         (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
