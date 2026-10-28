@@ -838,6 +838,8 @@ class Pipeline(unittest.TestCase):
         i = argv.index("--max-turns")  # harmonic-forge#1195 AC7
         self.assertEqual(argv[i:i + 2], ["--max-turns", "60"])
         self.assertNotIn("--bare", argv)
+        i = argv.index("--setting-sources")  # harmonic-forge#1195 rework
+        self.assertEqual(argv[i:i + 2], ["--setting-sources", ""])
         self.assertEqual(Path(self.observed()[0]["cwd"]),
                          (self.tmp / "wt" / "harmonic-forge-7r-impl").resolve())
 
@@ -1751,6 +1753,36 @@ class Settings(unittest.TestCase):
         argv = te_run.sandbox.boundary_argv(clone)
         at = argv.index("MISE_TRUSTED_CONFIG_PATHS")
         self.assertEqual(argv[at + 1], str(clone.resolve() / "mise.toml"))
+
+
+class LaunchBase(unittest.TestCase):
+    """harmonic-forge#1195 rework: one launch mode for the agent and the probe."""
+
+    def test_base_loads_no_settings_file_and_passes_the_runner_settings(self):
+        base = te_run.launch_base()
+        self.assertEqual(base[:2], [te_run.CLAUDE, "-p"])
+        i = base.index("--setting-sources")
+        self.assertEqual(base[i:i + 2], ["--setting-sources", ""])
+        j = base.index("--settings")
+        self.assertEqual(base[j:j + 2], ["--settings", str(te_run.SETTINGS)])
+        self.assertLess(i, j)
+
+    def test_base_never_contains_bare(self):
+        for settings in (None, Path("/x/settings.json")):
+            self.assertNotIn("--bare", te_run.launch_base(settings))
+        self.assertNotIn("--bare", te_run.claude_argv("1"))
+
+    def test_agent_argv_starts_from_the_base(self):
+        base = te_run.launch_base()
+        argv = te_run.claude_argv("2")
+        self.assertEqual(argv[:len(base)], base)
+        self.assertEqual(argv[len(base):], ["--max-budget-usd", "2", "--max-turns", "60"])
+
+    def test_a_settings_path_replaces_only_the_settings_value(self):
+        default, other = te_run.launch_base(), te_run.launch_base(Path("/x/s.json"))
+        j = default.index("--settings")
+        self.assertEqual(other[j + 1], "/x/s.json")
+        self.assertEqual(default[:j + 1] + default[j + 2:], other[:j + 1] + other[j + 2:])
 
 
 class Prompt(unittest.TestCase):

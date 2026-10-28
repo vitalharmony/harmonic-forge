@@ -339,9 +339,22 @@ class ProbeFailure(Base):
         failures, call = self.probe({"subtype": "success", "is_error": False})
         self.assertEqual(failures, [])
         argv = call.args[0]
-        self.assertIn("--bare", argv)
+        # harmonic-forge#1195 rework: the probe launches exactly as the agent.
+        base = te_run.launch_base(self.tmp / "settings.json")
+        start = argv.index(te_run.CLAUDE)
+        self.assertEqual(argv[start:start + len(base)], base)
+        self.assertNotIn("--bare", argv)
+        i = argv.index("--setting-sources")
+        self.assertEqual(argv[i:i + 2], ["--setting-sources", ""])
         self.assertIn("--include-hook-events", argv)
         self.assertTrue(call.kwargs["stdin"].rstrip().endswith(f"`{SENTINEL}`"))
+
+    def test_failure_text_names_the_agent_mode_not_bare(self):
+        failures, _ = self.probe({"subtype": "success", "is_error": False},
+                                 sentinel_denied=False)
+        self.assertTrue(failures)
+        self.assertFalse([f for f in failures if "--bare" in f], failures)
+        self.assertTrue(any("agent's launch mode" in f for f in failures), failures)
 
     def test_sentinel_not_denied_fails(self):
         failures, _ = self.probe({"subtype": "success", "is_error": False},

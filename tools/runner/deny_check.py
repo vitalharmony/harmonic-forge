@@ -158,8 +158,8 @@ def diff_hits(base: str, head: str) -> list[str]:
 
 
 #: The exact command the settings' own PreToolUse hook denies, so the preflight
-#: probe proves the hooks enforce under `--bare`, not merely that they are
-#: present (harmonic-forge#1195).
+#: probe proves the hooks enforce in the agent's own launch mode
+#: (`te_run.launch_base`), not merely that they are present (harmonic-forge#1195).
 SENTINEL_COMMAND = "python3 -c 'print(\"te-runner-hook-probe\")'"
 #: Reads the hook's stdin JSON and denies SENTINEL_COMMAND, rebuilt from
 #: chr() so the hook's own text never needs nested quoting.

@@ -18,7 +18,8 @@ statuses: the agent is never given the queue path. Per item:
    a name that exists there moves on to the next attempt. The agent and every
    run of its code (the check steps, the kill-check tests) run inside
    `sandbox.py`'s allowlist `bwrap` boundary (harmonic-forge#1098);
-3. run `claude -p --max-turns 60` in it, under an `AGENT_TIMEOUT_S` wall
+3. run `claude -p --max-turns 60` in it (`launch_base`: no discovered
+   settings, never `--bare`), under an `AGENT_TIMEOUT_S` wall
    timeout, with `te-runner.settings.json` (its hooks passed explicitly), the
    runner's own key and gh config (`sandbox.runner_env`), and stream-json with
    hook events. G3: the run aborts unless `SessionStart`, `UserPromptSubmit`
@@ -274,11 +275,23 @@ def agent_prompt(issue: int, body: str, handoff: str) -> str:
             f"## Issue\n\n{body}\n\n## Handoff\n\n{handoff}\n")
 
 
-def claude_argv(budget: str) -> list[str]:
+def launch_base(settings: Path | None = None) -> list[str]:
+    """The one `claude -p` launch mode the agent and the preflight probe share
+    (harmonic-forge#1195 rework), so the probe proves enforcement in the mode
+    the agent runs in. `--setting-sources ""` loads no user, project or local
+    settings file (the clone's discovered `.claude/settings.json` included),
+    and `--settings` then supplies te-runner.settings.json alone, hooks and
+    all. Never `--bare`: bare mode skips every settings hook, the sentinel's
+    included. The mode is passed explicitly, so a change of `claude -p`'s
+    default cannot move it."""
     return [CLAUDE, "-p", "--output-format", "stream-json", "--verbose",
-            "--include-hook-events", "--settings", str(SETTINGS),
-            "--permission-mode", "dontAsk", "--permission-prompts", "none",
-            "--max-budget-usd", budget, "--max-turns", str(MAX_TURNS)]
+            "--include-hook-events", "--setting-sources", "",
+            "--settings", str(settings or SETTINGS),
+            "--permission-mode", "dontAsk", "--permission-prompts", "none"]
+
+
+def claude_argv(budget: str) -> list[str]:
+    return launch_base() + ["--max-budget-usd", budget, "--max-turns", str(MAX_TURNS)]
 
 
 def parse_stream(text: str) -> dict:

@@ -8,9 +8,10 @@ every stage that cannot work before any agent spend.
 
 a. permission probe: `claude -p` with the agent's settings, inside the agent's
    boundary, on a cheap model with a budget of at most $0.10, runs each queued
-   item's verification commands plus `PROBE_COMMANDS`, with `--bare`
-   (harmonic-forge#1195: bare mode skips discovered hooks, so the settings'
-   own `hooks` block must be what enforces). `SENTINEL_COMMAND` must be
+   item's verification commands plus `PROBE_COMMANDS`, launched exactly as
+   the agent is (`te_run.launch_base`: no discovered settings files, the
+   settings' own `hooks` block only, never `--bare`; harmonic-forge#1195).
+   `SENTINEL_COMMAND` must be
    denied, in `permission_denials` and by a `PreToolUse` `hook_response`
    event: hook presence alone is not the evidence. Any other denial fails,
    and so does a command the probe never attempted (undecidable is a
@@ -154,11 +155,9 @@ def parse_probe_hooks(stdout: str) -> tuple[list[str], list[str], dict | None, l
 
 def permission_probe(commands: list[str], clone: Path, transcripts: Path, agent_env: dict,
                      settings: Path, inputs: tuple[Path, ...]) -> list[str]:
-    argv = ["claude", "-p", "--bare", "--output-format", "stream-json", "--verbose",
-            "--include-hook-events",
-            "--settings", str(settings), "--permission-mode", "dontAsk",
-            "--permission-prompts", "none", "--model", PROBE_MODEL,
-            "--max-budget-usd", PROBE_BUDGET]
+    import te_run  # noqa: PLC0415 -- te_run imports this module
+    argv = te_run.launch_base(settings) + ["--model", PROBE_MODEL,
+                                           "--max-budget-usd", PROBE_BUDGET]
     wrapped = sandbox.wrap(argv, clone, transcripts, profile="agent", inputs=inputs)
     commands = [c for c in commands if c != SENTINEL_COMMAND] + [SENTINEL_COMMAND]
     done = _run(wrapped, cwd=clone, env=agent_env, stdin=probe_prompt(commands))
@@ -178,7 +177,8 @@ def permission_probe(commands: list[str], clone: Path, transcripts: Path, agent_
                         "not 'success'")
     if SENTINEL_COMMAND not in denied:
         failures.append(f"permission probe: the sentinel `{SENTINEL_COMMAND}` was not denied "
-                        "(the settings' PreToolUse hook did not enforce under --bare)")
+                        "(the settings' PreToolUse hook did not enforce in the agent's "
+                        "launch mode)")
     if not any("deny" in json.dumps(event) for event in hooks):
         failures.append("permission probe: no PreToolUse hook_response event carries the "
                         "sentinel's deny")
