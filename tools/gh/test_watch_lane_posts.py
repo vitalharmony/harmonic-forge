@@ -1403,6 +1403,41 @@ class CommentWatchCycleTests(unittest.TestCase):
         """Live announcements only -- not the AC4 'PRIMED at first arm' line."""
         return [l for l in lines if "PRIMED at first arm" not in l]
 
+    def test_another_lanes_post_refreshes_the_task_list_even_when_filtered(self):
+        """harmonic-forge#1221: a Lane 1 handoff seen by a Lane 2 belt that does
+        not watch l1 is dropped from the lines, but still reaches the
+        task-list marker helper, before any filter."""
+        comment = {"id": 91, "body": self.HANDOFF, "created_at": "2026-09-10T11:59:00Z"}
+        with patch("watch_lane_posts._fetch_comments", return_value=[comment]), \
+                patch.object(watch_lane_posts._tasklist_owed, "record_if_stale") as rec:
+            watch_lane_posts.comment_watch_cycle(
+                self.target, {"l3"}, self.NOW, self.wm, self.seen, self.primed,
+                self_lane="l2")
+        rec.assert_called_once()
+        self.assertEqual(rec.call_args.args[:2], ("vitalharmony/hrse", 1530))
+        self.assertEqual(rec.call_args.args[3], "2026-09-10T11:59:00Z")
+
+    def test_this_lanes_own_post_never_reaches_the_task_list_helper(self):
+        """harmonic-forge#1221 AC3."""
+        comment = {"id": 92, "body": self.HANDOFF, "created_at": "2026-09-10T11:59:00Z"}
+        with patch("watch_lane_posts._fetch_comments", return_value=[comment]), \
+                patch.object(watch_lane_posts._tasklist_owed, "record_if_stale") as rec:
+            watch_lane_posts.comment_watch_cycle(
+                self.target, {"l2"}, self.NOW, self.wm, self.seen, self.primed,
+                self_lane="l1")
+        rec.assert_not_called()
+
+    def test_a_raising_task_list_helper_never_breaks_the_tick(self):
+        """harmonic-forge#1221 AC6."""
+        comment = {"id": 93, "body": self.HANDOFF, "created_at": "2026-09-10T11:59:00Z"}
+        with patch("watch_lane_posts._fetch_comments", return_value=[comment]), \
+                patch.object(watch_lane_posts._tasklist_owed, "record_if_stale",
+                             side_effect=RuntimeError("boom")):
+            _lines, fetch_failed = watch_lane_posts.comment_watch_cycle(
+                self.target, {"l1"}, self.NOW, self.wm, self.seen, self.primed,
+                self_lane="l2")
+        self.assertFalse(fetch_failed)
+
     def test_a_failed_fetch_reports_fetch_failed_true(self):
         """harmonic-forge#638 preclose finding 2 -- 'I do not know' must never
         read as 'nothing found' for backoff purposes."""
