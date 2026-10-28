@@ -299,8 +299,47 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
     return result
 
 
+def preflight_key(repo: str, issue: int, sha: str, checks_path: str) -> str:
+    import _preflight  # noqa: PLC0415
+    content = Path(checks_path).read_bytes()
+    digest = hashlib.sha256(b"|".join([repo.encode(), str(issue).encode(), sha.encode(),
+                                       content])).hexdigest()
+    return _preflight.digest_key("kill_check", digest)
+
+
+def validate(args: argparse.Namespace) -> int:
+    """harmonic-forge#1215 AC2: the read-only preflight of `run`. Checks the
+    checks file's schema and that every patch applies at `--head`, using a
+    throwaway index; runs no test and writes nothing to the repo."""
+    import _preflight  # noqa: PLC0415
+    repo, sha, _change = identity(args.repo, args.issue, args.base, args.head)
+    checks = checked_inputs(args.checks)
+    if args.timeout <= 0:
+        raise SystemExit("kill-check: --timeout must be positive")
+    with tempfile.TemporaryDirectory(prefix="kill-check-validate-") as tmp:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        subprocess.run(["git", "read-tree", sha], check=True, capture_output=True, env=env)
+        for number, check in enumerate(checks, 1):
+            done = subprocess.run(["git", "apply", "--check", "--cached", check["patch_path"]],
+                                  capture_output=True, text=True, env=env)
+            if done.returncode != 0:
+                raise SystemExit(f"kill-check: check {number}'s patch does not apply at "
+                                 f"{sha[:12]}: {done.stderr.strip()}")
+    _preflight.record(preflight_key(repo, args.issue, sha, args.checks))
+    print(f"kill-check --validate: {len(checks)} check(s) valid at {sha[:12]}; "
+          f"`run` with the same arguments is unlocked")
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     repo, sha, change = identity(args.repo, args.issue, args.base, args.head)
+    import _preflight  # noqa: PLC0415
+    refusal = _preflight.require(preflight_key(repo, args.issue, sha, args.checks),
+                                 "mise run kill-check -- run --validate " + " ".join(
+                                     f"--{k} {getattr(args, k)}" for k in ("repo", "issue", "base", "head", "checks")))
+    if refusal:
+        print(f"[kill-check] {refusal}", file=sys.stderr)
+        return 1
     payload = {"repo": repo, "issue": args.issue, "head_sha": sha,
                "change_identity": change, "checks": [],
                "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()}
@@ -358,10 +397,15 @@ def main() -> None:
         if name == "run":
             command.add_argument("--checks", required=True)
             command.add_argument("--timeout", type=int, default=300)
+            command.add_argument("--validate", action="store_true",
+                                 help="read-only preflight: schema and patch-apply checks, no test run "
+                                      "(harmonic-forge#1215); unlocks `run` with the same arguments")
         else:
             command.add_argument("--reason", required=True)
     args = parser.parse_args()
     _caller_path.resolve_args(args, 'checks')  # harmonic-forge#1117 AC2
+    if args.command == "run" and args.validate:
+        raise SystemExit(validate(args))
     raise SystemExit(run(args) if args.command == "run" else waive(args))
 
 

@@ -51,6 +51,10 @@ class _Fixture(unittest.TestCase):
         })
         self.env.start()
         self.addCleanup(self.env.stop)
+        # harmonic-forge#1215: the rebase fixtures test the rebase, not the
+        # preflight gate; an inherited session id would make them depend on
+        # whatever receipts the calling session holds. Preflight is tested below.
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         self.origin = self.tmp / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
         self.repo = self.tmp / "repo"
@@ -93,6 +97,72 @@ class _Fixture(unittest.TestCase):
 
     def prep_left(self):
         return lane1_rebase.prep_path(str(self.repo), ISSUE).exists()
+
+class CheckPreflightTest(_Fixture):
+    """harmonic-forge#1215 AC1: `--check` is a read-only, digest-bound preflight."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "test-session-1215"
+        os.environ["PREFLIGHT_RECEIPT_DIR"] = str(self.tmp / "receipts")
+        self.addCleanup(os.environ.pop, "CLAUDE_CODE_SESSION_ID", None)
+        self.addCleanup(os.environ.pop, "PREFLIGHT_RECEIPT_DIR", None)
+
+    def check(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = lane1_rebase.main(["--check", str(self.repo), str(ISSUE), BRANCH])
+        return code, out.getvalue()
+
+    def refs(self):
+        return sh(self.repo, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    def test_check_moves_no_ref_takes_no_lock_and_prunes_nothing(self):
+        self.advance_main()
+        before = self.refs()
+        stale = lane1_rebase.prep_path(str(self.repo), ISSUE)
+        stale.mkdir(parents=True)
+        with mock.patch.object(lane1_rebase, "fetch", side_effect=AssertionError("fetched")), \
+             mock.patch.object(lane1_rebase.fcntl, "flock", side_effect=AssertionError("locked")):
+            code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("would-rebase", out)
+        self.assertIn("unchecked:", out)
+        self.assertEqual(self.refs(), before)
+        self.assertTrue(stale.exists())
+
+    def test_check_unlocks_exactly_the_checked_run(self):
+        self.advance_main()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.run_main(), 1)
+        self.assertIn("--check", err.getvalue())
+        self.assertEqual(self.check()[0], 0)
+        self.assertEqual(self.run_main(), 0)
+
+    def test_help_does_not_unlock(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            lane1_rebase.main(["--help"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.run_main(), 1)
+        self.assertIn("harmonic-forge#1076", err.getvalue())
+
+    def test_a_push_after_check_needs_a_new_check(self):
+        self.assertEqual(self.check()[0], 0)
+        sh(self.impl, "commit", "-q", "--allow-empty", "-m", "lane 2 pushes again")
+        sh(self.impl, "push", "-q", "origin", BRANCH)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.run_main(), 1)
+        self.assertIn("harmonic-forge#1076", err.getvalue())
+
+    def test_failed_precondition_records_nothing(self):
+        with mock.patch.object(lane1_rebase, "newest_lane_marker", return_value="l1.rework"):
+            code, out = self.check()
+        self.assertEqual(code, 4)
+        self.assertFalse((self.tmp / "receipts").exists())
+
 
 class Lane1RebaseTest(_Fixture):
     def test_clean_rebase_pushes_and_moves_impl_worktree(self):

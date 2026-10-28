@@ -79,6 +79,7 @@ inferred from history (sticky-wicket reforge, F1034).
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -779,24 +780,80 @@ def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None
     return new, resolved, regenerated, render_run
 
 
+def remote_sha(repo_dir: str, ref: str) -> str | None:
+    """origin's SHA for `ref`, read with `ls-remote`: no fetch, so no ref moves."""
+    done = git(repo_dir, "ls-remote", "origin", ref, check=False)
+    line = done.stdout.split("\n", 1)[0].split() if done.returncode == 0 else []
+    return line[0] if line else None
+
+
+#: Checks only the rebase itself can reveal; `--check` names them as unchecked.
+UNCHECKED_BY_CHECK = ("per-commit conflicts", "version-line resolution (exit 2)",
+                      "baseline regeneration", "the impl-worktree and cherry checks (exit 3)",
+                      "the pre-push hook (exit 5)", "a Render-Pending head (exit 6)")
+
+
+def preflight_key(repo_dir: str, issue: int, branch: str, old: str) -> str:
+    import _preflight  # noqa: PLC0415
+    digest = hashlib.sha256(f"{Path(repo_dir).resolve()}|{issue}|{branch}|{old}".encode()).hexdigest()
+    return _preflight.digest_key("lane1_rebase", digest)
+
+
+def check(repo_dir: str, issue: int, branch: str) -> tuple[int, list[str]]:
+    """harmonic-forge#1215 AC1: the read-only preflight. No fetch, lock or prune."""
+    old = remote_sha(repo_dir, f"refs/heads/{branch}")
+    main = remote_sha(repo_dir, "refs/heads/main")
+    if not old or not main:
+        return 1, [f"origin/{branch} or origin/main did not resolve via ls-remote"]
+    try:
+        check_preconditions(repo_dir, issue, branch, old)
+    except Exit as exc:
+        return exc.code, [f"precondition: {exc.message}"]
+    lines = [f"would-rebase {old[:12]} onto {main[:12]}"]
+    have = all(git(repo_dir, "cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode == 0
+               for sha in (old, main))
+    if not have:
+        lines.append("conflicts: not predicted (origin's commits are not local; no fetch is done)")
+    else:
+        done = git(repo_dir, "merge-tree", "--write-tree", "--name-only", main, old, check=False)
+        paths = [p for p in done.stdout.splitlines()[1:] if p and not p.startswith(" ")] \
+            if done.returncode == 1 else []
+        version_only = bool(paths) and all(Path(p).name in ("package.json", "package-lock.json")
+                                           for p in paths)
+        lines.append("conflicts: none predicted" if not paths else
+                     f"conflicts: {', '.join(paths)} ({'version-only' if version_only else 'not version-only'})")
+    lines.append("unchecked: " + "; ".join(UNCHECKED_BY_CHECK))
+    import _preflight  # noqa: PLC0415
+    _preflight.record(preflight_key(repo_dir, issue, branch, old))
+    return 0, lines
+
+
 def main(argv: list[str]) -> int:
     sys.path.insert(0, str(_GH))
     import _preflight  # noqa: PLC0415 -- tools/gh, beside watch_lane_posts
-    # harmonic-forge#1076: --help is the preflight form, checked before the
-    # argument count so it can always run.
     if {"-h", "--help"} & set(argv):
-        _preflight.record("lane1_rebase")
         print(__doc__)
         return 0
-    if len(argv) != 3 or not argv[1].isdigit():
-        print("usage: lane1-rebase <repo-dir> <issue> <branch>", file=sys.stderr)
+    checking = argv[:1] == ["--check"]
+    args = argv[1:] if checking else argv
+    if len(args) != 3 or not args[1].isdigit():
+        print("usage: lane1-rebase [--check] <repo-dir> <issue> <branch>", file=sys.stderr)
         return 1
-    refusal = _preflight.require("lane1_rebase", f"python3 {Path(__file__).resolve()} --help")
+    if checking:
+        code, lines = check(args[0], int(args[1]), args[2])
+        for line in lines:
+            print(f"[lane1-rebase --check] {line}")
+        return code
+    # harmonic-forge#1215 AC1: --help no longer unlocks a run; the preflight is
+    # `--check` with the same arguments, bound to origin's branch SHA.
+    old = remote_sha(args[0], f"refs/heads/{args[2]}") or ""
+    refusal = _preflight.require(preflight_key(args[0], int(args[1]), args[2], old),
+                                 f"python3 {Path(__file__).resolve()} --check {' '.join(args)}")
     if refusal:
         print(f"[lane1-rebase] {refusal}", file=sys.stderr)
         return 1
     try:
-        new, resolved, regenerated, render_run = run(argv[0], int(argv[1]), argv[2])
+        new, resolved, regenerated, render_run = run(args[0], int(args[1]), args[2])
     except Exit as exc:
         print(f"[lane1-rebase] exit {exc.code}: {exc.message}", file=sys.stderr)
         return exc.code
