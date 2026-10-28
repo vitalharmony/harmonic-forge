@@ -109,6 +109,12 @@ def decide(payload: dict) -> str | None:
             # pass 1 survivor 5: one ref's fault skips that ref, never the rest.
             try:
                 sha = _git(here, "rev-parse", f"{src}^{{commit}}")
+                # pass 2 survivor (AC3): a ref the remote-tracking ref already
+                # shows at this SHA is up to date, so git hands pre-push no line
+                # for it and pre-push allows; judging it here would block it.
+                if sha and _git(here, "rev-parse", "--verify", "-q",
+                                f"refs/remotes/{remote}/{dst}^{{commit}}") == sha:
+                    continue
                 reason = check_receipt.push_refusal(slug, dst, sha) if sha else None
             except Exception:  # noqa: BLE001 -- that ref is left to pre-push
                 continue

@@ -90,6 +90,9 @@ class Pass1Fixes(Base):
         _git(self.repo, "update-ref", f"refs/remotes/origin/{TE_BRANCH}", "HEAD")
         _git(self.repo, "config", f"branch.{TE_BRANCH}.remote", "origin")
         _git(self.repo, "config", f"branch.{TE_BRANCH}.merge", f"refs/heads/{TE_BRANCH}")
+        (self.repo / "ahead").write_text("a")  # the branch is ahead of its remote, so git pushes it
+        _git(self.repo, "add", "ahead")
+        _git(self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "ahead")
         self.assertIsNotNone(self.decide("git push"))
 
     def test_an_expansion_after_a_literal_push_still_judges_it(self):
@@ -111,6 +114,21 @@ class Pass1Fixes(Base):
             return real(slug, branch, sha, cache)
         with mock.patch.object(C, "push_refusal", side_effect=flaky):
             self.assertIsNotNone(self.decide(f"git push origin main {TE_BRANCH}"))
+
+
+class Pass2Fix(Base):
+    def test_an_up_to_date_push_is_not_judged(self):
+        """pass 2 survivor: the remote-tracking ref already holds this SHA."""
+        _git(self.repo, "update-ref", f"refs/remotes/origin/{TE_BRANCH}", TE_BRANCH)
+        self.assertIsNone(self.decide(f"git push -u origin {TE_BRANCH}"))
+
+    def test_a_stale_tracking_ref_still_judges(self):
+        _git(self.repo, "update-ref", f"refs/remotes/origin/{TE_BRANCH}", TE_BRANCH)
+        _git(self.repo, "checkout", "-q", TE_BRANCH)
+        (self.repo / "g").write_text("y")
+        _git(self.repo, "add", "g")
+        _git(self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "ahead")
+        self.assertIsNotNone(self.decide(f"git push origin {TE_BRANCH}"))
 
 
 class Allows(Base):
