@@ -746,7 +746,8 @@ def move_local_ref(repo_dir: str, branch: str, new: str,
 
 
 def run(repo_dir: str, issue: int, branch: str,
-        checked: str | None = None) -> tuple[str, str | None, list[str], str | None]:
+        checked: str | None = None,
+        checked_main: str | None = None) -> tuple[str, str | None, list[str], str | None]:
     # preclose F1018-3: one run per issue at a time. The stale-prep busy check
     # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
     lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
@@ -756,11 +757,12 @@ def run(repo_dir: str, issue: int, branch: str,
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Exit(1, f"another lane1-rebase run holds {lock_path}; nothing done") from None
-        return _run_locked(repo_dir, issue, branch, checked)
+        return _run_locked(repo_dir, issue, branch, checked, checked_main)
 
 
 def _run_locked(repo_dir: str, issue: int, branch: str,
-                checked: str | None = None) -> tuple[str, str | None, list[str], str | None]:
+                checked: str | None = None,
+                checked_main: str | None = None) -> tuple[str, str | None, list[str], str | None]:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
@@ -769,6 +771,10 @@ def _run_locked(repo_dir: str, issue: int, branch: str,
     # pass 1 survivor 4: the run acts only on the head --check saw.
     if checked and old != checked:
         raise Exit(4, f"origin/{branch} moved to {old[:12]} since --check saw {checked[:12]}; "
+                      "run --check again")
+    # pass 2 survivor 1: nor onto a main --check did not see.
+    if checked_main and main != checked_main:
+        raise Exit(4, f"origin/main moved to {main[:12]} since --check saw {checked_main[:12]}; "
                       "run --check again")
     # harmonic-forge#1058: a marked head is exit 6 before any work.
     baseline_render.refuse_marked_head(sys.modules[__name__], repo_dir, branch, old)
@@ -799,10 +805,29 @@ UNCHECKED_BY_CHECK = ("per-commit conflicts", "version-line resolution (exit 2)"
                       "the pre-push hook (exit 5)", "a Render-Pending head (exit 6)")
 
 
-def preflight_key(repo_dir: str, issue: int, branch: str, old: str) -> str:
+def preflight_key(repo_dir: str, issue: int, branch: str, old: str, main: str) -> str:
     import _preflight  # noqa: PLC0415
-    digest = hashlib.sha256(f"{Path(repo_dir).resolve()}|{issue}|{branch}|{old}".encode()).hexdigest()
+    # pass 2 survivor 1: origin/main's SHA too, so a moved main needs a new --check.
+    digest = hashlib.sha256(
+        f"{Path(repo_dir).resolve()}|{issue}|{branch}|{old}|{main}".encode()).hexdigest()
     return _preflight.digest_key("lane1_rebase", digest)
+
+
+def _version_only_conflict(repo_dir: str, main: str, old: str, path: str) -> bool:
+    """pass 2 survivor 2: a conflict is version-only when the two sides'
+    files are byte-identical once each top-level version is blanked, judged on
+    content, never on the file name. Anything unreadable is not version-only."""
+    if Path(path).name not in ("package.json", "package-lock.json"):
+        return False
+    blanked = []
+    for sha in (main, old):
+        done = subprocess.run(["git", "-C", repo_dir, "show", f"{sha}:{path}"],
+                              capture_output=True, check=False)
+        got = _blank_version(done.stdout) if done.returncode == 0 else None
+        if got is None:
+            return False
+        blanked.append(got[0])
+    return blanked[0] == blanked[1]
 
 
 def check(repo_dir: str, issue: int, branch: str) -> tuple[int, list[str]]:
@@ -835,13 +860,13 @@ def check(repo_dir: str, issue: int, branch: str) -> tuple[int, list[str]]:
                 break
             paths.append(p)
         paths = paths if done.returncode == 1 else []
-        version_only = bool(paths) and all(Path(p).name in ("package.json", "package-lock.json")
+        version_only = bool(paths) and all(_version_only_conflict(repo_dir, main, old, p)
                                            for p in paths)
         lines.append("conflicts: none predicted" if not paths else
                      f"conflicts: {', '.join(paths)} ({'version-only' if version_only else 'not version-only'})")
     lines.append("unchecked: " + "; ".join(UNCHECKED_BY_CHECK))
     import _preflight  # noqa: PLC0415
-    _preflight.record(preflight_key(repo_dir, issue, branch, old))
+    _preflight.record(preflight_key(repo_dir, issue, branch, old, main))
     return 0, lines
 
 
@@ -864,14 +889,16 @@ def main(argv: list[str]) -> int:
     # harmonic-forge#1215 AC1: --help no longer unlocks a run; the preflight is
     # `--check` with the same arguments, bound to origin's branch SHA.
     old = remote_sha(args[0], f"refs/heads/{args[2]}") or ""
-    refusal = _preflight.require(preflight_key(args[0], int(args[1]), args[2], old),
+    main_sha = remote_sha(args[0], "refs/heads/main") or ""
+    refusal = _preflight.require(preflight_key(args[0], int(args[1]), args[2], old, main_sha),
                                  f"python3 {Path(__file__).resolve()} --check {' '.join(args)}")
     if refusal:
         print(f"[lane1-rebase] {refusal}", file=sys.stderr)
         return 1
     try:
         new, resolved, regenerated, render_run = run(args[0], int(args[1]), args[2],
-                                                     checked=old or None)
+                                                     checked=old or None,
+                                                     checked_main=main_sha or None)
     except Exit as exc:
         print(f"[lane1-rebase] exit {exc.code}: {exc.message}", file=sys.stderr)
         return exc.code

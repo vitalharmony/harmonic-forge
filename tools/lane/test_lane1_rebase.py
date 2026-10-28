@@ -159,15 +159,43 @@ class CheckPreflightTest(_Fixture):
 
     def test_package_json_only_conflict_is_version_only(self):
         """pass 1 survivor 2: merge-tree's messages are not conflict paths."""
-        (self.impl / "package.json").write_text('{"version": "1.0.1"}\n')
+        (self.impl / "package.json").write_text('{\n  "version": "1.0.1"\n}\n')
         sh(self.impl, "add", "package.json"); sh(self.impl, "commit", "-qm", "branch version")
         sh(self.impl, "push", "-q", "origin", BRANCH)
-        self.advance_main("package.json", '{"version": "1.0.2"}\n')
+        self.advance_main("package.json", '{\n  "version": "1.0.2"\n}\n')
         sh(self.repo, "fetch", "-q", "origin")
         code, out = self.check()
         self.assertEqual(code, 0, out)
         self.assertIn("conflicts: package.json (version-only)", out)
         self.assertNotIn("Auto-merging", out)
+
+    def test_a_dependency_conflict_in_package_json_is_not_version_only(self):
+        """pass 2 survivor 2: judged on the blanked contents, never the name."""
+        (self.impl / "package.json").write_text('{\n  "version": "1.0.1",\n  "dep": "a"\n}\n')
+        sh(self.impl, "add", "package.json"); sh(self.impl, "commit", "-qm", "branch version")
+        sh(self.impl, "push", "-q", "origin", BRANCH)
+        self.advance_main("package.json", '{\n  "version": "1.0.2",\n  "dep": "b"\n}\n')
+        sh(self.repo, "fetch", "-q", "origin")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("conflicts: package.json (not version-only)", out)
+
+    def test_a_main_move_after_check_needs_a_new_check(self):
+        """pass 2 survivor 1: the receipt is bound to origin/main's SHA too."""
+        self.advance_main()
+        self.assertEqual(self.check()[0], 0)
+        self.advance_main("later.txt", "main moved\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.run_main(), 1)
+        self.assertIn("harmonic-forge#1076", err.getvalue())
+
+    def test_run_refuses_a_main_check_never_saw(self):
+        """pass 2 survivor 1: the run acts only on the --check main."""
+        self.advance_main()
+        with self.assertRaises(lane1_rebase.Exit) as caught:
+            lane1_rebase.run(str(self.repo), ISSUE, BRANCH, checked_main="0" * 40)
+        self.assertEqual(caught.exception.code, 4)
 
     def test_merge_tree_error_records_nothing(self):
         """pass 1 survivor 3: an execution error is not 'none predicted'."""
