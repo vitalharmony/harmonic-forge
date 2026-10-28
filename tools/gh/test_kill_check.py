@@ -119,6 +119,22 @@ class KillCheckTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.execute(), 1)
 
+    def test_an_edited_patch_needs_a_new_validate(self) -> None:
+        """pass 1 survivor 1: patch contents are in the digest."""
+        self._in_session()
+        self.assertEqual(self._validate(), 0)
+        self.patch_file.write_text(self.patch_file.read_text().replace("return 2", "return 3"))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.execute(), 1)
+
+    def test_a_changed_base_needs_a_new_validate(self) -> None:
+        self._in_session()
+        self.assertEqual(self._validate(), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = kill.run(argparse.Namespace(repo=REPO, issue=ISSUE, base="HEAD~1", head="HEAD",
+                                               checks=str(self.checks_file), timeout=300))
+        self.assertEqual(code, 1)
+
     def test_validate_refuses_a_malformed_checks_file(self) -> None:
         self._in_session()
         self.checks_file.write_text(json.dumps([{"ac": "AC1", "mechanism": "m",

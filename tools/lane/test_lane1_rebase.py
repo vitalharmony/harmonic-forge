@@ -157,6 +157,38 @@ class CheckPreflightTest(_Fixture):
             self.assertEqual(self.run_main(), 1)
         self.assertIn("harmonic-forge#1076", err.getvalue())
 
+    def test_package_json_only_conflict_is_version_only(self):
+        """pass 1 survivor 2: merge-tree's messages are not conflict paths."""
+        (self.impl / "package.json").write_text('{"version": "1.0.1"}\n')
+        sh(self.impl, "add", "package.json"); sh(self.impl, "commit", "-qm", "branch version")
+        sh(self.impl, "push", "-q", "origin", BRANCH)
+        self.advance_main("package.json", '{"version": "1.0.2"}\n')
+        sh(self.repo, "fetch", "-q", "origin")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("conflicts: package.json (version-only)", out)
+        self.assertNotIn("Auto-merging", out)
+
+    def test_merge_tree_error_records_nothing(self):
+        """pass 1 survivor 3: an execution error is not 'none predicted'."""
+        real = lane1_rebase.git
+        def failing(cwd, *args, **kw):
+            if args[:1] == ("merge-tree",):
+                return subprocess.CompletedProcess(args, 128, "", "fatal: bad object")
+            return real(cwd, *args, **kw)
+        with mock.patch.object(lane1_rebase, "git", side_effect=failing):
+            code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("merge-tree failed", out)
+        self.assertFalse((self.tmp / "receipts").exists())
+
+    def test_run_refuses_a_head_check_never_saw(self):
+        """pass 1 survivor 4: the run acts only on the --check head."""
+        self.advance_main()
+        with self.assertRaises(lane1_rebase.Exit) as caught:
+            lane1_rebase.run(str(self.repo), ISSUE, BRANCH, checked="0" * 40)
+        self.assertEqual(caught.exception.code, 4)
+
     def test_failed_precondition_records_nothing(self):
         with mock.patch.object(lane1_rebase, "newest_lane_marker", return_value="l1.rework"):
             code, out = self.check()

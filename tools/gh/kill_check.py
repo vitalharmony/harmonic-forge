@@ -299,11 +299,19 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
     return result
 
 
-def preflight_key(repo: str, issue: int, sha: str, checks_path: str) -> str:
+def preflight_key(repo: str, issue: int, sha: str, checks_path: str, base: str = "") -> str:
+    """harmonic-forge#1215 pass 1: binds the checks file AND every patch it names
+    (by content) plus --base, so editing a patch after --validate needs a new one."""
     import _preflight  # noqa: PLC0415
     content = Path(checks_path).read_bytes()
-    digest = hashlib.sha256(b"|".join([repo.encode(), str(issue).encode(), sha.encode(),
-                                       content])).hexdigest()
+    parts = [repo.encode(), str(issue).encode(), sha.encode(), base.encode(), content]
+    try:
+        for entry in json.loads(content):
+            patch = Path(str(entry.get("patch", ""))).resolve()
+            parts.append(hashlib.sha256(patch.read_bytes()).hexdigest().encode())
+    except (OSError, ValueError, AttributeError, TypeError):
+        parts.append(b"unreadable-patches")  # checked_inputs refuses these anyway
+    digest = hashlib.sha256(b"|".join(parts)).hexdigest()
     return _preflight.digest_key("kill_check", digest)
 
 
@@ -325,7 +333,7 @@ def validate(args: argparse.Namespace) -> int:
             if done.returncode != 0:
                 raise SystemExit(f"kill-check: check {number}'s patch does not apply at "
                                  f"{sha[:12]}: {done.stderr.strip()}")
-    _preflight.record(preflight_key(repo, args.issue, sha, args.checks))
+    _preflight.record(preflight_key(repo, args.issue, sha, args.checks, args.base))
     print(f"kill-check --validate: {len(checks)} check(s) valid at {sha[:12]}; "
           f"`run` with the same arguments is unlocked")
     return 0
@@ -334,7 +342,7 @@ def validate(args: argparse.Namespace) -> int:
 def run(args: argparse.Namespace) -> int:
     repo, sha, change = identity(args.repo, args.issue, args.base, args.head)
     import _preflight  # noqa: PLC0415
-    refusal = _preflight.require(preflight_key(repo, args.issue, sha, args.checks),
+    refusal = _preflight.require(preflight_key(repo, args.issue, sha, args.checks, args.base),
                                  "mise run kill-check -- run --validate " + " ".join(
                                      f"--{k} {getattr(args, k)}" for k in ("repo", "issue", "base", "head", "checks")))
     if refusal:

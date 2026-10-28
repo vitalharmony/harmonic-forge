@@ -745,7 +745,8 @@ def move_local_ref(repo_dir: str, branch: str, new: str,
                       f"origin is at {new}")
 
 
-def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str], str | None]:
+def run(repo_dir: str, issue: int, branch: str,
+        checked: str | None = None) -> tuple[str, str | None, list[str], str | None]:
     # preclose F1018-3: one run per issue at a time. The stale-prep busy check
     # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
     lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
@@ -755,15 +756,20 @@ def run(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[s
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Exit(1, f"another lane1-rebase run holds {lock_path}; nothing done") from None
-        return _run_locked(repo_dir, issue, branch)
+        return _run_locked(repo_dir, issue, branch, checked)
 
 
-def _run_locked(repo_dir: str, issue: int, branch: str) -> tuple[str, str | None, list[str], str | None]:
+def _run_locked(repo_dir: str, issue: int, branch: str,
+                checked: str | None = None) -> tuple[str, str | None, list[str], str | None]:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
     if not old or not main:
         raise Exit(1, f"origin/{branch} or origin/main did not resolve after fetch")
+    # pass 1 survivor 4: the run acts only on the head --check saw.
+    if checked and old != checked:
+        raise Exit(4, f"origin/{branch} moved to {old[:12]} since --check saw {checked[:12]}; "
+                      "run --check again")
     # harmonic-forge#1058: a marked head is exit 6 before any work.
     baseline_render.refuse_marked_head(sys.modules[__name__], repo_dir, branch, old)
     passed = check_preconditions(repo_dir, issue, branch, old)
@@ -815,9 +821,20 @@ def check(repo_dir: str, issue: int, branch: str) -> tuple[int, list[str]]:
     if not have:
         lines.append("conflicts: not predicted (origin's commits are not local; no fetch is done)")
     else:
-        done = git(repo_dir, "merge-tree", "--write-tree", "--name-only", main, old, check=False)
-        paths = [p for p in done.stdout.splitlines()[1:] if p and not p.startswith(" ")] \
-            if done.returncode == 1 else []
+        done = git(repo_dir, "merge-tree", "--write-tree", "--name-only", "--no-messages",
+                   main, old, check=False)
+        if done.returncode > 1:
+            # pass 1 survivor 3: an execution error is not a clean prediction.
+            return 1, [f"merge-tree failed (exit {done.returncode}): {done.stderr.strip()[:200]}"]
+        # pass 1 survivor 2: with --no-messages the output is the tree OID then
+        # the conflicted paths; stop at the first blank line regardless.
+        body = done.stdout.splitlines()[1:]
+        paths = []
+        for p in body:
+            if not p.strip():
+                break
+            paths.append(p)
+        paths = paths if done.returncode == 1 else []
         version_only = bool(paths) and all(Path(p).name in ("package.json", "package-lock.json")
                                            for p in paths)
         lines.append("conflicts: none predicted" if not paths else
@@ -853,7 +870,8 @@ def main(argv: list[str]) -> int:
         print(f"[lane1-rebase] {refusal}", file=sys.stderr)
         return 1
     try:
-        new, resolved, regenerated, render_run = run(args[0], int(args[1]), args[2])
+        new, resolved, regenerated, render_run = run(args[0], int(args[1]), args[2],
+                                                     checked=old or None)
     except Exit as exc:
         print(f"[lane1-rebase] exit {exc.code}: {exc.message}", file=sys.stderr)
         return exc.code
