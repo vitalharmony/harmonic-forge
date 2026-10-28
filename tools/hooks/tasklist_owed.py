@@ -51,8 +51,17 @@ def key_for(repo: str, issue: int | str) -> str | None:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import batch_auth  # noqa: PLC0415
+    except Exception as exc:
+        # harmonic-forge#1221 AC6: a resolver that cannot load is a failure,
+        # not an unknown repo, so it is named; an unknown repo stays silent.
+        print(f"[tasklist_owed] key resolver unavailable: {exc}", file=sys.stderr)
+        return None
+    try:
         return batch_auth.issue_key(repo, issue)
-    except Exception:
+    except Exception as exc:
+        # issue_key returns None for an unknown repo and never raises for one
+        # (batch_auth.py:347-348), so a raise here is a real failure (AC6).
+        print(f"[tasklist_owed] key resolve failed for {repo}#{issue}: {exc}", file=sys.stderr)
         return None
 
 
@@ -125,6 +134,45 @@ def record_post(repo: str, issue: int | str, kind: str) -> None:
             record(key, kind)
     except Exception:
         pass
+
+
+def _epoch(stamp: str) -> float:
+    """A GitHub `created_at` (ISO-8601, `Z`) as a UTC epoch float."""
+    from datetime import datetime  # noqa: PLC0415
+    return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+
+
+def record_if_stale(repo: str, issue: int | str, kind: str, created_at: str,
+                    session: str | None = None, tasks_dir: Path | None = None) -> bool:
+    """harmonic-forge#1221: the belt's call for another lane's post. Records
+    `key`'s marker only when this session holds an open entry for it that was
+    last written before the post (AC1/AC2). A K/Y/D key is left to the existing
+    handling (AC4). Never raises; a failure is one stderr line (AC6)."""
+    session = session_id() if session is None else session
+    try:
+        key = key_for(repo, issue)
+        if not key or not session or key[0] in "KYD":
+            return False
+        try:
+            posted = _epoch(created_at)
+        except (TypeError, ValueError) as exc:
+            print(f"[tasklist_owed] {key}: unparseable created_at {created_at!r}: {exc}",
+                  file=sys.stderr)
+            return False
+        try:
+            held = open_entries(read_entries(session, tasks_dir), key)
+        except OSError as exc:
+            print(f"[tasklist_owed] {key}: task list unreadable: {exc}", file=sys.stderr)
+            return False
+        if not held or any(float(e.get("_mtime") or 0) >= posted for e in held):
+            return False
+        if not record(key, f"other-lane:{kind}", session):
+            print(f"[tasklist_owed] {key}: marker write failed", file=sys.stderr)
+            return False
+        return True
+    except Exception as exc:
+        print(f"[tasklist_owed] record_if_stale failed: {exc}", file=sys.stderr)
+        return False
 
 
 def markers(session: str) -> list[dict]:

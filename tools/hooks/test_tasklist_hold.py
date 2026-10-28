@@ -553,5 +553,85 @@ class Wiring(unittest.TestCase):
         self.assertIn("tools/hooks/tasklist_hold.py", r0413)
 
 
+class OtherLanePostTests(Base):
+    """harmonic-forge#1221: another lane's post on a held issue owes the entry
+    an update, recorded by the belt's comment watch."""
+
+    POSTED = "2026-10-28T12:00:00Z"
+
+    def _posted(self):
+        return owed._epoch(self.POSTED)
+
+    def stale(self, **kw):
+        return owed.record_if_stale("vitalharmony/hrse", 2384, "l1 — ready-for-l3",
+                                    kw.pop("created_at", self.POSTED), session=SESSION, **kw)
+
+    def test_an_entry_older_than_the_post_is_marked(self):
+        """AC1."""
+        self.entry(1, "H2384 — L2D ca2ca1733 · waiting on Lane 1 review", "pending",
+                   mtime=self._posted() - 60)
+        self.assertTrue(self.stale())
+        self.assertEqual([m["key"] for m in owed.markers(SESSION)], ["H2384"])
+        verdict, _reason = hold.stop_decide({"session_id": SESSION})
+        self.assertEqual(verdict, "block")
+
+    def test_an_entry_written_after_the_post_is_not_marked(self):
+        """AC2."""
+        self.entry(1, "H2384 — ready-for-l3 posted · waiting on Lane 3 spec", "pending",
+                   mtime=self._posted() + 60)
+        self.assertFalse(self.stale())
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_no_open_entry_records_nothing(self):
+        self.entry(1, "H2384 — closed", "completed", mtime=self._posted() - 60)
+        self.assertFalse(self.stale())
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_a_k_key_records_nothing(self):
+        """AC4."""
+        self.entry(1, "K65 — handoff posted · waiting on Lane 2", "pending",
+                   mtime=self._posted() - 60)
+        with mock.patch.object(owed, "key_for", return_value="K65"):
+            self.assertFalse(self.stale())
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_an_unreadable_task_list_never_raises(self):
+        """AC6."""
+        with mock.patch.object(owed, "read_entries", side_effect=OSError("denied")):
+            self.assertFalse(self.stale())
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_an_unparseable_created_at_never_raises(self):
+        """AC6."""
+        self.entry(1, "H2384 — L2D · waiting on Lane 1 review", "pending",
+                   mtime=self._posted() - 60)
+        self.assertFalse(self.stale(created_at="not-a-date"))
+        self.assertEqual(owed.markers(SESSION), [])
+
+    def test_a_resolver_that_cannot_load_is_named_on_stderr(self):
+        """AC6 (pass-1 survivor 2): a batch_auth import failure is logged, not
+        mistaken for an unknown repo."""
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"batch_auth": None}), \
+                mock.patch("sys.stderr", err):
+            self.assertIsNone(owed.key_for("vitalharmony/hrse", 2384))
+        self.assertIn("key resolver unavailable", err.getvalue())
+
+    def test_an_unknown_repo_stays_silent(self):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            self.assertIsNone(owed.key_for("nobody/nothing", 1))
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_raising_resolver_is_named_on_stderr(self):
+        """AC6 (pass-2 survivor 2)."""
+        import batch_auth  # noqa: PLC0415
+        err = io.StringIO()
+        with mock.patch.object(batch_auth, "issue_key", side_effect=RuntimeError("boom")), \
+                mock.patch("sys.stderr", err):
+            self.assertIsNone(owed.key_for("vitalharmony/hrse", 2384))
+        self.assertIn("key resolve failed", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

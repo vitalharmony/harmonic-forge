@@ -229,6 +229,16 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 import gate_ci  # noqa: E402
 import markdown_strip  # noqa: E402
 import staleness_ff  # noqa: E402
+# harmonic-forge#1221: another lane's post on a held issue owes this session's
+# task-list entry an update. Never raises; an import failure leaves the watch as
+# it was.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+try:
+    import tasklist_owed as _tasklist_owed  # noqa: E402
+except Exception as _exc:  # noqa: BLE001 -- AC6: a broken module must not stop the belt
+    print(f"[watch_lane_posts] task-list markers off: tasklist_owed did not import: {_exc}",
+          file=sys.stderr)
+    _tasklist_owed = None
 
 from belt_mechanics import (  # noqa: E402
     CallCounter,
@@ -1815,6 +1825,15 @@ def comment_watch_cycle(
             if classified is None:
                 continue
             lane, detail = classified
+            # harmonic-forge#1221: before every filter below, so a post owed to
+            # another lane still refreshes this session's entry for the issue.
+            if self_lane and lane != self_lane and _tasklist_owed is not None:
+                try:
+                    _tasklist_owed.record_if_stale(repo, issue, detail,
+                                                   comment.get("created_at") or "")
+                except Exception as exc:
+                    print(f"[watch_lane_posts] {target}: task-list marker failed: {exc}",
+                          file=sys.stderr)
             # harmonic-forge#1099 (preclose survivor 2): a gate report is never
             # Lane 2's news, whatever its footer's kind or posted-by says.
             if self_lane == "l2" and _is_gate_report(detail, comment.get("body", "")):

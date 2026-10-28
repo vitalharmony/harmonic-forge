@@ -27,7 +27,9 @@ is this lane's own.
 2. Every lane post, merge, PR or close on an issue owes its entry an update
    naming that action (`tasklist_owed.py` records it; `stop_decide` refuses to
    end the turn while the marker remains). One marker per key, the latest
-   wins. Reforge epoch 4: only a successful TaskCreate or TaskUpdate that
+   wins. Another lane's post is recorded too, by the belt's comment watch
+   (`tasklist_owed.record_if_stale`, harmonic-forge#1221), when this session
+   holds an open entry for the issue last written before that post. Reforge epoch 4: only a successful TaskCreate or TaskUpdate that
    gives an entry carrying the key its subject clears the marker
    (`posttooluse_decide`). Stop compares nothing and makes no state read.
 3. An entry names a concrete step (read, review, push/PR, post), never only
