@@ -77,6 +77,11 @@
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_unchecked_push.py\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"",
+            "timeout": 5
           }
         ]
       },
@@ -336,6 +341,11 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/record_tasklist_post.py\"",
             "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/record_failed_command.py\"",
+            "timeout": 5
           }
         ]
       },
