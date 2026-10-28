@@ -44,7 +44,7 @@ class Base(unittest.TestCase):
         return {"session_id": session, "cwd": str(cwd or self.repo),
                 "tool_input": {"command": command}, **extra}
 
-    def fail(self, command, **kw):
+    def record_failure(self, command, **kw):
         R.record(self.payload(command, **kw))
 
     def refused(self, command, **kw):
@@ -53,7 +53,7 @@ class Base(unittest.TestCase):
 
 class Blocks(Base):
     def test_identical_repeat_is_refused(self):
-        self.fail("python3 tools/gh/l1_post.py --issue 1")
+        self.record_failure("python3 tools/gh/l1_post.py --issue 1")
         self.assertIn("harmonic-forge#1216", self.refused("python3 tools/gh/l1_post.py --issue 1"))
 
     def test_lane_shapes_are_refused(self):
@@ -61,25 +61,25 @@ class Blocks(Base):
                         "mise run gate-checkout -- --issue 5",
                         "mise run lane-comment -- --issue 5 --kind spec --file s.md"):
             with self.subTest(command=command):
-                self.fail(command)
+                self.record_failure(command)
                 self.assertIsNotNone(self.refused(command))
 
     def test_grep_exit_one_repeat_is_refused_inside_the_ttl(self):
-        self.fail("grep -n nothing f")
+        self.record_failure("grep -n nothing f")
         self.assertIsNotNone(self.refused("grep -n nothing f"))
 
     def test_refusal_names_the_recorded_failure(self):
-        self.fail("make x", error="make: *** No rule to make target 'x'.")
+        self.record_failure("make x", error="make: *** No rule to make target 'x'.")
         self.assertIn("No rule to make target", self.refused("make x"))
 
 
 class Clears(Base):
     def test_a_changed_command_clears(self):
-        self.fail("make x")
+        self.record_failure("make x")
         self.assertIsNone(self.refused("make  x"))
 
     def test_a_new_head_clears(self):
-        self.fail("make x")
+        self.record_failure("make x")
         (self.repo / "g").write_text("y")
         _git(self.repo, "add", "g")
         _git(self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "d")
@@ -87,12 +87,12 @@ class Clears(Base):
 
     def test_editing_an_already_dirty_file_clears(self):
         (self.repo / "f").write_text("dirty 1")
-        self.fail("make x")
+        self.record_failure("make x")
         (self.repo / "f").write_text("dirty 2")
         self.assertIsNone(self.refused("make x"))
 
     def test_a_new_untracked_file_clears(self):
-        self.fail("make x")
+        self.record_failure("make x")
         (self.repo / "new").write_text("n")
         self.assertIsNone(self.refused("make x"))
 
@@ -101,19 +101,19 @@ class Clears(Base):
         self.assertIsNone(self.refused("gh pr checks 1"))
 
     def test_another_session_is_not_refused(self):
-        self.fail("make x")
+        self.record_failure("make x")
         self.assertIsNone(self.refused("make x", session="other"))
 
 
 class Flaky(Base):
     def test_one_unchanged_retry_then_refused(self):
-        self.fail("mise run check")
+        self.record_failure("mise run check")
         self.assertIsNone(self.refused("mise run check"))
-        self.fail("mise run check")
+        self.record_failure("mise run check")
         self.assertIsNotNone(self.refused("mise run check"))
 
     def test_a_near_miss_gets_no_retry(self):
-        self.fail("mise run check && echo ok")
+        self.record_failure("mise run check && echo ok")
         self.assertIsNotNone(self.refused("mise run check && echo ok"))
 
 
@@ -121,17 +121,17 @@ class FailOpen(Base):
     def test_outside_a_repo_is_neither_recorded_nor_refused(self):
         outside = self.root / "plain"
         outside.mkdir()
-        self.fail("make x", cwd=outside)
+        self.record_failure("make x", cwd=outside)
         self.assertFalse(R.session_file(SESSION).exists())
         self.assertIsNone(self.refused("make x", cwd=outside))
 
     def test_no_session_is_inert(self):
-        self.fail("make x", session="")
+        self.record_failure("make x", session="")
         self.assertFalse((self.root / "store").exists())
         self.assertIsNone(self.refused("make x", session=""))
 
     def test_a_store_error_allows(self):
-        self.fail("make x")
+        self.record_failure("make x")
         with mock.patch.object(R, "_read", side_effect=OSError):
             out = io.StringIO()
             with mock.patch("sys.stdin", io.StringIO(json.dumps(self.payload("make x")))), \
@@ -147,7 +147,7 @@ class FailOpen(Base):
         self.assertEqual(out.getvalue(), "")
 
     def test_a_git_timeout_allows(self):
-        self.fail("make x")
+        self.record_failure("make x")
         with mock.patch.object(R.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 3)):
             self.assertIsNone(self.refused("make x"))
 
@@ -164,11 +164,11 @@ class Hygiene(Base):
         stale.write_text("")
         past = time.time() - R.STALE_FILE_SECONDS - 10
         os.utime(stale, (past, past))
-        self.fail("make x")
+        self.record_failure("make x")
         self.assertFalse(stale.exists())
 
     def test_hook_main_emits_deny_json(self):
-        self.fail("make x")
+        self.record_failure("make x")
         out = io.StringIO()
         with mock.patch("sys.stdin", io.StringIO(json.dumps(self.payload("make x")))), \
              mock.patch("sys.stdout", out):
