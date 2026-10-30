@@ -5,6 +5,7 @@ Every subprocess is stubbed; each kill check names the test that must fail."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -214,7 +215,11 @@ class ReadOnlyTest(Lane3EnvCase):
     def test_checks_are_read_only(self):
         run = Recorder(tasks=["lane3-preflight"])
         before = sorted(str(p) for p in self.lane3.rglob("*"))
-        self.check({"1": "1. TC1\n Requires: py:json\n"}, run)
+        # The caller's own environment must not supply the guard (preclose
+        # pass 1 #7): kill_check.py exports it, which hid its absence here.
+        with patch.dict("os.environ"):
+            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+            self.check({"1": "1. TC1\n Requires: py:json\n"}, run)
         for cmd, _cwd, _kw in run.calls:
             args = {Path(a).name for a in cmd[1:]}
             self.assertFalse(args & {"install", "hooks-install", "pip", "npm", "sync_rules.py", "ci"})

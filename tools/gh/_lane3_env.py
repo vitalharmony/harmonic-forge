@@ -40,8 +40,10 @@ REQUIRES_LINE = re.compile(r"(?im)^[ \t]*(?:[-*+][ \t]+)?\**[ \t]*Requires[ \t]*
 #: field the parser could not attribute, and refuses (preclose pass 1 #1/#2:
 #: no match must never read as "nothing to check").
 REQUIRES_LOOSE = re.compile(r"(?i)\bRequires[ \t]*\**[ \t]*:")
-#: Probe subprocesses never write bytecode into the tree they probe (AC3).
-PROBE_ENV = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+def probe_env() -> dict[str, str]:
+    """Probe subprocesses never write bytecode into the tree they probe (AC3).
+    Built per call, so it is this process's environment at probe time."""
+    return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
 REQUIRES_TOKEN = re.compile(r"(bin|py):([A-Za-z0-9_.+-]+)")
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -88,7 +90,7 @@ def links_ok(repo: str, lane3: Path, run: Runner = subprocess.run,
     try:
         result = run([sys.executable, str(script), "--project", str(lane3)],
                      cwd=str(lane3), capture_output=True, text=True, timeout=LINK_TIMEOUT,
-                     env=PROBE_ENV)
+                     env=probe_env())
     except subprocess.TimeoutExpired:
         return False, f"link report timed out after {LINK_TIMEOUT}s"
     return result.returncode == 0, _tail(result)
@@ -149,7 +151,7 @@ def probe_requires(needs: dict[str, list[tuple[str, str]]], lane3: Path,
                 try:
                     ok = run([interp, "-I", "-c", f"import {name}"], cwd=str(lane3),
                              capture_output=True, text=True, timeout=IMPORT_TIMEOUT,
-                             env=PROBE_ENV).returncode == 0
+                             env=probe_env()).returncode == 0
                 except (subprocess.TimeoutExpired, OSError):
                     ok = False
             if not ok:
