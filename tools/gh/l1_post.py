@@ -107,6 +107,7 @@ import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
 import _scratch  # noqa: E402  (harmonic-forge#949)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
+import _lane3_env  # noqa: E402  (harmonic-forge#1218)
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -1161,24 +1162,45 @@ def _field_sets(text: str, label: str) -> list[frozenset[str]]:
     return [parse_external_calls(line, label) for line in lines if pattern.search(line)]
 
 
-def sweep_case_external_calls(sweep_body: str, tier_p: bool = False) -> dict[str, list[frozenset[str]]]:
-    """{case id: the `External calls:` sets in that case's block}, a block
-    running from its `TC<n>` entry to the next one. Only when the spec is
-    Tier P (`spec_is_tier_p`, the detection `validate_sweep` uses) are the
-    sweep's `P<n>` entries read as the TC entries they canonicalize to; in
-    any other sweep a line-leading `P<n>` is ordinary text (harmonic-forge#1115
-    sticky-wicket PATCH 3)."""
+def sweep_case_blocks(sweep_body: str, tier_p: bool = False) -> dict[str, str]:
+    """{case id: that case's block}, a block running from its `TC<n>` entry to
+    the next one. Only when the spec is Tier P (`spec_is_tier_p`, the detection
+    `validate_sweep` uses) are the sweep's `P<n>` entries read as the TC
+    entries they canonicalize to; in any other sweep a line-leading `P<n>` is
+    ordinary text (harmonic-forge#1115 sticky-wicket PATCH 3). Shared by the
+    `External calls:` and `Requires:` (harmonic-forge#1218) readers."""
     body = sweep_body or ""
     if tier_p:
         body, _ = _canonicalize_tier_p(body, sweep=True)
     section, _ = _case_section(body)
     starts = list(SWEEP_TC_ENTRY_SUFFIXED.finditer(section))
-    found: dict[str, list[frozenset[str]]] = {}
+    blocks: dict[str, str] = {}
     for index, entry in enumerate(starts):
         end = starts[index + 1].start() if index + 1 < len(starts) else len(section)
-        found.setdefault(entry.group(1).lower(), []).extend(
-            _field_sets(section[entry.start():end], SWEEP_CALLS_LABEL))
-    return found
+        case = entry.group(1).lower()
+        blocks[case] = blocks.get(case, "") + section[entry.start():end]
+    return blocks
+
+
+def sweep_case_external_calls(sweep_body: str, tier_p: bool = False) -> dict[str, list[frozenset[str]]]:
+    """{case id: the `External calls:` sets in that case's block}."""
+    return {case: _field_sets(block, SWEEP_CALLS_LABEL)
+            for case, block in sweep_case_blocks(sweep_body, tier_p).items()}
+
+
+def validate_lane3_env(sweep_body: str, spec_body: str, repo: str) -> None:
+    """harmonic-forge#1218: refuse a sweep until Lane 3's own environment is
+    ready, judged from Lane 3's worktree (AC1 links, AC2 `Requires:`, AC5 the
+    repo's `lane3-preflight`). Read-only (AC3); runs on `--dry-run` too (AC4).
+    A separate step after `validate_sweep`, never inside it, so that
+    validator's unit tests stay independent of machine state."""
+    try:
+        reasons = _lane3_env.check(repo, sweep_case_blocks(sweep_body, spec_is_tier_p(spec_body)))
+    except _lane3_env.Lane3EnvError as exc:
+        fail(f"sweep refused (harmonic-forge#1218): {exc}")
+    if reasons:
+        fail("sweep refused: Lane 3's environment is not ready (harmonic-forge#1218, R-0125):\n- "
+             + "\n- ".join(reasons))
 
 
 def spec_live_ids(spec_body: str) -> set[str]:
@@ -3491,6 +3513,7 @@ def main() -> None:
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
+            lambda: validate_lane3_env(sweep_body, spec_once(), repo),  # harmonic-forge#1218
             lambda: validate_ae_by_name(spec_once(), ae_body, sweep_body),  # harmonic-forge#1179
             lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
                 ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()),
@@ -3586,6 +3609,7 @@ def main() -> None:
     if args.kind == "sweep":
         spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
         steps.append(lambda: validate_sweep(body, spec_once(), repo, args.issue))
+        steps.append(lambda: validate_lane3_env(body, spec_once(), repo))  # harmonic-forge#1218
         # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(
             repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))
