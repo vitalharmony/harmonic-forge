@@ -39,6 +39,11 @@ class Harness(unittest.TestCase):
                                            "CLAUDE_CODE_SESSION_ID": "session-a"})
         env.start()
         self.addCleanup(env.stop)
+        # harmonic-forge#1218: Lane 3's environment has its own tests; here it
+        # is ready, so no test reads the real worktree.
+        lane3 = mock.patch.object(L._lane3_env, "check", return_value=[])
+        lane3.start()
+        self.addCleanup(lane3.stop)
         os.environ.pop("L1_POST_ENTRY", None)
         self.overlap = False
         self.pr_open = True

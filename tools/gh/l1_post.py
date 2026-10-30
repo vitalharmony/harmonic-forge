@@ -1195,7 +1195,11 @@ def validate_lane3_env(sweep_body: str, spec_body: str, repo: str) -> None:
     A separate step after `validate_sweep`, never inside it, so that
     validator's unit tests stay independent of machine state."""
     try:
-        reasons = _lane3_env.check(repo, sweep_case_blocks(sweep_body, spec_is_tier_p(spec_body)))
+        blocks = sweep_case_blocks(sweep_body, spec_is_tier_p(spec_body))
+        loose = _lane3_env.REQUIRES_LOOSE
+        if len(loose.findall(sweep_body or "")) != sum(len(loose.findall(b)) for b in blocks.values()):
+            raise _lane3_env.Lane3EnvError("`Requires:` outside any case block")
+        reasons = _lane3_env.check(repo, blocks)
     except _lane3_env.Lane3EnvError as exc:
         fail(f"sweep refused (harmonic-forge#1218): {exc}")
     if reasons:

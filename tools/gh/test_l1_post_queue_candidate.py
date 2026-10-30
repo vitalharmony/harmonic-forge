@@ -142,12 +142,17 @@ from unittest import mock as _session_mock  # noqa: E402
 _NO_SESSION_PATCH = _session_mock.patch.dict(_os.environ)
 
 
+_LANE3_ENV_PATCH = _session_mock.patch.object(L._lane3_env, "check", return_value=[])
+
+
 def setUpModule():  # noqa: N802
+    _LANE3_ENV_PATCH.start()
     _NO_SESSION_PATCH.start()
     _os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 
 
 def tearDownModule():  # noqa: N802
+    _LANE3_ENV_PATCH.stop()
     _NO_SESSION_PATCH.stop()
 
 

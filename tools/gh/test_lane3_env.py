@@ -4,6 +4,7 @@ Every subprocess is stubbed; each kill check names the test that must fail."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -23,18 +24,26 @@ def _done(rc: int, out: str = "") -> subprocess.CompletedProcess:
 
 
 class Recorder:
-    """A subprocess stand-in: records each call, answers by the first match."""
+    """A subprocess stand-in: records each call, answers by the first match.
 
-    def __init__(self, answers: dict[str, int] | None = None):
-        self.calls: list[tuple[list[str], str]] = []
+    `mise tasks ls --json` answers with `tasks` (no tasks by default), the way
+    mise lists what it resolves in the worktree."""
+
+    def __init__(self, answers: dict[str, int] | None = None, tasks: list[str] | None = None,
+                 tasks_out: str | None = None):
+        self.calls: list[tuple[list[str], str, dict]] = []
         self.answers = answers or {}
+        self.tasks_out = tasks_out if tasks_out is not None else json.dumps(
+            [{"name": n} for n in (tasks or [])])
 
-    def __call__(self, cmd, cwd=None, **_kw):
-        self.calls.append((list(cmd), cwd))
+    def __call__(self, cmd, cwd=None, **kw):
+        self.calls.append((list(cmd), cwd, kw))
         joined = " ".join(cmd)
         for needle, rc in self.answers.items():
             if needle in joined:
                 return _done(rc, f"{needle} -> {rc}")
+        if "tasks ls" in joined:
+            return _done(0, self.tasks_out)
         return _done(0)
 
 
@@ -62,8 +71,6 @@ class Lane3EnvCase(unittest.TestCase):
         return _lane3_env.check(repo, blocks, lane3=lane3 or self.lane3, run=run,
                                 which=which, platform=lambda: self.platform)
 
-    def preflight(self, run: str) -> None:
-        (self.lane3 / "mise.toml").write_text(f'[tasks.lane3-preflight]\nrun = "{run}"\n')
 
 
 class LinksTest(Lane3EnvCase):
@@ -83,7 +90,7 @@ class LinksTest(Lane3EnvCase):
         """Kill check 2: forge's report is Lane 3's own copy, never the platform checkout's."""
         run = Recorder()
         self.check({}, run, repo=_lane3_env.FORGE_REPO)
-        cmd, cwd = run.calls[0]
+        cmd, cwd, _kw = run.calls[0]
         self.assertEqual(cmd[1], str(self.lane3 / "tools" / "onboard" / "platform_link_report.py"))
         self.assertEqual(cmd[2:], ["--project", str(self.lane3)])
         self.assertEqual(cwd, str(self.lane3))
@@ -91,13 +98,17 @@ class LinksTest(Lane3EnvCase):
     def test_consuming_repo_runs_platform_copy_against_lane3(self):
         run = Recorder()
         self.check({}, run)
-        cmd, _cwd = run.calls[0]
+        cmd, _cwd, _kw = run.calls[0]
         self.assertEqual(cmd[1], str(self.platform / "tools" / "onboard" / "platform_link_report.py"))
         self.assertEqual(cmd[2:], ["--project", str(self.lane3)])
 
     def test_link_timeout_is_not_ok(self):
-        def run(cmd, **_kw):
-            raise subprocess.TimeoutExpired(cmd, 60)
+        recorder = Recorder()
+
+        def run(cmd, **kw):
+            if "platform_link_report" in " ".join(cmd):
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return recorder(cmd, **kw)
         reasons = self.check({}, run)
         self.assertTrue(reasons and "timed out" in reasons[0])
 
@@ -114,6 +125,17 @@ class LinksTest(Lane3EnvCase):
         wts = [self.root / "R-lane2", self.root / "R-lane3"]
         projects = {"o/r": SimpleNamespace(protocol=SimpleNamespace(runs_lane3=True), worktrees=wts)}
         self.assertEqual(_lane3_env.lane3_dir("o/r", projects), wts[1])
+
+    def test_lane3_dir_selects_by_lane_not_name_suffix(self):
+        """Preclose pass 1 #5: a template naming the worktree `-gate3` is still Lane 3's."""
+        wts = [self.root / "R-gate2", self.root / "R-gate3"]
+        projects = {"o/r": SimpleNamespace(protocol=SimpleNamespace(runs_lane3=True), worktrees=wts)}
+        self.assertEqual(_lane3_env.lane3_dir("o/r", projects), wts[1])
+
+    def test_lane3_repo_with_no_lane3_worktree_refuses(self):
+        projects = {"o/r": SimpleNamespace(protocol=SimpleNamespace(runs_lane3=True), worktrees=[])}
+        with self.assertRaisesRegex(_lane3_env.Lane3EnvError, "no Lane 3 worktree"):
+            _lane3_env.lane3_dir("o/r", projects)
 
 
 class RequiresTest(Lane3EnvCase):
@@ -152,6 +174,18 @@ class RequiresTest(Lane3EnvCase):
             with self.subTest(line=line), self.assertRaisesRegex(_lane3_env.Lane3EnvError, "malformed"):
                 _lane3_env.requires({"1": f"1. TC1\n   {line}\n"})
 
+    def test_bulleted_requires_is_probed(self):
+        """Preclose pass 1 #1: a list-item `Requires:` is read, not skipped."""
+        for line in ("  - Requires: bin:no-such-tool", "  * **Requires:** bin:no-such-tool"):
+            with self.subTest(line=line):
+                reasons = self.check({"1": f"- TC1 — x\n{line}\n"}, Recorder(), which=_absent)
+                self.assertEqual(reasons, [f"Lane 3 ({self.lane3}) lacks TC1: bin:no-such-tool"])
+
+    def test_inline_requires_refuses_as_unattributed(self):
+        """Preclose pass 1 #1: `Requires:` text the line grammar cannot attribute refuses."""
+        with self.assertRaisesRegex(_lane3_env.Lane3EnvError, "unattributed"):
+            _lane3_env.requires({"1": "TC1 — x. Requires: bin:no-such-tool\n"})
+
     def test_two_requires_lines_in_one_case_refuses(self):
         with self.assertRaisesRegex(_lane3_env.Lane3EnvError, "more than one"):
             _lane3_env.requires({"1": "1. TC1\n Requires: bin:git\n Requires: py:json\n"})
@@ -178,13 +212,16 @@ class ReadOnlyTest(Lane3EnvCase):
     """AC3."""
 
     def test_checks_are_read_only(self):
-        self.preflight("true")
-        run = Recorder()
+        run = Recorder(tasks=["lane3-preflight"])
         before = sorted(str(p) for p in self.lane3.rglob("*"))
         self.check({"1": "1. TC1\n Requires: py:json\n"}, run)
-        for cmd, _cwd in run.calls:
+        for cmd, _cwd, _kw in run.calls:
             args = {Path(a).name for a in cmd[1:]}
             self.assertFalse(args & {"install", "hooks-install", "pip", "npm", "sync_rules.py", "ci"})
+        for cmd, _cwd, kw in run.calls:
+            if "python" in Path(cmd[0]).name or cmd[0] == sys.executable:
+                # preclose pass 1 #7: probes never write bytecode into Lane 3.
+                self.assertEqual(kw.get("env", {}).get("PYTHONDONTWRITEBYTECODE"), "1", cmd)
         self.assertEqual(sorted(str(p) for p in self.lane3.rglob("*")), before)
 
 
@@ -193,23 +230,37 @@ class PreflightTest(Lane3EnvCase):
 
     def test_failing_preflight_refuses(self):
         """Kill check 8: the hrse#2522 shape, Lane 3's own preflight failing."""
-        self.preflight("false")
-        run = Recorder({"lane3-preflight": 1})
+        run = Recorder({"run lane3-preflight": 1}, tasks=["lane3-preflight"])
         reasons = self.check({}, run)
         self.assertEqual(len(reasons), 1)
         self.assertIn("lane3-preflight", reasons[0])
         self.assertIn(str(self.lane3), reasons[0])
-        self.assertEqual(run.calls[-1], (["mise", "run", "lane3-preflight"], str(self.lane3)))
+        self.assertEqual(run.calls[-1][:2], (["mise", "run", "lane3-preflight"], str(self.lane3)))
 
     def test_passing_preflight_passes(self):
-        self.preflight("true")
-        self.assertEqual(self.check({}, Recorder()), [])
+        self.assertEqual(self.check({}, Recorder(tasks=["lane3-preflight"])), [])
+
+    def test_preflight_found_wherever_mise_resolves_it(self):
+        """Preclose pass 1 #6: declared in `.mise.toml`, not `mise.toml`, it is
+        still found, because mise itself is asked, in Lane 3's worktree."""
+        (self.lane3 / ".mise.toml").write_text('[tasks.lane3-preflight]\nrun = "false"\n')
+        run = Recorder({"run lane3-preflight": 1}, tasks=["lane3-preflight"])
+        reasons = self.check({}, run)
+        self.assertTrue(reasons and "lane3-preflight" in reasons[0])
+        ls = [c for c in run.calls if "tasks ls" in " ".join(c[0])][0]
+        self.assertEqual(ls[1], str(self.lane3))
+
+    def test_unreadable_mise_config_refuses(self):
+        """Preclose pass 1 #3: a config mise cannot read refuses, never reads as
+        "not declared"."""
+        for run in (Recorder({"tasks ls": 1}), Recorder(tasks_out="not json")):
+            with self.subTest(run=run), self.assertRaises(_lane3_env.Lane3EnvError):
+                self.check({}, run)
 
     def test_no_declared_preflight_is_not_run(self):
-        (self.lane3 / "mise.toml").write_text('[tasks.other]\nrun = "true"\n')
-        run = Recorder()
+        run = Recorder(tasks=["other"])
         self.check({}, run)
-        self.assertFalse(any("lane3-preflight" in " ".join(c[0]) for c in run.calls))
+        self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
 
 
 class WiringTest(unittest.TestCase):
@@ -225,12 +276,12 @@ class WiringTest(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "malformed"):
             l1_post.validate_lane3_env("x", "", "vitalharmony/hrse")
 
-    def test_both_sweep_call_sites_run_the_step(self):
-        """Kill check 6: the step sits beside `validate_sweep` at both call
-        sites, inside `_collect`, the path the dry run also takes."""
-        source = Path(l1_post.__file__).read_text()
-        self.assertEqual(source.count("validate_lane3_env(sweep_body, spec_once(), repo)"), 1)
-        self.assertEqual(source.count("validate_lane3_env(body, spec_once(), repo)"), 1)
+    def test_requires_outside_any_case_refuses(self):
+        """Preclose pass 1 #2: a `Requires:` line the per-case split drops refuses."""
+        sweep = "## Gate-readiness sweep — H1\n\nRequires: bin:no-such-tool\n\n1. TC1 — ready.\n"
+        with patch.object(_lane3_env, "check", return_value=[]), \
+                self.assertRaisesRegex(SystemExit, "outside any case block"):
+            l1_post.validate_lane3_env(sweep, "", "vitalharmony/hrse")
 
 
 if __name__ == "__main__":

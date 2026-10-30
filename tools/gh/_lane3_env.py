@@ -19,7 +19,8 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
+import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -34,7 +35,13 @@ LINK_TIMEOUT = 60
 IMPORT_TIMEOUT = 30
 PREFLIGHT_TIMEOUT = 120
 
-REQUIRES_LINE = re.compile(r"(?im)^[ \t]*\**[ \t]*Requires[ \t]*\**[ \t]*:(.*)$")
+REQUIRES_LINE = re.compile(r"(?im)^[ \t]*(?:[-*+][ \t]+)?\**[ \t]*Requires[ \t]*\**[ \t]*:(.*)$")
+#: Any `Requires:` text at all. A count that differs from REQUIRES_LINE's is a
+#: field the parser could not attribute, and refuses (preclose pass 1 #1/#2:
+#: no match must never read as "nothing to check").
+REQUIRES_LOOSE = re.compile(r"(?i)\bRequires[ \t]*\**[ \t]*:")
+#: Probe subprocesses never write bytecode into the tree they probe (AC3).
+PROBE_ENV = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
 REQUIRES_TOKEN = re.compile(r"(bin|py):([A-Za-z0-9_.+-]+)")
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -45,12 +52,19 @@ class Lane3EnvError(Exception):
 
 
 def lane3_dir(repo: str, projects: dict | None = None) -> Path | None:
-    """The manifest's `-lane3` worktree, or None when the repo runs no Lane 3."""
+    """The manifest's Lane 3 worktree, or None when the repo runs no Lane 3.
+
+    Selected by lane position, never by a name suffix: `Protocol.worktree_names`
+    lists lanes (2, 3) in order whatever its `worktree_name` template spells
+    (preclose pass 1 #5). A repo that runs Lane 3 but resolves no Lane 3
+    worktree refuses rather than going unchecked."""
     project = (projects if projects is not None else manifest.by_repo()).get(repo)
     if project is None or project.protocol is None or not project.protocol.runs_lane3:
         return None
-    lane3 = [w for w in project.worktrees if w.name.endswith("-lane3")]
-    return lane3[0] if lane3 else None
+    worktrees = project.worktrees
+    if len(worktrees) < 2:
+        raise Lane3EnvError(f"{repo}: the manifest runs Lane 3 but no Lane 3 worktree resolves")
+    return worktrees[1]
 
 
 def _platform_source() -> Path:
@@ -73,7 +87,8 @@ def links_ok(repo: str, lane3: Path, run: Runner = subprocess.run,
         return False, f"link report not found at {script}"
     try:
         result = run([sys.executable, str(script), "--project", str(lane3)],
-                     cwd=str(lane3), capture_output=True, text=True, timeout=LINK_TIMEOUT)
+                     cwd=str(lane3), capture_output=True, text=True, timeout=LINK_TIMEOUT,
+                     env=PROBE_ENV)
     except subprocess.TimeoutExpired:
         return False, f"link report timed out after {LINK_TIMEOUT}s"
     return result.returncode == 0, _tail(result)
@@ -93,6 +108,10 @@ def requires(case_blocks: dict[str, str]) -> dict[str, list[tuple[str, str]]]:
     found: dict[str, list[tuple[str, str]]] = {}
     for case, block in case_blocks.items():
         lines = REQUIRES_LINE.findall(block)
+        if len(REQUIRES_LOOSE.findall(block)) != len(lines):
+            raise Lane3EnvError(
+                f"{case_label(case)}: unattributed `Requires:` text; put the field on "
+                "its own line (grammar: `Requires: bin:<name>; py:<module>`)")
         if not lines:
             continue
         if len(lines) > 1:
@@ -129,8 +148,8 @@ def probe_requires(needs: dict[str, list[tuple[str, str]]], lane3: Path,
             else:
                 try:
                     ok = run([interp, "-I", "-c", f"import {name}"], cwd=str(lane3),
-                             capture_output=True, text=True,
-                             timeout=IMPORT_TIMEOUT).returncode == 0
+                             capture_output=True, text=True, timeout=IMPORT_TIMEOUT,
+                             env=PROBE_ENV).returncode == 0
                 except (subprocess.TimeoutExpired, OSError):
                     ok = False
             if not ok:
@@ -138,16 +157,25 @@ def probe_requires(needs: dict[str, list[tuple[str, str]]], lane3: Path,
     return misses
 
 
-def declares_preflight(lane3: Path) -> bool:
-    """AC5: whether Lane 3's own `mise.toml` declares the preflight task."""
-    config = lane3 / "mise.toml"
-    if not config.is_file():
-        return False
+def declares_preflight(lane3: Path, run: Runner = subprocess.run) -> bool:
+    """AC5: whether mise, run in Lane 3's worktree, resolves the preflight task.
+
+    mise is asked rather than one config file parsed, so `.mise.toml`,
+    `mise.local.toml`, `.config/mise.toml` and file tasks all count (preclose
+    pass 1 #6). A config mise cannot read raises rather than reading as "not
+    declared" (#3)."""
     try:
-        tasks = tomllib.loads(config.read_text()).get("tasks", {})
-    except tomllib.TOMLDecodeError:
-        return False
-    return PREFLIGHT_TASK in tasks
+        result = run(["mise", "tasks", "ls", "--json", "--hidden"], cwd=str(lane3),
+                     capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise Lane3EnvError(f"`mise tasks ls` could not run in {lane3}: {exc}") from exc
+    if result.returncode != 0:
+        raise Lane3EnvError(f"`mise tasks ls` failed in {lane3}:\n{_tail(result)}")
+    try:
+        tasks = json.loads(result.stdout)
+    except ValueError as exc:
+        raise Lane3EnvError(f"`mise tasks ls --json` in {lane3} printed no JSON: {exc}") from exc
+    return any(isinstance(t, dict) and t.get("name") == PREFLIGHT_TASK for t in tasks)
 
 
 def preflight_ok(lane3: Path, run: Runner = subprocess.run) -> tuple[bool, str]:
@@ -185,7 +213,7 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
         reasons.append(f"Lane 3's platform links do not verify from {lane3}; run "
                        f"`{REPAIR}` there:\n{detail}")
     reasons += [f"Lane 3 ({lane3}) lacks {miss}" for miss in probe_requires(needs, lane3, run, which)]
-    if declares_preflight(lane3):
+    if declares_preflight(lane3, run=run):
         ok, detail = preflight_ok(lane3, run=run)
         if not ok:
             reasons.append(f"Lane 3's `mise run {PREFLIGHT_TASK}` failed in {lane3}:\n{detail}")
