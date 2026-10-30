@@ -92,16 +92,16 @@ class LinksTest(Lane3EnvCase):
         run = Recorder()
         self.check({}, run, repo=_lane3_env.FORGE_REPO)
         cmd, cwd, _kw = run.calls[0]
-        self.assertEqual(cmd[1], str(self.lane3 / "tools" / "onboard" / "platform_link_report.py"))
-        self.assertEqual(cmd[2:], ["--project", str(self.lane3)])
+        self.assertEqual(cmd[1:3], ["-B", str(self.lane3 / "tools" / "onboard" / "platform_link_report.py")])
+        self.assertEqual(cmd[3:], ["--project", str(self.lane3)])
         self.assertEqual(cwd, str(self.lane3))
 
     def test_consuming_repo_runs_platform_copy_against_lane3(self):
         run = Recorder()
         self.check({}, run)
         cmd, _cwd, _kw = run.calls[0]
-        self.assertEqual(cmd[1], str(self.platform / "tools" / "onboard" / "platform_link_report.py"))
-        self.assertEqual(cmd[2:], ["--project", str(self.lane3)])
+        self.assertEqual(cmd[1:3], ["-B", str(self.platform / "tools" / "onboard" / "platform_link_report.py")])
+        self.assertEqual(cmd[3:], ["--project", str(self.lane3)])
 
     def test_link_timeout_is_not_ok(self):
         recorder = Recorder()
@@ -155,8 +155,23 @@ class RequiresTest(Lane3EnvCase):
         reasons = self.check(blocks, run)
         self.assertEqual(reasons, [f"Lane 3 ({self.lane3}) lacks TC2: py:no_such_module"])
         probe = [c for c in run.calls if "import no_such_module" in " ".join(c[0])][0]
-        self.assertEqual(probe[0][:3], ["python3", "-I", "-c"])
+        # pass 2 #2: -I ignores PYTHONDONTWRITEBYTECODE, so -B is explicit.
+        self.assertEqual(probe[0][:4], ["python3", "-I", "-B", "-c"])
         self.assertEqual(probe[1], str(self.lane3))
+
+    def test_probe_runs_lane3s_venv_interpreter(self):
+        """Pass 2 #1: the probe itself, not only `interpreter()`, uses Lane 3's venv."""
+        venv = self.lane3 / "backend" / ".venv" / "bin"
+        venv.mkdir(parents=True)
+        (venv / "python3").write_text("")
+        run = Recorder()
+        _lane3_env.probe_requires({"1": [("py", "json")]}, self.lane3, run=run)
+        self.assertEqual(run.calls[0][0][0], str(venv / "python3"))
+
+    def test_probe_falls_back_to_python3_without_a_venv(self):
+        run = Recorder()
+        _lane3_env.probe_requires({"1": [("py", "json")]}, self.lane3, run=run)
+        self.assertEqual(run.calls[0][0][0], "python3")
 
     def test_lane3_venv_interpreter_is_preferred(self):
         venv = self.lane3 / "backend" / ".venv" / "bin"
@@ -254,6 +269,13 @@ class PreflightTest(Lane3EnvCase):
         self.assertTrue(reasons and "lane3-preflight" in reasons[0])
         ls = [c for c in run.calls if "tasks ls" in " ".join(c[0])][0]
         self.assertEqual(ls[1], str(self.lane3))
+
+    def test_preflight_found_by_alias(self):
+        """Pass 2 #3: a task exposing lane3-preflight only as an alias is found and run."""
+        out = json.dumps([{"name": "gate-preflight", "aliases": ["lane3-preflight"]}])
+        run = Recorder({"run lane3-preflight": 1}, tasks_out=out)
+        reasons = self.check({}, run)
+        self.assertTrue(reasons and "lane3-preflight" in reasons[0])
 
     def test_unreadable_mise_config_refuses(self):
         """Preclose pass 1 #3: a config mise cannot read refuses, never reads as

@@ -88,7 +88,7 @@ def links_ok(repo: str, lane3: Path, run: Runner = subprocess.run,
     if not script.is_file():
         return False, f"link report not found at {script}"
     try:
-        result = run([sys.executable, str(script), "--project", str(lane3)],
+        result = run([sys.executable, "-B", str(script), "--project", str(lane3)],
                      cwd=str(lane3), capture_output=True, text=True, timeout=LINK_TIMEOUT,
                      env=probe_env())
     except subprocess.TimeoutExpired:
@@ -149,7 +149,7 @@ def probe_requires(needs: dict[str, list[tuple[str, str]]], lane3: Path,
                 ok = which(name) is not None
             else:
                 try:
-                    ok = run([interp, "-I", "-c", f"import {name}"], cwd=str(lane3),
+                    ok = run([interp, "-I", "-B", "-c", f"import {name}"], cwd=str(lane3),
                              capture_output=True, text=True, timeout=IMPORT_TIMEOUT,
                              env=probe_env()).returncode == 0
                 except (subprocess.TimeoutExpired, OSError):
@@ -177,7 +177,9 @@ def declares_preflight(lane3: Path, run: Runner = subprocess.run) -> bool:
         tasks = json.loads(result.stdout)
     except ValueError as exc:
         raise Lane3EnvError(f"`mise tasks ls --json` in {lane3} printed no JSON: {exc}") from exc
-    return any(isinstance(t, dict) and t.get("name") == PREFLIGHT_TASK for t in tasks)
+    return any(isinstance(t, dict) and (t.get("name") == PREFLIGHT_TASK
+                                        or PREFLIGHT_TASK in (t.get("aliases") or []))
+               for t in tasks)
 
 
 def preflight_ok(lane3: Path, run: Runner = subprocess.run) -> tuple[bool, str]:
