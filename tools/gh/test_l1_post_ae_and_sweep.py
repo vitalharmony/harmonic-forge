@@ -56,7 +56,13 @@ _SWEEP_CALLS_PATCH = _ci_mock.patch.object(
 _NO_SESSION_PATCH = _ci_mock.patch.dict("os.environ")
 
 
+# harmonic-forge#1218: Lane 3's environment has its own tests
+# (test_lane3_env.py); here it is ready, so no test reads the real worktree.
+_LANE3_ENV_PATCH = _ci_mock.patch.object(post._lane3_env, "check", return_value=[])
+
+
 def setUpModule():  # noqa: N802
+    _LANE3_ENV_PATCH.start()
     _CI_PATCH.start()
     _SWEEP_CALLS_PATCH.start()
     _NO_SESSION_PATCH.start()
@@ -65,6 +71,7 @@ def setUpModule():  # noqa: N802
 
 
 def tearDownModule():  # noqa: N802
+    _LANE3_ENV_PATCH.stop()
     _CI_PATCH.stop()
     _SWEEP_CALLS_PATCH.stop()
     _NO_SESSION_PATCH.stop()
@@ -227,6 +234,24 @@ class MainIntegrationTests(unittest.TestCase):
              patch.object(sys, "argv", self._argv()):
             post.main()
         self.assertEqual(self.posted_kinds, ["ae", "sweep"], "AE must post strictly before sweep, through main() itself")
+
+    def test_dry_run_runs_the_lane3_env_step_through_main(self) -> None:
+        """harmonic-forge#1218 AC4 (preclose pass 1 #4): the dry run refuses on
+        Lane 3's environment exactly as the real post would, driven through
+        main(), so moving the step behind `not args.dry_run` or after the
+        dry-run return fails here."""
+        self.ae_file.write_text(AE_BODY)
+        self.sweep_file.write_text(SWEEP_BODY)
+        with patch.object(post, "run", side_effect=_fake_run), \
+             patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
+             patch.object(post, "write_receipt"), \
+             patch.object(post._lane3_env, "check", return_value=["stub: Lane 3 not ready"]) as check, \
+             patch.object(sys, "argv", self._argv() + ["--dry-run"]):
+            with self.assertRaises(SystemExit) as raised:
+                post.main()
+        check.assert_called_once()
+        self.assertIn("stub: Lane 3 not ready", str(raised.exception))
+        self.assertEqual(self.posted_kinds, [])
 
     def test_main_resolves_an_omitted_repo(self) -> None:
         self.ae_file.write_text(AE_BODY)
