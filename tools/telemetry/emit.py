@@ -87,70 +87,6 @@ def event_id(source: str, repo: Optional[str], issue: Any, subject_id: Optional[
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
-def request_event_id(source: str, subject_id: str) -> str:
-    """harmonic-forge#1188 (operator ruling A): identity of a per-request usage
-    event is its request key alone, so a request re-emitted with fuller usage
-    on a later harvest is the same event, not a second row."""
-    return hashlib.sha256("\x1f".join(["request", source, subject_id]).encode("utf-8")).hexdigest()
-
-
-#: Sources whose duplicate is replaced when it carries a higher attrs.output
-#: (a fuller read of the same request), instead of being dropped.
-REPLACE_ON_HIGHER_OUTPUT = frozenset({"llm-usage"})
-
-
-def _output(event: dict[str, Any]) -> int:
-    value = (event.get("attrs") or {}).get("output")
-    return value if isinstance(value, int) and not isinstance(value, bool) else -1
-
-
-def _replace_lines(part: Path, better: dict[str, Optional[dict[str, Any]]]) -> int:
-    """Rewrite `part` with each event in `better` (keyed by event_id) in place
-    of the stored line with that id; a None value deletes that line (a row
-    moving to its resolved partition, operator ruling A on 1188 preclose
-    pass 2). Called under the partition lock."""
-    if not better or not part.exists():
-        return 0
-    replaced = 0
-    out = []
-    with part.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            try:
-                eid = json.loads(line)["event_id"]
-            except (ValueError, KeyError, TypeError):
-                out.append(line)
-                continue
-            if eid in better:
-                event = better.pop(eid)
-                if event is not None:
-                    out.append(json.dumps(event, sort_keys=True) + "\n")
-                replaced += 1
-            else:
-                out.append(line)
-    tmp = part.with_name(part.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        handle.write("".join(out))
-        handle.flush()
-        os.fsync(handle.fileno())
-    tmp.replace(part)
-    return replaced
-
-
-def _stored_outputs(part: Path, ids: set[str]) -> dict[str, int]:
-    found: dict[str, int] = {}
-    if not part.exists():
-        return found
-    with part.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(event, dict) and event.get("event_id") in ids:
-                found[event["event_id"]] = _output(event)
-    return found
-
-
 def normalize_ts(ts: Any) -> str:
     if not isinstance(ts, str) or not ts:
         raise SchemaError(f"ts must be an ISO 8601 string, got {type(ts).__name__}")
@@ -241,7 +177,7 @@ def emit(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Append new events. Returns {"written", "duplicate", "rejected"}, where
     `rejected` lists (index, event_type, reason) -- never the payload."""
     root = store_root()
-    counts: dict[str, Any] = {"written": 0, "duplicate": 0, "replaced": 0, "rejected": []}
+    counts: dict[str, Any] = {"written": 0, "duplicate": 0, "rejected": []}
     if _refuses_real_store(root):
         print("[telemetry] test process: not writing the real telemetry store "
               f"(set {STORE_ENV}) -- harmonic-forge#907", file=sys.stderr)
@@ -266,50 +202,18 @@ def emit(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 if unresolved != part:
                     seen |= _read_ids(unresolved)
                 fresh = []
-                dupes = [e for e in items if e["event_id"] in seen]
-                replaceable = any(e["source"] in REPLACE_ON_HIGHER_OUTPUT for e in dupes)
-                dupe_ids = {e["event_id"] for e in dupes}
-                stored = _stored_outputs(part, dupe_ids) if replaceable else {}
-                # Operator ruling A (1188 preclose pass 2): a fuller read whose
-                # stored row is in the unresolved partition moves here; the
-                # month boundary is the one documented residual.
-                stored_unres = (_stored_outputs(unresolved, dupe_ids - set(stored))
-                                if replaceable and unresolved != part else {})
-                better: dict[str, Optional[dict[str, Any]]] = {}
-                moved: dict[str, Optional[dict[str, Any]]] = {}
                 for e in items:
                     if e["event_id"] in seen:
-                        eid, out = e["event_id"], _output(e)
-                        if e["source"] in REPLACE_ON_HIGHER_OUTPUT and eid in stored and out > stored[eid]:
-                            better[eid] = e
-                            stored[eid] = out
-                        elif (e["source"] in REPLACE_ON_HIGHER_OUTPUT and eid in stored_unres
-                              and out > stored_unres[eid]):
-                            moved[eid] = None
-                            stored_unres.pop(eid)
-                            stored[eid] = out
-                            fresh.append(e)
-                        else:
-                            counts["duplicate"] += 1
+                        counts["duplicate"] += 1
                         continue
                     seen.add(e["event_id"])
                     fresh.append(e)
-                counts["replaced"] += _replace_lines(part, better)
-                if moved:
-                    # The unresolved partition's own lock, always taken after
-                    # the resolved one; an emit into unresolved never nests.
-                    with unresolved.with_name(unresolved.name + ".lock").open("a") as ulock:
-                        fcntl.flock(ulock.fileno(), fcntl.LOCK_EX)
-                        try:
-                            counts["replaced"] += _replace_lines(unresolved, moved)
-                        finally:
-                            fcntl.flock(ulock.fileno(), fcntl.LOCK_UN)
                 if fresh:
                     with part.open("a", encoding="utf-8") as handle:
                         handle.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in fresh))
                         handle.flush()
                         os.fsync(handle.fileno())
-                counts["written"] += len(fresh) - len(moved)
+                counts["written"] += len(fresh)
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return counts

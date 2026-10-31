@@ -305,7 +305,7 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
     import time
     state = _load_state()
     marks = state.setdefault("claude", {})
-    totals = {"events": 0, "written": 0, "duplicate": 0, "replaced": 0, "rejected": 0,
+    totals = {"events": 0, "written": 0, "duplicate": 0, "rejected": 0,
               "unknown_lines": 0, "held": 0}
     clock = time.time() if now is None else now
     for path in sorted(root.rglob("*.jsonl")):
@@ -323,11 +323,10 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
             offset = framed[held_index - 1][1] if held_index else start
             groups = groups[:-1]
             totals["held"] += 1
-        # Operator ruling A (1188 pass 1, :328): one identity per request, so a
-        # request re-read with fuller usage replaces its row instead of adding one.
-        events = [{**to_event(u, ts, f"claude:{k}", prices),
-                   "event_id": emit.request_event_id("llm-usage", f"claude:{k}")}
-                  for k, u, ts, _ in groups]
+        # Operator ruling B (1188 reforge): every distinct read of a request is
+        # stored; a report keeps each request's highest-output read
+        # (llm_usage_report.latest_reads). The store is never rewritten.
+        events = [to_event(u, ts, f"claude:{k}", prices) for k, u, ts, _ in groups]
         try:
             counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
         except OSError:
@@ -338,7 +337,6 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
         totals["events"] += len(events)
         totals["written"] += counts["written"]
         totals["duplicate"] += counts["duplicate"]
-        totals["replaced"] += counts.get("replaced", 0)
         totals["rejected"] += len(counts["rejected"])
         totals["unknown_lines"] += unknown
         marks[key] = {"inode": inode, "offset": offset}

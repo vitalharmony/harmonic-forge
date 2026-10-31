@@ -35,8 +35,7 @@ UNASSIGNED = "unassigned"
 #: harmonic-forge#1188 amendment 2: stated on every report, never estimated.
 CLAUDE_BLIND_SPOT = ("not counted: Claude Code background calls that leave no transcript line "
                      "(compact, agent_summary, generate_session_title); AC1 measured 0.3% of one "
-                     "Lane 2 day's cost, with prompt suggestions off in lanes; a request re-read "
-                     "across a month boundary may keep its partial row beside the fuller one")
+                     "Lane 2 day's cost, with prompt suggestions off in lanes")
 
 
 def load(source: str, root: Optional[Path] = None) -> list[dict]:
@@ -50,6 +49,27 @@ def load(source: str, root: Optional[Path] = None) -> list[dict]:
                 except ValueError:
                     continue
     return events
+
+
+def latest_reads(events: Iterable[dict]) -> list[dict]:
+    """Operator ruling B (1188 reforge): a request harvested more than once
+    (lines arriving after a settle window, a re-read after a watermark loss,
+    or a later sidecar line resolving its repo) keeps only its highest-output
+    read; ties keep the later ts. Events without a request id pass through."""
+    best: dict[tuple, dict] = {}
+    rest: list[dict] = []
+    for event in events:
+        attrs = event.get("attrs") or {}
+        rid = attrs.get("request_id")
+        if not rid:
+            rest.append(event)
+            continue
+        key = (attrs.get("provider"), rid)
+        held = best.get(key)
+        rank = (attrs.get("output") or 0, event.get("ts") or "")
+        if held is None or rank > ((held.get("attrs") or {}).get("output") or 0, held.get("ts") or ""):
+            best[key] = event
+    return rest + list(best.values())
 
 
 def _issue_key(event: dict) -> str:
@@ -70,7 +90,7 @@ def summarize(usage: Iterable[dict], attention: Iterable[dict]) -> dict:
                 "unpriced_calls": 0, "attention_min": 0.0}
     out = {"issue": defaultdict(row), "lane": defaultdict(row)}
     total = unassigned = 0
-    for e in usage:
+    for e in latest_reads(usage):
         attrs = e.get("attrs") or {}
         keys = (("issue", _issue_key(e)), ("lane", str(attrs.get("lane") or UNASSIGNED)))
         tokens = _tokens(e)
