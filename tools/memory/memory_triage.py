@@ -70,6 +70,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from memory_lint import (  # noqa: E402
+    _allow_unpromoted,
     _body_text,
     _parse_frontmatter,
     _repo_roots,
@@ -320,6 +321,12 @@ def classify(path: Path, rules: list[Rule], roots: list[Path],
     if kind in {"reference", "user"}:
         row.verdict = "LOCAL"
         row.evidence = f"declared type: {kind} — operator context, not promotable"
+        return row
+
+    exempt = _allow_unpromoted().get(path.name)
+    if exempt is not None:
+        # harmonic-forge#1225: an exemption memory_lint honors is not a FOLD here.
+        row.verdict, row.evidence = "LOCAL", f"exempt (allow_unpromoted.toml): {exempt}"
         return row
 
     if row.promoted:

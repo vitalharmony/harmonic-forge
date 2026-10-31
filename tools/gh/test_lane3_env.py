@@ -311,5 +311,62 @@ class WiringTest(unittest.TestCase):
             l1_post.validate_lane3_env(sweep, "", "vitalharmony/hrse")
 
 
+
+class FenceTest(Lane3EnvCase):
+    """harmonic-forge#1225 AC2: `fence:` paths go through the hook's own predicate."""
+
+    OUTSIDE = "~/Harmonic_Projects/HRSE2-lane3/backend/x.json"
+    INSIDE = "~/Harmonic_Projects/testplan/h1/x.json"
+
+    def setUp(self) -> None:
+        super().setUp()
+        prior = os.environ.pop("LANE", None)
+        self.addCleanup(lambda: os.environ.__setitem__("LANE", prior) if prior is not None
+                        else os.environ.pop("LANE", None))
+
+    def blocks(self, path):
+        return {"3": f"3. TC3 — ready.\n   Requires: fence:{path}\n"}
+
+    def test_outside_path_refuses_naming_case_and_path(self):
+        """Kill checks 2 and 3: LANE is absent here, so a pass needs the LANE=3 call."""
+        reasons = self.check(self.blocks(self.OUTSIDE), Recorder())
+        self.assertIn(f"TC3: fence:{self.OUTSIDE} is outside Lane 3's write targets", reasons)
+
+    def test_testplan_path_passes(self):
+        self.assertEqual(self.check(self.blocks(self.INSIDE), Recorder()), [])
+
+    def test_refuses_on_every_return_path(self):
+        want = f"TC3: fence:{self.OUTSIDE} is outside Lane 3's write targets"
+        missing = self.check(self.blocks(self.OUTSIDE), Recorder(), lane3=self.root / "absent")
+        self.assertIn(want, missing)
+        with patch.object(_lane3_env, "lane3_dir", return_value=None):
+            none = _lane3_env.check("o/r", self.blocks(self.OUTSIDE), run=Recorder())
+        self.assertEqual(none, [want])
+
+    def test_lane_restored_absent_and_set(self):
+        self.check(self.blocks(self.OUTSIDE), Recorder())
+        self.assertNotIn("LANE", os.environ)
+        os.environ["LANE"] = "1"
+        self.check(self.blocks(self.OUTSIDE), Recorder())
+        self.assertEqual(os.environ["LANE"], "1")
+
+    def test_lane_restored_when_predicate_raises(self):
+        os.environ["LANE"] = "1"
+        import block_lane1_status_claims as hook
+        with patch.object(hook, "lane3_write_outside_testplan", side_effect=RuntimeError):
+            with self.assertRaises(RuntimeError):
+                self.check(self.blocks(self.OUTSIDE), Recorder())
+        self.assertEqual(os.environ["LANE"], "1")
+
+    def test_relative_path_refuses(self):
+        """Kill check 4."""
+        with self.assertRaisesRegex(_lane3_env.Lane3EnvError, "TC3: fence path 'rel/x' is relative"):
+            self.check(self.blocks("rel/x"), Recorder())
+
+    def test_fence_is_not_probed_as_an_import(self):
+        run = Recorder()
+        self.check(self.blocks(self.INSIDE), run)
+        self.assertFalse([c for c in run.calls if "import " in " ".join(c[0])])
+
 if __name__ == "__main__":
     unittest.main()

@@ -400,5 +400,17 @@ class ReadOnlyTests(unittest.TestCase):
                 self.assertNotRegex(str(mode), r"[wax+]", f"open(mode={mode!r})")
 
 
+
+class ExemptionTests(unittest.TestCase):
+    """harmonic-forge#1225 AC1: a file memory_lint exempts is not re-flagged as a FOLD."""
+
+    def test_an_exempt_fold_shaped_memory_is_local(self) -> None:
+        self.assertEqual(rows()["feedback_scheduling"].verdict, "FOLD")
+        with mock.patch.object(mt, "_allow_unpromoted",
+                               return_value={"feedback_scheduling.md": "operator context"}):
+            row = rows()["feedback_scheduling"]
+        self.assertEqual(row.verdict, "LOCAL")
+        self.assertIn("operator context", row.evidence)
+
 if __name__ == "__main__":
     unittest.main()

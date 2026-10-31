@@ -85,3 +85,4 @@
 "feedback_review_queue_keep_criterion.md" = "product criterion in the HRSE2 domain, not protocol"
 "feedback_never_blockquote_copyable_drafts.md" = "operator chat-paste preference, no rule predicate"
 "feedback_token_efficiency.md" = "a judgment with no predicate; the predicate half is R-0364"
+"feedback_discovery_screen_rules.md" = "operator-specific context carried by the operator's global CLAUDE.md or the memory itself; not a shared protocol rule (fold 2026-10-30)"

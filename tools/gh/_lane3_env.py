@@ -44,7 +44,9 @@ def probe_env() -> dict[str, str]:
     """Probe subprocesses never write bytecode into the tree they probe (AC3).
     Built per call, so it is this process's environment at probe time."""
     return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-REQUIRES_TOKEN = re.compile(r"(bin|py):([A-Za-z0-9_.+-]+)")
+REQUIRES_TOKEN = re.compile(r"(bin|py):([A-Za-z0-9_.+-]+)|(fence):(\S+)")
+GRAMMAR = ("`Requires: bin:<name>; py:<module>; fence:<path>` "
+           "(a fence path is absolute or ~-prefixed, no whitespace)")
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -113,7 +115,7 @@ def requires(case_blocks: dict[str, str]) -> dict[str, list[tuple[str, str]]]:
         if len(REQUIRES_LOOSE.findall(block)) != len(lines):
             raise Lane3EnvError(
                 f"{case_label(case)}: unattributed `Requires:` text; put the field on "
-                "its own line (grammar: `Requires: bin:<name>; py:<module>`)")
+                f"its own line (grammar: {GRAMMAR})")
         if not lines:
             continue
         if len(lines) > 1:
@@ -126,8 +128,16 @@ def requires(case_blocks: dict[str, str]) -> dict[str, list[tuple[str, str]]]:
             if not match:
                 raise Lane3EnvError(
                     f"{case_label(case)}: malformed `Requires:` token {part!r} "
-                    "(grammar: `Requires: bin:<name>; py:<module>`)")
-            tokens.append((match.group(1), match.group(2)))
+                    f"(grammar: {GRAMMAR})")
+            if match.group(1):
+                kind, name = match.group(1), match.group(2)
+            else:
+                kind, name = match.group(3), match.group(4)
+            if kind == "fence" and not name.startswith(("/", "~")):
+                raise Lane3EnvError(
+                    f"{case_label(case)}: fence path {name!r} is relative; Lane 1's cwd "
+                    f"is not Lane 3's (grammar: {GRAMMAR})")
+            tokens.append((kind, name))
         found[case] = tokens
     return found
 
@@ -145,6 +155,8 @@ def probe_requires(needs: dict[str, list[tuple[str, str]]], lane3: Path,
     interp = interpreter(lane3)
     for case, tokens in needs.items():
         for kind, name in tokens:
+            if kind == "fence":
+                continue  # fence_refusals decides it
             if kind == "bin":
                 ok = which(name) is not None
             else:
@@ -194,6 +206,35 @@ def preflight_ok(lane3: Path, run: Runner = subprocess.run) -> tuple[bool, str]:
     return result.returncode == 0, _tail(result)
 
 
+def fence_refusals(needs: dict[str, list[tuple[str, str]]]) -> list[str]:
+    """harmonic-forge#1225 AC2: each `fence:` path Lane 3's write fence would refuse.
+
+    Calls the hook's own predicate, never a copy, so the sweep and the fence
+    cannot disagree. The predicate answers only under `LANE=3`; this process is
+    Lane 1's, so `LANE` is set for each call and restored after it."""
+    hooks = str(_HERE.parents[1] / "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import block_lane1_status_claims as fence  # noqa: E402
+    out = []
+    for case, tokens in needs.items():
+        for kind, path in tokens:
+            if kind != "fence":
+                continue
+            prior = os.environ.get("LANE")
+            os.environ["LANE"] = "3"
+            try:
+                outside = fence.lane3_write_outside_testplan(path)
+            finally:
+                if prior is None:
+                    os.environ.pop("LANE", None)
+                else:
+                    os.environ["LANE"] = prior
+            if outside:
+                out.append(f"{case_label(case)}: fence:{path} is outside Lane 3's write targets")
+    return out
+
+
 def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
           run: Runner = subprocess.run,
           which: Callable[[str], str | None] = shutil.which,
@@ -204,14 +245,15 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
     The `Requires:` grammar is checked even then, since a malformed line is the
     author's error whatever the environment."""
     needs = requires(case_blocks)
+    fences = fence_refusals(needs)
     if lane3 is None:
         lane3 = lane3_dir(repo)
     if lane3 is None:
-        return []
+        return fences
     if not lane3.is_dir():
-        return [f"Lane 3 worktree {lane3} does not exist; create it, then run "
+        return fences + [f"Lane 3 worktree {lane3} does not exist; create it, then run "
                 f"`{REPAIR}` there"]
-    reasons = []
+    reasons = list(fences)
     ok, detail = links_ok(repo, lane3, run=run, platform=platform)
     if not ok:
         reasons.append(f"Lane 3's platform links do not verify from {lane3}; run "
