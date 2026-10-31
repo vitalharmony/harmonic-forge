@@ -119,6 +119,8 @@ def validate(event: dict[str, Any]) -> None:
         for key in LLM_USAGE_REQUIRED:
             if usage.get(key) is None:
                 raise SchemaError(f"llm-usage event missing attrs.{key}")
+        if "effort" not in usage:  # 1188 amendment 1: present, null where the source has none
+            raise SchemaError("llm-usage event missing attrs.effort (null is allowed, absent is not)")
     prov = event.get("provenance")
     if prov is not None and prov not in SCHEMA["columns"]["provenance"]:
         raise SchemaError(f"unknown provenance {prov!r}")

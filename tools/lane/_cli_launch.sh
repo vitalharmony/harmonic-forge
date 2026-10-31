@@ -74,6 +74,12 @@ fi
 
 # AC2. Exported alongside LANE, and never written again after this point.
 export LANE_AGENT="$_lane_agent"
+# harmonic-forge#1188 amendment 2 (operator option C): prompt suggestions leave
+# no transcript line and were 26% of one Lane 2 day's cost (AC1), so a Claude
+# Code lane runs without them and its transcripts stay the usage source.
+if [ "$_lane_agent" = "claude" ]; then
+  export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+fi
 lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 
 # Codex loads hook registration when the session starts. Refuse to start a

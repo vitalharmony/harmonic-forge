@@ -167,6 +167,22 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(args[-4:], ["--name", f"lane{lane}", "-p", "hi"])
                 self.assertIn(f"lane{lane}: session label 'lane{lane}'", cell["stderr"])
 
+    @needs_trusted_lane3_policy
+    def test_claude_lane_turns_prompt_suggestions_off(self):
+        """harmonic-forge#1188 amendment 2 (option C)."""
+        for lane in ("1", "2", "3"):
+            with self.subTest(lane=lane):
+                cell = self.tree.run(lane, [], LANE_CLI="claude",
+                                     LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION")
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+                self.assertEqual(cell["extra_env"]["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"], "false")
+
+    def test_codex_lane_leaves_prompt_suggestions_alone(self):
+        cell = self.tree.run("2", [], LANE_CLI="codex",
+                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"])
+
     def test_codex_gets_no_name(self):
         for agent in ("codex",):
             with self.subTest(agent=agent):

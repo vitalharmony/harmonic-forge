@@ -901,6 +901,12 @@ _ATTRIB_TRIGGER_RE = re.compile(
     r"^[ \t]*(Plan|Implement|Fix|Spec|AE|close|Blueprint)[ \t]+([A-Za-z])(\d{1,6})\b")
 _ATTRIB_TRIGGER_LANE = {"Plan": "2", "Implement": "2", "Fix": "2", "Spec": "3",
                         "AE": "1", "close": "1", "Blueprint": "1"}
+#: harmonic-forge#1188 amendment 1: a belt event names its repo, issue and lane
+#: in fixed fields (`watch_lane_posts.py`'s `<owner>/<repo>#<n> queued-for-l<N>`),
+#: so belt-driven work gets its own sidecar line instead of inheriting the
+#: previous trigger's issue. Structured fields only, never free text.
+_ATTRIB_BELT_RE = re.compile(
+    r"^[ \t]*(?:<event>)?[ \t]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d{1,6})[ \t]+queued-for-l([123])\b")
 #: Belt and harness-injected prompts are not operator attention (AC11).
 #: "This session is being continued" is the harness's post-compaction prompt.
 _NON_HUMAN_PREFIXES = ("<task-notification", "<system-reminder", "<local-command", "<command-",
@@ -925,6 +931,12 @@ def record_attribution(prompt: str, session_id, lane, doc_text: str, transcript_
     prefixes = parse_repo_prefixes(doc_text)
     written = 0
     for line in prompt.splitlines():
+        belt = _ATTRIB_BELT_RE.match(line)
+        if belt:
+            if attrib.append(session_id, f"{belt.group(1)}#{belt.group(2)}", lane or belt.group(3),
+                             None, "belt:queued", transcript_path=transcript_path):
+                written += 1
+            continue
         m = _ATTRIB_TRIGGER_RE.match(line)
         if not m:
             continue

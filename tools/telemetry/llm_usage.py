@@ -57,9 +57,11 @@ LEAD_CAP_BYTES = 4096  # AC11 formula, unvalidated
 #: est_cost_usd = -1 and is counted as unpriced in the report.
 #: Every entry was checked against a published price page (named per block);
 #: none is shipped unchecked, so a model's absence means "not yet checked".
-#: Cache write is the 5-minute rate. Claude Code also writes 1-hour cache at a
-#: higher rate; the Claude harvester (AC4) prices that split itself.
-PRICES_VERSION = "2026-10-26.1"
+#: Cache write is the 5-minute rate. A 1-hour cache write costs
+#: CACHE_1H_INPUT_MULTIPLIER x the uncached input rate (same price page), and
+#: the Claude harvester (AC4) passes that split as `cache_write_1h`.
+PRICES_VERSION = "2026-10-31.1"
+CACHE_1H_INPUT_MULTIPLIER = 2.0
 PRICES: dict[str, tuple[float, float, float, float]] = {
     # platform.claude.com/docs/en/about-claude/pricing, read 2026-10-26.
     # Haiku 5.5 is the prompts-up-to-100K-tokens tier.
@@ -85,11 +87,15 @@ def attention_dir() -> Path:
 
 
 def est_cost(model: str, input_uncached: int, cached_read: int, cache_write: int, output: int,
-             prices: Optional[dict] = None) -> float:
+             prices: Optional[dict] = None, cache_write_1h: int = 0) -> float:
+    """`cache_write` is the total; `cache_write_1h` is the part of it written
+    to the 1-hour cache, priced at its own rate."""
     rate = (PRICES if prices is None else prices).get(model)
     if rate is None:
         return -1
-    return round((input_uncached * rate[0] + cached_read * rate[1] + cache_write * rate[2]
+    one_hour = min(max(cache_write_1h, 0), cache_write)
+    return round((input_uncached * rate[0] + cached_read * rate[1]
+                  + (cache_write - one_hour) * rate[2] + one_hour * rate[0] * CACHE_1H_INPUT_MULTIPLIER
                   + output * rate[3]) / 1_000_000, 6)
 
 
@@ -118,11 +124,12 @@ def to_event(usage: dict, ts: str, subject_id: str, prices: Optional[dict] = Non
     """One normalized llm-usage event from a provider-neutral usage dict."""
     who = attribute(usage.get("session_id") or "", ts)
     attrs = {k: usage.get(k) for k in (
-        "provider", "model", "input_uncached", "cached_read", "cache_write", "output",
-        "reasoning_out", "latency_ms", "session_id", "request_id",
-        "plan_used_pct_5h", "plan_used_pct_7d")}
+        "provider", "model", "input_uncached", "cached_read", "cache_write", "cache_write_1h",
+        "output", "reasoning_out", "latency_ms", "session_id", "request_id",
+        "plan_used_pct_5h", "plan_used_pct_7d", "cost_in_nano_usd", "query_source")}
     attrs.update(est_cost_usd=est_cost(usage["model"], usage["input_uncached"], usage["cached_read"],
-                                       usage["cache_write"], usage["output"], prices),
+                                       usage["cache_write"], usage["output"], prices,
+                                       _int(usage.get("cache_write_1h"))),
                  price_version=PRICES_VERSION, attribution=who["attribution"],
                  run_id=who["run_id"], lane=who["lane"],
                  attrib_trigger=who["attrib_trigger"], attrib_ts=who["attrib_ts"])
@@ -135,7 +142,10 @@ def to_event(usage: dict, ts: str, subject_id: str, prices: Optional[dict] = Non
         "event_type": "llm-usage.call", "subject_kind": "llm-call", "subject_id": subject_id,
         "provenance": "hook" if who["attribution"] == "explicit" else "manual",
         "validated": True, "extractor_version": EXTRACTOR,
-        "attrs": {k: v for k, v in attrs.items() if v is not None},
+        # `effort` is kept even when null (1188 amendment 1): null means the
+        # source does not carry it, which a route join must be able to see.
+        "attrs": {**{k: v for k, v in attrs.items() if v is not None},
+                  "effort": usage.get("effort") if isinstance(usage.get("effort"), str) else None},
     }
 
 
@@ -164,6 +174,8 @@ def codex_usages(lines: Iterable[str], ctx: dict) -> tuple[list[tuple[dict, str,
         if kind == "turn_context":
             if isinstance(payload.get("model"), str):
                 ctx["model"] = payload["model"]
+            if isinstance(payload.get("effort"), str):
+                ctx["effort"] = payload["effort"]
             continue
         if kind != "event_msg" or payload.get("type") != "token_count":
             continue
@@ -193,14 +205,15 @@ def codex_usages(lines: Iterable[str], ctx: dict) -> tuple[list[tuple[dict, str,
                  "cached_read": cached, "cache_write": _int(last.get("cache_write_input_tokens")),
                  "output": _int(last.get("output_tokens")),
                  "reasoning_out": _int(last.get("reasoning_output_tokens")),
-                 "session_id": rollout, "request_id": f"{rollout}:{cumulative}", **pct}
+                 "session_id": rollout, "request_id": f"{rollout}:{cumulative}",
+                 "effort": ctx.get("effort"), **pct}
         out.append((usage, rec.get("timestamp") or "", f"codex:{rollout}:{cumulative}"))
     return out, unknown
 
 
 # --- xAI (AC6, fixture only) ---------------------------------------------------
 
-def normalize_xai(response: dict, session_id: str = "") -> dict:
+def normalize_xai(response: dict, session_id: str = "", effort: Optional[str] = None) -> dict:
     """Map a recorded xAI response's usage (Chat Completions or Responses
     shape) onto the normalized usage dict. Cached input is billed separately,
     so it is split out of the prompt/input count, never left in it."""
@@ -217,19 +230,110 @@ def normalize_xai(response: dict, session_id: str = "") -> dict:
         output = _int(usage.get("output_tokens"))
     cached = _int(details.get("cached_tokens")) if isinstance(details, dict) else 0
     reasoning = _int(out_details.get("reasoning_tokens")) if isinstance(out_details, dict) else 0
+    nano = usage.get("cost_in_nano_usd")
     return {"provider": "xai", "model": str(response.get("model") or "unknown"),
             "input_uncached": max(total_in - cached, 0), "cached_read": cached, "cache_write": 0,
             "output": output, "reasoning_out": reasoning, "session_id": session_id,
-            "request_id": str(response.get("id") or "")}
+            "request_id": str(response.get("id") or ""), "effort": effort,
+            "cost_in_nano_usd": nano if isinstance(nano, int) and not isinstance(nano, bool) else None}
 
 
-# --- Claude Code (AC4): deferred ------------------------------------------------
+# --- Claude Code (AC4): transcripts (AC1 ruling, issuecomment-6548383660) --------
 
-def harvest_claude(*_args: Any, **_kwargs: Any) -> None:
-    """TODO(harmonic-forge#1188 AC4): build after the AC1 OTel-vs-transcript
-    comparison is posted; AC1 decides whether the source is transcripts, OTel,
-    or OTel with transcript fallback."""
-    raise NotImplementedError("Claude Code harvester waits on harmonic-forge#1188 AC1")
+CLAUDE_ROOT = Path.home() / ".claude" / "projects"
+#: A file's newest request group is held back until a later request follows
+#: it or the file has been idle this long, so a request whose lines straddle a
+#: run's stop point is emitted once, complete (AC5).
+CLAUDE_SETTLE_S = 600
+
+
+def claude_usage(rec: dict) -> Optional[tuple[str, dict, str]]:
+    """(group key, usage, ts) for an assistant line with usage, else None. The
+    group key is `requestId`, or `message.id` when it is missing (AC4)."""
+    if rec.get("type") != "assistant":
+        return None
+    msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    key = rec.get("requestId") or msg.get("id")
+    if not key:
+        return None
+    split = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+    return str(key), {
+        "provider": "anthropic-claude-code", "model": str(msg.get("model") or "unknown"),
+        # The Codex subtraction is never applied: Claude's input_tokens is uncached.
+        "input_uncached": _int(usage.get("input_tokens")),
+        "cached_read": _int(usage.get("cache_read_input_tokens")),
+        "cache_write": _int(usage.get("cache_creation_input_tokens")),
+        "cache_write_1h": _int(split.get("ephemeral_1h_input_tokens")),
+        "output": _int(usage.get("output_tokens")),
+        "reasoning_out": _int((usage.get("output_tokens_details") or {}).get("thinking_tokens"))
+        if isinstance(usage.get("output_tokens_details"), dict) else 0,
+        "session_id": str(rec.get("sessionId") or ""), "request_id": str(key),
+        "effort": rec.get("effort") if isinstance(rec.get("effort"), str) else None,
+    }, str(rec.get("timestamp") or "")
+
+
+def claude_groups(lines: list[str]) -> tuple[list[tuple[str, dict, str, int]], int]:
+    """Per request group in first-seen order: (key, usage of its highest-output
+    line, ts of its first line, index of its first line). Lines are never
+    summed. Also the count of unparseable lines."""
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    unknown = 0
+    for index, raw in enumerate(lines):
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            unknown += 1
+            continue
+        found = claude_usage(rec) if isinstance(rec, dict) else None
+        if found is None:
+            continue
+        key, usage, ts = found
+        if key not in groups:
+            groups[key] = [usage, ts, index]
+            order.append(key)
+        elif usage["output"] > groups[key][0]["output"]:
+            groups[key][0] = usage
+    return [(k, groups[k][0], groups[k][1], groups[k][2]) for k in order], unknown
+
+
+def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = CLAUDE_SETTLE_S,
+                   now: Optional[float] = None) -> dict:
+    import time
+    state = _load_state()
+    marks = state.setdefault("claude", {})
+    totals = {"events": 0, "written": 0, "duplicate": 0, "rejected": 0, "unknown_lines": 0,
+              "held": 0}
+    clock = time.time() if now is None else now
+    for path in sorted(root.rglob("*.jsonl")):
+        key = str(path)
+        mark = marks.get(key, {})
+        try:
+            lines, inode, end = _new_lines(path, mark)
+            idle = clock - path.stat().st_mtime >= settle_s
+        except OSError:
+            continue
+        start = mark.get("offset", 0) if mark.get("inode") == inode and mark.get("offset", 0) <= end else 0
+        groups, unknown = claude_groups(lines)
+        offset = end
+        if groups and not idle:  # hold the newest group back; re-read it next run
+            held_index = groups[-1][3]
+            offset = start + sum(len(l.encode("utf-8")) + 1 for l in lines[:held_index])
+            groups = groups[:-1]
+            totals["held"] += 1
+        events = [to_event(u, ts, f"claude:{k}", prices) for k, u, ts, _ in groups]
+        counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+        totals["events"] += len(events)
+        totals["written"] += counts["written"]
+        totals["duplicate"] += counts["duplicate"]
+        totals["rejected"] += len(counts["rejected"])
+        totals["unknown_lines"] += unknown
+        marks[key] = {"inode": inode, "offset": offset}
+    _save_state(state)
+    return totals
 
 
 # --- watermark + harvest --------------------------------------------------------
@@ -338,9 +442,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     h = sub.add_parser("harvest")
     h.add_argument("--codex-root", type=Path, default=CODEX_ROOT)
+    h.add_argument("--claude-root", type=Path, default=CLAUDE_ROOT)
     h.add_argument("--attention-root", type=Path, default=None)
     args = parser.parse_args(argv)
     result = {"codex": harvest_codex(args.codex_root) if args.codex_root.is_dir() else "absent",
+              "claude": harvest_claude(args.claude_root) if args.claude_root.is_dir() else "absent",
               "attention": harvest_attention(args.attention_root or attention_dir())}
     print(json.dumps(result, sort_keys=True))
     return 0

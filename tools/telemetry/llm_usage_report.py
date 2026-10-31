@@ -32,6 +32,10 @@ import emit  # noqa: E402
 
 TOKEN_FIELDS = ("input_uncached", "cached_read", "cache_write", "output")
 UNASSIGNED = "unassigned"
+#: harmonic-forge#1188 amendment 2: stated on every report, never estimated.
+CLAUDE_BLIND_SPOT = ("not counted: Claude Code background calls that leave no transcript line "
+                     "(compact, agent_summary, generate_session_title); AC1 measured 0.3% of one "
+                     "Lane 2 day's cost, with prompt suggestions off in lanes")
 
 
 def load(source: str, root: Optional[Path] = None) -> list[dict]:
@@ -105,6 +109,7 @@ def render(summary: dict) -> str:
         lines.append("")
     lines.append(f"unassigned share of tokens: {summary['unassigned_share']:.2%}")
     lines.append("attention minutes: validated events only (none until the AC11 comparison is posted)")
+    lines.append(CLAUDE_BLIND_SPOT)
     return "\n".join(lines)
 
 

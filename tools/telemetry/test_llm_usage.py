@@ -1,8 +1,10 @@
 """harmonic-forge#1188: LLM usage capture -- schema (AC2), Codex harvester
 (AC3), idempotent re-harvest (AC5), xAI adapter (AC6), sidecar join (AC7),
 sidecar writers never fail their action (AC8), token-weighted unassigned share
-(AC9), audit evidence (AC10), unvalidated attention (AC11), report (AC12).
-The Claude Code harvester (AC4) waits on AC1 and has no tests yet."""
+(AC9), audit evidence (AC10), unvalidated attention (AC11), report (AC12),
+the Claude Code transcript harvester (AC4), and the 1188 amendments: `effort`
+on every event, belt pickups as their own sidecar line, xAI cost_in_nano_usd,
+and the stated Claude blind spot."""
 import io
 import json
 import os
@@ -54,7 +56,8 @@ class Schema(Base):
         base = {"provider": "xai", "model": "m", "input_uncached": 1, "cached_read": 0, "output": 1}
         base.update(attrs)
         return {"ts": "2026-10-26T10:00:00Z", "source": "llm-usage", "event_type": "llm-usage.call",
-                "subject_id": "xai:r1", "attrs": {k: v for k, v in base.items() if v is not None}}
+                "subject_id": "xai:r1",
+                "attrs": {**{k: v for k, v in base.items() if v is not None}, "effort": None}}
 
     def test_llm_usage_source_accepted(self):
         self.assertIn("llm-usage", emit.SCHEMA["columns"]["source"])
@@ -66,6 +69,13 @@ class Schema(Base):
             with self.subTest(key=key), self.assertRaises(emit.SchemaError):
                 emit.validate(self._event(**{key: None}))
         self.assertEqual(len(emit.emit([self._event(output=None)])["rejected"]), 1)
+
+    def test_effort_key_required_null_allowed(self):
+        event = self._event()
+        emit.validate(event)  # effort: None is accepted
+        del event["attrs"]["effort"]
+        with self.assertRaises(emit.SchemaError):
+            emit.validate(event)
 
 
 class Codex(Base):
@@ -119,9 +129,84 @@ class Codex(Base):
         self.assertEqual(llm_usage.harvest_codex(self.codex)["written"], 1)
         self.assertEqual(len(self.usage()), 2)
 
-    def test_claude_harvester_is_a_stub_until_ac1(self):
-        with self.assertRaises(NotImplementedError):
-            llm_usage.harvest_claude()
+    def test_codex_effort_from_turn_context(self):
+        path = self.add_rollout("two-events")
+        lines = path.read_text().splitlines(keepends=True)
+        ctx = '{"type":"turn_context","timestamp":"2026-10-26T10:00:00Z","payload":{"effort":"medium"}}\n'
+        path.write_text(lines[0] + ctx + "".join(lines[1:]))
+        llm_usage.harvest_codex(self.codex)
+        self.assertEqual({e["attrs"]["effort"] for e in self.usage()}, {"medium"})
+
+
+class Claude(Base):
+    """AC4: one event per request, the highest-output line, never summed."""
+
+    def setUp(self):
+        super().setUp()
+        self.claude = self.tmp / "claude" / "proj"
+        self.claude.mkdir(parents=True)
+        self.path = self.claude / "s.jsonl"
+        shutil.copy(FIX / "claude-session.jsonl", self.path)
+
+    def by_req(self):
+        return {e["attrs"]["request_id"]: e for e in self.usage()}
+
+    def test_one_event_per_request_highest_output(self):
+        llm_usage.harvest_claude(self.tmp / "claude", settle_s=0)
+        rows = self.by_req()
+        self.assertEqual(set(rows), {"req_A", "msg_B", "req_C"})  # msg_B: no requestId
+        self.assertEqual(rows["req_A"]["attrs"]["output"], 40)  # the max, not 5+40+22
+        self.assertEqual(rows["req_C"]["attrs"]["output"], 30)
+
+    def test_mapping_no_codex_subtraction(self):
+        llm_usage.harvest_claude(self.tmp / "claude", settle_s=0)
+        a = self.by_req()["req_A"]["attrs"]
+        self.assertEqual((a["input_uncached"], a["cached_read"], a["cache_write"],
+                          a["cache_write_1h"], a["reasoning_out"]), (12, 9000, 300, 200, 7))
+        self.assertEqual(a["provider"], "anthropic-claude-code")
+
+    def test_effort_carried_and_null_kept(self):
+        llm_usage.harvest_claude(self.tmp / "claude", settle_s=0)
+        rows = self.by_req()
+        self.assertEqual(rows["req_A"]["attrs"]["effort"], "high")
+        self.assertIn("effort", rows["req_C"]["attrs"])
+        self.assertIsNone(rows["req_C"]["attrs"]["effort"])
+
+    def test_one_hour_cache_priced_at_its_own_rate(self):
+        five_only = llm_usage.est_cost("claude-opus-5-5", 0, 0, 300, 0)
+        split = llm_usage.est_cost("claude-opus-5-5", 0, 0, 300, 0, cache_write_1h=200)
+        self.assertAlmostEqual(five_only, 300 * 5.0 / 1e6)
+        self.assertAlmostEqual(split, (100 * 5.0 + 200 * 4.0 * 2.0) / 1e6)
+
+    def test_reharvest_adds_zero(self):
+        root = self.tmp / "claude"
+        self.assertEqual(llm_usage.harvest_claude(root, settle_s=0)["written"], 3)
+        self.assertEqual(llm_usage.harvest_claude(root, settle_s=0)["written"], 0)
+        os.remove(os.environ[llm_usage.STATE_ENV])
+        again = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual((again["written"], again["duplicate"]), (0, 3))
+
+    def test_straddling_request_emitted_once_complete(self):
+        """AC5: a request whose lines straddle a run's stop point."""
+        root = self.tmp / "claude"
+        lines = self.path.read_text().splitlines(keepends=True)
+        self.path.write_text("".join(lines[:3]))  # req_A's first two lines only
+        first = llm_usage.harvest_claude(root, settle_s=3600)  # live file: newest group held
+        self.assertEqual((first["written"], first["held"]), (0, 1))
+        with self.path.open("a") as handle:
+            handle.write("".join(lines[3:]))
+        llm_usage.harvest_claude(root, settle_s=3600)  # req_A complete; req_C now held
+        llm_usage.harvest_claude(root, settle_s=0)  # idle: req_C emitted
+        rows = self.by_req()
+        self.assertEqual(rows["req_A"]["attrs"]["output"], 40)
+        self.assertEqual(len(self.usage()), 3)
+
+    def test_joins_sidecar_by_session(self):
+        attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
+                      None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
+        llm_usage.harvest_claude(self.tmp / "claude", settle_s=0)
+        self.assertEqual({(e["issue"], e["attrs"]["attribution"]) for e in self.usage()},
+                         {(77, "explicit")})
 
 
 class Xai(Base):
@@ -129,6 +214,15 @@ class Xai(Base):
         usage = llm_usage.normalize_xai(json.loads((FIX / "xai_chat.json").read_text()))
         self.assertEqual((usage["input_uncached"], usage["cached_read"], usage["output"],
                           usage["reasoning_out"]), (400, 800, 300, 120))
+
+    def test_xai_keeps_cost_in_nano_usd_and_caller_effort(self):
+        usage = llm_usage.normalize_xai(json.loads((FIX / "xai_responses.json").read_text()),
+                                        effort="low")
+        event = llm_usage.to_event(usage, "2026-10-26T10:00:00Z", "xai:resp-xai-1")
+        self.assertEqual(event["attrs"]["cost_in_nano_usd"], 1234567)
+        self.assertEqual(event["attrs"]["effort"], "low")
+        chat = llm_usage.normalize_xai(json.loads((FIX / "xai_chat.json").read_text()))
+        self.assertIsNone(chat["cost_in_nano_usd"])  # absent stays absent
 
     def test_xai_responses_shape(self):
         usage = llm_usage.normalize_xai(json.loads((FIX / "xai_responses.json").read_text()))
@@ -195,6 +289,22 @@ class Writers(Base):
             hook.main()
         return out.getvalue()
 
+    def test_hook_writes_belt_line(self):
+        """1188 amendment 1: belt-driven work is booked to the belt event's
+        issue, not the previous trigger's."""
+        self._run_hook("Implement F123")
+        self._run_hook("<task-notification>\n<event>vitalharmony/hrse#18 queued-for-l1 "
+                       "kind=spec owes=spec-review</event>\n</task-notification>")
+        lines = attrib.read("hook-session")
+        self.assertEqual([(l["issue"], l["trigger"]) for l in lines],
+                         [("vitalharmony/harmonic-forge#123", "shorthand:Implement"),
+                          ("vitalharmony/hrse#18", "belt:queued")])
+        self.assertEqual(lines[-1]["lane"], "1")
+
+    def test_hook_ignores_belt_text_that_is_not_a_queued_line(self):
+        self._run_hook("<task-notification>vitalharmony/hrse#18 l3 — gate-result</task-notification>")
+        self.assertEqual(attrib.read("hook-session"), [])
+
     def test_hook_writes_trigger_line(self):
         self._run_hook("Implement F123")
         (line,) = attrib.read("hook-session")
@@ -257,6 +367,12 @@ class Writers(Base):
                      "--trigger", "cross-family:verify"])
         (line,) = attrib.read("thread-1")
         self.assertEqual(line["issue"], "vitalharmony/harmonic-forge#42")
+
+
+class BlindSpot(Base):
+    def test_report_states_the_claude_blind_spot(self):
+        text = llm_usage_report.render(llm_usage_report.summarize([], []))
+        self.assertIn(llm_usage_report.CLAUDE_BLIND_SPOT, text)
 
 
 class Report(Base):
