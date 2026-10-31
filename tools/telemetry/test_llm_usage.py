@@ -257,6 +257,39 @@ class Claude(Base):
         self.assertEqual(self.usage(), [])
         self.assertEqual(llm_usage.harvest_claude(root, settle_s=0)["written"], 3)
 
+    def test_fuller_read_moves_out_of_unresolved(self):
+        """Operator ruling A (preclose pass 2): a request first stored unassigned
+        and re-read fuller once its sidecar exists ends as one resolved row."""
+        root = self.tmp / "claude"
+        lines = self.path.read_text().splitlines(keepends=True)
+        self.path.write_text("".join(lines[:2]))  # req_A at output 5, no sidecar yet
+        llm_usage.harvest_claude(root, settle_s=0)
+        (first,) = self.usage()
+        self.assertEqual((first["repo"], first["attrs"]["output"]), (emit.UNRESOLVED, 5))
+        attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
+                      None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
+        with self.path.open("a") as handle:
+            handle.write("".join(lines[2:]))
+        result = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual(result["replaced"], 1)
+        rows = [e for e in self.usage() if e["attrs"]["request_id"] == "req_A"]
+        self.assertEqual([(e["repo"], e["attrs"]["output"]) for e in rows],
+                         [("vitalharmony/harmonic-forge", 40)])
+        self.assertEqual(len(self.usage()), 3)
+
+    def test_lower_read_does_not_move_out_of_unresolved(self):
+        root = self.tmp / "claude"
+        llm_usage.harvest_claude(root, settle_s=0)  # all three unresolved, req_A at 40
+        os.remove(os.environ[llm_usage.STATE_ENV])
+        attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
+                      None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
+        lines = self.path.read_text().splitlines(keepends=True)
+        self.path.write_text("".join(lines[:2]))  # a partial re-read of req_A (5)
+        again = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual((again["replaced"], again["duplicate"]), (0, 1))
+        rows = [e for e in self.usage() if e["attrs"]["request_id"] == "req_A"]
+        self.assertEqual([(e["repo"], e["attrs"]["output"]) for e in rows], [(emit.UNRESOLVED, 40)])
+
     def test_joins_sidecar_by_session(self):
         attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
                       None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")

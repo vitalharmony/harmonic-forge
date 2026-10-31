@@ -104,9 +104,11 @@ def _output(event: dict[str, Any]) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else -1
 
 
-def _replace_lines(part: Path, better: dict[str, dict[str, Any]]) -> int:
+def _replace_lines(part: Path, better: dict[str, Optional[dict[str, Any]]]) -> int:
     """Rewrite `part` with each event in `better` (keyed by event_id) in place
-    of the stored line with that id. Called under the partition lock."""
+    of the stored line with that id; a None value deletes that line (a row
+    moving to its resolved partition, operator ruling A on 1188 preclose
+    pass 2). Called under the partition lock."""
     if not better or not part.exists():
         return 0
     replaced = 0
@@ -119,7 +121,9 @@ def _replace_lines(part: Path, better: dict[str, dict[str, Any]]) -> int:
                 out.append(line)
                 continue
             if eid in better:
-                out.append(json.dumps(better.pop(eid), sort_keys=True) + "\n")
+                event = better.pop(eid)
+                if event is not None:
+                    out.append(json.dumps(event, sort_keys=True) + "\n")
                 replaced += 1
             else:
                 out.append(line)
@@ -263,27 +267,49 @@ def emit(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     seen |= _read_ids(unresolved)
                 fresh = []
                 dupes = [e for e in items if e["event_id"] in seen]
-                stored = (_stored_outputs(part, {e["event_id"] for e in dupes})
-                          if any(e["source"] in REPLACE_ON_HIGHER_OUTPUT for e in dupes) else {})
-                better: dict[str, dict[str, Any]] = {}
+                replaceable = any(e["source"] in REPLACE_ON_HIGHER_OUTPUT for e in dupes)
+                dupe_ids = {e["event_id"] for e in dupes}
+                stored = _stored_outputs(part, dupe_ids) if replaceable else {}
+                # Operator ruling A (1188 preclose pass 2): a fuller read whose
+                # stored row is in the unresolved partition moves here; the
+                # month boundary is the one documented residual.
+                stored_unres = (_stored_outputs(unresolved, dupe_ids - set(stored))
+                                if replaceable and unresolved != part else {})
+                better: dict[str, Optional[dict[str, Any]]] = {}
+                moved: dict[str, Optional[dict[str, Any]]] = {}
                 for e in items:
                     if e["event_id"] in seen:
-                        if (e["source"] in REPLACE_ON_HIGHER_OUTPUT and e["event_id"] in stored
-                                and _output(e) > stored[e["event_id"]]):
-                            better[e["event_id"]] = e
-                            stored[e["event_id"]] = _output(e)
+                        eid, out = e["event_id"], _output(e)
+                        if e["source"] in REPLACE_ON_HIGHER_OUTPUT and eid in stored and out > stored[eid]:
+                            better[eid] = e
+                            stored[eid] = out
+                        elif (e["source"] in REPLACE_ON_HIGHER_OUTPUT and eid in stored_unres
+                              and out > stored_unres[eid]):
+                            moved[eid] = None
+                            stored_unres.pop(eid)
+                            stored[eid] = out
+                            fresh.append(e)
                         else:
                             counts["duplicate"] += 1
                         continue
                     seen.add(e["event_id"])
                     fresh.append(e)
                 counts["replaced"] += _replace_lines(part, better)
+                if moved:
+                    # The unresolved partition's own lock, always taken after
+                    # the resolved one; an emit into unresolved never nests.
+                    with unresolved.with_name(unresolved.name + ".lock").open("a") as ulock:
+                        fcntl.flock(ulock.fileno(), fcntl.LOCK_EX)
+                        try:
+                            counts["replaced"] += _replace_lines(unresolved, moved)
+                        finally:
+                            fcntl.flock(ulock.fileno(), fcntl.LOCK_UN)
                 if fresh:
                     with part.open("a", encoding="utf-8") as handle:
                         handle.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in fresh))
                         handle.flush()
                         os.fsync(handle.fileno())
-                counts["written"] += len(fresh)
+                counts["written"] += len(fresh) - len(moved)
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return counts

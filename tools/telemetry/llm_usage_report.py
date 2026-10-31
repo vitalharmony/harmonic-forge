@@ -35,7 +35,8 @@ UNASSIGNED = "unassigned"
 #: harmonic-forge#1188 amendment 2: stated on every report, never estimated.
 CLAUDE_BLIND_SPOT = ("not counted: Claude Code background calls that leave no transcript line "
                      "(compact, agent_summary, generate_session_title); AC1 measured 0.3% of one "
-                     "Lane 2 day's cost, with prompt suggestions off in lanes")
+                     "Lane 2 day's cost, with prompt suggestions off in lanes; a request re-read "
+                     "across a month boundary may keep its partial row beside the fuller one")
 
 
 def load(source: str, root: Optional[Path] = None) -> list[dict]:
