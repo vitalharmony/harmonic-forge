@@ -311,9 +311,6 @@ class WiringTest(unittest.TestCase):
             l1_post.validate_lane3_env(sweep, "", "vitalharmony/hrse")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class FenceTest(Lane3EnvCase):
     """harmonic-forge#1225 AC2: `fence:` paths go through the hook's own predicate."""
@@ -370,3 +367,6 @@ class FenceTest(Lane3EnvCase):
         run = Recorder()
         self.check(self.blocks(self.INSIDE), run)
         self.assertFalse([c for c in run.calls if "import " in " ".join(c[0])])
+
+if __name__ == "__main__":
+    unittest.main()

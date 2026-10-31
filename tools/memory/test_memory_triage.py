@@ -400,9 +400,6 @@ class ReadOnlyTests(unittest.TestCase):
                 self.assertNotRegex(str(mode), r"[wax+]", f"open(mode={mode!r})")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ExemptionTests(unittest.TestCase):
     """harmonic-forge#1225 AC1: a file memory_lint exempts is not re-flagged as a FOLD."""
@@ -414,3 +411,6 @@ class ExemptionTests(unittest.TestCase):
             row = rows()["feedback_scheduling"]
         self.assertEqual(row.verdict, "LOCAL")
         self.assertIn("operator context", row.evidence)
+
+if __name__ == "__main__":
+    unittest.main()
