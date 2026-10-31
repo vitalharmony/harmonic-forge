@@ -247,6 +247,16 @@ class Claude(Base):
         self.assertEqual((again["replaced"], again["duplicate"]), (0, 1))
         self.assertEqual(self.by_req()["req_A"]["attrs"]["output"], 40)
 
+    def test_emit_failure_is_contained_and_reread(self):
+        """Preclose pass 2: an OSError from emit never aborts the harvest, and
+        the file is re-read on the next run."""
+        root = self.tmp / "claude"
+        with mock.patch.object(llm_usage.emit, "emit", side_effect=OSError("disk")):
+            result = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual(result["emit_failed"], 1)
+        self.assertEqual(self.usage(), [])
+        self.assertEqual(llm_usage.harvest_claude(root, settle_s=0)["written"], 3)
+
     def test_joins_sidecar_by_session(self):
         attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
                       None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
@@ -358,6 +368,20 @@ class Writers(Base):
         self._run_hook("\n  Implement F123\nmore text")
         self.assertEqual([l["issue"] for l in attrib.read("hook-session")],
                          ["vitalharmony/harmonic-forge#123"])
+
+    def test_headless_prompt_never_attributes(self):
+        """Preclose pass 2: an sdk-* session has no operator at its prompt."""
+        self._run_hook("Implement F123", entrypoint="sdk-cli")
+        self.assertEqual(attrib.read("hook-session"), [])
+
+    def test_queued_line_after_the_notification_closes_is_ignored(self):
+        self._run_hook("<task-notification>nothing</task-notification>\n"
+                       "vitalharmony/hrse#999 queued-for-l1 kind=spec")
+        self.assertEqual(attrib.read("hook-session"), [])
+
+    def test_trigger_beside_a_notification_is_ignored(self):
+        self._run_hook("Implement F123\n<task-notification>x</task-notification>")
+        self.assertEqual(attrib.read("hook-session"), [])
 
     def test_belt_line_outside_a_notification_is_ignored(self):
         self._run_hook("pasted: vitalharmony/hrse#18 queued-for-l1 kind=spec")

@@ -328,7 +328,13 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
         events = [{**to_event(u, ts, f"claude:{k}", prices),
                    "event_id": emit.request_event_id("llm-usage", f"claude:{k}")}
                   for k, u, ts, _ in groups]
-        counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+        try:
+            counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+        except OSError:
+            # 1188 preclose pass 2: a store write failure is counted and this
+            # file's watermark stays put, so the next run re-reads it.
+            totals["emit_failed"] = totals.get("emit_failed", 0) + 1
+            continue
         totals["events"] += len(events)
         totals["written"] += counts["written"]
         totals["duplicate"] += counts["duplicate"]

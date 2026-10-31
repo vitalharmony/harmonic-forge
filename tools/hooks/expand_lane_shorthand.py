@@ -930,18 +930,22 @@ def record_attribution(prompt: str, session_id, lane, doc_text: str, transcript_
     attrib = _telemetry_attrib()
     written = 0
     stripped = prompt.lstrip()
-    # 1188 preclose pass 1: a belt line counts only inside a belt notification,
-    # and an operator trigger only as a human prompt's first non-blank line
-    # (R-0117's first-line rule). Quoted, pasted or injected text never does.
+    # 1188 preclose passes 1-2: an allowlist, not a denylist. A belt line counts
+    # only inside a notification's own body; an operator trigger only as the
+    # first non-blank line of an interactive (non-sdk) prompt that carries no
+    # notification at all (R-0117's first-line rule). Nothing else attributes.
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith(_HEADLESS_ENTRYPOINT):
+        return 0
     if stripped.startswith("<task-notification"):
-        for line in prompt.splitlines():
+        body = stripped.split("</task-notification>", 1)[0]
+        for line in body.splitlines():
             belt = _ATTRIB_BELT_RE.match(line)
             if belt and attrib.append(session_id, f"{belt.group(1)}#{belt.group(2)}",
                                       lane or belt.group(3), None, "belt:queued",
                                       transcript_path=transcript_path):
                 written += 1
         return written
-    if stripped.startswith(_NON_HUMAN_PREFIXES):
+    if stripped.startswith(_NON_HUMAN_PREFIXES) or "<task-notification" in prompt:
         return 0
     first = next((line for line in prompt.splitlines() if line.strip()), "")
     m = _ATTRIB_TRIGGER_RE.match(first)
