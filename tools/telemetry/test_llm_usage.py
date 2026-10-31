@@ -222,6 +222,31 @@ class Claude(Base):
         self.assertEqual(self.by_req()["req_C"]["attrs"]["output"], 30)
         self.assertEqual(len(self.usage()), 3)
 
+    def test_late_lines_after_settle_replace_not_duplicate(self):
+        """Operator ruling A (preclose pass 1, :328): a request emitted before
+        its later lines arrive is replaced by the fuller read, never doubled."""
+        root = self.tmp / "claude"
+        lines = self.path.read_text().splitlines(keepends=True)
+        self.path.write_text("".join(lines[:2]))  # req_A's first line only (output 5)
+        llm_usage.harvest_claude(root, settle_s=0)  # idle: emitted at output 5
+        with self.path.open("a") as handle:
+            handle.write("".join(lines[2:]))  # req_A's later lines (40, 22), then B, C
+        result = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual(result["replaced"], 1)
+        rows = [e for e in self.usage() if e["attrs"]["request_id"] == "req_A"]
+        self.assertEqual([e["attrs"]["output"] for e in rows], [40])
+        self.assertEqual(len(self.usage()), 3)
+
+    def test_lower_output_duplicate_is_dropped(self):
+        root = self.tmp / "claude"
+        llm_usage.harvest_claude(root, settle_s=0)
+        os.remove(os.environ[llm_usage.STATE_ENV])
+        lines = self.path.read_text().splitlines(keepends=True)
+        self.path.write_text("".join(lines[:2]))  # a partial re-read: req_A at 5
+        again = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual((again["replaced"], again["duplicate"]), (0, 1))
+        self.assertEqual(self.by_req()["req_A"]["attrs"]["output"], 40)
+
     def test_joins_sidecar_by_session(self):
         attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
                       None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")

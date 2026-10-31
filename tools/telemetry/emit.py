@@ -87,6 +87,66 @@ def event_id(source: str, repo: Optional[str], issue: Any, subject_id: Optional[
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
+def request_event_id(source: str, subject_id: str) -> str:
+    """harmonic-forge#1188 (operator ruling A): identity of a per-request usage
+    event is its request key alone, so a request re-emitted with fuller usage
+    on a later harvest is the same event, not a second row."""
+    return hashlib.sha256("\x1f".join(["request", source, subject_id]).encode("utf-8")).hexdigest()
+
+
+#: Sources whose duplicate is replaced when it carries a higher attrs.output
+#: (a fuller read of the same request), instead of being dropped.
+REPLACE_ON_HIGHER_OUTPUT = frozenset({"llm-usage"})
+
+
+def _output(event: dict[str, Any]) -> int:
+    value = (event.get("attrs") or {}).get("output")
+    return value if isinstance(value, int) and not isinstance(value, bool) else -1
+
+
+def _replace_lines(part: Path, better: dict[str, dict[str, Any]]) -> int:
+    """Rewrite `part` with each event in `better` (keyed by event_id) in place
+    of the stored line with that id. Called under the partition lock."""
+    if not better or not part.exists():
+        return 0
+    replaced = 0
+    out = []
+    with part.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                eid = json.loads(line)["event_id"]
+            except (ValueError, KeyError, TypeError):
+                out.append(line)
+                continue
+            if eid in better:
+                out.append(json.dumps(better.pop(eid), sort_keys=True) + "\n")
+                replaced += 1
+            else:
+                out.append(line)
+    tmp = part.with_name(part.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write("".join(out))
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(part)
+    return replaced
+
+
+def _stored_outputs(part: Path, ids: set[str]) -> dict[str, int]:
+    found: dict[str, int] = {}
+    if not part.exists():
+        return found
+    with part.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("event_id") in ids:
+                found[event["event_id"]] = _output(event)
+    return found
+
+
 def normalize_ts(ts: Any) -> str:
     if not isinstance(ts, str) or not ts:
         raise SchemaError(f"ts must be an ISO 8601 string, got {type(ts).__name__}")
@@ -177,7 +237,7 @@ def emit(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Append new events. Returns {"written", "duplicate", "rejected"}, where
     `rejected` lists (index, event_type, reason) -- never the payload."""
     root = store_root()
-    counts: dict[str, Any] = {"written": 0, "duplicate": 0, "rejected": []}
+    counts: dict[str, Any] = {"written": 0, "duplicate": 0, "replaced": 0, "rejected": []}
     if _refuses_real_store(root):
         print("[telemetry] test process: not writing the real telemetry store "
               f"(set {STORE_ENV}) -- harmonic-forge#907", file=sys.stderr)
@@ -202,12 +262,22 @@ def emit(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 if unresolved != part:
                     seen |= _read_ids(unresolved)
                 fresh = []
+                dupes = [e for e in items if e["event_id"] in seen]
+                stored = (_stored_outputs(part, {e["event_id"] for e in dupes})
+                          if any(e["source"] in REPLACE_ON_HIGHER_OUTPUT for e in dupes) else {})
+                better: dict[str, dict[str, Any]] = {}
                 for e in items:
                     if e["event_id"] in seen:
-                        counts["duplicate"] += 1
+                        if (e["source"] in REPLACE_ON_HIGHER_OUTPUT and e["event_id"] in stored
+                                and _output(e) > stored[e["event_id"]]):
+                            better[e["event_id"]] = e
+                            stored[e["event_id"]] = _output(e)
+                        else:
+                            counts["duplicate"] += 1
                         continue
                     seen.add(e["event_id"])
                     fresh.append(e)
+                counts["replaced"] += _replace_lines(part, better)
                 if fresh:
                     with part.open("a", encoding="utf-8") as handle:
                         handle.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in fresh))
