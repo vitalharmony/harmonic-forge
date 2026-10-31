@@ -201,6 +201,27 @@ class Claude(Base):
         self.assertEqual(rows["req_A"]["attrs"]["output"], 40)
         self.assertEqual(len(self.usage()), 3)
 
+    def test_unicode_line_separator_inside_a_record_is_kept(self):
+        """Preclose pass 1: U+2028 inside a JSONL record never splits it."""
+        lines = self.path.read_text().splitlines(keepends=True)
+        rec = json.loads(lines[1])
+        rec["message"]["content"] = [{"type": "text", "text": "a\u2028b\u0085c"}]
+        lines[1] = json.dumps(rec, ensure_ascii=False) + "\n"
+        self.path.write_text("".join(lines))
+        result = llm_usage.harvest_claude(self.tmp / "claude", settle_s=0)
+        self.assertEqual((result["written"], result["unknown_lines"]), (3, 0))
+
+    def test_holdback_offset_survives_invalid_utf8_and_crlf(self):
+        """Preclose pass 1: the held group's offset comes from raw bytes."""
+        lines = self.path.read_bytes().split(b"\n")
+        noisy = [lines[0] + b"\xff\xfe", b"", lines[1] + b"\r"] + lines[2:]
+        self.path.write_bytes(b"\n".join(noisy))
+        root = self.tmp / "claude"
+        llm_usage.harvest_claude(root, settle_s=3600)  # req_C held
+        llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual(self.by_req()["req_C"]["attrs"]["output"], 30)
+        self.assertEqual(len(self.usage()), 3)
+
     def test_joins_sidecar_by_session(self):
         attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
                       None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
@@ -301,6 +322,22 @@ class Writers(Base):
                           ("vitalharmony/hrse#18", "belt:queued")])
         self.assertEqual(lines[-1]["lane"], "1")
 
+    def test_hook_attributes_only_a_first_line_trigger(self):
+        """Preclose pass 1: quoted, pasted or fenced trigger text never attributes."""
+        for prompt in ("Please explain this example; do not implement it:\n```\nImplement F999\n```",
+                       "Here is the issue body:\nFix H18 is what it says",
+                       "<task-notification>Fix H18 in a Monitor line</task-notification>"):
+            with self.subTest(prompt=prompt[:30]):
+                self._run_hook(prompt)
+        self.assertEqual(attrib.read("hook-session"), [])
+        self._run_hook("\n  Implement F123\nmore text")
+        self.assertEqual([l["issue"] for l in attrib.read("hook-session")],
+                         ["vitalharmony/harmonic-forge#123"])
+
+    def test_belt_line_outside_a_notification_is_ignored(self):
+        self._run_hook("pasted: vitalharmony/hrse#18 queued-for-l1 kind=spec")
+        self.assertEqual(attrib.read("hook-session"), [])
+
     def test_hook_ignores_belt_text_that_is_not_a_queued_line(self):
         self._run_hook("<task-notification>vitalharmony/hrse#18 l3 — gate-result</task-notification>")
         self.assertEqual(attrib.read("hook-session"), [])
@@ -324,6 +361,12 @@ class Writers(Base):
         with mock.patch.dict(os.environ, {attrib.ATTRIB_DIR_ENV: str(blocker)}):
             output = self._run_hook("Implement F123")
         self.assertIn("hookSpecificOutput", output)
+        # The guard itself (preclose pass 1): the hook's own call raises.
+        import expand_lane_shorthand as hook
+        for name in ("record_attribution", "record_attention"):
+            with self.subTest(raising=name), \
+                    mock.patch.object(hook, name, side_effect=RuntimeError("boom")):
+                self.assertIn("hookSpecificOutput", self._run_hook("Implement F123"))
 
     def test_hook_records_attention(self):
         self._run_hook("Implement F123")

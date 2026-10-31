@@ -928,25 +928,31 @@ def record_attribution(prompt: str, session_id, lane, doc_text: str, transcript_
     """Append one sidecar line per recognized lane trigger, with the transcript
     holding the prompt as the audit's evidence (AC10). Returns lines written."""
     attrib = _telemetry_attrib()
-    prefixes = parse_repo_prefixes(doc_text)
     written = 0
-    for line in prompt.splitlines():
-        belt = _ATTRIB_BELT_RE.match(line)
-        if belt:
-            if attrib.append(session_id, f"{belt.group(1)}#{belt.group(2)}", lane or belt.group(3),
-                             None, "belt:queued", transcript_path=transcript_path):
+    stripped = prompt.lstrip()
+    # 1188 preclose pass 1: a belt line counts only inside a belt notification,
+    # and an operator trigger only as a human prompt's first non-blank line
+    # (R-0117's first-line rule). Quoted, pasted or injected text never does.
+    if stripped.startswith("<task-notification"):
+        for line in prompt.splitlines():
+            belt = _ATTRIB_BELT_RE.match(line)
+            if belt and attrib.append(session_id, f"{belt.group(1)}#{belt.group(2)}",
+                                      lane or belt.group(3), None, "belt:queued",
+                                      transcript_path=transcript_path):
                 written += 1
-            continue
-        m = _ATTRIB_TRIGGER_RE.match(line)
-        if not m:
-            continue
-        repo = STRIP_MARKDOWN.sub("", prefixes.get(m.group(2).upper(), ("", ""))[0]).strip()
-        if "/" not in repo:
-            continue
-        if attrib.append(session_id, f"{repo}#{m.group(3)}", lane or _ATTRIB_TRIGGER_LANE[m.group(1)],
-                         None, f"shorthand:{m.group(1)}",
-                         transcript_path=transcript_path):
-            written += 1
+        return written
+    if stripped.startswith(_NON_HUMAN_PREFIXES):
+        return 0
+    first = next((line for line in prompt.splitlines() if line.strip()), "")
+    m = _ATTRIB_TRIGGER_RE.match(first)
+    if not m:
+        return 0
+    prefixes = parse_repo_prefixes(doc_text)
+    repo = STRIP_MARKDOWN.sub("", prefixes.get(m.group(2).upper(), ("", ""))[0]).strip()
+    if "/" in repo and attrib.append(session_id, f"{repo}#{m.group(3)}",
+                                     lane or _ATTRIB_TRIGGER_LANE[m.group(1)], None,
+                                     f"shorthand:{m.group(1)}", transcript_path=transcript_path):
+        written += 1
     return written
 
 

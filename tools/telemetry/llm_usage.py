@@ -312,16 +312,15 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
         key = str(path)
         mark = marks.get(key, {})
         try:
-            lines, inode, end = _new_lines(path, mark)
+            framed, inode, start, end = _framed_lines(path, mark)
             idle = clock - path.stat().st_mtime >= settle_s
         except OSError:
             continue
-        start = mark.get("offset", 0) if mark.get("inode") == inode and mark.get("offset", 0) <= end else 0
-        groups, unknown = claude_groups(lines)
+        groups, unknown = claude_groups([text for text, _ in framed])
         offset = end
         if groups and not idle:  # hold the newest group back; re-read it next run
             held_index = groups[-1][3]
-            offset = start + sum(len(l.encode("utf-8")) + 1 for l in lines[:held_index])
+            offset = framed[held_index - 1][1] if held_index else start
             groups = groups[:-1]
             totals["held"] += 1
         events = [to_event(u, ts, f"claude:{k}", prices) for k, u, ts, _ in groups]
@@ -354,17 +353,32 @@ def _save_state(state: dict) -> None:
     tmp.replace(path)
 
 
-def _new_lines(path: Path, mark: dict) -> tuple[list[str], int, int]:
-    """Complete lines after the watermark, plus the new (inode, offset). A
+def _framed_lines(path: Path, mark: dict) -> tuple[list[tuple[str, int]], int, int, int]:
+    """(line, offset just past it) for each non-blank complete line after the
+    watermark, the inode, the start offset and the new end offset. Lines are
+    framed on raw b"\n" before decoding (1188 preclose pass 1): a U+2028 inside
+    a record never splits it, and offsets never come from re-encoded text. A
     changed inode or a shrunk file restarts at 0 (rotation)."""
     st = path.stat()
-    offset = mark.get("offset", 0) if mark.get("inode") == st.st_ino and mark.get("offset", 0) <= st.st_size else 0
+    start = mark.get("offset", 0) if mark.get("inode") == st.st_ino and mark.get("offset", 0) <= st.st_size else 0
     with path.open("rb") as handle:
-        handle.seek(offset)
+        handle.seek(start)
         data = handle.read()
     end = data.rfind(b"\n") + 1  # a torn last line waits for the next run
-    text = data[:end].decode("utf-8", errors="replace")
-    return [l for l in text.splitlines() if l.strip()], st.st_ino, offset + end
+    framed = []
+    pos = start
+    for raw in data[:end].split(b"\n")[:-1]:
+        pos += len(raw) + 1
+        text = raw.decode("utf-8", errors="replace")
+        if text.strip():
+            framed.append((text, pos))
+    return framed, st.st_ino, start, start + end
+
+
+def _new_lines(path: Path, mark: dict) -> tuple[list[str], int, int]:
+    """Complete lines after the watermark, plus the new (inode, offset)."""
+    framed, inode, _start, end = _framed_lines(path, mark)
+    return [text for text, _ in framed], inode, end
 
 
 def harvest_codex(root: Path, prices: Optional[dict] = None) -> dict:
