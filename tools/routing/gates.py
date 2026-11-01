@@ -29,6 +29,7 @@ issue and a sandboxed preflight (te_queue.item_failures).
 from __future__ import annotations
 
 import posixpath
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,8 @@ from preclose_check import HIGH_BLAST_PATTERNS  # noqa: E402
 #: account belongs to another account or to a client (K, Y, D, P and any added
 #: later), so it is matched by owner, never by a list of names.
 HOME_OWNER = "vitalharmony"
+#: GitHub's repository-name alphabet, after case folding
+_REPO_NAME = re.compile(r"[a-z0-9._-]+")
 HRSE_REPO = "vitalharmony/hrse"
 PRODUCT_PREFIXES = ("backend/", "frontend/")
 TE_LABEL = "tooling-exception"
@@ -95,7 +98,7 @@ def _foreign(repo: str) -> bool:
     """True for any repo that is not OWNER/NAME under HOME_OWNER, including a
     bare or malformed name: only canonical input may reach a looser gate."""
     owner, _, name = repo.partition("/")
-    return owner != HOME_OWNER or not name or "/" in name
+    return owner != HOME_OWNER or not _REPO_NAME.fullmatch(name) or name in (".", "..")
 
 
 def _outside_repo(path: str) -> bool:

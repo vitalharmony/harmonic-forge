@@ -115,6 +115,11 @@ class FailClosedEdges(unittest.TestCase):
         route = evaluate(Scope(HRSE, {"hrse": ["backend/app/x.py"]}, labels=["tooling-exception"]))
         self.assertEqual(route.path, 1)
 
+    def test_malformed_home_repo_name_is_path_1(self):
+        for repo in ("vitalharmony/..", "vitalharmony/.", "vitalharmony/bad name", "vitalharmony/"):
+            route = evaluate(Scope(repo, {repo: ["a.py"]}, runner_eligible=True))
+            self.assertEqual((route.path, route.gate_id), (1, "cross-account"), repo)
+
     def test_absolute_or_climbing_path_is_path_1(self):
         """Pass-2 #2: a path that is not repo-relative fails closed."""
         for path in ("/backend/requirements.txt", "/frontend/src/x.ts", "../hrse/backend/x.py"):
@@ -293,6 +298,17 @@ class Store(unittest.TestCase):
         event = route_store.record(f"Vitalharmony/HARMONIC-FORGE#900", gates.Route(1, "override", "r"),
                                    "override", "override")
         self.assertEqual(event["repo"], FORGE)
+        self.assertEqual(route_store.current(self.key)["attrs"]["path"], 1)
+
+    def test_mixed_case_stored_history_is_read(self):
+        """A history written before keys were folded still reads under the folded key."""
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        part = next((self.tmp / "store").glob("events/*/*/route/*.jsonl"))
+        event = json.loads(part.read_text().splitlines()[0])
+        event.update(repo="VitalHarmony/Harmonic-Forge", subject_id="route:legacy")
+        event["attrs"].update(path=1, decider="override", ns=event["attrs"]["ns"] + 1)
+        with part.open("a") as handle:
+            handle.write(json.dumps(event) + "\n")
         self.assertEqual(route_store.current(self.key)["attrs"]["path"], 1)
 
     def test_path_outside_range_is_refused(self):
