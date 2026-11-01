@@ -579,6 +579,18 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
     return None
 
 
+#: harmonic-forge#1232 (sticky-wicket): what the filing computed and whether the board
+#: took it. One check in `main_with_route_check`'s `finally` prints `route: unavailable` for every exit
+#: that skips the Path write, including exits nobody has written yet.
+_ROUTE_STATE: dict = {"path": None, "written": False}
+
+
+def _print_route_unwritten() -> None:
+    if _ROUTE_STATE["path"] is not None and not _ROUTE_STATE["written"]:
+        print(f"[GH] route: unavailable — Path={_ROUTE_STATE['path']} was not written "
+              f"(the filing stopped before the board took it; see the messages above)", file=sys.stderr)
+
+
 def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int) -> str | None:
     """harmonic-forge#1232: the filing checkpoint of semantic routing.
 
@@ -593,7 +605,13 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int)
         import gates
         import route_store
         import scope
-        route = gates.evaluate(scope.scope_for_filing(repo, body, labels))
+        _ROUTE_STATE.update(path=None, written=False)
+        unparsed = scope.unparsed_spans(body)
+        if unparsed:
+            # Fail closed: a path-like span that cannot be read must never lower the route.
+            route = gates.Route(1, "unparsed-path", f"path-like span could not be read: {unparsed[0]}")
+        else:
+            route = gates.evaluate(scope.scope_for_filing(repo, body, labels))
     except Exception as exc:
         print(f"[GH] route: unavailable — {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
@@ -601,17 +619,13 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int)
         route_store.record(f"{repo}#{issue_number}", route, decider=route.gate_id, checkpoint="filing")
     except Exception as exc:
         print(f"[GH] route: not recorded — {type(exc).__name__}: {exc}", file=sys.stderr)
+    _ROUTE_STATE["path"] = str(route.path)
     return str(route.path)
 
 
 def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None,
                   theme: str | None = None, venture: str | None = None,
                   route_path: str | None = None) -> bool:
-    def path_unwritten(reason: str) -> None:
-        # harmonic-forge#1232 pass 1: every exit before the Path write says so.
-        if route_path is not None:
-            print(f"[GH] route: unavailable — Path={route_path} was not written ({reason})", file=sys.stderr)
-
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
     # last on a large board).
@@ -634,7 +648,6 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
         item_id = _find_existing_item(issue_url, project_owner, project_number)
         if item_id is None:
             print(f"[GH] Warning: created issue but failed to add to board:\n{add_result.stderr}", file=sys.stderr)
-            path_unwritten("not added to the board")
             return False
         print(f"[GH] Already on board #{project_number} (added by another writer); setting fields on the existing item")
     else:
@@ -642,7 +655,6 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
             item_id = json.loads(add_result.stdout)["id"]
         except (json.JSONDecodeError, KeyError) as exc:
             print(f"[GH] Warning: added to board but could not parse item id: {exc}", file=sys.stderr)
-            path_unwritten("item id unreadable")
             return False
 
         print(f"[GH] Added issue to board #{project_number} (owner: {project_owner})")
@@ -650,15 +662,14 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     ctx = _fetch_project_context(project_owner, project_number)
     if ctx is None:
         print("[GH] Warning: added to board but could not fetch project context — needs manual triage", file=sys.stderr)
-        path_unwritten("project context unavailable")
         return False
 
     # harmonic-forge#1232: Path is a display field, so its write is soft and runs
     # before the hard Status/Tier/Theme/Venture writes -- their failure cannot
     # skip it, and its own failure cannot fail the filing.
     if route_path is not None:
-        if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Path", route_path):
-            path_unwritten("the board rejected it")
+        if _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Path", route_path):
+            _ROUTE_STATE["written"] = True
 
     if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Status", STATUS_OPTION_NAME):
         print("[GH] Warning: could not set Status=Todo — item was added but needs manual triage", file=sys.stderr)
@@ -954,8 +965,6 @@ def main() -> int:
 
     if not project_owner or not project_number:
         print("[GH] No project board configured — skipping board-add.")
-        if route_path is not None:
-            print("[GH] route: unavailable — no board configured for Path", file=sys.stderr)
         # harmonic-forge#263, same defect in the branch nobody looked at: a
         # board field was explicitly requested and cannot be written because
         # there is no board. Returning 0 here reports success for a routing/
@@ -1007,7 +1016,15 @@ def _print_owed() -> None:
             continue
 
 
+def main_with_route_check() -> int:
+    """`main()` with the one route check around it (harmonic-forge#1232)."""
+    try:
+        return main()
+    finally:
+        _print_route_unwritten()
+
+
 if __name__ == "__main__":
-    code = main()
+    code = main_with_route_check()
     _print_owed()
     sys.exit(code)

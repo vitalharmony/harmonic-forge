@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the filing route checkpoint and the Path board field (harmonic-forge#1232, A2)."""
+import contextlib
 import io
 import json
 import os
@@ -71,6 +72,17 @@ class Scope(unittest.TestCase):
     def test_prose_and_spaced_backticks_are_not_paths(self):
         self.assertEqual(scope.paths_from_body("run `mise run check` and see tools/hooks/x.py"), [])
 
+    def test_an_unparseable_path_like_span_is_reported_not_dropped(self):
+        for body, token in (("`src/*.py`", "src/*.py"), ("`$HOME/x/y.py`", "$HOME/x/y.py"),
+                            ("`tools/hooks/[x].py`", "tools/hooks/[x].py")):
+            with self.subTest(body=body):
+                self.assertIn(token, scope.unparsed_spans(body))
+
+    def test_anchors_and_spaces_are_read_not_unparsed(self):
+        self.assertEqual(scope.paths_from_body("`frontend/src/App.tsx#L5`"), ["frontend/src/App.tsx"])
+        self.assertEqual(scope.unparsed_spans("`frontend/src/App.tsx#L5-L9` and `backend/my file.py`"), [])
+        self.assertIn("backend/my", scope.paths_from_body("`backend/my file.py`"))
+
     def test_no_path_is_an_empty_scope(self):
         self.assertEqual(scope.scope_for_filing(FORGE, "no paths here", []).halves, {})
 
@@ -98,6 +110,22 @@ class FilingCheckpoint(TempStore):
         gh_issue._route_at_filing(FORGE, "edits `tools/hooks/x.py`", [], 77)
         events = route_store.load(f"{FORGE}#77")
         self.assertEqual([e["attrs"]["checkpoint"] for e in events], ["filing"])
+
+    def test_adding_an_unparseable_token_never_lowers_the_route(self):
+        """Sticky-wicket's property: no spelling of a path can give a less strict route."""
+        bases = ["`tools/hooks/x.py`", "`backend/app/x.py`", "nothing to see", "`docs/a.md`"]
+        unparseable = ["`src/*.py`", "`$HOME/x/y.py`", "`tools/hooks/[x].py`", "`~/z/w.py`"]
+        for repo in (FORGE, HRSE):
+            for base in bases:
+                before = int(gh_issue._route_at_filing(repo, base, [], 77))
+                for token in unparseable:
+                    with self.subTest(repo=repo, base=base, token=token):
+                        after = int(gh_issue._route_at_filing(repo, f"{base} {token}", [], 77))
+                        self.assertLessEqual(after, before)
+
+    def test_unparseable_span_files_at_path_1(self):
+        self.assertEqual(gh_issue._route_at_filing(FORGE, "edits `tools/hooks/x.py` and `src/*.py`", [], 77), "1")
+        self.assertEqual(route_store.current(f"{FORGE}#77")["attrs"]["gate_id"], "unparsed-path")
 
     def test_evaluator_error_prints_unavailable_and_returns_none(self):
         err = io.StringIO()
@@ -139,22 +167,9 @@ class MainWiring(TempStore):
         self.assertEqual(result, 0)
         self.assertEqual(add.call_args[0][6], "2")
 
-    def test_no_board_still_files_and_prints_unavailable(self):
-        err = io.StringIO()
-        with patch.object(sys, "argv", self.ARGV), \
-             patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.find_prior_owners", return_value=[]), \
-             patch("gh_issue.create_issue", return_value=URL), \
-             patch("gh_issue.handoff_owed.record"), \
-             patch("gh_issue._discharge_exception", return_value=True), \
-             patch("gh_issue.resolve_board_for_repo", return_value=("", "")), \
-             redirect_stderr(err):
-            self.assertEqual(gh_issue.main(), 0)
-        self.assertIn("route: unavailable — no board", err.getvalue())
-
 
 class PathWrite(unittest.TestCase):
-    """AC4: Path is a soft write, attempted before the hard ones."""
+    """Path is a soft write, attempted before the hard ones."""
 
     def _board(self, set_single_select):
         ctx = {"project_id": "P", "fields": []}
@@ -165,11 +180,8 @@ class PathWrite(unittest.TestCase):
         return ok, setter
 
     def test_rejected_path_write_does_not_fail_the_filing(self):
-        err = io.StringIO()
-        with redirect_stderr(err):
-            ok, setter = self._board(lambda item, project, fields, name, value: name != "Path")
+        ok, _ = self._board(lambda item, project, fields, name, value: name != "Path")
         self.assertTrue(ok)
-        self.assertIn("route: unavailable", err.getvalue())
 
     def test_path_is_written_before_status(self):
         _, setter = self._board(lambda *a: True)
@@ -180,38 +192,6 @@ class PathWrite(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(setter.call_args_list[0].args[3], "Path")
 
-    def _early_exit(self, **patches):
-        err = io.StringIO()
-        with patch("gh_issue._set_single_select", return_value=True) as setter, redirect_stderr(err):
-            for target, value in patches.items():
-                patch(f"gh_issue.{target}", **value).start()
-            try:
-                ok = gh_issue.add_to_board(URL, "o", "1", None, route_path="2")
-            finally:
-                patch.stopall()
-        return ok, err.getvalue(), setter
-
-    def test_item_add_failure_says_path_was_not_written(self):
-        ok, err, setter = self._early_exit(
-            _run={"return_value": SimpleNamespace(returncode=1, stdout="", stderr="boom")},
-            _find_existing_item={"return_value": None})
-        self.assertFalse(ok)
-        self.assertIn("route: unavailable", err)
-        setter.assert_not_called()
-
-    def test_unreadable_item_id_says_path_was_not_written(self):
-        ok, err, _ = self._early_exit(
-            _run={"return_value": SimpleNamespace(returncode=0, stdout="not json", stderr="")})
-        self.assertFalse(ok)
-        self.assertIn("route: unavailable", err)
-
-    def test_missing_project_context_says_path_was_not_written(self):
-        ok, err, _ = self._early_exit(
-            _run={"return_value": SimpleNamespace(returncode=0, stdout='{"id": "I1"}', stderr="")},
-            _fetch_project_context={"return_value": None})
-        self.assertFalse(ok)
-        self.assertIn("route: unavailable", err)
-
     def test_no_path_means_no_path_write(self):
         ctx = {"project_id": "P", "fields": []}
         with patch("gh_issue._run", return_value=SimpleNamespace(returncode=0, stdout='{"id": "I1"}', stderr="")), \
@@ -219,6 +199,82 @@ class PathWrite(unittest.TestCase):
              patch("gh_issue._set_single_select", return_value=True) as setter:
             gh_issue.add_to_board(URL, "o", "1", None)
         self.assertNotIn("Path", [c.args[3] for c in setter.call_args_list])
+
+
+class RouteNoticeEveryExit(TempStore):
+    """The `route: unavailable` line prints exactly once whenever a route was
+    computed and Path was not written, from ONE check around main(), so it holds
+    for every exit including ones nobody has written yet (sticky-wicket)."""
+
+    ARGV = ["gh_issue.py", "--repo", FORGE, "--title", "semantic routing filing checkpoint",
+            "--body", "edits `tools/hooks/x.py`", "--no-prior-owner", "test fixture"]
+    NOTICE = "route: unavailable — Path="
+    OK_ITEM = SimpleNamespace(returncode=0, stdout='{"id": "I1"}', stderr="")
+
+    def _drive(self, *, discharge_ok=True, board=("o", "1"), run=None, find_existing=None,
+               context="ok", set_single_select=None):
+        err = io.StringIO()
+        ctx = {"project_id": "P", "fields": []}
+        with contextlib.ExitStack() as stack:
+            for target, kwargs in (
+                    ("fetch_milestones", {"return_value": {}}), ("find_prior_owners", {"return_value": []}),
+                    ("create_issue", {"return_value": URL}), ("handoff_owed.record", {}),
+                    ("_discharge_exception", {"return_value": discharge_ok}),
+                    ("resolve_board_for_repo", {"return_value": board}),
+                    ("_run", {"return_value": run or self.OK_ITEM}),
+                    ("_find_existing_item", {"return_value": find_existing}),
+                    ("_fetch_project_context", {"return_value": ctx if context == "ok" else None}),
+                    ("_set_single_select", {"side_effect": set_single_select or (lambda *a: True)})):
+                stack.enter_context(patch(f"gh_issue.{target}", **kwargs))
+            stack.enter_context(patch.object(sys, "argv", self.ARGV))
+            stack.enter_context(redirect_stderr(err))
+            code = gh_issue.main_with_route_check()
+        return code, err.getvalue()
+
+    def test_written_path_prints_nothing(self):
+        code, err = self._drive()
+        self.assertEqual(code, 0)
+        self.assertEqual(err.count(self.NOTICE), 0)
+
+    def test_failed_discharge_exit_prints_it_once(self):
+        code, err = self._drive(discharge_ok=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(err.count(self.NOTICE), 1)
+
+    def test_no_board_prints_it_once(self):
+        code, err = self._drive(board=("", ""))
+        self.assertEqual(code, 0)
+        self.assertEqual(err.count(self.NOTICE), 1)
+
+    def test_item_add_failure_prints_it_once(self):
+        code, err = self._drive(run=SimpleNamespace(returncode=1, stdout="", stderr="boom"))
+        self.assertEqual(code, 1)
+        self.assertEqual(err.count(self.NOTICE), 1)
+
+    def test_unreadable_item_id_prints_it_once(self):
+        code, err = self._drive(run=SimpleNamespace(returncode=0, stdout="not json", stderr=""))
+        self.assertEqual(code, 1)
+        self.assertEqual(err.count(self.NOTICE), 1)
+
+    def test_missing_project_context_prints_it_once(self):
+        code, err = self._drive(context="none")
+        self.assertEqual(code, 1)
+        self.assertEqual(err.count(self.NOTICE), 1)
+
+    def test_board_rejecting_path_prints_it_once_and_still_files(self):
+        code, err = self._drive(set_single_select=lambda item, project, fields, name, value: name != "Path")
+        self.assertEqual(code, 0)
+        self.assertEqual(err.count(self.NOTICE), 1)
+
+    def test_a_later_hard_failure_after_a_written_path_prints_nothing(self):
+        code, err = self._drive(set_single_select=lambda item, project, fields, name, value: name != "Status")
+        self.assertEqual(code, 1)
+        self.assertEqual(err.count(self.NOTICE), 0)
+
+    def test_a_stale_state_from_a_prior_filing_does_not_leak(self):
+        self._drive(discharge_ok=False)
+        code, err = self._drive()
+        self.assertEqual(err.count(self.NOTICE), 0)
 
 
 class NoOptionEdits(unittest.TestCase):
