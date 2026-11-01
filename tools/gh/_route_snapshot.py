@@ -90,7 +90,15 @@ def record_snapshot(repo: str, issue: int, route: gates.Route) -> Optional[str]:
     Returns a message to print when the route was not recorded in force (a
     looser result is printed as a proposal, never stored: the store treats any
     non-override event as the evaluated route in force). Raises on a store
-    error; the caller prints it and never raises past the post."""
+    error; the caller prints it and never raises past the post.
+
+    Known limit (preclose pass 1, operator ruling A plus B): the comparison
+    reads `current()` and then appends, with no lock between the two. A second
+    writer on the same issue that lands in that gap is overwritten by a looser
+    result. Today that needs two concurrent non-override writers on one issue
+    (a handoff post and a filing checkpoint), the route is shadow only, and an
+    operator override is held by `current()` as a floor regardless. An atomic
+    compare-and-append in `route_store` is the follow-up."""
     key = f"{repo}#{issue}"
     in_force = route_store.current(key)
     if in_force is not None:
