@@ -26,13 +26,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gates import Scope  # noqa: E402
 
-#: a span may wrap a line; the cap keeps a stray backtick from pairing across a whole document
-_SPAN = re.compile(r"`([^`]{1,200})`")
+#: a span may wrap a line and has no length cap: a cap is another place a path can hide
+_SPAN = re.compile(r"`([^`]+)`")
 _SUFFIX = re.compile(r"(?::\d+(?:-\d+)?|#L\d+(?:-L?\d+)?)$")
 _SAFE = re.compile(r"^[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*)*$")
 
 
-_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,6}$")
+_EXTENSION = re.compile(r"\.[A-Za-z0-9]+$")
 
 
 def _pathlike(token: str) -> bool:

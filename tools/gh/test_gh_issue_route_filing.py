@@ -84,6 +84,11 @@ class Scope(unittest.TestCase):
         self.assertIn("foo?.py", scope.unparsed_spans("`tools/hooks/x.py` `foo?.py`"))
         self.assertIn("*.py", scope.unparsed_spans("`tools/hooks/x.py` `src/\n*.py`"))
 
+    def test_no_length_cap_hides_a_path(self):
+        """Final-head read: a long span and a long extension are visited, not skipped."""
+        self.assertIn("src/*.py", scope.unparsed_spans("`" + "x " * 150 + "src/*.py`"))
+        self.assertIn("bad?.extension", scope.unparsed_spans("`tools/hooks/x.py` `bad?.extension`"))
+
     def test_anchors_and_spaces_are_read_not_unparsed(self):
         self.assertEqual(scope.paths_from_body("`frontend/src/App.tsx#L5`"), ["frontend/src/App.tsx"])
         self.assertEqual(scope.unparsed_spans("`frontend/src/App.tsx#L5-L9` and `backend/my file.py`"), [])
@@ -121,7 +126,7 @@ class FilingCheckpoint(TempStore):
         """Sticky-wicket's property: no spelling of a path can give a less strict route."""
         bases = ["`tools/hooks/x.py`", "`backend/app/x.py`", "nothing to see", "`docs/a.md`"]
         unparseable = ["`src/*.py`", "`$HOME/x/y.py`", "`tools/hooks/[x].py`", "`~/z/w.py`",
-                       "`foo?.py`", "`src/\n*.py`"]
+                       "`foo?.py`", "`src/\n*.py`", "`bad?.extension`", "`" + "x " * 150 + "src/*.py`"]
         for repo in (FORGE, HRSE):
             for base in bases:
                 before = int(gh_issue._route_at_filing(repo, base, [], 77))
