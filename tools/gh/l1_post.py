@@ -108,6 +108,7 @@ import _scenario_trace  # noqa: E402
 import _scratch  # noqa: E402  (harmonic-forge#949)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 import _lane3_env  # noqa: E402  (harmonic-forge#1218)
+import _route_snapshot  # noqa: E402  (harmonic-forge#1231)
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -3140,6 +3141,12 @@ def _post_kind(
         marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing,
                                  snapshot_out=attempt)
         body = body.rstrip("\n") + "\n\n" + marker + "\n"
+    snapshot_route = None
+    if kind == "handoff":
+        # harmonic-forge#1231: before the digest, so the digest covers the line.
+        # Fail open: the evaluator's error becomes an `unavailable` line.
+        snapshot_line, snapshot_route = _route_snapshot.snapshot(body, repo)
+        body = body.rstrip("\n") + "\n\n" + snapshot_line + "\n"
     # a private-repo incident: hash the rstripped body, not the raw one -- `comment_body()`
     # below posts `body.rstrip("\n") + footer`, so hashing `body` unstripped
     # recorded a digest that didn't correspond to what was actually posted
@@ -3200,6 +3207,15 @@ def _post_kind(
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
     if _tasklist_owed is not None:
         _tasklist_owed.record_post(repo, issue, kind)
+    if snapshot_route is not None:
+        # harmonic-forge#1231: after the post, so a refused or failed post
+        # records nothing; a store error is printed and never raised.
+        try:
+            note = _route_snapshot.record_snapshot(repo, issue, snapshot_route)
+            if note:
+                print(note)
+        except Exception as exc:
+            print(f"[route] handoff snapshot not recorded: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
         # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one
