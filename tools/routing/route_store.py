@@ -102,6 +102,10 @@ def current(key: str) -> Optional[dict[str, Any]]:
     else:
         in_force, shadow = evaluated, None
     result = dict(in_force, attrs=dict(in_force["attrs"]))
+    # harmonic-forge#1234: an override never carries a tier_floor (`route set`
+    # records none), so a stricter override must not drop the evaluated route's.
+    if shadow is not None and "tier_floor" not in result["attrs"] and "tier_floor" in shadow["attrs"]:
+        result["attrs"]["tier_floor"] = shadow["attrs"]["tier_floor"]
     if shadow is not None and int(shadow["attrs"]["path"]) != int(in_force["attrs"]["path"]):
         result["attrs"]["shadow_path"] = int(shadow["attrs"]["path"])
         result["attrs"]["shadow_gate"] = shadow["attrs"]["gate_id"]

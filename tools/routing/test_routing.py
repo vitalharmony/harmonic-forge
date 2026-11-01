@@ -326,14 +326,33 @@ class Store(unittest.TestCase):
                 route_store.record(self.key, gates.Route(bad, "x", "r"), "x", "filing")
 
     def test_stored_path_outside_range_raises(self):
+        """The valid range is 1 to 3: 0 and 4 each raise, each on its own key
+        (harmonic-forge#1234; setUp gives one store per test)."""
+        for offset, bad in enumerate((0, 4)):
+            with self.subTest(path=bad):
+                key = f"{FORGE}#{910 + offset}"
+                route_store.record(key, gates.Route(1, "override", "r"), "override", "override")
+                part = next((self.tmp / "store").glob("events/*/*/route/*.jsonl"))
+                event = json.loads(part.read_text().splitlines()[-1])
+                event["attrs"]["path"] = bad
+                with part.open("a") as handle:
+                    handle.write(json.dumps(event) + "\n")
+                with self.assertRaises(RuntimeError):
+                    route_store.current(key)
+
+    def test_override_keeps_the_evaluated_tier_floor(self):
+        """harmonic-forge#1234 AC1: a stricter override reports the deep floor."""
+        route_store.record(self.key, gates.Route(2, "authorization", "r", tier_floor="deep"),
+                           "authorization", "handoff")
         route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
-        part = next((self.tmp / "store").glob("events/*/*/route/*.jsonl"))
-        event = json.loads(part.read_text().splitlines()[0])
-        event["attrs"]["path"] = 0
-        with part.open("a") as handle:
-            handle.write(json.dumps(event) + "\n")
-        with self.assertRaises(RuntimeError):
-            route_store.current(self.key)
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["tier_floor"], attrs["shadow_gate"]), (1, "deep", "authorization"))
+
+    def test_override_over_an_evaluation_with_no_floor_gains_none(self):
+        """harmonic-forge#1234 AC2: no floor to carry means none appears."""
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        self.assertNotIn("tier_floor", route_store.current(self.key)["attrs"])
 
     def test_bad_key(self):
         with self.assertRaises(ValueError):
