@@ -579,8 +579,34 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
     return None
 
 
+def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int) -> str | None:
+    """harmonic-forge#1232: the filing checkpoint of semantic routing.
+
+    Evaluates the route from the body's backticked paths and the filing's labels,
+    records one `checkpoint=filing` event, and returns the Path option ("1", "2"
+    or "3") for the board write. Shadow only, and fail-open: a routing error
+    prints `route: unavailable` and the issue is filed and boarded as before.
+    The imports live here so even a broken routing module cannot stop a filing.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "routing"))
+        import gates
+        import route_store
+        import scope
+        route = gates.evaluate(scope.scope_for_filing(repo, body, labels))
+    except Exception as exc:
+        print(f"[GH] route: unavailable — {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+    try:
+        route_store.record(f"{repo}#{issue_number}", route, decider=route.gate_id, checkpoint="filing")
+    except Exception as exc:
+        print(f"[GH] route: not recorded — {type(exc).__name__}: {exc}", file=sys.stderr)
+    return str(route.path)
+
+
 def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None,
-                  theme: str | None = None, venture: str | None = None) -> bool:
+                  theme: str | None = None, venture: str | None = None,
+                  route_path: str | None = None) -> bool:
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
     # last on a large board).
@@ -618,6 +644,13 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     if ctx is None:
         print("[GH] Warning: added to board but could not fetch project context — needs manual triage", file=sys.stderr)
         return False
+
+    # harmonic-forge#1232: Path is a display field, so its write is soft and runs
+    # before the hard Status/Tier/Theme/Venture writes -- their failure cannot
+    # skip it, and its own failure cannot fail the filing.
+    if route_path is not None:
+        if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Path", route_path):
+            print(f"[GH] route: unavailable — Path={route_path} was not written", file=sys.stderr)
 
     if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Status", STATUS_OPTION_NAME):
         print("[GH] Warning: could not set Status=Todo — item was added but needs manual triage", file=sys.stderr)
@@ -895,8 +928,12 @@ def main() -> int:
     # creation records nothing, so it cannot leave a record blocking a turn
     # for an issue that does not exist.
     issue_number = _issue_number(issue_url)
+    route_path = None
     if issue_number is not None:
         handoff_owed.record(args.repo, issue_number, issue_url)
+        # harmonic-forge#1232: before `_discharge_exception`, which can return 1,
+        # so the filing checkpoint is recorded on every exit below.
+        route_path = _route_at_filing(args.repo, body, labels, issue_number)
         if not _discharge_exception(args, issue_number, issue_url):
             return 1
 
@@ -909,6 +946,8 @@ def main() -> int:
 
     if not project_owner or not project_number:
         print("[GH] No project board configured — skipping board-add.")
+        if route_path is not None:
+            print("[GH] route: unavailable — no board configured for Path", file=sys.stderr)
         # harmonic-forge#263, same defect in the branch nobody looked at: a
         # board field was explicitly requested and cannot be written because
         # there is no board. Returning 0 here reports success for a routing/
@@ -931,7 +970,7 @@ def main() -> int:
         return 0
 
     return 0 if add_to_board(issue_url, project_owner, project_number, tier,
-                              args.theme, args.venture) else 1
+                              args.theme, args.venture, route_path) else 1
 
 
 def _print_owed() -> None:
