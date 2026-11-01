@@ -87,6 +87,28 @@ class Snapshot(unittest.TestCase):
         route = snap.snapshot(_handoff(["`tools/hooks/x.py` (new)"]), REPO)[1]
         self.assertEqual(route.gate_id, "lane-machinery")
 
+    def test_no_declared_path_is_ever_dropped_from_a_cell(self):
+        """Sticky-wicket's invariant: whatever mix of quoting, commas, notes and
+        spaces a cell uses, every path it declares reaches the scope."""
+        cells = {
+            "`tools/hooks/a.py`, backend/app/services/foo.py": ["tools/hooks/a.py", "backend/app/services/foo.py"],
+            "backend/app/x.py, `tools/hooks/a.py` (new)": ["tools/hooks/a.py", "backend/app/x.py"],
+            "`a.py`, `b.py`, c.py": ["a.py", "b.py", "c.py"],
+            "`my file.py`, docs/n.md": ["my file.py", "docs/n.md"],
+            "docs/n.md (new, big)": ["docs/n.md"],
+            "tools/a.py": ["tools/a.py"],
+        }
+        for cell, declared in cells.items():
+            with self.subTest(cell=cell):
+                got = snap._cell_paths(cell)
+                for path in declared:
+                    self.assertTrue(any(path in token for token in got), f"{path!r} lost from {got!r}")
+
+    def test_mixed_cell_keeps_the_stricter_gate(self):
+        body = _handoff(["`tools/hooks/x.py`, backend/app/services/foo.py"])
+        route = snap.snapshot(body, "vitalharmony/hrse")[1]
+        self.assertEqual((route.path, route.gate_id), (1, "hrse-product"))
+
     def test_qualified_path_is_its_own_half(self):
         halves = snap.affected_files(_handoff(["vitalharmony/hrse:backend/x.py", "tools/a.py"]), REPO)
         self.assertEqual(halves, {"vitalharmony/hrse": ["backend/x.py"], REPO: ["tools/a.py"]})
@@ -133,6 +155,28 @@ class Recording(TempStore):
         self.assertIn("looser than path 1", note)
         self.assertEqual(route_store.current(KEY)["attrs"]["path"], 1)
         self.assertEqual(len(self._events()), 1)
+
+    def test_a_tightening_of_the_evaluated_route_is_recorded_beneath_an_override(self):
+        """Pass 2: evaluated path 3, override path 1, a handoff evaluating to path 2.
+        It is stricter than the evaluated route, so it is recorded (the override
+        floor holds meanwhile), not dropped as 'looser than path 1'."""
+        route_store.record(KEY, gates.Route(3, "runner", "r"), "runner", "filing")
+        route_store.record(KEY, gates.Route(1, "override", "r"), "override", "override")
+        self.assertIsNone(snap.record_snapshot(REPO, 1231, gates.Route(2, "lane-machinery", "r")))
+        self.assertEqual(route_store.evaluated_path(KEY), 2)
+        self.assertEqual(route_store.current(KEY)["attrs"]["path"], 1)
+
+    def test_a_route_looser_than_the_evaluated_one_is_still_refused_beneath_an_override(self):
+        route_store.record(KEY, gates.Route(2, "lane-machinery", "r"), "lane-machinery", "filing")
+        route_store.record(KEY, gates.Route(1, "override", "r"), "override", "override")
+        note = snap.record_snapshot(REPO, 1231, gates.Route(3, "runner", "r"))
+        self.assertIn("looser than path 2", note)
+        self.assertEqual(route_store.evaluated_path(KEY), 2)
+
+    def test_only_an_override_on_record_is_not_a_baseline(self):
+        route_store.record(KEY, gates.Route(1, "override", "r"), "override", "override")
+        self.assertIsNone(snap.record_snapshot(REPO, 1231, gates.Route(2, "lane-machinery", "r")))
+        self.assertEqual(route_store.evaluated_path(KEY), 2)
 
     def test_stricter_result_becomes_the_route_in_force(self):
         snap.record_snapshot(REPO, 1231, gates.Route(2, "lane-machinery", "r"))

@@ -55,14 +55,14 @@ def affected_files(body: str, issue_repo: str) -> dict[str, list[str]]:
 
 
 def _cell_paths(cell: str) -> list[str]:
-    """Every path a first-column cell declares (harmonic-forge#1231 pass 1).
+    """Every path a first-column cell declares, losslessly (sticky-wicket on
+    harmonic-forge#1231: both passes found a parser that threw declared text away).
 
-    Backticked tokens when there are any (so `a.py`, `b.py` and
-    `my file.py` (new) each keep their paths, spaces included); otherwise the
-    comma-separated pieces of the plain cell. A trailing `(note)` is dropped.
-    A cell is never skipped for containing a space: a dropped row would loosen
-    the route the handoff declared."""
-    tokens = _BACKTICKED.findall(cell) or cell.split(",")
+    The tokens are the backticked spans PLUS the comma-split text left over once
+    those spans are removed, each with a trailing `(note)` stripped. Nothing is
+    dropped for containing a space or for sitting beside a backticked path: a
+    junk token can only tighten the route, a dropped one can loosen it."""
+    tokens = _BACKTICKED.findall(cell) + _BACKTICKED.sub(" ", cell).split(",")
     return [path for path in (_ANNOTATION.sub("", token.strip()).strip() for token in tokens) if path]
 
 
@@ -87,24 +87,23 @@ def snapshot(body: str, issue_repo: str) -> tuple[str, Optional[gates.Route]]:
 def record_snapshot(repo: str, issue: int, route: gates.Route) -> Optional[str]:
     """Record `route` at the handoff checkpoint, tighten-only.
 
-    Returns a message to print when the route was not recorded in force (a
-    looser result is printed as a proposal, never stored: the store treats any
-    non-override event as the evaluated route in force). Raises on a store
-    error; the caller prints it and never raises past the post.
+    The comparison is `route_store.record_if_not_looser`'s, made against the
+    newest EVALUATED route (an operator override is a floor that `current()`
+    merges in, and comparing against it dropped real tightenings). Returns a
+    message to print when the route was not recorded (a looser result is printed
+    as a proposal, never stored). Raises on a store error; the caller prints it
+    and never raises past the post.
 
-    Known limit (preclose pass 1, operator ruling A plus B): the comparison
-    reads `current()` and then appends, with no lock between the two. A second
-    writer on the same issue that lands in that gap is overwritten by a looser
-    result. Today that needs two concurrent non-override writers on one issue
-    (a handoff post and a filing checkpoint), the route is shadow only, and an
-    operator override is held by `current()` as a floor regardless. An atomic
-    compare-and-append in `route_store` is the follow-up."""
+    Known limit (preclose pass 1, operator ruling A plus B): the comparison and
+    the append in `record_if_not_looser` are not atomic, so a second writer on
+    the same issue that lands between them can be overwritten by a looser
+    result. Today that needs two concurrent non-override writers on one issue,
+    the route is shadow only, and an operator override is held by `current()` as
+    a floor regardless. The atomic compare-and-append is the follow-up, and
+    `record_if_not_looser` is the one place it goes."""
     key = f"{repo}#{issue}"
-    in_force = route_store.current(key)
-    if in_force is not None:
-        held = int(in_force["attrs"]["path"])
-        if route_store.tighter(route.path, held) != route.path and route.path != held:
-            return (f"[route] handoff snapshot proposes path {route.path} ({route.gate_id}), looser than "
-                    f"path {held} in force for {key}; not recorded")
-    route_store.record(key, route, decider="l1-post", checkpoint="handoff")
+    event, evaluated = route_store.record_if_not_looser(key, route, decider="l1-post", checkpoint="handoff")
+    if event is None:
+        return (f"[route] handoff snapshot proposes path {route.path} ({route.gate_id}), looser than "
+                f"path {evaluated} in force for {key}; not recorded")
     return None
