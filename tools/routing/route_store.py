@@ -112,6 +112,32 @@ def current(key: str) -> Optional[dict[str, Any]]:
     return result
 
 
+def evaluated_path(key: str) -> Optional[int]:
+    """The path of the newest evaluated (non-override) event for `key`, or None.
+
+    This is the baseline a tighten-only writer compares against: `current()`
+    merges an operator override's floor in, and a comparison against that floor
+    drops a real tightening of the evaluated route (harmonic-forge#1231)."""
+    newest = None
+    for event in load(key):
+        if event["attrs"].get("decider") != OVERRIDE:
+            newest = event
+    return None if newest is None else int(newest["attrs"]["path"])
+
+
+def record_if_not_looser(key: str, route: Route, decider: str, checkpoint: str, **kwargs
+                         ) -> tuple[Optional[dict[str, Any]], Optional[int]]:
+    """Record `route` unless it is looser than the newest evaluated route.
+
+    Returns (the recorded event or None, the evaluated path compared against).
+    The comparison and the append are not atomic: the atomic compare-and-append
+    (operator ruling B on harmonic-forge#1231) goes here."""
+    baseline = evaluated_path(key)
+    if baseline is not None and route.path > baseline:
+        return None, baseline
+    return record(key, route, decider, checkpoint, **kwargs), baseline
+
+
 def record(key: str, route: Route, decider: str, checkpoint: str, *,
            tier: Optional[str] = None, actor: str = "lane1",
            reason: Optional[str] = None) -> dict[str, Any]:
