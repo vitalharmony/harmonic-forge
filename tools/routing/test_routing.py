@@ -290,8 +290,9 @@ class Store(unittest.TestCase):
 
     def test_key_case_is_one_history(self):
         """Pass-2 #4: an alias key reads and writes the same history."""
-        route_store.record(f"Vitalharmony/HARMONIC-FORGE#900", gates.Route(1, "override", "r"),
-                           "override", "override")
+        event = route_store.record(f"Vitalharmony/HARMONIC-FORGE#900", gates.Route(1, "override", "r"),
+                                   "override", "override")
+        self.assertEqual(event["repo"], FORGE)
         self.assertEqual(route_store.current(self.key)["attrs"]["path"], 1)
 
     def test_path_outside_range_is_refused(self):
