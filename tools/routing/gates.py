@@ -79,8 +79,6 @@ def _repo(name: str) -> str:
 
 def _path(path: str) -> str:
     path = path.strip()
-    while path.startswith("./"):
-        path = path[2:]
     return posixpath.normpath(path) if path else path
 
 

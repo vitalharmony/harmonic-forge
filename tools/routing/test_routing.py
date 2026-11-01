@@ -93,6 +93,11 @@ class FailClosedEdges(unittest.TestCase):
                                runner_eligible=True))
         self.assertEqual((route.path, route.gate_id), (1, "cross-account"))
 
+    def test_cross_account_half_under_forge_issue(self):
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/telemetry/x.py"], "kenekted/kenekted-ai": ["src/x.py"]},
+                               runner_eligible=True))
+        self.assertEqual((route.path, route.gate_id), (1, "cross-account"))
+
     def test_repo_case_is_folded(self):
         self.assertEqual(evaluate(Scope("leasepal-ml/leasepal-app-prototype",
                                         {"leasepal-ml/leasepal-app-prototype": ["a.py"]},
