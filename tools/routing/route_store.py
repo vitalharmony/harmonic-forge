@@ -159,7 +159,14 @@ def record_if_not_looser(key: str, route: Route, decider: str, checkpoint: str, 
     overwritten by this looser one. Any future non-override writer that compares
     before it appends (the filing checkpoint, if it ever does) must take the same
     lock; `record` itself stays unlocked for writers that do not compare, such as
-    the operator's `route set`."""
+    the operator's `route set`.
+
+    Known limit (preclose pass 1 of harmonic-forge#1238, operator ruling A plus C):
+    events sort by `attrs.ns`, the wall-clock `time.time_ns()` that `record` takes,
+    not by the lock order. The lock fixes the order of the appends; a backward step
+    of the system clock between two writes on one issue can still sort the later
+    write first. Every writer shares this property. Making `ns` monotonic per issue
+    is harmonic-forge#1240."""
     with _route_lock(key):
         baseline = evaluated_path(key)
         if baseline is not None and route.path > baseline:
