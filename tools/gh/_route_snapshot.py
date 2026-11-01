@@ -100,13 +100,10 @@ def record_snapshot(repo: str, issue: int, route: gates.Route) -> Optional[str]:
     as a proposal, never stored). Raises on a store error; the caller prints it
     and never raises past the post.
 
-    Known limit (preclose pass 1, operator ruling A plus B): the comparison and
-    the append in `record_if_not_looser` are not atomic, so a second writer on
-    the same issue that lands between them can be overwritten by a looser
-    result. Today that needs two concurrent non-override writers on one issue,
-    the route is shadow only, and an operator override is held by `current()` as
-    a floor regardless. The atomic compare-and-append is the follow-up, and
-    `record_if_not_looser` is the one place it goes."""
+    The compare-and-append is atomic: `route_store.record_if_not_looser` holds a
+    per-issue lock across the read of the newest evaluated route and the append
+    (harmonic-forge#1238), closing the race that pass 1 of harmonic-forge#1231
+    accepted and documented."""
     key = f"{repo}#{issue}"
     event, evaluated = route_store.record_if_not_looser(key, route, decider="l1-post", checkpoint="handoff")
     if event is None:

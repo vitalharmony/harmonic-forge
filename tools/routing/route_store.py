@@ -11,6 +11,8 @@ a skipped line could be the tightening that holds the route in force.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import sys
 import time
@@ -125,17 +127,51 @@ def evaluated_path(key: str) -> Optional[int]:
     return None if newest is None else int(newest["attrs"]["path"])
 
 
+@contextlib.contextmanager
+def _route_lock(key: str):
+    """An exclusive per-issue lock for a compare-then-append (harmonic-forge#1238).
+
+    The path comes from `split_key(key)`, which strips the key and lowercases the
+    repo, never from the raw key, so `Owner/Repo#5` and `owner/repo#5` share one
+    file. It is a separate file from `emit`'s partition lock: `emit.emit` takes
+    that lock itself for the append, and a second `flock` on another open file
+    description of the same file blocks even in one process, so holding it across
+    `record` would deadlock. The descriptor is closed on exit, so an exception or
+    a killed holder releases the lock."""
+    repo, number = split_key(key)
+    directory = emit.store_root() / "route-locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{repo.replace('/', '__')}#{number}.lock").open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def record_if_not_looser(key: str, route: Route, decider: str, checkpoint: str, **kwargs
                          ) -> tuple[Optional[dict[str, Any]], Optional[int]]:
     """Record `route` unless it is looser than the newest evaluated route.
 
     Returns (the recorded event or None, the evaluated path compared against).
-    The comparison and the append are not atomic: the atomic compare-and-append
-    (operator ruling B on harmonic-forge#1231) goes here."""
-    baseline = evaluated_path(key)
-    if baseline is not None and route.path > baseline:
-        return None, baseline
-    return record(key, route, decider, checkpoint, **kwargs), baseline
+    The read of the newest evaluated route and the append happen under one
+    per-issue lock (`_route_lock`), so a concurrent stricter writer cannot be
+    overwritten by this looser one. Any future non-override writer that compares
+    before it appends (the filing checkpoint, if it ever does) must take the same
+    lock; `record` itself stays unlocked for writers that do not compare, such as
+    the operator's `route set`.
+
+    Known limit (preclose pass 1 of harmonic-forge#1238, operator ruling A plus C):
+    events sort by `attrs.ns`, the wall-clock `time.time_ns()` that `record` takes,
+    not by the lock order. The lock fixes the order of the appends; a backward step
+    of the system clock between two writes on one issue can still sort the later
+    write first. Every writer shares this property. Making `ns` monotonic per issue
+    is harmonic-forge#1240."""
+    with _route_lock(key):
+        baseline = evaluated_path(key)
+        if baseline is not None and route.path > baseline:
+            return None, baseline
+        return record(key, route, decider, checkpoint, **kwargs), baseline
 
 
 def record(key: str, route: Route, decider: str, checkpoint: str, *,
