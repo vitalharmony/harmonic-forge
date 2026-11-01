@@ -97,12 +97,21 @@ class Snapshot(unittest.TestCase):
             "`my file.py`, docs/n.md": ["my file.py", "docs/n.md"],
             "docs/n.md (new, big)": ["docs/n.md"],
             "tools/a.py": ["tools/a.py"],
+            "`tools/hooks/x.py` (new) backend/app/services/foo.py": ["tools/hooks/x.py", "backend/app/services/foo.py"],
+            "`backend/app/foo (copy)`": ["backend/app/foo"],
+            "backend/my file.py, docs/n.md (a, b)": ["backend/my", "docs/n.md"],
         }
         for cell, declared in cells.items():
             with self.subTest(cell=cell):
                 got = snap._cell_paths(cell)
                 for path in declared:
                     self.assertTrue(any(path in token for token in got), f"{path!r} lost from {got!r}")
+
+    def test_a_note_before_a_plain_path_keeps_the_stricter_gate(self):
+        """Final-head read: `x.py` (new) backend/... must still reach hrse-product."""
+        body = _handoff(["`tools/hooks/x.py` (new) backend/app/services/foo.py"])
+        route = snap.snapshot(body, "vitalharmony/hrse")[1]
+        self.assertEqual((route.path, route.gate_id), (1, "hrse-product"))
 
     def test_mixed_cell_keeps_the_stricter_gate(self):
         body = _handoff(["`tools/hooks/x.py`, backend/app/services/foo.py"])

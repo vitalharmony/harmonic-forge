@@ -23,6 +23,7 @@ _HEADING = re.compile(r"(?m)^###[ \t]+Affected Files[ \t]*$")
 _NEXT_HEADING = re.compile(r"(?m)^###?[ \t]")
 _THREAT = re.compile(r"(?im)^[ \t]*\**[ \t]*Threat model[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(?P<text>\S.*?)[ \t]*\**[ \t]*$")
 _BACKTICKED = re.compile(r"`([^`]+)`")
+_NOTE = re.compile(r"\([^)]*\)")
 _ANNOTATION = re.compile(r"\s*\([^)]*\)\s*$")
 _QUALIFIED = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(?P<path>.+)$")
 
@@ -62,8 +63,13 @@ def _cell_paths(cell: str) -> list[str]:
     those spans are removed, each with a trailing `(note)` stripped. Nothing is
     dropped for containing a space or for sitting beside a backticked path: a
     junk token can only tighten the route, a dropped one can loosen it."""
-    tokens = _BACKTICKED.findall(cell) + _BACKTICKED.sub(" ", cell).split(",")
-    return [path for path in (_ANNOTATION.sub("", token.strip()).strip() for token in tokens) if path]
+    tokens = [_ANNOTATION.sub("", token.strip()).strip() for token in _BACKTICKED.findall(cell)]
+    # The plain text left beside the backticked spans: notes are removed wherever they
+    # sit (a note before a path left `(new) backend/x.py` as one token that no gate
+    # matched), then commas and spaces separate tokens. A plain name with a space
+    # becomes two tokens, both kept: extra tokens can only tighten the route.
+    plain = _NOTE.sub(" ", _BACKTICKED.sub(" ", cell)).replace(",", " ").split()
+    return [path for path in tokens + plain if path]
 
 
 def threat_model(body: str) -> Optional[str]:
