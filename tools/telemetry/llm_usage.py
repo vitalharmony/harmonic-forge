@@ -326,7 +326,18 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
         # Operator ruling B (1188 reforge): every distinct read of a request is
         # stored; a report keeps each request's highest-output read
         # (llm_usage_report.latest_reads). The store is never rewritten.
-        events = [to_event(u, ts, f"claude:{k}", prices) for k, u, ts, _ in groups]
+        events = []
+        for k, u, ts, _ in groups:
+            event = to_event(u, ts, f"claude:{k}", prices)
+            # Reforge pass 1: a read's identity carries its output, so a fuller
+            # read of the same request is stored, not dropped as a duplicate.
+            try:
+                event["event_id"] = emit.event_id(
+                    event["source"], event["repo"] or emit.UNRESOLVED, event["issue"],
+                    f"{event['subject_id']}:o{u['output']}", event["event_type"], emit.normalize_ts(ts))
+            except emit.SchemaError:
+                pass  # emit rejects the bad ts and counts it
+            events.append(event)
         try:
             counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
         except OSError:
@@ -406,7 +417,13 @@ def harvest_codex(root: Path, prices: Optional[dict] = None) -> dict:
             ctx["rollout_id"] = path.stem.split("-", 6)[-1] if path.stem.count("-") >= 6 else None
         usages, unknown = codex_usages(lines, ctx)
         events = [to_event(u, ts, sid, prices) for u, ts, sid in usages]
-        counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+        try:
+            counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+        except OSError:
+            # Reforge pass 1: a store failure is counted and this file's mark
+            # stays put, as harvest_claude does.
+            totals["emit_failed"] = totals.get("emit_failed", 0) + 1
+            continue
         totals["events"] += len(events)
         totals["written"] += counts["written"]
         totals["duplicate"] += counts["duplicate"]
@@ -427,6 +444,7 @@ def harvest_attention(root: Path) -> dict:
     state = _load_state()
     marks = state.setdefault("attention", {})
     events = []
+    pending: dict[str, dict] = {}
     for path in sorted(root.glob("*.jsonl")):
         key = str(path)
         try:
@@ -454,8 +472,14 @@ def harvest_attention(root: Path) -> dict:
                                             "lane": who["lane"], "attribution": who["attribution"]}.items()
                           if v is not None},
             })
-        marks[key] = {"inode": inode, "offset": offset}
-    counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+        pending[key] = {"inode": inode, "offset": offset}
+    try:
+        counts = emit.emit(events) if events else {"written": 0, "duplicate": 0, "rejected": []}
+    except OSError:
+        # Reforge pass 1: no mark advances, so the next run re-reads these lines.
+        _save_state(state)
+        return {"events": len(events), "written": 0, "duplicate": 0, "emit_failed": 1}
+    marks.update(pending)
     _save_state(state)
     return {"events": len(events), "written": counts["written"], "duplicate": counts["duplicate"]}
 
@@ -468,9 +492,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     h.add_argument("--claude-root", type=Path, default=CLAUDE_ROOT)
     h.add_argument("--attention-root", type=Path, default=None)
     args = parser.parse_args(argv)
-    result = {"codex": harvest_codex(args.codex_root) if args.codex_root.is_dir() else "absent",
-              "claude": harvest_claude(args.claude_root) if args.claude_root.is_dir() else "absent",
-              "attention": harvest_attention(args.attention_root or attention_dir())}
+    jobs = {"codex": lambda: harvest_codex(args.codex_root) if args.codex_root.is_dir() else "absent",
+            "claude": lambda: harvest_claude(args.claude_root) if args.claude_root.is_dir() else "absent",
+            "attention": lambda: harvest_attention(args.attention_root or attention_dir())}
+    result = {}
+    for name, job in jobs.items():
+        # Reforge pass 1: one harvester's failure never stops the others.
+        try:
+            result[name] = job()
+        except Exception as exc:  # noqa: BLE001
+            result[name] = {"error": type(exc).__name__}
     print(json.dumps(result, sort_keys=True))
     return 0
 

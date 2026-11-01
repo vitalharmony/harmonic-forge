@@ -276,12 +276,79 @@ class Claude(Base):
         self.assertEqual(self.usage(), [])
         self.assertEqual(llm_usage.harvest_claude(root, settle_s=0)["written"], 3)
 
+    def test_fuller_reread_same_ts_is_stored(self):
+        """Reforge pass 1: a fuller read with the same first-line ts is a
+        distinct read, stored, and the report keeps it."""
+        root = self.tmp / "claude"
+        lines = self.path.read_text().splitlines(keepends=True)
+        self.path.write_text("".join(lines[:2]))  # req_A at 5
+        llm_usage.harvest_claude(root, settle_s=0)
+        os.remove(os.environ[llm_usage.STATE_ENV])  # re-read from offset 0
+        self.path.write_text("".join(lines))  # req_A complete, same first line
+        llm_usage.harvest_claude(root, settle_s=0)
+        reads = sorted(e["attrs"]["output"] for e in self.usage() if e["attrs"]["request_id"] == "req_A")
+        self.assertEqual(reads, [5, 40])
+        kept = [e for e in llm_usage_report.latest_reads(self.usage())
+                if e["attrs"]["request_id"] == "req_A"]
+        self.assertEqual([e["attrs"]["output"] for e in kept], [40])
+
+    def test_tie_keeps_the_attributed_read_in_either_order(self):
+        def read(issue):
+            return {"ts": "2026-10-31T10:00:01Z", "issue": issue,
+                    "attrs": {"provider": "anthropic-claude-code", "request_id": "r", "output": 7}}
+        for order in ((read(None), read(1188)), (read(1188), read(None))):
+            with self.subTest(first=order[0]["issue"]):
+                (kept,) = llm_usage_report.latest_reads(list(order))
+                self.assertEqual(kept["issue"], 1188)
+
     def test_joins_sidecar_by_session(self):
         attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
                       None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
         llm_usage.harvest_claude(self.tmp / "claude", settle_s=0)
         self.assertEqual({(e["issue"], e["attrs"]["attribution"]) for e in self.usage()},
                          {(77, "explicit")})
+
+
+class HarvestContainment(Base):
+    """Reforge pass 1: a store failure in one harvester never stops the others
+    and never advances that harvester's marks."""
+
+    def test_codex_emit_failure_is_contained(self):
+        self.add_rollout("two-events")
+        with mock.patch.object(llm_usage.emit, "emit", side_effect=OSError("disk")):
+            result = llm_usage.harvest_codex(self.codex)
+        self.assertEqual(result["emit_failed"], 1)
+        self.assertEqual(llm_usage.harvest_codex(self.codex)["written"], 2)
+
+    def test_attention_emit_failure_keeps_marks(self):
+        att = self.tmp / "attention"
+        att.mkdir()
+        (att / "s1.jsonl").write_text(json.dumps({"ts": "2026-10-31T10:00:00Z", "session_id": "s1",
+                                                  "gap_s": 30, "lead_bytes": 100}) + "\n")
+        with mock.patch.object(llm_usage.emit, "emit", side_effect=OSError("disk")):
+            self.assertEqual(llm_usage.harvest_attention(att)["emit_failed"], 1)
+        self.assertEqual(llm_usage.harvest_attention(att)["written"], 1)
+
+    def test_main_runs_every_harvester_after_one_fails(self):
+        calls = []
+        with mock.patch.object(llm_usage, "harvest_codex", side_effect=OSError("disk")), \
+                mock.patch.object(llm_usage, "harvest_claude", side_effect=lambda *a, **k: calls.append("claude") or {}), \
+                mock.patch.object(llm_usage, "harvest_attention", side_effect=lambda *a, **k: calls.append("attention") or {}), \
+                redirect_stdout(io.StringIO()) as out:
+            rc = llm_usage.main(["harvest", "--codex-root", str(self.codex),
+                                 "--claude-root", str(self.codex)])
+        self.assertEqual((rc, calls), (0, ["claude", "attention"]))
+        self.assertIn("OSError", out.getvalue())
+
+
+class TeRunAttribution(unittest.TestCase):
+    def test_sidecar_is_written_before_the_agent_runs(self):
+        """Reforge pass 1: a harvest during a te-run already finds its line."""
+        src = (HERE.parent / "runner" / "te_run.py").read_text()
+        body = src[src.index("    session_id = str(uuid.uuid4())"):]
+        body = body[:body.index('    result = parsed["result"]')]
+        self.assertLess(body.index("record_attrib(session_id"), body.index("run_agent("))
+        self.assertEqual(body.count("record_attrib("), 1)
 
 
 class Xai(Base):

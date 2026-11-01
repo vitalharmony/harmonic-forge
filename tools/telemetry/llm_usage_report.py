@@ -55,7 +55,7 @@ def latest_reads(events: Iterable[dict]) -> list[dict]:
     """Operator ruling B (1188 reforge): a request harvested more than once
     (lines arriving after a settle window, a re-read after a watermark loss,
     or a later sidecar line resolving its repo) keeps only its highest-output
-    read; ties keep the later ts. Events without a request id pass through."""
+    read; on equal output the attributed read, then the later ts. Events without a request id pass through."""
     best: dict[tuple, dict] = {}
     rest: list[dict] = []
     for event in events:
@@ -66,8 +66,9 @@ def latest_reads(events: Iterable[dict]) -> list[dict]:
             continue
         key = (attrs.get("provider"), rid)
         held = best.get(key)
-        rank = (attrs.get("output") or 0, event.get("ts") or "")
-        if held is None or rank > ((held.get("attrs") or {}).get("output") or 0, held.get("ts") or ""):
+        rank = (attrs.get("output") or 0, event.get("issue") is not None, event.get("ts") or "")
+        if held is None or rank > ((held.get("attrs") or {}).get("output") or 0,
+                                   held.get("issue") is not None, held.get("ts") or ""):
             best[key] = event
     return rest + list(best.values())
 

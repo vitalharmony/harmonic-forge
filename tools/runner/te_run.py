@@ -1031,12 +1031,14 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
     bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
     session_id = str(uuid.uuid4())
     started = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Reforge pass 1: written before the agent runs, so a harvest during the
+    # run already finds it.
+    record_attrib(session_id, issue, state.get("run_id"), started)
     try:
         parsed = run_agent(clone, agent_prompt(issue, body, handoff),
                            budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts",
                            session_id=session_id)
     except ItemTimeout as exc:
-        record_attrib(session_id, issue, state.get("run_id"), started)
         # Set aside as `budget`; the queue moves on. The head is still pinned so
         # the next attempt archives this one's work.
         git("fetch", "-q", str(clone), "HEAD")
@@ -1047,7 +1049,6 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
                  "budget_exceeded": True, "budget_detail": "agent wall timeout"}
         return {"head_sha": head, "branch": branch, "attempt": attempt, "ac_titles": titles,
                 "facts": facts, "verdict": verdict.reduce(facts)}
-    record_attrib(session_id, issue, state.get("run_id"), started)
     result = parsed["result"]
     # The head is read through SOURCE, never the clone's own git, and pinned
     # by a ref so a gc in SOURCE cannot prune it before the push (#1098).
