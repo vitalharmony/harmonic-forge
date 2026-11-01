@@ -85,6 +85,47 @@ class Halves(unittest.TestCase):
         self.assertEqual((route.path, route.gate_id), (1, "no-scope"))
 
 
+class FailClosedEdges(unittest.TestCase):
+    """Pass-1 survivors #1-#4 and #10: every unrecognized or missing input is strict."""
+
+    def test_issue_repo_is_gated(self):
+        route = evaluate(Scope("LeasePAL-ML/LeasePAL-App-Prototype", {FORGE: ["tools/telemetry/x.py"]},
+                               runner_eligible=True))
+        self.assertEqual((route.path, route.gate_id), (1, "cross-account"))
+
+    def test_repo_case_is_folded(self):
+        self.assertEqual(evaluate(Scope("leasepal-ml/leasepal-app-prototype",
+                                        {"leasepal-ml/leasepal-app-prototype": ["a.py"]},
+                                        runner_eligible=True)).path, 1)
+        route = evaluate(Scope("vitalharmony/HRSE", {"vitalharmony/HRSE": ["backend/app/x.py"]},
+                               labels=["tooling-exception"]))
+        self.assertEqual((route.path, route.gate_id), (1, "hrse-product"))
+
+    def test_threat_spelling_is_folded(self):
+        for spelling in ("Hostile-Author", "hostile_author", " HOSTILE AUTHOR "):
+            route = evaluate(Scope(FORGE, {FORGE: ["tools/telemetry/x.py"]},
+                                   threat_model=spelling, runner_eligible=True))
+            self.assertEqual(route.gate_id, "authorization", spelling)
+
+    def test_unknown_threat_is_never_runner(self):
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/telemetry/x.py"]},
+                               threat_model="unclear", runner_eligible=True))
+        self.assertNotEqual(route.path, 3)
+
+    def test_good_faith_any_spelling_may_reach_runner(self):
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/telemetry/x.py"]},
+                               threat_model="Good_Faith", runner_eligible=True))
+        self.assertEqual(route.path, 3)
+
+    def test_dot_prefixed_product_path(self):
+        route = evaluate(Scope(HRSE, {HRSE: ["./backend/app/x.py"]}, runner_eligible=True))
+        self.assertEqual((route.path, route.gate_id), (1, "hrse-product"))
+
+    def test_empty_half_beside_runner_half_is_path_1(self):
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/telemetry/x.py"], HRSE: []}, runner_eligible=True))
+        self.assertEqual((route.path, route.gate_id), (1, "empty-half"))
+
+
 class Hostile(unittest.TestCase):
     """AC3: hostile-author is never path 3."""
 
@@ -122,9 +163,59 @@ class Store(unittest.TestCase):
 
     def test_recheck_never_loosens(self):
         route_store.record(self.key, gates.Route(1, "hrse-product", "r"), "hrse-product", "filing")
-        event = route_store.record(self.key, gates.Route(3, "runner", "r"), "runner", "handoff")
-        self.assertEqual((event["attrs"]["path"], event["attrs"]["shadow_path"]), (1, 3))
+        route_store.record(self.key, gates.Route(3, "runner", "r"), "runner", "handoff")
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["shadow_path"]), (1, 3))
+
+    def test_late_looser_writer_cannot_replace_tightening(self):
+        """Pass-1 #5: order of append never loosens; the tightest event holds."""
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "pre-merge")
         self.assertEqual(route_store.current(self.key)["attrs"]["path"], 1)
+
+    def test_same_second_writes_are_both_stored(self):
+        """Pass-1 #5: two writes in one second are distinct events, not a duplicate."""
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        self.assertEqual(len(route_store.load(self.key)), 2)
+
+    def test_unstored_write_raises(self):
+        """Pass-1 #5: a write emit does not store is an error, never a success."""
+        with mock.patch.object(emit, "emit", return_value={"rejected": [], "written": 0, "duplicate": 1}):
+            with self.assertRaises(RuntimeError):
+                route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+
+    def test_corrupt_line_raises(self):
+        """Pass-1 #7: an unreadable event line fails closed instead of being skipped."""
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        part = next((self.tmp / "store").glob("events/*/*/route/*.jsonl"))
+        with part.open("a") as handle:
+            handle.write('{"torn": \n')
+        with self.assertRaises(RuntimeError):
+            route_store.current(self.key)
+
+    def test_no_root_parameter(self):
+        """Pass-1 #6: one store for reads and writes; no root override exists."""
+        import inspect
+        for fn in (route_store.load, route_store.current, route_store.record):
+            self.assertNotIn("root", inspect.signature(fn).parameters)
+
+    def test_tighter(self):
+        """Pass-1 #9: tighter() is the strictest-path rule current() applies."""
+        self.assertEqual(route_store.tighter(1, 3), 1)
+        self.assertEqual(route_store.tighter(3, 2), 2)
+        with mock.patch.object(route_store, "tighter", side_effect=max):
+            route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+            route_store.record(self.key, gates.Route(3, "runner", "r"), "runner", "handoff")
+            self.assertEqual(route_store.current(self.key)["attrs"]["path"], 3)
+
+    def test_route_set_refuses_loosening_with_no_history(self):
+        """Pass-1 #8: no recorded route reads as path 1."""
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(route_cli.cmd_set(self.key, 3, "faster"), 1)
+        self.assertIn("refused", err.getvalue())
+        self.assertIsNone(route_store.current(self.key))
 
     def test_recheck_tightens(self):
         route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")

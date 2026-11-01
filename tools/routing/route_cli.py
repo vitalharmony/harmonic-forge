@@ -18,24 +18,26 @@ import route_store  # noqa: E402
 from gates import Route  # noqa: E402
 
 
-def cmd_set(key: str, path: int, reason: str, root: Optional[Path] = None) -> int:
+def cmd_set(key: str, path: int, reason: str) -> int:
     if not reason.strip():
         print("route set: --reason is required", file=sys.stderr)
         return 2
-    prior = route_store.current(key, root)
-    if prior is not None and path > int(prior["attrs"]["path"]):
-        print(f"route set: refused. {key} is path {prior['attrs']['path']} "
-              f"({prior['attrs']['gate_id']}); path {path} is looser, and loosening is the "
-              "operator's digest batch line, not route set.", file=sys.stderr)
+    prior = route_store.current(key)
+    # No route recorded reads as path 1, so route set can never open a looser one.
+    in_force = int(prior["attrs"]["path"]) if prior is not None else 1
+    if path > in_force:
+        gate = prior["attrs"]["gate_id"] if prior is not None else "none recorded"
+        print(f"route set: refused. {key} is path {in_force} ({gate}); path {path} is looser, "
+              "and loosening is the operator's digest batch line, not route set.", file=sys.stderr)
         return 1
     route_store.record(key, Route(path, "override", reason.strip()), decider="override",
-                       checkpoint="override", actor="operator", root=root)
+                       checkpoint="override", actor="operator")
     print(f"route set: {key} -> path {path} (override)")
     return 0
 
 
-def cmd_show(key: str, root: Optional[Path] = None) -> int:
-    event = route_store.current(key, root)
+def cmd_show(key: str) -> int:
+    event = route_store.current(key)
     if event is None:
         print(f"{key}: no route recorded")
         return 0
@@ -60,7 +62,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.cmd == "set":
             return cmd_set(args.key, args.path, args.reason)
         return cmd_show(args.key)
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         print(f"route: {exc}", file=sys.stderr)
         return 2
 
