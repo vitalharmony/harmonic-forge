@@ -1,10 +1,11 @@
 """harmonic-forge#1230 (semantic routing A1): route events in the telemetry store.
 
 One event per routing checkpoint (filing, handoff, pre-merge, override). Only
-the evaluator and the operator's `route set` write events. A write only appends;
-it never reads first, so two writers racing decide nothing. The route in force
-is computed when the events are read (see `current`): the newest evaluated
-route, held no looser than the strictest operator override.
+the evaluator and the operator's `route set` write events. A write appends under
+a per-issue lock and reads only the issue's newest timestamp, to keep events in
+append order; it never decides a route, so two writers racing decide nothing.
+The route in force is computed when the events are read (see `current`): the
+newest evaluated route, held no looser than the strictest operator override.
 
 Fail closed: an unparseable event line raises rather than being skipped, since
 a skipped line could be the tightening that holds the route in force.
@@ -156,31 +157,43 @@ def record_if_not_looser(key: str, route: Route, decider: str, checkpoint: str, 
     Returns (the recorded event or None, the evaluated path compared against).
     The read of the newest evaluated route and the append happen under one
     per-issue lock (`_route_lock`), so a concurrent stricter writer cannot be
-    overwritten by this looser one. Any future non-override writer that compares
-    before it appends (the filing checkpoint, if it ever does) must take the same
-    lock; `record` itself stays unlocked for writers that do not compare, such as
-    the operator's `route set`.
-
-    Known limit (preclose pass 1 of harmonic-forge#1238, operator ruling A plus C):
-    events sort by `attrs.ns`, the wall-clock `time.time_ns()` that `record` takes,
-    not by the lock order. The lock fixes the order of the appends; a backward step
-    of the system clock between two writes on one issue can still sort the later
-    write first. Every writer shares this property. Making `ns` monotonic per issue
-    is harmonic-forge#1240."""
+    overwritten by this looser one. It calls the lock-free `_append` because the
+    lock is not reentrant; `record` takes the same lock for the writers that do
+    not compare, such as the operator's `route set`. Any future writer that
+    compares before it appends must hold the lock across both steps, as this
+    does."""
     with _route_lock(key):
         baseline = evaluated_path(key)
         if baseline is not None and route.path > baseline:
             return None, baseline
-        return record(key, route, decider, checkpoint, **kwargs), baseline
+        return _append(key, route, decider, checkpoint, **kwargs), baseline
 
 
-def record(key: str, route: Route, decider: str, checkpoint: str, *,
-           tier: Optional[str] = None, actor: str = "lane1",
-           reason: Optional[str] = None) -> dict[str, Any]:
-    """Append one proposed route and return the event. Never reads first."""
+def record(key: str, route: Route, decider: str, checkpoint: str, **kwargs) -> dict[str, Any]:
+    """Append one proposed route under the per-issue lock and return the event.
+
+    The lock lets `_append` keep `ns` strictly increasing for the issue
+    (harmonic-forge#1240). `ns` is an order key, not a wall time: a forward clock
+    spike pins that issue's later values above the spike."""
+    with _route_lock(key):
+        return _append(key, route, decider, checkpoint, **kwargs)
+
+
+def _append(key: str, route: Route, decider: str, checkpoint: str, *,
+            tier: Optional[str] = None, actor: str = "lane1",
+            reason: Optional[str] = None) -> dict[str, Any]:
+    """Append one event; the caller holds `_route_lock(key)`.
+
+    `ns` is the wall clock or one above the issue's newest stored `ns`,
+    whichever is larger, so the sort order `load` applies equals the append order
+    even if the system clock steps backward. Reading the newest `ns` means a
+    corrupt route store raises here, as it already does for `current()`: the
+    filing checkpoint's event is then dropped (gh_issue.py catches it and the
+    issue is still filed)."""
     repo, issue = split_key(key)
     _valid_path(route.path)
-    ns = time.time_ns()
+    newest = max((int(e["attrs"].get("ns", 0)) for e in load(key)), default=0)
+    ns = max(time.time_ns(), newest + 1)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     owner = repo.split("/")[0]
     attrs = {"path": route.path, "gate_id": route.gate_id,

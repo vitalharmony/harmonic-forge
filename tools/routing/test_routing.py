@@ -425,7 +425,7 @@ class AtomicCompareAndAppend(unittest.TestCase):
 
     def test_lock_is_released_when_the_append_raises(self):
         """AC2: an exception inside the lock leaves it free."""
-        with mock.patch.object(route_store, "record", side_effect=RuntimeError("boom")):
+        with mock.patch.object(route_store, "_append", side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
                 route_store.record_if_not_looser(self.key, gates.Route(2, "t", "r"), "t", "handoff")
         done = self._completes(lambda: route_store.record_if_not_looser(
@@ -490,6 +490,101 @@ class AtomicCompareAndAppend(unittest.TestCase):
         self.assertTrue(got.wait(5))
         holder.join(5)
         taker.join(5)
+
+
+class MonotonicTimestamps(unittest.TestCase):
+    """harmonic-forge#1240: `ns` is strictly increasing per issue whatever the
+    wall clock does, for every writer that goes through `record`."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ, {emit.STORE_ENV: str(self.tmp / "store")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.key = f"{FORGE}#1240"
+
+    def _clock(self, *values):
+        return mock.patch.object(route_store.time, "time_ns", side_effect=list(values))
+
+    def _completes(self, fn, timeout=5.0):
+        thread = threading.Thread(target=fn, daemon=True)
+        thread.start()
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    def _ns(self, key):
+        return [int(e["attrs"]["ns"]) for e in route_store.load(key)]
+
+    def test_a_backward_clock_step_does_not_reorder_events(self):
+        """AC1: a looser write at 100, the clock steps back to 50, a stricter write."""
+        with self._clock(100, 50):
+            route_store.record(self.key, gates.Route(2, "t", "r"), "t", "handoff")
+            route_store.record(self.key, gates.Route(1, "t", "r"), "t", "handoff")
+        first, second = self._ns(self.key)
+        self.assertGreater(second, first)
+        self.assertEqual(route_store.evaluated_path(self.key), 1)
+
+    def test_every_writer_is_ordered_not_only_the_comparing_one(self):
+        """AC2: an override-style and a filing-style write go through `record`."""
+        with self._clock(100, 50, 25):
+            route_store.record(self.key, gates.Route(3, "filing", "r"), "filing", "filing")
+            route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+            route_store.record(self.key, gates.Route(2, "handoff", "r"), "handoff", "handoff")
+        stamps = self._ns(self.key)
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertEqual(len(set(stamps)), 3)
+
+    def test_concurrent_writers_get_distinct_increasing_stamps(self):
+        """AC2, concurrent: with a constant clock and the first writer paused after
+        its read, a lock-free `record` would give both writers the same `ns`."""
+        real = route_store.load
+        read_done, go = threading.Event(), threading.Event()
+
+        def paused(key):
+            value = real(key)
+            if threading.current_thread().name == "first":
+                read_done.set()
+                go.wait(10)
+            return value
+
+        def write(path):
+            route_store.record(self.key, gates.Route(path, "t", "r"), "t", "handoff")
+
+        with self._clock(*([100] * 8)), mock.patch.object(route_store, "load", paused):
+            first = threading.Thread(name="first", target=write, args=(2,), daemon=True)
+            second = threading.Thread(name="second", target=write, args=(1,), daemon=True)
+            first.start()
+            self.assertTrue(read_done.wait(5))
+            second.start()
+            second.join(0.5)  # finished without a lock; still waiting on it with one
+            go.set()
+            first.join(5)
+            second.join(5)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        stamps = sorted(self._ns(self.key))
+        self.assertEqual(len(stamps), 2)
+        self.assertGreater(stamps[1], stamps[0])
+
+    def test_record_if_not_looser_still_completes(self):
+        """AC3: it calls the lock-free `_append`, so it does not self-deadlock."""
+        done = self._completes(lambda: route_store.record_if_not_looser(
+            self.key, gates.Route(2, "t", "r"), "t", "handoff"))
+        self.assertTrue(done, "record_if_not_looser deadlocked on its own lock")
+
+    def test_another_issue_is_not_clamped_to_this_issues_stamps(self):
+        """AC4, ordering pinned: key A at clock 100, then key B at clock 50 keeps 50."""
+        other = f"{FORGE}#1241"
+        with self._clock(100, 50):
+            route_store.record(self.key, gates.Route(2, "t", "r"), "t", "handoff")
+            route_store.record(other, gates.Route(2, "t", "r"), "t", "handoff")
+        self.assertEqual(self._ns(other), [50])
+
+    def test_an_increasing_clock_is_stamped_as_is(self):
+        with self._clock(100, 200):
+            route_store.record(self.key, gates.Route(2, "t", "r"), "t", "handoff")
+            route_store.record(self.key, gates.Route(1, "t", "r"), "t", "handoff")
+        self.assertEqual(self._ns(self.key), [100, 200])
 
 
 class Schema(unittest.TestCase):
