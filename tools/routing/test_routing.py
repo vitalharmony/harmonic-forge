@@ -1,6 +1,7 @@
 """harmonic-forge#1230: the gate evaluator (AC1-AC4), the route store and
 `route set`/`route show` (AC5), and the schema's `route` source (AC6)."""
 import io
+import json
 import os
 import shutil
 import sys
@@ -41,6 +42,11 @@ class Gates(unittest.TestCase):
 
     def test_authorization_is_deep(self):
         route = evaluate(Scope(FORGE, {FORGE: ["tools/gh/x.py"]}, threat_model="hostile-author"))
+        self.assertEqual((route.path, route.gate_id, route.tier_floor), (2, "authorization", "deep"))
+
+    def test_authorization_before_lane_machinery(self):
+        """Pass-2 #6: gate 3 wins over gate 4 and keeps the deep floor."""
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/hooks/x.py"]}, threat_model="hostile-author"))
         self.assertEqual((route.path, route.gate_id, route.tier_floor), (2, "authorization", "deep"))
 
     def test_lane_machinery(self):
@@ -97,6 +103,23 @@ class FailClosedEdges(unittest.TestCase):
         route = evaluate(Scope(FORGE, {FORGE: ["tools/telemetry/x.py"], "kenekted/kenekted-ai": ["src/x.py"]},
                                runner_eligible=True))
         self.assertEqual((route.path, route.gate_id), (1, "cross-account"))
+
+    def test_unlisted_foreign_repo_is_path_1(self):
+        """Pass-2 #5: matched by owner, so a new client repo is covered."""
+        route = evaluate(Scope("kenekted/kenekted-mobile", {"kenekted/kenekted-mobile": ["a.py"]},
+                               runner_eligible=True))
+        self.assertEqual((route.path, route.gate_id), (1, "cross-account"))
+
+    def test_bare_repo_key_is_path_1(self):
+        """Pass-2 #3: a non-canonical repo name never reaches a looser gate."""
+        route = evaluate(Scope(HRSE, {"hrse": ["backend/app/x.py"]}, labels=["tooling-exception"]))
+        self.assertEqual(route.path, 1)
+
+    def test_absolute_or_climbing_path_is_path_1(self):
+        """Pass-2 #2: a path that is not repo-relative fails closed."""
+        for path in ("/backend/requirements.txt", "/frontend/src/x.ts", "../hrse/backend/x.py"):
+            route = evaluate(Scope(HRSE, {HRSE: [path]}, runner_eligible=True))
+            self.assertEqual(route.path, 1, path)
 
     def test_repo_case_is_folded(self):
         self.assertEqual(evaluate(Scope("leasepal-ml/leasepal-app-prototype",
@@ -166,14 +189,28 @@ class Store(unittest.TestCase):
         route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
         self.assertEqual(route_store.current(self.key)["attrs"]["path"], 2)
 
-    def test_recheck_never_loosens(self):
-        route_store.record(self.key, gates.Route(1, "hrse-product", "r"), "hrse-product", "filing")
+    def test_newest_evaluation_is_current(self):
+        """Pass-2 #1 (operator ruling B): a later checkpoint replaces an earlier one."""
+        route_store.record(self.key, gates.Route(1, "no-scope", "r"), "no-scope", "filing")
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "handoff")
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["checkpoint"]), (2, "handoff"))
+        self.assertNotIn("shadow_path", attrs)
+
+    def test_override_is_a_floor_over_later_evaluations(self):
+        """Ruling B: a later, looser evaluation is held at the override and shadowed."""
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
         route_store.record(self.key, gates.Route(3, "runner", "r"), "runner", "handoff")
         attrs = route_store.current(self.key)["attrs"]
-        self.assertEqual((attrs["path"], attrs["shadow_path"]), (1, 3))
+        self.assertEqual((attrs["path"], attrs["decider"], attrs["shadow_path"]), (1, "override", 3))
+
+    def test_stricter_evaluation_beats_looser_override(self):
+        route_store.record(self.key, gates.Route(2, "override", "r"), "override", "override")
+        route_store.record(self.key, gates.Route(1, "hrse-product", "r"), "hrse-product", "pre-merge")
+        self.assertEqual(route_store.current(self.key)["attrs"]["gate_id"], "hrse-product")
 
     def test_late_looser_writer_cannot_replace_tightening(self):
-        """Pass-1 #5: order of append never loosens; the tightest event holds."""
+        """Pass-1 #5: an override holds whatever is appended after it."""
         route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
         route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
         route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "pre-merge")
@@ -250,6 +287,28 @@ class Store(unittest.TestCase):
             self.assertEqual(route_cli.cmd_set(self.key, 3, "faster"), 1)
         self.assertIn("refused", err.getvalue())
         self.assertEqual(route_store.current(self.key)["attrs"]["path"], 1)
+
+    def test_key_case_is_one_history(self):
+        """Pass-2 #4: an alias key reads and writes the same history."""
+        route_store.record(f"Vitalharmony/HARMONIC-FORGE#900", gates.Route(1, "override", "r"),
+                           "override", "override")
+        self.assertEqual(route_store.current(self.key)["attrs"]["path"], 1)
+
+    def test_path_outside_range_is_refused(self):
+        """Pass-2 #7: only 1, 2 and 3 are routes."""
+        for bad in (0, 4, True):
+            with self.assertRaises(ValueError):
+                route_store.record(self.key, gates.Route(bad, "x", "r"), "x", "filing")
+
+    def test_stored_path_outside_range_raises(self):
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        part = next((self.tmp / "store").glob("events/*/*/route/*.jsonl"))
+        event = json.loads(part.read_text().splitlines()[0])
+        event["attrs"]["path"] = 0
+        with part.open("a") as handle:
+            handle.write(json.dumps(event) + "\n")
+        with self.assertRaises(RuntimeError):
+            route_store.current(self.key)
 
     def test_bad_key(self):
         with self.assertRaises(ValueError):

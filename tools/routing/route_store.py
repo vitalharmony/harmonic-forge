@@ -1,11 +1,10 @@
 """harmonic-forge#1230 (semantic routing A1): route events in the telemetry store.
 
 One event per routing checkpoint (filing, handoff, pre-merge, override). Only
-the evaluator and the operator's `route set` write events. A write only appends
-the proposed route; it never reads first. Tighten-only is applied when the
-events are read: the route in force is the strictest event so far (on a tie,
-the newest), and a looser later event is kept as the shadow proposal. So two
-writers racing can never loosen a route, because neither one decides anything.
+the evaluator and the operator's `route set` write events. A write only appends;
+it never reads first, so two writers racing decide nothing. The route in force
+is computed when the events are read (see `current`): the newest evaluated
+route, held no looser than the strictest operator override.
 
 Fail closed: an unparseable event line raises rather than being skipped, since
 a skipped line could be the tightening that holds the route in force.
@@ -27,6 +26,8 @@ from gates import Route  # noqa: E402
 SOURCE = "route"
 EVENT_TYPE = "route.event"
 EXTRACTOR = "route-1"
+#: the `decider` of an operator's `route set` event
+OVERRIDE = "override"
 
 
 def tighter(a: int, b: int) -> int:
@@ -35,10 +36,17 @@ def tighter(a: int, b: int) -> int:
 
 
 def split_key(key: str) -> tuple[str, int]:
-    repo, _, number = key.rpartition("#")
+    repo, _, number = key.strip().rpartition("#")
     if not repo or "/" not in repo or not number.isdigit():
         raise ValueError(f"route key must be OWNER/REPO#N, got {key!r}")
-    return repo, int(number)
+    # GitHub names are case-insensitive: one issue, one history.
+    return repo.lower(), int(number)
+
+
+def _valid_path(path: Any) -> int:
+    if isinstance(path, bool) or not isinstance(path, int) or path not in (1, 2, 3):
+        raise ValueError(f"route path must be 1, 2 or 3, got {path!r}")
+    return path
 
 
 def load(key: str) -> list[dict[str, Any]]:
@@ -55,26 +63,43 @@ def load(key: str) -> list[dict[str, Any]]:
                     event = json.loads(line)
                 except ValueError as exc:
                     raise RuntimeError(f"route store: unreadable event at {part}:{number}") from exc
-                if event.get("repo") == repo and event.get("issue") == issue:
+                if str(event.get("repo", "")).lower() == repo and event.get("issue") == issue:
+                    try:
+                        _valid_path((event.get("attrs") or {}).get("path"))
+                    except ValueError as exc:
+                        raise RuntimeError(f"route store: {exc} at {part}:{number}") from exc
                     out.append(event)
     return sorted(out, key=lambda e: int((e.get("attrs") or {}).get("ns", 0)))
 
 
 def current(key: str) -> Optional[dict[str, Any]]:
-    """The route in force for `key`, with the newest looser event after it as
-    `shadow_path`/`shadow_gate`, or None when nothing is recorded."""
-    in_force: Optional[dict[str, Any]] = None
-    shadow: Optional[dict[str, Any]] = None
+    """The route in force for `key`, or None when nothing is recorded.
+
+    The newest evaluator event is the evaluated route (design 05: newest =
+    current), so a later checkpoint may loosen an earlier one. Each operator
+    override is a floor: the route in force is the stricter of the newest
+    evaluated route and the strictest override, and only child D's digest line
+    removes an override. When the floor holds a looser evaluated route back,
+    that route is reported as `shadow_path`/`shadow_gate`."""
+    evaluated: Optional[dict[str, Any]] = None
+    floor: Optional[dict[str, Any]] = None
     for event in load(key):
-        path = int(event["attrs"]["path"])
-        if in_force is None or tighter(path, int(in_force["attrs"]["path"])) == path:
-            in_force, shadow = event, None
+        attrs = event["attrs"]
+        if attrs.get("decider") == OVERRIDE:
+            if floor is None or tighter(int(attrs["path"]), int(floor["attrs"]["path"])) == int(attrs["path"]):
+                floor = event
         else:
-            shadow = event
-    if in_force is None:
+            evaluated = event
+    if evaluated is None and floor is None:
         return None
+    if evaluated is None or (floor is not None and
+                             tighter(int(floor["attrs"]["path"]), int(evaluated["attrs"]["path"]))
+                             == int(floor["attrs"]["path"])):
+        in_force, shadow = floor, evaluated
+    else:
+        in_force, shadow = evaluated, None
     result = dict(in_force, attrs=dict(in_force["attrs"]))
-    if shadow is not None:
+    if shadow is not None and int(shadow["attrs"]["path"]) != int(in_force["attrs"]["path"]):
         result["attrs"]["shadow_path"] = int(shadow["attrs"]["path"])
         result["attrs"]["shadow_gate"] = shadow["attrs"]["gate_id"]
     return result
@@ -85,6 +110,7 @@ def record(key: str, route: Route, decider: str, checkpoint: str, *,
            reason: Optional[str] = None) -> dict[str, Any]:
     """Append one proposed route and return the event. Never reads first."""
     repo, issue = split_key(key)
+    _valid_path(route.path)
     ns = time.time_ns()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     owner = repo.split("/")[0]
