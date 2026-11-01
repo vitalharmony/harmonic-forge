@@ -209,6 +209,14 @@ class Store(unittest.TestCase):
         attrs = route_store.current(self.key)["attrs"]
         self.assertEqual((attrs["path"], attrs["decider"], attrs["shadow_path"]), (1, "override", 3))
 
+    def test_equal_path_override_keeps_evaluated_tier(self):
+        """Post-verdict: a tie keeps the evaluated gate and its deep Tier floor."""
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/hooks/x.py"]}, threat_model="hostile-author"))
+        route_store.record(self.key, route, route.gate_id, "handoff")
+        route_store.record(self.key, gates.Route(2, "override", "r"), "override", "override")
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["gate_id"], attrs["tier_floor"]), (2, "authorization", "deep"))
+
     def test_stricter_evaluation_beats_looser_override(self):
         route_store.record(self.key, gates.Route(2, "override", "r"), "override", "override")
         route_store.record(self.key, gates.Route(1, "hrse-product", "r"), "hrse-product", "pre-merge")

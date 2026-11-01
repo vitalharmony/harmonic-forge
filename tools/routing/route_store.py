@@ -92,7 +92,10 @@ def current(key: str) -> Optional[dict[str, Any]]:
             evaluated = event
     if evaluated is None and floor is None:
         return None
+    # An override replaces the evaluation only when strictly tighter: on a tie
+    # the evaluated route stays in force with its gate and Tier floor.
     if evaluated is None or (floor is not None and
+                             int(floor["attrs"]["path"]) != int(evaluated["attrs"]["path"]) and
                              tighter(int(floor["attrs"]["path"]), int(evaluated["attrs"]["path"]))
                              == int(floor["attrs"]["path"])):
         in_force, shadow = floor, evaluated
