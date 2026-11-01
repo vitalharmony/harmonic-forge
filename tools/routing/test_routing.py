@@ -4,8 +4,10 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -357,6 +359,137 @@ class Store(unittest.TestCase):
     def test_bad_key(self):
         with self.assertRaises(ValueError):
             route_store.split_key("F1230")
+
+
+class AtomicCompareAndAppend(unittest.TestCase):
+    """harmonic-forge#1238: `record_if_not_looser` holds a per-issue lock across
+    the read and the append. Ordered by events, never by sleeps."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ, {emit.STORE_ENV: str(self.tmp / "store")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.key = f"{FORGE}#1238"
+
+    def _completes(self, fn, timeout=5.0):
+        thread = threading.Thread(target=fn, daemon=True)
+        thread.start()
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    def _race(self, looser_first: bool):
+        """The looser writer reads its baseline and pauses; the stricter writer runs
+        in the gap. Without a lock the stricter finishes first and the looser then
+        appends over it; with one, the stricter waits for the looser to finish."""
+        real = route_store.evaluated_path
+        read_done, go = threading.Event(), threading.Event()
+
+        def paused(key):
+            value = real(key)
+            if threading.current_thread().name == "looser":
+                read_done.set()
+                go.wait(10)
+            return value
+
+        def write(path):
+            route_store.record_if_not_looser(self.key, gates.Route(path, "t", "r"), "t", "handoff")
+
+        with mock.patch.object(route_store, "evaluated_path", paused):
+            looser = threading.Thread(name="looser", target=write, args=(2,), daemon=True)
+            stricter = threading.Thread(name="stricter", target=write, args=(1,), daemon=True)
+            if looser_first:
+                looser.start()
+                self.assertTrue(read_done.wait(5))
+                stricter.start()
+                stricter.join(0.5)  # finished without a lock; still waiting on it with one
+                go.set()
+            else:
+                stricter.start()
+                stricter.join(5)
+                looser.start()
+                self.assertTrue(read_done.wait(5))
+                go.set()
+            looser.join(5)
+            stricter.join(5)
+        self.assertFalse(looser.is_alive() or stricter.is_alive())
+        return real(self.key)
+
+    def test_stricter_wins_when_the_looser_reads_first(self):
+        """AC1/AC4."""
+        self.assertEqual(self._race(looser_first=True), 1)
+
+    def test_stricter_wins_when_it_runs_first(self):
+        self.assertEqual(self._race(looser_first=False), 1)
+
+    def test_lock_is_released_when_the_append_raises(self):
+        """AC2: an exception inside the lock leaves it free."""
+        with mock.patch.object(route_store, "record", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                route_store.record_if_not_looser(self.key, gates.Route(2, "t", "r"), "t", "handoff")
+        done = self._completes(lambda: route_store.record_if_not_looser(
+            self.key, gates.Route(2, "t", "r"), "t", "handoff"))
+        self.assertTrue(done, "the lock leaked after an exception")
+
+    def test_lock_is_released_when_the_holder_is_killed(self):
+        """AC2: a killed holder releases the lock."""
+        code = ("import sys; sys.path.insert(0, %r); import route_store\n"
+                "with route_store._route_lock(%r):\n"
+                "    print('locked', flush=True)\n"
+                "    import time; time.sleep(60)\n") % (str(HERE), self.key)
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+                                env=dict(os.environ))
+        self.addCleanup(proc.stdout.close)
+        self.addCleanup(proc.kill)
+        self.assertEqual(proc.stdout.readline().strip(), "locked")
+        proc.kill()
+        proc.wait(5)
+        done = self._completes(lambda: route_store.record_if_not_looser(
+            self.key, gates.Route(2, "t", "r"), "t", "handoff"))
+        self.assertTrue(done, "a killed holder left the lock held")
+
+    def test_writers_on_different_issues_do_not_block_each_other(self):
+        """AC3."""
+        held, release = threading.Event(), threading.Event()
+
+        def hold():
+            with route_store._route_lock(f"{FORGE}#1"):
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        self.assertTrue(held.wait(5))
+        done = self._completes(lambda: route_store.record_if_not_looser(
+            f"{FORGE}#2", gates.Route(2, "t", "r"), "t", "handoff"))
+        release.set()
+        holder.join(5)
+        self.assertTrue(done, "a writer on another issue was blocked")
+
+    def test_key_spelling_does_not_change_the_lock(self):
+        """AC3: `Owner/Repo#5` and `owner/repo#5` contend on one lock."""
+        held, release, got = threading.Event(), threading.Event(), threading.Event()
+
+        def hold():
+            with route_store._route_lock("Vitalharmony/Harmonic-Forge#5"):
+                held.set()
+                release.wait(10)
+
+        def take():
+            with route_store._route_lock("vitalharmony/harmonic-forge#5"):
+                got.set()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        self.assertTrue(held.wait(5))
+        taker = threading.Thread(target=take, daemon=True)
+        taker.start()
+        self.assertFalse(got.wait(0.5), "the lock path ignored key normalization")
+        release.set()
+        self.assertTrue(got.wait(5))
+        holder.join(5)
+        taker.join(5)
 
 
 class Schema(unittest.TestCase):
