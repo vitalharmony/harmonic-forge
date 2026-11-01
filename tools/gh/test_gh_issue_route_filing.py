@@ -78,6 +78,12 @@ class Scope(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertIn(token, scope.unparsed_spans(body))
 
+    def test_special_character_file_name_and_wrapped_span_are_unparsed(self):
+        """Post-verdict read: a name with an extension but a stray character, and a
+        span broken across a line, must be reported, not ignored."""
+        self.assertIn("foo?.py", scope.unparsed_spans("`tools/hooks/x.py` `foo?.py`"))
+        self.assertIn("*.py", scope.unparsed_spans("`tools/hooks/x.py` `src/\n*.py`"))
+
     def test_anchors_and_spaces_are_read_not_unparsed(self):
         self.assertEqual(scope.paths_from_body("`frontend/src/App.tsx#L5`"), ["frontend/src/App.tsx"])
         self.assertEqual(scope.unparsed_spans("`frontend/src/App.tsx#L5-L9` and `backend/my file.py`"), [])
@@ -114,7 +120,8 @@ class FilingCheckpoint(TempStore):
     def test_adding_an_unparseable_token_never_lowers_the_route(self):
         """Sticky-wicket's property: no spelling of a path can give a less strict route."""
         bases = ["`tools/hooks/x.py`", "`backend/app/x.py`", "nothing to see", "`docs/a.md`"]
-        unparseable = ["`src/*.py`", "`$HOME/x/y.py`", "`tools/hooks/[x].py`", "`~/z/w.py`"]
+        unparseable = ["`src/*.py`", "`$HOME/x/y.py`", "`tools/hooks/[x].py`", "`~/z/w.py`",
+                       "`foo?.py`", "`src/\n*.py`"]
         for repo in (FORGE, HRSE):
             for base in bases:
                 before = int(gh_issue._route_at_filing(repo, base, [], 77))
@@ -275,6 +282,14 @@ class RouteNoticeEveryExit(TempStore):
         self._drive(discharge_ok=False)
         code, err = self._drive()
         self.assertEqual(err.count(self.NOTICE), 0)
+
+    def test_a_second_invocation_that_computes_no_route_prints_nothing(self):
+        """Post-verdict read: the state is reset on entry, not only when a route is computed."""
+        self._drive(discharge_ok=False)
+        err = io.StringIO()
+        with patch("gh_issue.main", return_value=0), redirect_stderr(err):
+            self.assertEqual(gh_issue.main_with_route_check(), 0)
+        self.assertEqual(err.getvalue().count(self.NOTICE), 0)
 
 
 class NoOptionEdits(unittest.TestCase):

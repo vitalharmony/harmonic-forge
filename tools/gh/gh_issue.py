@@ -1018,6 +1018,7 @@ def _print_owed() -> None:
 
 def main_with_route_check() -> int:
     """`main()` with the one route check around it (harmonic-forge#1232)."""
+    _ROUTE_STATE.update(path=None, written=False)
     try:
         return main()
     finally:

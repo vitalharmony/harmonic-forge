@@ -26,14 +26,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gates import Scope  # noqa: E402
 
-_SPAN = re.compile(r"`([^`\n]+)`")
+#: a span may wrap a line; the cap keeps a stray backtick from pairing across a whole document
+_SPAN = re.compile(r"`([^`]{1,200})`")
 _SUFFIX = re.compile(r"(?::\d+(?:-\d+)?|#L\d+(?:-L?\d+)?)$")
 _SAFE = re.compile(r"^[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*)*$")
-_BARE_FILE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[A-Za-z0-9]+$")
+
+
+_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,6}$")
 
 
 def _pathlike(token: str) -> bool:
-    return "/" in token or token.startswith(".") or bool(_BARE_FILE.match(token))
+    """Anything that could name a file: a slash, a leading dot, or a trailing
+    extension. Deliberately wider than `_SAFE`: a token that looks like a path
+    but is not clean is reported as unparsed, never ignored."""
+    return "/" in token or token.startswith(".") or bool(_EXTENSION.search(token))
 
 
 def analyze(body: str) -> tuple[list[str], list[str]]:
