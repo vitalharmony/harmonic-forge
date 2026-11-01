@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -358,6 +359,19 @@ def _inert(text: str) -> str:
     return text.replace("\x1b", "")
 
 
+def _record_attrib(repo: str, issue: int, kind: str, lane: str, comment_url=None) -> None:
+    """harmonic-forge#1188 AC8: a sidecar line for the session that posted,
+    after the post succeeded, carrying the comment's URL as the audit's
+    evidence (AC10). Never fails the post."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "telemetry"))
+        import attrib  # noqa: E402
+        attrib.append(os.environ.get("CLAUDE_CODE_SESSION_ID"), f"{repo}#{issue}", lane, None,
+                      f"post:{kind}", comment_url=comment_url)
+    except BaseException:  # noqa: BLE001
+        pass
+
+
 def post(repo: str, issue: int, body: str) -> dict:
     result = _gh_api("--method", "POST", f"repos/{repo}/issues/{issue}/comments",
                       "-f", f"body={body}")
@@ -538,6 +552,7 @@ def main() -> int:
         # only: it prints, and cannot change what is posted.
         orphan_report.report()
     result = post(args.repo, args.issue, body)
+    _record_attrib(args.repo, args.issue, args.kind, "2", (result or {}).get("url"))
     #: harmonic-forge#691 (AC1'). `belt_candidates` is the one module all
     #: three marker-posting tools call on every successful post --
     #: `posted_by="l2"` matches this tool's own hardcoded footer

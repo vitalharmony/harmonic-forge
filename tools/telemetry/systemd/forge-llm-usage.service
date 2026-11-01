@@ -1,0 +1,8 @@
+[Unit]
+Description=Harmonic Forge: harvest LLM usage (Codex rollouts, attention lines) into the telemetry store (harmonic-forge#1188)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/telemetry/llm_usage.py harvest
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-llm-usage.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-llm-usage.log

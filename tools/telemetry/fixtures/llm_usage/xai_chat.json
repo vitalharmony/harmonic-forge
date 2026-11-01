@@ -1,0 +1,15 @@
+{
+ "id": "chatcmpl-xai-1",
+ "model": "grok-5",
+ "usage": {
+  "prompt_tokens": 1200,
+  "completion_tokens": 300,
+  "total_tokens": 1500,
+  "prompt_tokens_details": {
+   "cached_tokens": 800
+  },
+  "completion_tokens_details": {
+   "reasoning_tokens": 120
+  }
+ }
+}

@@ -3000,6 +3000,19 @@ def _refuse_script_contract(script: str, sha: str) -> None:
              "`scripts/1-2396-reembed-unknown-persons.py` does.")
 
 
+def _record_attrib(repo: str, issue: int, kind: str, lane: str, comment_url=None) -> None:
+    """harmonic-forge#1188 AC8: a sidecar line for the session that posted,
+    after the post succeeded, carrying the comment's URL as the audit's
+    evidence (AC10). Never fails the post."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "telemetry"))
+        import attrib  # noqa: E402
+        attrib.append(os.environ.get("CLAUDE_CODE_SESSION_ID"), f"{repo}#{issue}", lane, None,
+                      f"post:{kind}", comment_url=comment_url)
+    except BaseException:  # noqa: BLE001
+        pass
+
+
 def post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str, **kwargs,
 ) -> tuple[str, int]:
@@ -3012,11 +3025,15 @@ def post_kind(
     `refused-other` before it propagates. `KeyboardInterrupt` is deliberately
     not caught: an operator abort is not a refusal. No other kind ever emits."""
     if kind != "ready-for-l3":
-        return _post_kind(repo, issue, kind, body, sha, branch, attempt=None, **kwargs)
+        posted = _post_kind(repo, issue, kind, body, sha, branch, attempt=None, **kwargs)
+        _record_attrib(repo, issue, kind, "1", posted[0])
+        return posted
     attempt = {"emitted": False, "local_check_result": "not-run", "local_check_ms": None,
                "ci_state": "not-taken"}
     try:
-        return _post_kind(repo, issue, kind, body, sha, branch, attempt=attempt, **kwargs)
+        posted = _post_kind(repo, issue, kind, body, sha, branch, attempt=attempt, **kwargs)
+        _record_attrib(repo, issue, kind, "1", posted[0])
+        return posted
     except KeyboardInterrupt:
         raise  # an operator abort is not a refusal, and records nothing
     except BaseException:  # noqa: BLE001 - re-raised below, so no outcome changes

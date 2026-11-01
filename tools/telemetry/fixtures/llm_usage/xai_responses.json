@@ -1,0 +1,16 @@
+{
+  "id": "resp-xai-1",
+  "model": "grok-5",
+  "usage": {
+    "input_tokens": 2000,
+    "output_tokens": 400,
+    "total_tokens": 2400,
+    "input_tokens_details": {
+      "cached_tokens": 1500
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 90
+    },
+    "cost_in_nano_usd": 1234567
+  }
+}

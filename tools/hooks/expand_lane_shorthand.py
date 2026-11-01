@@ -60,6 +60,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hook_identity import slot_env as _slot_env  # noqa: E402
@@ -893,6 +894,126 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
             f"{key}`, then the non-force preflight and the --force run (harmonic-forge#1169, #1174).")
 
 
+#: harmonic-forge#1188 AC7/AC8: the fixed operator->lane trigger vocabulary
+#: (rules/lane-shorthand.md "Operator -> lane triggers"), at a line start. The
+#: issue comes only from the trigger's own key, never from other prompt text.
+_ATTRIB_TRIGGER_RE = re.compile(
+    r"^[ \t]*(Plan|Implement|Fix|Spec|AE|close|Blueprint)[ \t]+([A-Za-z])(\d{1,6})\b")
+_ATTRIB_TRIGGER_LANE = {"Plan": "2", "Implement": "2", "Fix": "2", "Spec": "3",
+                        "AE": "1", "close": "1", "Blueprint": "1"}
+#: harmonic-forge#1188 amendment 1: a belt event names its repo, issue and lane
+#: in fixed fields (`watch_lane_posts.py`'s `<owner>/<repo>#<n> queued-for-l<N>`),
+#: so belt-driven work gets its own sidecar line instead of inheriting the
+#: previous trigger's issue. Structured fields only, never free text.
+_ATTRIB_BELT_RE = re.compile(
+    r"^[ \t]*(?:<event>)?[ \t]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d{1,6})[ \t]+queued-for-l([123])\b")
+#: Belt and harness-injected prompts are not operator attention (AC11).
+#: "This session is being continued" is the harness's post-compaction prompt.
+_NON_HUMAN_PREFIXES = ("<task-notification", "<system-reminder", "<local-command", "<command-",
+                       "This session is being continued")
+#: A headless `claude -p` session (te-runner agent, cross-family reviewer,
+#: research agent) has no operator at its prompt; transcripts show it as
+#: `entrypoint` sdk-*, against `cli` for an interactive session.
+_HEADLESS_ENTRYPOINT = "sdk-"
+_TRANSCRIPT_TAIL_BYTES = 262144
+
+
+def _telemetry_attrib():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "telemetry"))
+    import attrib  # noqa: E402
+    return attrib
+
+
+def record_attribution(prompt: str, session_id, lane, doc_text: str, transcript_path=None) -> int:
+    """Append one sidecar line per recognized lane trigger, with the transcript
+    holding the prompt as the audit's evidence (AC10). Returns lines written."""
+    attrib = _telemetry_attrib()
+    written = 0
+    stripped = prompt.lstrip()
+    # 1188 preclose passes 1-2: an allowlist, not a denylist. A belt line counts
+    # only inside a notification's own body; an operator trigger only as the
+    # first non-blank line of an interactive (non-sdk) prompt that carries no
+    # notification at all (R-0117's first-line rule). Nothing else attributes.
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith(_HEADLESS_ENTRYPOINT):
+        return 0
+    if stripped.startswith("<task-notification"):
+        body = stripped.split("</task-notification>", 1)[0]
+        for line in body.splitlines():
+            belt = _ATTRIB_BELT_RE.match(line)
+            if belt and attrib.append(session_id, f"{belt.group(1)}#{belt.group(2)}",
+                                      lane or belt.group(3), None, "belt:queued",
+                                      transcript_path=transcript_path):
+                written += 1
+        return written
+    if stripped.startswith(_NON_HUMAN_PREFIXES) or "<task-notification" in prompt:
+        return 0
+    first = next((line for line in prompt.splitlines() if line.strip()), "")
+    m = _ATTRIB_TRIGGER_RE.match(first)
+    if not m:
+        return 0
+    prefixes = parse_repo_prefixes(doc_text)
+    repo = STRIP_MARKDOWN.sub("", prefixes.get(m.group(2).upper(), ("", ""))[0]).strip()
+    if "/" in repo and attrib.append(session_id, f"{repo}#{m.group(3)}",
+                                     lane or _ATTRIB_TRIGGER_LANE[m.group(1)], None,
+                                     f"shorthand:{m.group(1)}", transcript_path=transcript_path):
+        written += 1
+    return written
+
+
+def _last_lead(transcript_path) -> tuple:
+    """(ts, bytes) of the last assistant text in the transcript tail -- sizes
+    and times only; no text is kept."""
+    path = Path(str(transcript_path or ""))
+    if not path.is_file():
+        return None, 0
+    with path.open("rb") as handle:
+        handle.seek(max(path.stat().st_size - _TRANSCRIPT_TAIL_BYTES, 0))
+        tail = handle.read().decode("utf-8", errors="replace").splitlines()
+    for raw in reversed(tail):
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        content = (rec.get("message") or {}).get("content")
+        size = sum(len(str(c.get("text", "")).encode("utf-8")) for c in content or []
+                   if isinstance(c, dict) and c.get("type") == "text") if isinstance(content, list) else 0
+        if size:
+            return rec.get("timestamp"), size
+    return None, 0
+
+
+def record_attention(prompt: str, payload: dict) -> bool:
+    """One operator-attention line per human prompt (AC11, unvalidated)."""
+    if prompt.lstrip().startswith(_NON_HUMAN_PREFIXES):
+        return False
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith(_HEADLESS_ENTRYPOINT):
+        return False
+    session_id = str(payload.get("session_id") or "")
+    if not re.match(r"^[A-Za-z0-9._-]{1,128}$", session_id):
+        return False
+    now = datetime.now(timezone.utc)
+    last_ts, lead = _last_lead(payload.get("transcript_path"))
+    gap = 0.0
+    if isinstance(last_ts, str):
+        try:
+            gap = max((now - datetime.fromisoformat(last_ts.replace("Z", "+00:00"))).total_seconds(), 0.0)
+        except ValueError:
+            gap = 0.0
+    if not os.environ.get("HARMONIC_FORGE_ATTENTION_DIR") and _telemetry_attrib().under_test():
+        return False  # a test never writes the operator's real attention lines
+    base = Path(os.environ.get("HARMONIC_FORGE_ATTENTION_DIR")
+                or Path.home() / ".claude" / "state" / "attention").expanduser()
+    base.mkdir(parents=True, exist_ok=True)
+    # Reforge pass 2: microseconds, so two prompts in one second stay distinct.
+    line = {"ts": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "session_id": session_id,
+            "gap_s": round(gap, 1), "lead_bytes": lead}
+    with (base / f"{session_id}.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line, sort_keys=True) + "\n")
+    return True
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -928,6 +1049,17 @@ def main() -> None:
         force_receipt = ""
     if force_receipt:
         batch_receipt = " ".join(p for p in (batch_receipt, force_receipt) if p)
+    # harmonic-forge#1188 AC8: attribution and attention ride on this hook and
+    # never fail it; each sits in its own try.
+    try:
+        record_attribution(prompt, payload.get("session_id"), os.environ.get("LANE"),
+                           DOC_PATH.read_text(encoding="utf-8"), payload.get("transcript_path"))
+    except Exception:
+        pass
+    try:
+        record_attention(prompt, payload)
+    except Exception:
+        pass
     try:
         doc_text = DOC_PATH.read_text(encoding="utf-8")
         expanded = annotate(prompt, doc_text)

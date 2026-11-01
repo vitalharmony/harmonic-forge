@@ -79,6 +79,7 @@ import subprocess
 import stat
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -290,8 +291,23 @@ def launch_base(settings: Path | None = None) -> list[str]:
             "--permission-mode", "dontAsk", "--permission-prompts", "none"]
 
 
-def claude_argv(budget: str) -> list[str]:
-    return launch_base() + ["--max-budget-usd", budget, "--max-turns", str(MAX_TURNS)]
+def claude_argv(budget: str, session_id: str | None = None) -> list[str]:
+    # harmonic-forge#1188: a known session id, so the run's attribution
+    # sidecar line and its usage join on it.
+    return (launch_base() + ["--max-budget-usd", budget, "--max-turns", str(MAX_TURNS)]
+            + (["--session-id", session_id] if session_id else []))
+
+
+def record_attrib(session_id: str, issue: int, run_id: object, started: str) -> None:
+    """harmonic-forge#1188 AC8: the run's sidecar line, written after the
+    agent ran and dated at its start so every call in the run joins to it.
+    Never fails the run."""
+    try:
+        import attrib  # noqa: E402 -- tools/telemetry is on sys.path
+        attrib.append(session_id, f"{te_queue.REPO}#{issue}", "te-runner", run_id, "te-run",
+                      ts=started)
+    except BaseException:  # noqa: BLE001
+        pass
 
 
 def parse_stream(text: str) -> dict:
@@ -331,13 +347,13 @@ def g3_problems(parsed: dict) -> list[str]:
 
 
 def run_agent(clone: Path, prompt: str, budget: str, env: dict[str, str],
-              log_path: Path, transcripts: Path) -> dict:
+              log_path: Path, transcripts: Path, session_id: str | None = None) -> dict:
     if not SETTINGS.is_file():
         raise Abort(f"settings file {SETTINGS} is missing")
     try:
         # The agent runs inside the bwrap boundary (harmonic-forge#1098): only its
         # clone and a private transcripts dir are writable.
-        argv = sandbox.wrap(claude_argv(budget), clone, transcripts, profile="agent",
+        argv = sandbox.wrap(claude_argv(budget, session_id), clone, transcripts, profile="agent",
                             inputs=(source_objects(),))
     except sandbox.SandboxError as exc:
         raise Abort(str(exc)) from exc
@@ -1013,9 +1029,15 @@ def work_item(item: dict, state: dict, queue: Path, budget: str, env: dict[str, 
         raise Blocked("the handoff pins no kill-bundle-sha256")
     pin = pinned.group(1)
     bundle = snapshot_bundle(issue, pin, scratch)  # before the agent can touch it
+    session_id = str(uuid.uuid4())
+    started = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Reforge pass 1: written before the agent runs, so a harvest during the
+    # run already finds it.
+    record_attrib(session_id, issue, state.get("run_id"), started)
     try:
         parsed = run_agent(clone, agent_prompt(issue, body, handoff),
-                           budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts")
+                           budget, agent_env, scratch / "stream.jsonl", scratch / "transcripts",
+                           session_id=session_id)
     except ItemTimeout as exc:
         # Set aside as `budget`; the queue moves on. The head is still pinned so
         # the next attempt archives this one's work.

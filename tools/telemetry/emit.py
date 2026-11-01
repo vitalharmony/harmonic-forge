@@ -46,6 +46,8 @@ _BODY_TOKENS = {"body", "text", "message", "quote", "content", "description", "n
 #: ...except these, which are identifiers, not text.
 _ID_SUFFIXES = ("_id", "_ids", "_count", "_url", "_sha", "_kind")
 _ATTR_STR_MAX = 200
+#: harmonic-forge#1188 AC2: an llm-usage event without these is refused.
+LLM_USAGE_REQUIRED = ("provider", "model", "input_uncached", "cached_read", "output")
 
 
 class SchemaError(ValueError):
@@ -112,6 +114,13 @@ def validate(event: dict[str, Any]) -> None:
             raise SchemaError(f"missing required: {col}")
     if event["source"] not in SCHEMA["columns"]["source"]:
         raise SchemaError(f"unknown source {event['source']!r}")
+    if event["source"] == "llm-usage":  # harmonic-forge#1188 AC2
+        usage = event.get("attrs") if isinstance(event.get("attrs"), dict) else {}
+        for key in LLM_USAGE_REQUIRED:
+            if usage.get(key) is None:
+                raise SchemaError(f"llm-usage event missing attrs.{key}")
+        if "effort" not in usage:  # 1188 amendment 1: present, null where the source has none
+            raise SchemaError("llm-usage event missing attrs.effort (null is allowed, absent is not)")
     prov = event.get("provenance")
     if prov is not None and prov not in SCHEMA["columns"]["provenance"]:
         raise SchemaError(f"unknown provenance {prov!r}")
