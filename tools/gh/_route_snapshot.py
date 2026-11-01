@@ -22,6 +22,8 @@ import route_store  # noqa: E402
 _HEADING = re.compile(r"(?m)^###[ \t]+Affected Files[ \t]*$")
 _NEXT_HEADING = re.compile(r"(?m)^###?[ \t]")
 _THREAT = re.compile(r"(?im)^[ \t]*\**[ \t]*Threat model[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(?P<text>\S.*?)[ \t]*\**[ \t]*$")
+_BACKTICKED = re.compile(r"`([^`]+)`")
+_ANNOTATION = re.compile(r"\s*\([^)]*\)\s*$")
 _QUALIFIED = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(?P<path>.+)$")
 
 
@@ -42,15 +44,26 @@ def affected_files(body: str, issue_repo: str) -> dict[str, list[str]]:
         line = line.strip()
         if not line.startswith("|"):
             continue
-        cell = line.strip("|").split("|", 1)[0].strip().strip("`").strip()
-        if not cell or cell.lower() == "file" or set(cell) <= set("-: "):
+        cell = line.strip("|").split("|", 1)[0].strip()
+        if not cell or cell.strip("`").strip().lower() == "file" or set(cell) <= set("-: "):
             continue
-        qualified = _QUALIFIED.match(cell)
-        repo, path = (qualified["repo"], qualified["path"].strip()) if qualified else (issue_repo, cell)
-        if " " in path:
-            continue
-        halves.setdefault(repo, []).append(path)
+        for token in _cell_paths(cell):
+            qualified = _QUALIFIED.match(token)
+            repo, path = (qualified["repo"], qualified["path"].strip()) if qualified else (issue_repo, token)
+            halves.setdefault(repo, []).append(path)
     return halves
+
+
+def _cell_paths(cell: str) -> list[str]:
+    """Every path a first-column cell declares (harmonic-forge#1231 pass 1).
+
+    Backticked tokens when there are any (so `a.py`, `b.py` and
+    `my file.py` (new) each keep their paths, spaces included); otherwise the
+    comma-separated pieces of the plain cell. A trailing `(note)` is dropped.
+    A cell is never skipped for containing a space: a dropped row would loosen
+    the route the handoff declared."""
+    tokens = _BACKTICKED.findall(cell) or cell.split(",")
+    return [path for path in (_ANNOTATION.sub("", token.strip()).strip() for token in tokens) if path]
 
 
 def threat_model(body: str) -> Optional[str]:

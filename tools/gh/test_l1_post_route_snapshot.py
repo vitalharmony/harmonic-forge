@@ -59,6 +59,34 @@ class Snapshot(unittest.TestCase):
         halves = snap.affected_files(_handoff(["tools/a.py"]), REPO)
         self.assertEqual(halves, {REPO: ["tools/a.py"]})
 
+    def test_annotated_cell_keeps_its_path_and_gate(self):
+        """Pass 1: `x.py` (new) was dropped for its space, loosening the route."""
+        body = _handoff(["`tools/hooks/batch_auth.py` (new)", "docs/notes.md"])
+        self.assertEqual(snap.affected_files(body, REPO), {REPO: ["tools/hooks/batch_auth.py", "docs/notes.md"]})
+        self.assertEqual(snap.snapshot(body, REPO)[1].gate_id, "lane-machinery")
+
+    def test_plain_annotated_cell_keeps_its_path(self):
+        self.assertEqual(snap.affected_files(_handoff(["tools/a.py (new)"]), REPO), {REPO: ["tools/a.py"]})
+
+    def test_cell_with_two_paths_contributes_both(self):
+        body = _handoff(["`docs/a.md`, `tools/hooks/x.py`"])
+        self.assertEqual(snap.affected_files(body, REPO), {REPO: ["docs/a.md", "tools/hooks/x.py"]})
+
+    def test_plain_comma_cell_contributes_each_piece(self):
+        self.assertEqual(snap.affected_files(_handoff(["docs/a.md, tools/hooks/x.py"]), REPO),
+                         {REPO: ["docs/a.md", "tools/hooks/x.py"]})
+
+    def test_path_containing_a_space_is_kept_and_gates(self):
+        """Pass 1 (cross-family): a spaced hrse product path must not vanish."""
+        body = _handoff(["tools/gh/l1_post.py", "`vitalharmony/hrse:backend/my file.py`"])
+        self.assertEqual(snap.affected_files(body, REPO)["vitalharmony/hrse"], ["backend/my file.py"])
+        route = snap.snapshot(body, REPO)[1]
+        self.assertEqual((route.path, route.gate_id), (1, "hrse-product"))
+
+    def test_all_rows_annotated_is_not_no_scope(self):
+        route = snap.snapshot(_handoff(["`tools/hooks/x.py` (new)"]), REPO)[1]
+        self.assertEqual(route.gate_id, "lane-machinery")
+
     def test_qualified_path_is_its_own_half(self):
         halves = snap.affected_files(_handoff(["vitalharmony/hrse:backend/x.py", "tools/a.py"]), REPO)
         self.assertEqual(halves, {"vitalharmony/hrse": ["backend/x.py"], REPO: ["tools/a.py"]})
