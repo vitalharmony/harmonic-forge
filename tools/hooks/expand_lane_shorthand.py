@@ -1006,7 +1006,8 @@ def record_attention(prompt: str, payload: dict) -> bool:
     base = Path(os.environ.get("HARMONIC_FORGE_ATTENTION_DIR")
                 or Path.home() / ".claude" / "state" / "attention").expanduser()
     base.mkdir(parents=True, exist_ok=True)
-    line = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "session_id": session_id,
+    # Reforge pass 2: microseconds, so two prompts in one second stay distinct.
+    line = {"ts": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "session_id": session_id,
             "gap_s": round(gap, 1), "lead_bytes": lead}
     with (base / f"{session_id}.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(line, sort_keys=True) + "\n")

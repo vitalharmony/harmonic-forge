@@ -301,6 +301,16 @@ class Claude(Base):
                 (kept,) = llm_usage_report.latest_reads(list(order))
                 self.assertEqual(kept["issue"], 1188)
 
+    def test_reread_differing_only_in_input_is_stored(self):
+        """Reforge pass 2: any usage field makes a read distinct."""
+        root = self.tmp / "claude"
+        llm_usage.harvest_claude(root, settle_s=0)
+        os.remove(os.environ[llm_usage.STATE_ENV])
+        text = self.path.read_text().replace('"input_tokens": 12', '"input_tokens": 120')
+        self.path.write_text(text)
+        again = llm_usage.harvest_claude(root, settle_s=0)
+        self.assertEqual(again["written"], 3)
+
     def test_joins_sidecar_by_session(self):
         attrib.append("cccc2222-0000-0000-0000-000000000001", "vitalharmony/harmonic-forge#77", "2",
                       None, "shorthand:Fix", ts="2026-10-31T09:00:00Z")
@@ -349,6 +359,28 @@ class TeRunAttribution(unittest.TestCase):
         body = body[:body.index('    result = parsed["result"]')]
         self.assertLess(body.index("record_attrib(session_id"), body.index("run_agent("))
         self.assertEqual(body.count("record_attrib("), 1)
+
+
+class AttentionIdentity(Base):
+    """Reforge pass 2: an attention prompt is counted once."""
+
+    def test_compare_counts_a_reharvested_prompt_once(self):
+        timings = self.tmp / "t.csv"
+        timings.write_text("date,minutes\n2026-10-31,3\n")
+        one = {"ts": "2026-10-31T10:00:00Z", "subject_id": "s1:2026-10-31T10:00:00.1Z", "issue": None,
+               "attrs": {"minutes": 3.0}}
+        two = dict(one, issue=1188)
+        (row,) = llm_usage_report.attention_compare([one, two], timings)
+        self.assertEqual(row["formula_min"], 3.0)
+
+    def test_hook_records_subsecond_prompt_times(self):
+        import expand_lane_shorthand as hook
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "cli"}):
+            hook.record_attention("hello", {"session_id": "sub-s", "transcript_path": ""})
+            hook.record_attention("again", {"session_id": "sub-s", "transcript_path": ""})
+        lines = [json.loads(l) for l in (self.tmp / "attention" / "sub-s.jsonl").read_text().splitlines()]
+        self.assertEqual(len({l["ts"] for l in lines}), 2)
+        self.assertRegex(lines[0]["ts"], r"\.\d{6}Z$")
 
 
 class Xai(Base):

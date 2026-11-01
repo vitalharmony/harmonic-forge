@@ -245,6 +245,9 @@ CLAUDE_ROOT = Path.home() / ".claude" / "projects"
 #: it or the file has been idle this long, so a request whose lines straddle a
 #: run's stop point is emitted once, complete (AC5).
 CLAUDE_SETTLE_S = 600
+#: The usage fields a Claude read's identity covers (reforge pass 2).
+READ_FIELDS = ("input_uncached", "cached_read", "cache_write", "cache_write_1h", "output",
+               "reasoning_out")
 
 
 def claude_usage(rec: dict) -> Optional[tuple[str, dict, str]]:
@@ -329,12 +332,14 @@ def harvest_claude(root: Path, prices: Optional[dict] = None, settle_s: float = 
         events = []
         for k, u, ts, _ in groups:
             event = to_event(u, ts, f"claude:{k}", prices)
-            # Reforge pass 1: a read's identity carries its output, so a fuller
-            # read of the same request is stored, not dropped as a duplicate.
+            # Reforge passes 1-2: a read's identity is every usage field (never
+            # its attribution, joined at read time), so any distinct read of the
+            # same request is stored, not dropped as a duplicate.
+            usage_key = ":".join(str(u.get(f, 0)) for f in READ_FIELDS)
             try:
                 event["event_id"] = emit.event_id(
                     event["source"], event["repo"] or emit.UNRESOLVED, event["issue"],
-                    f"{event['subject_id']}:o{u['output']}", event["event_type"], emit.normalize_ts(ts))
+                    f"{event['subject_id']}:{usage_key}", event["event_type"], emit.normalize_ts(ts))
             except emit.SchemaError:
                 pass  # emit rejects the bad ts and counts it
             events.append(event)

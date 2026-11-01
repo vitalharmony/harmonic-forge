@@ -160,7 +160,10 @@ def audit_sample(usage: list[dict], n: int, seed: Optional[int] = None) -> list[
 
 def attention_compare(attention: list[dict], timings: Path) -> list[dict]:
     formula: dict[str, float] = defaultdict(float)
-    for e in attention:
+    # Reforge pass 2: one row per prompt (subject_id, which carries no
+    # attribution), so a re-harvest after attribution appears is not summed twice.
+    prompts = {str(e.get("subject_id") or id(e)): e for e in attention}
+    for e in prompts.values():
         formula[str(e.get("ts", ""))[:10]] += float((e.get("attrs") or {}).get("minutes") or 0)
     rows = []
     with timings.open(encoding="utf-8") as handle:
