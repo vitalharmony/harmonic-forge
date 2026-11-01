@@ -607,6 +607,11 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int)
 def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None,
                   theme: str | None = None, venture: str | None = None,
                   route_path: str | None = None) -> bool:
+    def path_unwritten(reason: str) -> None:
+        # harmonic-forge#1232 pass 1: every exit before the Path write says so.
+        if route_path is not None:
+            print(f"[GH] route: unavailable — Path={route_path} was not written ({reason})", file=sys.stderr)
+
     # --format json returns the item id directly, no need to scan item-list
     # (which paginates at 30 by default and a freshly created item sorts
     # last on a large board).
@@ -629,6 +634,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
         item_id = _find_existing_item(issue_url, project_owner, project_number)
         if item_id is None:
             print(f"[GH] Warning: created issue but failed to add to board:\n{add_result.stderr}", file=sys.stderr)
+            path_unwritten("not added to the board")
             return False
         print(f"[GH] Already on board #{project_number} (added by another writer); setting fields on the existing item")
     else:
@@ -636,6 +642,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
             item_id = json.loads(add_result.stdout)["id"]
         except (json.JSONDecodeError, KeyError) as exc:
             print(f"[GH] Warning: added to board but could not parse item id: {exc}", file=sys.stderr)
+            path_unwritten("item id unreadable")
             return False
 
         print(f"[GH] Added issue to board #{project_number} (owner: {project_owner})")
@@ -643,6 +650,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     ctx = _fetch_project_context(project_owner, project_number)
     if ctx is None:
         print("[GH] Warning: added to board but could not fetch project context — needs manual triage", file=sys.stderr)
+        path_unwritten("project context unavailable")
         return False
 
     # harmonic-forge#1232: Path is a display field, so its write is soft and runs
@@ -650,7 +658,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     # skip it, and its own failure cannot fail the filing.
     if route_path is not None:
         if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Path", route_path):
-            print(f"[GH] route: unavailable — Path={route_path} was not written", file=sys.stderr)
+            path_unwritten("the board rejected it")
 
     if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Status", STATUS_OPTION_NAME):
         print("[GH] Warning: could not set Status=Todo — item was added but needs manual triage", file=sys.stderr)

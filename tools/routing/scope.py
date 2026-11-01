@@ -19,8 +19,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gates import Scope  # noqa: E402
 
+#: Broader than HRSE2's: pass 1 of harmonic-forge#1232 found a multi-segment
+#: directory (`tools/hooks/`), a `:line` suffix and an extensionless file
+#: (`tools/hooks/Makefile`) all extracted nothing and filed as Path 1.
+#: Group 1 is the path alone; the optional `:42` or `:42-60` is not captured.
 PATH_TOKEN = re.compile(
-    r"`((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+|\.[a-z]+rules|[A-Za-z0-9_-]+/)`")
+    r"`((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*"
+    r"|[A-Za-z0-9_.-]+\.[A-Za-z0-9]+"
+    r"|\.[a-z]+rules)"
+    r"(?::\d+(?:-\d+)?)?`")
 
 
 def paths_from_body(body: str) -> list[str]:

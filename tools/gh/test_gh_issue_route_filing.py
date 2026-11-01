@@ -44,6 +44,33 @@ class Scope(unittest.TestCase):
         body = "see `tools/a.py` and `backend/` then `tools/a.py` again, but not tools/b.py"
         self.assertEqual(scope.paths_from_body(body), ["tools/a.py", "backend/"])
 
+    def test_common_path_forms_are_extracted(self):
+        """Pass 1: directories, :line suffixes and extensionless files all counted."""
+        cases = {
+            "`tools/hooks/`": ["tools/hooks/"],
+            "`tools/hooks/x.py:42`": ["tools/hooks/x.py"],
+            "`tools/hooks/x.py:42-60`": ["tools/hooks/x.py"],
+            "`tools/hooks/Makefile`": ["tools/hooks/Makefile"],
+            "`.windsurfrules`": [".windsurfrules"],
+            "`backend/`": ["backend/"],
+        }
+        for body, expected in cases.items():
+            with self.subTest(body=body):
+                self.assertEqual(scope.paths_from_body(body), expected)
+
+    def test_those_forms_route_as_lane_machinery(self):
+        import gates
+        # A bare directory is extracted (above) but not listed here: A1's
+        # `gates._path` normalizes `tools/hooks/` to `tools/hooks`, which the
+        # lane-machinery patterns do not match; that errs to Path 1 (strict).
+        for body in ("`tools/hooks/x.py:42`", "`tools/hooks/Makefile`"):
+            with self.subTest(body=body):
+                route = gates.evaluate(scope.scope_for_filing(FORGE, body, []))
+                self.assertEqual((route.path, route.gate_id), (2, "lane-machinery"))
+
+    def test_prose_and_spaced_backticks_are_not_paths(self):
+        self.assertEqual(scope.paths_from_body("run `mise run check` and see tools/hooks/x.py"), [])
+
     def test_no_path_is_an_empty_scope(self):
         self.assertEqual(scope.scope_for_filing(FORGE, "no paths here", []).halves, {})
 
@@ -152,6 +179,38 @@ class PathWrite(unittest.TestCase):
         ok, setter = self._board(lambda item, project, fields, name, value: name != "Status")
         self.assertFalse(ok)
         self.assertEqual(setter.call_args_list[0].args[3], "Path")
+
+    def _early_exit(self, **patches):
+        err = io.StringIO()
+        with patch("gh_issue._set_single_select", return_value=True) as setter, redirect_stderr(err):
+            for target, value in patches.items():
+                patch(f"gh_issue.{target}", **value).start()
+            try:
+                ok = gh_issue.add_to_board(URL, "o", "1", None, route_path="2")
+            finally:
+                patch.stopall()
+        return ok, err.getvalue(), setter
+
+    def test_item_add_failure_says_path_was_not_written(self):
+        ok, err, setter = self._early_exit(
+            _run={"return_value": SimpleNamespace(returncode=1, stdout="", stderr="boom")},
+            _find_existing_item={"return_value": None})
+        self.assertFalse(ok)
+        self.assertIn("route: unavailable", err)
+        setter.assert_not_called()
+
+    def test_unreadable_item_id_says_path_was_not_written(self):
+        ok, err, _ = self._early_exit(
+            _run={"return_value": SimpleNamespace(returncode=0, stdout="not json", stderr="")})
+        self.assertFalse(ok)
+        self.assertIn("route: unavailable", err)
+
+    def test_missing_project_context_says_path_was_not_written(self):
+        ok, err, _ = self._early_exit(
+            _run={"return_value": SimpleNamespace(returncode=0, stdout='{"id": "I1"}', stderr="")},
+            _fetch_project_context={"return_value": None})
+        self.assertFalse(ok)
+        self.assertIn("route: unavailable", err)
 
     def test_no_path_means_no_path_write(self):
         ctx = {"project_id": "P", "fields": []}
