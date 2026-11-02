@@ -252,6 +252,40 @@ class Store(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             route_store.current(self.key)
 
+    def _linked_account(self):
+        """harmonic-forge#1255: an `events/<year>` symlink to a dir outside the store."""
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (self.tmp / "store" / "events").mkdir(parents=True, exist_ok=True)
+        return outside
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 directory")
+    def test_symlink_behind_unsearchable_parent_raises(self):
+        outside = self._linked_account()
+        locked = outside / "locked"
+        (locked / "target").mkdir(parents=True)
+        (self.tmp / "store" / "events" / "2099").symlink_to(locked / "target", target_is_directory=True)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        with self.assertRaisesRegex(RuntimeError, "cannot read"):
+            route_store.load(self.key)
+
+    def test_readable_symlinked_directory_loads_its_event(self):
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        events = self.tmp / "store" / "events"
+        year = next(p for p in events.iterdir() if p.is_dir())
+        outside = self._linked_account()
+        shutil.move(str(year), str(outside / year.name))
+        year.symlink_to(outside / year.name, target_is_directory=True)
+        loaded = route_store.load(self.key)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["attrs"]["path"], 2)
+
+    def test_broken_symlink_is_ignored(self):
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
+        (self.tmp / "store" / "events" / "dangling").symlink_to(self.tmp / "nowhere")
+        self.assertEqual(len(route_store.load(self.key)), 1)
+
     def test_no_root_parameter(self):
         """Pass-1 #6: one store for reads and writes; no root override exists."""
         import inspect
