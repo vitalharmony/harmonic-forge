@@ -66,8 +66,20 @@ def load(key: str) -> list[dict[str, Any]]:
 
     if base.exists():
         # followlinks: `Path.glob` traverses a symlinked directory, so the walk must too.
-        for _ in os.walk(base, onerror=_unreadable, followlinks=True):
-            pass
+        for root, dirs, files in os.walk(base, onerror=_unreadable, followlinks=True):
+            # `os.walk` classes a symlink whose target it cannot stat as a file
+            # and never calls `onerror`, so stat each link here. Only a denied
+            # read raises; any other unresolvable link (broken, a loop, a path
+            # through a file) is still ignored, as before (harmonic-forge#1255).
+            for name in dirs + files:
+                path = os.path.join(root, name)
+                if os.path.islink(path):
+                    try:
+                        os.stat(path)
+                    except PermissionError as err:
+                        _unreadable(err)
+                    except OSError:
+                        continue
     for part in sorted(base.glob(f"*/*/{SOURCE}/*.jsonl")):
         with part.open(encoding="utf-8") as handle:
             for number, line in enumerate(handle, 1):
