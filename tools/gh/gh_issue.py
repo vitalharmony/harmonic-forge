@@ -998,6 +998,8 @@ def main() -> int:
     # for an issue that does not exist.
     issue_number = _issue_number(issue_url)
     route_path = None
+    if issue_number is None and args.escape_of is not None:
+        print(f"[GH] escape-of: not recorded — no issue number in {issue_url}", file=sys.stderr)
     if issue_number is not None:
         handoff_owed.record(args.repo, issue_number, issue_url)
         # harmonic-forge#1232: before `_discharge_exception`, which can return 1,

@@ -3,6 +3,7 @@
 
 Events go to a temp store, never the live telemetry store; GitHub calls are patched.
 Run: `python3 -m unittest tools.gh.test_gh_issue_escape_of`."""
+import contextlib
 import io
 import os
 import sys
@@ -33,13 +34,15 @@ class EscapeOf(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _main(self, *extra):
+    def _main(self, *extra, create_patch=True):
         argv = ["gh_issue.py", "--repo", FORGE, "--title", "an escaped bug",
                 "--body", BODY, "--no-prior-owner", "test fixture", *extra]
+        create_cm = patch("gh_issue.create_issue", return_value=URL) if create_patch \
+            else contextlib.nullcontext(None)
         with patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
              patch("gh_issue.find_prior_owners", return_value=[]), \
-             patch("gh_issue.create_issue", return_value=URL) as create, \
+             create_cm as create, \
              patch("gh_issue.handoff_owed.record"), \
              patch("gh_issue._discharge_exception", return_value=True), \
              patch("gh_issue.resolve_board_for_repo", return_value=("o", "1")), \
@@ -62,11 +65,20 @@ class EscapeOf(unittest.TestCase):
 
     def test_malformed_key_is_refused_before_filing(self):
         for key in ("L12", "f1230", "F", "1230", "H12x"):
-            with self.subTest(key=key), redirect_stderr(io.StringIO()):
+            with self.subTest(key=key), redirect_stderr(io.StringIO()), \
+                 patch("gh_issue.create_issue", return_value=URL) as create:
                 with self.assertRaises(SystemExit) as caught:
-                    _, create = self._main("--escape-of", key)
+                    self._main("--escape-of", key, create_patch=False)
                 self.assertEqual(caught.exception.code, 2)
+                create.assert_not_called()
                 self.assertEqual(self.events(), [])
+
+    def test_an_unparsed_issue_url_prints_the_skip(self):
+        err = io.StringIO()
+        with patch("gh_issue._issue_number", return_value=None), redirect_stderr(err):
+            self._main("--escape-of", "F1230")
+        self.assertIn("escape-of: not recorded", err.getvalue())
+        self.assertEqual(self.events(), [])
 
     def test_a_valid_key_passes_the_same_harness(self):
         result, create = self._main("--escape-of", "H2562")
