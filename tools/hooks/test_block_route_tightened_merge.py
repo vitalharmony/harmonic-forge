@@ -150,7 +150,7 @@ class RefusalPersists(_Case):
             self.assertTrue(self.denied(self.run_hook(FakeGitHub(HRSE))))
         self.assertEqual(len(self.premerge(key)), 1)
 
-    def test_baseline_ignores_pre_merge_events(self):
+    def test_a_looser_override_does_not_lower_the_evaluated_baseline(self):
         events = [{"attrs": {"path": 2, "gate_id": "te-label", "checkpoint": "filing",
                              "decider": "evaluator"}},
                   {"attrs": {"path": 3, "gate_id": "runner", "checkpoint": "override",
