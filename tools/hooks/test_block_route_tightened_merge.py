@@ -296,6 +296,22 @@ class FailDirections(_Case):
         self.assertIn("route store", result["systemMessage"])
         self.assertEqual(self.premerge(f"{HRSE}#2600"), [])
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 directory")
+    def test_unreadable_symlinked_store_directory_denies(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        target = Path(outside.name) / "elsewhere"
+        target.mkdir()
+        (self.store / "events").mkdir(parents=True)
+        (self.store / "events" / "2026").symlink_to(target, target_is_directory=True)
+        target.chmod(0)
+        try:
+            result = self.run_hook(FakeGitHub(HRSE))
+        finally:
+            target.chmod(0o755)
+        self.assertTrue(self.denied(result))
+        self.assertIn("route store", result["systemMessage"])
+
     def test_files_unreadable_denies(self):
         gh = FakeGitHub(HRSE)
         gh.down.add("files")

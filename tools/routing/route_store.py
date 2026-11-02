@@ -65,7 +65,8 @@ def load(key: str) -> list[dict[str, Any]]:
         raise RuntimeError(f"route store: cannot read {err.filename} ({err.strerror})") from err
 
     if base.exists():
-        for _ in os.walk(base, onerror=_unreadable):
+        # followlinks: `Path.glob` traverses a symlinked directory, so the walk must too.
+        for _ in os.walk(base, onerror=_unreadable, followlinks=True):
             pass
     for part in sorted(base.glob(f"*/*/{SOURCE}/*.jsonl")):
         with part.open(encoding="utf-8") as handle:
