@@ -3055,6 +3055,7 @@ def _post_kind(
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
     grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
     milestone_ack: str | None = None, carry_forward: tuple[str, int] | None = None,
+    labels=None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -3145,7 +3146,8 @@ def _post_kind(
     if kind == "handoff":
         # harmonic-forge#1231: before the digest, so the digest covers the line.
         # Fail open: the evaluator's error becomes an `unavailable` line.
-        snapshot_line, snapshot_route = _route_snapshot.snapshot(body, repo)
+        # harmonic-forge#1242: the labels `main` already read once (#1192 AC7).
+        snapshot_line, snapshot_route = _route_snapshot.snapshot(body, repo, labels or ())
         body = body.rstrip("\n") + "\n\n" + snapshot_line + "\n"
     # a private-repo incident: hash the rstripped body, not the raw one -- `comment_body()`
     # below posts `body.rstrip("\n") + footer`, so hashing `body` unstripped
@@ -3698,6 +3700,7 @@ def main() -> None:
         grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)), prod_run=prod_run,
         milestone_ack=args.milestone_ack, carry_forward=(
             (args.from_sha, args.pass_comment) if args.kind == "carry-forward" else None),
+        labels=(labels_once() if args.kind == "handoff" else None),
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

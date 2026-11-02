@@ -206,9 +206,34 @@ class PostedHandoff(TempStore):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _post(self, body, comment):
+    def _post(self, body, comment, labels=None):
         with patch.object(post, "comment_body", comment):
-            return post._post_kind(REPO, 1231, "handoff", body, SHA, "b")
+            return post._post_kind(REPO, 1231, "handoff", body, SHA, "b", labels=labels)
+
+    def _posted_path(self, labels):
+        posted = {}
+
+        def comment(repo, issue, text):
+            posted["text"] = text
+            return "https://example.test/c", 1
+
+        self._post(_handoff(["tools/routing/route_store.py"]), comment, labels=labels)
+        self.line = next(l for l in posted["text"].splitlines() if l.startswith("Route (snapshot):"))
+        return route_store.current(KEY)["attrs"]["path"]
+
+    def test_a_te_labelled_handoff_records_path_2(self):
+        """harmonic-forge#1242 AC1: `tools/routing/` is not lane machinery, so
+        only the `te-label` gate can give path 2."""
+        self.assertEqual(self._posted_path({"tooling-exception"}), 2)
+        self.assertIn("gate te-label", self.line)
+
+    def test_an_unlabelled_handoff_with_the_same_files_records_path_1(self):
+        """harmonic-forge#1242 AC2."""
+        self.assertEqual(self._posted_path(set()), 1)
+
+    def test_no_labels_passed_still_posts_and_records_path_1(self):
+        """harmonic-forge#1242 AC3: `labels=None` is evaluated without labels."""
+        self.assertEqual(self._posted_path(None), 1)
 
     def test_line_is_inside_the_digest_and_an_event_is_written(self):
         posted = {}
