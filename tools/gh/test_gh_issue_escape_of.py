@@ -93,8 +93,9 @@ class EscapeOf(unittest.TestCase):
         with patch.object(emit, "emit", side_effect=RuntimeError("a\nb")), redirect_stderr(err):
             self._main("--escape-of", "F1230")
         lines = err.getvalue().splitlines()
-        self.assertEqual(len([l for l in lines if l.startswith("[GH] escape-of: not recorded")]), 1)
-        self.assertFalse(any(l == "b" for l in lines))
+        escape = [l for l in lines if l.startswith("[GH] escape-of: not recorded")]
+        self.assertEqual(len(escape), 1)
+        self.assertTrue(escape[0].endswith("RuntimeError: a b"), escape[0])
 
     def test_emit_failure_never_fails_the_filing(self):
         err = io.StringIO()
