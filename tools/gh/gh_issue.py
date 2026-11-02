@@ -595,8 +595,9 @@ def _print_route_unwritten() -> None:
 def _escape_of_repo(key: str) -> str | None:
     """The repo a repo-prefixed key (`F1230`) names, from batch_auth's prefix
     map (the one the BATCH keys already use), or None when it is not one.
-    Uppercase only: a lowercase prefix is refused, never guessed."""
-    match = re.fullmatch(r"([A-Z])(\d+)", key or "")
+    Uppercase only: a lowercase prefix is refused, never guessed, and so is a
+    zero number (`F0`), which names no issue (harmonic-forge#1256)."""
+    match = re.fullmatch(r"([A-Z])([1-9]\d*)", key or "")
     if not match:
         return None
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
@@ -627,7 +628,8 @@ def _record_escape(repo: str, issue_number: int, key: str) -> None:
         if counts.get("rejected"):
             raise RuntimeError(f"rejected: {counts['rejected']}")
     except Exception as exc:
-        print(f"[GH] escape-of: not recorded — {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"[GH] escape-of: not recorded — {type(exc).__name__}: {" ".join(str(exc).split())}",
+              file=sys.stderr)  # one line, whatever the message holds (harmonic-forge#1256)
 
 
 def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int) -> str | None:
@@ -657,7 +659,8 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int)
     try:
         route_store.record(f"{repo}#{issue_number}", route, decider=route.gate_id, checkpoint="filing")
     except Exception as exc:
-        print(f"[GH] route: not recorded — {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"[GH] route: not recorded — {type(exc).__name__}: {" ".join(str(exc).split())}",
+              file=sys.stderr)  # one line, whatever the message holds (harmonic-forge#1256)
     _ROUTE_STATE["path"] = str(route.path)
     return str(route.path)
 
