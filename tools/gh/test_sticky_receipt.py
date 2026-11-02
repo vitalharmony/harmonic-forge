@@ -149,6 +149,8 @@ class MainCallSiteTests(ReceiptHome):
     def _main(self, kind, comments):
         argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", kind,
                 "--sha", "deadbeef", "--branch", "feat/35-x", "--file", "/dev/null"]
+        if kind == "rework":
+            argv += ["--rework-kind", "correction"]  # harmonic-forge#1247
         result = mock.Mock(returncode=0, stdout=json.dumps(comments), stderr="")
         with mock.patch.object(sys, "argv", argv), \
                 mock.patch.object(l1_post, "resolve_sha", return_value="deadbeef"), \

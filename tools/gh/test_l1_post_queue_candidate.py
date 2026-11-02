@@ -76,6 +76,8 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
             "l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "1921",
             "--kind", kind, "--sha", "deadbeef", "--branch", "l1/test",
         ]
+        if kind == "rework":
+            argv += ["--rework-kind", "correction"]  # harmonic-forge#1247
         for key, value in extra.items():
             argv += [f"--{key.replace('_', '-')}", value]
         return argv
