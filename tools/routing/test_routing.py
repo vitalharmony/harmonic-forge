@@ -283,7 +283,12 @@ class Store(unittest.TestCase):
 
     def test_broken_symlink_is_ignored(self):
         route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
-        (self.tmp / "store" / "events" / "dangling").symlink_to(self.tmp / "nowhere")
+        events = self.tmp / "store" / "events"
+        (events / "dangling").symlink_to(self.tmp / "nowhere")
+        (events / "loop").symlink_to(events / "loop")  # ELOOP
+        afile = self.tmp / "afile"
+        afile.write_text("")
+        (events / "notdir").symlink_to(afile / "x")  # NotADirectoryError
         self.assertEqual(len(route_store.load(self.key)), 1)
 
     def test_no_root_parameter(self):
