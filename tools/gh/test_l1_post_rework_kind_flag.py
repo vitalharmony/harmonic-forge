@@ -68,15 +68,20 @@ class ReworkFooter(unittest.TestCase):
              mock.patch.object(l1_post, "world_checks", lambda *a, **k: ([], [])), \
              mock.patch.object(l1_post, "require_open_pr", lambda *a, **k: (["pr-open"], [], [])), \
              mock.patch.object(l1_post, "pr_issue_marker", lambda *a, **k: "<!-- lane-pr-link v1 -->"), \
-             mock.patch.object(l1_post, "write_receipt", lambda record: None), \
+             mock.patch.object(l1_post, "write_receipt", lambda record: captured.setdefault("receipt", record)), \
              mock.patch.object(l1_post, "validate_sticky_wicket"):
             l1_post.post_kind("o/r", 1, kind, "body", "abc", "br", **kwargs)
+        self.receipt = captured.get("receipt")
         return captured["body"]
 
     def test_the_field_sits_directly_after_sha_and_kind_still_reads(self):
         body = self._body("rework", rework_kind="correction")
         self.assertIn("sha=abc; rework=correction;", body)
         self.assertEqual(lane_state._FOOTER_KIND.search(body).group(1), "rework")
+
+    def test_the_receipt_records_the_kind(self):
+        self._body("rework", rework_kind="rebase")
+        self.assertEqual(self.receipt["rework_kind"], "rebase")
 
     def test_no_other_kind_carries_the_field(self):
         for kind in ("ready-for-l3", "sweep"):

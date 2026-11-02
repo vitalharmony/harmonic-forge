@@ -3209,6 +3209,7 @@ def _post_kind(
         attempt["posted"] = True
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
+                   **({"rework_kind": rework_kind} if kind == "rework" else {}),  # harmonic-forge#1247
                    **({"prod_run": _prod_run.footer_field(issue, sha, prod_run)} if prod_run else {}),
                    "sha": sha, "branch": branch, "body_sha256": digest, "checks": checks,
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
