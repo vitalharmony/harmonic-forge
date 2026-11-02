@@ -3347,9 +3347,11 @@ def _post_digest(args: argparse.Namespace, repo: str, sha: str) -> str:
         "ack_overlap": args.ack_overlap, "ack_no_pr_required": args.ack_no_pr_required,
         "milestone_ack": args.milestone_ack, "plan_first": args.plan_first,
         "mutates_live": args.mutates_live, "cross_repo": args.cross_repo,
-        # harmonic-forge#1247: a dry run for one rework kind never clears the other.
-        "rework_kind": getattr(args, "rework_kind", None),
     }
+    # harmonic-forge#1247: a dry run for one rework kind never clears the other.
+    # Added for a rework only, so every other kind's digest is unchanged.
+    if args.kind == "rework":
+        fields["rework_kind"] = args.rework_kind
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 

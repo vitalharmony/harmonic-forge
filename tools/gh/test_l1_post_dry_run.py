@@ -418,15 +418,27 @@ class ReceiptDigestFieldTests(Harness):
             argv += [flag] if value is True else [flag, value]
         return argv
 
+    def test_a_non_rework_digest_has_no_rework_field(self):
+        """harmonic-forge#1247 AC4: every other kind's digest is unchanged."""
+        import argparse  # noqa: PLC0415
+        seen: dict = {}
+        with mock.patch.object(L.json, "dumps", side_effect=lambda fields, **k: seen.update(fields) or "{}"):
+            L._post_digest(argparse.Namespace(kind="ready-for-l3", **{k: None for k in (
+                "issue", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
+                "from_sha", "pass_comment", "ack_overlap", "ack_no_pr_required", "milestone_ack",
+                "plan_first", "mutates_live", "cross_repo", "rework_kind")}), REPO, SHA_A)
+        self.assertNotIn("rework_kind", seen)
+
     def test_the_rows_cover_every_digest_input(self):
         """A field added to `_post_digest` needs a row here."""
         import argparse  # noqa: PLC0415
         seen: dict = {}
         with mock.patch.object(L.json, "dumps", side_effect=lambda fields, **k: seen.update(fields) or "{}"):
-            L._post_digest(argparse.Namespace(**{k: None for k in (
-                "issue", "kind", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
+            # kind=rework, so the rework-only field (harmonic-forge#1247) is seen too.
+            L._post_digest(argparse.Namespace(kind="rework", **{k: None for k in (
+                "issue", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
                 "from_sha", "pass_comment", "ack_overlap", "ack_no_pr_required", "milestone_ack",
-                "plan_first", "mutates_live", "cross_repo")}), REPO, SHA_A)
+                "plan_first", "mutates_live", "cross_repo", "rework_kind")}), REPO, SHA_A)
         self.assertEqual(set(seen), {row[0] for row in DIGEST_ROWS})
 
     def test_each_digest_field_invalidates_the_receipt(self):
