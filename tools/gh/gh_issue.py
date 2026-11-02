@@ -659,8 +659,7 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int)
     try:
         route_store.record(f"{repo}#{issue_number}", route, decider=route.gate_id, checkpoint="filing")
     except Exception as exc:
-        print(f"[GH] route: not recorded — {type(exc).__name__}: {" ".join(str(exc).split())}",
-              file=sys.stderr)  # one line, whatever the message holds (harmonic-forge#1256)
+        print(f"[GH] route: not recorded — {type(exc).__name__}: {exc}", file=sys.stderr)
     _ROUTE_STATE["path"] = str(route.path)
     return str(route.path)
 
