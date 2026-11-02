@@ -352,7 +352,7 @@ action** (harmonic-forge#1018): run `mise run lane1-rebase -- <repo-dir>
 <issue> <branch>`. It also applies to a branch whose newest lane comment is
 a Lane 3 PASS on its current head (harmonic-forge#1034); any other gate
 result exits 4. On exit 0, post `ready-for-l3` on the printed SHA in the
-same action (R-0338). On exit 2 or 3, post `--kind rework` naming the
+same action (R-0338). On exit 2 or 3, post `--kind rework --rework-kind rebase` naming the
 conflicting paths or the two SHAs. A conflict confined to `package.json`'s
 top-level `"version"` is not exit 2: the tool sets it to `origin/main`'s
 version plus one patch and prints `version-resolved=` (harmonic-forge#1035);

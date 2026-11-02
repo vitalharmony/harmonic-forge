@@ -2198,7 +2198,7 @@ id = "R-0337"
 file = "rules/lane-tooling-reference.md"
 anchor = "kind-rework"
 statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework, never as ordinary discussion; it renders the Fix H<N> trigger under a distinct l1.rework key; a gate FAIL renders no trigger, since Lane 2 takes work only from Lane 1 (R-0207)."
-text_sha = "168c6dd464f7959b"
+text_sha = "1e36d83a2f37a951"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind rework"], wired_in = "hrse" }]
 
 [[rule]]
@@ -2627,7 +2627,7 @@ id = "R-0390"
 file = "rules/universal-lane1.md"
 anchor = "doc-only-merges-wait"
 statement = "A clean rebase of a Lane 2 branch onto current origin/main is Lane 1's own action via mise run lane1-rebase, including a branch whose newest lane comment is a Lane 3 PASS on its current head (any other gate result exits 4); exit 0 means ready-for-l3 on the printed SHA in the same action, exit 2 or 3 a --kind rework (a conflict confined to package.json's top-level version is resolved by the tool to origin/main's version plus one patch, not exit 2, unless MAJOR or MINOR differ; a re-run after a crash that followed a resolution exits 3), 4 or 5 the named reason, never --no-verify; an auto-AE or standing-grant AE on the old SHA needs a fresh one. When the newest gate report is a PASS and lane1-rebase exits 0, post --kind carry-forward instead of ready-for-l3 (harmonic-forge#1036): a pending/absent CI refusal means wait and re-post, any substantive refusal sends it to Lane 3 via ready-for-l3 and a fresh AE; run `_carry_forward.py check` immediately before gh pr merge on a carried branch: exit 4 (origin/main moved, head still the gated change) means lane1-rebase then a new carry-forward, exit 3 a CI wait, any other non-zero ready-for-l3."
-text_sha = "c6f77edb690c238c"
+text_sha = "1add753642000d5e"
 hooks = []
 
 [[rule]]

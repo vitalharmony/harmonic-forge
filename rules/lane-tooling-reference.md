@@ -87,7 +87,7 @@ tabulates another issue's footers as evidence, and reading the raw body put a
 
 <!-- R-0337 -->
 **A Lane 1 comment asking Lane 2 for more work on an existing branch is posted
-with `--kind rework`, never as ordinary discussion.** `_Markers.newest()`
+with `--kind rework` and `--rework-kind correction|rebase`, never as ordinary discussion.** `_Markers.newest()`
 excludes `discussion` by design — on its own it is Lane 1 talking, not a lane
 transition — so a rebase request posted that way left the row still naming
 Lane 3 while Lane 2 owed the work and nobody had been told (hrse#1609; observed
