@@ -64,7 +64,7 @@ class EscapeOf(unittest.TestCase):
         self.assertEqual(events[0]["attrs"]["escape_of_key"], "F1230")
 
     def test_malformed_key_is_refused_before_filing(self):
-        for key in ("L12", "f1230", "F", "1230", "H12x"):
+        for key in ("L12", "f1230", "F", "1230", "H12x", "F0", "F00"):
             with self.subTest(key=key), redirect_stderr(io.StringIO()), \
                  patch("gh_issue.create_issue", return_value=URL) as create:
                 with self.assertRaises(SystemExit) as caught:
@@ -81,9 +81,21 @@ class EscapeOf(unittest.TestCase):
         self.assertEqual(self.events(), [])
 
     def test_a_valid_key_passes_the_same_harness(self):
-        result, create = self._main("--escape-of", "H2562")
-        self.assertIn(result, (0, None))
-        create.assert_called_once()
+        for key in ("H2562", "F1", "F10", "H2584"):  # harmonic-forge#1256
+            with self.subTest(key=key):
+                result, create = self._main("--escape-of", key)
+                self.assertIn(result, (0, None))
+                create.assert_called_once()
+
+    def test_a_multi_line_failure_prints_one_line(self):
+        """harmonic-forge#1256: a newline in the exception never splits the line."""
+        err = io.StringIO()
+        with patch.object(emit, "emit", side_effect=RuntimeError("a\nb")), redirect_stderr(err):
+            self._main("--escape-of", "F1230")
+        lines = err.getvalue().splitlines()
+        escape = [l for l in lines if l.startswith("[GH] escape-of: not recorded")]
+        self.assertEqual(len(escape), 1)
+        self.assertTrue(escape[0].endswith("RuntimeError: a b"), escape[0])
 
     def test_emit_failure_never_fails_the_filing(self):
         err = io.StringIO()
