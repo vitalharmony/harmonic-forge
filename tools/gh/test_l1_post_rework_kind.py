@@ -1,106 +1,66 @@
 #!/usr/bin/env python3
-"""harmonic-forge#1247 — a Lane 1 rework records whether it corrects or only rebases.
+"""a private-repo incident — `rework` is a real `--kind`, and deliberately a bare one on
+heading: no mandated heading was invented for it, unlike `sweep`/`ae`.
 
-`--kind rework` requires `--rework-kind correction|rebase`; the footer carries
-`rework=<kind>;` directly after `sha=`; the thread extractor reads it back, and a
-legacy footer reads `unclassified`, never a guess.
-Run: `python3 -m unittest tools.gh.test_l1_post_rework_kind`."""
-import importlib.util
+a private-repo incident gave it a LEAD_FIELDS entry (`Finding`, `Next`) — a Lane 1 rework
+request is exactly the shape that needs "what's the problem, what happens
+next" before any evidence, the same case sweep/ae already made. What stays
+bare is the heading requirement: still no mandated `## Rework` string, only
+the lead-field content.
+"""
+import subprocess
 import sys
 import unittest
-import unittest.mock as mock
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT.parent / "telemetry"))
-sys.path.insert(0, str(ROOT.parent.parent / "skills" / "sprint-plan" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import l1_post as L  # noqa: E402
+
+SCRIPT = Path(__file__).resolve().parent / "l1_post.py"
 
 
-def load(name: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
-    return module
+class ReworkKindTests(unittest.TestCase):
+    def test_rework_is_an_accepted_kind(self) -> None:
+        """The defect this closes is that it was not."""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--issue", "1", "--kind", "rework",
+             "--sha", "HEAD", "--branch", "nope", "--file", "/nonexistent"],
+            capture_output=True, text=True,
+        )
+        self.assertNotIn("invalid choice", result.stderr,
+                         "`rework` must be a valid --kind")
 
+    def test_an_unknown_kind_is_still_refused(self) -> None:
+        """AC6's other direction: the choices list is still a closed set, so a
+        typo is a hard argparse failure rather than a silently-stamped footer
+        nothing downstream can read."""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--issue", "1", "--kind", "reworkk",
+             "--sha", "HEAD", "--branch", "nope", "--file", "/nonexistent"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid choice", result.stderr)
 
-l1_post = load("l1_post")
-import eras  # noqa: E402
-import lane_state  # noqa: E402
+    def test_rework_requires_a_finding_and_a_next_step(self) -> None:
+        """a private-repo incident: a Lane 1 rework request is exactly the "what's the
+        problem, what happens next" shape sweep/ae already require — a bare
+        `## L1 — rework, H1\n\nrebase and push\n` is no longer sufficient."""
+        self.assertEqual(L.LEAD_FIELDS["rework"], ("Finding", "Next"))
+        with self.assertRaises(SystemExit):
+            L.validate_lead("rework", "## L1 — rework, H1\n\nrebase and push\n")
+        L.validate_lead(
+            "rework",
+            "## L1 — rework, H1\n\n**Finding:** branch is behind main.\n"
+            "**Next:** rebase and re-push.\n\ndetail\n",
+        )
 
-ARGV = ["l1_post.py", "--repo", "o/r", "--issue", "1", "--sha", "abc", "--branch", "br",
-        "--file", "/dev/null"]
-
-
-class ReworkKindFlag(unittest.TestCase):
-    def _main(self, *extra):
-        def no_network(*a, **k):
-            raise AssertionError("a network or git call ran before the refusal")
-        with mock.patch.object(sys, "argv", ARGV + list(extra)), \
-             mock.patch.object(l1_post, "run", side_effect=no_network), \
-             mock.patch.object(l1_post.subprocess, "run", side_effect=no_network):
-            with self.assertRaises(SystemExit) as caught:
-                l1_post.main()
-        return str(caught.exception.code)
-
-    def test_a_rework_without_a_kind_is_refused_before_any_call(self):
-        self.assertIn("--rework-kind", self._main("--kind", "rework"))
-
-    def test_a_kind_on_another_post_kind_is_refused(self):
-        self.assertIn("valid only for --kind rework",
-                      self._main("--kind", "handoff", "--plan-first", "false",
-                                 "--rework-kind", "rebase"))
-
-
-class ReworkFooter(unittest.TestCase):
-    def _body(self, kind, **kwargs):
-        captured = {}
-
-        def fake_comment_body(repo, issue, body):
-            captured["body"] = body
-            return "https://example/1", 1
-
-        with mock.patch.object(l1_post, "comment_body", fake_comment_body), \
-             mock.patch.object(l1_post, "static_checks", lambda sha, branch: (
-                 ["body-validation"], ("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00"),
-                 {"result": "pass"})), \
-             mock.patch.object(l1_post, "world_checks", lambda *a, **k: ([], [])), \
-             mock.patch.object(l1_post, "require_open_pr", lambda *a, **k: (["pr-open"], [], [])), \
-             mock.patch.object(l1_post, "pr_issue_marker", lambda *a, **k: "<!-- lane-pr-link v1 -->"), \
-             mock.patch.object(l1_post, "write_receipt", lambda record: None), \
-             mock.patch.object(l1_post, "validate_sticky_wicket"):
-            l1_post.post_kind("o/r", 1, kind, "body", "abc", "br", **kwargs)
-        return captured["body"]
-
-    def test_the_field_sits_directly_after_sha_and_kind_still_reads(self):
-        body = self._body("rework", rework_kind="correction")
-        self.assertIn("sha=abc; rework=correction;", body)
-        self.assertEqual(lane_state._FOOTER_KIND.search(body).group(1), "rework")
-
-    def test_no_other_kind_carries_the_field(self):
-        for kind in ("ready-for-l3", "sweep"):
-            with self.subTest(kind=kind):
-                self.assertNotIn("rework=", self._body(kind))
-
-
-class ReworkExtractor(unittest.TestCase):
-    def _kinds(self, footer: str) -> list:
-        body = f"## Rework: H1 — fix the thing\n\n**Next:** Lane 2.\n\n{footer}\n"
-        comment = {"id": 5, "body": body, "created_at": "2026-11-01T00:00:00Z",
-                   "updated_at": "2026-11-01T00:00:00Z", "user": {"login": "x"}}
-        events = eras.comment_events(comment, account="a", org="o", repo="o/r", issue=1)
-        return [e["attrs"].get("rework_kind") for e in events
-                if e["event_type"] == lane_state.KEY_REWORK]
-
-    def test_the_footer_kind_is_read(self):
-        footer = "<!-- l1-post v1; kind=rework; sha=abc; rework=correction; body-sha256=x; checks=y -->"
-        self.assertEqual(self._kinds(footer), ["correction"])
-
-    def test_a_legacy_footer_is_unclassified(self):
-        footer = "<!-- l1-post v1; kind=rework; sha=abc; body-sha256=x; checks=y -->"
-        self.assertEqual(self._kinds(footer), ["unclassified"])
-
+    def test_rework_still_carries_no_mandated_heading(self) -> None:
+        """The heading half of the original decision holds — only the
+        content requirement changed. `AE_HEADING`/`SWEEP_HEADING` have no
+        `REWORK_HEADING` counterpart, and this issue does not add one."""
+        self.assertFalse(hasattr(L, "REWORK_HEADING"))
 
 if __name__ == "__main__":
     unittest.main()
