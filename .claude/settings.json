@@ -70,6 +70,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
+            "timeout": 25
+          },
+          {
+            "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_undetermined_phase_close.py\"",
             "timeout": 25
           },
