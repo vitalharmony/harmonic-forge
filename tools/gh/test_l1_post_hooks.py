@@ -1070,7 +1070,7 @@ class MilestoneCurrentTests(unittest.TestCase):
 
     def test_ack_with_reserved_marker_refused(self):
         with patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
-                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--kind", "rework", "--rework-kind", "correction", "--sha", "HEAD", "--branch", "b",
                                         "--file", "body.md", "--milestone-ack",
                                         "<!-- l1-post v1; kind=sweep; sha=x; body-sha256=y -->"]), \
              patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
@@ -1121,7 +1121,7 @@ class MilestoneCurrentTests(unittest.TestCase):
              patch.object(post, "record_queue_candidate"), \
              patch.object(post, "post_kind", posted), \
              patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
-                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--kind", "rework", "--rework-kind", "correction", "--sha", "HEAD", "--branch", "b",
                                         "--file", "body.md"]):
             with self.assertRaises(SystemExit) as caught:
                 post.main()
@@ -1130,7 +1130,7 @@ class MilestoneCurrentTests(unittest.TestCase):
 
     def test_empty_ack_refused(self):
         with patch.object(sys, "argv", ["l1_post.py", "--repo", "vitalharmony/hrse", "--issue", "7",
-                                        "--kind", "rework", "--sha", "HEAD", "--branch", "b",
+                                        "--kind", "rework", "--rework-kind", "correction", "--sha", "HEAD", "--branch", "b",
                                         "--file", "body.md", "--milestone-ack", "  "]), \
              patch.object(post, "resolve_repo", side_effect=lambda value, *a, **k: value), \
              patch.object(post, "apply_project_identity"), \
@@ -1145,7 +1145,7 @@ class MilestoneCurrentTests(unittest.TestCase):
              patch.object(post, "write_receipt"), \
              patch.object(post, "validate_sticky_wicket"):
             post._post_kind("vitalharmony/hrse", 7, "rework", "**Finding:** x\n", "a" * 40, "b",
-                            milestone_ack="queued by operator")
+                            milestone_ack="queued by operator", rework_kind="correction")
         posted = comment.call_args.args[2]
         self.assertIn("### Milestone override (operator-acknowledged)", posted)
         self.assertIn("- R-0404 milestone ack: queued by operator", posted)

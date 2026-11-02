@@ -3055,7 +3055,7 @@ def _post_kind(
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
     grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
     milestone_ack: str | None = None, carry_forward: tuple[str, int] | None = None,
-    labels=None,
+    labels=None, rework_kind: str | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -3191,6 +3191,11 @@ def _post_kind(
             fail("--kind carry-forward requires --from-sha and --pass-comment")
         checks.append("carry-forward")
         prod_run_field += f" from-sha={carry_forward[0]}; pass={int(carry_forward[1])};"
+    # harmonic-forge#1247: directly after `sha=`, ahead of any prod-run field.
+    if kind == "rework":
+        if rework_kind not in ("correction", "rebase"):
+            fail("--kind rework requires --rework-kind correction|rebase (harmonic-forge#1247)")
+        prod_run_field = f" rework={rework_kind};" + prod_run_field
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
     if kind in STICKY_CHECKED_KINDS:
@@ -3204,6 +3209,7 @@ def _post_kind(
         attempt["posted"] = True
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
+                   **({"rework_kind": rework_kind} if kind == "rework" else {}),  # harmonic-forge#1247
                    **({"prod_run": _prod_run.footer_field(issue, sha, prod_run)} if prod_run else {}),
                    "sha": sha, "branch": branch, "body_sha256": digest, "checks": checks,
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
@@ -3342,6 +3348,10 @@ def _post_digest(args: argparse.Namespace, repo: str, sha: str) -> str:
         "milestone_ack": args.milestone_ack, "plan_first": args.plan_first,
         "mutates_live": args.mutates_live, "cross_repo": args.cross_repo,
     }
+    # harmonic-forge#1247: a dry run for one rework kind never clears the other.
+    # Added for a rework only, so every other kind's digest is unchanged.
+    if args.kind == "rework":
+        fields["rework_kind"] = args.rework_kind
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
@@ -3406,6 +3416,8 @@ def main() -> None:
     # narrower than it looked.
     parser.add_argument("--kind", choices=("handoff", "ready-for-l3", "sweep", "ae", "ae-and-sweep", "rework",
                                            "carry-forward"), required=True)
+    # harmonic-forge#1247: a rework says whether it corrects the work or only rebases it.
+    parser.add_argument("--rework-kind", choices=("correction", "rebase"))
     parser.add_argument("--sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--file", type=Path, help="Body file for every --kind except ae-and-sweep")
@@ -3490,6 +3502,10 @@ def main() -> None:
         fail("--spec-comment is valid only for sweep / ae / ae-and-sweep")
     if args.ack_overlap is not None and not args.ack_overlap.strip():
         fail("--ack-overlap requires a non-empty reason")
+    if args.kind == "rework" and args.rework_kind is None:
+        fail("--kind rework requires --rework-kind correction|rebase (harmonic-forge#1247)")
+    if args.rework_kind is not None and args.kind != "rework":
+        fail("--rework-kind is valid only for --kind rework (harmonic-forge#1247)")
     if args.milestone_ack is not None:
         if not args.milestone_ack.strip():
             fail("--milestone-ack requires a non-empty reason")
@@ -3701,6 +3717,7 @@ def main() -> None:
         milestone_ack=args.milestone_ack, carry_forward=(
             (args.from_sha, args.pass_comment) if args.kind == "carry-forward" else None),
         labels=(labels_once() if args.kind == "handoff" else None),
+        rework_kind=args.rework_kind,
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

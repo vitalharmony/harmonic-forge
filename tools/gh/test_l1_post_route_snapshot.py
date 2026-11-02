@@ -272,7 +272,7 @@ class PostedHandoff(TempStore):
             return "https://example.test/c", 1
 
         with patch.object(post, "comment_body", comment):
-            post._post_kind(REPO, 1231, "rework", "**Finding:** x\n", SHA, "b")
+            post._post_kind(REPO, 1231, "rework", "**Finding:** x\n", SHA, "b", rework_kind="correction")
         self.assertNotIn("Route (snapshot)", posted["text"])
         self.assertEqual(route_store.load(KEY), [])
 

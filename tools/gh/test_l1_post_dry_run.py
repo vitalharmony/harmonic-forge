@@ -135,7 +135,7 @@ class DryRunTests(Harness):
     def test_dry_run_lists_overlap_and_body_refusals_together(self):
         """AC1."""
         self.overlap = True
-        code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--sha", SHA_A,
+        code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--rework-kind", "correction", "--sha", SHA_A,
                                    "--branch", "fix/1115-x", "--file", self.body(NO_NEXT), "--dry-run")
         self.assertIsNotNone(code)
         self.assertIn("2 problems:", code)
@@ -309,7 +309,7 @@ class DryRunTests(Harness):
         """AC1 (reforge pass 1): the marker refusal is collected with the body
         and world refusals, never raised ahead of them."""
         self.overlap = True
-        code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--sha", SHA_A,
+        code, _, _ = self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--rework-kind", "correction", "--sha", SHA_A,
                                    "--branch", "fix/1115-x",
                                    "--file", self.body(NO_NEXT + "<!-- l1-post copied -->\n"), "--dry-run")
         self.assertIn("3 problems", code)
@@ -321,7 +321,7 @@ class DryRunTests(Harness):
 
     def test_real_post_still_runs_world_checks_after_clean_dry_run(self):
         """The dry run gates in front of the real checks; it replaces none."""
-        argv = ("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--sha", SHA_A,
+        argv = ("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--rework-kind", "correction", "--sha", SHA_A,
                 "--branch", "fix/1115-x", "--file", self.body(REWORK))
         self.assertIsNone(self.run_main(*argv, "--dry-run", real_post_kind=True)[0])
         self.overlap = True  # the world moved after the dry run
@@ -334,7 +334,7 @@ class DryRunTests(Harness):
 #: `True` for a switch; a changed flag replaces its base value.
 DIGEST_ROWS = [
     ("repo", "ready-for-l3", {}, {"--repo": "vitalharmony/hrse"}, None),
-    ("kind", "ready-for-l3", {}, {"--kind": "rework"}, None),
+    ("kind", "ready-for-l3", {}, {"--kind": "rework", "--rework-kind": "correction"}, None),
     ("issue", "ready-for-l3", {}, {"--issue": ISSUE + 1}, None),
     ("sha", "ready-for-l3", {}, {"--sha": SHA_B}, None),
     ("branch", "ready-for-l3", {}, {"--branch": "fix/1115-y"}, None),
@@ -348,6 +348,7 @@ DIGEST_ROWS = [
     ("ack_overlap", "ready-for-l3", {}, {"--ack-overlap": "reviewed"}, None),
     ("ack_no_pr_required", "ready-for-l3", {}, {"--ack-no-pr-required": "no CI here"}, None),
     ("milestone_ack", "rework", {}, {"--milestone-ack": "outside the release, operator ruling"}, None),
+    ("rework_kind", "rework", {}, {"--rework-kind": "rebase"}, None),  # harmonic-forge#1247
     ("plan_first", "handoff", {"--plan-first": "false"}, {"--plan-first": "true"}, None),
     ("mutates_live", "handoff", {"--plan-first": "false"}, {"--mutates-live": True}, None),
     ("cross_repo", "handoff", {"--plan-first": "false"}, {"--cross-repo": True}, None),
@@ -406,6 +407,8 @@ class ReceiptDigestFieldTests(Harness):
                           "--spec-comment": 5})
         else:
             flags["--file"] = self.dir / "body.md"
+        if kind == "rework":
+            flags["--rework-kind"] = "correction"  # harmonic-forge#1247
         if kind == "carry-forward":
             flags.update({"--from-sha": "d" * 40, "--pass-comment": 7})
         for extra in flag_sets:
@@ -415,15 +418,27 @@ class ReceiptDigestFieldTests(Harness):
             argv += [flag] if value is True else [flag, value]
         return argv
 
+    def test_a_non_rework_digest_has_no_rework_field(self):
+        """harmonic-forge#1247 AC4: every other kind's digest is unchanged."""
+        import argparse  # noqa: PLC0415
+        seen: dict = {}
+        with mock.patch.object(L.json, "dumps", side_effect=lambda fields, **k: seen.update(fields) or "{}"):
+            L._post_digest(argparse.Namespace(kind="ready-for-l3", **{k: None for k in (
+                "issue", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
+                "from_sha", "pass_comment", "ack_overlap", "ack_no_pr_required", "milestone_ack",
+                "plan_first", "mutates_live", "cross_repo", "rework_kind")}), REPO, SHA_A)
+        self.assertNotIn("rework_kind", seen)
+
     def test_the_rows_cover_every_digest_input(self):
         """A field added to `_post_digest` needs a row here."""
         import argparse  # noqa: PLC0415
         seen: dict = {}
         with mock.patch.object(L.json, "dumps", side_effect=lambda fields, **k: seen.update(fields) or "{}"):
-            L._post_digest(argparse.Namespace(**{k: None for k in (
-                "issue", "kind", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
+            # kind=rework, so the rework-only field (harmonic-forge#1247) is seen too.
+            L._post_digest(argparse.Namespace(kind="rework", **{k: None for k in (
+                "issue", "branch", "file", "ae_file", "sweep_file", "spec_comment", "prod_run",
                 "from_sha", "pass_comment", "ack_overlap", "ack_no_pr_required", "milestone_ack",
-                "plan_first", "mutates_live", "cross_repo")}), REPO, SHA_A)
+                "plan_first", "mutates_live", "cross_repo", "rework_kind")}), REPO, SHA_A)
         self.assertEqual(set(seen), {row[0] for row in DIGEST_ROWS})
 
     def test_each_digest_field_invalidates_the_receipt(self):

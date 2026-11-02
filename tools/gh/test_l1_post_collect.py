@@ -61,6 +61,8 @@ class MainCollectTests(unittest.TestCase):
                 "--sha", "deadbeef", "--branch", "feat/35-x", "--file", "/dev/null"]
         if kind == "handoff":
             argv += ["--plan-first", "false"]
+        if kind == "rework":
+            argv += ["--rework-kind", "correction"]  # harmonic-forge#1247
         result = mock.Mock(returncode=0, stdout=json.dumps(list(comments)), stderr="")
         patches = [mock.patch.object(sys, "argv", argv),
                    mock.patch.object(l1_post, "resolve_sha", return_value="deadbeef"),
@@ -84,7 +86,7 @@ class MainCollectTests(unittest.TestCase):
 
     def test_milestone_ack_reaches_posted_body(self):
         """The main() -> post_kind hop carries --milestone-ack (harmonic-forge#1033)."""
-        argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", "rework",
+        argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", "rework", "--rework-kind", "correction",
                 "--sha", "deadbeef", "--branch", "feat/35-x", "--file", "/dev/null",
                 "--milestone-ack", "queued by operator"]
         patches = [mock.patch.object(sys, "argv", argv),
@@ -161,6 +163,8 @@ class ValidatorOrderTests(unittest.TestCase):
                  else ["--file", "/dev/null"])
         if kind == "handoff":
             argv += ["--plan-first", "false"]
+        if kind == "rework":
+            argv += ["--rework-kind", "correction"]  # harmonic-forge#1247
         if kind not in ("sweep", "ae-and-sweep"):
             argv.remove("--spec-comment"), argv.remove("9")
         patches = [mock.patch.object(sys, "argv", argv),

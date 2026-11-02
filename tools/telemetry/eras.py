@@ -62,6 +62,7 @@ _POSTED_BY = re.compile(r"posted-by=LANE(\d|-unset)\b", re.I)
 #: A comment's own footer stands on a line of its own; the last one is l1_post's.
 _OWN_FOOTER = re.compile(r"^[ \t]*(<!--\s*l1-post\b[^>]*-->)[ \t]*$", re.I | re.M)
 _QUOTED = re.compile(r"^[ \t]*>.*$", re.M)
+_REWORK_KIND = re.compile(r"\brework=(correction|rebase);")
 _GATE_KEYS = {lane_state.KEY_GATE_PASS, lane_state.KEY_GATE_FAIL, lane_state.KEY_UNKNOWN}
 _VERDICT_KEY = {"PASS": lane_state.KEY_GATE_PASS, "FAIL": lane_state.KEY_GATE_FAIL,
                 "BLOCKED": lane_state.KEY_BLOCKED_LANE}
@@ -248,6 +249,10 @@ def comment_events(comment: dict[str, Any], *, account: Optional[str], org: Opti
             continue
         extra = (case_counts(footer, "spec")
                  if artifact == "spec" and t.key == lane_state.KEY_SPEC_POSTED else {})
+        if t.key == lane_state.KEY_REWORK:
+            # harmonic-forge#1247: the poster's own classification, never a guess.
+            kind_match = _REWORK_KIND.search(footer or "")
+            extra = {**extra, "rework_kind": kind_match.group(1) if kind_match else "unclassified"}
         add(t.key, t.provenance, t.validated, t.at, t.comment_id, extra)
     # Gate verdicts come from gate_ci.verdict_of(): heading or lead block only
     # (never a per-TC line), any heading level, and CONFLICT when the two

@@ -25,6 +25,7 @@ class ReworkKindTests(unittest.TestCase):
         """The defect this closes is that it was not."""
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--issue", "1", "--kind", "rework",
+             "--rework-kind", "correction",  # harmonic-forge#1247
              "--sha", "HEAD", "--branch", "nope", "--file", "/nonexistent"],
             capture_output=True, text=True,
         )

@@ -77,8 +77,8 @@ issue's own declared scope (`harmonic-forge/tools/gh/` only).
 An AE and its gate-readiness sweep are one atomic action: same turn, sweep
 strictly after, and the sweep is Lane 1's (R-0208). A `ready-for-l3` after a
 FAIL carries that authorization forward onto the new SHA (R-0209). A Lane 1
-request for more work on a branch (a rebase, a correction) is posted with
-`--kind rework`, never as a discussion, which no lane's queue reads.
+request for work on a branch (rebase or fix) is posted with
+`--kind rework --rework-kind`, never as a discussion, which no lane's queue reads.
 
 Reference: `harmonic-forge/rules/lane-tooling-reference.md` § Derived lane states
 (`lane_state.py`'s key table, R-0331–R-0334) and § `kind=rework` (R-0337).
