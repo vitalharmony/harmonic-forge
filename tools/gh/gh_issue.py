@@ -26,6 +26,7 @@ import re
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -591,6 +592,44 @@ def _print_route_unwritten() -> None:
               f"(the filing stopped before the board took it; see the messages above)", file=sys.stderr)
 
 
+def _escape_of_repo(key: str) -> str | None:
+    """The repo a repo-prefixed key (`F1230`) names, from batch_auth's prefix
+    map (the one the BATCH keys already use), or None when it is not one.
+    Uppercase only: a lowercase prefix is refused, never guessed."""
+    match = re.fullmatch(r"([A-Z])(\d+)", key or "")
+    if not match:
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+    import batch_auth  # noqa: PLC0415
+    return batch_auth._PREFIX_TO_REPO.get(match.group(1))
+
+
+def _record_escape(repo: str, issue_number: int, key: str) -> None:
+    """harmonic-forge#1248: one `escape.filed` event for the new issue. Fail-open,
+    the route record's contract: a telemetry failure prints one line and never
+    fails the filing."""
+    try:
+        telemetry = str(Path(__file__).resolve().parents[1] / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        import emit as telemetry_emit  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        event = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": "manual", "repo": repo, "issue": issue_number,
+            "account": origin.account, "org": origin.org,
+            "actor": "lane1:gh-issue", "event_type": "escape.filed",
+            "subject_kind": "escape", "subject_id": f"{repo}#{issue_number}:escape-of:{key}",
+            "provenance": "manual", "attrs": {"escape_of_key": key},
+        }
+        counts = telemetry_emit.emit([event])
+        if counts.get("rejected"):
+            raise RuntimeError(f"rejected: {counts['rejected']}")
+    except Exception as exc:
+        print(f"[GH] escape-of: not recorded — {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int) -> str | None:
     """harmonic-forge#1232: the filing checkpoint of semantic routing.
 
@@ -784,8 +823,17 @@ def main() -> int:
              "title search printed candidate prior owners. The reason says "
              "why none of them owns this work. Never skips the search.",
     )
+    parser.add_argument(
+        "--escape-of", default=None, metavar="KEY",
+        help="harmonic-forge#1248: this bug escaped the closed issue KEY (a "
+             "repo-prefixed key such as F1230). Appends `Escape-of: KEY` to the "
+             "body and records one `escape.filed` telemetry event after filing.",
+    )
     args = parser.parse_args()
     _caller_path.resolve_args(args, 'body_file')  # harmonic-forge#1117 AC2
+    if args.escape_of is not None and _escape_of_repo(args.escape_of) is None:
+        parser.error(f"--escape-of {args.escape_of!r} is not a known repo-prefixed "
+                     "issue key (e.g. F1230, H2562).")
     _caller_path.refuse_repo_override(parser, 'gh-new-issue')
     if args.no_prior_owner is not None and not args.no_prior_owner.strip():
         parser.error("--no-prior-owner needs a non-empty reason (R-0397).")
@@ -822,6 +870,8 @@ def main() -> int:
                     body = handle.read()
         except OSError as exc:
             parser.error(f"cannot read --body-file {args.body_file}: {exc}")
+    if args.escape_of is not None:
+        body = f"{body or ''}\n\nEscape-of: {args.escape_of}\n"
 
     tier = args.tier
 
@@ -948,11 +998,15 @@ def main() -> int:
     # for an issue that does not exist.
     issue_number = _issue_number(issue_url)
     route_path = None
+    if issue_number is None and args.escape_of is not None:
+        print(f"[GH] escape-of: not recorded — no issue number in {issue_url}", file=sys.stderr)
     if issue_number is not None:
         handoff_owed.record(args.repo, issue_number, issue_url)
         # harmonic-forge#1232: before `_discharge_exception`, which can return 1,
         # so the filing checkpoint is recorded on every exit below.
         route_path = _route_at_filing(args.repo, body, labels, issue_number)
+        if args.escape_of is not None:
+            _record_escape(args.repo, issue_number, args.escape_of)
         if not _discharge_exception(args, issue_number, issue_url):
             return 1
 
