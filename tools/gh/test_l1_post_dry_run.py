@@ -354,6 +354,44 @@ DIGEST_ROWS = [
 ]
 
 
+
+class HandoffLabelThreadingTests(Harness):
+    """harmonic-forge#1242: `main()` hands the one label read (`labels_once`)
+    to `post_kind` for a handoff, so the snapshot can see `tooling-exception`."""
+
+    def test_main_passes_the_single_label_read_to_post_kind(self):
+        reads = []
+
+        def labels(repo, issue):
+            reads.append((repo, issue))
+            return {"tooling-exception"}
+
+        quiet = ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
+                 "validate_board_fields_set", "validate_milestone_set",
+                 "validate_tooling_exception_labelled", "validate_pitch_inspected", "validate_te_lead_fields",
+                 "validate_lead"]
+        with contextlib.ExitStack() as stack:
+            for name in quiet:
+                stack.enter_context(mock.patch.object(L, name))
+            stack.enter_context(mock.patch.object(L, "issue_labels", side_effect=labels))
+            argv = ("--repo", REPO, "--issue", ISSUE, "--kind", "handoff", "--sha", SHA_A,
+                    "--branch", "main", "--file", self.body(R4L3), "--plan-first", "false")
+            code, _, err = self.run_main(*argv, "--dry-run")
+            self.assertIsNone(code, err)
+            reads.clear()
+            code, _, err = self.run_main(*argv)
+        self.assertIsNone(code, err)
+        self.posted.assert_called_once()
+        self.assertEqual(self.posted.call_args.kwargs.get("labels"), {"tooling-exception"})
+        self.assertEqual(len(reads), 1, "the handoff made a second label read")
+
+    def test_a_non_handoff_passes_no_labels(self):
+        code, _, err = self.run_main(*self.r4l3("--dry-run"))
+        self.assertIsNone(code, err)
+        code, _, err = self.run_main(*self.r4l3())
+        self.assertIsNone(code, err)
+        self.assertIsNone(self.posted.call_args.kwargs.get("labels"))
+
 class ReceiptDigestFieldTests(Harness):
     """harmonic-forge#1115 AC10: every receipt-digest input, changed alone
     after a clean dry run, stops the receipt matching. The body validators
