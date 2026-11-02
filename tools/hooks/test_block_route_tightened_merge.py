@@ -283,6 +283,19 @@ class FailDirections(_Case):
         self.assertTrue(self.denied(result))
         self.assertIn("route store", result["systemMessage"])
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 directory")
+    def test_unreadable_store_directory_denies(self):
+        part = self.store / "events" / "2026" / "11"
+        part.mkdir(parents=True)
+        part.chmod(0)
+        try:
+            result = self.run_hook(FakeGitHub(HRSE))
+        finally:
+            part.chmod(0o755)
+        self.assertTrue(self.denied(result))
+        self.assertIn("route store", result["systemMessage"])
+        self.assertEqual(self.premerge(f"{HRSE}#2600"), [])
+
     def test_files_unreadable_denies(self):
         gh = FakeGitHub(HRSE)
         gh.down.add("files")
@@ -341,8 +354,14 @@ class TitleMapping(_Case):
         self.assertIn(f"no route recorded for {FORGE}#1243", result["systemMessage"])
         self.assertEqual(route_store.load(f"{HRSE}#1243"), [])
         self.assertEqual(len(route_store.load(f"{FORGE}#1243")), 1)
-        self.assertFalse(any(args[:2] == ("pr", "view") and "headRefName" in args
-                             for args in gh.calls))
+
+    def test_title_and_branch_naming_different_issues_is_refused(self):
+        self.seed(f"{FORGE}#1243", 3, "runner", "handoff")
+        gh = FakeGitHub(FORGE, title="Wire it (harmonic-forge#1234)", ref="feat/1243-x")
+        result = self.run_hook(gh)
+        self.assertTrue(self.denied(result))
+        self.assertIn("title names #1234 but its branch names #1243", result["systemMessage"])
+        self.assertEqual(route_store.load(f"{FORGE}#1234"), [])
 
     def test_no_suffix_falls_back_to_the_branch(self):
         gh = FakeGitHub(HRSE, title="Register the hook", ref="feat/1243-x",

@@ -131,13 +131,20 @@ def issue_for_pr(deadline: Deadline, repo: str, pr: str, title: str) -> tuple[st
     branch `feat/1243-...` for harmonic-forge#1243) never resolves to hrse#1243.
     Without one, the branch number in the PR's own repo (`issues_closed_by_pr`)."""
     match = TITLE_ISSUE.search(title or "")
-    if match:
-        return f"{repo.split('/')[0]}/{match.group('slug')}", match.group("number")
     deadline.need(READ_CEILING, f"reading PR #{pr}'s branch")
     issues = pre.issues_closed_by_pr(repo, pr)
     if issues is None:
         raise Refused(f"Blocked: could not read which issue PR #{pr} in {repo} is for, so "
                       f"its route cannot be rechecked (harmonic-forge#1243 AC7).")
+    if match:
+        number = match.group("number")
+        # A branch number that disagrees with the title is a typo in one of
+        # them; resolving either would compare the diff with the wrong issue.
+        if issues and issues[0] != number:
+            raise Refused(f"Blocked: PR #{pr}'s title names #{number} but its branch names "
+                          f"#{issues[0]}, so its issue (and route) cannot be told apart "
+                          f"(harmonic-forge#1243). Fix the title or the branch.")
+        return f"{repo.split('/')[0]}/{match.group('slug')}", number
     return (repo, issues[0]) if issues else None
 
 
