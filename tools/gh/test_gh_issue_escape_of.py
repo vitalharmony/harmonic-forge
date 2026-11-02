@@ -62,14 +62,16 @@ class EscapeOf(unittest.TestCase):
 
     def test_malformed_key_is_refused_before_filing(self):
         for key in ("L12", "f1230", "F", "1230", "H12x"):
-            with self.subTest(key=key), redirect_stderr(io.StringIO()), \
-                 patch("gh_issue.create_issue") as create:
-                with patch.object(sys, "argv", ["gh_issue.py", "--repo", FORGE, "--title", "t",
-                                                "--body", BODY, "--escape-of", key]):
-                    with self.assertRaises(SystemExit) as caught:
-                        gh_issue.main()
+            with self.subTest(key=key), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    _, create = self._main("--escape-of", key)
                 self.assertEqual(caught.exception.code, 2)
-                create.assert_not_called()
+                self.assertEqual(self.events(), [])
+
+    def test_a_valid_key_passes_the_same_harness(self):
+        result, create = self._main("--escape-of", "H2562")
+        self.assertIn(result, (0, None))
+        create.assert_called_once()
 
     def test_emit_failure_never_fails_the_filing(self):
         err = io.StringIO()
