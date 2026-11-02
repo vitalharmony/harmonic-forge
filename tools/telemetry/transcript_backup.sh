@@ -18,6 +18,8 @@
 # Snapshots are never forgotten: the point is that nothing is lost, and
 # restic deduplicates, so an unchanged transcript costs nothing per run.
 # `restic check --read-data-subset` verifies a slice of stored data each run.
+# Each run also backs up the telemetry store (`emit.store_root()`) into the same
+# repository under the tag `telemetry-store` (harmonic-forge#1246).
 set -euo pipefail
 
 CONF="${FORGE_TRANSCRIPT_BACKUP_ENV:-$HOME/.config/harmonic-forge/transcript-backup.env}"
@@ -31,6 +33,13 @@ source "$CONF"
 : "${RESTIC_PASSWORD_FILE:?transcript-backup: RESTIC_PASSWORD_FILE unset in $CONF}"
 SOURCE_DIR="${SOURCE_DIR:-$HOME/.claude/projects}"
 SOURCE_DIR="${SOURCE_DIR/#\~/$HOME}"
+# The store root comes from emit, never a copied literal; a missing store
+# stops the run before any backup, so it never yields a run that looks green.
+STORE_DIR="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import emit; print(emit.store_root())' "$(dirname "$(readlink -f "$0")")")"
+if [[ ! -d "$STORE_DIR" || ! -r "$STORE_DIR" ]]; then
+  echo "transcript-backup: telemetry store $STORE_DIR missing or unreadable" >&2
+  exit 5
+fi
 export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE
 
 perm=$(stat -c '%a' "$RESTIC_PASSWORD_FILE")
@@ -56,6 +65,7 @@ restic cat config 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys
   && mv "$ID_FILE.tmp" "$ID_FILE"
 
 restic backup --tag claude-transcripts --one-file-system --no-scan "$SOURCE_DIR"
+restic backup --tag telemetry-store --one-file-system --no-scan "$STORE_DIR"
 
 # The copy only protects anything once it has left the disk. Wait for Insync
 # to report the whole repository uploaded -- the same `insync status -f`
