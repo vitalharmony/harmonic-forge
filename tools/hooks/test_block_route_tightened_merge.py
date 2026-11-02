@@ -179,6 +179,10 @@ class PassAtExactHead(_Case):
         gh = FakeGitHub(HRSE, comments=[comment(10, gate_body("PASS", OTHER))])
         self.assertTrue(self.denied(self.run_hook(gh)))
 
+    def test_fail_at_head_is_refused(self):
+        gh = FakeGitHub(HRSE, comments=[comment(10, gate_body("FAIL", HEAD))])
+        self.assertTrue(self.denied(self.run_hook(gh)))
+
     def test_pass_at_a_prefix_of_the_head_is_refused(self):
         gh = FakeGitHub(HRSE, comments=[comment(10, gate_body("PASS", HEAD[:12]))])
         self.assertTrue(self.denied(self.run_hook(gh)))
