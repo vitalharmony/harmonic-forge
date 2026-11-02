@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "routing"))
 import gates  # noqa: E402
@@ -79,11 +79,15 @@ def threat_model(body: str) -> Optional[str]:
     return match["text"].strip().strip("*").strip() if match else None
 
 
-def snapshot(body: str, issue_repo: str) -> tuple[str, Optional[gates.Route]]:
-    """(the line to append, the evaluated route or None when unavailable)."""
+def snapshot(body: str, issue_repo: str, labels: Iterable[str] = ()) -> tuple[str, Optional[gates.Route]]:
+    """(the line to append, the evaluated route or None when unavailable).
+
+    `labels` are the issue's labels, so the `te-label` gate can match at a
+    handoff (harmonic-forge#1242); the caller passes the one read it already made."""
     try:
         scope = gates.Scope(repo=issue_repo, halves=affected_files(body, issue_repo),
-                            threat_model=threat_model(body), runner_eligible=False)
+                            labels=sorted(labels), threat_model=threat_model(body),
+                            runner_eligible=False)
         route = gates.evaluate(scope)
         return f"Route (snapshot): path {route.path} — gate {route.gate_id} — {route.reason}", route
     except Exception as exc:  # fail open: a routing bug never blocks a post
