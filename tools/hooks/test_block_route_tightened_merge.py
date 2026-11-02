@@ -105,7 +105,11 @@ class _Case(unittest.TestCase):
         return json.loads(out.getvalue() or "{}")
 
     def denied(self, result) -> bool:
-        return (result.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny"
+        deny = (result.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny"
+        if deny:
+            # A crash reaches the catch-all deny; no case may pass on one.
+            self.assertNotIn("the route recheck failed", result.get("systemMessage", ""))
+        return deny
 
     def premerge(self, key):
         return [e for e in route_store.load(key) if e["attrs"]["checkpoint"] == "pre-merge"]
@@ -175,6 +179,10 @@ class PassAtExactHead(_Case):
         gh = FakeGitHub(HRSE, comments=[comment(10, gate_body("PASS", OTHER))])
         self.assertTrue(self.denied(self.run_hook(gh)))
 
+    def test_pass_at_a_prefix_of_the_head_is_refused(self):
+        gh = FakeGitHub(HRSE, comments=[comment(10, gate_body("PASS", HEAD[:12]))])
+        self.assertTrue(self.denied(self.run_hook(gh)))
+
     def test_newer_fail_supersedes_pass(self):
         gh = FakeGitHub(HRSE, comments=[comment(10, gate_body("PASS", HEAD)),
                                         comment(11, gate_body("FAIL", HEAD))])
@@ -206,6 +214,12 @@ class PrecloseCoversHead(_Case):
         self.assertTrue(self.denied(result))
         self.assertIn("lane-machinery", result["systemMessage"])
 
+    def test_pr_in_another_repo_gets_no_replay(self):
+        gh = FakeGitHub(HRSE, title="Wire it (harmonic-forge#2600)", files=["tools/hooks/x.py"],
+                        labels=["tooling-exception", pre.PRECLOSE_LABEL])
+        self.run_hook(gh, receipt_ok=True)
+        self.assertEqual(self.receipt_calls[0].args, (FORGE, "2600", HEAD, None))
+
     def test_label_missing_is_refused(self):
         self.gh.labels = ["tooling-exception"]
         self.assertTrue(self.denied(self.run_hook(self.gh, receipt_ok=True)))
@@ -223,6 +237,15 @@ class NoRouteRecordsAndAllows(_Case):
         second = self.run_hook(FakeGitHub(HRSE))
         self.assertFalse(self.denied(second))
         self.assertEqual(len(self.premerge(key)), 1)
+
+    def test_first_recorded_event_is_the_baseline(self):
+        key = f"{HRSE}#2600"
+        first = self.run_hook(FakeGitHub(HRSE, files=["docs/x.md"]))
+        self.assertFalse(self.denied(first))
+        self.assertEqual(self.premerge(key)[0]["attrs"]["path"], 2)
+        result = self.run_hook(FakeGitHub(HRSE))
+        self.assertTrue(self.denied(result))
+        self.assertIn("hrse-product", result["systemMessage"])
 
 
 class RunnerExemption(_Case):

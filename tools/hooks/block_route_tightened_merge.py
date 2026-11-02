@@ -172,7 +172,12 @@ def _newest_pass_at(comments: list[dict], head: str) -> bool:
     """True when the issue's newest gate report is a Lane 3 PASS gated at `head`."""
     cf = _carry_forward()
     for comment in comments:
-        if not cf.is_gate_report(comment.get("body") or ""):
+        body = comment.get("body") or ""
+        if not cf.is_gate_report(body):
+            continue
+        # Exact full-SHA equality: `check_pass_comment`'s `same_sha` accepts a
+        # prefix, and a PASS on a 12-character prefix must not clear the head.
+        if (cf.gate_ci.gated_sha(body) or "").lower() != head.lower():
             continue
         cid = int(comment.get("id", -1))
         if not cf.check_pass_comment(comments, cid, head) and \
@@ -205,7 +210,10 @@ def clearers(deadline: Deadline, repo: str, issue: str, pr_repo: str, pr: str, h
         if pre.PRECLOSE_LABEL not in labels:
             return False, missing
         deadline.need(pre.FETCH_BUDGET_SECONDS, "checking the pre-close receipt")
-        if pre._preclose_receipt_ok(repo, issue, head, pr):
+        # The receipt lives under the issue's repo, but the change-identity
+        # replay fetches the PR from that same repo. For a PR in another repo
+        # pass no PR, so only an exact reviewed-head match is accepted.
+        if pre._preclose_receipt_ok(repo, issue, head, pr if pr_repo == repo else None):
             return True, "a pre-close receipt covers the head"
         return False, missing
     return False, f"a clearer for path {diff.path} (none is defined)"
@@ -255,12 +263,13 @@ def recheck(deadline: Deadline, command: str, pr_repo: str, pr: str) -> str | No
     prior = [e for e in events if _checkpoint(e) != CHECKPOINT]
     diff_text = _route_text(diff.path, diff.gate_id, f": {diff.reason}")
 
-    if not prior:
-        if not mine:
-            route_store.record(key, diff, decider=DECIDER, checkpoint=CHECKPOINT)
+    if not prior and not mine:
+        route_store.record(key, diff, decider=DECIDER, checkpoint=CHECKPOINT)
         return f"no route recorded for {key}; recorded {diff.path}/{diff.gate_id} at pre-merge"
 
-    base = baseline(prior)["attrs"]
+    # With no other route, the first event this hook recorded (AC5) is the
+    # baseline; its later tightenings still never are (AC2).
+    base = baseline(prior or mine[:1])["attrs"]
     base_path = int(base["path"])
     if diff.path >= base_path:
         return None
