@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -57,6 +58,16 @@ def load(key: str) -> list[dict[str, Any]]:
     repo, issue = split_key(key)
     base = emit.store_root() / "events"
     out: list[dict[str, Any]] = []
+
+    def _unreadable(err: OSError) -> None:
+        # `Path.glob` skips a directory it cannot read, so an unreadable store
+        # would load as "no route" (harmonic-forge#1243 pass 2).
+        raise RuntimeError(f"route store: cannot read {err.filename} ({err.strerror})") from err
+
+    if base.exists():
+        # followlinks: `Path.glob` traverses a symlinked directory, so the walk must too.
+        for _ in os.walk(base, onerror=_unreadable, followlinks=True):
+            pass
     for part in sorted(base.glob(f"*/*/{SOURCE}/*.jsonl")):
         with part.open(encoding="utf-8") as handle:
             for number, line in enumerate(handle, 1):
