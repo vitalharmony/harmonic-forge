@@ -34,7 +34,11 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-OWED_DIR = Path.home() / ".cache" / "harmonic-forge" / "tasklist_owed"
+#: The operator's real marker store -- the one literal for it, which a test
+#: process never writes (harmonic-forge#1257, the #907 guard applied here).
+REAL_OWED_DIR = Path.home() / ".cache" / "harmonic-forge" / "tasklist_owed"
+OWED_DIR = REAL_OWED_DIR
+TESTING_ENV = "HARMONIC_FORGE_TESTING"
 TASKS_DIR = Path.home() / ".claude" / "tasks"
 PRUNE_AFTER_DAYS = 7
 OPEN_STATUSES = ("pending", "in_progress")
@@ -98,9 +102,24 @@ def _dir(session: str) -> Path:
     return OWED_DIR / session
 
 
+def _refuses_real_store() -> bool:
+    """Whether this is a test process pointed at the operator's real store
+    (`emit._refuses_real_store`'s rule, harmonic-forge#907/#1257). Both globals
+    are read at call time, so a test that patches them is seen; an unresolvable
+    path refuses rather than writes."""
+    if not ("unittest" in sys.modules or os.environ.get(TESTING_ENV) == "1"):
+        return False
+    try:
+        return Path(OWED_DIR).resolve() == Path(REAL_OWED_DIR).resolve()
+    except OSError:
+        return True
+
+
 def record(key: str, kind: str, session: str | None = None,
            now: float | None = None) -> bool:
     """Record that `key`'s entry owes an update after `kind`. Never raises."""
+    if _refuses_real_store():
+        return False
     session = session_id() if session is None else session
     if not session:
         # No Stop hook can ever match an unkeyed marker; writing one would
