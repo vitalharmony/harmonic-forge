@@ -373,11 +373,13 @@ def required_checks(repo: str, branch: str = "main", run=None, *, bare_404_ok: b
       (`report_red_main.DEFAULT_REQUIRED_CHECKS`, which it also substitutes
       for the empty set).
 
-    `bare_404_ok` is off by default, and on only at the Lane 3 PASS gate and
-    carry-forward (harmonic-forge#1263, operator ruling A). A merge must not take
-    this path: GitHub enforces nothing on such a repo, and a PR can add a green
-    job named `verify` that shadows a red one, so `batch_auth.merge_ci_state`
-    keeps reading None there and the merge asks.
+    `bare_404_ok` is off by default, and on only at the Lane 3 PASS gate
+    (harmonic-forge#1263, operator ruling A as narrowed). Nothing that runs at
+    merge time may take this path: GitHub enforces nothing on such a repo, and a
+    PR can add a green job named `verify` that shadows a red one. So
+    `batch_auth.merge_ci_state` keeps reading None and the merge asks, and
+    carry-forward stays out because `_carry_forward.check` runs immediately
+    before a merge; a rebased branch on such a repo is re-gated instead.
     """
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}/protection",

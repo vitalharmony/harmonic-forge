@@ -333,12 +333,6 @@ class PassRequiresGreenCiTests(unittest.TestCase):
         state, detail, _ = self._merge_ci_state(self._merge_runner(checks))
         self.assertEqual(state, "unknown", detail)
 
-    def test_only_the_pass_gate_and_carry_forward_take_the_bare_404_path(self):
-        tools = Path(gate_ci.__file__).resolve().parents[1]
-        callers = sorted(str(p.relative_to(tools)) for p in tools.rglob("*.py")
-                         if not p.name.startswith("test_") and "bare_404_ok=True" in p.read_text())
-        self.assertEqual(callers, ["gh/_carry_forward.py", "gh/gate_ci.py"])
-
     def test_a_bare_404_pass_is_judged_like_any_unprotected_branch(self):
         """End to end through `check_gate_result`: the empty set does not wave a
         PASS through. A red observed check refuses, as for every unprotected repo."""

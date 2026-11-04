@@ -250,11 +250,16 @@ def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
 
 def check_ci(repo: str, sha: str, run=None) -> list[Refusal]:
     """AC1 bullet 5: CI green under the REQUIRED checks; pending/absent wait."""
-    required = gate_ci.required_checks(repo, run=run, bare_404_ok=True)
+    # harmonic-forge#1263: no `bare_404_ok`. `check()` runs this immediately before
+    # a merge, and that path must not say all clear on a repo GitHub enforces
+    # nothing on.
+    required = gate_ci.required_checks(repo, run=run)
     if required is None:
         # F1036 epoch 2 survivor 2: never fall back to the observed runs; an
         # unreadable required set cannot show every required check reported.
-        return [Refusal(f"cannot read {repo}'s required checks (retry)", wait=True)]
+        return [Refusal(f"cannot read {repo}'s required checks (retry once). A repo with no branch-protection "
+                        "feature answers this every time, so if a retry does not clear it, stop retrying: "
+                        "the branch goes back to Lane 3 through ready-for-l3 and a fresh AE", wait=True)]
     state, detail = gate_ci.authorizing_conclusion(repo, sha, required, run=run)
     if state == "green":
         return []
