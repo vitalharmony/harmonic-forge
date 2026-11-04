@@ -16,11 +16,13 @@ installed root-owned beside the broker (`install-hrse-gate.md`).
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import signal
 import stat
+import termios
 import urllib.error
 import urllib.request
 from types import ModuleType
@@ -234,18 +236,33 @@ def has_spent_dry_run(issue: int, sha: str, script: str) -> bool:
     return False
 
 
+#: The operator's terminal. A constant so a test can point it away from `/dev`.
+TTY_PATH = "/dev/tty"
+
+
 def isatty() -> bool:
     return os.isatty(0) and os.isatty(1)
 
 
 def confirm(text: str) -> bool:
-    """One TTY answer; only y/yes is consent. A TTY error refuses, named (F1081)."""
+    """One TTY answer; only y/yes is consent. A TTY error refuses, named (F1081).
+
+    `os.open` with no `O_CREAT`, so a missing node is a refusal and never a new
+    regular file, and `isatty` so a regular file planted at the path is never
+    read as an answer. Two handles, because a text stream opened read-write
+    needs a seekable file and a TTY is not one. Pending input is discarded after
+    the prompt prints: consent is an answer to the description just shown, not a
+    `y` typed while GitHub was being read (F1261).
+    """
     try:
-        # Two handles: a text stream opened "r+" needs a seekable file, and a TTY is not one.
-        with open("/dev/tty", "w", encoding="utf-8") as out, open("/dev/tty", "r", encoding="utf-8") as tty_in:
+        fd = os.open(TTY_PATH, os.O_RDWR | os.O_NOCTTY)
+        with open(fd, "w", encoding="utf-8") as out, open(os.dup(fd), "r", encoding="utf-8") as tty_in:
+            if not os.isatty(fd):
+                raise OSError(errno.ENOTTY, f"{TTY_PATH} is not a terminal")
             print(text + "\nMint this grant? [y/N] ", end="", file=out, flush=True)
+            termios.tcflush(fd, termios.TCIFLUSH)
             answer = tty_in.readline()
-    except OSError as exc:
+    except (OSError, termios.error) as exc:
         raise _refuse(f"cannot use /dev/tty for the confirmation: {exc}; nothing minted") from exc
     except ValueError:  # undecodable input is not consent
         return False
