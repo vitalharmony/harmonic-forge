@@ -1409,6 +1409,10 @@ class TestF1262SessionRootsAndTighten(_F1116Fixture):
             with self.subTest(command=command):
                 self.assertIn("writes into the main checkout", self.decide("2", self.main, command) or "")
 
+    def test_a_followed_cd_keeps_the_session_roots_for_an_interpreter_write(self):
+        self.assertIn("writes into the main checkout", self.decide(
+            "2", self.main, "cd /tmp; python3 -c \"open('{MAIN}/backend/x.py','w')\"") or "")
+
     def test_the_session_roots_also_hold_from_a_worktree(self):
         self.assertRow("2", self.impl, "cd /tmp; echo hi > {MAIN}/backend/x.py", True)
 
@@ -1476,11 +1480,14 @@ class TestF1262SessionRootsAndTighten(_F1116Fixture):
             self.assertRow("3", plan, f"s={plan}; echo hi > $s/x.py", False)
 
     def test_tighten_only_ever_adds_a_denial(self):
-        """A variable whose literal value is outside every root, or that has no
-        literal value at all, is decided exactly as without this check."""
+        """A variable whose literal value is outside every root, or that no
+        assignment-only segment set, is decided exactly as without this check."""
         for command in ("S={SCRATCH}; echo hi > $S/out.py", "s={SCRATCH}; echo hi > $s/out.py",
                         "echo hi > $UNSET/out.py", "s=$HOME; echo hi > $s/y", "s={MAIN}$t; echo hi > $s/y",
-                        "s={MAIN}/*; echo hi > $s/y", "s=$(echo {MAIN}); echo hi > $s/y", "ss={MAIN}; echo hi > $s/y"):
+                        "s={MAIN}/*; echo hi > $s/y", "s=$(echo {MAIN}); echo hi > $s/y", "ss={MAIN}; echo hi > $s/y",
+                        "s={MAIN} cmd > $s/y", "tool --out={MAIN}/r.json; out=$(mktemp); echo hi > \"$out\"",
+                        "echo 's={MAIN}'; echo hi > $s/y", "dir=$(mktemp -d); mise run x --dir={MAIN} > $dir/log 2>&1",
+                        "s={MAIN}; grep foo $s/README.md; s=/tmp/zz; echo hi > $s/out"):
             with self.subTest(command=command):
                 self.assertRow("2", self.impl, command, False)
 
@@ -1501,25 +1508,66 @@ class TestF1262SessionRootsAndTighten(_F1116Fixture):
             with self.subTest(command=command):
                 self.assertRow("2", self.impl, command, False)
 
-    def test_an_alias_sequence_stays_denied(self):  # AC3
+    def test_an_unresolved_cd_still_denies_a_variable_target(self):  # AC3's alias sequence
+        """The `cd $dest` this guard cannot follow is what denies this, not
+        anything about aliases: nothing here reads `alias` or `source`."""
         command = ("dest={SCRATCH}\nshopt -s expand_aliases\nalias q=source\nq /tmp/evil.sh\n"
                    "cd $dest\necho hi > $dest/backend/x.py")
-        self.assertRow("2", self.impl, command, True)
-        self.assertRow(None, self.scratch, command, True)
+        for lane, cwd in (("2", self.impl), (None, self.scratch)):
+            with self.subTest(lane=lane):
+                self.assertIn("cannot resolve statically", self.decide(lane, cwd, command) or "")
+
+    def test_a_quoted_reference_to_a_protected_value_is_the_accepted_false_denial(self):
+        """Operator ruling on 6622298009: after `shlex` a quoted `$y` reads as a
+        live one, so this read-only command is denied as a write. Accepted."""
+        self.assertRow("2", self.impl, "y={MAIN}; gh api x --jq '.n>$y'", True)
+
+    def test_a_later_literal_value_replaces_an_earlier_one(self):
+        self.assertRow("2", self.impl, "s={MAIN}; s={SCRATCH}; echo hi > $s/out", False)
+        self.assertRow("2", self.impl, "s={SCRATCH}; s={MAIN}; echo hi > $s/out", True)
+
+    def test_a_dev_value_is_skipped_as_the_literal_write_would_be(self):
+        import os
+        plan = self.scratch / "testplan"
+        plan.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(plan)
+        with unittest.mock.patch.object(m, "TESTPLAN_ROOT", plan):
+            for command in ("sink=/dev/null; cmd > $sink", "log=/dev/stderr; echo hi >> $log"):
+                with self.subTest(command=command):
+                    self.assertRow("3", plan, command, False)
+
+    def test_a_dev_value_holding_dotdot_is_checked_not_skipped(self):
+        """It passes `ignorable_write_target` and is not under `/dev`."""
+        self.assertIn("writes into the main checkout", self.decide(
+            "2", self.impl, "d=/dev/..{MAIN}; echo hi > $d/backend/x.py") or "")
 
     def test_a_thousand_assignments_return_promptly(self):
+        """From an impl worktree, so `$a7/x` reaches the check at its value: from
+        main it denies first, as a relative-looking path under the checkout."""
         import time
-        command = "; ".join(f"a{i}=/tmp" for i in range(1000)) + "; echo hi > $a7/x; echo hi > {MAIN}/backend/x.py"
+        command = "; ".join(f"a{i}=/tmp" for i in range(1000)) + "; a7={MAIN}; echo hi > $a7/backend/x"
         start = time.monotonic()
-        self.assertRow("2", self.main, command, True)
+        self.assertIn("writes into the main checkout", self.decide("2", self.impl, command) or "")
         self.assertLess(time.monotonic() - start, 5.0)
 
-    def test_values_are_read_in_one_pass_and_bound_to_their_own_name(self):
-        values = m.assigned_values("a=/x; b=/y z=1 c='/q'; a=/w; d=/e$f; g=/h*; h=/ok; $i=/no")
-        self.assertEqual(values, {"a": ["/x", "/w"], "b": ["/y"], "c": ["/q"], "h": ["/ok"]})
-        self.assertEqual(m.candidate_targets("$a/k", values), ["/x/k", "/w/k"])
-        self.assertEqual(m.candidate_targets("${b}", values), ["/y"])
-        for target in ("/x/$a", "x$a", "${a:-z}", "$none/k", "$a$b"):
+    def test_only_an_assignment_only_segment_assigns(self):
+        self.assertEqual(m.segment_assignments(["a=/x"]), {"a": "/x"})
+        self.assertEqual(m.segment_assignments(["a=/x", "b=/y"]), {"a": "/x", "b": "/y"})
+        self.assertEqual(m.segment_assignments(["export", "a=/x"]), {"a": "/x"})
+        for segment in (["a=/x", "cmd"], ["cmd", "a=/x"], ["cmd", "--dir=/x"], ["--dir=/x"], ["a=/x$b"], ["a=/x*"],
+                        ["a=~/x"], ["a=$HOME"], ["a=x"], ["export"], ["export", "cmd"], ["readonly", "a=/x"]):
+            with self.subTest(segment=segment):
+                self.assertEqual(m.segment_assignments(segment), {})
+
+    def test_a_candidate_is_the_value_at_this_point_with_its_suffix(self):
+        values = {"a": "/x", "dn": "/dev/null", "up": "/dev/../x"}
+        self.assertEqual(m.candidate_targets("$a/k", values), ["/x/k"])
+        self.assertEqual(m.candidate_targets("${a}", values), ["/x"])
+        self.assertEqual(m.candidate_targets("$dn", values), [])
+        self.assertEqual(m.candidate_targets("$up/k", values), ["/dev/../x/k"])
+        self.assertEqual(m.candidate_targets("$dn/../y", values), ["/dev/null/../y"])
+        for target in ("/x/$a", "x$a", "${a:-z}", "$none/k", "$a$a"):
             with self.subTest(target=target):
                 self.assertEqual(m.candidate_targets(target, values), [])
 

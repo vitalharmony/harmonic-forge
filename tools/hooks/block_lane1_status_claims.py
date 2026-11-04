@@ -108,7 +108,6 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).parent))
 from shell_parse import (  # noqa: E402  (harmonic-forge#167)
     command_segments,
-    mask_heredoc_bodies,
     strip_invocation_prefix,
 )
 
@@ -1317,33 +1316,43 @@ def allowlisted_variable_cd(command: str) -> AllowlistedCd | None:
                          segments)
 
 
-#: A `name=/abs` assignment whose value is plainly literal (harmonic-forge#1262).
-#: Anything that could expand or glob fails the character class or the boundary,
-#: so it does not match, and a miss leaves the decision as it would have been.
-LITERAL_ASSIGNMENT = re.compile(
-    rf"""(?<![A-Za-z0-9_$])({SHELL_NAME})=(["']?)(/[A-Za-z0-9._/@+%:,=-]*)\2(?=[\s;&|)]|$)""")
+#: One word that assigns a plainly literal absolute value (harmonic-forge#1262).
+#: Anything that could expand or glob fails the character class, so the word is
+#: not an assignment here and the decision stays as it would have been.
+LITERAL_ASSIGNMENT = re.compile(rf"({SHELL_NAME})=(/[A-Za-z0-9._/@+%:,=-]*)")
 LEADING_REFERENCE = re.compile(rf"\$(?:({SHELL_NAME})|\{{({SHELL_NAME})\}})(/.*)?", re.DOTALL)
 
 
-def assigned_values(command: str) -> dict[str, list[str]]:
-    """Every literal absolute value each name is assigned anywhere in `command`,
-    outside heredoc bodies. One pass, whatever the number of assignments."""
-    values: dict[str, list[str]] = {}
-    for match in LITERAL_ASSIGNMENT.finditer(mask_heredoc_bodies(command)):
-        values.setdefault(match.group(1), []).append(match.group(3))
-    return values
+def segment_assignments(segment: list[str]) -> dict[str, str]:
+    """The literal absolute values a parsed segment assigns, only when every word
+    of it, after an optional `export`, is an assignment. So `--dir=/x`,
+    `s=/x cmd`, prose and heredoc bodies assign nothing."""
+    words = segment[1:] if segment[:1] == ["export"] else segment
+    matches = [LITERAL_ASSIGNMENT.fullmatch(word) for word in words]
+    if not all(matches):
+        return {}
+    return {match.group(1): match.group(2) for match in matches if match}
 
 
-def candidate_targets(target: str, values: dict[str, list[str]]) -> list[str]:
-    """What a leading `$name` target could be, one path per literal value of that
-    name. The bash value is not proved: this only ever adds a path to check, so
-    it can add a denial and never removes one, and with no literal value the
-    decision stays as it was."""
+def candidate_targets(target: str, values: dict[str, str]) -> list[str]:
+    """What a leading `$name` target holds at this point in the command, when a
+    literal segment set it. The bash value is not proved: this only ever adds a
+    path to check, so it can add a denial and never removes one, and with no
+    literal value the decision stays as it was.
+
+    A `/dev/...` value is skipped as the literal write would be, unless it holds
+    a `..`: `/dev/../home/...` passes `ignorable_write_target` and is not `/dev`.
+    """
     reference = LEADING_REFERENCE.fullmatch(target)
     if reference is None:
         return []
-    name = reference.group(1) or reference.group(2)
-    return [value + (reference.group(3) or "") for value in values.get(name, ())]
+    value = values.get(reference.group(1) or reference.group(2))
+    if value is None:
+        return []
+    candidate = value + (reference.group(3) or "")
+    if ignorable_write_target(candidate) and ".." not in candidate.split("/"):
+        return []
+    return [candidate]
 
 
 def unresolved_variable(segment: list[str]) -> str | None:
@@ -1499,10 +1508,12 @@ def decision(command: object, cwd: Path) -> dict:
     unresolved_name: str | None = None
     # harmonic-forge#1262: the payload cwd stays known after a followed `cd`.
     session_cwd = cwd
-    # Under LANE=2/3 only, and read once, on the first `$name` target.
+    # Under LANE=2/3 only. In command order, so a later value replaces an earlier one.
     lane_guarded = os.environ.get("LANE") in ("2", "3")
-    assigned: dict[str, list[str]] | None = None
+    assigned: dict[str, str] = {}
     for position, segment in enumerate(segments):
+        if lane_guarded:
+            assigned.update(segment_assignments(segment))
         if allowed is not None and position == allowed.cd_index:
             effective_cwd = Path(allowed.target)
             continue
@@ -1547,10 +1558,7 @@ def decision(command: object, cwd: Path) -> dict:
             effective_cwd, session_cwd)
         if write_denial is not None:
             return write_denial
-        if lane_guarded and any(target.startswith("$") for target in shell_targets
-                                + [target for _c, target in interpreter_pairs]):
-            if assigned is None:
-                assigned = assigned_values(command)
+        if assigned:
             write_denial = protected_write_denial(
                 [("a shell write construct", candidate)
                  for target in shell_targets for candidate in candidate_targets(target, assigned)]
