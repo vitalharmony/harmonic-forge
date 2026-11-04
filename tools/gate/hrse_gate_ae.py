@@ -250,9 +250,11 @@ def confirm(text: str) -> bool:
     `os.open` with no `O_CREAT`, so a missing node is a refusal and never a new
     regular file, and `isatty` so a regular file planted at the path is never
     read as an answer. Two handles, because a text stream opened read-write
-    needs a seekable file and a TTY is not one. Pending input is discarded after
-    the prompt prints: consent is an answer to the description just shown, not a
-    `y` typed while GitHub was being read (F1261).
+    needs a seekable file and a TTY is not one. After the prompt prints, input
+    already queued is discarded, so a `y` typed while GitHub was being read does
+    not count (F1261). That is all the flush proves: it dates input by when it
+    reached the kernel, not by what reached the operator's screen, so it does not
+    show the description was read, and a `y` in flight at the flush still counts.
     """
     try:
         fd = os.open(TTY_PATH, os.O_RDWR | os.O_NOCTTY)

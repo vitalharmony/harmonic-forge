@@ -261,6 +261,7 @@ class RealTerminal(unittest.TestCase):
     DEADLINE_SECONDS = 20.0
     PROMPT = b"[y/N] "
     FLUSHED = b"<flushed>"
+    DESCRIPTION = "the-grant-under-review"
 
     def _read_until(self, fd: int, marker: bytes, seen: bytearray, deadline: float) -> bool:
         """Read until `marker` is in `seen`; False at EOF or the deadline."""
@@ -299,7 +300,7 @@ class RealTerminal(unittest.TestCase):
                     real_flush(*args)
                     os.write(1, self.FLUSHED)
                 ae.termios.tcflush = flush_then_report  # this forked copy only
-                code = 0 if REAL_CONFIRM("prompt") else 1
+                code = 0 if REAL_CONFIRM(self.DESCRIPTION) else 1
             except BaseException as exc:  # noqa: BLE001 -- reported through the pty
                 code = 2
                 os.write(1, f"RAISED {exc}\n".encode())
@@ -334,6 +335,12 @@ class RealTerminal(unittest.TestCase):
         code, shown = self._confirm_on_a_pty(b"y\n")
         self.assertEqual(code, 0, shown)
         self.assertIn("Mint this grant? [y/N]", shown)
+
+    def test_the_description_reaches_the_terminal_before_the_prompt(self):
+        """Pass 2: printing only the prompt would mint on a `y` to nothing."""
+        code, shown = self._confirm_on_a_pty(b"n\n")
+        self.assertEqual(code, 1, shown)
+        self.assertLess(shown.index(self.DESCRIPTION), shown.index(self.PROMPT.decode()))
 
     def test_the_prompt_prints_before_pending_input_is_discarded(self):
         """A `y` typed before the operator can see the prompt must be gone by the

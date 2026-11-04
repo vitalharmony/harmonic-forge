@@ -145,6 +145,9 @@ sudo /usr/local/libexec/hrse-gate grant-from-ae 1892 dry-run
 sudo /usr/local/libexec/hrse-gate grant-from-ae 1892 apply     # only after the dry run was consumed at that SHA
 ```
 
+The confirmation discards input already queued when the prompt prints, and a `y`
+arriving after that still counts.
+
 It reads the issue's newest `--prod-run` AE for that mode, checks that its SHA
 is an open PR's head (or `main`'s current head, for a post-merge step), shows
 the exact grant with **DRY RUN** or **APPLY (writes production)** on its own
