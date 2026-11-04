@@ -340,7 +340,7 @@ def render_pending_refusal(sha: str, run_id: str) -> str:
             f"{run_id}; re-run lane1-rebase after it succeeds (harmonic-forge#1066).")
 
 
-def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | None:
+def required_checks(repo: str, branch: str = "main", run=None, *, bare_404_ok: bool = False) -> set[str] | None:
     """Names of the branch's REQUIRED status checks, or None if unreadable.
 
     AC1 says "the PR's own **required** checks". The first draft said "any
@@ -357,10 +357,10 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
     - a non-empty set: the branch's required contexts;
     - an EMPTY set: the branch is readable and requires nothing -- GitHub
       answered 404 "Branch not protected" (harmonic-forge, cymagraph-infra and
-      openclaw-projects today), or a bare 404 on the protection read while the
-      branch itself reads `protected: false` (a private repo on a plan with no
-      branch protection, LeasePAL today; harmonic-forge#1263), or the
-      protection names no contexts. This is
+      openclaw-projects today), or the protection names no contexts, or, only
+      for a caller passing `bare_404_ok=True`, a bare 404 on the protection read
+      while the branch itself reads `protected: false` (a private repo on a plan
+      with no branch protection, LeasePAL today; harmonic-forge#1263). This is
       a permanent repo state, not a read failure, and `ci_conclusion` judges
       every check it observes for it (`if required:` is falsy), exactly as
       before #1103;
@@ -372,6 +372,12 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
       `_carry_forward.check_ci` do) or substitute an explicit default it names
       (`report_red_main.DEFAULT_REQUIRED_CHECKS`, which it also substitutes
       for the empty set).
+
+    `bare_404_ok` is off by default, and on only at the Lane 3 PASS gate and
+    carry-forward (harmonic-forge#1263, operator ruling A). A merge must not take
+    this path: GitHub enforces nothing on such a repo, and a PR can add a green
+    job named `verify` that shadows a red one, so `batch_auth.merge_ci_state`
+    keeps reading None there and the merge asks.
     """
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}/protection",
@@ -382,7 +388,7 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
         # carrying the phrase (an HTTP 500, say) is an unreadable read.
         if UNPROTECTED_MESSAGE in err and "HTTP 404" in err:
             return set()
-        if "HTTP 404" not in err:
+        if not bare_404_ok or "HTTP 404" not in err:
             return None
         # harmonic-forge#1263: a bare 404 is also what a token that cannot see
         # the repo gets, so the text proves nothing. Only a positive fact does:
@@ -718,7 +724,7 @@ def check_gate_result(
     if pending:
         return False, render_pending_refusal(sha, pending)
 
-    required = required_checks(repo, run=run)
+    required = required_checks(repo, run=run, bare_404_ok=True)
     if required is None:
         # harmonic-forge#1103: an unreadable required set is not "consider
         # every check" -- it lets an unreported required check read green.

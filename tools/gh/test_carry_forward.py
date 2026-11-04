@@ -197,6 +197,13 @@ class CarryForwardValidateTests(_Fixture):
     def test_absent_ci_is_a_wait_refusal(self):
         self.assertRefused(self.validate(self.rebase(), ci="absent"), "is absent", wait=True)
 
+    def test_a_bare_404_repo_with_a_readable_unprotected_branch_can_carry_forward(self):
+        """harmonic-forge#1263, operator ruling A: carry-forward takes the new path."""
+        with mock.patch.object(gate_ci, "required_checks", return_value=set()) as required, \
+                mock.patch.object(gate_ci, "authorizing_conclusion", return_value=("green", "verify:success")):
+            self.assertEqual(cf.check_ci("o/r", "a" * 40), [])
+        self.assertIs(required.call_args.kwargs.get("bare_404_ok"), True)
+
     def test_unreadable_required_checks_is_a_retry_refusal(self):
         """F1036 epoch 2 survivor 2: no fallback to the observed runs."""
         with mock.patch.object(gate_ci, "required_checks", return_value=None):
@@ -233,7 +240,7 @@ class CarryForwardValidateTests(_Fixture):
                 mock.patch.object(gate_ci, "_read_check_runs", return_value=([], None)), \
                 mock.patch.object(gate_ci, "_judge_runs", return_value=("green", "verify:success")) as ci:
             self.assertEqual(cf.check_ci(REPO, "a" * 40, run="R"), [])
-        req.assert_called_once_with(REPO, run="R")
+        req.assert_called_once_with(REPO, run="R", bare_404_ok=True)
         self.assertEqual(ci.call_args.args[2], {"verify"})
 
     def test_edited_pass_body_is_refused(self):

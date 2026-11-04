@@ -246,7 +246,7 @@ class PassRequiresGreenCiTests(unittest.TestCase):
 
     def test_a_bare_404_on_a_readable_unprotected_branch_requires_nothing(self):
         run, calls = self._bare_404_then(0, "false\n")
-        self.assertEqual(gate_ci.required_checks("o/r", run=run), set())
+        self.assertEqual(gate_ci.required_checks("o/r", run=run, bare_404_ok=True), set())
         self.assertEqual(len(calls), 2)
 
     def test_a_bare_404_needs_the_exact_positive_fact(self):
@@ -259,7 +259,7 @@ class PassRequiresGreenCiTests(unittest.TestCase):
                                (1, "gh: Server Error (HTTP 500)\n", "server error")):
             with self.subTest(why=why):
                 run, calls = self._bare_404_then(code, out)
-                self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run, bare_404_ok=True))
                 self.assertEqual(len(calls), 2)
 
     def test_a_non_404_failure_is_unreadable_with_no_second_read(self):
@@ -267,20 +267,22 @@ class PassRequiresGreenCiTests(unittest.TestCase):
                       "gh: Branch not protected (HTTP 500)\n"):
             with self.subTest(first=first):
                 run, calls = self._bare_404_then(0, "false\n", first=first)
-                self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run, bare_404_ok=True))
                 self.assertEqual(len(calls), 1)
 
     def test_a_404_with_other_text_still_needs_the_positive_fact(self):
         first = "gh: Something else entirely (HTTP 404)\n"
         run, _ = self._bare_404_then(1, "gh: Not Found (HTTP 404)\n", first=first)
-        self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+        self.assertIsNone(gate_ci.required_checks("o/r", run=run, bare_404_ok=True))
         run, _ = self._bare_404_then(0, "false\n", first=first)
-        self.assertEqual(gate_ci.required_checks("o/r", run=run), set())
+        self.assertEqual(gate_ci.required_checks("o/r", run=run, bare_404_ok=True), set())
 
     def test_the_branch_not_protected_path_makes_no_second_read(self):
-        run, calls = self._bare_404_then(0, "true\n", first="gh: Branch not protected (HTTP 404)\n")
-        self.assertEqual(gate_ci.required_checks("o/r", run=run), set())
-        self.assertEqual(len(calls), 1)
+        for bare_404_ok in (True, False):
+            with self.subTest(bare_404_ok=bare_404_ok):
+                run, calls = self._bare_404_then(0, "true\n", first="gh: Branch not protected (HTTP 404)\n")
+                self.assertEqual(gate_ci.required_checks("o/r", run=run, bare_404_ok=bare_404_ok), set())
+                self.assertEqual(len(calls), 1)
 
     def test_a_named_branch_is_the_one_read_twice(self):
         calls = []
@@ -288,8 +290,54 @@ class PassRequiresGreenCiTests(unittest.TestCase):
         def run(cmd):
             calls.append(cmd)
             return (1, self.BARE_404) if any(a.endswith("/protection") for a in cmd) else (0, "false\n")
-        self.assertEqual(gate_ci.required_checks("o/r", branch="rel", run=run), set())
+        self.assertEqual(gate_ci.required_checks("o/r", branch="rel", run=run, bare_404_ok=True), set())
         self.assertIn("repos/o/r/branches/rel", calls[1])
+
+    def test_the_default_reads_a_bare_404_as_unreadable_with_no_second_read(self):
+        """Operator ruling A: the new path is opt-in."""
+        run, calls = self._bare_404_then(0, "false\n")
+        self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+        self.assertEqual(len(calls), 1)
+
+    def _merge_runner(self, checks, sha="a" * 40):
+        """A bare-404 repo whose branch reads `protected: false` and whose head
+        has `checks`: the shape on which the judge itself would say green."""
+        inner = fake_gh(checks=checks)
+
+        def run(cmd):
+            if any(a.endswith("/protection") for a in cmd):
+                return 1, self.BARE_404
+            if cmd[-2:] == ["--jq", ".protected"]:
+                return 0, "false\n"
+            if cmd[-2:] == ["--jq", ".head.sha"]:
+                return 0, sha + "\n"
+            return inner(cmd)
+        return run
+
+    def _merge_ci_state(self, run):
+        hooks = str(Path(gate_ci.__file__).resolve().parents[1] / "hooks")
+        if hooks not in sys.path:
+            sys.path.insert(0, hooks)
+        import batch_auth  # noqa: PLC0415
+        return batch_auth.merge_ci_state("o/r", 7, run=run)
+
+    def test_a_merge_on_a_bare_404_repo_stays_unknown_so_it_asks(self):
+        state, detail, sha = self._merge_ci_state(self._merge_runner([check("verify")]))
+        self.assertEqual(state, "unknown", detail)
+        self.assertIn("required checks", detail)
+        self.assertEqual(sha, "a" * 40)
+
+    def test_a_shadowed_verify_at_the_merge_check_asks_and_does_not_allow(self):
+        """Pass 1's survivor: the PR's own later job named `verify` hides a red one."""
+        checks = [check("verify", conclusion="failure"), check("verify")]
+        state, detail, _ = self._merge_ci_state(self._merge_runner(checks))
+        self.assertEqual(state, "unknown", detail)
+
+    def test_only_the_pass_gate_and_carry_forward_take_the_bare_404_path(self):
+        tools = Path(gate_ci.__file__).resolve().parents[1]
+        callers = sorted(str(p.relative_to(tools)) for p in tools.rglob("*.py")
+                         if not p.name.startswith("test_") and "bare_404_ok=True" in p.read_text())
+        self.assertEqual(callers, ["gh/_carry_forward.py", "gh/gate_ci.py"])
 
     def test_a_bare_404_pass_is_judged_like_any_unprotected_branch(self):
         """End to end through `check_gate_result`: the empty set does not wave a

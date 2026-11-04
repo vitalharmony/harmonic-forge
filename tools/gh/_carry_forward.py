@@ -250,7 +250,7 @@ def check_patch_identity(from_sha: str, sha: str, git: GitRunner, cwd,
 
 def check_ci(repo: str, sha: str, run=None) -> list[Refusal]:
     """AC1 bullet 5: CI green under the REQUIRED checks; pending/absent wait."""
-    required = gate_ci.required_checks(repo, run=run)
+    required = gate_ci.required_checks(repo, run=run, bare_404_ok=True)
     if required is None:
         # F1036 epoch 2 survivor 2: never fall back to the observed runs; an
         # unreadable required set cannot show every required check reported.
