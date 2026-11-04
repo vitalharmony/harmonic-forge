@@ -1513,6 +1513,40 @@ class TestF1262TableRows(_F1262Fixture):
                 reason = self.decide("2", self.main, command)
                 self.assertIn("writes into the main checkout", reason or "")
 
+    def test_stderr_to_stdout_passes_alongside_an_expanded_target(self):
+        for command in ("s={SCRATCH}; python3 x.py > $s/out.log 2>&1",
+                        's={SCRATCH}; python3 x.py > "$s/out.log" 2>&1',
+                        "s={SCRATCH}; python3 x.py 2>&1 > $s/out.log",
+                        "s={SCRATCH}; python3 x.py > $s/out.log 2>&1 && echo done",
+                        "s={SCRATCH}; cd $s/sub; python3 x.py > $s/out.log 2>&1"):
+            with self.subTest(command=command):
+                self.assertEqual(self.closed(command), {"s": str(self.scratch)})
+                self.assertRow("2", self.impl, command, False)
+                self.assertRow(None, self.scratch, command, False)
+
+    def test_stderr_to_stdout_does_not_unlock_a_protected_target(self):
+        self.assertRow("2", self.main, "s={MAIN}; python3 x.py > $s/backend/x.py 2>&1", True)
+        self.assertRow("2", self.main, "s={MAIN}; cd /tmp; python3 x.py > $s/backend/x.py 2>&1", True)
+
+    def test_every_advisory_agent_can_return_its_findings_under_a_lane(self):
+        """The pattern each agent file tells it to run, taken from the file: the
+        old `out="$(mktemp ...)"` form is denied under LANE=2 and LANE=3 now."""
+        agents = Path(__file__).resolve().parents[2] / "agents"
+        for name in ("pitch-inspection", "preclose-inspection", "product-strategy", "sticky-wicket"):
+            with self.subTest(agent=name):
+                text = (agents / f"{name}.md").read_text()
+                self.assertNotIn("mktemp", text)
+                block = text[text.index("```bash\n   cat <<'EOF' >") + len("```bash\n"):]
+                command = "\n".join(line.strip() for line in block[:block.index("```")].splitlines())
+                command = (command.replace("<target-directory>", "{SCRATCH}")
+                           .replace("<this-agent-name>", name)
+                           .replace("<six random characters>", "a1b2c3")
+                           .replace("<your findings, verbatim, exactly as specified above>", "No findings."))
+                self.assertRow("2", self.impl, command, False)
+                self.assertRow(None, self.scratch, command, False)
+                self.assertRow("2", self.impl, 'out=/tmp/x; ' + command.replace(
+                    f"{{SCRATCH}}/advisory-{name}-a1b2c3.md", '"$out"'), True)
+
     def test_the_session_roots_also_hold_from_a_worktree(self):
         self.assertRow("2", self.impl, "cd /tmp; echo hi > {MAIN}/backend/x.py", True)
 
@@ -1566,6 +1600,22 @@ class TestF1262Hostile(_F1262Fixture):
         self.assertRow(None, self.scratch, "s={SCRATCH}; cd $s/sub; s=/x; echo hi > $s/y", True)
         self.assertRow(None, self.scratch, "s={SCRATCH}; cd $s/sub; echo $s; echo hi > $s/y", True)
         self.assertRow(None, self.scratch, "s={SCRATCH}; cd $s/sub; echo hi > '$s'/y", True)
+
+    def test_a_near_miss_of_stderr_to_stdout_expands_nothing(self):
+        for tail in ("2>&2", "2>&1x", "x2>&1", "1>&2", "2>&-", "2>&1&", "&> y", ">& y", "&>> y"):
+            with self.subTest(tail=tail):
+                self.assertEqual(self.closed("s={SCRATCH}; python3 x.py > $s/y " + tail), {})
+
+    def test_stderr_to_stdout_cannot_stand_in_for_a_command_or_a_target(self):
+        for command in ("s={SCRATCH}; 2>&1", "s={SCRATCH}; echo hi > 2>&1", "s={SCRATCH}; echo hi >> 2>&1",
+                        "s={SCRATCH} 2>&1; echo hi > $s/y"):
+            with self.subTest(command=command):
+                self.assertEqual(self.closed(command), {})
+
+    def test_the_view_must_match_the_guard_tokens_around_stderr_to_stdout(self):
+        command = "s=/a; python3 x.py > $s/y 2>&1"
+        self.assertEqual(m.closed_assignments(command, m.command_segments(command)), {"s": "/a"})
+        self.assertEqual(m.closed_assignments(command, m._expansion_tokens(command)), {})
 
     def test_expansion_only_rewrites_an_exact_leading_reference(self):
         values = {"s": "/a"}

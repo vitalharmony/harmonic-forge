@@ -1326,6 +1326,8 @@ EXPANSION_REFERENCE = re.compile(
     rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?")
 EXPANSION_QUOTED_TOKEN = re.compile(rf'"(\${ALLOWLIST_NAME}(?:/{ALLOWLIST_PATH_CHARS}*)?)"')
 EXPANSION_ASSIGNMENT = re.compile(rf"(?P<name>{ALLOWLIST_NAME})=(?P<value>/{ALLOWLIST_PATH_CHARS}*)")
+#: The one `&` or non-standalone `>` allowed: it names no path and no variable.
+EXPANSION_STDERR_TO_STDOUT = "2>&1"
 EXPANSION_BLOCKED_WORDS = (ALLOWLIST_DISPATCH_WORDS - {"cd"}) | {
     "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
     "case", "esac", "select", "function",
@@ -1340,10 +1342,10 @@ def _expansion_tokens(command: str) -> list[list[str]] | None:
         return None
     segments: list[list[str]] = []
     for part in re.split(r"(?:;|&&|\n)", command.strip()):
-        if "&" in part:
-            return None
         tokens: list[str] = []
         for token in part.split(" "):
+            if "&" in token and token != EXPANSION_STDERR_TO_STDOUT:
+                return None
             if '"' in token:
                 quoted = EXPANSION_QUOTED_TOKEN.fullmatch(token)
                 if quoted is None:
@@ -1372,8 +1374,12 @@ def _expansion_segment_ok(tokens: list[str], names: set[str]) -> bool:
         return False
     targets = set(bash_write_targets(tokens))
     for position, token in enumerate(tokens):
-        if "~" in token or (">" in token and token not in (">", ">>")):
+        if "~" in token or (">" in token and token not in (">", ">>", EXPANSION_STDERR_TO_STDOUT)):
             return False
+        if token == EXPANSION_STDERR_TO_STDOUT:
+            if tokens[position - 1] in (">", ">>"):  # position 0 failed the first-word rule above
+                return False
+            continue
         remainder = token
         if "$" in token:
             reference = EXPANSION_REFERENCE.fullmatch(token)
@@ -1389,6 +1395,22 @@ def _expansion_segment_ok(tokens: list[str], names: set[str]) -> bool:
     return True
 
 
+def _guard_view(parsed: list[list[str]]) -> list[list[str]]:
+    """`parsed` as `command_segments` tokenizes it: `&` is a control operator
+    there, so `2>&1` reads as `2>`, a segment break, then `1`."""
+    view: list[list[str]] = []
+    for tokens in parsed:
+        current: list[str] = []
+        for token in tokens:
+            if token == EXPANSION_STDERR_TO_STDOUT:
+                view.append([*current, "2>"])
+                current = ["1"]
+            else:
+                current.append(token)
+        view.append(current)
+    return view
+
+
 def closed_assignments(command: str, segments: list[list[str]]) -> dict[str, str]:
     """`{name: value}` when the whole command is the closed shape, else `{}`
     (harmonic-forge#1262; hostile-author threat model, so no partial map).
@@ -1399,10 +1421,11 @@ def closed_assignments(command: str, segments: list[list[str]]) -> dict[str, str
     once; the value has no glob, `~`, `..`, `$`, backtick or quote), joined by
     `;`, `&&` or a newline, then segments `_expansion_segment_ok` accepts, with
     no `IFS` word anywhere. The guard's tokenizer must parse the command to the
-    same tokens, or nothing is expanded.
+    same tokens (`_guard_view`), or nothing is expanded. The one `&` allowed is
+    the exact standalone token `2>&1`.
     """
     parsed = _expansion_tokens(command)
-    if parsed is None or parsed != segments:
+    if parsed is None or _guard_view(parsed) != segments:
         return {}
     values: dict[str, str] = {}
     index = 0
