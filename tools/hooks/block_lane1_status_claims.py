@@ -1321,6 +1321,10 @@ def allowlisted_variable_cd(command: str) -> AllowlistedCd | None:
 #: not an assignment here and the decision stays as it would have been.
 LITERAL_ASSIGNMENT = re.compile(rf"({SHELL_NAME})=(/[A-Za-z0-9._/@+%:,=-]*)")
 LEADING_REFERENCE = re.compile(rf"\$(?:({SHELL_NAME})|\{{({SHELL_NAME})\}})(/.*)?", re.DOTALL)
+ASSIGNMENT_WORD = re.compile(rf"({SHELL_NAME})=")
+#: A value longer than a path can be is not a path: the checks that follow would
+#: pass it to `git` as an argument and crash the hook (harmonic-forge#1262).
+MAX_ASSIGNED_PATH = 4096
 
 
 def segment_assignments(segment: list[str]) -> dict[str, str]:
@@ -1329,7 +1333,7 @@ def segment_assignments(segment: list[str]) -> dict[str, str]:
     `s=/x cmd`, prose and heredoc bodies assign nothing."""
     words = segment[1:] if segment[:1] == ["export"] else segment
     matches = [LITERAL_ASSIGNMENT.fullmatch(word) for word in words]
-    if not all(matches):
+    if not all(matches) or any(m and len(m.group(2)) > MAX_ASSIGNED_PATH for m in matches):
         return {}
     return {match.group(1): match.group(2) for match in matches if match}
 
@@ -1450,9 +1454,7 @@ def unresolved_cwd_denial(targets: list[str],
         named = ""
         if variable is not None:
             # harmonic-forge#1116 AC4: name the variable and the fix.
-            named = (f"The variable `${variable}` could not be resolved; "
-                     "assign it to a literal absolute path in this same "
-                     "command, or use the absolute path. ")
+            named = f"The variable `${variable}` could not be resolved. "
         return denial(
             named
             + f"Blocked: this command changes directory to somewhere this guard "
@@ -1513,6 +1515,10 @@ def decision(command: object, cwd: Path) -> dict:
     assigned: dict[str, str] = {}
     for position, segment in enumerate(segments):
         if lane_guarded:
+            # A non-literal reassignment leaves no value this guard can read.
+            first = ASSIGNMENT_WORD.match(segment[0]) if segment else None
+            if first and not LITERAL_ASSIGNMENT.fullmatch(segment[0]):
+                assigned.pop(first.group(1), None)
             assigned.update(segment_assignments(segment))
         if allowed is not None and position == allowed.cd_index:
             effective_cwd = Path(allowed.target)

@@ -1047,8 +1047,7 @@ class _F1116Fixture(unittest.TestCase):
         self.assertIn("cannot resolve statically", reason)
         if variable is not None:
             self.assertIn(f"`${variable}`", reason)
-            self.assertIn("assign it to a literal absolute path in this same "
-                          "command, or use the absolute path", reason)
+            self.assertIn("Pass an absolute path for the write target", reason)
 
     def assertProtected(self, command: str) -> str:
         reason = self.reason(command)
@@ -1398,6 +1397,42 @@ class TestF1262SessionRootsAndTighten(_F1116Fixture):
     def assertRow(self, lane: str | None, cwd: Path, command: str, denied: bool) -> None:
         reason = self.decide(lane, cwd, command)
         self.assertEqual(reason is not None, denied, f"{command!r} from {cwd}: {reason}")
+
+    # --- sticky-wicket PATCH on pass 2 ----------------------------------------
+
+    def test_a_non_literal_reassignment_clears_the_value(self):
+        self.assertRow("2", self.impl, "s={MAIN}; s=$(mktemp -d); echo hi > $s/out", False)
+
+    def test_a_write_before_the_later_value_is_still_denied(self):
+        self.assertRow("2", self.impl, "s={MAIN}; echo hi > $s/x; s=/tmp/zz", True)
+
+    def test_a_command_prefix_assignment_does_not_replace_the_value(self):
+        self.assertRow("2", self.impl, "s={MAIN}; s=/tmp/a cmd > $s/backend/x.py", True)
+
+    def test_read_only_rows_stay_allowed_with_an_assignment_present(self):
+        for tail in ("grep -n '=>$' f", "awk '$1>$2' f", "sed -i -e 's/ *$//' f"):
+            with self.subTest(tail=tail):
+                self.assertRow("2", self.impl, "s={MAIN}; " + tail, False)
+
+    def test_session_roots_survive_an_allow_listed_cd(self):
+        self.assertRow("2", self.main, "s=/tmp/zz; cd $s; echo hi > {MAIN}/backend/x.py", True)
+
+    def test_a_tilde_target_is_anchored_after_a_followed_cd(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"HOME": str(self.main.parent)}):
+            self.assertRow("2", self.main, f"cd /tmp; echo hi > ~/{self.main.name}/backend/x.py", True)
+
+    def test_a_value_longer_than_a_path_is_not_read_and_cannot_crash_the_hook(self):
+        value = "/" + "a" * 140_000
+        self.assertEqual(m.segment_assignments([f"s={value}"]), {})
+        self.assertEqual(m.segment_assignments(["s=/" + "a" * 4095]), {"s": "/" + "a" * 4095})
+        self.assertEqual(m.segment_assignments(["s=/" + "a" * 4096]), {})
+        self.assertRow("2", self.impl, f"s={value}; echo hi > $s/out", False)
+
+    def test_the_denial_names_the_variable_and_gives_no_advice_that_does_not_clear(self):
+        reason = self.decide("2", self.impl, "s=/tmp/zz; cd $s/sub; echo hi > $s/out.py") or ""
+        self.assertIn("The variable `$s` could not be resolved. ", reason)
+        self.assertNotIn("assign it to a literal", reason)
 
     # --- session roots -------------------------------------------------------
 
