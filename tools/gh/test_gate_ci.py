@@ -226,6 +226,136 @@ class PassRequiresGreenCiTests(unittest.TestCase):
         self.assertFalse(ok, msg)
         self.assertIn("required checks; retry", msg)
 
+    # --- harmonic-forge#1263: a bare 404 needs a positive fact ----------------
+
+    BARE_404 = "gh: Not Found (HTTP 404)\n"
+
+    def _bare_404_then(self, code, out, first=None):
+        """A runner whose protection read fails and whose branch read answers
+        (code, out); records the commands so a test can count the reads."""
+        calls = []
+
+        def run(cmd):
+            calls.append(cmd)
+            if any(a.endswith("/protection") for a in cmd):
+                return 1, self.BARE_404 if first is None else first
+            self.assertIn("repos/o/r/branches/main", cmd)
+            self.assertEqual(cmd[-2:], ["--jq", ".protected"])
+            return code, out
+        return run, calls
+
+    def test_a_bare_404_on_a_readable_unprotected_branch_requires_nothing(self):
+        run, calls = self._bare_404_then(0, "false\n")
+        self.assertEqual(gate_ci.required_checks("o/r", run=run, bare_404_ok=True), set())
+        self.assertEqual(len(calls), 2)
+
+    def test_a_bare_404_needs_the_exact_positive_fact(self):
+        for code, out, why in ((0, "true\n", "protected"), (0, "null\n", "no field"), (0, "", "no output"),
+                               (0, "False\n", "not GitHub's literal"), (0, "false\ntrue\n", "two lines"),
+                               (0, "falsey\n", "a prefix"),
+                               (1, "gh: Branch not found (HTTP 404)\n", "no such branch"),
+                               (1, "gh: Not Found (HTTP 404)\n", "repo not visible"),
+                               (1, "false\n", "a failed read saying false"),
+                               (1, "gh: Server Error (HTTP 500)\n", "server error")):
+            with self.subTest(why=why):
+                run, calls = self._bare_404_then(code, out)
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run, bare_404_ok=True))
+                self.assertEqual(len(calls), 2)
+
+    def test_a_non_404_failure_is_unreadable_with_no_second_read(self):
+        for first in ("gh: Server Error (HTTP 500)\n", "gh: Forbidden (HTTP 403)\n", "", "connection refused\n",
+                      "gh: Branch not protected (HTTP 500)\n"):
+            with self.subTest(first=first):
+                run, calls = self._bare_404_then(0, "false\n", first=first)
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run, bare_404_ok=True))
+                self.assertEqual(len(calls), 1)
+
+    def test_a_404_with_other_text_still_needs_the_positive_fact(self):
+        first = "gh: Something else entirely (HTTP 404)\n"
+        run, _ = self._bare_404_then(1, "gh: Not Found (HTTP 404)\n", first=first)
+        self.assertIsNone(gate_ci.required_checks("o/r", run=run, bare_404_ok=True))
+        run, _ = self._bare_404_then(0, "false\n", first=first)
+        self.assertEqual(gate_ci.required_checks("o/r", run=run, bare_404_ok=True), set())
+
+    def test_the_branch_not_protected_path_makes_no_second_read(self):
+        for bare_404_ok in (True, False):
+            with self.subTest(bare_404_ok=bare_404_ok):
+                run, calls = self._bare_404_then(0, "true\n", first="gh: Branch not protected (HTTP 404)\n")
+                self.assertEqual(gate_ci.required_checks("o/r", run=run, bare_404_ok=bare_404_ok), set())
+                self.assertEqual(len(calls), 1)
+
+    def test_a_named_branch_is_the_one_read_twice(self):
+        calls = []
+
+        def run(cmd):
+            calls.append(cmd)
+            return (1, self.BARE_404) if any(a.endswith("/protection") for a in cmd) else (0, "false\n")
+        self.assertEqual(gate_ci.required_checks("o/r", branch="rel", run=run, bare_404_ok=True), set())
+        self.assertIn("repos/o/r/branches/rel", calls[1])
+
+    def test_the_default_reads_a_bare_404_as_unreadable_with_no_second_read(self):
+        """Operator ruling A: the new path is opt-in."""
+        run, calls = self._bare_404_then(0, "false\n")
+        self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+        self.assertEqual(len(calls), 1)
+
+    def _merge_runner(self, checks, sha="a" * 40):
+        """A bare-404 repo whose branch reads `protected: false` and whose head
+        has `checks`: the shape on which the judge itself would say green."""
+        inner = fake_gh(checks=checks)
+
+        def run(cmd):
+            if any(a.endswith("/protection") for a in cmd):
+                return 1, self.BARE_404
+            if cmd[-2:] == ["--jq", ".protected"]:
+                return 0, "false\n"
+            if cmd[-2:] == ["--jq", ".head.sha"]:
+                return 0, sha + "\n"
+            return inner(cmd)
+        return run
+
+    def _merge_ci_state(self, run):
+        hooks = str(Path(gate_ci.__file__).resolve().parents[1] / "hooks")
+        if hooks not in sys.path:
+            sys.path.insert(0, hooks)
+        import batch_auth  # noqa: PLC0415
+        return batch_auth.merge_ci_state("o/r", 7, run=run)
+
+    def test_a_merge_on_a_bare_404_repo_stays_unknown_so_it_asks(self):
+        state, detail, sha = self._merge_ci_state(self._merge_runner([check("verify")]))
+        self.assertEqual(state, "unknown", detail)
+        self.assertIn("required checks", detail)
+        self.assertEqual(sha, "a" * 40)
+
+    def test_a_shadowed_verify_at_the_merge_check_asks_and_does_not_allow(self):
+        """Pass 1's survivor: the PR's own later job named `verify` hides a red one."""
+        checks = [check("verify", conclusion="failure"), check("verify")]
+        state, detail, _ = self._merge_ci_state(self._merge_runner(checks))
+        self.assertEqual(state, "unknown", detail)
+
+    def test_a_bare_404_pass_is_judged_like_any_unprotected_branch(self):
+        """End to end through `check_gate_result`: the empty set does not wave a
+        PASS through. A red observed check refuses, as for every unprotected repo."""
+        def bare(checks, protected="false\n"):
+            inner = fake_gh(checks=checks)
+
+            def run(cmd):
+                if any(a.endswith("/protection") for a in cmd):
+                    return 1, self.BARE_404
+                if cmd[-2:] == ["--jq", ".protected"]:
+                    return 0, protected
+                return inner(cmd)
+            return run
+        ok, msg = gate_ci.check_gate_result("o/r", PASS_BODY, run=bare([check("verify")]))
+        self.assertTrue(ok, msg)
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=bare([check("verify"), check("lint", conclusion="failure")]))
+        self.assertFalse(ok, msg)
+        self.assertIn("RED", msg)
+        ok, msg = gate_ci.check_gate_result("o/r", PASS_BODY, run=bare([check("verify")], protected="true\n"))
+        self.assertFalse(ok, msg)
+        self.assertIn("required checks; retry", msg)
+
     def test_an_unprotected_branch_judges_its_observed_checks(self):
         """harmonic-forge#1103 preclose survivor 1: GitHub's 404 "Branch not
         protected" is a permanent repo state, not an unreadable read. A PASS

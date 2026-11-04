@@ -197,6 +197,27 @@ class CarryForwardValidateTests(_Fixture):
     def test_absent_ci_is_a_wait_refusal(self):
         self.assertRefused(self.validate(self.rebase(), ci="absent"), "is absent", wait=True)
 
+    def test_a_bare_404_repo_waits_with_no_second_read_and_says_a_retry_will_not_help(self):
+        """harmonic-forge#1263, ruling A as narrowed: `check_ci` also runs right
+        before a merge, so a green `verify` on such a repo is still no all-clear."""
+        import test_gate_ci as tg
+        inner = tg.fake_gh(checks=[tg.check("verify")])
+        calls = []
+
+        def run(cmd):
+            calls.append(cmd)
+            if any(a.endswith("/protection") for a in cmd):
+                return 1, "gh: Not Found (HTTP 404)\n"
+            if cmd[-2:] == ["--jq", ".protected"]:
+                return 0, "false\n"
+            return inner(cmd)
+        refusals = cf.check_ci(REPO, "a" * 40, run=run)
+        self.assertEqual(len(refusals), 1)
+        self.assertTrue(refusals[0].wait)
+        self.assertIn("required checks", refusals[0])
+        self.assertIn("ready-for-l3", refusals[0])
+        self.assertEqual(len(calls), 1)
+
     def test_unreadable_required_checks_is_a_retry_refusal(self):
         """F1036 epoch 2 survivor 2: no fallback to the observed runs."""
         with mock.patch.object(gate_ci, "required_checks", return_value=None):
