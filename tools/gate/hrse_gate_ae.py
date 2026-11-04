@@ -241,9 +241,10 @@ def isatty() -> bool:
 def confirm(text: str) -> bool:
     """One TTY answer; only y/yes is consent. A TTY error refuses, named (F1081)."""
     try:
-        with open("/dev/tty", "r+", encoding="utf-8") as tty:
-            print(text + "\nMint this grant? [y/N] ", end="", file=tty, flush=True)
-            answer = tty.readline()
+        # Two handles: a text stream opened "r+" needs a seekable file, and a TTY is not one.
+        with open("/dev/tty", "w", encoding="utf-8") as out, open("/dev/tty", "r", encoding="utf-8") as tty_in:
+            print(text + "\nMint this grant? [y/N] ", end="", file=out, flush=True)
+            answer = tty_in.readline()
     except OSError as exc:
         raise _refuse(f"cannot use /dev/tty for the confirmation: {exc}; nothing minted") from exc
     except ValueError:  # undecodable input is not consent

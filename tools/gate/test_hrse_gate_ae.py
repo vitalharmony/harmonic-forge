@@ -2,15 +2,21 @@
 """Tests for `hrse-gate grant-from-ae` (harmonic-forge#1064).
 
 GitHub, the TTY, the euid and the token file are all stubbed in-process; the
-store lives under a temp root. Nothing here reaches the network, `/etc`,
-`/var/lib/hrse-gate` or a real terminal.
+store lives under a temp root. Nothing here reaches the network, `/etc` or
+`/var/lib/hrse-gate`. One class, `RealTerminal`, runs the real `confirm()` on a
+real pty (harmonic-forge#1261), because a `mock_open` cannot show that a TTY is
+not seekable; every other test stubs the terminal.
 """
 from __future__ import annotations
 
 import json
 import os
+import pty
+import select
+import signal
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -222,6 +228,65 @@ class Confirmation(_Case):
         self.assertIn(SHA, text)
         self.assertIn(SCRIPT, text)
         self.assertIn("\n  DRY RUN\n", text)
+
+
+class RealTerminal(unittest.TestCase):
+    """The real confirm() on a real pty (harmonic-forge#1261). The forked child
+    always ends in os._exit, so a failure never reruns the suite in its copy; the
+    parent's reads are bounded and it always reaps, so a hung child cannot hang CI."""
+
+    DEADLINE_SECONDS = 20.0
+
+    def _confirm_on_a_pty(self, answer: bytes) -> tuple[int, str]:
+        """(child exit code, what the terminal showed). 0 = True, 1 = False, 2 = raised."""
+        ae.bind(b)  # a refusal needs the broker; never rely on an earlier test having bound it
+        try:
+            pid, fd = pty.fork()
+        except OSError as exc:
+            self.skipTest(f"pty.fork() is unavailable here: {exc}")
+        if pid == 0:
+            code = 3
+            try:
+                code = 0 if REAL_CONFIRM("prompt") else 1
+            except BaseException as exc:  # noqa: BLE001 -- reported through the pty
+                code = 2
+                os.write(1, f"RAISED {exc}\n".encode())
+            finally:
+                os._exit(code)
+        output = b""
+        timed_out = True
+        try:
+            os.write(fd, answer)  # the terminal queues it until the child reads
+            deadline = time.monotonic() + self.DEADLINE_SECONDS
+            while time.monotonic() < deadline:
+                if not select.select([fd], [], [], 0.2)[0]:
+                    continue
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:  # EIO: the child closed its end
+                    chunk = b""
+                if not chunk:
+                    timed_out = False
+                    break
+                output += chunk
+        finally:
+            if timed_out:
+                os.kill(pid, signal.SIGKILL)
+            os.close(fd)
+            _, status = os.waitpid(pid, 0)
+        shown = output.decode(errors="replace")
+        self.assertFalse(timed_out, f"confirm() did not return in {self.DEADLINE_SECONDS}s: {shown!r}")
+        return os.waitstatus_to_exitcode(status), shown
+
+    def test_y_on_a_real_terminal_is_consent(self):
+        code, shown = self._confirm_on_a_pty(b"y\n")
+        self.assertEqual(code, 0, shown)
+        self.assertIn("Mint this grant? [y/N]", shown)
+
+    def test_n_on_a_real_terminal_is_not_consent(self):
+        code, shown = self._confirm_on_a_pty(b"n\n")
+        self.assertEqual(code, 1, shown)
+        self.assertIn("Mint this grant? [y/N]", shown)
 
 
 class Minting(_Case):
