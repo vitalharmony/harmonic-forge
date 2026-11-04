@@ -1047,8 +1047,7 @@ class _F1116Fixture(unittest.TestCase):
         self.assertIn("cannot resolve statically", reason)
         if variable is not None:
             self.assertIn(f"`${variable}`", reason)
-            self.assertIn("assign it to a literal absolute path in this same "
-                          "command, or use the absolute path", reason)
+            self.assertIn("Pass an absolute path for the write target", reason)
 
     def assertProtected(self, command: str) -> str:
         reason = self.reason(command)
@@ -1369,6 +1368,251 @@ class TestF1116AttackShapes(_F1116Fixture):
 
     def test_first_ac6_b_conditional_reassignment(self):
         self.assertDenied('w={MAIN}; [ -n "$x" ] && w={SCRATCH}; cd $w && echo > tracked.md')
+
+
+class TestF1262SessionRootsAndTighten(_F1116Fixture):
+    """harmonic-forge#1262, as reforged: nothing here relaxes a denial. The
+    session's protected roots survive a followed `cd`, and under LANE=2/3 a
+    leading `$name` target is also checked at every literal value of that name."""
+
+    def setUp(self) -> None:
+        import subprocess
+        super().setUp()
+        self.impl = self.base / "proj-42-impl"
+        subprocess.run(["git", "-C", str(self.main), "worktree", "add", "-q",
+                        "-b", "work", str(self.impl)], check=True)
+
+    def decide(self, lane: str | None, cwd: Path, command: str) -> str | None:
+        import os
+        environ = dict(os.environ)
+        environ.pop("LANE", None)
+        if lane is not None:
+            environ["LANE"] = lane
+        with unittest.mock.patch.dict(os.environ, environ, clear=True):
+            result = m.decision(self.fill(command), cwd)
+        if not _is_denied(result):
+            return None
+        return result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def assertRow(self, lane: str | None, cwd: Path, command: str, denied: bool) -> None:
+        reason = self.decide(lane, cwd, command)
+        self.assertEqual(reason is not None, denied, f"{command!r} from {cwd}: {reason}")
+
+    # --- sticky-wicket PATCH on pass 2 ----------------------------------------
+
+    def test_a_non_literal_reassignment_clears_the_value(self):
+        self.assertRow("2", self.impl, "s={MAIN}; s=$(mktemp -d); echo hi > $s/out", False)
+
+    def test_a_write_before_the_later_value_is_still_denied(self):
+        self.assertRow("2", self.impl, "s={MAIN}; echo hi > $s/x; s=/tmp/zz", True)
+
+    def test_a_command_prefix_assignment_does_not_replace_the_value(self):
+        self.assertRow("2", self.impl, "s={MAIN}; s=/tmp/a cmd > $s/backend/x.py", True)
+
+    def test_read_only_rows_stay_allowed_with_an_assignment_present(self):
+        for tail in ("grep -n '=>$' f", "awk '$1>$2' f", "sed -i -e 's/ *$//' f"):
+            with self.subTest(tail=tail):
+                self.assertRow("2", self.impl, "s={MAIN}; " + tail, False)
+
+    def test_session_roots_survive_an_allow_listed_cd(self):
+        self.assertRow("2", self.main, "s=/tmp/zz; cd $s; echo hi > {MAIN}/backend/x.py", True)
+
+    def test_a_tilde_target_is_anchored_after_a_followed_cd(self):
+        import os
+        with unittest.mock.patch.dict(os.environ, {"HOME": str(self.main.parent)}):
+            self.assertRow("2", self.main, f"cd /tmp; echo hi > ~/{self.main.name}/backend/x.py", True)
+
+    def test_a_value_longer_than_a_path_is_not_read_and_cannot_crash_the_hook(self):
+        value = "/" + "a" * 140_000
+        self.assertEqual(m.segment_assignments([f"s={value}"]), {})
+        self.assertEqual(m.segment_assignments(["s=/" + "a" * 4095]), {"s": "/" + "a" * 4095})
+        self.assertEqual(m.segment_assignments(["s=/" + "a" * 4096]), {})
+        self.assertRow("2", self.impl, f"s={value}; echo hi > $s/out", False)
+
+    def test_the_denial_names_the_variable_and_gives_no_advice_that_does_not_clear(self):
+        reason = self.decide("2", self.impl, "s=/tmp/zz; cd $s/sub; echo hi > $s/out.py") or ""
+        self.assertIn("The variable `$s` could not be resolved. ", reason)
+        self.assertNotIn("assign it to a literal", reason)
+
+    # --- session roots -------------------------------------------------------
+
+    def test_a_protected_write_stays_denied(self):  # row 8: deny on 9a923ab
+        self.assertRow("2", self.main, "echo hi > {MAIN}/backend/x.py", True)
+
+    def test_a_followed_cd_keeps_the_session_roots(self):  # rows 11, 12: allow on 9a923ab
+        for command in ("cd /tmp; echo hi > {MAIN}/backend/x.py", "cd /tmp; tee {MAIN}/backend/x.py"):
+            with self.subTest(command=command):
+                self.assertIn("writes into the main checkout", self.decide("2", self.main, command) or "")
+
+    def test_a_followed_cd_keeps_the_session_roots_for_an_interpreter_write(self):
+        self.assertIn("writes into the main checkout", self.decide(
+            "2", self.main, "cd /tmp; python3 -c \"open('{MAIN}/backend/x.py','w')\"") or "")
+
+    def test_the_session_roots_also_hold_from_a_worktree(self):
+        self.assertRow("2", self.impl, "cd /tmp; echo hi > {MAIN}/backend/x.py", True)
+
+    def test_a_write_outside_every_root_stays_allowed(self):  # row 13: allow on 9a923ab
+        self.assertRow("2", self.impl, "cd {SCRATCH}; echo hi > {SCRATCH}/x", False)
+        self.assertRow("2", self.impl, "echo hi > f.txt", False)
+
+    def test_a_relative_target_lands_in_the_followed_cwd_not_the_session(self):
+        """Read against the session cwd this would be a false denial from main."""
+        self.assertRow("2", self.main, "cd {SCRATCH}; echo hi > out.txt", False)
+        self.assertRow("2", self.main, "cd {SCRATCH}/sub; echo hi > ../out.txt", False)
+        self.assertRow("2", self.scratch, "cd {MAIN}; echo hi > out.txt", True)
+
+    # --- tighten -------------------------------------------------------------
+
+    def test_a_variable_into_a_protected_path_is_denied_in_both_letter_cases(self):  # AC2
+        for name in ("s", "S"):
+            for cwd, prefix in ((self.main, f"{name}={{MAIN}}; cd /tmp; "), (self.impl, f"{name}={{MAIN}}; ")):
+                command = prefix + f"echo hi > ${name}/backend/x.py"
+                with self.subTest(command=command):
+                    self.assertIn("writes into the main checkout", self.decide("2", cwd, command) or "")
+
+    def test_a_variable_into_a_protected_path_is_denied_under_lane3_in_both_letter_cases(self):  # AC2
+        """From the testplan, where only the check at the value can deny it; from
+        an impl worktree the Lane 3 rule denies any relative-looking target anyway."""
+        import os
+        plan = self.scratch / "testplan"
+        plan.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(plan)
+        with unittest.mock.patch.object(m, "TESTPLAN_ROOT", plan):
+            for name in ("s", "S"):
+                for prefix in (f"{name}={{MAIN}}; cd /tmp; ", f"{name}={{MAIN}}; "):
+                    command = prefix + f"echo hi > ${name}/backend/x.py"
+                    with self.subTest(command=command):
+                        self.assertIn("outside its two allowed roots", self.decide("3", plan, command) or "")
+                        self.assertRow("3", self.impl, command, True)
+
+    def test_every_write_form_of_the_variable_is_checked(self):
+        for command in ("s={MAIN}; echo hi > ${s}/backend/x.py", 's={MAIN}; echo hi > "$s/backend/x.py"',
+                        's="{MAIN}"; echo hi > $s/backend/x.py', "s='{MAIN}'; echo hi > $s/backend/x.py",
+                        "s={MAIN}; echo hi >> $s/backend/x.py", "s={MAIN}; echo hi | tee $s/backend/x.py",
+                        "s={MAIN}; cp /tmp/a $s/backend/x.py", "export s={MAIN}; echo hi > $s/backend/x.py",
+                        "s={SCRATCH}; s={MAIN}; echo hi > $s/backend/x.py", "s={MAIN}\necho hi > $s/backend/x.py"):
+            with self.subTest(command=command):
+                self.assertRow("2", self.impl, command, True)
+
+    def test_the_interpreter_arm_is_checked_too(self):
+        self.assertIn("writes into the main checkout", self.decide(
+            "2", self.impl, "s={MAIN}; python3 -c \"open('$s/backend/x.py','w')\"") or "")
+
+    def test_lane3_is_denied_from_the_testplan_where_its_own_rule_would_not_be(self):
+        """From inside the testplan a relative-looking `$s/x` reads as a testplan
+        path, so only the check at the value denies it. The same command with a
+        testplan value stays allowed."""
+        import os
+        plan = self.scratch / "testplan"
+        plan.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(plan)  # the Lane 3 rule resolves a relative path from the hook's own cwd
+        with unittest.mock.patch.object(m, "TESTPLAN_ROOT", plan):
+            self.assertRow("3", plan, "echo hi > $s/x.py", False)
+            self.assertIn("outside its two allowed roots",
+                          self.decide("3", plan, "s={MAIN}; echo hi > $s/x.py") or "")
+            self.assertRow("3", plan, f"s={plan}; echo hi > $s/x.py", False)
+
+    def test_tighten_only_ever_adds_a_denial(self):
+        """A variable whose literal value is outside every root, or that no
+        assignment-only segment set, is decided exactly as without this check."""
+        for command in ("S={SCRATCH}; echo hi > $S/out.py", "s={SCRATCH}; echo hi > $s/out.py",
+                        "echo hi > $UNSET/out.py", "s=$HOME; echo hi > $s/y", "s={MAIN}$t; echo hi > $s/y",
+                        "s={MAIN}/*; echo hi > $s/y", "s=$(echo {MAIN}); echo hi > $s/y", "ss={MAIN}; echo hi > $s/y",
+                        "s={MAIN} cmd > $s/y", "tool --out={MAIN}/r.json; out=$(mktemp); echo hi > \"$out\"",
+                        "echo 's={MAIN}'; echo hi > $s/y", "dir=$(mktemp -d); mise run x --dir={MAIN} > $dir/log 2>&1",
+                        "s={MAIN}; grep foo $s/README.md; s=/tmp/zz; echo hi > $s/out"):
+            with self.subTest(command=command):
+                self.assertRow("2", self.impl, command, False)
+
+    def test_an_assignment_inside_a_heredoc_body_is_not_an_assignment(self):
+        self.assertRow("2", self.impl, "cat <<'EOF' > $out\ns={MAIN}\nout={MAIN}\nEOF\n", False)
+
+    def test_lane_unset_is_unchanged(self):
+        self.assertRow(None, self.scratch, "s={MAIN}; cd /tmp; echo hi > $s/backend/x.py", False)
+        self.assertRow(None, self.scratch, "S={SCRATCH}; echo hi > $S/out.py", False)
+        # `write_on_main_branch` applies with no LANE and would deny this if checked.
+        self.assertRow(None, self.scratch, "s={MAIN}; echo hi > $s/tracked.md", False)
+        self.assertRow(None, self.scratch, "echo hi > {MAIN}/tracked.md", True)
+
+    def test_real_read_only_shapes_stay_allowed_under_lane2(self):  # AC3
+        for command in ("grep -n '=>$' f", "awk '$1>$2' f", "sed -i -e 's/ *$//' f", "truncate -s $n f",
+                        'mise run check > "${TMPDIR:-/tmp}/x.log" 2>&1', 'out=$(mktemp); cat <<\'EOF\' > "$out"\nhi\nEOF\n',
+                        "gh api x --jq '.n>$y'"):
+            with self.subTest(command=command):
+                self.assertRow("2", self.impl, command, False)
+
+    def test_an_unresolved_cd_still_denies_a_variable_target(self):  # AC3's alias sequence
+        """The `cd $dest` this guard cannot follow is what denies this, not
+        anything about aliases: nothing here reads `alias` or `source`."""
+        command = ("dest={SCRATCH}\nshopt -s expand_aliases\nalias q=source\nq /tmp/evil.sh\n"
+                   "cd $dest\necho hi > $dest/backend/x.py")
+        for lane, cwd in (("2", self.impl), (None, self.scratch)):
+            with self.subTest(lane=lane):
+                self.assertIn("cannot resolve statically", self.decide(lane, cwd, command) or "")
+
+    def test_a_quoted_reference_to_a_protected_value_is_the_accepted_false_denial(self):
+        """Operator ruling on 6622298009: after `shlex` a quoted `$y` reads as a
+        live one, so this read-only command is denied as a write. Accepted."""
+        self.assertRow("2", self.impl, "y={MAIN}; gh api x --jq '.n>$y'", True)
+
+    def test_a_later_literal_value_replaces_an_earlier_one(self):
+        self.assertRow("2", self.impl, "s={MAIN}; s={SCRATCH}; echo hi > $s/out", False)
+        self.assertRow("2", self.impl, "s={SCRATCH}; s={MAIN}; echo hi > $s/out", True)
+
+    def test_a_dev_value_is_skipped_as_the_literal_write_would_be(self):
+        import os
+        plan = self.scratch / "testplan"
+        plan.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(plan)
+        with unittest.mock.patch.object(m, "TESTPLAN_ROOT", plan):
+            for command in ("sink=/dev/null; cmd > $sink", "log=/dev/stderr; echo hi >> $log"):
+                with self.subTest(command=command):
+                    self.assertRow("3", plan, command, False)
+
+    def test_a_dev_value_holding_dotdot_is_checked_not_skipped(self):
+        """It passes `ignorable_write_target` and is not under `/dev`."""
+        self.assertIn("writes into the main checkout", self.decide(
+            "2", self.impl, "d=/dev/..{MAIN}; echo hi > $d/backend/x.py") or "")
+
+    def test_a_thousand_assignments_return_promptly(self):
+        """From an impl worktree, so `$a7/x` reaches the check at its value: from
+        main it denies first, as a relative-looking path under the checkout."""
+        import time
+        command = "; ".join(f"a{i}=/tmp" for i in range(1000)) + "; a7={MAIN}; echo hi > $a7/backend/x"
+        start = time.monotonic()
+        self.assertIn("writes into the main checkout", self.decide("2", self.impl, command) or "")
+        self.assertLess(time.monotonic() - start, 5.0)
+
+    def test_only_an_assignment_only_segment_assigns(self):
+        self.assertEqual(m.segment_assignments(["a=/x"]), {"a": "/x"})
+        self.assertEqual(m.segment_assignments(["a=/x", "b=/y"]), {"a": "/x", "b": "/y"})
+        self.assertEqual(m.segment_assignments(["export", "a=/x"]), {"a": "/x"})
+        for segment in (["a=/x", "cmd"], ["cmd", "a=/x"], ["cmd", "--dir=/x"], ["--dir=/x"], ["a=/x$b"], ["a=/x*"],
+                        ["a=~/x"], ["a=$HOME"], ["a=x"], ["export"], ["export", "cmd"], ["readonly", "a=/x"]):
+            with self.subTest(segment=segment):
+                self.assertEqual(m.segment_assignments(segment), {})
+
+    def test_a_candidate_is_the_value_at_this_point_with_its_suffix(self):
+        values = {"a": "/x", "dn": "/dev/null", "up": "/dev/../x"}
+        self.assertEqual(m.candidate_targets("$a/k", values), ["/x/k"])
+        self.assertEqual(m.candidate_targets("${a}", values), ["/x"])
+        self.assertEqual(m.candidate_targets("$dn", values), [])
+        self.assertEqual(m.candidate_targets("$up/k", values), ["/dev/../x/k"])
+        self.assertEqual(m.candidate_targets("$dn/../y", values), ["/dev/null/../y"])
+        for target in ("/x/$a", "x$a", "${a:-z}", "$none/k", "$a$a"):
+            with self.subTest(target=target):
+                self.assertEqual(m.candidate_targets(target, values), [])
+
+    # --- denial text -----------------------------------------------------------
+
+    def test_the_denial_names_the_rule_and_the_literal_path_fix(self):
+        reason = self.decide(None, self.scratch, "s={SCRATCH}; cd $s/sub; echo hi > $s/out.py")
+        self.assertIn("The rule that failed", reason)
+        self.assertIn("a write target must be absolute", reason)
+        self.assertIn("Pass an absolute path for the write target", reason)
 
 
 if __name__ == "__main__":

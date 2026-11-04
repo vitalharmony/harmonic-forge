@@ -1049,8 +1049,18 @@ def branch_advice(target: str, cwd: Path) -> str:
     return "Branch first: `git checkout -b <name>`."
 
 
+def _anchored_target(target: str, cwd: Path) -> str:
+    """`target` as an absolute path, a relative one anchored at `cwd`: the
+    directory the write happens in, whichever cwd's roots are being checked."""
+    try:
+        raw = Path(target).expanduser()
+    except (OSError, ValueError, RuntimeError):
+        return target
+    return str(raw if raw.is_absolute() else cwd / raw)
+
+
 def protected_write_denial(
-    pairs: list[tuple[str, str]], cwd: Path
+    pairs: list[tuple[str, str]], cwd: Path, session_cwd: Path | None = None
 ) -> dict | None:
     """The `Edit`/`Write` predicates, reached from the `Bash` surface.
 
@@ -1068,6 +1078,12 @@ def protected_write_denial(
     have been denied had the same file been touched with `Edit`. The bug
     (harmonic-forge#458) is that the two surfaces shared these predicates and
     only one was wired to them.
+
+    `session_cwd` is the payload's cwd (harmonic-forge#1262). `cwd` may be the
+    directory after a followed `cd`, and the roots derive from the cwd given, so
+    after `cd /tmp` there were none and a write into the session's own main
+    checkout was not denied. A relative target is still anchored at `cwd`: it
+    lands there, not in the session's directory.
     """
     seen: set[str] = set()
     deduped: list[tuple[str, str]] = []
@@ -1076,7 +1092,9 @@ def protected_write_denial(
             seen.add(target)
             deduped.append((construct, target))
     for construct, target in deduped[:MAX_WRITE_TARGETS]:
-        if lane2_write_in_main_checkout(target, cwd):
+        if lane2_write_in_main_checkout(target, cwd) or (
+                session_cwd is not None
+                and lane2_write_in_main_checkout(_anchored_target(target, cwd), session_cwd)):
             return denial(
                 f"Blocked: this session was launched as Lane 2 (LANE=2) and "
                 f"this command writes into the main checkout via {construct} "
@@ -1298,6 +1316,49 @@ def allowlisted_variable_cd(command: str) -> AllowlistedCd | None:
                          segments)
 
 
+#: One word that assigns a plainly literal absolute value (harmonic-forge#1262).
+#: Anything that could expand or glob fails the character class, so the word is
+#: not an assignment here and the decision stays as it would have been.
+LITERAL_ASSIGNMENT = re.compile(rf"({SHELL_NAME})=(/[A-Za-z0-9._/@+%:,=-]*)")
+LEADING_REFERENCE = re.compile(rf"\$(?:({SHELL_NAME})|\{{({SHELL_NAME})\}})(/.*)?", re.DOTALL)
+ASSIGNMENT_WORD = re.compile(rf"({SHELL_NAME})=")
+#: A value longer than a path can be is not a path: the checks that follow would
+#: pass it to `git` as an argument and crash the hook (harmonic-forge#1262).
+MAX_ASSIGNED_PATH = 4096
+
+
+def segment_assignments(segment: list[str]) -> dict[str, str]:
+    """The literal absolute values a parsed segment assigns, only when every word
+    of it, after an optional `export`, is an assignment. So `--dir=/x`,
+    `s=/x cmd`, prose and heredoc bodies assign nothing."""
+    words = segment[1:] if segment[:1] == ["export"] else segment
+    matches = [LITERAL_ASSIGNMENT.fullmatch(word) for word in words]
+    if not all(matches) or any(m and len(m.group(2)) > MAX_ASSIGNED_PATH for m in matches):
+        return {}
+    return {match.group(1): match.group(2) for match in matches if match}
+
+
+def candidate_targets(target: str, values: dict[str, str]) -> list[str]:
+    """What a leading `$name` target holds at this point in the command, when a
+    literal segment set it. The bash value is not proved: this only ever adds a
+    path to check, so it can add a denial and never removes one, and with no
+    literal value the decision stays as it was.
+
+    A `/dev/...` value is skipped as the literal write would be, unless it holds
+    a `..`: `/dev/../home/...` passes `ignorable_write_target` and is not `/dev`.
+    """
+    reference = LEADING_REFERENCE.fullmatch(target)
+    if reference is None:
+        return []
+    value = values.get(reference.group(1) or reference.group(2))
+    if value is None:
+        return []
+    candidate = value + (reference.group(3) or "")
+    if ignorable_write_target(candidate) and ".." not in candidate.split("/"):
+        return []
+    return [candidate]
+
+
 def unresolved_variable(segment: list[str]) -> str | None:
     """The variable named by a directory change's operand, if any."""
     index = 0
@@ -1393,9 +1454,7 @@ def unresolved_cwd_denial(targets: list[str],
         named = ""
         if variable is not None:
             # harmonic-forge#1116 AC4: name the variable and the fix.
-            named = (f"The variable `${variable}` could not be resolved; "
-                     "assign it to a literal absolute path in this same "
-                     "command, or use the absolute path. ")
+            named = f"The variable `${variable}` could not be resolved. "
         return denial(
             named
             + f"Blocked: this command changes directory to somewhere this guard "
@@ -1403,9 +1462,12 @@ def unresolved_cwd_denial(targets: list[str],
             f"nested `bash -c`), and then writes to the RELATIVE path "
             f"{target!r} (harmonic-forge#529). Where that lands depends on the "
             "unresolved directory, so the guard cannot tell whether it is a "
-            "protected checkout — and guessing would fail open. Pass an "
-            "absolute path for the write target and it will be checked "
-            "normally."
+            "protected checkout — and guessing would fail open. The rule that "
+            "failed: after a directory change this guard cannot follow, a write "
+            "target must be absolute, and `$name/...` does not count even when "
+            "`name` is assigned in this command. Pass an absolute path for the "
+            "write target, spelled out literally, and it will be checked "
+            "normally (harmonic-forge#1262)."
         )
     return None
 
@@ -1446,7 +1508,18 @@ def decision(command: object, cwd: Path) -> dict:
             or segments[allowed.cd_index][:1] != ["cd"]):
         allowed = None
     unresolved_name: str | None = None
+    # harmonic-forge#1262: the payload cwd stays known after a followed `cd`.
+    session_cwd = cwd
+    # Under LANE=2/3 only. In command order, so a later value replaces an earlier one.
+    lane_guarded = os.environ.get("LANE") in ("2", "3")
+    assigned: dict[str, str] = {}
     for position, segment in enumerate(segments):
+        if lane_guarded:
+            # A non-literal reassignment leaves no value this guard can read.
+            first = ASSIGNMENT_WORD.match(segment[0]) if segment else None
+            if first and not LITERAL_ASSIGNMENT.fullmatch(segment[0]):
+                assigned.pop(first.group(1), None)
+            assigned.update(segment_assignments(segment))
         if allowed is not None and position == allowed.cd_index:
             effective_cwd = Path(allowed.target)
             continue
@@ -1482,15 +1555,25 @@ def decision(command: object, cwd: Path) -> dict:
                 return unresolved
         write_denial = protected_write_denial(
             [("a shell write construct", target) for target in shell_targets],
-            effective_cwd)
+            effective_cwd, session_cwd)
         if write_denial is not None:
             return write_denial
         write_denial = protected_write_denial(
             [(CONSTRUCT_LABELS.get(construct, "an interpreter one-liner"), target)
              for construct, target in interpreter_pairs],
-            effective_cwd)
+            effective_cwd, session_cwd)
         if write_denial is not None:
             return write_denial
+        if assigned:
+            write_denial = protected_write_denial(
+                [("a shell write construct", candidate)
+                 for target in shell_targets for candidate in candidate_targets(target, assigned)]
+                + [(CONSTRUCT_LABELS.get(construct, "an interpreter one-liner"), candidate)
+                   for construct, target in interpreter_pairs
+                   for candidate in candidate_targets(target, assigned)],
+                effective_cwd, session_cwd)
+            if write_denial is not None:
+                return write_denial
         relocate_denial = lane3_relocate_source_denial(
             bash_relocate_sources(segment)
             + interpreter_relocate_sources(segment, command))
