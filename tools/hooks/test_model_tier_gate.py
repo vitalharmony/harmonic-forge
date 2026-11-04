@@ -1042,6 +1042,31 @@ class RouteFloorTests(unittest.TestCase):
         with patch.dict(sys.modules, {"route_store": None}):
             self.assertIs(m.resolve_route_floor("/tmp/x", 1, "forge"), m.LOOKUP_FAILED)
 
+    def _two_target_patch(self):
+        return {"tool_name": "apply_patch", "model": "gpt-5.6-mini", "cwd": "/some/other/dir",
+                "tool_input": {"command": "*** Begin Patch\n*** Update File: /tmp/a/a.py\n"
+                                          "*** Update File: /tmp/b/b.py\n*** End Patch\n"}}
+
+    def test_ac1_a_board_crash_on_an_earlier_target_does_not_skip_a_later_floor(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        targets = {"/tmp/a": (7, None), "/tmp/b": (1249, None)}
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d in targets), \
+             patch.object(m, "resolve_issue_target", side_effect=targets.get), \
+             patch.object(m, "resolve_repo", return_value=self.REPO), \
+             patch.object(m, "resolve_tier", side_effect=FileNotFoundError("gh")):
+            out = self._run_main(self._two_target_patch())
+        self.assertIn("route (gate authorization)", out)
+
+    def test_ac1_one_number_in_two_repos_reads_each_repos_floor(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        repos = {"/tmp/a": "vitalharmony/hrse", "/tmp/b": self.REPO}
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d in repos), \
+             patch.object(m, "resolve_issue_target", return_value=(1249, None)), \
+             patch.object(m, "resolve_repo", side_effect=repos.get), \
+             patch.object(m, "resolve_tier", return_value="standard"):
+            out = self._run_main(self._two_target_patch())
+        self.assertIn("route (gate authorization)", out)
+
     def test_ac4_exemptions_unchanged(self):
         self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
         self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5", env={"LANE": "3"}))
