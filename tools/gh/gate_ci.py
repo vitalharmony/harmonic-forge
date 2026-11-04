@@ -357,7 +357,10 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
     - a non-empty set: the branch's required contexts;
     - an EMPTY set: the branch is readable and requires nothing -- GitHub
       answered 404 "Branch not protected" (harmonic-forge, cymagraph-infra and
-      openclaw-projects today), or the protection names no contexts. This is
+      openclaw-projects today), or a bare 404 on the protection read while the
+      branch itself reads `protected: false` (a private repo on a plan with no
+      branch protection, LeasePAL today; harmonic-forge#1263), or the
+      protection names no contexts. This is
       a permanent repo state, not a read failure, and `ci_conclusion` judges
       every check it observes for it (`if required:` is falsy), exactly as
       before #1103;
@@ -377,7 +380,15 @@ def required_checks(repo: str, branch: str = "main", run=None) -> set[str] | Non
         err = out or ""
         # Only GitHub's own 404 means "no protection rule"; any other failure
         # carrying the phrase (an HTTP 500, say) is an unreadable read.
-        return set() if (UNPROTECTED_MESSAGE in err and "HTTP 404" in err) else None
+        if UNPROTECTED_MESSAGE in err and "HTTP 404" in err:
+            return set()
+        if "HTTP 404" not in err:
+            return None
+        # harmonic-forge#1263: a bare 404 is also what a token that cannot see
+        # the repo gets, so the text proves nothing. Only a positive fact does:
+        # GitHub says this branch exists and is not protected.
+        code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}", "--jq", ".protected"])
+        return set() if code == 0 and (out or "").strip() == "false" else None
     if not (out or "").strip():
         # A successful read with no output is unparseable, not "no contexts"
         # (harmonic-forge#1103 preclose pass 2): only GitHub's 404 above or an
