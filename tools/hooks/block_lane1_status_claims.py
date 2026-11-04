@@ -108,6 +108,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).parent))
 from shell_parse import (  # noqa: E402  (harmonic-forge#167)
     command_segments,
+    mask_heredoc_bodies,
     strip_invocation_prefix,
 )
 
@@ -1316,167 +1317,33 @@ def allowlisted_variable_cd(command: str) -> AllowlistedCd | None:
                          segments)
 
 
-# harmonic-forge#1262: the closed expansion of a once-assigned variable. Its own
-# gate, never a wider `_allowlist_tokens`, which would also widen
-# `allowlisted_variable_cd`. The alphabet adds only the newline, which is a plain
-# separator here: nothing in it can quote, continue a line or open a heredoc.
-EXPANSION_ALPHABET = re.compile(r'[A-Za-z0-9 ._/~@+=$;&{}">\n-]*')
-EXPANSION_REFERENCE = re.compile(
-    rf"\$(?:(?P<var>{ALLOWLIST_NAME})|\{{(?P<bvar>{ALLOWLIST_NAME})\}})"
-    rf"(?P<suffix>/{ALLOWLIST_PATH_CHARS}*)?")
-EXPANSION_QUOTED_TOKEN = re.compile(rf'"(\${ALLOWLIST_NAME}(?:/{ALLOWLIST_PATH_CHARS}*)?)"')
-EXPANSION_ASSIGNMENT = re.compile(rf"(?P<name>{ALLOWLIST_NAME})=(?P<value>/{ALLOWLIST_PATH_CHARS}*)")
-#: The one `&` or non-standalone `>` allowed: it names no path and no variable.
-EXPANSION_STDERR_TO_STDOUT = "2>&1"
-EXPANSION_BLOCKED_WORDS = (ALLOWLIST_DISPATCH_WORDS - {"cd"}) | {
-    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
-    "case", "esac", "select", "function",
-}
+#: A `name=/abs` assignment whose value is plainly literal (harmonic-forge#1262).
+#: Anything that could expand or glob fails the character class or the boundary,
+#: so it does not match, and a miss leaves the decision as it would have been.
+LITERAL_ASSIGNMENT = re.compile(
+    rf"""(?<![A-Za-z0-9_$])({SHELL_NAME})=(["']?)(/[A-Za-z0-9._/@+%:,=-]*)\2(?=[\s;&|)]|$)""")
+LEADING_REFERENCE = re.compile(rf"\$(?:({SHELL_NAME})|\{{({SHELL_NAME})\}})(/.*)?", re.DOTALL)
 
 
-def _expansion_tokens(command: str) -> list[list[str]] | None:
-    """Character gate, then the single parse into segments. None on anything else."""
-    if not EXPANSION_ALPHABET.fullmatch(command):
-        return None
-    if re.search(r"[{}]", ALLOWLIST_BRACED.sub("", command)) or re.search(r"\bIFS\b", command):
-        return None
-    segments: list[list[str]] = []
-    for part in re.split(r"(?:;|&&|\n)", command.strip()):
-        tokens: list[str] = []
-        for token in part.split(" "):
-            if "&" in token and token != EXPANSION_STDERR_TO_STDOUT:
-                return None
-            if '"' in token:
-                quoted = EXPANSION_QUOTED_TOKEN.fullmatch(token)
-                if quoted is None:
-                    return None
-                token = quoted.group(1)
-            if token:
-                tokens.append(token)
-        if not tokens:
-            return None
-        segments.append(tokens)
-    return segments
-
-
-def _names_in(text: str, names: set[str]) -> bool:
-    return any(re.search(rf"(?<![A-Za-z0-9_]){name}(?![A-Za-z0-9_])", text) for name in names)
-
-
-def _expansion_segment_ok(tokens: list[str], names: set[str]) -> bool:
-    """A segment after the assignments: a literal, non-dispatching first word,
-    `>`/`>>` only standalone, no `~`, and every `$` is the leading `$name` of a
-    `cd` operand or a write target. No assigned name appears anywhere else."""
-    word = tokens[0]
-    if not ALLOWLIST_COMMAND_WORD.fullmatch(word) or word in EXPANSION_BLOCKED_WORDS:
-        return False
-    if word == "cd" and len(tokens) != 2:
-        return False
-    targets = set(bash_write_targets(tokens))
-    for position, token in enumerate(tokens):
-        if "~" in token or (">" in token and token not in (">", ">>", EXPANSION_STDERR_TO_STDOUT)):
-            return False
-        if token == EXPANSION_STDERR_TO_STDOUT:
-            if tokens[position - 1] in (">", ">>"):  # position 0 failed the first-word rule above
-                return False
-            continue
-        remainder = token
-        if "$" in token:
-            reference = EXPANSION_REFERENCE.fullmatch(token)
-            if reference is None or (reference.group("var") or reference.group("bvar")) not in names:
-                return False
-            if not (token in targets or (word == "cd" and position == 1)):
-                return False
-            remainder = reference.group("suffix") or ""
-            if ".." in remainder.split("/"):
-                return False
-        if _names_in(remainder, names):
-            return False
-    return True
-
-
-def _guard_view(parsed: list[list[str]]) -> list[list[str]]:
-    """`parsed` as `command_segments` tokenizes it: `&` is a control operator
-    there, so `2>&1` reads as `2>`, a segment break, then `1`."""
-    view: list[list[str]] = []
-    for tokens in parsed:
-        current: list[str] = []
-        for token in tokens:
-            if token == EXPANSION_STDERR_TO_STDOUT:
-                view.append([*current, "2>"])
-                current = ["1"]
-            else:
-                current.append(token)
-        view.append(current)
-    return view
-
-
-def closed_assignments(command: str, segments: list[list[str]]) -> dict[str, str]:
-    """`{name: value}` when the whole command is the closed shape, else `{}`
-    (harmonic-forge#1262; hostile-author threat model, so no partial map).
-
-    A raw-text grammar, not a walk over `command_segments`: `shlex` strips quotes
-    and backslashes, so `'$s'` would read as `$s` there. The command must be a
-    leading run of sole-token `name=/literal` segments (lowercase name, assigned
-    once; the value has no glob, `~`, `..`, `$`, backtick or quote), joined by
-    `;`, `&&` or a newline, then segments `_expansion_segment_ok` accepts, with
-    no `IFS` word anywhere. The guard's tokenizer must parse the command to the
-    same tokens (`_guard_view`), or nothing is expanded. The one `&` allowed is
-    the exact standalone token `2>&1`.
-    """
-    parsed = _expansion_tokens(command)
-    if parsed is None or _guard_view(parsed) != segments:
-        return {}
-    values: dict[str, str] = {}
-    index = 0
-    while index < len(parsed) and len(parsed[index]) == 1:
-        assignment = EXPANSION_ASSIGNMENT.fullmatch(parsed[index][0])
-        if assignment is None:
-            break
-        name, value = assignment.group("name"), assignment.group("value")
-        if name in values or ".." in value.split("/"):
-            return {}
-        values[name] = value
-        index += 1
-    names = set(values)
-    if not names or any(_names_in(value, names) for value in values.values()):
-        return {}
-    if not all(_expansion_segment_ok(tokens, names) for tokens in parsed[index:]):
-        return {}
+def assigned_values(command: str) -> dict[str, list[str]]:
+    """Every literal absolute value each name is assigned anywhere in `command`,
+    outside heredoc bodies. One pass, whatever the number of assignments."""
+    values: dict[str, list[str]] = {}
+    for match in LITERAL_ASSIGNMENT.finditer(mask_heredoc_bodies(command)):
+        values.setdefault(match.group(1), []).append(match.group(3))
     return values
 
 
-def expand_write_target(target: str, values: dict[str, str]) -> str:
-    """A write target with its leading `$name` expanded from `closed_assignments`,
-    or unchanged. Only the exact leading-reference form is ever rewritten."""
-    reference = EXPANSION_REFERENCE.fullmatch(target)
+def candidate_targets(target: str, values: dict[str, list[str]]) -> list[str]:
+    """What a leading `$name` target could be, one path per literal value of that
+    name. The bash value is not proved: this only ever adds a path to check, so
+    it can add a denial and never removes one, and with no literal value the
+    decision stays as it was."""
+    reference = LEADING_REFERENCE.fullmatch(target)
     if reference is None:
-        return target
-    value = values.get(reference.group("var") or reference.group("bvar"))
-    return target if value is None else value + (reference.group("suffix") or "")
-
-
-def unexpandable_target_denial(targets: list[str]) -> dict | None:
-    """LANE=2 and LANE=3 only: a write target still holding `$` or a backtick
-    after the closed expansion (harmonic-forge#1262). What it names is unknown
-    here, so judging it as a path would fail open. Unconditional on whether a
-    `cd` was followed: the same blindness applies either way."""
-    lane = os.environ.get("LANE")
-    if lane not in ("2", "3"):
-        return None
-    for target in targets:
-        if "$" in target or "`" in target:
-            return denial(
-                f"Blocked: this session was launched as Lane {lane} and the write "
-                f"target {target!r} holds a `$` or a backtick this guard cannot "
-                "expand (harmonic-forge#1262), so it cannot tell whether the "
-                "write lands in a protected path. Passing shapes: a literal "
-                "absolute path, or `name=/abs/path; echo x > $name/out` with a "
-                "lowercase name assigned once, as its own segment at the start "
-                "of the command, and used only as the leading `$name` of a write "
-                "target or a `cd` operand."
-            )
-    return None
+        return []
+    name = reference.group(1) or reference.group(2)
+    return [value + (reference.group(3) or "") for value in values.get(name, ())]
 
 
 def unresolved_variable(segment: list[str]) -> str | None:
@@ -1586,11 +1453,10 @@ def unresolved_cwd_denial(targets: list[str],
             "unresolved directory, so the guard cannot tell whether it is a "
             "protected checkout — and guessing would fail open. The rule that "
             "failed: after a directory change this guard cannot follow, a write "
-            "target must be absolute. Pass an absolute path for the write target "
-            "and it will be checked normally. The other shape that passes: "
-            "`name=/abs/path; cd $name/dir; echo x > $name/out`, with a lowercase "
-            "name assigned once, as its own segment at the start of the command "
-            "(harmonic-forge#1262)."
+            "target must be absolute, and `$name/...` does not count even when "
+            "`name` is assigned in this command. Pass an absolute path for the "
+            "write target, spelled out literally, and it will be checked "
+            "normally (harmonic-forge#1262)."
         )
     return None
 
@@ -1631,10 +1497,11 @@ def decision(command: object, cwd: Path) -> dict:
             or segments[allowed.cd_index][:1] != ["cd"]):
         allowed = None
     unresolved_name: str | None = None
-    # harmonic-forge#1262: the payload cwd stays known after a followed `cd`,
-    # and the one closed expansion is decided once, over the whole command.
+    # harmonic-forge#1262: the payload cwd stays known after a followed `cd`.
     session_cwd = cwd
-    closed = closed_assignments(command, segments)
+    # Under LANE=2/3 only, and read once, on the first `$name` target.
+    lane_guarded = os.environ.get("LANE") in ("2", "3")
+    assigned: dict[str, list[str]] | None = None
     for position, segment in enumerate(segments):
         if allowed is not None and position == allowed.cd_index:
             effective_cwd = Path(allowed.target)
@@ -1661,15 +1528,8 @@ def decision(command: object, cwd: Path) -> dict:
         # surface and, until now, nothing else — so `echo x > <protected>` and
         # `python3 -c "open(<protected>,'w')"` walked straight past a guard
         # that denies the identical write through `Edit`.
-        shell_targets = [expand_write_target(target, closed)
-                         for target in bash_write_targets(segment)]
-        interpreter_pairs = [(construct, expand_write_target(target, closed))
-                             for construct, target in interpreter_write_targets(segment, command)]
-        unexpandable = unexpandable_target_denial(
-            shell_targets + [target for _c, target in interpreter_pairs]
-            + (nested_shell_write_targets(nested) if nested is not None else []))
-        if unexpandable is not None:
-            return unexpandable
+        shell_targets = bash_write_targets(segment)
+        interpreter_pairs = interpreter_write_targets(segment, command)
         if cwd_unresolved:
             unresolved = unresolved_cwd_denial(
                 shell_targets + [target for _c, target in interpreter_pairs],
@@ -1687,6 +1547,19 @@ def decision(command: object, cwd: Path) -> dict:
             effective_cwd, session_cwd)
         if write_denial is not None:
             return write_denial
+        if lane_guarded and any(target.startswith("$") for target in shell_targets
+                                + [target for _c, target in interpreter_pairs]):
+            if assigned is None:
+                assigned = assigned_values(command)
+            write_denial = protected_write_denial(
+                [("a shell write construct", candidate)
+                 for target in shell_targets for candidate in candidate_targets(target, assigned)]
+                + [(CONSTRUCT_LABELS.get(construct, "an interpreter one-liner"), candidate)
+                   for construct, target in interpreter_pairs
+                   for candidate in candidate_targets(target, assigned)],
+                effective_cwd, session_cwd)
+            if write_denial is not None:
+                return write_denial
         relocate_denial = lane3_relocate_source_denial(
             bash_relocate_sources(segment)
             + interpreter_relocate_sources(segment, command))

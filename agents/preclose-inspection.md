@@ -171,15 +171,14 @@ As the last action before ending your turn:
    section above specifies) to a file in that directory, using a **quoted
    heredoc** so no shell substitution or quoting hazard applies:
    ```bash
-   cat <<'EOF' > <target-directory>/advisory-<this-agent-name>-<six random characters>.md
+   out="$(mktemp "<target-directory>/advisory-<this-agent-name>-XXXXXX.md")"
+   cat <<'EOF' > "$out"
    <your findings, verbatim, exactly as specified above>
    EOF
    ```
-   Type the whole path out as one literal absolute path, composing the six
-   random characters yourself: a `$` or a command substitution in a write target
-   is denied under `LANE=2` and `LANE=3` (harmonic-forge#1262). The random suffix
-   keeps this collision-free under concurrency — two advisory subagents running
-   at once each get their own file, no coordination needed.
+   `mktemp`'s `XXXXXX` suffix makes this collision-free under concurrency —
+   two advisory subagents running at once each get their own file, no
+   coordination needed.
 3. A run that finds nothing still writes a file, one saying so explicitly
    (e.g. "No findings met the bar."). An absent file must never be the
    signal for "nothing found" — reserve it for "something went wrong," so
