@@ -524,6 +524,35 @@ def _codex_is_high(model: object) -> bool:
     return _codex_family(model) in CODEX_HIGH_FAMILIES
 
 
+def resolve_route_floor(cwd: str, issue_number: int, repo_hint: str | None = None):
+    """The gate id of the route that sets a `deep` Tier floor on this issue,
+    None when none does, LOOKUP_FAILED when the route store cannot be read
+    (harmonic-forge#1249). A missing repo is "no route": the store is keyed
+    by OWNER/REPO#N, so nothing could be found for it.
+
+    `route_store.load` raises on any corrupt line, of any issue, so one bad
+    line makes this LOOKUP_FAILED for every issue: accepted, and fail-closed
+    only for a session not on a high-tier model (handoff, pitch change 2).
+    """
+    try:
+        routing = str(Path(__file__).resolve().parents[1] / "routing")
+        if routing not in sys.path:
+            sys.path.insert(0, routing)
+        import route_store
+        hinted = HINTED_TARGETS.get(repo_hint or "")
+        repo = hinted[0] if hinted else resolve_repo(cwd)
+        if not repo:
+            return None
+        event = route_store.current(f"{repo}#{issue_number}")
+        attrs = (event or {}).get("attrs") or {}
+    except Exception as exc:
+        print(f"model_tier_gate: route store unreadable: {exc}", file=sys.stderr)
+        return LOOKUP_FAILED
+    if attrs.get("tier_floor") != "deep":
+        return None
+    return str(attrs.get("gate_id") or "unknown")
+
+
 def _codex_switch_hint() -> str:
     """What a denied Codex session should switch to, naming no version.
 
@@ -772,14 +801,20 @@ def _main() -> None:
     lookup_failed_issue: int | None = None
     escalating_issue: int | None = None
     escalating_tier: str | None = None
+    escalating_gate: str | None = None  # set when the route, not the board, escalated
     for d, issue_number, repo_hint in resolved:
         tier = resolve_tier(d, issue_number, repo_hint)
-        if tier is LOOKUP_FAILED:
+        floor_gate = resolve_route_floor(d, issue_number, repo_hint)
+        if tier is LOOKUP_FAILED or floor_gate is LOOKUP_FAILED:
             lookup_failed_issue = issue_number
             break  # a failed lookup is the worst outcome any target can have
         if tier in ESCALATING_TIERS and escalating_issue is None:
             escalating_issue = issue_number
             escalating_tier = tier
+        elif floor_gate is not None and escalating_issue is None:
+            escalating_issue = issue_number
+            escalating_tier = "deep"
+            escalating_gate = floor_gate
 
     if lookup_failed_issue is not None:
         # harmonic-forge#656 AC6: fail closed on a failed read, but only for a
@@ -801,8 +836,11 @@ def _main() -> None:
         _allow()
 
     switch_to = _codex_switch_hint() if "model" in payload else "`/model opus`"
+    source = (f"Issue #{escalating_issue}'s route (gate {escalating_gate}) sets Tier floor "
+              f"'{escalating_tier}'" if escalating_gate is not None
+              else f"Issue #{escalating_issue} is Tier '{escalating_tier}'")
     _deny(
-        f"Issue #{escalating_issue} is Tier '{escalating_tier}' "
+        f"{source} "
         f"-- harmonic-forge#202 requires the high-tier model for this work. "
         f"Switch to {switch_to} and retry, or set LANE_MODEL to override."
     )
