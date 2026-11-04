@@ -1371,5 +1371,235 @@ class TestF1116AttackShapes(_F1116Fixture):
         self.assertDenied('w={MAIN}; [ -n "$x" ] && w={SCRATCH}; cd $w && echo > tracked.md')
 
 
+class _F1262Fixture(_F1116Fixture):
+    """harmonic-forge#1262: a main checkout plus the worktrees Lane 2 works from."""
+
+    def setUp(self) -> None:
+        import subprocess
+        super().setUp()
+        self.impl = self.base / "proj-42-impl"
+        self.lane2 = self.base / "proj-lane2"
+        for path, branch in ((self.impl, "work"), (self.lane2, "lane2")):
+            subprocess.run(["git", "-C", str(self.main), "worktree", "add", "-q",
+                            "-b", branch, str(path)], check=True)
+
+    def decide(self, lane: str | None, cwd: Path, command: str) -> str | None:
+        """The denial reason for `command` from `cwd` under `lane`, else None."""
+        import os
+        environ = dict(os.environ)
+        environ.pop("LANE", None)
+        if lane is not None:
+            environ["LANE"] = lane
+        with unittest.mock.patch.dict(os.environ, environ, clear=True):
+            result = m.decision(self.fill(command), cwd)
+        if not _is_denied(result):
+            return None
+        return result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def assertRow(self, lane: str | None, cwd: Path, command: str, denied: bool) -> None:
+        reason = self.decide(lane, cwd, command)
+        self.assertEqual(reason is not None, denied, f"{command!r} from {cwd}: {reason}")
+
+    def closed(self, command: str) -> dict[str, str]:
+        filled = self.fill(command)
+        return m.closed_assignments(filled, m.command_segments(filled))
+
+
+#: Built to look like the closed assignment without being it. Every one must
+#: yield no expansion and, under LANE=2 or LANE=3, a denial.
+F1262_HOSTILE = (
+    "s={SCRATCH}; s={MAIN}; echo hi > $s/tracked.md",  # reassigned
+    "echo hi > $s/x",  # unassigned
+    "s={SCRATCH}; echo hi > ${s:-{MAIN}}/x",
+    "s=$(echo {MAIN}); echo hi > $s/x",
+    "s={SCRATCH}; echo hi > $(echo {MAIN})/x",
+    "s={SCRATCH}; echo hi > `echo {MAIN}`/x",
+    "s=`echo {MAIN}`; echo hi > $s/x",
+    "declare s={SCRATCH}; echo hi > $s/x",
+    "s={SCRATCH}; declare s={MAIN}; echo hi > $s/x",
+    "s={SCRATCH}; read s; echo hi > $s/x",
+    "s={SCRATCH}; for s in {MAIN}; do echo hi > $s/x; done",
+    "s={SCRATCH}; printf -v s {MAIN}; echo hi > $s/x",
+    "s={SCRATCH}; s+=/x; echo hi > $s/y",
+    "s={SCRATCH}; unset s; echo hi > $s/y",
+    "false && s={SCRATCH}; echo hi > $s/x",
+    "s={MAIN}; false && s={SCRATCH}; echo hi > $s/x",
+    "( s={SCRATCH} ); echo hi > $s/x",
+    "s={SCRATCH} cmd > $s/y",
+    "s={SCRATCH} || s={MAIN}; echo hi > $s/y",
+    "s={SCRATCH} | echo hi > $s/y",
+    "s={SCRATCH} & echo hi > $s/y",
+    "s={SCRATCH}/*; echo hi > $s/y",
+    "s=~/x; echo hi > $s/y",
+    "s={SCRATCH}/../x; echo hi > $s/y",
+    "s=$HOME; echo hi > $s/y",
+    "s={SCRATCH}$t; echo hi > $s/y",
+    "s='{SCRATCH}'; echo hi > $s/y",
+    'x=y; s="{SCRATCH}"; echo hi > $s/y',
+    "PWD={SCRATCH}; cd ..; echo hi > $s/y",
+    "s={SCRATCH}; echo $s; echo hi > $s/y",
+    "s={SCRATCH}; cat s; echo hi > $s/y",
+    "s={SCRATCH}; cp $s/a $s/b",
+    "s={SCRATCH}; echo hi > {SCRATCH}/$s/y",
+    "s={SCRATCH}; dd of=$s/y",
+    "s={SCRATCH}; echo hi >$s/y",
+    "s={SCRATCH}; echo hi > '$s'/y",
+    "s={SCRATCH}; echo hi > $s/../y",
+    "s={SCRATCH}; echo hi > $t/y",
+    "s={SCRATCH}; T=x; echo hi > $s/y",
+    "s={SCRATCH}; echo hi > $s/y; s={MAIN}",
+    "a=s; b==; eval $a$b={MAIN}; echo hi > $s/x",
+    "a=s; b==; declare $a$b={MAIN}; echo hi > $s/x",
+    "s={SCRATCH}; eval echo hi > $s/x",
+    "s={SCRATCH}; . /tmp/f; echo hi > $s/x",
+    "s={SCRATCH}; source /tmp/f; echo hi > $s/x",
+    "s={SCRATCH}; IFS=x; tee $s",
+    "s={SCRATCH}; IFS=x; echo hi > $s/y",
+    "s={SCRATCH}; declare IFS=x; tee $s",  # reaches the IFS rule: `declare` passes the first-word rule
+    "s={SCRATCH}; export IFS=x; tee $s/y",
+    "s={SCRATCH}; if true; then echo hi > $s/y; fi",
+    "bash -c 'echo hi > $s/y'",  # one token to the outer parse; only the nested parse sees it
+    "s={SCRATCH}; bash -c 'echo hi > $s/y'",
+)
+
+
+class TestF1262TableRows(_F1262Fixture):
+    """The handoff's Scenario Trace, each row's origin/main decision recorded
+    in its comment (measured at 9a923ab before any edit)."""
+
+    def test_uppercase_stays_denied_after_an_unresolved_cd(self):  # row 1: deny today
+        self.assertRow(None, self.scratch, "S={SCRATCH}; cd $S/sub; echo hi > $S/out.py", True)
+
+    def test_lowercase_once_assigned_target_expands(self):  # rows 2, 3: deny today
+        for command in ("s={SCRATCH}; cd $s/sub; echo hi > $s/out.py",
+                        's={SCRATCH}; cd "$s/sub"; echo hi > "$s/out.py"',
+                        "s={SCRATCH} && cd ${s}/sub && echo hi >> ${s}/out.py",
+                        "s={SCRATCH}\ncd $s/sub\necho hi > $s/out.py"):
+            with self.subTest(command=command):
+                self.assertRow(None, self.scratch, command, False)
+                self.assertEqual(self.closed(command), {"s": str(self.scratch)})
+
+    def test_a_relative_target_stays_denied(self):  # row 4: deny today
+        self.assertRow(None, self.scratch, 's={SCRATCH} && cd "$s/sub" && python3 x.py > out.txt', True)
+
+    def test_an_absolute_target_stays_allowed(self):  # row 5: allow today
+        self.assertRow(None, self.scratch, "S={SCRATCH}; cd $S/sub; python3 x.py > {SCRATCH}/out.txt", False)
+
+    def test_lane_unset_unexpandable_is_unchanged(self):  # row 6a: allow today
+        self.assertRow(None, self.scratch, "S={SCRATCH}; echo hi > $S/out.py", False)
+
+    def test_lane2_unexpandable_is_denied_from_a_worktree(self):  # row 6b: allow today
+        for cwd in (self.impl, self.lane2):
+            with self.subTest(cwd=cwd):
+                reason = self.decide("2", cwd, "S={SCRATCH}; echo hi > $S/out.py")
+                self.assertIn("harmonic-forge#1262", reason or "")
+
+    def test_unexpandable_stays_denied_from_main_and_lane3(self):  # row 6c: deny today
+        self.assertRow("2", self.main, "S={SCRATCH}; echo hi > $S/out.py", True)
+        self.assertRow("3", self.impl, "S={SCRATCH}; echo hi > $S/out.py", True)
+
+    def test_an_unset_variable_stays_denied(self):  # row 7: deny today
+        self.assertRow(None, self.scratch, "cd $UNSET && echo hi > $UNSET/out.py", True)
+
+    def test_a_protected_write_stays_denied(self):  # rows 8, 9: deny today
+        self.assertRow("2", self.main, "echo hi > {MAIN}/backend/x.py", True)
+        self.assertRow("2", self.main, "s={MAIN}; echo hi > $s/backend/x.py", True)
+
+    def test_a_followed_cd_keeps_the_session_roots(self):  # rows 10-12: allow today (fail-open)
+        for command in ("s={MAIN}; cd /tmp; echo hi > $s/backend/x.py",
+                        "cd /tmp; echo hi > {MAIN}/backend/x.py",
+                        "cd /tmp; tee {MAIN}/backend/x.py"):
+            with self.subTest(command=command):
+                reason = self.decide("2", self.main, command)
+                self.assertIn("writes into the main checkout", reason or "")
+
+    def test_the_session_roots_also_hold_from_a_worktree(self):
+        self.assertRow("2", self.impl, "cd /tmp; echo hi > {MAIN}/backend/x.py", True)
+
+    def test_a_write_outside_every_root_stays_allowed(self):  # row 13, AC3: allow today
+        self.assertRow("2", self.impl, "cd {SCRATCH}; echo hi > {SCRATCH}/x", False)
+        self.assertRow("2", self.impl, "echo hi > f.txt", False)
+        self.assertRow("2", self.lane2, "echo hi > f.txt", False)
+
+    def test_a_relative_target_lands_in_the_followed_cwd_not_the_session(self):
+        """The session's roots are checked against where the write lands. Read
+        against the session cwd this would be a false denial from main."""
+        self.assertRow("2", self.main, "cd {SCRATCH}; echo hi > out.txt", False)
+        self.assertRow("2", self.main, "cd {SCRATCH}/sub; echo hi > ../out.txt", False)
+        self.assertRow("2", self.scratch, "cd {MAIN}; echo hi > out.txt", True)
+
+    def test_a_single_quoted_reference_stays_denied(self):  # row 14: deny today
+        self.assertRow("2", self.main, "S=/tmp; echo hi > '$S'/backend/x.py", True)
+        self.assertRow("2", self.main, "s=/tmp; echo hi > '$s'/backend/x.py", True)
+        self.assertEqual(self.closed("s=/tmp; echo hi > '$s'/backend/x.py"), {})
+
+    def test_lane2_expanded_target_outside_every_root_is_allowed(self):
+        self.assertRow("2", self.impl, "s={SCRATCH}; echo hi > $s/out.py", False)
+        self.assertRow("2", self.impl, "s={SCRATCH}; cd $s/sub; tee $s/out.py", False)
+        self.assertRow("2", self.impl, "s={SCRATCH}; cd $s/sub; cp /tmp/a $s/out.py", False)
+
+    def test_an_expanded_target_gets_every_protected_check(self):
+        """The relaxation must not skip a check: with no LANE an expanded write
+        to a tracked file on `main` is denied by that predicate, by name."""
+        reason = self.decide(None, self.scratch, "s={MAIN}; cd $s; echo hi > $s/tracked.md")
+        self.assertIn("harmonic-forge#384", reason or "")
+        self.assertNotIn("cannot resolve statically", reason or "")
+
+
+class TestF1262Hostile(_F1262Fixture):
+    """AC2: the shapes built to pass the closed expansion without being it."""
+
+    def test_the_closure_expands_none_of_them(self):
+        for command in F1262_HOSTILE:
+            with self.subTest(command=command):
+                self.assertEqual(self.closed(command), {})
+
+    def test_each_is_denied_under_lane2_and_lane3(self):
+        for command in F1262_HOSTILE:
+            for lane, cwd in (("2", self.impl), ("2", self.main), ("3", self.impl)):
+                with self.subTest(command=command, lane=lane, cwd=cwd):
+                    self.assertIsNotNone(self.decide(lane, cwd, command))
+
+    def test_a_reassigned_name_is_denied_after_an_unresolved_cd_with_no_lane(self):
+        """No LANE, so only the closure stands between this and an allow."""
+        self.assertRow(None, self.scratch, "s={SCRATCH}; s={SCRATCH}/x; cd $s/sub; echo hi > $s/y", True)
+        self.assertRow(None, self.scratch, "s={SCRATCH}; cd $s/sub; s=/x; echo hi > $s/y", True)
+        self.assertRow(None, self.scratch, "s={SCRATCH}; cd $s/sub; echo $s; echo hi > $s/y", True)
+        self.assertRow(None, self.scratch, "s={SCRATCH}; cd $s/sub; echo hi > '$s'/y", True)
+
+    def test_expansion_only_rewrites_an_exact_leading_reference(self):
+        values = {"s": "/a"}
+        self.assertEqual(m.expand_write_target("$s/x", values), "/a/x")
+        self.assertEqual(m.expand_write_target("${s}/x", values), "/a/x")
+        self.assertEqual(m.expand_write_target("$s", values), "/a")
+        for target in ("$t/x", "/b/$s", "$s$s", "${s:-x}", "$S/x", "x$s", "$s/$s"):
+            with self.subTest(target=target):
+                self.assertEqual(m.expand_write_target(target, values), target)
+
+    def test_the_guard_tokenizer_must_agree_or_nothing_expands(self):
+        command = "s=/a; echo hi > $s/x"
+        self.assertEqual(m.closed_assignments(command, m.command_segments(command)), {"s": "/a"})
+        self.assertEqual(m.closed_assignments(command, [["s=/a"], ["echo", "hi"]]), {})
+
+    def test_the_shared_allowlist_gate_is_not_widened(self):
+        """`allowlisted_variable_cd` is out of scope and must stay exactly as narrow."""
+        self.assertIsNone(m._allowlist_tokens("s=/a\ncd $s"))
+        self.assertIsNone(m._allowlist_tokens('s=/a; cd "$s/sub"'))
+        self.assertIsNone(m.allowlisted_variable_cd("s=/a; cd $s; echo hi > $s/x"))
+
+
+class TestF1262DenialText(_F1262Fixture):
+    def test_ac4_an_unresolved_cd_names_the_rule_and_the_passing_shape(self):
+        reason = self.decide(None, self.scratch, "s={SCRATCH}; cd $s/sub; echo hi > out.txt")
+        self.assertIn("The rule that failed", reason)
+        self.assertIn("a write target must be absolute", reason)
+        self.assertIn("name=/abs/path; cd $name/dir; echo x > $name/out", reason)
+
+    def test_the_lane_denial_names_the_shapes_that_pass(self):
+        reason = self.decide("2", self.impl, "S={SCRATCH}; echo hi > $S/out.py")
+        self.assertIn("a literal absolute path", reason)
+        self.assertIn("name=/abs/path; echo x > $name/out", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
