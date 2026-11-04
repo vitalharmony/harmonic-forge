@@ -2,15 +2,22 @@
 """Tests for `hrse-gate grant-from-ae` (harmonic-forge#1064).
 
 GitHub, the TTY, the euid and the token file are all stubbed in-process; the
-store lives under a temp root. Nothing here reaches the network, `/etc`,
-`/var/lib/hrse-gate` or a real terminal.
+store lives under a temp root. Nothing here reaches the network, `/etc` or
+`/var/lib/hrse-gate`. One class, `RealTerminal`, runs the real `confirm()` on a
+real pty (harmonic-forge#1261), because a mock cannot show that a TTY is not
+seekable or that pending input is discarded; every other test stubs the terminal.
 """
 from __future__ import annotations
 
 import json
 import os
+import pty
+import select
+import signal
 import sys
 import tempfile
+import termios
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -183,16 +190,21 @@ class Confirmation(_Case):
         self.answer = False
         self.assertIn("not confirmed", self.refused())
 
-    def test_confirm_reads_only_y_or_yes(self):
-        for raw, expected in (("y\n", True), ("YES\n", True), ("\n", False), ("", False),
-                              ("n\n", False), ("yep\n", False), (" y \n", True)):
-            with self.subTest(raw=raw), \
-                    mock.patch("builtins.open", mock.mock_open(read_data=raw)):
-                self.assertEqual(REAL_CONFIRM("prompt"), expected)
+    @staticmethod
+    def _failing_tty_open():
+        """`os.open` failing for the terminal path only: tempfile and the rest
+        of the suite use it too."""
+        real_open = os.open
+
+        def fake(path, *args, **kwargs):
+            if path == ae.TTY_PATH:
+                raise OSError(6, "No such device or address")
+            return real_open(path, *args, **kwargs)
+        return mock.patch("os.open", side_effect=fake)
 
     def test_confirm_with_no_tty_refuses_naming_the_error(self):
         """harmonic-forge#1081: an unopenable /dev/tty is not a declined answer."""
-        with mock.patch("builtins.open", side_effect=OSError(6, "No such device or address")):
+        with self._failing_tty_open():
             with self.assertRaises(b.Refused) as ctx:
                 REAL_CONFIRM("prompt")
         self.assertEqual(ctx.exception.code, b.EXIT_REFUSED)
@@ -202,19 +214,30 @@ class Confirmation(_Case):
     def test_unopenable_tty_names_the_error_and_mints_nothing(self):
         """harmonic-forge#1081 AC1, end to end through grant_from_ae with the
         real confirm(): only the /dev/tty open fails."""
-        real_open = open
-
-        def open_failing_tty(path, *args, **kwargs):
-            if path == "/dev/tty":
-                raise OSError(6, "No such device or address")
-            return real_open(path, *args, **kwargs)
-
-        with mock.patch.object(ae, "confirm", REAL_CONFIRM), \
-                mock.patch("builtins.open", side_effect=open_failing_tty):
+        with mock.patch.object(ae, "confirm", REAL_CONFIRM), self._failing_tty_open():
             message = self.refused()
         self.assertIn("cannot use /dev/tty", message)
         self.assertIn("No such device or address", message)
         self.assertNotIn("not confirmed", message)
+
+    def test_a_missing_node_is_refused_and_never_created(self):
+        """harmonic-forge#1261 pass 1: mode "w" carries O_CREAT, so a minimal
+        /dev gained a root-owned regular file and the read got the prompt back."""
+        missing = Path(self._tmp.name) / "no-such-tty"
+        with mock.patch.object(ae, "TTY_PATH", str(missing)):
+            with self.assertRaises(b.Refused) as ctx:
+                REAL_CONFIRM("prompt")
+        self.assertIn("cannot use /dev/tty", str(ctx.exception))
+        self.assertFalse(missing.exists())
+
+    def test_a_regular_file_at_the_path_is_never_read_as_an_answer(self):
+        planted = Path(self._tmp.name) / "planted-tty"
+        planted.write_text("y\n")
+        with mock.patch.object(ae, "TTY_PATH", str(planted)):
+            with self.assertRaises(b.Refused) as ctx:
+                REAL_CONFIRM("prompt")
+        self.assertIn("is not a terminal", str(ctx.exception))
+        self.assertEqual(planted.read_text(), "y\n")  # neither truncated nor written
 
     def test_display_shows_the_action_prominently(self):
         self.mint()
@@ -222,6 +245,142 @@ class Confirmation(_Case):
         self.assertIn(SHA, text)
         self.assertIn(SCRIPT, text)
         self.assertIn("\n  DRY RUN\n", text)
+
+
+class RealTerminal(unittest.TestCase):
+    """The real confirm() on a real pty (harmonic-forge#1261). The forked child
+    always ends in os._exit, so a failure never reruns the suite in its copy; the
+    parent's reads are bounded and it always reaps, so a hung child cannot hang CI.
+
+    The answer is sent only after the child reports its flush, because confirm()
+    discards anything earlier, and reading the prompt back is not enough: the
+    prompt prints just before the flush. A child waits on a pipe until queued
+    input has reached the line discipline (its echo is the proof), so a
+    type-ahead test cannot pass by the `y` merely arriving after the flush."""
+
+    DEADLINE_SECONDS = 20.0
+    PROMPT = b"[y/N] "
+    FLUSHED = b"<flushed>"
+    DESCRIPTION = "the-grant-under-review"
+
+    def _read_until(self, fd: int, marker: bytes, seen: bytearray, deadline: float) -> bool:
+        """Read until `marker` is in `seen`; False at EOF or the deadline."""
+        while marker not in seen:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if not select.select([fd], [], [], min(remaining, 0.2))[0]:
+                continue
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:  # EIO: the child closed its end
+                return False
+            if not chunk:
+                return False
+            seen.extend(chunk)
+        return True
+
+    def _confirm_on_a_pty(self, answer: bytes, queued: bytes = b"") -> tuple[int, str]:
+        """(child exit code, what the terminal showed). 0 = True, 1 = False, 2 = raised."""
+        ae.bind(b)  # a refusal needs the broker; never rely on an earlier test having bound it
+        go_read, go_write = os.pipe()
+        try:
+            pid, fd = pty.fork()
+        except OSError as exc:
+            os.close(go_read)
+            os.close(go_write)
+            self.skipTest(f"pty.fork() is unavailable here: {exc}")
+        if pid == 0:
+            code = 3
+            try:
+                os.read(go_read, 1)
+                real_flush = ae.termios.tcflush
+
+                def flush_then_report(*args):
+                    real_flush(*args)
+                    os.write(1, self.FLUSHED)
+                ae.termios.tcflush = flush_then_report  # this forked copy only
+                code = 0 if REAL_CONFIRM(self.DESCRIPTION) else 1
+            except BaseException as exc:  # noqa: BLE001 -- reported through the pty
+                code = 2
+                os.write(1, f"RAISED {exc}\n".encode())
+            finally:
+                os._exit(code)
+        os.close(go_read)
+        seen = bytearray()
+        deadline = time.monotonic() + self.DEADLINE_SECONDS
+        timed_out = True
+        try:
+            if queued:
+                os.write(fd, queued)
+                self.assertTrue(self._read_until(fd, queued.strip(), seen, deadline),
+                                "the queued input never echoed")
+            os.write(go_write, b"g")
+            if self._read_until(fd, self.FLUSHED, seen, deadline):
+                os.write(fd, answer)
+            # To EOF: `marker` is never in the output.
+            self._read_until(fd, b"\0no-such-marker\0", seen, deadline)
+            timed_out = time.monotonic() >= deadline
+        finally:
+            if timed_out:
+                os.kill(pid, signal.SIGKILL)
+            os.close(go_write)
+            os.close(fd)
+            _, status = os.waitpid(pid, 0)
+        shown = seen.decode(errors="replace")
+        self.assertFalse(timed_out, f"confirm() did not return in {self.DEADLINE_SECONDS}s: {shown!r}")
+        return os.waitstatus_to_exitcode(status), shown
+
+    def test_y_on_a_real_terminal_is_consent(self):
+        code, shown = self._confirm_on_a_pty(b"y\n")
+        self.assertEqual(code, 0, shown)
+        self.assertIn("Mint this grant? [y/N]", shown)
+
+    def test_the_description_reaches_the_terminal_before_the_prompt(self):
+        """Pass 2: printing only the prompt would mint on a `y` to nothing."""
+        code, shown = self._confirm_on_a_pty(b"n\n")
+        self.assertEqual(code, 1, shown)
+        self.assertLess(shown.index(self.DESCRIPTION), shown.index(self.PROMPT.decode()))
+
+    def test_the_prompt_prints_before_pending_input_is_discarded(self):
+        """A `y` typed before the operator can see the prompt must be gone by the
+        time the answer is read: flushing first would leave a window after it."""
+        code, shown = self._confirm_on_a_pty(b"n\n")
+        self.assertEqual(code, 1, shown)
+        self.assertLess(shown.index(self.PROMPT.decode()), shown.index(self.FLUSHED.decode()))
+
+    def test_n_on_a_real_terminal_is_not_consent(self):
+        code, shown = self._confirm_on_a_pty(b"n\n")
+        self.assertEqual(code, 1, shown)
+        self.assertIn("Mint this grant? [y/N]", shown)
+
+    def test_only_y_or_yes_is_consent_on_a_real_terminal(self):
+        for raw, expected in ((b"y\n", 0), (b"YES\n", 0), (b" y \n", 0), (b"\n", 1), (b"n\n", 1),
+                              (b"yep\n", 1), (b"\x04", 1)):  # \x04: EOF at the terminal
+            with self.subTest(raw=raw):
+                code, shown = self._confirm_on_a_pty(raw)
+                self.assertEqual(code, expected, shown)
+
+    def test_undecodable_input_is_not_consent(self):
+        code, shown = self._confirm_on_a_pty(b"\xff\xfe\n")
+        self.assertEqual(code, 1, shown)
+
+    def test_a_y_typed_before_the_prompt_is_discarded(self):
+        """Pass 1: a `y` typed while GitHub was being read minted a grant before
+        the operator had seen what it covers."""
+        code, shown = self._confirm_on_a_pty(b"n\n", queued=b"y\n")
+        self.assertEqual(code, 1, shown)
+
+    def test_a_queued_y_with_no_later_answer_never_returns_true(self):
+        """The flush alone decides: the only `y` is the queued one, and EOF follows."""
+        code, shown = self._confirm_on_a_pty(b"\x04", queued=b"yes\n")
+        self.assertEqual(code, 1, shown)
+
+    def test_a_failed_flush_is_a_named_refusal_not_consent(self):
+        with mock.patch.object(ae.termios, "tcflush", side_effect=termios.error(5, "Input/output error")):
+            code, shown = self._confirm_on_a_pty(b"y\n")
+        self.assertEqual(code, 2, shown)
+        self.assertIn("cannot use /dev/tty for the confirmation", shown)
 
 
 class Minting(_Case):
@@ -353,10 +512,6 @@ class PassOneFindings(_Case):
     def test_token_read_error_refuses(self):
         with mock.patch.object(ae.os, "read", side_effect=OSError(5, "EIO")):
             self.assertIn("unreadable", self.refused())
-
-    def test_undecodable_tty_answer_is_not_consent(self):
-        with mock.patch("builtins.open", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")):
-            self.assertFalse(REAL_CONFIRM("prompt"))
 
     def test_huge_issue_number_refuses(self):
         with self.assertRaises(b.Refused) as ctx:
