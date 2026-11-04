@@ -527,8 +527,9 @@ def _codex_is_high(model: object) -> bool:
 def resolve_route_floor(cwd: str, issue_number: int, repo_hint: str | None = None):
     """The gate id of the route that sets a `deep` Tier floor on this issue,
     None when none does, LOOKUP_FAILED when the route store cannot be read
-    (harmonic-forge#1249). A missing repo is "no route": the store is keyed
-    by OWNER/REPO#N, so nothing could be found for it.
+    (harmonic-forge#1249). The store is keyed by OWNER/REPO#N, and the repo
+    comes from the branch hint, GH_REPO, or the origin remote, so a repo with
+    no GH_REPO still finds its route. With none of them no key exists: no route.
 
     `route_store.load` raises on any corrupt line, of any issue, so one bad
     line makes this LOOKUP_FAILED for every issue: accepted, and fail-closed
@@ -542,6 +543,10 @@ def resolve_route_floor(cwd: str, issue_number: int, repo_hint: str | None = Non
         hinted = HINTED_TARGETS.get(repo_hint or "")
         repo = hinted[0] if hinted else resolve_repo(cwd)
         if not repo:
+            origin = _run(["git", "-C", cwd, "remote", "get-url", "origin"])
+            found = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", origin.stdout.strip())
+            repo = found.group(1) if origin.returncode == 0 and found else None
+        if not repo:
             return None
         event = route_store.current(f"{repo}#{issue_number}")
         attrs = (event or {}).get("attrs") or {}
@@ -550,7 +555,8 @@ def resolve_route_floor(cwd: str, issue_number: int, repo_hint: str | None = Non
         return LOOKUP_FAILED
     if attrs.get("tier_floor") != "deep":
         return None
-    return str(attrs.get("gate_id") or "unknown")
+    # An override never sets a floor; under one, the gate that did is the shadow.
+    return str(attrs.get("shadow_gate") or attrs.get("gate_id") or "unknown")
 
 
 def _codex_switch_hint() -> str:
@@ -803,18 +809,23 @@ def _main() -> None:
     escalating_tier: str | None = None
     escalating_gate: str | None = None  # set when the route, not the board, escalated
     for d, issue_number, repo_hint in resolved:
-        tier = resolve_tier(d, issue_number, repo_hint)
+        # The floor is local, and read first: a crash in the board read below
+        # reaches main()'s blanket allow, and must not skip it.
         floor_gate = resolve_route_floor(d, issue_number, repo_hint)
-        if tier is LOOKUP_FAILED or floor_gate is LOOKUP_FAILED:
+        if floor_gate is LOOKUP_FAILED:
+            lookup_failed_issue = issue_number
+            break  # a failed lookup is the worst outcome any target can have
+        if floor_gate is not None:
+            # A later target can only demand the same high tier, so stop here.
+            escalating_issue, escalating_tier, escalating_gate = issue_number, "deep", floor_gate
+            break
+        tier = resolve_tier(d, issue_number, repo_hint)
+        if tier is LOOKUP_FAILED:
             lookup_failed_issue = issue_number
             break  # a failed lookup is the worst outcome any target can have
         if tier in ESCALATING_TIERS and escalating_issue is None:
             escalating_issue = issue_number
             escalating_tier = tier
-        elif floor_gate is not None and escalating_issue is None:
-            escalating_issue = issue_number
-            escalating_tier = "deep"
-            escalating_gate = floor_gate
 
     if lookup_failed_issue is not None:
         # harmonic-forge#656 AC6: fail closed on a failed read, but only for a
