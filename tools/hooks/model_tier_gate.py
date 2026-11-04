@@ -524,6 +524,46 @@ def _codex_is_high(model: object) -> bool:
     return _codex_family(model) in CODEX_HIGH_FAMILIES
 
 
+def resolve_route_floor(cwd: str, issue_number: int, repo_hint: str | None = None):
+    """The gate id of the route that sets a `deep` Tier floor on this issue,
+    None when none does, LOOKUP_FAILED when the route store cannot be read
+    (harmonic-forge#1249). The store is keyed by OWNER/REPO#N, and the repo
+    comes from the branch hint, GH_REPO, or the origin remote, so a repo with
+    no GH_REPO still finds its route. With none of them no key exists: no route.
+
+    The key's repo is the checkout's, as the board read's is, so an unhinted
+    branch for a cross-repo half keys its checkout: use `feat/f<N>-x` there.
+    The branch name is the author's, so this guards against a wrong-model
+    accident and not a hostile rename, which AC4's no-issue exemption admits.
+
+    `route_store.load` raises on any corrupt line, of any issue, so one bad
+    line makes this LOOKUP_FAILED for every issue: accepted, and fail-closed
+    only for a session not on a high-tier model (handoff, pitch change 2).
+    """
+    try:
+        routing = str(Path(__file__).resolve().parents[1] / "routing")
+        if routing not in sys.path:
+            sys.path.insert(0, routing)
+        import route_store
+        hinted = HINTED_TARGETS.get(repo_hint or "")
+        repo = hinted[0] if hinted else resolve_repo(cwd)
+        if not repo:
+            origin = _run(["git", "-C", cwd, "remote", "get-url", "origin"])
+            found = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", origin.stdout.strip())
+            repo = found.group(1) if origin.returncode == 0 and found else None
+        if not repo:
+            return None
+        event = route_store.current(f"{repo}#{issue_number}")
+        attrs = (event or {}).get("attrs") or {}
+    except Exception as exc:
+        print(f"model_tier_gate: route store unreadable: {exc}", file=sys.stderr)
+        return LOOKUP_FAILED
+    if attrs.get("tier_floor") != "deep":
+        return None
+    # An override never sets a floor; under one, the gate that did is the shadow.
+    return str(attrs.get("shadow_gate") or attrs.get("gate_id") or "unknown")
+
+
 def _codex_switch_hint() -> str:
     """What a denied Codex session should switch to, naming no version.
 
@@ -748,14 +788,31 @@ def _main() -> None:
     # call is gated on the WORST outcome across all of them below.
     resolved: list[tuple[str, int, str | None]] = []
     seen_issues: set[tuple[int, str | None]] = set()
+    lookup_failed_issue: int | None = None
+    escalating_issue: int | None = None
+    escalating_tier: str | None = None
+    escalating_gate: str | None = None  # set when the route, not the board, escalated
     for d in resolve_dirs:
         target = resolve_issue_target(d)
-        if target is None or target in seen_issues:
+        if target is None:
+            continue
+        # Floors are local and read for every target before any board read (a
+        # crash there reaches main()'s blanket allow) and before the dedupe (two
+        # repos can share a number); one hit decides the call, so stop here.
+        floor_gate = resolve_route_floor(d, target[0], target[1])
+        if floor_gate is LOOKUP_FAILED:
+            lookup_failed_issue = target[0]
+            break
+        if floor_gate is not None:
+            escalating_issue, escalating_tier, escalating_gate = target[0], "deep", floor_gate
+            break
+        if target in seen_issues:
             continue
         seen_issues.add(target)
         resolved.append((d, target[0], target[1]))
 
-    if not resolved:
+    floor_decided = lookup_failed_issue is not None or escalating_issue is not None
+    if not resolved and not floor_decided:
         # harmonic-forge#630 AC4 (preclose finding 3): a write TARGET was
         # named but none of its candidate directories resolved to a
         # tracked issue -- most commonly a genuinely untracked path, but
@@ -769,10 +826,7 @@ def _main() -> None:
                   f"allowing", file=sys.stderr)
         _allow()
 
-    lookup_failed_issue: int | None = None
-    escalating_issue: int | None = None
-    escalating_tier: str | None = None
-    for d, issue_number, repo_hint in resolved:
+    for d, issue_number, repo_hint in ([] if floor_decided else resolved):
         tier = resolve_tier(d, issue_number, repo_hint)
         if tier is LOOKUP_FAILED:
             lookup_failed_issue = issue_number
@@ -801,8 +855,11 @@ def _main() -> None:
         _allow()
 
     switch_to = _codex_switch_hint() if "model" in payload else "`/model opus`"
+    source = (f"Issue #{escalating_issue}'s route (gate {escalating_gate}) sets Tier floor "
+              f"'{escalating_tier}'" if escalating_gate is not None
+              else f"Issue #{escalating_issue} is Tier '{escalating_tier}'")
     _deny(
-        f"Issue #{escalating_issue} is Tier '{escalating_tier}' "
+        f"{source} "
         f"-- harmonic-forge#202 requires the high-tier model for this work. "
         f"Switch to {switch_to} and retry, or set LANE_MODEL to override."
     )

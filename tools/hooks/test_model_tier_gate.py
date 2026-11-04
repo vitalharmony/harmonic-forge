@@ -19,6 +19,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 import model_tier_gate as m
 
 
+def setUpModule():
+    """harmonic-forge#1249: `_main` reads the route store, so no test here may
+    read the operator's real one."""
+    root = tempfile.mkdtemp()
+    unittest.addModuleCleanup(shutil.rmtree, root, ignore_errors=True)
+    patcher = patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_STORE": root})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def _completed(stdout="", returncode=0):
     class R:
         pass
@@ -923,6 +933,153 @@ class MainBashGatingTests(unittest.TestCase):
             fake_resolve_tier.assert_not_called()
         self.assertEqual(out, "")
 
+
+
+class RouteFloorTests(unittest.TestCase):
+    """harmonic-forge#1249: `tier_floor: deep` on the issue's current route
+    escalates exactly as a `deep` board Tier does, through a real route store."""
+
+    REPO = "vitalharmony/harmonic-forge"
+
+    _run_main = MainBashGatingTests._run_main
+    _transcript = MainBashGatingTests._transcript
+
+    def setUp(self):
+        self.store = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.store, ignore_errors=True)
+        routing = str(Path(__file__).resolve().parents[1] / "routing")
+        if routing not in sys.path:
+            sys.path.insert(0, routing)
+        import route_store
+        self.emit_patcher = patch.object(route_store.emit, "store_root", return_value=self.store)
+        self.emit_patcher.start()
+        self.addCleanup(self.emit_patcher.stop)
+
+    def _write_event(self, attrs: dict, issue: int = 1249) -> None:
+        part = self.store / "events" / "2026" / "11" / "route"
+        part.mkdir(parents=True, exist_ok=True)
+        event = {"repo": self.REPO, "issue": issue, "attrs": {"path": 2, "ns": len(list(part.iterdir())) + 1, **attrs}}
+        with (part / "p.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event) + "\n")
+
+    def _payload(self, model: str) -> dict:
+        return {"tool_name": "Bash", "cwd": "/tmp/harmonic-forge-1249-impl",
+                "transcript_path": self._transcript(model),
+                "tool_input": {"command": "cat > f.py <<'EOF'\ncode\nEOF\n"}}
+
+    def _gate(self, model: str, tier="standard", env: dict | None = None) -> str:
+        with patch.object(m, "resolve_issue_target", return_value=(1249, None)), \
+             patch.object(m, "resolve_tier", **({"side_effect": tier} if isinstance(tier, Exception) else {"return_value": tier})), \
+             patch.object(m, "resolve_repo", return_value=self.REPO):
+            return self._run_main(self._payload(model), env=env)
+
+    def test_ac1_route_floor_denies_non_high_naming_the_gate(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        out = self._gate("claude-sonnet-5")
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("route (gate authorization)", out)
+
+    def test_ac1_route_floor_allows_high_tier(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-opus-5-5"))
+
+    def test_ac2_no_route_is_board_only(self):
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5"))
+
+    def test_ac2_route_without_floor_is_board_only(self):
+        self._write_event({"gate_id": "lane-machinery", "decider": "l1-post"})
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5"))
+
+    def test_ac2_other_issue_route_does_not_escalate(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"}, issue=7)
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5"))
+
+    def test_ac2_board_deep_keeps_board_wording(self):
+        out = self._gate("claude-sonnet-5", tier="deep")
+        self.assertIn("is Tier 'deep'", out)
+        self.assertNotIn("route (gate", out)
+
+    def test_ac1_a_crashing_board_read_does_not_skip_the_floor(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        out = self._gate("claude-sonnet-5", tier=FileNotFoundError("gh"))
+        self.assertIn("route (gate authorization)", out)
+
+    def test_ac1_repo_with_no_gh_repo_keys_from_origin(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        for url in ("git@github.com:vitalharmony/harmonic-forge.git", "https://github.com/vitalharmony/harmonic-forge"):
+            with patch.object(m, "resolve_repo", return_value=None), \
+                 patch.object(m, "_run", return_value=_completed(url + "\n")):
+                self.assertEqual(m.resolve_route_floor("/tmp/x", 1249), "authorization", url)
+
+    def test_ac1_override_names_the_gate_that_set_the_floor(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        self._write_event({"gate_id": "override", "decider": "override", "path": 1})
+        self.assertIn("route (gate authorization)", self._gate("claude-sonnet-5"))
+
+    def test_older_tests_do_not_read_the_real_store(self):
+        import route_store
+        self.emit_patcher.stop()
+        self.addCleanup(self.emit_patcher.start)
+        self.assertNotEqual(route_store.emit.store_root(), Path(route_store.emit.REAL_STORE).expanduser())
+
+    def test_override_inherits_floor_from_earlier_event(self):
+        """An operator override carries no tier_floor (`route set`); a stricter
+        one must not drop the evaluated route's floor (route_store.current)."""
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        self._write_event({"gate_id": "operator", "decider": "override", "path": 1})
+        self.assertIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5"))
+
+    def test_ac3_corrupt_store_denies_non_high_allows_high(self):
+        part = self.store / "events" / "2026" / "11" / "route"
+        part.mkdir(parents=True)
+        (part / "p.jsonl").write_text("{not json\n")
+        out = self._gate("claude-sonnet-5")
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("Tier lookup failed", out)
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-opus-5-5"))
+
+    def test_ac3_import_failure_is_lookup_failed(self):
+        with patch.dict(sys.modules, {"route_store": None}):
+            self.assertIs(m.resolve_route_floor("/tmp/x", 1, "forge"), m.LOOKUP_FAILED)
+
+    def _two_target_patch(self):
+        return {"tool_name": "apply_patch", "model": "gpt-5.6-mini", "cwd": "/some/other/dir",
+                "tool_input": {"command": "*** Begin Patch\n*** Update File: /tmp/a/a.py\n"
+                                          "*** Update File: /tmp/b/b.py\n*** End Patch\n"}}
+
+    def test_ac1_a_board_crash_on_an_earlier_target_does_not_skip_a_later_floor(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        targets = {"/tmp/a": (7, None), "/tmp/b": (1249, None)}
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d in targets), \
+             patch.object(m, "resolve_issue_target", side_effect=targets.get), \
+             patch.object(m, "resolve_repo", return_value=self.REPO), \
+             patch.object(m, "resolve_tier", side_effect=FileNotFoundError("gh")):
+            out = self._run_main(self._two_target_patch())
+        self.assertIn("route (gate authorization)", out)
+
+    def test_ac1_one_number_in_two_repos_reads_each_repos_floor(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        repos = {"/tmp/a": "vitalharmony/hrse", "/tmp/b": self.REPO}
+        with patch.object(m.os.path, "isdir", side_effect=lambda d: d in repos), \
+             patch.object(m, "resolve_issue_target", return_value=(1249, None)), \
+             patch.object(m, "resolve_repo", side_effect=repos.get), \
+             patch.object(m, "resolve_tier", return_value="standard"):
+            out = self._run_main(self._two_target_patch())
+        self.assertIn("route (gate authorization)", out)
+
+    def test_ac4_exemptions_unchanged(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5", env={"LANE": "3"}))
+        self.assertNotIn('"permissionDecision": "deny"', self._gate("claude-sonnet-5", env={"LANE_MODEL": "x"}))
+
+    def test_missing_repo_is_no_route(self):
+        with patch.object(m, "resolve_repo", return_value=None):
+            self.assertIsNone(m.resolve_route_floor("/tmp/x", 1249))
+
+    def test_hint_routes_to_its_repo(self):
+        self._write_event({"gate_id": "authorization", "tier_floor": "deep", "decider": "l1-post"})
+        self.assertEqual(m.resolve_route_floor("/tmp/x", 1249, "forge"), "authorization")
+        self.assertIsNone(m.resolve_route_floor("/tmp/x", 1249, "hrse"))
 
 
 class WriteTargetResolutionTests(unittest.TestCase):
