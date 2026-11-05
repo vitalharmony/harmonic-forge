@@ -251,6 +251,7 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
     checked, unchecked = refs[:_MAX_TIER_READS], refs[_MAX_TIER_READS:]
     blocks: list[str] = []
     deep_refs: list[str] = []
+    deep_reading_high: list[str] = []
     notes: list[str] = []
     suggestions: list[str] = []
     needs_high = False
@@ -282,6 +283,8 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
                     f"{ref} is Tier {tier}; this session is {model_label}. "
                     f"Run /model opus (or /model fable) and resend."
                 )
+            else:
+                deep_reading_high.append(f"{ref} is Tier {tier}")
         elif tier in ("fast", "standard") and high and not raised:
             suggestions.append(f"{ref} is Tier {tier}; /model sonnet is sufficient.")
     if not needs_high:
@@ -307,6 +310,15 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
         line = (f"{'; '.join(deep_refs)}: this session ({model_label}) is raised, and its requests "
                 f"go out on opus. The footer still shows the launch model (harmonic-forge#1250).")
         return {"systemMessage": "\n".join([line, *notes])}
+    # A transcript's opus proves only that a marker existed once: a /clear carries the model
+    # to a new session id, and a clearing prompt leaves it behind. Only a marker sends this
+    # turn's requests on opus, and on a session really on opus a marker changes nothing.
+    if deep_reading_high and not raised and raise_floor is not None:
+        refs_text = "; ".join(deep_reading_high)
+        notes.insert(0, f"{refs_text}: this session's requests go out on opus (harmonic-forge#1250)."
+                     if raise_floor() else
+                     f"{refs_text}: this session reads as {model_label}, and its route-floor marker "
+                     "could not be written, so that reading is unconfirmed (harmonic-forge#1250).")
     if blocks and advisory:
         # A belt/task notification is not a trigger: it lists every queued
         # issue, so blocking it would erase every belt tick of a Sonnet lane

@@ -547,6 +547,54 @@ class RouteFloorRaise(unittest.TestCase):
         self.assertIn("Do NOT start", out["systemMessage"])
         self.assertFalse(self._marked())
 
+    def test_ac2_only_the_exact_l2_token_raises(self):
+        for line in (f"{HRSE}#1830 queued-for-l3 kind=ready-for-l3 owes=spec",
+                     f"{HRSE}#1830 queued-for-l1 kind=spec owes=spec-review",
+                     f"{HRSE}#1830 queued-for-l2-later kind=handoff"):
+            with self.subTest(line=line):
+                out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+                self.assertIn("Do NOT start", out["systemMessage"])
+                self.assertFalse(self._marked())
+
+    def test_ac2_every_line_of_the_event_must_be_queued_for_l2(self):
+        lines = f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1830 left-queue-for-l2"
+        out, _ = self._run(self._event(lines), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_a_session_reading_high_with_no_marker_gets_one(self):
+        # After a /clear, or a clearing prompt with no response: opus in history, no marker.
+        out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
+        self.assertIn(f"{HRSE}#1830 is Tier deep", out["systemMessage"])
+        self.assertIn("go out on opus", out["systemMessage"])
+        self.assertNotIn("decision", out)
+        self.assertTrue(self._marked())
+
+    def test_a_session_already_raised_writes_and_says_nothing_more(self):
+        self._mark()
+        with patch.object(t.route_floor_marker, "write") as write:
+            out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
+        write.assert_not_called()
+        self.assertIsNone(out)
+
+    def test_a_high_reading_with_no_signal_or_another_lane_stays_silent(self):
+        for lane, extra in (("2", {}), ("1", self.ELIGIBLE)):
+            with self.subTest(lane=lane, extra=extra):
+                out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"}, lane=lane, extra_env=extra)
+                self.assertIsNone(out)
+                self.assertFalse(self._marked())
+
+    def test_a_high_reading_whose_write_fails_says_so_and_does_not_block(self):
+        with patch.object(t.route_floor_marker, "write", return_value=False):
+            out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
+        self.assertIn("could not be written", out["systemMessage"])
+        self.assertNotIn("decision", out)
+
+    def test_a_high_reading_on_an_other_notification_writes_nothing(self):
+        out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-opus-5", {(HRSE, 1830): "deep"})
+        self.assertIsNone(out)
+        self.assertFalse(self._marked())
+
     def test_ac4_no_signal_or_another_lane_blocks(self):
         for lane, extra in (("2", {}), ("1", self.ELIGIBLE)):
             with self.subTest(lane=lane, extra=extra):
@@ -629,7 +677,9 @@ class RouteFloorRaise(unittest.TestCase):
         self._mark()
         out, _ = self._run("Plan H1100 then H1101", "claude-opus-5", {(HRSE, 1100): model_tier_gate.NOT_AN_ISSUE, (HRSE, 1101): "fast"})
         self.assertNotIn("/model sonnet", json.dumps(out))
-        self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        clearing, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+        self.assertNotIn("/model sonnet", json.dumps(clearing))
         out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
         self.assertIn("/model sonnet", out["systemMessage"])
 
