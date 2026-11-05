@@ -88,7 +88,9 @@ class Admission(unittest.TestCase):
         self.assertGreaterEqual(full[1], check[1])
 
     def test_the_floor_counts_what_was_just_promised(self):
-        self.assertFalse(decide(hs.Reading(8, 12.0, 9.0, 20.0, 0.0), [holder(age=10.0, gb=8)], waited=600.0))
+        ok, why = hs.decide((4, 6), hs.Reading(8, 12.0, 9.0, 20.0, 0.0), [holder(age=10.0, gb=8)], 10_000.0, CONFIG, 600.0)
+        self.assertFalse(ok)
+        self.assertTrue(why.startswith("memory floor"), why)
 
     def test_an_older_job_is_not_counted_against_memory_twice(self):
         # MemAvailable already excludes what a running job uses: 13 GB is 13 GB free.
@@ -220,6 +222,10 @@ class Real(unittest.TestCase):
         holders.mkdir(parents=True)
         for name, body in (("a", "[]"), ("b", "null"), ("c", '{"cores": "5", "gb": 1, "admitted_at": 1}')):
             (holders / f"{name}.json").write_text(body)
+        # A record whose lock is held would otherwise read as live, however wrong its shape.
+        locked = open(holders / "c.lock", "a+")
+        self.addCleanup(locked.close)
+        hs.fcntl.flock(locked, hs.fcntl.LOCK_EX)
         out = self._run("run", "--kind", "kill", "--label", "t", "--", "sh", "-c", "exit 3")
         self.assertEqual(out.returncode, 3, out.stderr)
         self.assertEqual(self._holders(), [])
