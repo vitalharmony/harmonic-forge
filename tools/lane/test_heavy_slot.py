@@ -90,7 +90,8 @@ class Admission(unittest.TestCase):
         self.assertEqual(hs.reservation("e2e", CONFIG, 8), (5, 6))
 
     def test_the_floor_counts_what_was_just_promised(self):
-        self.assertFalse(decide(hs.Reading(8, 12.0, 9.0, 20.0, 0.0), [holder(age=5.0, gb=6)], waited=600.0))
+        lease = holder(age=5000.0, gb=8, lease=True)  # not a recent admission, so the bound would pass it
+        self.assertFalse(decide(hs.Reading(8, 12.0, 9.0, 20.0, 0.0), [lease], waited=600.0))
 
     def test_a_lease_does_not_remove_the_memory_floor(self):
         lease = holder(age=5000.0, cores=8, gb=8, lease=True)
@@ -103,6 +104,12 @@ class Admission(unittest.TestCase):
         with mock.patch.object(hs.Path, "read_text", lambda path, *a, **k: pages[str(path)]), \
                 mock.patch.object(hs.os, "cpu_count", lambda: 8):
             self.assertEqual(hs.read_system(), hs.Reading(8, 3.5, 2.0, 12.5, 7.25))
+
+    def test_absent_memory_is_not_zero_free(self):
+        pages = {"/proc/loadavg": "3.50 2.00 1.00 1/100 200\n", "/proc/meminfo": "MemTotal: 9 kB\n"}
+        with mock.patch.object(hs.Path, "read_text", lambda path, *a, **k: pages[str(path)]), \
+                self.assertRaises(ValueError):
+            hs.read_system()
 
     def test_absent_pressure_reads_as_none(self):
         def missing(path, *a, **k):
@@ -135,6 +142,14 @@ class Real(unittest.TestCase):
     def _run(self, *cmd, env=None, **kw):
         return subprocess.run([sys.executable, self.tool, *cmd], env=env or self.env, text=True,
                               capture_output=True, timeout=60, **kw)
+
+    @contextlib.contextmanager
+    def _managed(self):
+        """This test's state, with the suite's own unmanaged switches off."""
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_DIR": self.tmp.name}):
+            os.environ.pop("HEAVY_SLOT_DISABLE", None)
+            os.environ.pop("CI", None)
+            yield
 
     def _holders(self):
         return list((self.state / "holders").glob("*.json"))
@@ -244,7 +259,7 @@ class Real(unittest.TestCase):
 
     def test_a_config_of_the_wrong_type_warns_and_runs(self):
         config = dict(CONFIG, kinds={"default": {"cores": "5", "gb": 1}})
-        with mock.patch.dict(os.environ, {"HEAVY_SLOT_DIR": self.tmp.name}), \
+        with self._managed(), \
                 mock.patch.object(hs, "load_config", lambda: config), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             with hs.slot("kill", "t"):
@@ -258,7 +273,7 @@ class Real(unittest.TestCase):
         def fake(path, *args, **kwargs):
             return "MemTotal: 1 kB\n" if str(path) == "/proc/meminfo" else real(path, *args, **kwargs)
 
-        with mock.patch.dict(os.environ, {"HEAVY_SLOT_DIR": self.tmp.name}), \
+        with self._managed(), \
                 mock.patch.object(hs.Path, "read_text", fake), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             with hs.slot("kill", "t"):
@@ -290,7 +305,7 @@ class Real(unittest.TestCase):
         self.assertEqual(json.loads(out.stdout), [1, True, 1, 0])
 
     def test_no_session_means_no_lease_and_says_so(self):
-        with mock.patch.dict(os.environ, {"HEAVY_SLOT_DIR": self.tmp.name}), \
+        with self._managed(), \
                 mock.patch.object(hs, "agent_owner", lambda pid: pid), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             hs.cmd_lease(mock.Mock(kind="gate", label="H1"))
@@ -365,7 +380,7 @@ class Real(unittest.TestCase):
         owner = hs.agent_owner(os.getpid())
         (holders / "x.json").write_text(json.dumps({
             "id": "x", "lease": True, "owner": owner, "owner_start": hs._start_time(owner), "kind": "gate",
-            "label": "H1", "lane": "3", "admitted_at": 0.0, "cores": 8, "gb": 8}))
+            "label": "H1", "lane": "3", "admitted_at": time.time(), "cores": 8, "gb": 8}))
         reading = hs.Reading(8, 2.0, 7.0, 1.0, 0.0)  # charged its own 8 cores, it would queue
 
         def sleep(_seconds):
