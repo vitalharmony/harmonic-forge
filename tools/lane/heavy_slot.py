@@ -368,6 +368,8 @@ def cmd_lease(args) -> int:
 
 
 def cmd_release(_args) -> int:
+    if _unmanaged_reason():  # a test under a leased session must not drop that lease
+        return 0
     try:
         config, state = load_config(), _state_dir()
         owner = agent_owner(os.getpid())

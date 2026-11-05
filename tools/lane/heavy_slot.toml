@@ -11,8 +11,8 @@ poll_seconds = 10
 note_seconds = 60
 lease_backstop_seconds = 14400  # matches the gate graph's own 4-hour backstop
 
-[kinds.check]
-cores = 4
+[kinds.check]  # measured: 573 s, p90 4.5 cores, peak 6.1, summed RSS 4.9 GB
+cores = 5
 gb = 6
 
 [kinds.check-full]
@@ -23,9 +23,9 @@ gb = 8
 cores = 2
 gb = 8
 
-[kinds.e2e]
-cores = 3
-gb = 4
+[kinds.e2e]  # measured: 106 s, p90 4.7 cores, summed RSS 4.8 GB
+cores = 5
+gb = 6
 
 [kinds.kill]
 cores = 2

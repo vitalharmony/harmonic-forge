@@ -87,9 +87,17 @@ class Real(unittest.TestCase):
         self.env.pop("CI", None)
         self.env.pop("HEAVY_SLOT_DISABLE", None)
         self.state = Path(self.tmp.name)
+        # Real processes and locks, but an idle reading: these tests are not about the
+        # machine, and a busy one queued them until their waits ran out.
+        self.tool = str(self.state / "drive.py")
+        Path(self.tool).write_text(
+            f"import sys, time\nsys.path.insert(0, {str(TOOL.parent)!r})\nimport heavy_slot as hs\n"
+            "idle = lambda: hs.Reading(8, 0.5, 20.0, 1.0, 0.0)\n"
+            "hs.read_system = idle\nhs._admit.__defaults__ = (idle, time.sleep, time.time)\n"
+            "raise SystemExit(hs.main(sys.argv[1:]))\n")
 
     def _run(self, *cmd, env=None, **kw):
-        return subprocess.run([sys.executable, str(TOOL), *cmd], env=env or self.env, text=True,
+        return subprocess.run([sys.executable, self.tool, *cmd], env=env or self.env, text=True,
                               capture_output=True, timeout=60, **kw)
 
     def _holders(self):
@@ -103,13 +111,13 @@ class Real(unittest.TestCase):
         self.assertEqual(self._holders(), [])
 
     def test_a_nested_run_re_enters_and_does_not_wait(self):
-        inner = f"{sys.executable} {TOOL} run --kind kill --label inner -- true"
+        inner = f"{sys.executable} {self.tool} run --kind kill --label inner -- true"
         out = self._run("run", "--kind", "kill", "--label", "outer", "--", "sh", "-c", inner)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("runs under kill outer", out.stderr)
 
     def test_a_sibling_is_not_an_ancestor(self):
-        first = subprocess.Popen([sys.executable, str(TOOL), "run", "--kind", "kill", "--label", "a", "--",
+        first = subprocess.Popen([sys.executable, self.tool, "run", "--kind", "kill", "--label", "a", "--",
                                   "sleep", "30"], env=self.env, stderr=subprocess.DEVNULL)
         self.addCleanup(first.kill)
         for _ in range(100):
@@ -124,7 +132,7 @@ class Real(unittest.TestCase):
         self.assertIsNone(hs._ancestor_holder(self.state, CONFIG))
 
     def test_a_killed_holder_releases_at_once(self):
-        child = subprocess.Popen([sys.executable, str(TOOL), "run", "--kind", "kill", "--label", "a", "--",
+        child = subprocess.Popen([sys.executable, self.tool, "run", "--kind", "kill", "--label", "a", "--",
                                   "sleep", "30"], env=self.env, stderr=subprocess.DEVNULL)
         for _ in range(100):
             if self._holders():
@@ -181,6 +189,13 @@ class Real(unittest.TestCase):
         self.assertTrue(leased and leased[0]["lease"])
         self.assertEqual(self._run("release").returncode, 0)
         self.assertEqual(self._holders(), [])
+
+    def test_an_unmanaged_release_keeps_the_lease(self):
+        self.assertEqual(self._run("lease", "--kind", "gate", "--label", "H1").returncode, 0)
+        self.assertTrue(self._holders())
+        self.assertEqual(self._run("release", env={**self.env, "HEAVY_SLOT_DISABLE": "1"}).returncode, 0)
+        self.assertTrue(self._holders())
+        self.assertEqual(self._run("release").returncode, 0)
 
     def test_ci_runs_unmanaged(self):
         out = self._run("run", "--kind", "check", "--label", "t", "--", "true", env={**self.env, "CI": "true"})
