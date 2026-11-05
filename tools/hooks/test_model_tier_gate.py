@@ -1416,6 +1416,32 @@ class RouteFloorRaiseAtTheGate(unittest.TestCase):
             marked = m.route_floor_marker.exists(self.SID)
         return stdout.getvalue(), marked
 
+    def _subagent(self, main_model, sub_model, agent_id="a1b2c3"):
+        """A subagent's write: the main transcript says main_model, its own says sub_model."""
+        transcript = Path(self.home) / "transcript.jsonl"
+        transcript.write_text(json.dumps({"message": {"model": main_model}}) + "\n")
+        if sub_model is not None:
+            sub = Path(self.home) / self.SID / "subagents" / f"agent-{agent_id}.jsonl"
+            sub.parent.mkdir(parents=True)
+            sub.write_text(json.dumps({"isSidechain": True, "agentId": agent_id,
+                                       "message": {"role": "assistant", "model": sub_model}}) + "\n")
+        return {"transcript_path": str(transcript), "session_id": self.SID, "agent_id": agent_id,
+                "cwd": "/cwd"}
+
+    def test_a_subagent_is_judged_by_its_own_model(self):
+        """Operator ruling 2026-11-05: the gate's subagent blind spot goes entirely."""
+        for main_model, sub_model, met in (("claude-opus-5", "claude-sonnet-5", False),
+                                           ("claude-sonnet-5", "claude-opus-5", True),
+                                           ("claude-opus-5", None, False)):
+            with self.subTest(main=main_model, sub=sub_model):
+                self.assertEqual(m.required_tier_met(self._subagent(main_model, sub_model), True), met)
+                shutil.rmtree(Path(self.home) / self.SID, ignore_errors=True)
+
+    def test_a_subagent_id_that_is_not_an_id_reads_nothing(self):
+        payload = self._subagent("claude-opus-5", "claude-opus-5")
+        payload["agent_id"] = "../../x"
+        self.assertFalse(m.required_tier_met(payload, True))
+
     def test_ac3_the_deny_stands_writes_the_marker_and_says_retry(self):
         out, marked = self._deny(self.ELIGIBLE)
         self.assertIn('"permissionDecision": "deny"', out)

@@ -737,6 +737,15 @@ def required_tier_met(payload: dict, high_required: bool) -> bool:
     if "model" in payload:  # Codex: model is a direct field
         model = payload["model"]
         is_high = _codex_is_high(model)
+    elif payload.get("agent_id"):
+        # harmonic-forge#1250: a subagent's call is judged by the subagent's own model, read
+        # from its own transcript. The main transcript skips sidechain entries, so it says
+        # nothing about the subagent. Unreadable means not shown to be high: the call denies.
+        model = session_model.subagent_model(
+            payload.get("transcript_path"), payload.get("session_id"), payload.get("agent_id"))
+        if model is None:
+            return not high_required
+        is_high = claude_model_is_high(model)
     else:  # Claude Code: no model on the payload (harmonic-forge#656 AC4)
         model = session_model.current_model(
             payload.get("transcript_path", ""), payload.get("cwd") or "",
@@ -867,8 +876,8 @@ def _main() -> None:
         _deny(
             f"{source} "
             f"-- harmonic-forge#202 requires the high-tier model for this work. This session "
-            f"was raised to opus for its next request: retry this call. If this deny repeats, "
-            f"run {switch_to}."
+            f"was raised to a high-tier model for its next requests, a subagent's included: "
+            f"retry this call. If this deny repeats, run {switch_to}."
         )
     _deny(
         f"{source} "

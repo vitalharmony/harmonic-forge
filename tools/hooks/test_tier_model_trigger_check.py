@@ -566,9 +566,77 @@ class RouteFloorRaise(unittest.TestCase):
         # After a /clear, or a clearing prompt with no response: opus in history, no marker.
         out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
         self.assertIn(f"{HRSE}#1830 is Tier deep", out["systemMessage"])
-        self.assertIn("go out on opus", out["systemMessage"])
+        self.assertIn("go out on a high-tier model", out["systemMessage"])
         self.assertNotIn("decision", out)
         self.assertTrue(self._marked())
+
+    def test_an_untrusted_high_reading_raises_on_every_branch_that_would_block(self):
+        """Sticky-wicket 6666343012 item 1: one rule, every branch, not one test per scenario."""
+        refs = " ".join(f"H{1100 + i}" for i in range(t._MAX_TIER_READS + 1))
+        past_cap = {(HRSE, 1100 + i): "fast" for i in range(t._MAX_TIER_READS)}
+        cases = (
+            ("deep", "Plan H1830", {(HRSE, 1830): "deep"}, f"{HRSE}#1830 is Tier deep"),
+            ("unreadable", "Plan H1830", {(HRSE, 1830): "FAIL"}, f"Tier for {HRSE}#1830 could not be read"),
+            ("past the cap", f"Plan {refs}", past_cap, "Tier not checked for"),
+        )
+        for name, prompt, tiers, reason in cases:
+            for model in ("claude-opus-5", "claude-fable-5"):
+                with self.subTest(case=name, model=model):
+                    t.route_floor_marker.clear(self.SID)
+                    out, _ = self._run(prompt, model, tiers)
+                    self.assertNotIn("decision", out)
+                    self.assertIn(reason, out["systemMessage"])
+                    self.assertIn("is raised", out["systemMessage"])
+                    self.assertNotIn("on opus", out["systemMessage"])
+                    self.assertTrue(self._marked())
+                    with patch.object(t.route_floor_marker, "write", return_value=False):
+                        t.route_floor_marker.clear(self.SID)
+                        blocked, _ = self._run(prompt, model, tiers)
+                    self.assertEqual(blocked["decision"], "block")
+
+    def test_an_untrusted_high_reading_on_a_notification_warns(self):
+        for line in (f"{HRSE}#1830 left-queue-for-l2",
+                     f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1831 queued-for-l2 kind=handoff"):
+            with self.subTest(line=line):
+                out, _ = self._run(self._event(line), "claude-opus-5",
+                                   {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
+                self.assertIn("Do NOT start", out["systemMessage"])
+                self.assertFalse(self._marked())
+
+    def test_a_trusted_reading_is_unchanged(self):
+        self._mark()
+        out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "FAIL"})
+        self.assertNotIn("decision", out)
+        self.assertNotIn("is raised", out["systemMessage"])
+        out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "FAIL"}, extra_env={})
+        self.assertNotIn("decision", out)
+
+    def test_a_clear_says_so(self):
+        self._mark()
+        out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+        self.assertIn("Route floor cleared", out["systemMessage"])
+
+    def test_a_line_that_only_mentions_the_token_is_not_an_assignment(self):
+        line = f"{HRSE}#1830 l3 — Lane 3 Test Spec: belt showed queued-for-l2 twice"
+        out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+        self._mark()
+        self._run(self._event(line), "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertTrue(self._marked())
+
+    def test_two_events_or_two_notifications_are_not_one_assignment(self):
+        queued = f"<event>{HRSE}#1830 queued-for-l2 kind=handoff</event>"
+        for prompt in (
+            f"<task-notification>\n{queued}\n<event>{HRSE}#1830 left-queue-for-l2</event>\n</task-notification>",
+            f"<task-notification>\n{queued}\n</task-notification>\n"
+            f"<task-notification>\n<summary>done {HRSE}#1830</summary>\n</task-notification>",
+        ):
+            with self.subTest(prompt=prompt[:60]):
+                out, _ = self._run(prompt, "claude-sonnet-5", {(HRSE, 1830): "deep"})
+                self.assertFalse(self._marked())
+                self.assertNotIn("is raised", json.dumps(out))
 
     def test_a_session_already_raised_writes_and_says_nothing_more(self):
         self._mark()
@@ -584,15 +652,14 @@ class RouteFloorRaise(unittest.TestCase):
                 self.assertIsNone(out)
                 self.assertFalse(self._marked())
 
-    def test_a_high_reading_whose_write_fails_says_so_and_does_not_block(self):
+    def test_a_high_reading_whose_write_fails_blocks(self):
         with patch.object(t.route_floor_marker, "write", return_value=False):
             out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
-        self.assertIn("could not be written", out["systemMessage"])
-        self.assertNotIn("decision", out)
+        self.assertEqual(out["decision"], "block")
 
     def test_a_high_reading_on_an_other_notification_writes_nothing(self):
         out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-opus-5", {(HRSE, 1830): "deep"})
-        self.assertIsNone(out)
+        self.assertIn("Do NOT start", out["systemMessage"])
         self.assertFalse(self._marked())
 
     def test_ac4_no_signal_or_another_lane_blocks(self):
@@ -680,7 +747,10 @@ class RouteFloorRaise(unittest.TestCase):
         clearing, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
         self.assertFalse(self._marked())
         self.assertNotIn("/model sonnet", json.dumps(clearing))
+        # With the mod and no marker, a high reading is not a high session: nothing to lower.
         out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertNotIn("/model sonnet", json.dumps(out))
+        out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"}, extra_env={})
         self.assertIn("/model sonnet", out["systemMessage"])
 
 

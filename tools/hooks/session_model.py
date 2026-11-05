@@ -142,6 +142,38 @@ def transcript_model(transcript_path: str) -> str | None:
     return None
 
 
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def subagent_model(transcript_path: str | None, session_id: str | None,
+                   agent_id: str | None) -> str | None:
+    """The model of a subagent's newest response, from its own transcript, or None.
+
+    A subagent's entries are sidechain entries, which `transcript_model` skips: the main
+    transcript says nothing about which model a subagent runs on (harmonic-forge#1250).
+    The file is `<project>/<session_id>/subagents/agent-<agent_id>.jsonl`. Never raises."""
+    try:
+        if not (transcript_path and session_id and agent_id
+                and _AGENT_ID_RE.match(agent_id) and _AGENT_ID_RE.match(session_id)):
+            return None
+        path = Path(transcript_path).parent / session_id / "subagents" / f"agent-{agent_id}.jsonl"
+        for line in _tail_lines(str(path)):
+            if '"model"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            message = entry.get("message") if isinstance(entry, dict) else None
+            model = message.get("model") if isinstance(message, dict) else None
+            if (isinstance(model, str) and model and model != "<synthetic>"
+                    and message.get("role") == "assistant"):
+                return model
+    except Exception:  # noqa: BLE001 -- a model read must never crash a hook
+        return None
+    return None
+
+
 def record_path(session_id: str, record_dir: Path | None = None) -> Path | None:
     if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
         return None

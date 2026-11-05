@@ -345,16 +345,17 @@ class InHandProbeTests(unittest.TestCase):
 class RouteFloorMarker(unittest.TestCase):
     """harmonic-forge#1250 AC8: /model sonnet would not lower a raised session."""
 
-    def test_a_raised_session_is_silent_and_an_unraised_one_is_not(self):
+    def test_a_mod_session_is_silent_and_another_is_not(self):
+        """Raised, /model sonnet would not lower it; not raised, its high reading is stale."""
         payload = {"transcript_path": "/transcript", "cwd": "/cwd", "session_id": "session-1"}
-        for marked, silent in ((True, True), (False, False)):
-            with self.subTest(marked=marked), \
+        for env, silent in (({"LANE": "2", "LANE_ROUTE_MOD": "1"}, True), ({"LANE": "2"}, False),
+                            ({"LANE": "1", "LANE_ROUTE_MOD": "1"}, False)):
+            with self.subTest(env=env), \
                     patch.object(reminder.os.path, "isfile", return_value=True), \
                     patch.object(reminder, "_is_deep_branch", return_value=False), \
                     patch.object(reminder, "_posted_deep", return_value=False), \
-                    patch.object(reminder, "_probe_in_hand", return_value=False), \
-                    patch.object(reminder.route_floor_marker, "exists", return_value=marked):
-                out = reminder.run(payload, env={"LANE": "2"}, model="claude-opus-5")
+                    patch.object(reminder, "_probe_in_hand", return_value=False):
+                out = reminder.run(payload, env=env, model="claude-opus-5")
                 self.assertEqual(out is None, silent)
 
 

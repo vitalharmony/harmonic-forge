@@ -269,8 +269,10 @@ def run(payload: dict, env: dict | None = None, model=None) -> dict | None:
     cwd = payload.get("cwd") or os.getcwd()
     if not transcript_path or not os.path.isfile(transcript_path):
         return None
-    if route_floor_marker.exists(payload.get("session_id")):
-        return None  # raised: /model sonnet would not lower it (harmonic-forge#1250 AC8)
+    if route_floor_marker.eligible(env):
+        # harmonic-forge#1250 AC8: raised, /model sonnet would not lower it; not raised, a high
+        # reading came from a marker that is gone, and the session is not on a high model.
+        return None
     current = model if model is not None else session_model.current_model(
         transcript_path, cwd, payload.get("session_id"))
     if not model_tier_gate.claude_model_is_high(current):
