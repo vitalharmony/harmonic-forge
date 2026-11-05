@@ -93,19 +93,18 @@ def _psi(name: str) -> float | None:
 
 def read_system() -> Reading:
     load1 = float(Path("/proc/loadavg").read_text().split()[0])
-    available = 0.0
     for line in Path("/proc/meminfo").read_text().splitlines():
         if line.startswith("MemAvailable:"):
             available = int(line.split()[1]) / (1024 * 1024)
-            break
-    return Reading(os.cpu_count() or 1, load1, available, _psi("cpu"), _psi("memory"))
+            return Reading(os.cpu_count() or 1, load1, available, _psi("cpu"), _psi("memory"))
+    raise ValueError("/proc/meminfo has no MemAvailable")  # absent is not "0 GB free": callers fail open
 
 
 def reservation(kind: str, config: dict, nproc: int) -> tuple[float, float]:
     """A kind's (cores, GB), clamped so a job can always fit an idle machine."""
     kinds = config["kinds"]
     entry = kinds.get(kind, kinds["default"])
-    return min(entry["cores"], max(1, nproc // 2)), entry["gb"]
+    return min(entry["cores"], nproc), entry["gb"]
 
 
 def free_capacity(reading: Reading, holders: list[dict], now: float, config: dict,
@@ -127,15 +126,18 @@ def decide(need: tuple[float, float], reading: Reading, holders: list[dict], now
     """Whether the head of the queue may start, and the numbers behind that."""
     limits = config["limits"]
     cores, gb = need
+    floor_gb = gb  # a lease is a reservation, not memory known to be free
     if own_lease:
         cores = max(0.0, cores - own_lease["cores"])
         gb = max(0.0, gb - own_lease["gb"])
     free_cores, free_gb = free_capacity(reading, holders, now, config, own_lease)
     numbers = (f"need {cores:g} cores {gb:g} GB; free {free_cores:.1f} {free_gb:.1f}; "
                f"load {reading.load1:.1f}/{reading.nproc}; cpu {reading.cpu_avg10}; mem {reading.mem_avg10}")
-    if reading.mem_gb < gb:  # the floor: never bypassed, whatever has waited how long
+    if free_gb < floor_gb:  # the floor: never bypassed, whatever has waited how long
         return False, f"memory floor: {numbers}"
-    if waited >= limits["max_wait_seconds"]:
+    just_admitted = any(now - h["admitted_at"] < limits["recent_seconds"] for h in holders
+                        if not h.get("lease") and not (own_lease and h["id"] == own_lease["id"]))
+    if waited >= limits["max_wait_seconds"] and not just_admitted:  # one at a time, or the queue drains at once
         return True, f"after the {limits['max_wait_seconds']}s bound: {numbers}"
     pressure = ((reading.cpu_avg10 or 0.0) >= limits["cpu_avg10"]
                 or (reading.mem_avg10 or 0.0) >= limits["mem_avg10"])
@@ -216,6 +218,11 @@ def live_holders(state: Path, now: float, config: dict) -> list[dict]:
         except (OSError, ValueError):
             path.unlink(missing_ok=True)
             continue
+        if not (isinstance(holder, dict)
+                and all(isinstance(holder.get(k), (int, float)) for k in ("cores", "gb", "admitted_at", "owner"))):
+            path.unlink(missing_ok=True)
+            path.with_suffix(".lock").unlink(missing_ok=True)
+            continue
         if holder.get("lease"):
             dead = (not alive(holder["owner"], holder["owner_start"])
                     or now - holder["admitted_at"] > config["limits"]["lease_backstop_seconds"])
@@ -259,8 +266,9 @@ def _admit(kind: str, label: str, state: Path, config: dict, lease: bool,
     own_pid, owner = os.getpid(), agent_owner(os.getpid())
     ticket = state / "tickets" / f"{time.time_ns():020d}-{own_pid}.ticket"
     ticket.parent.mkdir(parents=True, exist_ok=True)
-    ticket_handle = open(ticket, "a+")
-    fcntl.flock(ticket_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with _guard(state):
+        ticket_handle = open(ticket, "a+")
+        fcntl.flock(ticket_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     started, last_note = clock(), 0.0
     try:
         while True:
@@ -283,7 +291,9 @@ def _admit(kind: str, label: str, state: Path, config: dict, lease: bool,
                     if not lease:
                         handle = open(directory / f"{holder_id}.lock", "a+")
                         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    (directory / f"{holder_id}.json").write_text(json.dumps(holder))
+                    scratch = directory / f"{holder_id}.tmp"
+                    scratch.write_text(json.dumps(holder))
+                    os.replace(scratch, directory / f"{holder_id}.json")
                     _log(f"admitted {kind} {label}: {numbers}")
                     return holder, handle
             if now - last_note >= config["limits"]["note_seconds"]:
@@ -325,7 +335,7 @@ def slot(kind: str, label: str) -> Iterator[None]:
                 _log(f"{kind} {label} runs under {parent['kind']} {parent['label']}")
             else:
                 holder, handle = _admit(kind, label, state, config, lease=False)
-        except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- AC6: admission can never stop the command
             _log(f"WARNING: running {kind} {label} unmanaged: {type(exc).__name__}: {exc}")
     try:
         yield
@@ -358,11 +368,16 @@ def cmd_lease(args) -> int:
         config, state = load_config(), _state_dir()
         state.mkdir(parents=True, exist_ok=True)
         owner = agent_owner(os.getpid())
-        if any(h.get("lease") and h["owner"] == owner for h in live_holders(state, time.time(), config)):
+        if owner == os.getpid():  # it would die with this command
+            _log(f"WARNING: no claude or codex session to own a lease: no lease taken for {args.kind} {args.label}")
+            return 0
+        with _guard(state):
+            held = any(h.get("lease") and h["owner"] == owner for h in live_holders(state, time.time(), config))
+        if held:
             _log("this session already holds a lease")
             return 0
         _admit(args.kind, args.label, state, config, lease=True)
-    except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError) as exc:
+    except Exception as exc:  # noqa: BLE001 -- AC6
         _log(f"WARNING: no lease taken: {type(exc).__name__}: {exc}")
     return 0
 
@@ -373,10 +388,12 @@ def cmd_release(_args) -> int:
     try:
         config, state = load_config(), _state_dir()
         owner = agent_owner(os.getpid())
-        for holder in live_holders(state, time.time(), config):
-            if holder.get("lease") and holder["owner"] == owner:
-                (state / "holders" / f"{holder['id']}.json").unlink(missing_ok=True)
-    except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError) as exc:
+        state.mkdir(parents=True, exist_ok=True)
+        with _guard(state):
+            for holder in live_holders(state, time.time(), config):
+                if holder.get("lease") and holder["owner"] == owner:
+                    (state / "holders" / f"{holder['id']}.json").unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001 -- AC6
         _log(f"WARNING: release failed: {type(exc).__name__}: {exc}")
     return 0
 
@@ -385,7 +402,9 @@ def cmd_status(_args) -> int:
     config, state, now = load_config(), _state_dir(), time.time()
     state.mkdir(parents=True, exist_ok=True)
     reading = read_system()
-    holders = live_holders(state, now, config)
+    with _guard(state):
+        holders = live_holders(state, now, config)
+        queued = len(_tickets(state))
     cores, gb = free_capacity(reading, holders, now, config)
     print(f"load {reading.load1:.1f}/{reading.nproc}; MemAvailable {reading.mem_gb:.1f} GB; "
           f"cpu avg10 {reading.cpu_avg10}; mem avg10 {reading.mem_avg10}; free {cores:.1f} cores {gb:.1f} GB")
@@ -393,7 +412,7 @@ def cmd_status(_args) -> int:
         tag = "lease" if holder.get("lease") else "run"
         print(f"  {tag} {holder['lane'] or '?'} {holder['kind']} {holder['label']} "
               f"for {int(now - holder['admitted_at'])}s ({holder['cores']:g} cores {holder['gb']:g} GB)")
-    print(f"  queued: {len(_tickets(state))}")
+    print(f"  queued: {queued}")
     return 0
 
 

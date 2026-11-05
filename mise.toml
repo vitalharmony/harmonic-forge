@@ -77,7 +77,7 @@ set -e
 # commit every step tested. ci-check runs inline (not as a dependency) so it
 # falls inside that window.
 head=$(git rev-parse HEAD)
-mise run ci-check
+python3 tools/lane/heavy_slot.py run --kind check --label "$(basename "$PWD")" -- mise run ci-check
 # harmonic-forge#645: machine-local -- reads $HOME/.local/bin, which a CI
 # runner does not have.
 python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
@@ -394,6 +394,9 @@ set -e
 # script's LAST line, so the script call must be last. The script writes the
 # marker itself, only after a passed check: an EXIT trap here also fired on
 # `-- --help`, which exits 0 having checked nothing (preclose survivor).
+# harmonic-forge#1271: a standing reservation for this session while the gate lives, before the
+# marker, so a killed wait leaves no marker behind it.
+python3 tools/lane/heavy_slot.py lease --kind gate --label "lane3:$(pwd)" || true
 eval python3 tools/gh/check_lane3_ready.py --mark-active $usage_args
 '''
 
@@ -403,6 +406,7 @@ run = '''
 set -e
 git_dir="$(git rev-parse --absolute-git-dir)"
 rm -f "$git_dir/LANE3_ACTIVE"
+python3 tools/lane/heavy_slot.py release || true
 echo "lane3-end: $(pwd) cleared"
 '''
 

@@ -172,8 +172,8 @@ def _heavy_slot(prefix: str, label: str):
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
         import heavy_slot  # noqa: PLC0415 -- tools/lane, optional by design
-    except ImportError as exc:
-        print(f"heavy-slot: WARNING: not loaded, running unmanaged: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 -- a broken tool runs unmanaged, it never stops the run
+        print(f"heavy-slot: WARNING: not loaded, running unmanaged: {exc!r}", file=sys.stderr)
         return contextlib.nullcontext()
     return heavy_slot.slot("check" if prefix.startswith("l1-post") else "kill", label)
 
