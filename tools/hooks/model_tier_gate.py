@@ -63,6 +63,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
+import route_floor_marker  # noqa: E402
 import session_model  # noqa: E402
 from session_model import _tail_lines  # noqa: E402,F401 -- re-exported; one bounded reader
 from lane3_codex_write_guard import apply_patch_targets  # noqa: E402 -- harmonic-forge#630, one patch parser, not two
@@ -855,9 +856,20 @@ def _main() -> None:
         _allow()
 
     switch_to = _codex_switch_hint() if "model" in payload else "`/model opus`"
+    # harmonic-forge#1250: the call still denies. A Lane 2 session whose launcher loaded the
+    # mod is raised for the next request, so a retry is all it takes.
+    raised = ("model" not in payload and route_floor_marker.eligible(os.environ)
+              and route_floor_marker.write(payload.get("session_id")))
     source = (f"Issue #{escalating_issue}'s route (gate {escalating_gate}) sets Tier floor "
               f"'{escalating_tier}'" if escalating_gate is not None
               else f"Issue #{escalating_issue} is Tier '{escalating_tier}'")
+    if raised:
+        _deny(
+            f"{source} "
+            f"-- harmonic-forge#202 requires the high-tier model for this work. This session "
+            f"was raised to opus for its next request: retry this call. If this deny repeats, "
+            f"run {switch_to}."
+        )
     _deny(
         f"{source} "
         f"-- harmonic-forge#202 requires the high-tier model for this work. "

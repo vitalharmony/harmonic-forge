@@ -342,5 +342,21 @@ class InHandProbeTests(unittest.TestCase):
                 self.assertIsNone(self.run_hook(self.transcript(command), lane="1"))
 
 
+class RouteFloorMarker(unittest.TestCase):
+    """harmonic-forge#1250 AC8: /model sonnet would not lower a raised session."""
+
+    def test_a_raised_session_is_silent_and_an_unraised_one_is_not(self):
+        payload = {"transcript_path": "/transcript", "cwd": "/cwd", "session_id": "session-1"}
+        for marked, silent in ((True, True), (False, False)):
+            with self.subTest(marked=marked), \
+                    patch.object(reminder.os.path, "isfile", return_value=True), \
+                    patch.object(reminder, "_is_deep_branch", return_value=False), \
+                    patch.object(reminder, "_posted_deep", return_value=False), \
+                    patch.object(reminder, "_probe_in_hand", return_value=False), \
+                    patch.object(reminder.route_floor_marker, "exists", return_value=marked):
+                out = reminder.run(payload, env={"LANE": "2"}, model="claude-opus-5")
+                self.assertEqual(out is None, silent)
+
+
 if __name__ == "__main__":
     unittest.main()

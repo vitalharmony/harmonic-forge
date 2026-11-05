@@ -477,6 +477,22 @@ for _word in $_lane_session_flags; do
 done
 unset _lane_session_flags _word
 
+# 4c-bis. The route-floor mod (harmonic-forge#1250). It only ever raises a Lane 2
+#     request to the issue's floor model, and `model_tier_gate.py` stays the
+#     enforcement. A missing mod refuses the launch rather than quietly losing
+#     the floor. LANE_ROUTE_MOD tells the hooks the mod is loaded, so an agent with
+#     no mod must not inherit it.
+_lane_plugin_flag="$(registry_lookup AGENT_PLUGIN_DIR_FLAG "$_lane_agent")"
+if [ -n "$_lane_plugin_flag" ]; then
+  [ -f "$_lane_dir/../routing/mod/.claude-plugin/plugin.json" ] \
+    || _lane_launch_die "route mod missing: $_lane_dir/../routing/mod -- refusing to launch"
+  cli_args+=("$_lane_plugin_flag" "$_lane_dir/../routing/mod")
+  export LANE_ROUTE_MOD=1
+else
+  unset LANE_ROUTE_MOD
+fi
+unset _lane_plugin_flag
+
 # 4d. The session name (harmonic-forge#1014): the lane's LANE_LABEL from
 #     _lane_identity.sh, before the passthrough. A caller's own --name/-n wins.
 [ -z "${LANE_LABEL_NOTE:-}" ] || echo "$LANE_LABEL_NOTE" >&2

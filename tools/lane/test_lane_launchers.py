@@ -52,6 +52,13 @@ def _drift_lane3_env(tree) -> None:
     (tree.lane3 / "backend" / ".env").symlink_to(stale)
 
 
+def _place_route_mod(lane_dir: Path) -> None:
+    """A copied lane dir resolves `../routing/mod` beside itself (harmonic-forge#1250)."""
+    manifest = lane_dir.parent / "routing" / "mod" / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}\n")
+
+
 class _FixtureTree:
     """A disposable project tree with stubbed CLIs, as a context manager."""
 
@@ -411,6 +418,7 @@ class RegistryIntegrity(unittest.TestCase):
 
     def _copy_lane_dir(self, dest: Path) -> Path:
         dest.mkdir()
+        _place_route_mod(dest)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                      "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
@@ -804,6 +812,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         (harmonic-forge#1113), now exercised through an agent that exists."""
         lane_dir = tree.root / "lanedir"
         lane_dir.mkdir()
+        _place_route_mod(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh",
                      "_lane_refresh.sh", "_lane_identity.sh"):
@@ -886,6 +895,7 @@ class ClaudeLane3Settings(unittest.TestCase):
         an "installed" policy without root."""
         lane_dir = tree.root / "lanedir"
         lane_dir.mkdir()
+        _place_route_mod(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                      "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
@@ -2004,6 +2014,59 @@ class DeferredToolsLaunchPrompt(unittest.TestCase):
                         self.assertTrue(cell["launched"], cell.get("stderr"))
                         carried = any(self.SENTENCE in a for a in _agent_args(cell))
                         self.assertEqual(carried, agent == "claude")
+
+
+class RouteFloorModWiring(unittest.TestCase):
+    """harmonic-forge#1250 AC4: Claude launches load the mod, Codex launches do not,
+    and a missing mod refuses with nothing launched."""
+
+    def test_a_claude_launch_at_every_lane_loads_the_mod(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2"):
+                with self.subTest(lane=lane):
+                    args = _agent_args(tree.run(lane, [], LANE_CLI="claude"))
+                    at = args.index("--plugin-dir")
+                    self.assertEqual(Path(args[at + 1]).resolve(), LANE_DIR.parent / "routing" / "mod")
+
+    def test_a_codex_launch_carries_no_plugin_dir(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    self.assertNotIn("--plugin-dir", _agent_args(tree.run(lane, [], LANE_CLI="codex")))
+
+    def test_the_real_mod_has_a_manifest(self):
+        self.assertTrue((LANE_DIR.parent / "routing" / "mod" / ".claude-plugin" / "plugin.json").is_file())
+
+    def test_a_missing_mod_refuses_and_launches_nothing(self):
+        source = (LANE_DIR / "_cli_launch.sh").read_text()
+        self.assertIn('[ -f "$_lane_dir/../routing/mod/.claude-plugin/plugin.json" ]', source)
+        with _FixtureTree() as tree:
+            lane_dir = tree.root / "lanedir"
+            lane_dir.mkdir()
+            for path in LANE_DIR.iterdir():
+                if path.is_file() and (path.name.startswith("_") or path.name in ("lane1", "lane2", "lane3")):
+                    (lane_dir / path.name).write_text(path.read_text())
+            shutil.copytree(LANE_DIR / "policies", lane_dir / "policies")
+            tree.lane_dir = lane_dir
+            cell = tree.run("2", [], LANE_CLI="claude")
+            self.assertFalse(cell["launched"])
+            self.assertIn("route mod missing", cell.get("stderr", ""))
+
+
+class RouteFloorSignal(unittest.TestCase):
+    """harmonic-forge#1250 AC7: a Claude launch exports the signal, a Codex launch drops an inherited one."""
+
+    def _extra(self, tree, lane, agent, **env):
+        cell = tree.run(lane, [], LANE_CLI=agent, LANE_CAPTURE_EXTRA_ENV="LANE_ROUTE_MOD", **env)
+        return cell["extra_env"]["LANE_ROUTE_MOD"]
+
+    def test_a_claude_launch_exports_it(self):
+        with _FixtureTree() as tree:
+            self.assertEqual(self._extra(tree, "2", "claude"), "1")
+
+    def test_a_codex_launch_drops_an_inherited_value(self):
+        with _FixtureTree() as tree:
+            self.assertIsNone(self._extra(tree, "2", "codex", LANE_ROUTE_MOD="1"))
 
 
 if __name__ == "__main__":

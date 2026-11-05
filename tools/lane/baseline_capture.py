@@ -322,9 +322,11 @@ def capture_all(lane_dir: Path) -> dict:
 #      `--name lane<N>`, just before the caller's own arguments. The capture
 #      repo is registered in no projects.toml, so the label is the bare lane.
 #      Declared here, never re-captured into the fixture.
+#   4. harmonic-forge#1250 -- a Claude lane loads the route-floor mod, just
+#      before that session name. Declared the same way.
 # ---------------------------------------------------------------------------
 DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why",
-                   "F1014:session-name")
+                   "F1014:session-name", "F1250:route-floor-mod")
 
 # Operator-facing display name per agent, mirroring AGENT_DISPLAY in
 # _agent_registry.sh. Duplicated here deliberately and minimally: the point of
@@ -348,8 +350,8 @@ def _load_lane3_additions(path: Path) -> list[str]:
 def _apply_declared_deltas(cell: dict, agent: str, key: str | None = None) -> dict:
     """Rewrite a baseline cell to carry the declared deltas.
 
-    `key` (`lane<N>/<agent>/<shape>`) enables F1014's session name, which needs
-    the lane and the argument shape; without it only AC2 and AC7 apply.
+    `key` (`lane<N>/<agent>/<shape>`) enables F1014's session name and F1250's mod,
+    which need the lane and the argument shape; without it only AC2 and AC7 apply.
     """
     updated = json.loads(json.dumps(cell))
     if not updated.get("launched"):
@@ -364,7 +366,8 @@ def _apply_declared_deltas(cell: dict, agent: str, key: str | None = None) -> di
         lane, _, shape = key.split("/")
         argv = updated["argv"]
         at = len(argv) - len(ARG_SHAPES[shape])
-        updated["argv"] = argv[:at] + ["--name", lane] + argv[at:]
+        updated["argv"] = (argv[:at] + ["--plugin-dir", "<LANEDIR>/../routing/mod", "--name", lane]
+                           + argv[at:])
     return updated
 
 

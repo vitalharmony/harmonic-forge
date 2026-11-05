@@ -481,5 +481,157 @@ class KenektedTierLookupTests(unittest.TestCase):
                         seen["envs"])
 
 
+class RouteFloorRaise(unittest.TestCase):
+    """harmonic-forge#1250: a Lane 2 session whose launcher loaded the mod is raised, not blocked."""
+
+    SID = "session-1"
+    ELIGIBLE = {"LANE_ROUTE_MOD": "1"}
+
+    def setUp(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        patcher = patch.dict(os.environ, {"HOME": home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, prompt, model, tiers, lane="2", extra_env=ELIGIBLE, session_id=SID):
+        fake = FakeTiers(tiers)
+        with patch.object(model_tier_gate, "resolve_repo", return_value=HRSE):
+            return t.run({"prompt": prompt, "cwd": "/cwd", "session_id": session_id},
+                         env={"LANE": lane, **extra_env}, lookup=fake, model=model), fake
+
+    @staticmethod
+    def _event(line):
+        return f"<task-notification>\n<event>{line}</event>\n</task-notification>"
+
+    def _marked(self):
+        return t.route_floor_marker.exists(self.SID)
+
+    def _mark(self):
+        self.assertTrue(t.route_floor_marker.write(self.SID))
+
+    def test_ac1_a_typed_deep_prompt_raises_and_proceeds(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertNotIn("decision", out)
+        self.assertIn(f"{HRSE}#1830 is Tier deep", out["systemMessage"])
+        self.assertIn("raised", out["systemMessage"])
+        self.assertTrue(self._marked())
+
+    def test_ac1_a_typed_prompt_with_another_block_blocks_and_writes_nothing(self):
+        out, _ = self._run("Plan H1100 then H1101", "claude-sonnet-5", {(HRSE, 1100): "deep", (HRSE, 1101): "FAIL"})
+        self.assertEqual(out["decision"], "block")
+        self.assertFalse(self._marked())
+
+    def test_ac2_a_queued_line_naming_one_deep_issue_raises(self):
+        out, _ = self._run(self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff owes=implement"),
+                           "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("raised", out["systemMessage"])
+        self.assertTrue(self._marked())
+
+    def test_ac2_two_queued_deep_issues_warn_and_write_nothing(self):
+        lines = f"{HRSE}#1100 queued-for-l2 kind=handoff\n{HRSE}#1101 queued-for-l2 kind=handoff"
+        out, _ = self._run(self._event(lines), "claude-sonnet-5", {(HRSE, 1100): "deep", (HRSE, 1101): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac2_other_notifications_never_raise(self):
+        for line in (f"{HRSE}#1830 left-queue-for-l2", f"{HRSE}#1830 l1 — handoff",
+                     f"{HRSE}#1830 branch-ahead feat/1830"):
+            with self.subTest(line=line):
+                out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+                self.assertIn("Do NOT start", out["systemMessage"])
+                self.assertFalse(self._marked())
+        out, _ = self._run(f"<task-notification>\n<summary>done {HRSE}#1830 queued-for-l2</summary>\n"
+                           "</task-notification>", "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac4_no_signal_or_another_lane_blocks(self):
+        for lane, extra in (("2", {}), ("1", self.ELIGIBLE)):
+            with self.subTest(lane=lane, extra=extra):
+                out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"},
+                                   lane=lane, extra_env=extra)
+                self.assertEqual(out["decision"], "block")
+                self.assertFalse(self._marked())
+
+    def test_ac4_a_failed_write_blocks(self):
+        with patch.object(t.route_floor_marker, "write", return_value=False):
+            out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertEqual(out["decision"], "block")
+
+    def test_ac4_no_session_id_blocks(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"}, session_id=None)
+        self.assertEqual(out["decision"], "block")
+
+    def test_ac4_an_unreadable_tier_blocks(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "FAIL"})
+        self.assertEqual(out["decision"], "block")
+        self.assertFalse(self._marked())
+
+    def test_ac4_refs_past_the_cap_block(self):
+        tiers = {(HRSE, n): "deep" for n in range(1100, 1108)}
+        out, _ = self._run("Plan " + ", ".join(f"H{n}" for n in range(1100, 1108)), "claude-sonnet-5", tiers)
+        self.assertEqual(out["decision"], "block")
+        self.assertFalse(self._marked())
+
+    def test_ac4_lane_model_still_skips(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"},
+                           extra_env={**self.ELIGIBLE, "LANE_MODEL": "sonnet"})
+        self.assertIn("LANE_MODEL", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac6_a_typed_prompt_clears_on_fast_standard_or_no_tier(self):
+        for tier in ("fast", "standard", None):
+            with self.subTest(tier=tier):
+                self._mark()
+                self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): tier})
+                self.assertFalse(self._marked())
+
+    def test_ac6_a_raised_session_reading_high_still_clears(self):
+        self._mark()
+        self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+
+    def test_ac6_a_deep_or_unknown_ref_leaves_it(self):
+        for tiers in ({(HRSE, 1100): "deep", (HRSE, 1101): "fast"}, {(HRSE, 1100): "FAIL", (HRSE, 1101): "fast"},
+                      {(HRSE, 1100): model_tier_gate.NOT_AN_ISSUE, (HRSE, 1101): "fast"},
+                      {(HRSE, 1100): t.NO_BOARD, (HRSE, 1101): "fast"}):
+            with self.subTest(tiers=tiers):
+                self._mark()
+                self._run("Plan H1100 then H1101", "claude-opus-5", tiers)
+                self.assertTrue(self._marked())
+
+    def test_ac6_refs_past_the_cap_leave_it(self):
+        self._mark()
+        tiers = {(HRSE, n): "fast" for n in range(1100, 1108)}
+        self._run("Plan " + ", ".join(f"H{n}" for n in range(1100, 1108)), "claude-opus-5", tiers)
+        self.assertTrue(self._marked())
+
+    def test_ac6_a_one_issue_queued_line_clears_a_belt_driven_lane(self):
+        self._mark()
+        self._run(self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff"), "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+
+    def test_ac6_no_other_notification_clears(self):
+        for line in (f"{HRSE}#1830 left-queue-for-l2", f"{HRSE}#1100 queued-for-l2 kind=x\n{HRSE}#1101 queued-for-l2 kind=x"):
+            with self.subTest(line=line):
+                self._mark()
+                self._run(self._event(line), "claude-opus-5", {(HRSE, 1830): "fast", (HRSE, 1100): "fast", (HRSE, 1101): "fast"})
+                self.assertTrue(self._marked())
+
+    def test_each_tier_is_read_once_for_the_clear_and_the_decision(self):
+        self._mark()
+        _, fake = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertEqual(fake.calls, [(HRSE, 1830)])
+
+    def test_ac8_a_raised_session_gets_no_downshift_suggestion(self):
+        self._mark()
+        out, _ = self._run("Plan H1100 then H1101", "claude-opus-5", {(HRSE, 1100): model_tier_gate.NOT_AN_ISSUE, (HRSE, 1101): "fast"})
+        self.assertNotIn("/model sonnet", json.dumps(out))
+        self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertIn("/model sonnet", out["systemMessage"])
+
+
 if __name__ == "__main__":
     unittest.main()
