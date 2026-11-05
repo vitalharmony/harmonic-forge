@@ -134,6 +134,10 @@ class ScratchTest(unittest.TestCase):
 
     def test_lock_wait_is_bounded_and_names_the_holder(self) -> None:
         self.base.mkdir(parents=True)
+        # harmonic-forge#1271: this tests the disk lock, not the machine's real queue.
+        patch = mock.patch.dict(os.environ, {"HEAVY_SLOT_DISABLE": "1"})
+        patch.start()
+        self.addCleanup(patch.stop)
         holder = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
             import sys, time; sys.path.insert(0, {str(HERE)!r})
             import _scratch

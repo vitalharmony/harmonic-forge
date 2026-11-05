@@ -1713,6 +1713,8 @@ class CheckSteps(unittest.TestCase):
                 if not line or line.startswith("#") or line in ("set -e",
                                                                 "head=$(git rev-parse HEAD)"):
                     continue
+                if line.startswith("python3 tools/lane/heavy_slot.py run"):  # harmonic-forge#1271: te_run is out of its scope
+                    line = line.split(" -- ", 1)[1]
                 out += lines(line.split()[-1]) if line.startswith("mise run ") else [line]
             return out
         ours = [l.strip() for _n, script in te_run.CHECK_STEPS for l in script.splitlines()]

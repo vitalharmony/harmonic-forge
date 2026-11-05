@@ -17,6 +17,8 @@ because cleanup was a `finally:` that never runs.
   label). While holding the lock, every directory whose owner pid is dead is
   deleted before a new one is made, so a killed run is reclaimed by the next
   run with no sweep job.
+- **Capacity first (harmonic-forge#1271):** `tools/lane/heavy_slot.py` admits the run
+  from real system load before the disk lock is taken.
 - **Space preflight:** refuses when the root's filesystem has less than
   `HRSE_SCRATCH_MIN_FREE_GB` (default 10) free, reporting free space and the
   largest directories under the root.
@@ -28,6 +30,7 @@ import fcntl
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Iterator
@@ -164,6 +167,17 @@ def _lock(base: Path, label: str) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def _heavy_slot(prefix: str, label: str):
+    """Load-aware admission for this run; absent or broken, the run proceeds as before."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
+        import heavy_slot  # noqa: PLC0415 -- tools/lane, optional by design
+    except Exception as exc:  # noqa: BLE001 -- a broken tool runs unmanaged, it never stops the run
+        print(f"heavy-slot: WARNING: not loaded, running unmanaged: {exc!r}", file=sys.stderr)
+        return contextlib.nullcontext()
+    return heavy_slot.slot("check" if prefix.startswith("l1-post") else "kill", label)
+
+
 @contextlib.contextmanager
 def scratch_dir(label: str, prefix: str = "scratch-", lock: bool = True) -> Iterator[Path]:
     """A fresh scratch directory under the disk-backed root, one run at a time.
@@ -178,7 +192,10 @@ def scratch_dir(label: str, prefix: str = "scratch-", lock: bool = True) -> Iter
     is inherited (harmonic-forge#949, operator ruling on AC2)."""
     base = root()
     base.mkdir(parents=True, exist_ok=True)
-    with (_lock(base, label) if lock else contextlib.nullcontext()):
+    # harmonic-forge#1271: capacity first, then disk, always in that order, so two
+    # waiters can never each hold one. A nested run re-enters its parent's slot.
+    with (_heavy_slot(prefix, label) if lock else contextlib.nullcontext()), \
+            (_lock(base, label) if lock else contextlib.nullcontext()):
         reap(base, ownerless=lock)
         preflight(base)
         path = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
