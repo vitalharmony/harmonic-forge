@@ -1438,8 +1438,13 @@ class RouteFloorRaiseAtTheGate(unittest.TestCase):
                 shutil.rmtree(Path(self.home) / self.SID, ignore_errors=True)
 
     def test_a_subagent_id_that_is_not_an_id_reads_nothing(self):
+        """An id that walks out of subagents/ reads nothing, though a high file sits there."""
         payload = self._subagent("claude-opus-5", "claude-opus-5")
-        payload["agent_id"] = "../../x"
+        subagents = Path(self.home) / self.SID / "subagents"
+        (subagents / "agent-..").mkdir()
+        (subagents / "x.jsonl").write_text(json.dumps(
+            {"message": {"role": "assistant", "model": "claude-opus-5"}}) + "\n")
+        payload["agent_id"] = "../x"
         self.assertFalse(m.required_tier_met(payload, True))
 
     def test_ac3_the_deny_stands_writes_the_marker_and_says_retry(self):

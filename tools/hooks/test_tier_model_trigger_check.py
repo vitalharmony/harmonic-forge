@@ -720,8 +720,10 @@ class RouteFloorRaise(unittest.TestCase):
     def test_ac6_refs_past_the_cap_leave_it(self):
         self._mark()
         tiers = {(HRSE, n): "fast" for n in range(1100, 1108)}
-        self._run("Plan " + ", ".join(f"H{n}" for n in range(1100, 1108)), "claude-opus-5", tiers)
+        out, _ = self._run("Plan " + ", ".join(f"H{n}" for n in range(1100, 1108)), "claude-opus-5", tiers)
         self.assertTrue(self._marked())
+        # Not cleared and then raised again: the marker was never touched.
+        self.assertNotIn("Route floor cleared", json.dumps(out))
 
     def test_ac6_a_one_issue_queued_line_clears_a_belt_driven_lane(self):
         self._mark()
