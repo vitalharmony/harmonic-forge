@@ -541,7 +541,8 @@ class RouteFloorRaise(unittest.TestCase):
                 out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
                 self.assertIn("Do NOT start", out["systemMessage"])
                 self.assertFalse(self._marked())
-        out, _ = self._run(f"<task-notification>\n<summary>done {HRSE}#1830 queued-for-l2</summary>\n"
+        # One line, so only the event requirement stands between this text and a raise.
+        out, _ = self._run(f"<task-notification><summary>done {HRSE}#1830 queued-for-l2 x</summary>"
                            "</task-notification>", "claude-sonnet-5", {(HRSE, 1830): "deep"})
         self.assertIn("Do NOT start", out["systemMessage"])
         self.assertFalse(self._marked())
