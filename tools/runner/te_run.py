@@ -562,6 +562,7 @@ CHECK_STEPS: tuple[tuple[str, str], ...] = (
     ("check_installed_lane_sources",
      'python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" '
      "--skip-if-absent"),
+    ("route_floor_mod_tests", "claude plugin test tools/routing/mod"),
     ("platform_link_report", "python3 tools/onboard/platform_link_report.py --project ."),
     ("check_cross_registry", "python3 tools/rules/check_cross_registry.py"),
     ("context_budget_ratchet", "python3 tools/memory/context_budget_ratchet.py --repo . --gate"),
