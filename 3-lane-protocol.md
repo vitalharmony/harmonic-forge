@@ -1397,11 +1397,13 @@ preview is not the document.
 
 `tools/lane/heavy_slot.py` admits `check`, `check-full`, `e2e-mocked`, kill runs and a
 Lane 3 gate from measured load, across all lanes: cores from `load1` against `nproc`,
-`MemAvailable`, PSI, and what recent and leased jobs reserved. Waiting is first come,
-first served, and bounded at 10 minutes, memory permitting. `python3
-tools/lane/heavy_slot.py status` shows holders, queue and readings. A waiting job's line
-names what it waits on, and a queued job is working as designed, not stuck. It fails
-open and refuses nothing; harmonic-forge#1272 owns enforcement.
+`MemAvailable`, PSI, and what recently admitted jobs reserved. Waiting is first come,
+first served, and bounded: past 10 minutes the head starts, memory permitting, once no
+job has been admitted in the last 10 minutes. `python3 tools/lane/heavy_slot.py status`
+shows holders, queue and readings. A waiting job's line names what it waits on, and a
+queued job is working as designed, not stuck. A waiter's place and clock end with its
+process, so run these commands in the background, never under a foreground Bash timeout.
+It fails open and refuses nothing; harmonic-forge#1272 owns enforcement.
 
 ## Tooling Exception — Dev/Test Tooling Skips the Full Loop
 

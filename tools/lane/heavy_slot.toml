@@ -1,6 +1,6 @@
 # harmonic-forge#1271: what each heavy kind reserves, and the admission limits.
-# Starting values. Measured runs replace the reservations before they are trusted;
-# the numbers are posted to the issue.
+# check and e2e are measured, and the numbers are posted to the issue. check-full, gate, kill
+# and default are not: each is a starting value, and any measured run replaces it.
 
 [limits]
 recent_seconds = 120          # load lags a job's start by about this long
@@ -9,14 +9,13 @@ cpu_avg10 = 60.0              # PSI `some avg10` at or above this holds a job ba
 mem_avg10 = 10.0
 poll_seconds = 10
 note_seconds = 60
-lease_backstop_seconds = 14400  # matches the gate graph's own 4-hour backstop
 
 [kinds.check]  # measured: 573 s, p90 4.5 cores, peak 6.1, summed RSS 4.9 GB
 cores = 5
 gb = 6
 
-[kinds.check-full]
-cores = 4
+[kinds.check-full]  # not measured; it runs all of check first, so never below check
+cores = 5
 gb = 8
 
 [kinds.gate]

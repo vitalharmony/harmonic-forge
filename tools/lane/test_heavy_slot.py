@@ -23,12 +23,12 @@ CONFIG = hs.load_config()
 IDLE = hs.Reading(8, 0.5, 20.0, 1.0, 0.0)
 
 
-def holder(age=1000.0, cores=4, gb=6, lease=False, id_="h1"):
-    return {"id": id_, "admitted_at": 10_000.0 - age, "cores": cores, "gb": gb, "lease": lease}
+def holder(age=1000.0, cores=4, gb=6, id_="h1"):
+    return {"id": id_, "admitted_at": 10_000.0 - age, "cores": cores, "gb": gb}
 
 
-def decide(reading=IDLE, holders=(), waited=0.0, need=(4, 6), own=None):
-    return hs.decide(need, reading, list(holders), 10_000.0, CONFIG, waited, own)[0]
+def decide(reading=IDLE, holders=(), waited=0.0, need=(4, 6)):
+    return hs.decide(need, reading, list(holders), 10_000.0, CONFIG, waited)[0]
 
 
 class Admission(unittest.TestCase):
@@ -56,16 +56,6 @@ class Admission(unittest.TestCase):
     def test_recent_memory_counts_too(self):
         self.assertFalse(decide(hs.Reading(8, 0.0, 10.0, 0.0, 0.0), [holder(age=10.0, cores=0, gb=6)], need=(1, 6)))
 
-    def test_a_lease_stands_while_idle(self):
-        lease = holder(age=5000.0, cores=6, gb=2, lease=True)
-        self.assertFalse(decide(hs.Reading(8, 0.5, 20.0, 1.0, 0.0), [lease], need=(4, 2)))
-
-    def test_a_lease_credits_its_own_commands(self):
-        lease = holder(age=5000.0, cores=4, gb=6, lease=True)
-        reading = hs.Reading(8, 7.5, 7.0, 1.0, 0.0)
-        self.assertFalse(decide(reading, [lease], need=(4, 6)))
-        self.assertTrue(decide(reading, [lease], need=(4, 6), own=lease))
-
     def test_the_bound_admits_under_sustained_load(self):
         loaded = hs.Reading(8, 30.0, 20.0, 90.0, 0.0)
         self.assertFalse(decide(loaded, waited=599.0))
@@ -74,28 +64,35 @@ class Admission(unittest.TestCase):
     def test_the_bound_never_bypasses_the_memory_floor(self):
         self.assertFalse(decide(hs.Reading(8, 0.0, 1.0, 0.0, 0.0), waited=100_000.0))
 
-    def test_a_kind_reservation_is_clamped_so_it_can_fit(self):
+    def test_a_kind_bigger_than_the_machine_reaches_the_bound(self):
         config = {"kinds": {"big": {"cores": 64, "gb": 1}, "default": {"cores": 1, "gb": 1}}}
-        self.assertEqual(hs.reservation("big", config, 8), (8, 1))
-        self.assertEqual(hs.reservation("unknown", config, 8), (1, 1))
+        self.assertEqual(hs.reservation("big", config), (64, 1))
+        self.assertEqual(hs.reservation("unknown", config), (1, 1))
+        small_idle = hs.Reading(4, 0.5, 20.0, 1.0, 0.0)
+        self.assertFalse(decide(small_idle, need=(5, 6)))
+        self.assertTrue(decide(small_idle, need=(5, 6), waited=600.0))
 
     def test_forge_tasks_go_through_admission(self):
         tasks = tomllib.loads((TOOL.parent.parent.parent / "mise.toml").read_text())["tasks"]
         self.assertIn("heavy_slot.py run --kind check", tasks["check"]["run"])
-        self.assertIn("heavy_slot.py lease --kind gate", tasks["lane3-begin"]["run"])
-        self.assertIn("heavy_slot.py release", tasks["lane3-end"]["run"])
+        begin = tasks["lane3-begin"]["run"]
+        self.assertLess(begin.index("heavy_slot.py run --kind gate"), begin.index("check_lane3_ready.py"))
 
     def test_the_measured_reservations_apply_on_eight_cores(self):
-        self.assertEqual(hs.reservation("check", CONFIG, 8), (5, 6))
-        self.assertEqual(hs.reservation("e2e", CONFIG, 8), (5, 6))
+        self.assertEqual(hs.reservation("check", CONFIG), (5, 6))
+        self.assertEqual(hs.reservation("e2e", CONFIG), (5, 6))
+
+    def test_check_full_never_reserves_less_than_the_check_it_contains(self):
+        check, full = hs.reservation("check", CONFIG), hs.reservation("check-full", CONFIG)
+        self.assertGreaterEqual(full[0], check[0])
+        self.assertGreaterEqual(full[1], check[1])
 
     def test_the_floor_counts_what_was_just_promised(self):
-        lease = holder(age=5000.0, gb=8, lease=True)  # not a recent admission, so the bound would pass it
-        self.assertFalse(decide(hs.Reading(8, 12.0, 9.0, 20.0, 0.0), [lease], waited=600.0))
+        self.assertFalse(decide(hs.Reading(8, 12.0, 9.0, 20.0, 0.0), [holder(age=10.0, gb=8)], waited=600.0))
 
-    def test_a_lease_does_not_remove_the_memory_floor(self):
-        lease = holder(age=5000.0, cores=8, gb=8, lease=True)
-        self.assertFalse(decide(hs.Reading(8, 0.5, 0.5, 1.0, 0.0), [lease], need=(2, 6), own=lease))
+    def test_an_older_job_is_not_counted_against_memory_twice(self):
+        # MemAvailable already excludes what a running job uses: 13 GB is 13 GB free.
+        self.assertTrue(decide(hs.Reading(8, 0.5, 13.0, 1.0, 0.0), [holder(age=5000.0, gb=8)]))
 
     def test_the_real_readings_are_parsed(self):
         pages = {"/proc/loadavg": "3.50 2.00 1.00 1/100 200\n", "/proc/meminfo": "MemTotal: 9 kB\nMemAvailable: 2097152 kB\n",
@@ -180,7 +177,7 @@ class Real(unittest.TestCase):
         sys.path.insert(0, str(TOOL.parent))
         os.environ["HEAVY_SLOT_DIR"] = self.tmp.name
         self.addCleanup(os.environ.pop, "HEAVY_SLOT_DIR", None)
-        self.assertIsNone(hs._ancestor_holder(self.state, CONFIG))
+        self.assertIsNone(hs._ancestor_holder(self.state))
 
     def test_a_killed_holder_releases_at_once(self):
         child = subprocess.Popen([sys.executable, self.tool, "run", "--kind", "kill", "--label", "a", "--",
@@ -192,7 +189,7 @@ class Real(unittest.TestCase):
         self.assertTrue(self._holders())
         child.send_signal(signal.SIGKILL)
         child.wait()
-        self.assertEqual(hs.live_holders(self.state, time.time(), CONFIG), [])
+        self.assertEqual(hs.live_holders(self.state), [])
 
     def test_a_dead_ticket_is_skipped(self):
         tickets = self.state / "tickets"
@@ -214,44 +211,14 @@ class Real(unittest.TestCase):
             raise TimeoutError
 
         with self.assertRaises(TimeoutError):
-            admitted.append(hs._admit("kill", "late", self.state, CONFIG, False,
+            admitted.append(hs._admit("kill", "late", self.state, CONFIG,
                                       read=lambda: IDLE, sleep=stop_after_first, clock=lambda: clock[0]))
         self.assertEqual(admitted, [])
-
-    def test_a_dead_lease_is_reclaimed(self):
-        holders = self.state / "holders"
-        holders.mkdir(parents=True)
-        (holders / "x.json").write_text(json.dumps({
-            "id": "x", "lease": True, "owner": 999_999_999, "owner_start": "1", "admitted_at": time.time(),
-            "cores": 2, "gb": 8}))
-        self.assertEqual(hs.live_holders(self.state, time.time(), CONFIG), [])
-
-    def test_a_lease_past_its_backstop_is_reclaimed(self):
-        holders = self.state / "holders"
-        holders.mkdir(parents=True)
-        (holders / "x.json").write_text(json.dumps({
-            "id": "x", "lease": True, "owner": os.getpid(), "owner_start": hs._start_time(os.getpid()),
-            "admitted_at": time.time() - 14_401, "cores": 2, "gb": 8}))
-        self.assertEqual(hs.live_holders(self.state, time.time(), CONFIG), [])
-
-    def test_a_lease_survives_between_commands_and_releases(self):
-        self.assertEqual(self._run("lease", "--kind", "gate", "--label", "H1").returncode, 0)
-        leased = [json.loads(p.read_text()) for p in self._holders()]
-        self.assertTrue(leased and leased[0]["lease"])
-        self.assertEqual(self._run("release").returncode, 0)
-        self.assertEqual(self._holders(), [])
-
-    def test_an_unmanaged_release_keeps_the_lease(self):
-        self.assertEqual(self._run("lease", "--kind", "gate", "--label", "H1").returncode, 0)
-        self.assertTrue(self._holders())
-        self.assertEqual(self._run("release", env={**self.env, "HEAVY_SLOT_DISABLE": "1"}).returncode, 0)
-        self.assertTrue(self._holders())
-        self.assertEqual(self._run("release").returncode, 0)
 
     def test_a_wrong_shaped_record_is_removed_and_the_command_runs(self):
         holders = self.state / "holders"
         holders.mkdir(parents=True)
-        for name, body in (("a", "[]"), ("b", "null"), ("c", '{"cores": "5", "gb": 1, "admitted_at": 1, "owner": 1}')):
+        for name, body in (("a", "[]"), ("b", "null"), ("c", '{"cores": "5", "gb": 1, "admitted_at": 1}')):
             (holders / f"{name}.json").write_text(body)
         out = self._run("run", "--kind", "kill", "--label", "t", "--", "sh", "-c", "exit 3")
         self.assertEqual(out.returncode, 3, out.stderr)
@@ -280,56 +247,6 @@ class Real(unittest.TestCase):
                 ran = True
         self.assertTrue(ran)
         self.assertIn("MemAvailable", err.getvalue())
-
-    def _session(self, script):
-        """Run a script under a parent process really named `claude`, the lease's owner."""
-        claude = self.state / "claude"
-        claude.symlink_to(sys.executable)
-        return subprocess.run([str(claude), "-c", script], env=self.env, text=True, capture_output=True, timeout=60)
-
-    def test_a_lease_is_live_between_commands_and_released(self):
-        script = (
-            "import json, subprocess, sys, time\n"
-            f"sys.path.insert(0, {str(TOOL.parent)!r})\nimport heavy_slot as hs\nfrom pathlib import Path\n"
-            f"cmd = [{sys.executable!r}, {self.tool!r}]\n"
-            f"state = Path({self.tmp.name!r})\n"
-            "live = lambda: hs.live_holders(state, time.time(), hs.load_config())\n"
-            "subprocess.run(cmd + ['lease', '--kind', 'gate', '--label', 'H1'], check=True)\n"
-            "first = live()\n"
-            "subprocess.run(cmd + ['lease', '--kind', 'gate', '--label', 'H1'], check=True)\n"
-            "second = live()\n"
-            "subprocess.run(cmd + ['release'], check=True)\n"
-            "print(json.dumps([len(first), first[0]['lease'], len(second), len(live())]))\n")
-        out = self._session(script)
-        self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(json.loads(out.stdout), [1, True, 1, 0])
-
-    def test_no_session_means_no_lease_and_says_so(self):
-        with self._managed(), \
-                mock.patch.object(hs, "agent_owner", lambda pid: pid), \
-                contextlib.redirect_stderr(io.StringIO()) as err:
-            hs.cmd_lease(mock.Mock(kind="gate", label="H1"))
-        self.assertEqual(self._holders(), [])
-        self.assertIn("no lease taken", err.getvalue())
-
-    def test_release_leaves_another_session_s_lease(self):
-        holders = self.state / "holders"
-        holders.mkdir(parents=True)
-        other = subprocess.Popen(["sleep", "30"])
-        self.addCleanup(other.kill)
-        (holders / "x.json").write_text(json.dumps({
-            "id": "x", "lease": True, "owner": other.pid, "owner_start": hs._start_time(other.pid),
-            "admitted_at": time.time(), "cores": 2, "gb": 8}))
-        self.assertEqual(self._run("release").returncode, 0)
-        self.assertEqual(len(self._holders()), 1)
-
-    def test_a_reused_pid_does_not_hold_a_lease(self):
-        holders = self.state / "holders"
-        holders.mkdir(parents=True)
-        (holders / "x.json").write_text(json.dumps({
-            "id": "x", "lease": True, "owner": os.getpid(), "owner_start": "not-this-process",
-            "admitted_at": time.time(), "cores": 2, "gb": 8}))
-        self.assertEqual(hs.live_holders(self.state, time.time(), CONFIG), [])
 
     def test_admission_waits_for_the_guard(self):
         with hs._guard(self.state):
@@ -366,7 +283,7 @@ class Real(unittest.TestCase):
                 raise TimeoutError
 
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            holder, handle = hs._admit("kill", "t", self.state, CONFIG, False, read=lambda: loaded,
+            holder, handle = hs._admit("kill", "t", self.state, CONFIG, read=lambda: loaded,
                                        sleep=sleep, clock=lambda: now[0])
         self.addCleanup(handle.close)
         self.assertEqual(holder["kind"], "kill")
@@ -374,29 +291,47 @@ class Real(unittest.TestCase):
         self.assertIn("waiting on", err.getvalue())
         self.assertIn("load 30.0/8", err.getvalue())
 
-    def test_a_session_s_own_lease_is_credited_on_the_live_path(self):
-        holders = self.state / "holders"
-        holders.mkdir(parents=True)
-        owner = hs.agent_owner(os.getpid())
-        (holders / "x.json").write_text(json.dumps({
-            "id": "x", "lease": True, "owner": owner, "owner_start": hs._start_time(owner), "kind": "gate",
-            "label": "H1", "lane": "3", "admitted_at": time.time(), "cores": 8, "gb": 8}))
-        reading = hs.Reading(8, 2.0, 7.0, 1.0, 0.0)  # charged its own 8 cores, it would queue
-
-        def sleep(_seconds):
-            raise TimeoutError("queued behind its own lease")
-
-        with contextlib.redirect_stderr(io.StringIO()):
-            holder, handle = hs._admit("kill", "t", self.state, CONFIG, False, read=lambda: reading,
-                                       sleep=sleep, clock=time.time)
-        self.addCleanup(handle.close)
-        self.assertEqual(holder["kind"], "kill")
-
     def test_two_waiters_past_the_bound_do_not_start_together(self):
         loaded = hs.Reading(8, 10.5, 40.0, 18.8, 0.0)
-        just_admitted = [holder(age=5.0, cores=5, gb=6)]
-        self.assertFalse(hs.decide((5, 6), loaded, just_admitted, 10_000.0, CONFIG, 700.0)[0])
-        self.assertTrue(hs.decide((5, 6), loaded, [holder(age=500.0)], 10_000.0, CONFIG, 700.0)[0])
+        for age, admitted in ((5.0, False), (121.0, False), (599.0, False), (601.0, True)):
+            with self.subTest(age=age):
+                self.assertEqual(hs.decide((5, 6), loaded, [holder(age=age, cores=5, gb=6)],
+                                           10_000.0, CONFIG, 700.0)[0], admitted)
+
+    def _running(self, label):
+        """A real job holding its slot, with an idle reading."""
+        child = subprocess.Popen([sys.executable, self.tool, "run", "--kind", "kill", "--label", label, "--",
+                                  "sleep", "30"], env=self.env, stderr=subprocess.DEVNULL)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        for _ in range(100):
+            if self._holders():
+                return child
+            time.sleep(0.1)
+        self.fail("the job never held its slot")
+
+    def test_a_second_job_starts_while_the_first_runs(self):
+        self._running("first")
+        out = self._run("run", "--kind", "kill", "--label", "second", "--", "true")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("waiting on", out.stderr)
+        self.assertEqual(list((self.state / "tickets").glob("*.ticket")), [])
+
+    def test_the_wait_line_comes_once_a_minute_and_names_the_holder(self):
+        self._running("first")
+        loaded, now, slept = hs.Reading(8, 30.0, 20.0, 90.0, 0.0), [time.time()], []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+            if sum(slept) >= 300:
+                raise TimeoutError
+
+        with self._managed(), contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(TimeoutError):
+            hs._admit("kill", "t", self.state, CONFIG, read=lambda: loaded, sleep=sleep, clock=lambda: now[0])
+        lines = [line for line in err.getvalue().splitlines() if "waiting on" in line]
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(all("kill first" in line for line in lines), lines)
 
     def test_ci_runs_unmanaged(self):
         out = self._run("run", "--kind", "check", "--label", "t", "--", "true", env={**self.env, "CI": "true"})

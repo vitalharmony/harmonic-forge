@@ -6,35 +6,33 @@ determine what capacity is available and then use the lock mechanism
 appropriately across all Lanes."
 
     heavy_slot.py run --kind check --label L -- <command...>
-    heavy_slot.py lease --kind gate --label L      (a gate spans many commands)
-    heavy_slot.py release
     heavy_slot.py status
 
 ## Admission
 
-A job reserves cores and GB by kind (`heavy_slot.toml`, each clamped to half of
-`nproc`, so nothing is unfittable). It is admitted when all of these hold, re-read
-every 10 s:
+A job reserves cores and GB by kind (`heavy_slot.toml`). It is admitted when all of
+these hold, re-read every 10 s:
 
-    nproc - load1 - recent - standing   >= its cores
-    MemAvailable  - recent - standing   >= its GB
+    nproc - load1 - recent   >= its cores
+    MemAvailable  - recent   >= its GB
     cpu `some avg10` and memory `some avg10` below their limits
 
-`recent` is what jobs admitted in the last 120 s reserved, since load lags a job's
-start. `standing` is what live gate leases reserved: an idle gate's capacity is not
-given away, and its own later commands are credited against it.
+`recent` is what jobs admitted in the last 120 s reserved, since load and memory lag
+a job's start. Nothing else is subtracted: a reading already shows what an older job
+uses.
 
-Waiting is first come, first served, and bounded: after 10 minutes the head of the
-queue is admitted on memory alone, so unrelated load delays work but cannot stop it,
-and two gates cannot wait on each other. **The memory floor is never bypassed.**
+Waiting is first come, first served, and bounded: past 10 minutes the head of the
+queue is admitted on memory alone, unless another live job was admitted within the
+last 10 minutes, so overdue jobs start one at a time. **The memory floor is never
+bypassed.**
 
 ## Ownership
 
 A process with a live holder among its `/proc` ancestors re-enters that holder, so a
 `check`'s own steps never queue. Anything else passes admission, including a second
 command from the same session. Holding is an `flock`, released when the holder dies.
-A lease names the nearest `claude` or `codex` ancestor and is reclaimed when that
-process is gone, with a 4-hour backstop.
+A gate holds nothing between commands: `lane3-begin` waits for capacity once, and the
+gate's wrapped commands each pass admission.
 
 ## It never stops work
 
@@ -58,7 +56,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-AGENTS = ("claude", "codex")
 CONFIG = Path(__file__).with_name("heavy_slot.toml")
 
 
@@ -100,45 +97,38 @@ def read_system() -> Reading:
     raise ValueError("/proc/meminfo has no MemAvailable")  # absent is not "0 GB free": callers fail open
 
 
-def reservation(kind: str, config: dict, nproc: int) -> tuple[float, float]:
-    """A kind's (cores, GB), clamped so a job can always fit an idle machine."""
+def reservation(kind: str, config: dict) -> tuple[float, float]:
+    """A kind's (cores, GB). A job bigger than the machine reaches the bound."""
     kinds = config["kinds"]
     entry = kinds.get(kind, kinds["default"])
-    return min(entry["cores"], nproc), entry["gb"]
+    return entry["cores"], entry["gb"]
 
 
-def free_capacity(reading: Reading, holders: list[dict], now: float, config: dict,
-                  own_lease: dict | None = None) -> tuple[float, float]:
-    """(cores, GB) free now, less what load cannot show yet. A job's own lease is credited."""
+def free_capacity(reading: Reading, holders: list[dict], now: float, config: dict) -> tuple[float, float]:
+    """(cores, GB) free now, less what the readings cannot show yet."""
     recent_s = config["limits"]["recent_seconds"]
     cores, gb = 0.0, 0.0
     for holder in holders:
-        if own_lease and holder["id"] == own_lease["id"]:
-            continue
-        if holder.get("lease") or now - holder["admitted_at"] < recent_s:
+        if now - holder["admitted_at"] < recent_s:
             cores += holder["cores"]
             gb += holder["gb"]
     return reading.nproc - reading.load1 - cores, reading.mem_gb - gb
 
 
 def decide(need: tuple[float, float], reading: Reading, holders: list[dict], now: float,
-           config: dict, waited: float, own_lease: dict | None = None) -> tuple[bool, str]:
+           config: dict, waited: float) -> tuple[bool, str]:
     """Whether the head of the queue may start, and the numbers behind that."""
     limits = config["limits"]
     cores, gb = need
-    floor_gb = gb  # a lease is a reservation, not memory known to be free
-    if own_lease:
-        cores = max(0.0, cores - own_lease["cores"])
-        gb = max(0.0, gb - own_lease["gb"])
-    free_cores, free_gb = free_capacity(reading, holders, now, config, own_lease)
+    free_cores, free_gb = free_capacity(reading, holders, now, config)
     numbers = (f"need {cores:g} cores {gb:g} GB; free {free_cores:.1f} {free_gb:.1f}; "
                f"load {reading.load1:.1f}/{reading.nproc}; cpu {reading.cpu_avg10}; mem {reading.mem_avg10}")
-    if free_gb < floor_gb:  # the floor: never bypassed, whatever has waited how long
+    if free_gb < gb:  # the floor: never bypassed, whatever has waited how long
         return False, f"memory floor: {numbers}"
-    just_admitted = any(now - h["admitted_at"] < limits["recent_seconds"] for h in holders
-                        if not h.get("lease") and not (own_lease and h["id"] == own_lease["id"]))
-    if waited >= limits["max_wait_seconds"] and not just_admitted:  # one at a time, or the queue drains at once
-        return True, f"after the {limits['max_wait_seconds']}s bound: {numbers}"
+    bound = limits["max_wait_seconds"]
+    overlaps = any(now - h["admitted_at"] < bound for h in holders)
+    if waited >= bound and not overlaps:  # one overdue start per bound, or the queue drains at once
+        return True, f"after the {bound}s bound: {numbers}"
     pressure = ((reading.cpu_avg10 or 0.0) >= limits["cpu_avg10"]
                 or (reading.mem_avg10 or 0.0) >= limits["mem_avg10"])
     if free_cores >= cores and free_gb >= gb and not pressure:
@@ -169,28 +159,6 @@ def ancestors(pid: int) -> list[int]:
     return chain
 
 
-def _start_time(pid: int) -> str | None:
-    try:  # field 22, after the parenthesized command, which may hold spaces
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-    except (OSError, IndexError):
-        return None
-
-
-def alive(pid: int, start: str | None) -> bool:
-    return bool(start) and _start_time(pid) == start
-
-
-def agent_owner(pid: int) -> int:
-    """The nearest `claude` or `codex` ancestor, else this process."""
-    for candidate in ancestors(pid):
-        try:
-            if Path(f"/proc/{candidate}/comm").read_text().strip() in AGENTS:
-                return candidate
-        except OSError:
-            continue
-    return pid
-
-
 # --- state ------------------------------------------------------------------------
 
 
@@ -207,8 +175,8 @@ def _try_flock(path: Path) -> bool:
         return True
 
 
-def live_holders(state: Path, now: float, config: dict) -> list[dict]:
-    """Every live holder, removing the dead. A `run` holder lives by its flock, a lease by its owner."""
+def live_holders(state: Path) -> list[dict]:
+    """Every live holder, removing the dead. A holder lives by its flock."""
     out = []
     directory = state / "holders"
     directory.mkdir(parents=True, exist_ok=True)
@@ -219,16 +187,11 @@ def live_holders(state: Path, now: float, config: dict) -> list[dict]:
             path.unlink(missing_ok=True)
             continue
         if not (isinstance(holder, dict)
-                and all(isinstance(holder.get(k), (int, float)) for k in ("cores", "gb", "admitted_at", "owner"))):
+                and all(isinstance(holder.get(k), (int, float)) for k in ("cores", "gb", "admitted_at"))):
             path.unlink(missing_ok=True)
             path.with_suffix(".lock").unlink(missing_ok=True)
             continue
-        if holder.get("lease"):
-            dead = (not alive(holder["owner"], holder["owner_start"])
-                    or now - holder["admitted_at"] > config["limits"]["lease_backstop_seconds"])
-        else:
-            dead = _try_flock(path.with_suffix(".lock"))
-        if dead:
+        if _try_flock(path.with_suffix(".lock")):
             path.unlink(missing_ok=True)
             path.with_suffix(".lock").unlink(missing_ok=True)
             continue
@@ -260,10 +223,10 @@ def _guard(state: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def _admit(kind: str, label: str, state: Path, config: dict, lease: bool,
-           read=read_system, sleep=time.sleep, clock=time.time) -> tuple[dict, object | None]:
-    """Wait for capacity, then record a holder. A `run` holder's lock handle is returned open."""
-    own_pid, owner = os.getpid(), agent_owner(os.getpid())
+def _admit(kind: str, label: str, state: Path, config: dict,
+           read=read_system, sleep=time.sleep, clock=time.time) -> tuple[dict, object]:
+    """Wait for capacity, then record a holder. Its lock handle is returned open."""
+    own_pid = os.getpid()
     ticket = state / "tickets" / f"{time.time_ns():020d}-{own_pid}.ticket"
     ticket.parent.mkdir(parents=True, exist_ok=True)
     with _guard(state):
@@ -273,24 +236,20 @@ def _admit(kind: str, label: str, state: Path, config: dict, lease: bool,
     try:
         while True:
             reading = read()
-            need = reservation(kind, config, reading.nproc)
+            need = reservation(kind, config)
             with _guard(state):
                 now = clock()
-                holders = live_holders(state, now, config)
+                holders = live_holders(state)
                 head = next(iter(_tickets(state)), ticket) == ticket
-                own_lease = next((h for h in holders if h.get("lease") and h["owner"] == owner), None)
-                ok, numbers = decide(need, reading, holders, now, config, now - started, own_lease)
+                ok, numbers = decide(need, reading, holders, now, config, now - started)
                 if head and ok:
                     holder_id = uuid.uuid4().hex
-                    holder = {"id": holder_id, "pid": own_pid, "owner": owner,
-                              "owner_start": _start_time(owner), "kind": kind, "label": label,
+                    holder = {"id": holder_id, "pid": own_pid, "kind": kind, "label": label,
                               "lane": os.environ.get("LANE", ""), "cores": need[0], "gb": need[1],
-                              "admitted_at": now, "lease": lease}
+                              "admitted_at": now}
                     directory = state / "holders"
-                    handle = None
-                    if not lease:
-                        handle = open(directory / f"{holder_id}.lock", "a+")
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    handle = open(directory / f"{holder_id}.lock", "a+")
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     scratch = directory / f"{holder_id}.tmp"
                     scratch.write_text(json.dumps(holder))
                     os.replace(scratch, directory / f"{holder_id}.json")
@@ -306,10 +265,9 @@ def _admit(kind: str, label: str, state: Path, config: dict, lease: bool,
         ticket.unlink(missing_ok=True)
 
 
-def _ancestor_holder(state: Path, config: dict) -> dict | None:
-    holders = live_holders(state, time.time(), config)
+def _ancestor_holder(state: Path) -> dict | None:
     chain = set(ancestors(os.getpid())) | {os.getpid()}
-    return next((h for h in holders if not h.get("lease") and h["pid"] in chain), None)
+    return next((h for h in live_holders(state) if h["pid"] in chain), None)
 
 
 def _unmanaged_reason() -> str | None:
@@ -330,11 +288,11 @@ def slot(kind: str, label: str) -> Iterator[None]:
             config = load_config()
             state.mkdir(parents=True, exist_ok=True)
             with _guard(state):
-                parent = _ancestor_holder(state, config)
+                parent = _ancestor_holder(state)
             if parent:
                 _log(f"{kind} {label} runs under {parent['kind']} {parent['label']}")
             else:
-                holder, handle = _admit(kind, label, state, config, lease=False)
+                holder, handle = _admit(kind, label, state, config)
         except Exception as exc:  # noqa: BLE001 -- AC6: admission can never stop the command
             _log(f"WARNING: running {kind} {label} unmanaged: {type(exc).__name__}: {exc}")
     try:
@@ -360,57 +318,18 @@ def cmd_run(args) -> int:
         return child.wait()
 
 
-def cmd_lease(args) -> int:
-    if _unmanaged_reason():
-        _log(f"{_unmanaged_reason()}: no lease taken")
-        return 0
-    try:
-        config, state = load_config(), _state_dir()
-        state.mkdir(parents=True, exist_ok=True)
-        owner = agent_owner(os.getpid())
-        if owner == os.getpid():  # it would die with this command
-            _log(f"WARNING: no claude or codex session to own a lease: no lease taken for {args.kind} {args.label}")
-            return 0
-        with _guard(state):
-            held = any(h.get("lease") and h["owner"] == owner for h in live_holders(state, time.time(), config))
-        if held:
-            _log("this session already holds a lease")
-            return 0
-        _admit(args.kind, args.label, state, config, lease=True)
-    except Exception as exc:  # noqa: BLE001 -- AC6
-        _log(f"WARNING: no lease taken: {type(exc).__name__}: {exc}")
-    return 0
-
-
-def cmd_release(_args) -> int:
-    if _unmanaged_reason():  # a test under a leased session must not drop that lease
-        return 0
-    try:
-        config, state = load_config(), _state_dir()
-        owner = agent_owner(os.getpid())
-        state.mkdir(parents=True, exist_ok=True)
-        with _guard(state):
-            for holder in live_holders(state, time.time(), config):
-                if holder.get("lease") and holder["owner"] == owner:
-                    (state / "holders" / f"{holder['id']}.json").unlink(missing_ok=True)
-    except Exception as exc:  # noqa: BLE001 -- AC6
-        _log(f"WARNING: release failed: {type(exc).__name__}: {exc}")
-    return 0
-
-
 def cmd_status(_args) -> int:
     config, state, now = load_config(), _state_dir(), time.time()
     state.mkdir(parents=True, exist_ok=True)
     reading = read_system()
     with _guard(state):
-        holders = live_holders(state, now, config)
+        holders = live_holders(state)
         queued = len(_tickets(state))
     cores, gb = free_capacity(reading, holders, now, config)
     print(f"load {reading.load1:.1f}/{reading.nproc}; MemAvailable {reading.mem_gb:.1f} GB; "
           f"cpu avg10 {reading.cpu_avg10}; mem avg10 {reading.mem_avg10}; free {cores:.1f} cores {gb:.1f} GB")
     for holder in holders:
-        tag = "lease" if holder.get("lease") else "run"
-        print(f"  {tag} {holder['lane'] or '?'} {holder['kind']} {holder['label']} "
+        print(f"  run {holder['lane'] or '?'} {holder['kind']} {holder['label']} "
               f"for {int(now - holder['admitted_at'])}s ({holder['cores']:g} cores {holder['gb']:g} GB)")
     print(f"  queued: {queued}")
     return 0
@@ -424,11 +343,6 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--label", default="")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
-    lease = sub.add_parser("lease")
-    lease.add_argument("--kind", default="gate")
-    lease.add_argument("--label", default="")
-    lease.set_defaults(func=cmd_lease)
-    sub.add_parser("release").set_defaults(func=cmd_release)
     sub.add_parser("status").set_defaults(func=cmd_status)
     args = parser.parse_args(argv)
     return args.func(args)

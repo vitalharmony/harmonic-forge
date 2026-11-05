@@ -394,9 +394,9 @@ set -e
 # script's LAST line, so the script call must be last. The script writes the
 # marker itself, only after a passed check: an EXIT trap here also fired on
 # `-- --help`, which exits 0 having checked nothing (preclose survivor).
-# harmonic-forge#1271: a standing reservation for this session while the gate lives, before the
-# marker, so a killed wait leaves no marker behind it.
-python3 tools/lane/heavy_slot.py lease --kind gate --label "lane3:$(pwd)" || true
+# harmonic-forge#1271: wait for capacity once, before the marker, so a killed wait leaves no
+# marker behind it. It holds nothing afterward; the gate's wrapped commands each pass admission.
+python3 tools/lane/heavy_slot.py run --kind gate --label "lane3:$(pwd)" -- true || true
 eval python3 tools/gh/check_lane3_ready.py --mark-active $usage_args
 '''
 
@@ -406,7 +406,6 @@ run = '''
 set -e
 git_dir="$(git rev-parse --absolute-git-dir)"
 rm -f "$git_dir/LANE3_ACTIVE"
-python3 tools/lane/heavy_slot.py release || true
 echo "lane3-end: $(pwd) cleared"
 '''
 
