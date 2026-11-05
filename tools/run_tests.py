@@ -119,6 +119,7 @@ def contained_tempdir(prefix: str = "hf-test-run-"):
     old_env = {name: os.environ.get(name) for name in (*TMP_ENV_VARS, REAL_TMPDIR_ENV)}
     old_cache = tempfile.tempdir
     os.environ[REAL_TMPDIR_ENV] = real
+    os.environ["HEAVY_SLOT_DISABLE"] = "1"  # harmonic-forge#1271: tests never sit in the machine's real queue
     for name in TMP_ENV_VARS:
         os.environ[name] = root
     tempfile.tempdir = root

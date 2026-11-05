@@ -1,0 +1,36 @@
+# harmonic-forge#1271: what each heavy kind reserves, and the admission limits.
+# Starting values. Measured runs replace the reservations before they are trusted;
+# the numbers are posted to the issue.
+
+[limits]
+recent_seconds = 120          # load lags a job's start by about this long
+max_wait_seconds = 600        # the head of the queue starts after this, memory permitting
+cpu_avg10 = 60.0              # PSI `some avg10` at or above this holds a job back
+mem_avg10 = 10.0
+poll_seconds = 10
+note_seconds = 60
+lease_backstop_seconds = 14400  # matches the gate graph's own 4-hour backstop
+
+[kinds.check]
+cores = 4
+gb = 6
+
+[kinds.check-full]
+cores = 4
+gb = 8
+
+[kinds.gate]
+cores = 2
+gb = 8
+
+[kinds.e2e]
+cores = 3
+gb = 4
+
+[kinds.kill]
+cores = 2
+gb = 4
+
+[kinds.default]
+cores = 2
+gb = 4
