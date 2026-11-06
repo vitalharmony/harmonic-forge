@@ -28,7 +28,7 @@ _READABLE = object()
 
 def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bare_runs=(),
             message="ordinary commit\n", attempts=(), run_status="completed",
-            extra_runs=(), total_count=None):
+            extra_runs=(), total_count=None, runs_listed=None, jobs_by_id=None):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -45,7 +45,11 @@ def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bar
     drops them, as GitHub does); `run_status` is run 1's run-level status,
     separate from its jobs'; `extra_runs` are further workflow runs
     (`{"status", "jobs"}`, ids 200+); `total_count` overrides the runs list's
-    reported total (default: the number of runs listed).
+    reported total (default: the number of runs listed). `runs_listed`, when
+    given, is emitted VERBATIM as the runs list (each object carrying its own
+    `total_count`, so two "pages" can disagree), and `jobs_by_id` answers each
+    run's jobs read -- for the guards that need exact ids and totals
+    (sticky-wicket 6690231556 conditions 2-4).
     """
     if required is _READABLE:
         # harmonic-forge#1103: the PASS gate now refuses an unreadable required
@@ -88,6 +92,12 @@ def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bar
         if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url):
             # Short-SHA resolution (`--jq .sha`): the fixture's SHAs are hex, padded to 40.
             return 0, url.rsplit("/", 1)[1].ljust(40, "0")
+        if "/actions/runs?" in url and runs_listed is not None:
+            return 0, "\n".join(json.dumps(o) for o in runs_listed)
+        if "/actions/runs/" in url and "/jobs" in url and jobs_by_id is not None:
+            m = re.search(r"/runs/(\d+)/", url)
+            jobs = jobs_by_id.get(int(m.group(1)), []) if m else []
+            return 0, "\n".join(json.dumps(c) for c in jobs)
         if "/actions/runs?" in url:
             # `--jq '.workflow_runs[] | {id, name, ...}'` streams one object per line. The
             # fixture models every check as a job of ONE workflow run (harmonic-forge#805);
@@ -580,8 +590,8 @@ class NoPrOverrideTests(unittest.TestCase):
         self.assertTrue(ok, msg)
         self.assertIn("no-pr-override", msg)
 
-    # harmonic-forge#1276: hrse's push-to-main run now creates `verify` and
-    # skips it, so the "cannot run" state reads `unknown`, not `absent`.
+    # harmonic-forge#1276: hrse's scheduled and workflow_dispatch CI runs create
+    # `verify` and skip it, so the "cannot run" state reads `unknown`, not `absent`.
     def test_override_fires_when_every_required_check_was_skipped(self):
         ok, msg = gate_ci.check_gate_result(
             "o/r", PASS_BODY,
@@ -647,6 +657,42 @@ class NoPrOverrideTests(unittest.TestCase):
                 self.assertFalse(gate_ci._required_checks_all_skipped(
                     "o/r", self.SHA, {"verify"},
                     run=fake_gh(checks=[check("verify", "skipped")], total_count=total)))
+
+    # Sticky-wicket 6690231556: each run-list guard pinned ALONE, with a twin
+    # that passes under the real code.
+    @staticmethod
+    def _listed(ids, totals):
+        runs = [{"id": i, "status": "completed", "total_count": t} for i, t in zip(ids, totals)]
+        jobs = {i: [check("verify", "skipped")] for i in ids}
+        return runs, jobs
+
+    def _predicate(self, ids, totals):
+        runs, jobs = self._listed(ids, totals)
+        return gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"}, run=fake_gh(runs_listed=runs, jobs_by_id=jobs))
+
+    def test_the_run_cap_alone_refuses_a_full_list(self):
+        cap = gate_ci.RUNS_LIST_CAP
+        self.assertFalse(self._predicate(list(range(1, cap + 1)), [cap] * cap))
+
+    def test_one_run_under_the_cap_is_accepted(self):
+        n = gate_ci.RUNS_LIST_CAP - 1
+        self.assertTrue(self._predicate(list(range(1, n + 1)), [n] * n))
+
+    def test_a_duplicated_run_id_alone_refuses(self):
+        self.assertFalse(self._predicate([1, 200, 200], [3, 3, 3]))
+
+    def test_distinct_run_ids_are_accepted(self):
+        self.assertTrue(self._predicate([1, 200, 201], [3, 3, 3]))
+
+    def test_pages_that_disagree_on_total_count_alone_refuse(self):
+        """A run created mid-read: page 1 says 2, page 2 says 3. With the
+        per-page guard deleted, page 1's total (2) equals the runs read, so
+        only that guard can refuse."""
+        self.assertFalse(self._predicate([1, 2], [2, 3]))
+
+    def test_pages_that_agree_on_total_count_are_accepted(self):
+        self.assertTrue(self._predicate([1, 2], [2, 2]))
 
     def test_a_skipped_run_beside_a_green_run_of_the_same_check_is_not_all_skipped(self):
         green = dict(check("verify"), completed_at="2026-09-09T00:00:00Z")

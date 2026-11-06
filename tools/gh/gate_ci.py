@@ -504,7 +504,9 @@ def _read_every_attempt(repo: str, sha: str, run=None) -> list[dict] | None:
         return None
     if not wf_runs or len(totals) != 1:
         return None
-    total = totals.pop()
+    # Explicit, not `totals.pop()`: a deterministic read keeps the per-page
+    # guard above testable on its own (sticky-wicket 6690231556 condition 1).
+    total = int(wf_runs[0]["total_count"])
     if total >= RUNS_LIST_CAP or total != len(wf_runs) or len(set(ids)) != len(ids):
         return None
     if any(wf.get("status") != "completed" for wf in wf_runs):
