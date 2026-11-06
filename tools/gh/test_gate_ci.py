@@ -27,7 +27,8 @@ _READABLE = object()
 
 
 def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bare_runs=(),
-            message="ordinary commit\n"):
+            message="ordinary commit\n", attempts=(), run_status="completed",
+            extra_runs=(), total_count=None, runs_listed=None, jobs_by_id=None):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -38,6 +39,17 @@ def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bar
     `main_tip` (harmonic-forge#788): the SHA `/branches/main` reports as
     `.commit.sha`, for `sha_is_current_main_tip`'s own call. `None` means the
     endpoint fails, matching every other unset fixture's fail-closed default.
+
+    harmonic-forge#1276 (sticky-wicket condition 8): `attempts` are EARLIER
+    attempts' jobs of run 1, returned only for `filter=all` (`filter=latest`
+    drops them, as GitHub does); `run_status` is run 1's run-level status,
+    separate from its jobs'; `extra_runs` are further workflow runs
+    (`{"status", "jobs"}`, ids 200+); `total_count` overrides the runs list's
+    reported total (default: the number of runs listed). `runs_listed`, when
+    given, is emitted VERBATIM as the runs list (each object carrying its own
+    `total_count`, so two "pages" can disagree), and `jobs_by_id` answers each
+    run's jobs read -- for the guards that need exact ids and totals
+    (sticky-wicket 6690231556 conditions 2-4).
     """
     if required is _READABLE:
         # harmonic-forge#1103: the PASS gate now refuses an unreadable required
@@ -80,18 +92,38 @@ def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bar
         if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url):
             # Short-SHA resolution (`--jq .sha`): the fixture's SHAs are hex, padded to 40.
             return 0, url.rsplit("/", 1)[1].ljust(40, "0")
+        if "/actions/runs?" in url and runs_listed is not None:
+            return 0, "\n".join(json.dumps(o) for o in runs_listed)
+        if "/actions/runs/" in url and "/jobs" in url and jobs_by_id is not None:
+            m = re.search(r"/runs/(\d+)/", url)
+            jobs = jobs_by_id.get(int(m.group(1)), []) if m else []
+            return 0, "\n".join(json.dumps(c) for c in jobs)
         if "/actions/runs?" in url:
             # `--jq '.workflow_runs[] | {id, name, ...}'` streams one object per line. The
             # fixture models every check as a job of ONE workflow run (harmonic-forge#805);
             # `bare_runs` are workflow runs that have no jobs at all.
-            lines = ([json.dumps({"id": 1, "name": "ci", "status": "completed",
-                                  "conclusion": "success"})] if checks else [])
-            lines += [json.dumps(dict(r, id=100 + i)) for i, r in enumerate(bare_runs)]
-            return 0, "\n".join(lines)
+            objs = ([{"id": 1, "name": "ci", "status": run_status,
+                      "conclusion": "success" if run_status == "completed" else None}]
+                    if (checks or attempts) else [])
+            objs += [dict(r, id=100 + i) for i, r in enumerate(bare_runs)]
+            objs += [{"id": 200 + i, "name": "ci", "status": r["status"],
+                      "conclusion": r.get("conclusion")} for i, r in enumerate(extra_runs)]
+            total = len(objs) if total_count is None else total_count
+            return 0, "\n".join(json.dumps(dict(o, total_count=total)) for o in objs)
         if "/actions/runs/" in url and "/jobs" in url:
             # `--jq '.jobs[]'` streams ONE OBJECT PER LINE, not an array.
-            # Only run 1 carries the fixture's jobs; a bare run (id 100+) has none.
-            return 0, "\n".join(json.dumps(c) for c in checks) if "/runs/1/" in url else ""
+            # Run 1 carries the fixture's jobs (plus `attempts` under filter=all);
+            # a bare run (id 100+) has none; an extra run (200+) its own.
+            every = "filter=all" in url
+            m = re.search(r"/runs/(\d+)/", url)
+            rid = int(m.group(1)) if m else -1
+            if rid == 1:
+                jobs = list(checks) + (list(attempts) if every else [])
+            elif rid >= 200:
+                jobs = list(extra_runs[rid - 200].get("jobs", ()))
+            else:
+                jobs = []
+            return 0, "\n".join(json.dumps(c) for c in jobs)
         return 0, "null"
     return run
 
@@ -557,6 +589,186 @@ class NoPrOverrideTests(unittest.TestCase):
             ack_no_pr_required="migration on main")
         self.assertTrue(ok, msg)
         self.assertIn("no-pr-override", msg)
+
+    # harmonic-forge#1276: hrse's scheduled and workflow_dispatch CI runs create
+    # `verify` and skip it, so the "cannot run" state reads `unknown`, not `absent`.
+    def test_override_fires_when_every_required_check_was_skipped(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        checks=[check("verify", "skipped"), check("render-and-deploy"),
+                                check("build-and-push", "skipped")],
+                        required={"verify"}),
+            ack_no_pr_required="hrse#2607 production apply on main")
+        self.assertTrue(ok, msg)
+        # post_lane_discussion.py reads this exact prefix to record the override.
+        self.assertTrue(msg.startswith("[GATE] no-pr-override:"), msg)
+        self.assertIn("never ran or was skipped", msg)
+
+    def test_a_newer_skipped_run_never_hides_an_older_red_one(self):
+        """Pitch finding 1: a tag-push `verify` failed, then a scheduled or
+        author-dispatched run skipped it. The failure still refuses."""
+        older = dict(check("verify", "failure"), completed_at="2026-09-09T00:00:00Z")
+        newer = dict(check("verify", "skipped"), completed_at="2026-09-10T00:00:00Z")
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[older, newer], required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+        self.assertFalse(gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"},
+            run=fake_gh(checks=[older, newer], required={"verify"})))
+
+    # harmonic-forge#1276 pass-1 survivors and sticky-wicket conditions 2-5.
+    def test_a_failed_earlier_attempt_hidden_by_a_skipped_rerun_refuses(self):
+        """Survivors 1-2: attempt 1's verify failed, a re-run attempt skipped
+        it. filter=latest shows only the skip; filter=all must see the red."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "skipped")],
+                        attempts=[check("verify", "failure")], required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_an_unfinished_run_with_no_verify_job_yet_refuses(self):
+        """Survivor 3: a tag-push run is in flight with only tag-proof; its
+        verify does not exist yet. Older scheduled skips must not authorize."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "skipped")],
+                        extra_runs=[{"status": "in_progress",
+                                     "jobs": [check("tag-proof", None, "in_progress")]}],
+                        required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_a_queued_run_with_no_jobs_at_all_refuses(self):
+        self.assertFalse(gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"},
+            run=fake_gh(checks=[check("verify", "skipped")],
+                        extra_runs=[{"status": "queued", "jobs": []}])))
+
+    def test_a_possibly_truncated_run_list_refuses(self):
+        for total in (gate_ci.RUNS_LIST_CAP, 2):
+            with self.subTest(total=total):
+                self.assertFalse(gate_ci._required_checks_all_skipped(
+                    "o/r", self.SHA, {"verify"},
+                    run=fake_gh(checks=[check("verify", "skipped")], total_count=total)))
+
+    # Sticky-wicket 6690231556: each run-list guard pinned ALONE, with a twin
+    # that passes under the real code.
+    @staticmethod
+    def _listed(ids, totals):
+        runs = [{"id": i, "status": "completed", "total_count": t} for i, t in zip(ids, totals)]
+        jobs = {i: [check("verify", "skipped")] for i in ids}
+        return runs, jobs
+
+    def _predicate(self, ids, totals):
+        runs, jobs = self._listed(ids, totals)
+        return gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"}, run=fake_gh(runs_listed=runs, jobs_by_id=jobs))
+
+    def test_the_run_cap_alone_refuses_a_full_list(self):
+        cap = gate_ci.RUNS_LIST_CAP
+        self.assertFalse(self._predicate(list(range(1, cap + 1)), [cap] * cap))
+
+    def test_one_run_under_the_cap_is_accepted(self):
+        n = gate_ci.RUNS_LIST_CAP - 1
+        self.assertTrue(self._predicate(list(range(1, n + 1)), [n] * n))
+
+    def test_a_duplicated_run_id_alone_refuses(self):
+        self.assertFalse(self._predicate([1, 200, 200], [3, 3, 3]))
+
+    def test_distinct_run_ids_are_accepted(self):
+        self.assertTrue(self._predicate([1, 200, 201], [3, 3, 3]))
+
+    def test_pages_that_disagree_on_total_count_alone_refuse(self):
+        """A run created mid-read: page 1 says 2, page 2 says 3. With the
+        per-page guard deleted, page 1's total (2) equals the runs read, so
+        only that guard can refuse."""
+        self.assertFalse(self._predicate([1, 2], [2, 3]))
+
+    def test_pages_that_agree_on_total_count_are_accepted(self):
+        self.assertTrue(self._predicate([1, 2], [2, 2]))
+
+    def test_a_skipped_run_beside_a_green_run_of_the_same_check_is_not_all_skipped(self):
+        green = dict(check("verify"), completed_at="2026-09-09T00:00:00Z")
+        skipped = dict(check("verify", "skipped"), completed_at="2026-09-10T00:00:00Z")
+        self.assertFalse(gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"},
+            run=fake_gh(checks=[green, skipped], required={"verify"})))
+
+    def test_skipped_required_without_the_flag_still_refuses(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "skipped")],
+                        required={"verify"}))
+        self.assertFalse(ok)
+        self.assertIn("verify:skipped", msg)
+
+    def test_skipped_override_refuses_an_unrecognised_conclusion(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "something_new")],
+                        required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_skipped_override_refuses_a_mixed_required_set(self):
+        """`verify` skipped while `lint` ran green reads `unknown`: CI did run
+        for this SHA, so it is not the all-skipped case. (A required check
+        that is MISSING reads `absent`, which #788's override already governs,
+        unchanged by #1276.)"""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        checks=[check("verify", "skipped"), check("lint")],
+                        required={"verify", "lint"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_skipped_override_refuses_when_main_has_moved(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip="a" * 40, checks=[check("verify", "skipped")],
+                        required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_skipped_override_refuses_with_an_open_pr(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "skipped")],
+                        required={"verify"},
+                        pulls=[{"number": 7, "state": "open", "head": self.SHA}]),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_all_skipped_predicate_directly(self):
+        f = gate_ci._required_checks_all_skipped
+        sha = self.SHA
+        self.assertTrue(f("o/r", sha, {"verify"},
+                          run=fake_gh(checks=[check("verify", "skipped")])))
+        self.assertFalse(f("o/r", sha, {"verify"},
+                           run=fake_gh(checks=[check("verify", None, "in_progress")])))
+        self.assertFalse(f("o/r", sha, {"verify"},
+                           run=fake_gh(checks=[check("verify", "skipped")],
+                                       fail=("/actions/runs",))))
+        self.assertFalse(f("o/r", sha, {"verify"}, run=fake_gh(checks=[])))
+        # Empty required: every visible non-default check must be green.
+        self.assertTrue(f("o/r", sha, set(),
+                          run=fake_gh(checks=[check("verify", "skipped"), check("x")],
+                                      required=None)))
+        self.assertFalse(f("o/r", sha, set(),
+                           run=fake_gh(checks=[check("verify", "skipped"),
+                                               check("x", "skipped")], required=None)))
 
     def test_override_does_not_fire_on_red_ci_even_with_a_pr_less_sha(self):
         """The override is consulted ONLY at the final no-checks-at-all

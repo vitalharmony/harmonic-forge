@@ -466,6 +466,106 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     return _judge_runs(runs, sha, set(DEFAULT_REQUIRED_CHECKS))
 
 
+#: GitHub returns at most this many workflow runs for a `head_sha` filter
+#: (REST docs, "List workflow runs for a repository"). A read at or past it is
+#: not known to be complete, so the all-skipped predicate refuses it
+#: (harmonic-forge#1276 sticky-wicket condition 4).
+RUNS_LIST_CAP = 1000
+
+
+def _read_every_attempt(repo: str, sha: str, run=None) -> list[dict] | None:
+    """Every job of every attempt of every workflow run on `sha`, or None.
+
+    harmonic-forge#1276 (sticky-wicket 6689496006): the all-skipped predicate's
+    OWN read, separate from `_read_check_runs`, whose `filter=latest` every
+    other caller keeps (AC4). None -- fail closed -- when the SHA does not
+    resolve, any read fails or is unparseable, there are no runs, the run list
+    may be truncated (`total_count` at or past `RUNS_LIST_CAP`, or not equal
+    to the runs read), or ANY workflow run on the SHA is not `completed`: a
+    run still in flight may yet create a required job (a tag-push `verify`
+    exists only once `tag-proof` finishes), so it vetoes the inference."""
+    run = run or _run
+    if len(sha) < 40:
+        code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
+        if code != 0 or len(full.strip()) != 40:
+            return None
+        sha = full.strip()
+    code, out = run(["gh", "api", "--paginate",
+                     f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
+                     "--jq", ".total_count as $t | .workflow_runs[] | "
+                             "{id, status, total_count: $t}"])
+    if code != 0:
+        return None
+    try:
+        wf_runs = [json.loads(line) for line in (out or "").splitlines() if line.strip()]
+        totals = {int(wf["total_count"]) for wf in wf_runs}
+        ids = [wf["id"] for wf in wf_runs]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not wf_runs or len(totals) != 1:
+        return None
+    # Explicit, not `totals.pop()`: a deterministic read keeps the per-page
+    # guard above testable on its own (sticky-wicket 6690231556 condition 1).
+    total = int(wf_runs[0]["total_count"])
+    if total >= RUNS_LIST_CAP or total != len(wf_runs) or len(set(ids)) != len(ids):
+        return None
+    if any(wf.get("status") != "completed" for wf in wf_runs):
+        return None
+    jobs: list[dict] = []
+    for run_id in ids:
+        code, out = run(["gh", "api", "--paginate",
+                         f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&filter=all",
+                         "--jq", ".jobs[]"])
+        if code != 0:
+            return None
+        try:
+            jobs += [json.loads(line) for line in (out or "").splitlines() if line.strip()]
+        except ValueError:
+            return None
+    return jobs
+
+
+def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
+                                 run=None) -> bool:
+    """Was every required check, in every run and every attempt on `sha`,
+    created and `skipped`? (harmonic-forge#1276)
+
+    Consulted ONLY by `check_gate_result`'s no-PR override, after
+    `authorizing_conclusion` read `unknown`. Reads `_read_every_attempt`, its
+    own complete read, and fails closed on anything that read refuses. A
+    required name must have at least one job, and EVERY job of that name --
+    across workflow runs and re-run attempts -- must be completed and
+    `skipped`: an older red run or attempt is never hidden by a newer skip, and
+    one that ran green is not the "cannot run" case either. With an EMPTY
+    `required`, every other job must also be completed and in `_GOOD`.
+
+    Accepted open gaps, shared with harmonic-forge#788's `absent` path rather
+    than introduced here: a run started AFTER this read, and a red run deleted
+    by someone with write access, are not seen."""
+    jobs = _read_every_attempt(repo, sha, run=run)
+    if not jobs:
+        return False
+    want = set(required) or set(DEFAULT_REQUIRED_CHECKS)
+
+    def conclusion(r: dict) -> str:
+        return (r.get("conclusion") or "").lower()
+
+    if not required:
+        for r in jobs:
+            if r.get("name") in want:
+                continue
+            if r.get("status") != "completed" or conclusion(r) not in _GOOD:
+                return False
+    for name in want:
+        named = [r for r in jobs if r.get("name") == name]
+        if not named:
+            return False
+        if not all(r.get("status") == "completed" and conclusion(r) == "skipped"
+                   for r in named):
+            return False
+    return True
+
+
 def ci_conclusion(repo: str, sha: str, run=None,
                   required: set[str] | None = None) -> tuple[str, str]:
     """`(state, detail)` for a commit's checks.
@@ -624,9 +724,11 @@ def sha_is_current_main_tip(repo: str, sha: str, run=None) -> bool | None:
     NOT "has any PR ever touched this commit" -- every commit on `main` has
     one, including the merge commit of the PR that landed it, so that
     signal never distinguishes a data-migration's reference SHA from an
-    ordinary code change. `verify` is gated `if: github.event_name ==
-    'pull_request'` (confirmed live, HRSE2 `.github/workflows/ci.yml:82`),
-    so it structurally never runs on a bare push to `main` -- what actually
+    ordinary code change. `verify` runs only on `pull_request` or a `v*` tag
+    push whose `tag-proof` is unproven (HRSE2 `.github/workflows/ci.yml:111`,
+    re-read for harmonic-forge#1276); hrse has no push-to-`main` trigger, and
+    on `schedule`/`workflow_dispatch` the job is created and `skipped`. So
+    `verify` structurally never vouches for an untagged `main` commit -- what actually
     marks "there is no PR pending for this SHA and none is coming" is that
     the SHA already IS the tip of `main` itself, not that it lacks a PR
     history.
@@ -674,6 +776,14 @@ def check_gate_result(
     stale/red/pending checks above still decide it, exactly as before this
     change. This is deliberately not "was --ack-no-pr-required passed", to
     match AC1's "never as a way to skip the check when a PR does exist".
+
+    harmonic-forge#1276: the override also covers a main tip whose required
+    check(s) were created and `skipped` in every run and attempt (hrse's
+    scheduled and `workflow_dispatch` CI skip `verify`), the same "CI cannot
+    run" evidence as a missing one, read by `_read_every_attempt`: every
+    attempt is judged, any unfinished workflow run vetoes, and a possibly
+    truncated run list refuses. A red, pending, unrecognised or mixed set
+    still refuses.
     """
     global _SLOT_ENV
     _SLOT_ENV = _slot_env_for(repo)
@@ -751,7 +861,10 @@ def check_gate_result(
     # in flight and `unknown` is a failed or unreadable lookup; neither is
     # evidence CI cannot exist, and letting the override through on them
     # published "cannot run" over a build that was running, or unread.
-    if ack_no_pr_required is not None and state == "absent":
+    if ack_no_pr_required is not None and (
+            state == "absent"
+            or (state == "unknown"
+                and _required_checks_all_skipped(repo, sha, required, run=run))):
         is_tip = sha_is_current_main_tip(repo, sha, run=run)
         # AC1: never when an OPEN PR contains this SHA. A main-tip commit's
         # own merge PR is closed, so only a genuinely pending PR refuses.
@@ -761,7 +874,8 @@ def check_gate_result(
                 f"[GATE] no-pr-override: {sha[:8]} is the current tip of "
                 f"main -- no PR is pending for it and `verify` is gated to "
                 f"pull_request events, so CI structurally cannot run for "
-                f"it. Acknowledged: {ack_no_pr_required}")
+                f"it (its required check never ran or was skipped). "
+                f"Acknowledged: {ack_no_pr_required}")
         # Otherwise -- main moved past this SHA, an open PR contains it, or
         # either lookup failed (None) -- fall through to the normal refusal.
         # A failed lookup is never read as "confirmed no PR".
