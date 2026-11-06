@@ -81,6 +81,9 @@ python3 tools/lane/heavy_slot.py run --kind check --label "$(basename "$PWD")" -
 # harmonic-forge#645: machine-local -- reads $HOME/.local/bin, which a CI
 # runner does not have.
 python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
+# harmonic-forge#1250: machine-local -- the route-floor mod's tests run in the
+# `claude` CLI's own harness, which a CI runner and the TE runner's sandbox do not have.
+! command -v claude > /dev/null || claude plugin test tools/routing/mod
 # harmonic-forge#543: machine-local -- fails on a checkout with no platform
 # links at all (verified live, F802 pitch-inspection), which every fresh CI
 # checkout is. Report platform-link drift from the gate rather than from a

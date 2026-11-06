@@ -481,5 +481,280 @@ class KenektedTierLookupTests(unittest.TestCase):
                         seen["envs"])
 
 
+class RouteFloorRaise(unittest.TestCase):
+    """harmonic-forge#1250: a Lane 2 session whose launcher loaded the mod is raised, not blocked."""
+
+    SID = "session-1"
+    ELIGIBLE = {"LANE_ROUTE_MOD": "1"}
+
+    def setUp(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        patcher = patch.dict(os.environ, {"HOME": home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, prompt, model, tiers, lane="2", extra_env=ELIGIBLE, session_id=SID):
+        fake = FakeTiers(tiers)
+        with patch.object(model_tier_gate, "resolve_repo", return_value=HRSE):
+            return t.run({"prompt": prompt, "cwd": "/cwd", "session_id": session_id},
+                         env={"LANE": lane, **extra_env}, lookup=fake, model=model), fake
+
+    @staticmethod
+    def _event(line):
+        return f"<task-notification>\n<event>{line}</event>\n</task-notification>"
+
+    def _marked(self):
+        return t.route_floor_marker.exists(self.SID)
+
+    def _mark(self):
+        self.assertTrue(t.route_floor_marker.write(self.SID))
+
+    def test_ac1_a_typed_deep_prompt_raises_and_proceeds(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertNotIn("decision", out)
+        self.assertIn(f"{HRSE}#1830 is Tier deep", out["systemMessage"])
+        self.assertIn("raised", out["systemMessage"])
+        self.assertTrue(self._marked())
+
+    def test_ac1_a_typed_prompt_with_another_block_blocks_and_writes_nothing(self):
+        out, _ = self._run("Plan H1100 then H1101", "claude-sonnet-5", {(HRSE, 1100): "deep", (HRSE, 1101): "FAIL"})
+        self.assertEqual(out["decision"], "block")
+        self.assertFalse(self._marked())
+
+    def test_ac2_a_queued_line_naming_one_deep_issue_raises(self):
+        out, _ = self._run(self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff owes=implement"),
+                           "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("raised", out["systemMessage"])
+        self.assertTrue(self._marked())
+
+    def test_ac2_two_queued_deep_issues_warn_and_write_nothing(self):
+        lines = f"{HRSE}#1100 queued-for-l2 kind=handoff\n{HRSE}#1101 queued-for-l2 kind=handoff"
+        out, _ = self._run(self._event(lines), "claude-sonnet-5", {(HRSE, 1100): "deep", (HRSE, 1101): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac2_other_notifications_never_raise(self):
+        for line in (f"{HRSE}#1830 left-queue-for-l2", f"{HRSE}#1830 l1 — handoff",
+                     f"{HRSE}#1830 branch-ahead feat/1830"):
+            with self.subTest(line=line):
+                out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+                self.assertIn("Do NOT start", out["systemMessage"])
+                self.assertFalse(self._marked())
+        # One line, so only the event requirement stands between this text and a raise.
+        out, _ = self._run(f"<task-notification><summary>done {HRSE}#1830 queued-for-l2 x</summary>"
+                           "</task-notification>", "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac2_only_the_exact_l2_token_raises(self):
+        for line in (f"{HRSE}#1830 queued-for-l3 kind=ready-for-l3 owes=spec",
+                     f"{HRSE}#1830 queued-for-l1 kind=spec owes=spec-review",
+                     f"{HRSE}#1830 queued-for-l2-later kind=handoff"):
+            with self.subTest(line=line):
+                out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+                self.assertIn("Do NOT start", out["systemMessage"])
+                self.assertFalse(self._marked())
+
+    def test_ac2_every_line_of_the_event_must_be_queued_for_l2(self):
+        lines = f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1830 left-queue-for-l2"
+        out, _ = self._run(self._event(lines), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_a_session_reading_high_with_no_marker_gets_one(self):
+        # After a /clear, or a clearing prompt with no response: opus in history, no marker.
+        out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
+        self.assertIn(f"{HRSE}#1830 is Tier deep", out["systemMessage"])
+        self.assertIn("go out on a high-tier model", out["systemMessage"])
+        self.assertNotIn("decision", out)
+        self.assertTrue(self._marked())
+
+    def test_an_untrusted_high_reading_raises_on_every_branch_that_would_block(self):
+        """Sticky-wicket 6666343012 item 1: one rule, every branch, not one test per scenario."""
+        refs = " ".join(f"H{1100 + i}" for i in range(t._MAX_TIER_READS + 1))
+        past_cap = {(HRSE, 1100 + i): "fast" for i in range(t._MAX_TIER_READS)}
+        cases = (
+            ("deep", "Plan H1830", {(HRSE, 1830): "deep"}, f"{HRSE}#1830 is Tier deep"),
+            ("unreadable", "Plan H1830", {(HRSE, 1830): "FAIL"}, f"Tier for {HRSE}#1830 could not be read"),
+            ("past the cap", f"Plan {refs}", past_cap, "Tier not checked for"),
+        )
+        for name, prompt, tiers, reason in cases:
+            for model in ("claude-opus-5", "claude-fable-5"):
+                with self.subTest(case=name, model=model):
+                    t.route_floor_marker.clear(self.SID)
+                    out, _ = self._run(prompt, model, tiers)
+                    self.assertNotIn("decision", out)
+                    self.assertIn(reason, out["systemMessage"])
+                    self.assertIn("is raised", out["systemMessage"])
+                    self.assertNotIn("on opus", out["systemMessage"])
+                    self.assertTrue(self._marked())
+                    with patch.object(t.route_floor_marker, "write", return_value=False):
+                        t.route_floor_marker.clear(self.SID)
+                        blocked, _ = self._run(prompt, model, tiers)
+                    self.assertEqual(blocked["decision"], "block")
+
+    def test_an_untrusted_high_reading_on_a_notification_warns(self):
+        for line in (f"{HRSE}#1830 left-queue-for-l2",
+                     f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1831 queued-for-l2 kind=handoff"):
+            with self.subTest(line=line):
+                out, _ = self._run(self._event(line), "claude-opus-5",
+                                   {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
+                self.assertIn("Do NOT start", out["systemMessage"])
+                self.assertFalse(self._marked())
+
+    def test_a_trusted_reading_is_unchanged(self):
+        self._mark()
+        out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "FAIL"})
+        self.assertNotIn("decision", out)
+        self.assertNotIn("is raised", out["systemMessage"])
+        out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "FAIL"}, extra_env={})
+        self.assertNotIn("decision", out)
+
+    def test_a_clear_says_so(self):
+        self._mark()
+        out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+        self.assertIn("Route floor cleared", out["systemMessage"])
+
+    def test_a_line_that_only_mentions_the_token_is_not_an_assignment(self):
+        line = f"{HRSE}#1830 l3 — Lane 3 Test Spec: belt showed queued-for-l2 twice"
+        out, _ = self._run(self._event(line), "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+        self._mark()
+        self._run(self._event(line), "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertTrue(self._marked())
+
+    def test_two_events_or_two_notifications_are_not_one_assignment(self):
+        queued = f"<event>{HRSE}#1830 queued-for-l2 kind=handoff</event>"
+        for prompt in (
+            f"<task-notification>\n{queued}\n<event>{HRSE}#1830 left-queue-for-l2</event>\n</task-notification>",
+            f"<task-notification>\n{queued}\n</task-notification>\n"
+            f"<task-notification>\n<summary>done {HRSE}#1830</summary>\n</task-notification>",
+        ):
+            with self.subTest(prompt=prompt[:60]):
+                out, _ = self._run(prompt, "claude-sonnet-5", {(HRSE, 1830): "deep"})
+                self.assertFalse(self._marked())
+                self.assertNotIn("is raised", json.dumps(out))
+
+    def test_a_session_already_raised_writes_and_says_nothing_more(self):
+        self._mark()
+        with patch.object(t.route_floor_marker, "write") as write:
+            out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
+        write.assert_not_called()
+        self.assertIsNone(out)
+
+    def test_a_high_reading_with_no_signal_or_another_lane_stays_silent(self):
+        for lane, extra in (("2", {}), ("1", self.ELIGIBLE)):
+            with self.subTest(lane=lane, extra=extra):
+                out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"}, lane=lane, extra_env=extra)
+                self.assertIsNone(out)
+                self.assertFalse(self._marked())
+
+    def test_a_high_reading_whose_write_fails_blocks(self):
+        with patch.object(t.route_floor_marker, "write", return_value=False):
+            out, _ = self._run("Plan H1830", "claude-opus-5", {(HRSE, 1830): "deep"})
+        self.assertEqual(out["decision"], "block")
+
+    def test_a_high_reading_on_an_other_notification_writes_nothing(self):
+        out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-opus-5", {(HRSE, 1830): "deep"})
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac4_no_signal_or_another_lane_blocks(self):
+        for lane, extra in (("2", {}), ("1", self.ELIGIBLE)):
+            with self.subTest(lane=lane, extra=extra):
+                out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"},
+                                   lane=lane, extra_env=extra)
+                self.assertEqual(out["decision"], "block")
+                self.assertFalse(self._marked())
+
+    def test_ac4_a_failed_write_blocks(self):
+        with patch.object(t.route_floor_marker, "write", return_value=False):
+            out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"})
+        self.assertEqual(out["decision"], "block")
+
+    def test_ac4_no_session_id_blocks(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"}, session_id=None)
+        self.assertEqual(out["decision"], "block")
+
+    def test_ac4_an_unreadable_tier_blocks(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "FAIL"})
+        self.assertEqual(out["decision"], "block")
+        self.assertFalse(self._marked())
+
+    def test_ac4_refs_past_the_cap_block(self):
+        tiers = {(HRSE, n): "deep" for n in range(1100, 1108)}
+        out, _ = self._run("Plan " + ", ".join(f"H{n}" for n in range(1100, 1108)), "claude-sonnet-5", tiers)
+        self.assertEqual(out["decision"], "block")
+        self.assertFalse(self._marked())
+
+    def test_ac4_lane_model_still_skips(self):
+        out, _ = self._run("Implement H1830", "claude-sonnet-5", {(HRSE, 1830): "deep"},
+                           extra_env={**self.ELIGIBLE, "LANE_MODEL": "sonnet"})
+        self.assertIn("LANE_MODEL", out["systemMessage"])
+        self.assertFalse(self._marked())
+
+    def test_ac6_a_typed_prompt_clears_on_fast_standard_or_no_tier(self):
+        for tier in ("fast", "standard", None):
+            with self.subTest(tier=tier):
+                self._mark()
+                self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): tier})
+                self.assertFalse(self._marked())
+
+    def test_ac6_a_raised_session_reading_high_still_clears(self):
+        self._mark()
+        self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+
+    def test_ac6_a_deep_or_unknown_ref_leaves_it(self):
+        for tiers in ({(HRSE, 1100): "deep", (HRSE, 1101): "fast"}, {(HRSE, 1100): "FAIL", (HRSE, 1101): "fast"},
+                      {(HRSE, 1100): model_tier_gate.NOT_AN_ISSUE, (HRSE, 1101): "fast"},
+                      {(HRSE, 1100): t.NO_BOARD, (HRSE, 1101): "fast"}):
+            with self.subTest(tiers=tiers):
+                self._mark()
+                self._run("Plan H1100 then H1101", "claude-opus-5", tiers)
+                self.assertTrue(self._marked())
+
+    def test_ac6_refs_past_the_cap_leave_it(self):
+        self._mark()
+        tiers = {(HRSE, n): "fast" for n in range(1100, 1108)}
+        out, _ = self._run("Plan " + ", ".join(f"H{n}" for n in range(1100, 1108)), "claude-opus-5", tiers)
+        self.assertTrue(self._marked())
+        # Not cleared and then raised again: the marker was never touched.
+        self.assertNotIn("Route floor cleared", json.dumps(out))
+
+    def test_ac6_a_one_issue_queued_line_clears_a_belt_driven_lane(self):
+        self._mark()
+        self._run(self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff"), "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+
+    def test_ac6_no_other_notification_clears(self):
+        for line in (f"{HRSE}#1830 left-queue-for-l2", f"{HRSE}#1100 queued-for-l2 kind=x\n{HRSE}#1101 queued-for-l2 kind=x"):
+            with self.subTest(line=line):
+                self._mark()
+                self._run(self._event(line), "claude-opus-5", {(HRSE, 1830): "fast", (HRSE, 1100): "fast", (HRSE, 1101): "fast"})
+                self.assertTrue(self._marked())
+
+    def test_each_tier_is_read_once_for_the_clear_and_the_decision(self):
+        self._mark()
+        _, fake = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertEqual(fake.calls, [(HRSE, 1830)])
+
+    def test_ac8_a_raised_session_gets_no_downshift_suggestion(self):
+        self._mark()
+        out, _ = self._run("Plan H1100 then H1101", "claude-opus-5", {(HRSE, 1100): model_tier_gate.NOT_AN_ISSUE, (HRSE, 1101): "fast"})
+        self.assertNotIn("/model sonnet", json.dumps(out))
+        clearing, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertFalse(self._marked())
+        self.assertNotIn("/model sonnet", json.dumps(clearing))
+        # With the mod and no marker, a high reading is not a high session: nothing to lower.
+        out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"})
+        self.assertNotIn("/model sonnet", json.dumps(out))
+        out, _ = self._run("Implement H1830", "claude-opus-5", {(HRSE, 1830): "fast"}, extra_env={})
+        self.assertIn("/model sonnet", out["systemMessage"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,8 @@
 All subprocess/gh calls mocked, no live gh/API calls.
 Run: python3 tools/hooks/test_model_tier_gate.py"""
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -1381,6 +1383,112 @@ class CodexDenialCallSiteTests(unittest.TestCase):
         self.assertIn('"permissionDecision": "deny"', out)
         self.assertIn("/model gpt-7-sol", out)
         self.assertNotIn("/model opus", out)
+
+
+class RouteFloorRaiseAtTheGate(unittest.TestCase):
+    """harmonic-forge#1250 AC3 and AC4: the call still denies, and a retry goes out raised."""
+
+    SID = "session-1"
+    ELIGIBLE = {"LANE": "2", "LANE_ROUTE_MOD": "1"}
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+
+    def _deny(self, env, tier="deep", model="claude-sonnet-5", codex=False):
+        transcript = Path(self.home) / "transcript.jsonl"
+        transcript.write_text(json.dumps({"message": {"model": model}}) + "\n")
+        payload = {"tool_name": "Bash", "cwd": "/tmp/harmonic-forge-1250-impl", "session_id": self.SID,
+                   "transcript_path": str(transcript),
+                   "tool_input": {"command": "cat > f.py <<'EOF'\ncode\nEOF\n"}}
+        if codex:
+            payload["model"] = model
+        full = {k: v for k, v in os.environ.items() if k not in ("LANE", "LANE_MODEL", "LANE_ROUTE_MOD")}
+        full.update(env, HOME=self.home)
+        stdout = io.StringIO()
+        with patch.object(m, "resolve_issue_target", return_value=(1250, None)), \
+                patch.object(m, "resolve_route_floor", return_value=None), \
+                patch.object(m, "resolve_tier", return_value=tier), \
+                patch("sys.stdin", io.StringIO(json.dumps(payload))), patch("sys.stdout", stdout), \
+                patch.dict(os.environ, full, clear=True):
+            with contextlib.suppress(SystemExit):
+                m._main()
+            marked = m.route_floor_marker.exists(self.SID)
+        return stdout.getvalue(), marked
+
+    def _subagent(self, main_model, sub_model, agent_id="a1b2c3"):
+        """A subagent's write: the main transcript says main_model, its own says sub_model."""
+        transcript = Path(self.home) / "transcript.jsonl"
+        transcript.write_text(json.dumps({"message": {"model": main_model}}) + "\n")
+        if sub_model is not None:
+            sub = Path(self.home) / self.SID / "subagents" / f"agent-{agent_id}.jsonl"
+            sub.parent.mkdir(parents=True)
+            sub.write_text(json.dumps({"isSidechain": True, "agentId": agent_id,
+                                       "message": {"role": "assistant", "model": sub_model}}) + "\n")
+        return {"transcript_path": str(transcript), "session_id": self.SID, "agent_id": agent_id,
+                "cwd": "/cwd"}
+
+    def test_a_subagent_is_judged_by_its_own_model(self):
+        """Operator ruling 2026-11-05: the gate's subagent blind spot goes entirely."""
+        for main_model, sub_model, met in (("claude-opus-5", "claude-sonnet-5", False),
+                                           ("claude-sonnet-5", "claude-opus-5", True),
+                                           ("claude-opus-5", None, False)):
+            with self.subTest(main=main_model, sub=sub_model):
+                self.assertEqual(m.required_tier_met(self._subagent(main_model, sub_model), True), met)
+                shutil.rmtree(Path(self.home) / self.SID, ignore_errors=True)
+
+    def test_a_subagent_id_that_is_not_an_id_reads_nothing(self):
+        """An id that walks out of subagents/ reads nothing, though a high file sits there."""
+        payload = self._subagent("claude-opus-5", "claude-opus-5")
+        subagents = Path(self.home) / self.SID / "subagents"
+        (subagents / "agent-x").mkdir()
+        # agent-x/../../y.jsonl resolves to <session>/y.jsonl, outside subagents/.
+        (subagents.parent / "y.jsonl").write_text(json.dumps(
+            {"message": {"role": "assistant", "model": "claude-opus-5"}}) + "\n")
+        payload["agent_id"] = "x/../../y"
+        self.assertFalse(m.required_tier_met(payload, True))
+
+    def test_ac3_the_deny_stands_writes_the_marker_and_says_retry(self):
+        out, marked = self._deny(self.ELIGIBLE)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertTrue(marked)
+        self.assertIn("raised", out)
+        self.assertIn("retry this call", out)
+        self.assertIn("/model opus", out)
+
+    def test_ac4_no_signal_or_another_lane_keeps_todays_text(self):
+        for env in ({"LANE": "2"}, {"LANE": "1", "LANE_ROUTE_MOD": "1"}):
+            with self.subTest(env=env):
+                out, marked = self._deny(env)
+                self.assertIn('"permissionDecision": "deny"', out)
+                self.assertFalse(marked)
+                self.assertNotIn("raised", out)
+
+    def test_ac4_a_failed_write_keeps_todays_text(self):
+        with patch.object(m.route_floor_marker, "write", return_value=False):
+            out, _ = self._deny(self.ELIGIBLE)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertNotIn("raised", out)
+
+    def test_ac4_an_unreadable_tier_writes_nothing(self):
+        out, marked = self._deny(self.ELIGIBLE, tier=m.LOOKUP_FAILED)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertFalse(marked)
+
+    def test_ac4_lane_model_still_allows(self):
+        out, marked = self._deny({**self.ELIGIBLE, "LANE_MODEL": "sonnet"})
+        self.assertNotIn('"permissionDecision": "deny"', out)
+        self.assertFalse(marked)
+
+    def test_a_codex_payload_is_never_raised(self):
+        out, marked = self._deny(self.ELIGIBLE, model="gpt-5", codex=True)
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertFalse(marked)
+
+    def test_a_high_model_writes_nothing(self):
+        out, marked = self._deny(self.ELIGIBLE, model="claude-opus-5-5")
+        self.assertNotIn('"permissionDecision": "deny"', out)
+        self.assertFalse(marked)
 
 
 if __name__ == "__main__":

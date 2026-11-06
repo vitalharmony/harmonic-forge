@@ -22,7 +22,9 @@ would let a trigger through after the Tier is raised; at most
 too, so `vitalharmony/hrse#1830 queued-for-l2` is checked like a trigger.
 
 - Tier `deep`, model not in `CLAUDE_HIGH_FAMILIES`: block, naming the issue,
-  Tier, model and the fix.
+  Tier, model and the fix. A Lane 2 session whose launcher loaded the route-floor
+  mod is raised instead: this writes its marker and the prompt proceeds with a
+  visible line (harmonic-forge#1250). A failed write blocks as above.
 - Tier unreadable, model not high (AC2): block with the error and the ways
   forward. On a high model: proceed with a visible note, so a rate-limit
   window cannot wedge the lanes.
@@ -57,6 +59,7 @@ HOOKS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOKS_DIR))
 import expand_lane_shorthand  # noqa: E402
 import model_tier_gate  # noqa: E402
+import route_floor_marker  # noqa: E402
 import session_model  # noqa: E402
 
 _MAX_TIER_READS = 6
@@ -236,12 +239,25 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str], ttl: float = 0):
 
 
 def decide(refs: list[tuple[str, int]], model: str | None, lookup,
-           advisory: bool = False) -> dict | None:
-    """The hook's JSON output for these refs, or None for a silent allow."""
-    high = model_tier_gate.claude_model_is_high(model)
-    model_label = model or "an unresolved model"
+           advisory: bool = False, raise_floor=None, raised: bool = False,
+           trusted: bool = True) -> dict | None:
+    """The hook's JSON output for these refs, or None for a silent allow.
+
+    `raise_floor`, when given, writes this session's marker and says whether it did.
+    `raised` means the session held a marker when the prompt arrived, so `/model
+    sonnet` would not lower it and is not suggested (AC8).
+    `trusted` False means a high reading in an eligible session with no marker: the
+    transcript's model came from a marker that is gone, so it says nothing about this
+    turn's requests, and every branch that would block on a low model raises instead.
+    """
+    untrusted_high = not trusted and model_tier_gate.claude_model_is_high(model)
+    high = model_tier_gate.claude_model_is_high(model) and not untrusted_high
+    model_label = (f"{model}, read from a raise whose marker is gone" if untrusted_high
+                   else model or "an unresolved model")
     checked, unchecked = refs[:_MAX_TIER_READS], refs[_MAX_TIER_READS:]
     blocks: list[str] = []
+    deep_refs: list[str] = []
+    reasons: list[str] = []  # what each block is about, in the raise line's words
     notes: list[str] = []
     suggestions: list[str] = []
     needs_high = False
@@ -259,6 +275,7 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
             if high:
                 notes.append(f"Tier for {ref} could not be read ({error_text}).")
             else:
+                reasons.append(f"Tier for {ref} could not be read ({error_text})")
                 blocks.append(
                     f"Tier for {ref} could not be read ({error_text}); this session is "
                     f"{model_label}. Run /model opus (or /model fable) and resend, wait "
@@ -268,11 +285,13 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
         elif tier in model_tier_gate.ESCALATING_TIERS:
             needs_high = True
             if not high:
+                deep_refs.append(f"{ref} is Tier {tier}")
+                reasons.append(f"{ref} is Tier {tier}")
                 blocks.append(
                     f"{ref} is Tier {tier}; this session is {model_label}. "
                     f"Run /model opus (or /model fable) and resend."
                 )
-        elif tier in ("fast", "standard") and high:
+        elif tier in ("fast", "standard") and high and not raised:
             suggestions.append(f"{ref} is Tier {tier}; /model sonnet is sufficient.")
     if not needs_high:
         notes += suggestions
@@ -286,11 +305,22 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
         else:
             # Preclose fix 1: a ref past the cap was a silent bypass -- the
             # deep issue could be the seventh one named.
+            reasons.append(f"Tier not checked for {unchecked_text}")
             blocks.append(
                 f"Too many issue references to check -- resend naming fewer issues "
                 f"(at most {_MAX_TIER_READS} are read; this session is {model_label}; "
                 f"not checked: {unchecked_text})."
             )
+    # On a trusted low reading only deep blocks are answered by the floor; an unreadable Tier or
+    # an unchecked ref keeps its block (AC4). On an untrusted high reading every block is
+    # answered: the session may really be on a high model, and a raise only ever goes up.
+    answerable = (deep_refs and len(deep_refs) == len(blocks)) or (blocks and untrusted_high)
+    if answerable and raise_floor is not None and raise_floor():
+        # The footer keeps showing the launch model, so this line is what tells the operator.
+        line = (f"{'; '.join(reasons)}: this session ({model_label}) is raised, and its requests "
+                f"go out on a high-tier model. The footer still shows the launch model "
+                f"(harmonic-forge#1250).")
+        return {"systemMessage": "\n".join([line, *notes])}
     if blocks and advisory:
         # A belt/task notification is not a trigger: it lists every queued
         # issue, so blocking it would erase every belt tick of a Sonnet lane
@@ -312,6 +342,42 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
 
 
 _UNSET = object()
+_EVENT_RE = re.compile(r"<event>(.*?)</event>", re.DOTALL)
+#: The emitter's own shape (watch_lane_posts.py: `{repo}#{issue} queued-for-{lane} kind=`): a ref,
+#: then the token. A line that only mentions the token is not an assignment.
+_QUEUED_L2_RE = re.compile(r"^\s*[\w.-]+/[\w.-]+#\d+ queued-for-l2(?:\s|$)")
+
+
+def _one_queued_issue(prompt: str, refs: list[tuple[str, int]]) -> bool:
+    """A notification holding one event, every line of it `queued-for-l2`, naming one issue.
+
+    `left-queue-for-l2`, branch-ahead and task-completion lines are not this."""
+    events = _EVENT_RE.findall(prompt)
+    if len(refs) != 1 or len(events) != 1 or prompt.count("<task-notification>") != 1:
+        return False
+    lines = [line for line in events[0].splitlines() if line.strip()]
+    return bool(lines) and all(_QUEUED_L2_RE.match(line) for line in lines)
+
+
+def _memoized(lookup):
+    """One read per ref per prompt: the clear and `decide` see the same answer."""
+    seen: dict[tuple[str, int], tuple] = {}
+
+    def read(repo, number):
+        if (repo, number) not in seen:
+            seen[(repo, number)] = lookup(repo, number)
+        return seen[(repo, number)]
+    return read
+
+
+def _may_clear(refs: list[tuple[str, int]], lookup) -> bool:
+    """Every ref was read as `fast`, `standard` or no Tier, and none went unchecked (AC6).
+
+    A PR number, an unreadable Tier, a repo with no board or a ref past the read cap
+    leaves the marker: none of them says the session has left deep work."""
+    if not refs or len(refs) > _MAX_TIER_READS:
+        return False
+    return all(lookup(repo, number)[0] in ("fast", "standard", None) for repo, number in refs)
 
 
 def run(payload: dict, env: dict | None = None, lookup=None, model=_UNSET) -> dict | None:
@@ -330,15 +396,41 @@ def run(payload: dict, env: dict | None = None, lookup=None, model=_UNSET) -> di
             f"LANE_MODEL={env['LANE_MODEL']} launch override is set; tier/model check "
             f"skipped for {', '.join(f'{r}#{n}' for r, n in refs)}."
         )}
-    if model is _UNSET:
-        model = session_model.current_model(
-            payload.get("transcript_path"), cwd, payload.get("session_id"))
     if lookup is None:
         boards = _boards()
 
         def lookup(repo, number):
             return lookup_tier(repo, number, boards)
-    return decide(refs, model, lookup, advisory=is_notification(prompt))
+    lookup = _memoized(lookup)
+    session_id = payload.get("session_id")
+    advisory = is_notification(prompt)
+    assigned = not advisory or _one_queued_issue(prompt, refs)  # a trigger, typed or belt-delivered
+    raised = route_floor_marker.exists(session_id)
+    eligible = route_floor_marker.eligible(env)
+    # AC6 comes before the model is read, because a raised session reads as high.
+    cleared = raised and assigned and _may_clear(refs, lookup)
+    if cleared:
+        route_floor_marker.clear(session_id)
+    if model is _UNSET:
+        model = session_model.current_model(
+            payload.get("transcript_path"), cwd, session_id)
+    raise_floor = None
+    if assigned and eligible:
+        def raise_floor():
+            return route_floor_marker.write(session_id)
+    # With the mod, a high reading proves a high request only while the marker is on disk.
+    trusted = not eligible or (raised and not cleared)
+    out = decide(refs, model, lookup, advisory=advisory, raise_floor=raise_floor, raised=raised,
+                 trusted=trusted)
+    if not cleared:
+        return out
+    # The raise was announced, so its end is too: the footer never showed either.
+    line = ("Route floor cleared: this session's requests go back to its launch model "
+            "(harmonic-forge#1250).")
+    if out is None:
+        return {"systemMessage": line}
+    out["systemMessage"] = "\n".join(filter(None, [line, out.get("systemMessage")]))
+    return out
 
 
 def is_notification(prompt: str) -> bool:

@@ -1702,6 +1702,14 @@ class BaseCache(unittest.TestCase):
 class CheckSteps(unittest.TestCase):
     """CHECK_STEPS cannot drift from mise.toml's `check` (with `ci-check` inlined)."""
 
+    def test_the_mod_step_passes_where_the_claude_cli_is_absent(self):
+        """harmonic-forge#1250: the oracle sandbox binds ~/.local/bin but not the CLI's install."""
+        script = dict(te_run.CHECK_STEPS)["route_floor_mod_tests"]
+        empty = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        run = subprocess.run(["/bin/sh", "-c", "set -e\n" + script], env={"PATH": empty}, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_check_steps_match_the_mise_check_task(self):
         import tomllib
         tasks = tomllib.loads((te_run.SOURCE / "mise.toml").read_text(encoding="utf-8"))["tasks"]

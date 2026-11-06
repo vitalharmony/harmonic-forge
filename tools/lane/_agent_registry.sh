@@ -127,6 +127,12 @@ declare -A AGENT_MODEL_FLAG_VALUE=(
   [claude]="sonnet"
   [codex]=""
 )
+# harmonic-forge#1250: the flag that loads the route-floor mod (tools/routing/mod).
+# Empty for an agent that has no mods, so a Codex launch carries nothing.
+declare -A AGENT_PLUGIN_DIR_FLAG=(
+  [claude]="--plugin-dir"
+  [codex]=""
+)
 declare -A AGENT_EFFORT_FLAG=(
   [claude]="--effort"
   [codex]=""

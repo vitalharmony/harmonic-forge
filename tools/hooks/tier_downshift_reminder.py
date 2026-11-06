@@ -30,6 +30,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOKS_DIR))
 import model_tier_gate  # noqa: E402
+import route_floor_marker  # noqa: E402
 import session_model  # noqa: E402
 import tier_model_stop_backstop as backstop  # noqa: E402
 import tier_model_trigger_check  # noqa: E402
@@ -267,6 +268,10 @@ def run(payload: dict, env: dict | None = None, model=None) -> dict | None:
     transcript_path = payload.get("transcript_path") or ""
     cwd = payload.get("cwd") or os.getcwd()
     if not transcript_path or not os.path.isfile(transcript_path):
+        return None
+    if route_floor_marker.eligible(env):
+        # harmonic-forge#1250 AC8: raised, /model sonnet would not lower it; not raised, a high
+        # reading came from a marker that is gone, and the session is not on a high model.
         return None
     current = model if model is not None else session_model.current_model(
         transcript_path, cwd, payload.get("session_id"))
