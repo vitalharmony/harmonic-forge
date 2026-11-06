@@ -466,27 +466,82 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     return _judge_runs(runs, sha, set(DEFAULT_REQUIRED_CHECKS))
 
 
+#: GitHub returns at most this many workflow runs for a `head_sha` filter
+#: (REST docs, "List workflow runs for a repository"). A read at or past it is
+#: not known to be complete, so the all-skipped predicate refuses it
+#: (harmonic-forge#1276 sticky-wicket condition 4).
+RUNS_LIST_CAP = 1000
+
+
+def _read_every_attempt(repo: str, sha: str, run=None) -> list[dict] | None:
+    """Every job of every attempt of every workflow run on `sha`, or None.
+
+    harmonic-forge#1276 (sticky-wicket 6689496006): the all-skipped predicate's
+    OWN read, separate from `_read_check_runs`, whose `filter=latest` every
+    other caller keeps (AC4). None -- fail closed -- when the SHA does not
+    resolve, any read fails or is unparseable, there are no runs, the run list
+    may be truncated (`total_count` at or past `RUNS_LIST_CAP`, or not equal
+    to the runs read), or ANY workflow run on the SHA is not `completed`: a
+    run still in flight may yet create a required job (a tag-push `verify`
+    exists only once `tag-proof` finishes), so it vetoes the inference."""
+    run = run or _run
+    if len(sha) < 40:
+        code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
+        if code != 0 or len(full.strip()) != 40:
+            return None
+        sha = full.strip()
+    code, out = run(["gh", "api", "--paginate",
+                     f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
+                     "--jq", ".total_count as $t | .workflow_runs[] | "
+                             "{id, status, total_count: $t}"])
+    if code != 0:
+        return None
+    try:
+        wf_runs = [json.loads(line) for line in (out or "").splitlines() if line.strip()]
+        totals = {int(wf["total_count"]) for wf in wf_runs}
+        ids = [wf["id"] for wf in wf_runs]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not wf_runs or len(totals) != 1:
+        return None
+    total = totals.pop()
+    if total >= RUNS_LIST_CAP or total != len(wf_runs) or len(set(ids)) != len(ids):
+        return None
+    if any(wf.get("status") != "completed" for wf in wf_runs):
+        return None
+    jobs: list[dict] = []
+    for run_id in ids:
+        code, out = run(["gh", "api", "--paginate",
+                         f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&filter=all",
+                         "--jq", ".jobs[]"])
+        if code != 0:
+            return None
+        try:
+            jobs += [json.loads(line) for line in (out or "").splitlines() if line.strip()]
+        except ValueError:
+            return None
+    return jobs
+
+
 def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
                                  run=None) -> bool:
-    """Did every required check run on `sha` and conclude `skipped`?
-    (harmonic-forge#1276)
+    """Was every required check, in every run and every attempt on `sha`,
+    created and `skipped`? (harmonic-forge#1276)
 
     Consulted ONLY by `check_gate_result`'s no-PR override, after
-    `authorizing_conclusion` read `unknown`. Reads its own snapshot and fails
-    closed: an unreadable read, a missing or unfinished required check, or any
-    required conclusion other than `skipped` is False. With an EMPTY
-    `required` it mirrors `authorizing_conclusion`: every visible check must
-    be green, or be a `DEFAULT_REQUIRED_CHECKS` member that was skipped.
+    `authorizing_conclusion` read `unknown`. Reads `_read_every_attempt`, its
+    own complete read, and fails closed on anything that read refuses. A
+    required name must have at least one job, and EVERY job of that name --
+    across workflow runs and re-run attempts -- must be completed and
+    `skipped`: an older red run or attempt is never hidden by a newer skip, and
+    one that ran green is not the "cannot run" case either. With an EMPTY
+    `required`, every other job must also be completed and in `_GOOD`.
 
-    EVERY run of a required name is judged, never only the latest
-    (`_latest_per_name`): a tag-push `verify` that ran and failed must not be
-    hidden by a newer scheduled or `workflow_dispatch` run that skipped it --
-    an author can trigger the latter. A required name whose runs include any
-    unfinished run, or any conclusion outside `skipped`/`_GOOD`, is False; one
-    that ran green on another event is not the "cannot run" case either, so
-    it must be all `skipped` to qualify."""
-    runs, failure = _read_check_runs(repo, sha, run=run)
-    if failure is not None or not runs:
+    Accepted open gaps, shared with harmonic-forge#788's `absent` path rather
+    than introduced here: a run started AFTER this read, and a red run deleted
+    by someone with write access, are not seen."""
+    jobs = _read_every_attempt(repo, sha, run=run)
+    if not jobs:
         return False
     want = set(required) or set(DEFAULT_REQUIRED_CHECKS)
 
@@ -494,13 +549,13 @@ def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
         return (r.get("conclusion") or "").lower()
 
     if not required:
-        for r in _latest_per_name(runs):
+        for r in jobs:
             if r.get("name") in want:
                 continue
             if r.get("status") != "completed" or conclusion(r) not in _GOOD:
                 return False
     for name in want:
-        named = [r for r in runs if r.get("name") == name]
+        named = [r for r in jobs if r.get("name") == name]
         if not named:
             return False
         if not all(r.get("status") == "completed" and conclusion(r) == "skipped"
@@ -721,10 +776,11 @@ def check_gate_result(
     match AC1's "never as a way to skip the check when a PR does exist".
 
     harmonic-forge#1276: the override also covers a main tip whose required
-    check(s) were created and `skipped` in every run (hrse's scheduled and
-    `workflow_dispatch` CI skip `verify`), the same "CI cannot run" evidence
-    as a missing one. Every run is judged, so an older red run is never
-    hidden by a newer skipped one; a red, pending, unrecognised or mixed set
+    check(s) were created and `skipped` in every run and attempt (hrse's
+    scheduled and `workflow_dispatch` CI skip `verify`), the same "CI cannot
+    run" evidence as a missing one, read by `_read_every_attempt`: every
+    attempt is judged, any unfinished workflow run vetoes, and a possibly
+    truncated run list refuses. A red, pending, unrecognised or mixed set
     still refuses.
     """
     global _SLOT_ENV
