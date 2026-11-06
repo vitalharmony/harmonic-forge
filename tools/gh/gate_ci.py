@@ -466,6 +466,49 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     return _judge_runs(runs, sha, set(DEFAULT_REQUIRED_CHECKS))
 
 
+def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
+                                 run=None) -> bool:
+    """Did every required check run on `sha` and conclude `skipped`?
+    (harmonic-forge#1276)
+
+    Consulted ONLY by `check_gate_result`'s no-PR override, after
+    `authorizing_conclusion` read `unknown`. Reads its own snapshot and fails
+    closed: an unreadable read, a missing or unfinished required check, or any
+    required conclusion other than `skipped` is False. With an EMPTY
+    `required` it mirrors `authorizing_conclusion`: every visible check must
+    be green, or be a `DEFAULT_REQUIRED_CHECKS` member that was skipped.
+
+    EVERY run of a required name is judged, never only the latest
+    (`_latest_per_name`): a tag-push `verify` that ran and failed must not be
+    hidden by a newer scheduled or `workflow_dispatch` run that skipped it --
+    an author can trigger the latter. A required name whose runs include any
+    unfinished run, or any conclusion outside `skipped`/`_GOOD`, is False; one
+    that ran green on another event is not the "cannot run" case either, so
+    it must be all `skipped` to qualify."""
+    runs, failure = _read_check_runs(repo, sha, run=run)
+    if failure is not None or not runs:
+        return False
+    want = set(required) or set(DEFAULT_REQUIRED_CHECKS)
+
+    def conclusion(r: dict) -> str:
+        return (r.get("conclusion") or "").lower()
+
+    if not required:
+        for r in _latest_per_name(runs):
+            if r.get("name") in want:
+                continue
+            if r.get("status") != "completed" or conclusion(r) not in _GOOD:
+                return False
+    for name in want:
+        named = [r for r in runs if r.get("name") == name]
+        if not named:
+            return False
+        if not all(r.get("status") == "completed" and conclusion(r) == "skipped"
+                   for r in named):
+            return False
+    return True
+
+
 def ci_conclusion(repo: str, sha: str, run=None,
                   required: set[str] | None = None) -> tuple[str, str]:
     """`(state, detail)` for a commit's checks.
@@ -624,9 +667,11 @@ def sha_is_current_main_tip(repo: str, sha: str, run=None) -> bool | None:
     NOT "has any PR ever touched this commit" -- every commit on `main` has
     one, including the merge commit of the PR that landed it, so that
     signal never distinguishes a data-migration's reference SHA from an
-    ordinary code change. `verify` is gated `if: github.event_name ==
-    'pull_request'` (confirmed live, HRSE2 `.github/workflows/ci.yml:82`),
-    so it structurally never runs on a bare push to `main` -- what actually
+    ordinary code change. `verify` runs only on `pull_request` or a `v*` tag
+    push whose `tag-proof` is unproven (HRSE2 `.github/workflows/ci.yml:111`,
+    re-read for harmonic-forge#1276); hrse has no push-to-`main` trigger, and
+    on `schedule`/`workflow_dispatch` the job is created and `skipped`. So
+    `verify` structurally never vouches for an untagged `main` commit -- what actually
     marks "there is no PR pending for this SHA and none is coming" is that
     the SHA already IS the tip of `main` itself, not that it lacks a PR
     history.
@@ -674,6 +719,13 @@ def check_gate_result(
     stale/red/pending checks above still decide it, exactly as before this
     change. This is deliberately not "was --ack-no-pr-required passed", to
     match AC1's "never as a way to skip the check when a PR does exist".
+
+    harmonic-forge#1276: the override also covers a main tip whose required
+    check(s) were created and `skipped` in every run (hrse's scheduled and
+    `workflow_dispatch` CI skip `verify`), the same "CI cannot run" evidence
+    as a missing one. Every run is judged, so an older red run is never
+    hidden by a newer skipped one; a red, pending, unrecognised or mixed set
+    still refuses.
     """
     global _SLOT_ENV
     _SLOT_ENV = _slot_env_for(repo)
@@ -751,7 +803,10 @@ def check_gate_result(
     # in flight and `unknown` is a failed or unreadable lookup; neither is
     # evidence CI cannot exist, and letting the override through on them
     # published "cannot run" over a build that was running, or unread.
-    if ack_no_pr_required is not None and state == "absent":
+    if ack_no_pr_required is not None and (
+            state == "absent"
+            or (state == "unknown"
+                and _required_checks_all_skipped(repo, sha, required, run=run))):
         is_tip = sha_is_current_main_tip(repo, sha, run=run)
         # AC1: never when an OPEN PR contains this SHA. A main-tip commit's
         # own merge PR is closed, so only a genuinely pending PR refuses.
@@ -761,7 +816,8 @@ def check_gate_result(
                 f"[GATE] no-pr-override: {sha[:8]} is the current tip of "
                 f"main -- no PR is pending for it and `verify` is gated to "
                 f"pull_request events, so CI structurally cannot run for "
-                f"it. Acknowledged: {ack_no_pr_required}")
+                f"it (its required check never ran or was skipped). "
+                f"Acknowledged: {ack_no_pr_required}")
         # Otherwise -- main moved past this SHA, an open PR contains it, or
         # either lookup failed (None) -- fall through to the normal refusal.
         # A failed lookup is never read as "confirmed no PR".

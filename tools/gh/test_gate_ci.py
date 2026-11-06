@@ -558,6 +558,112 @@ class NoPrOverrideTests(unittest.TestCase):
         self.assertTrue(ok, msg)
         self.assertIn("no-pr-override", msg)
 
+    # harmonic-forge#1276: hrse's push-to-main run now creates `verify` and
+    # skips it, so the "cannot run" state reads `unknown`, not `absent`.
+    def test_override_fires_when_every_required_check_was_skipped(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        checks=[check("verify", "skipped"), check("render-and-deploy"),
+                                check("build-and-push", "skipped")],
+                        required={"verify"}),
+            ack_no_pr_required="hrse#2607 production apply on main")
+        self.assertTrue(ok, msg)
+        # post_lane_discussion.py reads this exact prefix to record the override.
+        self.assertTrue(msg.startswith("[GATE] no-pr-override:"), msg)
+        self.assertIn("never ran or was skipped", msg)
+
+    def test_a_newer_skipped_run_never_hides_an_older_red_one(self):
+        """Pitch finding 1: a tag-push `verify` failed, then a scheduled or
+        author-dispatched run skipped it. The failure still refuses."""
+        older = dict(check("verify", "failure"), completed_at="2026-09-09T00:00:00Z")
+        newer = dict(check("verify", "skipped"), completed_at="2026-09-10T00:00:00Z")
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[older, newer], required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+        self.assertFalse(gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"},
+            run=fake_gh(checks=[older, newer], required={"verify"})))
+
+    def test_a_skipped_run_beside_a_green_run_of_the_same_check_is_not_all_skipped(self):
+        green = dict(check("verify"), completed_at="2026-09-09T00:00:00Z")
+        skipped = dict(check("verify", "skipped"), completed_at="2026-09-10T00:00:00Z")
+        self.assertFalse(gate_ci._required_checks_all_skipped(
+            "o/r", self.SHA, {"verify"},
+            run=fake_gh(checks=[green, skipped], required={"verify"})))
+
+    def test_skipped_required_without_the_flag_still_refuses(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "skipped")],
+                        required={"verify"}))
+        self.assertFalse(ok)
+        self.assertIn("verify:skipped", msg)
+
+    def test_skipped_override_refuses_an_unrecognised_conclusion(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "something_new")],
+                        required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_skipped_override_refuses_a_mixed_required_set(self):
+        """`verify` skipped while `lint` ran green reads `unknown`: CI did run
+        for this SHA, so it is not the all-skipped case. (A required check
+        that is MISSING reads `absent`, which #788's override already governs,
+        unchanged by #1276.)"""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA,
+                        checks=[check("verify", "skipped"), check("lint")],
+                        required={"verify", "lint"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_skipped_override_refuses_when_main_has_moved(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip="a" * 40, checks=[check("verify", "skipped")],
+                        required={"verify"}),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_skipped_override_refuses_with_an_open_pr(self):
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY,
+            run=fake_gh(main_tip=self.SHA, checks=[check("verify", "skipped")],
+                        required={"verify"},
+                        pulls=[{"number": 7, "state": "open", "head": self.SHA}]),
+            ack_no_pr_required="should not matter")
+        self.assertFalse(ok)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_all_skipped_predicate_directly(self):
+        f = gate_ci._required_checks_all_skipped
+        sha = self.SHA
+        self.assertTrue(f("o/r", sha, {"verify"},
+                          run=fake_gh(checks=[check("verify", "skipped")])))
+        self.assertFalse(f("o/r", sha, {"verify"},
+                           run=fake_gh(checks=[check("verify", None, "in_progress")])))
+        self.assertFalse(f("o/r", sha, {"verify"},
+                           run=fake_gh(checks=[check("verify", "skipped")],
+                                       fail=("/actions/runs",))))
+        self.assertFalse(f("o/r", sha, {"verify"}, run=fake_gh(checks=[])))
+        # Empty required: every visible non-default check must be green.
+        self.assertTrue(f("o/r", sha, set(),
+                          run=fake_gh(checks=[check("verify", "skipped"), check("x")],
+                                      required=None)))
+        self.assertFalse(f("o/r", sha, set(),
+                           run=fake_gh(checks=[check("verify", "skipped"),
+                                               check("x", "skipped")], required=None)))
+
     def test_override_does_not_fire_on_red_ci_even_with_a_pr_less_sha(self):
         """The override is consulted ONLY at the final no-checks-at-all
         branch -- a SHA that DOES have CI, and it's red, is refused on that
