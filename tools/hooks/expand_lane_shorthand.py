@@ -935,6 +935,11 @@ def _authorize_park(prompt, session_id, lane, now) -> str:
     import tasklist_owed  # noqa: PLC0415
     if not tasklist_owed.KEY_RE.match(key):
         return f"PARK REFUSED for {key}: no repo prefix matches it. No grant written."
+    if key[1] == "0":
+        # A task-list entry carries the issue number as written (`H2621`), and the hold
+        # looks the grant up by that key, so `H02621` would mint a grant nothing can use.
+        return (f"PARK REFUSED for {key}: write the issue number without leading zeros, "
+                "as the task-list entry does. No grant written.")
     if not session_id:
         return (f"PARK REFUSED for {key}: the prompt carries no session id to bind the grant "
                 "to. No grant written.")

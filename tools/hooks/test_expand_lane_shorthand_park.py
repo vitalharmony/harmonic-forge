@@ -104,6 +104,12 @@ class ParkTrigger(unittest.TestCase):
         self.assertIn("PARK REFUSED for Z12: no repo prefix", self.park("PARK Z12"))
         self.assertNothingWritten()
 
+    def test_park_key_with_leading_zero_writes_nothing(self) -> None:
+        # The hold looks the grant up by the entry's key (`H2621`); `H02621` could never match.
+        self.assertIn("PARK REFUSED for H02621: write the issue number without leading zeros",
+                      self.park("PARK H02621"))
+        self.assertNothingWritten()
+
     def test_park_without_session_writes_nothing(self) -> None:
         self.assertIn("no session id", self.park("PARK H2621", session=None))
         self.assertNothingWritten()

@@ -684,6 +684,17 @@ class Park(Base):
         self.assertEqual(verdict, "deny")
         self.assertIn(self.DENIED, reason)
 
+    def test_consume_failure_denies_and_leaves_grant_unspent(self):
+        # A usable grant whose consume raises (a full disk, a read-only store, or a
+        # parallel TaskUpdate that consumed it first) must deny, never allow unspent.
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        with mock.patch.object(self.park_grant, "consume", side_effect=OSError("disk full")):
+            verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn("PARK grant could not be consumed", reason)
+        self.assertIsNone(self.stored()["consumed_at"])
+
     def test_other_sessions_grant_does_not_unlock(self):
         self.entry(1, self.SUBJECT)
         self.grant(session="sess-other")
