@@ -185,6 +185,7 @@ class WiredIntoMain(unittest.TestCase):
                  mock.patch.object(L, "validate_milestone_set"), \
                  mock.patch.object(L, "validate_milestone_current"), \
                  mock.patch.object(L, "issue_labels", return_value=set()), \
+                 mock.patch.object(L, "validate_ui_brand"), \
                  mock.patch.object(L, "validate_sticky_wicket"), \
                  mock.patch.object(L, "post_kind",
                                    side_effect=lambda *a, **k: posted.append(a[2]) or ("u", 1)):

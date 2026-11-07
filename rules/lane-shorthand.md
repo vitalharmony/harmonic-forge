@@ -356,6 +356,29 @@ The grant file and the public comment are an audit trail, not proof
 against a session that can write the grant store.
 <!-- /R-0418 -->
 
+## `UI` — the operator's approval of a rendered-UI change
+
+Grammar: **`UI` + issue key + optional digest + `:` + reason**, FORCE's
+placement. Applies to a repo whose `main` has `frontend/ui-version.toml`.
+
+| Line | Recorded as | Approves |
+|---|---|---|
+| `UI H2615: <reason>` | `## UI plan grant — H2615` on the issue | a handoff declaring a UI change |
+| `UI H2615 <digest>: <reason>` | `## UI grant — H2615` on the one open PR naming H2615 at that digest | that PR's merge at that head digest |
+
+<!-- R-0420 -->
+The hook writes a pending grant (`ui_grant.py`, 7 days) only for an
+operator-typed first line passing R-0117 in Lane 1; `ui_grant.py record`
+posts it. Every vitalharmony handoff carries `**UI change:**` (`none`, or
+what is replaced and what goes away); a declared change needs the plan
+record. The gate is the PR's required `ui-approval` status, written from
+the default branch: a PR changing the corpus, the version file or the font
+pin passes only with a record for its head digest. Nothing is spent;
+BATCH, R-0351, R-0415 and `close` approve nothing here. Order: plan grant,
+handoff, Lane 2 renders and bumps, Lane 1 shows `ui_version.py diff`, digest
+line, record, status green, Lane 3, merge. A new head digest needs a new line.
+<!-- /R-0420 -->
+
 ## Operator → lane triggers
 
 <!-- R-0343 -->
