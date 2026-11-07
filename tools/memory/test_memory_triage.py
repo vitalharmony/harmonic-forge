@@ -152,6 +152,25 @@ class ClassificationTests(unittest.TestCase):
                              "FOLD+HOOK")
 
 
+class NestedMarkerTests(unittest.TestCase):
+    """harmonic-forge#1282 AC2: a promoted marker nested under `metadata:`
+    (where the harness writes it) still resolves to DUP."""
+
+    def test_nested_promoted_memory_is_dup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "feedback_nested.md"
+            path.write_text(
+                "---\nname: feedback_nested\ndescription: d\nmetadata:\n"
+                "  type: feedback\n  promoted: R-9001\n  instances: 37\n"
+                "  first_seen: 2026-09-04\n---\n\nbody\n", encoding="utf-8")
+            loaded = mt.load_rules(RULES)
+            row = mt.classify(path, loaded, RULES, mt.build_idf(loaded))
+        self.assertEqual(row.verdict, "DUP")
+        self.assertEqual(row.target, "R-9001")
+        self.assertEqual(row.instances, 37)
+        self.assertEqual(row.first_seen, "2026-09-04")
+
+
 class StaleDemotionTests(unittest.TestCase):
     """A stale citation must not delete a recurring lesson (preclose finding)."""
 

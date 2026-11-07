@@ -727,6 +727,61 @@ class FrontmatterParserTests(unittest.TestCase):
         fm = lint._parse_frontmatter(text)
         self.assertNotIn("instances", fm)
 
+    def test_nested_markers_are_read_as_metadata_keys(self) -> None:
+        """harmonic-forge#1282 AC1: the harness nests these four under
+        `metadata:`; each is read as `metadata.<key>` and through `field`."""
+        text = ("---\nname: x\nmetadata:\n  type: feedback\n  first_seen: 2026-10-01\n"
+                "  instances: 37\n  promoted: \"R-0419\"\n"
+                "  rule_check: 'none (searched: x)'\n---\n\nbody\n")
+        fm = lint._parse_frontmatter(text)
+        expected = {"first_seen": "2026-10-01", "instances": "37",
+                    "promoted": "R-0419", "rule_check": "none (searched: x)"}
+        for key, value in expected.items():
+            with self.subTest(key=key):
+                self.assertNotIn(key, fm)
+                self.assertEqual(fm[f"metadata.{key}"], value)
+                self.assertEqual(lint.field(fm, key), value)
+
+    def test_top_level_marker_wins_over_nested(self) -> None:
+        text = ("---\nname: x\ninstances: 4\nmetadata:\n  type: feedback\n"
+                "  instances: 99\n---\n\nbody\n")
+        fm = lint._parse_frontmatter(text)
+        self.assertEqual(lint.field(fm, "instances"), "4")
+        self.assertEqual(lint.field(fm, "promoted"), "")
+
+
+class NestedAgingTests(unittest.TestCase):
+    """harmonic-forge#1282 AC3: `check_aging` reads nested markers."""
+
+    def test_aging_reads_nested_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            (store / "feedback_nested.md").write_text(
+                "---\nname: feedback_nested\ndescription: d\nmetadata:\n"
+                "  type: feedback\n  first_seen: 2026-09-04\n  instances: 1\n---\n\nbody\n",
+                encoding="utf-8")
+            findings = lint.check_aging(store, today=datetime.date(2026, 9, 6))
+        self.assertEqual([f for f in findings if "missing" in f], [])
+        self.assertEqual([f for f in findings if "feedback_nested" in f], [])
+
+
+class NestedBackfillTests(unittest.TestCase):
+    """harmonic-forge#1282 AC6: a nested marker counts as present."""
+
+    def test_backfill_skips_nested_fields(self) -> None:
+        sys.path.insert(0, str(HERE))
+        import backfill_frontmatter
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            (store / "feedback_nested.md").write_text(
+                "---\nname: feedback_nested\ndescription: d\nmetadata:\n"
+                "  type: feedback\n  first_seen: 2026-09-04\n  instances: 3\n---\n\nbody\n",
+                encoding="utf-8")
+            rows = backfill_frontmatter.plan(store)
+        row = next(r for r in rows if r["file"] == "feedback_nested.md")
+        self.assertIsNone(row["first_seen"])
+        self.assertIsNone(row["instances"])
+
 
 if __name__ == "__main__":
     unittest.main()

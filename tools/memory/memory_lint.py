@@ -93,9 +93,26 @@ def memory_files(store: Path) -> list[Path]:
 #: `promoted` were added by harmonic-forge#500 for the aging check.
 _TOP_LEVEL_KEYS = ("name", "description", "first_seen", "instances", "promoted", "rule_check")
 
+#: The marker keys also read directly under `metadata:` (harmonic-forge#1282).
+#: The harness moves them there during a memory Write, so the store's newer
+#: files carry them nested. They are recorded as `metadata.<key>`, never under
+#: the top-level name, and are read through `field()`.
+_NESTED_MARKER_KEYS = ("first_seen", "instances", "promoted", "rule_check")
+
+
+def field(fm: dict[str, str], key: str, default: str = "") -> str:
+    """`fm[key]` when the key is at the top level, else `metadata.<key>`.
+
+    A top-level value wins when both exist (harmonic-forge#1282).
+    """
+    if key in fm:
+        return fm[key]
+    return fm.get(f"metadata.{key}", default)
+
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
-    """Top-level keys, plus `metadata.type` from the nested block.
+    """Top-level keys, plus `metadata.type` and the `_NESTED_MARKER_KEYS` from
+    the nested block, each as `metadata.<key>` (harmonic-forge#1282).
 
     **The metadata block is exited on dedent, not held to the end of the
     frontmatter (harmonic-forge#500).** The original set `in_metadata_block`
@@ -129,6 +146,12 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
             m = re.match(r"\s+type:\s*(.+)", line)
             if m:
                 result["metadata.type"] = m.group(1).strip()
+            m = re.match(rf"\s+({'|'.join(_NESTED_MARKER_KEYS)}):\s*(.+)", line)
+            if m:
+                value = m.group(2).strip()
+                if m.group(1) in ("promoted", "rule_check"):
+                    value = value.strip("\"'").strip()
+                result[f"metadata.{m.group(1)}"] = value
             continue
         m = re.match(rf"^({'|'.join(_TOP_LEVEL_KEYS)}):\s*(.+)", stripped)
         if m:
@@ -628,7 +651,7 @@ def check_aging(store: Path, today: date | None = None) -> list[str]:
         text = f.read_text(encoding="utf-8")
         fm = _parse_frontmatter(text)
 
-        missing = [k for k in ("first_seen", "instances") if k not in fm]
+        missing = [k for k in ("first_seen", "instances") if not field(fm, k)]
         if missing:
             findings.append(
                 f"{f.name}: missing {', '.join(missing)} — run "
@@ -636,17 +659,17 @@ def check_aging(store: Path, today: date | None = None) -> list[str]:
             continue
 
         try:
-            instances = int(str(fm["instances"]).strip())
+            instances = int(str(field(fm, "instances")).strip())
         except ValueError:
-            findings.append(f"{f.name}: instances: {fm['instances']!r} is not a number")
+            findings.append(f"{f.name}: instances: {field(fm, 'instances')!r} is not a number")
             continue
         try:
-            first_seen = date.fromisoformat(str(fm["first_seen"]).strip())
+            first_seen = date.fromisoformat(str(field(fm, "first_seen")).strip())
         except ValueError:
-            findings.append(f"{f.name}: first_seen: {fm['first_seen']!r} is not a date")
+            findings.append(f"{f.name}: first_seen: {field(fm, 'first_seen')!r} is not a date")
             continue
 
-        promoted = fm.get("promoted", "").strip()
+        promoted = field(fm, "promoted").strip()
         if promoted:
             # Checked BEFORE the threshold test: a promoted file is over the
             # threshold by definition (that is why it was promoted), so
