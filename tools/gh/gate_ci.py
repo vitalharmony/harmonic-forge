@@ -459,6 +459,9 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     if failure is not None:
         return failure
     if required:
+        runs, failure = _merge_status_records(repo, sha, runs, required, run=run)
+        if failure is not None:
+            return failure
         return _judge_runs(runs, sha, required)
     state, detail = _judge_runs(runs, sha, set())
     if state != "green":
@@ -635,12 +638,115 @@ def _read_check_runs(repo: str, sha: str, run=None
                 # A workflow run with NO jobs (`startup_failure`, awaiting approval, cancelled
                 # while queued) has no job to read. Read the run itself as the check, or a broken
                 # workflow is invisible and the commit reads green.
+                # `jobless_run` (harmonic-forge#1283): this record is a run, not a job, so it
+                # does not carry a required context; a bot commit status of the same name may
+                # replace it (`_merge_status_records`).
                 runs.append({"name": wf.get("name") or f"run {run_id}",
                              "status": wf.get("status"), "conclusion": wf.get("conclusion"),
-                             "started_at": wf.get("started_at")})
+                             "started_at": wf.get("started_at"), "jobless_run": True})
     except (ValueError, KeyError, TypeError):
         return [], ("unknown", f"unparseable job payload for {sha[:8]}")
     return runs, None
+
+
+#: The only status creator that counts (harmonic-forge#1283): the identity a
+#: workflow's `GITHUB_TOKEN` writes as, which branch protection's app pin
+#: (GitHub Actions, app 15368) accepts. Mirrors `ui_grant.STATUS_CREATOR`.
+STATUS_CREATOR = "github-actions[bot]"
+
+#: Commit status state -> the check-run shape `_judge_runs` reads.
+_STATUS_AS_RUN = {
+    "success": {"status": "completed", "conclusion": "success"},
+    "failure": {"status": "completed", "conclusion": "failure"},
+    "error": {"status": "completed", "conclusion": "failure"},
+    "pending": {"status": "in_progress", "conclusion": None},
+}
+
+
+def _status_records(repo: str, sha: str, names: set[str], run=None
+                    ) -> tuple[list[dict], tuple[str, str] | None]:
+    """Check-shaped records for the required contexts in `names` that a
+    commit STATUS satisfies (harmonic-forge#1283).
+
+    `_read_check_runs` sees Actions jobs only, so a required context GitHub
+    satisfies with a commit status (hrse's `ui-approval`, harmonic-forge#1274)
+    read as never run. This reads the status LIST,
+    `commits/<sha>/statuses`, because only it carries `creator`; the combined
+    `commits/<sha>/status` entries have none (verified live 2026-11-07).
+
+    - Only a status whose `creator.login` is `github-actions[bot]` counts: the
+      identity branch protection's app pin accepts. A user-token status is
+      ignored, so a lane session cannot post one to turn a check green.
+    - Newest per context, AFTER the creator filter. The list is newest first
+      (GitHub REST docs: "The first status in the list will be the latest
+      one"), so a newer user-token status cannot shadow an older bot one.
+    - `success` -> green, `failure`/`error` -> red, `pending` -> pending; any
+      other state keeps its raw value, which `_judge_runs` reports unknown.
+    - A failed or unparseable read is `unknown`, never `absent`.
+    - Token: a classic/OAuth token with `repo` reads this; a fine-grained one
+      would need "Commit statuses: read".
+
+    Residual, stated and not closed: a token with the `workflow` scope can
+    push a branch whose workflow writes a `success` status for any context as
+    `github-actions[bot]`. GitHub's branch protection accepts that status
+    too, so on a protected repo this reader matches GitHub and goes no
+    further. It is never called on an unprotected repo
+    (`authorizing_conclusion` calls it for a non-empty `required` only).
+    """
+    run = run or _run
+    if len(sha) < 40:
+        code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
+        if code != 0 or len(full.strip()) != 40:
+            return [], ("unknown", f"could not resolve {sha[:8]} to a full SHA: {full.strip()[:120]}")
+        sha = full.strip()
+    code, out = run(["gh", "api", "--paginate",
+                     f"repos/{repo}/commits/{sha}/statuses?per_page=100",
+                     "--jq", ".[] | {context, state, creator: .creator.login, updated_at}"])
+    if code != 0:
+        return [], ("unknown", f"could not read commit statuses for {sha[:8]}: {out.strip()[:200]}")
+    records: dict[str, dict] = {}
+    try:
+        for line in (out or "").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            context = entry["context"]
+            if context not in names or entry.get("creator") != STATUS_CREATOR:
+                continue
+            if context in records:
+                continue  # newest first: the first bot status per context wins
+            state = entry.get("state")
+            shape = _STATUS_AS_RUN.get(state, {"status": "completed", "conclusion": state})
+            records[context] = {"name": context, **shape,
+                                "completed_at": entry.get("updated_at")}
+    except (ValueError, KeyError, TypeError):
+        return [], ("unknown", f"unparseable commit status payload for {sha[:8]}")
+    return list(records.values()), None
+
+
+def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[str],
+                          run=None) -> tuple[list[dict], tuple[str, str] | None]:
+    """`runs` plus a status record for each required name no real JOB carries
+    (harmonic-forge#1283). No call when jobs cover every required name.
+
+    A job-less run record (`jobless_run`) does not carry its name, because
+    hrse's `ui-approval` workflow shares the context's name; it is dropped
+    only when a bot status replaced it, so a red job-less run with no status
+    stays red. A failed status read is `unknown`, unless the visible jobs are
+    already red, which stays `red` (#1103: visible checks are judged first).
+    """
+    carried = {r.get("name") for r in runs if not r.get("jobless_run")}
+    missing = set(required) - carried
+    if not missing:
+        return runs, None
+    records, failure = _status_records(repo, sha, missing, run=run)
+    if failure is not None:
+        if runs and _judge_runs(runs, sha, None)[0] == "red":
+            return [], _judge_runs(runs, sha, None)
+        return [], failure
+    replaced = {r["name"] for r in records}
+    kept = [r for r in runs if not (r.get("jobless_run") and r.get("name") in replaced)]
+    return kept + records, None
 
 
 def _judge_runs(runs: list[dict], sha: str,
