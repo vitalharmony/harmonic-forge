@@ -207,3 +207,15 @@ mandatory `**UI change:**` declaration and the lane order to a green `ui-approva
 status. Lane 1 names the exact UI line in the turn it asks the operator for one, so
 the grammar is loaded beside FORCE.
 """
+
+[[increase]]
+date = "2026-11-07"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 6724
+why = """
+Cumulative since the last baseline: 5561 (entry above) plus harmonic-forge#1281 (1163):
+the PARK section (R-0421), its grammar, what the grant lets the hold do, the owed-update
+deny, how a parked issue comes back, and the spent-grant residual. The operator types
+PARK in the turn an issue leaves the release, before any file is open, so the grammar
+is loaded beside FORCE and UI.
+"""

@@ -894,6 +894,56 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
             f"{key}`, then the non-force preflight and the --force run (harmonic-forge#1169, #1174).")
 
 
+#: `PARK <KEY>[: <reason>]` (harmonic-forge#1281): FORCE's placement. It lets
+#: this session remove an open issue's last task-list entry once
+#: (`tasklist_hold._park_decide`). A lowercase or misplaced PARK is refused.
+_PARK_RE = re.compile(r"^PARK[ \t]+([A-Za-z]\d{1,6})[ \t]*(?::[ \t]*(.*))?$")
+_PARK_ANY_RE = re.compile(r"^[ \t>]*park[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
+
+
+def authorize_park(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
+    """Write a PARK grant (harmonic-forge#1281 AC1). Returns a receipt for
+    `additionalContext`, or "" when no line looks like PARK. Every refusal
+    says why and writes nothing. Never raises."""
+    try:
+        return _authorize_park(prompt, session_id, lane, now)
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
+        return f"PARK REFUSED: the PARK check failed ({type(exc).__name__}: {exc}). No grant written."
+
+
+def _authorize_park(prompt, session_id, lane, now) -> str:
+    lines = prompt.splitlines()
+    if not any(_PARK_ANY_RE.match(line) for line in lines):
+        return ""
+    first = next((i for i, text in enumerate(lines) if text.strip()), None)
+    match = _PARK_RE.match(lines[first]) if first is not None else None
+    if match is None:
+        return ("PARK REFUSED: PARK is honored only as the prompt's first line, typed "
+                "unindented and uppercase, as `PARK <KEY>` or `PARK <KEY>: <reason>`. "
+                "No grant written.")
+    key = match.group(1).upper()
+    if first not in dict(directive_lines(prompt)):
+        return (f"PARK REFUSED for {key}: a PARK line inside a fenced block or blockquote is "
+                "quotation. No grant written.")
+    provenance = _provenance_refusal(prompt, first)
+    if provenance is not None:
+        return f"PARK REFUSED for {key}: {provenance}. No grant written."
+    if not lane:
+        return (f"PARK REFUSED for {key}: LANE is not set, and PARK applies only to a lane "
+                "session's task list. No grant written.")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import tasklist_owed  # noqa: PLC0415
+    if not tasklist_owed.KEY_RE.match(key):
+        return f"PARK REFUSED for {key}: no repo prefix matches it. No grant written."
+    if not session_id:
+        return (f"PARK REFUSED for {key}: the prompt carries no session id to bind the grant "
+                "to. No grant written.")
+    import park_grant  # noqa: PLC0415
+    grant = park_grant.write(key, session_id, lines[first], now)
+    return (f"PARK: {key}'s open task-list entry may now be completed or deleted once in this "
+            f"session (until {grant['expires_at']}).")
+
+
 #: `UI <KEY>[ <digest>]: <reason>` (harmonic-forge#1274): FORCE's shape and
 #: placement. No token is a plan grant; one 12-64 hex token is a merge grant
 #: bound to that digest prefix. Anything else gets its own refusal.
@@ -1128,6 +1178,14 @@ def main() -> None:
         force_receipt = ""
     if force_receipt:
         batch_receipt = " ".join(p for p in (batch_receipt, force_receipt) if p)
+    # harmonic-forge#1281: the PARK grant, beside FORCE; it mints nothing the
+    # other first-line grants own.
+    try:
+        park_receipt = authorize_park(prompt, payload.get("session_id"), os.environ.get("LANE"))
+    except Exception:
+        park_receipt = ""
+    if park_receipt:
+        batch_receipt = " ".join(p for p in (batch_receipt, park_receipt) if p)
     # harmonic-forge#1274: the UI grant, beside FORCE; it mints nothing the
     # other first-line grants own.
     try:

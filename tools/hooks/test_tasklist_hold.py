@@ -633,5 +633,158 @@ class OtherLanePostTests(Base):
         self.assertIn("key resolve failed", err.getvalue())
 
 
+class Park(Base):
+    """harmonic-forge#1281 AC3-AC7: the operator's `PARK <KEY>` grant lets
+    this session remove an open issue's last entry once."""
+
+    KEY = "H2621"
+    SUBJECT = "H2621 — parked in milestone 3.2 · waiting on nothing"
+    DENIED = "is still open, and this is its only entry"
+
+    def setUp(self):
+        super().setUp()
+        import park_grant  # noqa: PLC0415
+        self.park_grant = park_grant
+        self.park_dir = self.tmp / "park"
+        patcher = mock.patch.object(park_grant, "PARK_STATE_DIR", self.park_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def grant(self, session=SESSION, key=KEY, now=None):
+        from datetime import datetime, timezone  # noqa: PLC0415
+        return self.park_grant.write(key, session, f"PARK {key}",
+                                     now or datetime.now(timezone.utc))
+
+    def stored(self, session=SESSION, key=KEY):
+        return json.loads((self.park_dir / session / f"{key}.json").read_text())
+
+    def decide(self, status, task_id=1):
+        with self.closed(False):
+            return hold.pretooluse_decide(self.update(task_id, status))
+
+    def test_parked_last_entry_of_open_issue_completes(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        self.assertEqual(self.decide("completed"), ("allow", ""))
+        self.assertIsNotNone(self.stored()["consumed_at"])
+
+    def test_parked_last_entry_of_open_issue_deletes(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        self.assertEqual(self.decide("deleted"), ("allow", ""))
+        self.assertIsNotNone(self.stored()["consumed_at"])
+
+    def test_park_grant_is_single_use(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        self.assertEqual(self.decide("completed")[0], "allow")
+        (self.tasks / "1.json").unlink()
+        self.entry(2, self.SUBJECT)
+        verdict, reason = self.decide("completed", task_id=2)
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+
+    def test_other_sessions_grant_does_not_unlock(self):
+        self.entry(1, self.SUBJECT)
+        self.grant(session="sess-other")
+        verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+        # A grant file at this session's path that records another session.
+        grant = self.grant()
+        grant["session"] = "sess-other"
+        (self.park_dir / SESSION / f"{self.KEY}.json").write_text(json.dumps(grant))
+        verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+
+    def test_expired_grant_does_not_unlock(self):
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+        self.entry(1, self.SUBJECT)
+        self.grant(now=datetime.now(timezone.utc) - timedelta(hours=1, minutes=1))
+        verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+        self.assertIsNone(self.stored()["consumed_at"])
+
+    def test_grant_for_other_key_does_not_unlock(self):
+        self.entry(1, self.SUBJECT)
+        self.grant(key="H2622")
+        verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+        self.assertIsNone(self.stored(key="H2622")["consumed_at"])
+        # A grant file at this key's path that records another key.
+        grant = self.grant()
+        grant["key"] = "H2622"
+        (self.park_dir / SESSION / f"{self.KEY}.json").write_text(json.dumps(grant))
+        self.assertEqual(self.decide("completed")[0], "deny")
+
+    def test_consumed_grant_does_not_unlock(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        self.park_grant.consume(SESSION, self.KEY)
+        verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+
+    def test_owed_marker_denies_and_keeps_grant(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        owed.record(self.KEY, "handoff", session=SESSION)
+        verdict, reason = self.decide("completed")
+        self.assertEqual(verdict, "deny")
+        self.assertIn("owes an entry update", reason)
+        self.assertIn("PARK grant is kept", reason)
+        self.assertIsNone(self.stored()["consumed_at"])
+        self.assertTrue(self.park_grant.usable(SESSION, self.KEY))
+
+    def test_rename_away_is_not_a_park_and_keeps_grant(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        with self.closed(False):
+            verdict, reason = hold.pretooluse_decide(
+                self.update(1, "in_progress", subject="H9 — other"))
+        self.assertEqual(verdict, "deny")
+        self.assertIn(self.DENIED, reason)
+        self.assertIsNone(self.stored()["consumed_at"])
+
+    def test_parked_removal_makes_no_gh_call(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("gh called")):
+            self.assertEqual(hold.pretooluse_decide(self.update(1, "completed")), ("allow", ""))
+
+    def test_parked_other_account_key_completes(self):
+        self.entry(1, "K12 — parked · waiting on nothing")
+        self.grant(key="K12")
+        self.assertEqual(self.decide("completed"), ("allow", ""))
+
+    def test_post_after_park_requires_new_entry(self):
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        self.assertEqual(self.decide("completed")[0], "allow")
+        (self.tasks / "1.json").unlink()
+        owed.record(self.KEY, "handoff", session=SESSION)
+        verdict, reason = hold.stop_decide(self.stop())
+        self.assertEqual(verdict, "block")
+        self.assertIn(self.KEY, reason)
+
+    def test_failed_update_after_park_has_spent_the_grant(self):
+        """Stated residual: consume runs in PreToolUse, so a TaskUpdate that
+        then fails leaves the entry and a spent grant; PARK is typed again."""
+        self.entry(1, self.SUBJECT)
+        self.grant()
+        self.assertEqual(self.decide("completed")[0], "allow")
+        payload = {"hook_event_name": "PostToolUseFailure", "tool_name": "TaskUpdate",
+                   "session_id": SESSION, "tool_input": {"taskId": "1", "status": "completed"}}
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+            hold.main()
+        self.assertIsNotNone(self.stored()["consumed_at"])
+        self.assertEqual(self.decide("completed")[0], "deny")
+        self.grant()
+        self.assertEqual(self.decide("completed")[0], "allow")
+
+
 if __name__ == "__main__":
     unittest.main()

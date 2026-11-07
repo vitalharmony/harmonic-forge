@@ -23,7 +23,10 @@ is this lane's own.
    issue is open, its last entry cannot be completed or deleted
    (`pretooluse_decide`). After `gh issue close`, the entry is first updated
    to `<KEY> — closed` (with the merge SHA when there is one), so the operator
-   sees the close, and only then completed.
+   sees the close, and only then completed. Exception: the operator's
+   `PARK <KEY>` line (`rules/lane-shorthand.md`) lets this session remove
+   that open issue's last entry once, within an hour, when no update is owed
+   for it.
 2. Every lane post, merge, PR or close on an issue owes its entry an update
    naming that action (`tasklist_owed.py` records it; `stop_decide` refuses to
    end the turn while the marker remains). One marker per key, the latest
@@ -165,6 +168,9 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     if any(str(e.get("id")) != task_id and e.get("status") in owed.OPEN_STATUSES
            and owed.entry_key(e) == key for e in entries):
         return _sibling_decide(session, task_id, key)
+    parked = _park_decide(session, key, applied.get("status"))
+    if parked is not None:
+        return parked
     if key[0] in OTHER_ACCOUNT and _closed_subject(key, stored):
         return "allow", ""
     try:
@@ -182,6 +188,34 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
                     f"the list only when the issue closes, and it cannot be renamed away from "
                     f"its key. Update this entry to \"{SHAPE}\" instead "
                     "(tools/hooks/tasklist_hold.py).")
+
+
+def _park_decide(session: str, key: str, status) -> tuple[str, str] | None:
+    """harmonic-forge#1281: the operator's `PARK <KEY>` grant lets this call
+    remove `key`'s last open entry once. None falls through to the rule-1 path
+    unchanged. Runs before any GitHub read, so a parked removal needs none.
+
+    Only a completion or deletion is a removal PARK covers; a rename away
+    from the key also reaches here and is left to the existing path, grant
+    untouched. While an update is owed for the key (a `tasklist_owed`
+    marker), the removal is denied and the grant kept, so Stop and PARK never
+    deadlock. Residual, stated and not closed: the grant is consumed here, in
+    PreToolUse, so a TaskUpdate that then fails (PostToolUseFailure) has spent
+    it and the entry stays; the operator types `PARK <KEY>` again."""
+    if status not in ("completed", "deleted"):
+        return None
+    import park_grant  # noqa: PLC0415  (only this branch needs it)
+    if not park_grant.usable(session, key):
+        return None
+    if any(m.get("key") == key for m in owed.markers(session)):
+        return "deny", (f"{key} owes an entry update for a post first; update this entry to "
+                        f"\"{SHAPE}\", then complete it (the PARK grant is kept).")
+    try:
+        park_grant.consume(session, key)
+    except OSError as exc:
+        return "deny", (f"{key}'s PARK grant could not be consumed ({exc}), so its last "
+                        f"task-list entry stays. Update it to \"{SHAPE}\" instead.")
+    return "allow", ""
 
 
 def _sibling_decide(session: str, task_id: str, key: str) -> tuple[str, str]:
