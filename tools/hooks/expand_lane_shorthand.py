@@ -894,6 +894,85 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
             f"{key}`, then the non-force preflight and the --force run (harmonic-forge#1169, #1174).")
 
 
+#: `UI <KEY>[ <digest>]: <reason>` (harmonic-forge#1274): FORCE's shape and
+#: placement. No token is a plan grant; one 12-64 hex token is a merge grant
+#: bound to that digest prefix. Anything else gets its own refusal.
+_UI_RE = re.compile(r"^UI[ \t]+([A-Za-z]\d{1,6})((?:[ \t]+[^ \t:]+)*?)[ \t]*:[ \t]*(.*)$")
+_UI_ANY_RE = re.compile(r"^[ \t>]*ui[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
+
+
+def _ui_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+    import ui_grant  # noqa: PLC0415
+
+    return ui_grant
+
+
+def authorize_ui(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
+    """Write a PENDING UI grant (harmonic-forge#1274 AC3). It approves nothing
+    until `ui_grant.py record` posts its public record. Returns a receipt for
+    `additionalContext`, or "" when no line looks like UI. Every refusal says
+    why and writes nothing. Never raises."""
+    try:
+        return _authorize_ui(prompt, session_id, lane, now)
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
+        return f"UI REFUSED: the UI check failed ({type(exc).__name__}: {exc}). No grant written."
+
+
+def _authorize_ui(prompt, session_id, lane, now) -> str:
+    lines = prompt.splitlines()
+    if not any(_UI_ANY_RE.match(line) for line in lines):
+        return ""
+    first = next((i for i, text in enumerate(lines) if text.strip()), None)
+    match = _UI_RE.match(lines[first]) if first is not None else None
+    if match is None:
+        return ("UI REFUSED: UI is honored only as the prompt's first line, typed unindented "
+                "and uppercase, as `UI <KEY>: <reason>` or `UI <KEY> <digest>: <reason>`. "
+                "No grant written.")
+    if first not in dict(directive_lines(prompt)):
+        return "UI REFUSED: a UI line inside a fenced block or blockquote is quotation. No grant written."
+    key, reason = match.group(1).upper(), match.group(3).strip()
+    grants = _ui_module()
+    tokens = match.group(2).split()
+    if len(tokens) > 1:
+        return (f"UI REFUSED for {key}: a UI line takes at most one digest: `UI {key} <digest>: "
+                "<reason>`. No grant written.")
+    digest = tokens[0].lower() if tokens else None
+    if digest is not None and not grants.DIGEST_PREFIX_RE.match(digest):
+        return (f"UI REFUSED for {key}: {tokens[0]!r} is not a 12-64 character hex digest (the "
+                "one `ui_version.py diff` prints). No grant written.")
+    mode = "merge" if digest else "plan"
+    if not reason:
+        return f"UI REFUSED for {key}: the reason is empty. No grant written."
+    provenance = _provenance_refusal(prompt, first)
+    if provenance is not None:
+        return f"UI REFUSED for {key}: {provenance}. No grant written."
+    if lane != "1":
+        return f"UI REFUSED for {key}: LANE is {lane!r}, and UI is recorded only in a LANE=1 session."
+    imc = _imc_module()
+    target = imc.key_target(key)
+    if target is None:
+        return f"UI REFUSED for {key}: no repo maps to its prefix. No grant written."
+    repo, number = target
+    if not repo.lower().startswith(imc.VITALHARMONY):
+        return (f"UI REFUSED for {key}: {repo} is a cross-account repo, and UI fails closed "
+                "there. No grant written.")
+    entry, replaced = grants.write_pending(key, repo, number, mode, digest, reason, session_id,
+                                           lines[first], now)
+    bound = f" at digest {digest[:12]}" if digest else ""
+    note = ""
+    if replaced:
+        was = f" at {str(replaced.get('digest'))[:12]}" if mode == "merge" else ""
+        note = f" It replaces the earlier {replaced.get('status')} {mode} grant{was}."
+    where = (f"on {repo}#{number}, letting a handoff declare a UI change (approves no merge)"
+             if mode == "plan" else
+             "on the one open PR naming the key whose head digest starts with it; the PR's "
+             "required `ui-approval` status then passes for that digest")
+    return (f"UI: pending {mode} grant written for {key}{bound}, to be recorded {where}; "
+            f"pending until {entry['expires_at']}.{note} Next: `python3 tools/gh/ui_grant.py "
+            f"record --key {key}` posts its public record (harmonic-forge#1274).")
+
+
 #: harmonic-forge#1188 AC7/AC8: the fixed operator->lane trigger vocabulary
 #: (rules/lane-shorthand.md "Operator -> lane triggers"), at a line start. The
 #: issue comes only from the trigger's own key, never from other prompt text.
@@ -1049,6 +1128,14 @@ def main() -> None:
         force_receipt = ""
     if force_receipt:
         batch_receipt = " ".join(p for p in (batch_receipt, force_receipt) if p)
+    # harmonic-forge#1274: the UI grant, beside FORCE; it mints nothing the
+    # other first-line grants own.
+    try:
+        ui_receipt = authorize_ui(prompt, payload.get("session_id"), os.environ.get("LANE"))
+    except Exception:
+        ui_receipt = ""
+    if ui_receipt:
+        batch_receipt = " ".join(p for p in (batch_receipt, ui_receipt) if p)
     # harmonic-forge#1188 AC8: attribution and attention ride on this hook and
     # never fail it; each sits in its own try.
     try:

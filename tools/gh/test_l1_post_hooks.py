@@ -421,6 +421,7 @@ class RepoTargetTests(unittest.TestCase):
              patch.object(post, "validate_milestone_set"), \
              patch.object(post, "validate_milestone_current"), \
              patch.object(post, "issue_labels", return_value=set()), \
+             patch.object(post, "validate_ui_brand"), \
              patch.object(post, "world_checks", return_value=(["world"], [])), \
              patch.object(post, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.object(post, "write_receipt"), \
