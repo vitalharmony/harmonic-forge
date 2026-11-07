@@ -370,7 +370,7 @@ class HandoffLabelThreadingTests(Harness):
         quiet = ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
                  "validate_board_fields_set", "validate_milestone_set",
                  "validate_tooling_exception_labelled", "validate_pitch_inspected", "validate_te_lead_fields",
-                 "validate_lead"]
+                 "validate_ui_brand", "validate_lead"]
         with contextlib.ExitStack() as stack:
             for name in quiet:
                 stack.enter_context(mock.patch.object(L, name))

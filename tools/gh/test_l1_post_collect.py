@@ -138,7 +138,8 @@ ORDER = {
     "handoff": ["validate_handoff", "validate_plan_first_declared", "validate_plan_first_spec",
                 "validate_board_fields_set", "validate_milestone_set",
                 "validate_milestone_current", "validate_tooling_exception_labelled", "validate_pitch_inspected",
-                "validate_te_lead_fields", "validate_sticky_wicket", "validate_lead"],
+                "validate_te_lead_fields", "validate_ui_brand",  # harmonic-forge#1274
+                "validate_sticky_wicket", "validate_lead"],
     "rework": ["validate_milestone_current", "validate_sticky_wicket", "validate_lead"],
     "ready-for-l3": ["validate_sticky_wicket", "validate_lead"],
     "sweep": ["validate_sticky_wicket", "validate_lead", "_spec_body", "validate_sweep",

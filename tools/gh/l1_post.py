@@ -108,6 +108,7 @@ import _scenario_trace  # noqa: E402
 import _scratch  # noqa: E402  (harmonic-forge#949)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 import _lane3_env  # noqa: E402  (harmonic-forge#1218)
+import ui_grant  # noqa: E402  (harmonic-forge#1274)
 import _route_snapshot  # noqa: E402  (harmonic-forge#1231)
 
 HANDOFF_HEADINGS = [
@@ -1931,6 +1932,46 @@ def validate_sticky_wicket(repo: str, issue: int, *, kind: str | None = None,
         fail(reason)
 
 
+#: A `**UI change:**` value declaring no UI change.
+_UI_NONE = re.compile(r"^`?none`?\.?$", re.IGNORECASE)
+
+
+def validate_ui_brand(body: str, repo: str, issue: int, globs=None, comments=None) -> None:
+    """harmonic-forge#1274 AC6/AC7, reforged (comment 6699562919, step 6): a
+    declaration that fails closed, not a recognizer that fails open.
+
+    Every handoff on an issue under the vitalharmony owner carries a
+    `**UI change:**` lead line: `none`, or in plain words what is replaced and
+    what goes away. Absent or unfilled: refuse. `none` passes on the
+    declaration alone: the Affected Files path scanner that cross-checked it
+    was deleted (sticky-wicket 6702216500, operator ruling 2026-11-07), because
+    a free-text recognizer failed open on every new row shape. Anything else
+    needs the operator's plan grant recorded on the issue (`## UI plan grant —
+    <KEY>`, `ui_grant.find_record`). The required `ui-approval` status is the
+    hard stop at merge. `globs` (unused, kept for callers) and `comments`
+    (tests) replace the reads."""
+    if not repo.lower().startswith(ui_grant.imc_waiver.VITALHARMONY):
+        return
+    key = ui_grant.imc_waiver.issue_key(repo, issue) or f"{repo}#{issue}"
+    match = ui_grant.UI_CHANGE_RE.search(lead_region(body))
+    value = match.group("text").strip().strip("*").strip() if match else ""
+    if not value or not is_substantive(value) or re.fullmatch(r"<[^<>]*>", value):
+        fail(f"handoff on {repo}#{issue} has no filled `**UI change:**` lead line "
+             "(harmonic-forge#1274): write `**UI change:** none`, or say in plain words what is "
+             "replaced and what goes away")
+    if _UI_NONE.match(value):
+        return
+    try:
+        thread = comments if comments is not None else ui_grant.issue_comments(repo, issue)
+    except ui_grant.RecordRefused as exc:
+        fail(f"cannot read {repo}#{issue}'s comments to find its UI plan grant "
+             f"(harmonic-forge#1274): {exc}")
+    if ui_grant.find_record(thread, key, "plan") is None:
+        fail(f"handoff on {repo}#{issue} declares a UI change but the issue has no recorded UI "
+             f"plan grant (harmonic-forge#1274): the operator types `UI {key}: <reason>` as a "
+             f"prompt's first line, then `python3 tools/gh/ui_grant.py record --key {key}`")
+
+
 def validate_pitch_inspected(repo: str, issue: int, labels=None) -> None:
     """harmonic-forge#838 AC3: R-0238 trigger 4. Unconditional, unlike the
     Next-field check above: the labels are read live at post time, so a label
@@ -3655,6 +3696,7 @@ def main() -> None:
             lambda: validate_tooling_exception_labelled(body, repo, args.issue, labels_once()),
             lambda: validate_pitch_inspected(repo, args.issue, labels_once()),
             lambda: validate_te_lead_fields(body, LeadCtx(repo, args.issue, labels_once())),
+            lambda: validate_ui_brand(body, repo, args.issue),
         ]
     if args.kind == "rework":
         steps.append(lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack))

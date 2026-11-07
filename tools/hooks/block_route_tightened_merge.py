@@ -28,7 +28,11 @@ route event, else the route in force over every event not written here.
 Fails closed, unlike the opt-in hooks it borrows from: GitHub unreadable, a
 corrupt route store, an unexpected error, or the internal deadline
 (`DEADLINE_SECONDS`, below the 25 s registration timeout, since a timed-out
-hook lets the command run) each deny. A PR that maps to no issue is allowed
+hook lets the command run) each deny. The internal deadline bounds only the
+reads it is checked before; `hook_watchdog.Watchdog` bounds every path, including
+`run_gh`'s one retry and repo resolution: at `hook_watchdog.SECONDS` it writes one
+deny and exits (harmonic-forge#1274 preclose pass 1 found the retry overrun).
+A PR that maps to no issue is allowed
 with a warning, as `block_missing_preclose_inspection.py` allows it.
 
 Parsing is not re-implemented: merge commands, repo resolution, labels, the
@@ -55,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 
 import block_missing_preclose_inspection as pre  # noqa: E402
 import gates  # noqa: E402
+import hook_watchdog  # noqa: E402
 import route_store  # noqa: E402
 
 DECIDER = "pre-merge-recheck"
@@ -307,14 +312,28 @@ def recheck(deadline: Deadline, command: str, pr_repo: str, pr: str) -> str | No
     return None
 
 
+def _timed_out() -> None:
+    pre._deny(f"Blocked: the route recheck did not finish within {hook_watchdog.SECONDS:g} s "
+              f"(its watchdog, below the hook's 25 s timeout, which would let the merge through "
+              f"unchecked). Retry once GitHub responds faster (harmonic-forge#1274).")
+
+
 def main() -> None:
+    watchdog = hook_watchdog.Watchdog(hook_watchdog.SECONDS, _timed_out).start()
+    try:
+        _main(watchdog)
+    finally:
+        watchdog.cancel()
+
+
+def _main(watchdog: "hook_watchdog.Watchdog") -> None:
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        pre._allow()
+        watchdog.emit(pre._allow)
         return
     if data.get("tool_name") != "Bash":
-        pre._allow()
+        watchdog.emit(pre._allow)
         return
     command = (data.get("tool_input") or {}).get("command", "")
     payload_cwd = data.get("cwd") or None
@@ -322,7 +341,7 @@ def main() -> None:
     targets = [t for t in (pre.find_gated_targets(command) or []) if t[2] == "pr" and t[1]]
     if not targets:
         # No PR number: the preclose hook owns that deny.
-        pre._allow()
+        watchdog.emit(pre._allow)
         return
 
     deadline = Deadline(DEADLINE_SECONDS)
@@ -338,13 +357,14 @@ def main() -> None:
             if warning:
                 warnings.append(warning)
     except Refused as exc:
-        pre._deny(str(exc))
+        watchdog.emit(lambda: pre._deny(str(exc)))
         return
     except Exception as exc:  # noqa: BLE001 -- a refusal hook fails closed
-        pre._deny(f"Blocked: the route recheck failed ({type(exc).__name__}: {exc}), so the "
-                  f"merge's route cannot be shown not to have tightened (harmonic-forge#1243).")
+        message = (f"Blocked: the route recheck failed ({type(exc).__name__}: {exc}), so the "
+                   f"merge's route cannot be shown not to have tightened (harmonic-forge#1243).")
+        watchdog.emit(lambda: pre._deny(message))
         return
-    print(json.dumps({"systemMessage": "\n".join(warnings)} if warnings else {}))
+    watchdog.emit(lambda: print(json.dumps({"systemMessage": "\n".join(warnings)} if warnings else {})))
 
 
 if __name__ == "__main__":

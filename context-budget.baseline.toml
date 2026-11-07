@@ -195,3 +195,15 @@ the FORCE section (R-0418), its three modes and their bindings. Lane 1 names the
 exact FORCE line in the turn it asks the operator for one, so the grammar must be
 loaded without being consulted, beside BATCH and IMC.
 """
+
+[[increase]]
+date = "2026-11-06"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 5561
+why = """
+Cumulative since the last baseline: 4288 (entry above) plus harmonic-forge#1274 (1273):
+the UI section (R-0420), its plan and merge lines, where each is recorded, the
+mandatory `**UI change:**` declaration and the lane order to a green `ui-approval`
+status. Lane 1 names the exact UI line in the turn it asks the operator for one, so
+the grammar is loaded beside FORCE.
+"""
