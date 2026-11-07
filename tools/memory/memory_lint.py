@@ -461,8 +461,16 @@ class GateFrontmatter:
 
     `type` is read at the top level or directly under `metadata:`, with an
     inline ` #` comment and surrounding quotes stripped. `rule_check` is read at
-    the top level only, verbatim but for surrounding quotes, and must be
+    the top level, verbatim but for surrounding quotes, and must be
     `R-NNNN` or `none (searched: <terms>)`.
+
+    A `rule_check` directly under `metadata:` is read too, under the same
+    form, into `at_rest_rule_check` / `at_rest_errors` only
+    (harmonic-forge#1284). The harness relocates the key there during a memory
+    Write, so a file at rest carries it nested although the hook saw it at the
+    top level. The hook reads `rule_check` and `errors`, never these two, so
+    its decision is unchanged; Check 9, which reads the store at rest, accepts
+    them.
     """
 
     _TOP = re.compile(r"^([A-Za-z_]+):(?: (.*))?$")
@@ -471,6 +479,9 @@ class GateFrontmatter:
     def __init__(self, text: str) -> None:
         self.values: dict[str, str] = {}
         self.errors: list[str] = []
+        #: harmonic-forge#1284: form errors of a `rule_check` nested under
+        #: `metadata:`. Never merged into `errors`, which the hook denies on.
+        self.at_rest_errors: list[str] = []
         self.has_frontmatter = False
         self.frontmatter_lines = 0
         lines = text.splitlines()
@@ -520,10 +531,23 @@ class GateFrontmatter:
                     self.errors.append(f"`rule_check: {value}` is neither `R-NNNN` nor `none (searched: <terms>)`")
                 else:
                     self.values["rule_check"] = value
+            elif key == "rule_check" and scope == "metadata":
+                value = raw.strip().strip("\"'").strip()
+                if not RULE_CHECK_FORM.match(value):
+                    self.at_rest_errors.append(
+                        f"`rule_check: {value}` is neither `R-NNNN` nor `none (searched: <terms>)`")
+                else:
+                    self.values["metadata.rule_check"] = value
 
     @property
     def rule_check(self) -> str | None:
         return self.values.get("rule_check")
+
+    @property
+    def at_rest_rule_check(self) -> str | None:
+        """The `rule_check` nested under `metadata:` (harmonic-forge#1284).
+        Check 9 reads it; the hook never does."""
+        return self.values.get("metadata.rule_check")
 
     @property
     def is_feedback_type(self) -> bool:
@@ -592,9 +616,10 @@ def check_rule_check(store: Path) -> list[str]:
         if f.name in allowed:
             continue
         gate = GateFrontmatter(text)
-        if gate.errors and may_be_feedback(f.name, text):
-            findings.append(f"{f.name}: malformed gate frontmatter: {'; '.join(gate.errors)}")
-        elif is_feedback_memory(f.name, text) and not gate.rule_check:
+        errors = gate.errors + gate.at_rest_errors
+        if errors and may_be_feedback(f.name, text):
+            findings.append(f"{f.name}: malformed gate frontmatter: {'; '.join(errors)}")
+        elif is_feedback_memory(f.name, text) and not (gate.rule_check or gate.at_rest_rule_check):
             findings.append(f"{f.name}: feedback memory with no `rule_check:` and not in "
                             "feedback_allowlist.txt (written around the #981 gate?)")
     return findings
