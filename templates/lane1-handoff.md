@@ -11,8 +11,9 @@
 UI change. Keep `none` unless the work changes a repo's rendered UI (its
 `frontend/ui-version.toml` `brand` paths); then say in plain words what is
 replaced and what goes away, after the operator's `UI <KEY>: <reason>` plan
-grant is recorded on the issue. `l1_post.py` refuses a missing line, and a
-`none` that names a brand path in Affected Files. -->
+grant is recorded on the issue. `l1_post.py` refuses a missing line and a
+declared change with no recorded plan grant; the merge-time `ui-approval`
+status is the stop for a wrong `none`. -->
 
 <!-- hrse#1703: `l1_post.py --kind handoff` refuses a post whose lead region
 (everything above the first heading after this one) lacks these two labelled

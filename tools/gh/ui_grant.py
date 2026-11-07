@@ -36,11 +36,6 @@ only that pending entry, one per mode, so each mode is independent; `record`
 posts it, refetches it, and moves it to `recorded`. An expired pending entry
 is dropped with a note and never blocks the other mode.
 
-`matches()` is the forge's one glob reader (`l1_post.py`'s brand cross-check),
-with git's `:(glob)` pathspec meaning, so it agrees with the project's
-`git ls-files -- ':(glob)<pattern>'` (`test_ui_grant.py` checks that against
-git on a fixture tree).
-
 Like FORCE, this trusts the operator-typed line and the session. The grant
 file and the public comment are an audit trail, not proof against a session
 that writes this directory itself.
@@ -115,89 +110,6 @@ def grant_lock(key: str):
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-# --- glob meaning (handoff step 0) -------------------------------------------
-
-def _glob_regex(pattern: str) -> re.Pattern[str]:
-    """git wildmatch with WM_PATHNAME, the `:(glob)` pathspec meaning: `*`, `?`
-    and `[...]` never cross `/`; `**/` at the start or `/**/` match zero or more
-    directories; a trailing `/**` matches everything inside; any other `**` is
-    a plain `*`."""
-    out: list[str] = []
-    i, n = 0, len(pattern)
-    while i < n:
-        c = pattern[i]
-        if pattern.startswith("**", i):
-            at_start = i == 0 or pattern[i - 1] == "/"
-            after = pattern[i + 2:i + 3]
-            if at_start and after == "/":
-                out.append("(?:.*/)?")
-                i += 3
-                continue
-            if at_start and i + 2 == n:
-                out.append(".*")
-                i += 2
-                continue
-            out.append("[^/]*")
-            i += 2
-            continue
-        if c == "*":
-            out.append("[^/]*")
-        elif c == "?":
-            out.append("[^/]")
-        elif c == "[":
-            end = pattern.find("]", i + 2 if pattern[i + 1:i + 2] in ("!", "^") else i + 1)
-            if end == -1:
-                out.append(re.escape(c))
-            else:
-                body = pattern[i + 1:end]
-                negate = body[:1] in ("!", "^")
-                body = body[1:] if negate else body
-                body = body.replace("\\", "\\\\")
-                out.append(f"[^/{body}]" if negate else f"(?!/)[{body}]")
-                i = end
-        else:
-            out.append(re.escape(c))
-        i += 1
-    return re.compile("".join(out) + r"\Z")
-
-
-def _has_wildcard(pattern: str) -> bool:
-    return any(c in pattern for c in "*?[")
-
-
-def matches(path: str, patterns) -> bool:
-    """Whether `path` (repo-relative, `/`-separated) matches any pattern. A
-    pattern with no wildcard also matches everything below it, as a literal
-    pathspec does."""
-    for pattern in patterns or ():
-        pattern = str(pattern).strip()
-        if not pattern:
-            continue
-        if not _has_wildcard(pattern):
-            literal = pattern.rstrip("/")
-            if path == literal or path.startswith(literal + "/"):
-                return True
-            continue
-        if _glob_regex(pattern).match(path):
-            return True
-    return False
-
-
-def parse_version_file(text: str) -> dict:
-    """The version file as a dict; raises ValueError when it is not TOML or its
-    globs are not lists of strings."""
-    import tomllib  # noqa: PLC0415
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"{UI_VERSION_PATH} is not valid TOML ({exc})") from exc
-    for name in ("corpus", "brand"):
-        value = data.get(name, [])
-        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-            raise ValueError(f"{UI_VERSION_PATH}: `{name}` is not a list of globs")
-    return data
 
 
 def ui_change_line(bodies) -> str | None:

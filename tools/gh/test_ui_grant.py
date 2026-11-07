@@ -61,41 +61,6 @@ def _lines(items) -> str:
     return "".join(json.dumps(i) + "\n" for i in items)
 
 
-class GlobMeaning(unittest.TestCase):
-    """Step 0: `matches()` agrees with `git ls-files -- ':(glob)<pattern>'`."""
-
-    FILES = ("frontend/src/index.css", "frontend/src/token-pairings.toml",
-             "frontend/src/components/ui/button.tsx", "frontend/src/components/ui/deep/x.tsx",
-             "frontend/src/components/uix.tsx", "frontend/src/assets/logo.svg",
-             "frontend/src/assets/a/b/c.png", "frontend/public/favicon.svg",
-             "frontend/public/favicon.svg.bak", "frontend/e2e/visual/screens.spec.ts",
-             "frontend/e2e/visual/screens.spec.ts-snapshots/home-linux.png",
-             "frontend/e2e/visual/top.png", "extension/static/icons/i16.png",
-             "frontend/src/a1.css", "frontend/src/ab.css", "png/x.png", "x.png")
-    PATTERNS = ("frontend/src/index.css", "frontend/src/components/ui/**",
-                "frontend/src/assets/**", "frontend/public/favicon.svg",
-                "frontend/e2e/visual/**/*.png", "extension/static/icons/**",
-                "frontend/src/components", "frontend/src/*.css", "**/*.png", "frontend/src/a?.css",
-                "frontend/src/a[0-9].css", "frontend/src/a[!0-9].css", "frontend/**/c.png",
-                "frontend/e2e/visual/*.png", "frontend/s**/index.css")
-
-    def test_matches_agree_with_git_ls_files(self):
-        with tempfile.TemporaryDirectory() as root:
-            subprocess.run(["git", "init", "-q", root], check=True)
-            for name in self.FILES:
-                path = Path(root, name)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("x")
-            subprocess.run(["git", "-C", root, "add", "-A"], check=True)
-            for pattern in self.PATTERNS:
-                with self.subTest(pattern=pattern):
-                    out = subprocess.run(["git", "-C", root, "ls-files", "--", f":(glob){pattern}"],
-                                         capture_output=True, text=True, check=True).stdout
-                    want = sorted(out.split())
-                    got = sorted(f for f in self.FILES if G.matches(f, [pattern]))
-                    self.assertEqual(got, want)
-
-
 class FakeGitHub:
     """`gh api` for the record path: opt-in reads, open PRs, statuses, comments,
     and the post/refetch pair `imc_waiver.post_and_confirm` makes."""
@@ -181,6 +146,27 @@ class RecordPlan(_Store):
         self.pending("plan")
         with mock.patch.dict(os.environ, {"LANE": "2"}), self.assertRaisesRegex(SystemExit, "LANE"):
             G.record(KEY, now=NOW, runner=FakeGitHub())
+
+    def test_a_grant_typed_during_the_post_is_kept_not_wiped(self):
+        """Pass-2 test-honesty 4 (sticky-wicket 6702216500): the operator types
+        a new UI line while `record` is posting the older one. The newer grant
+        survives as pending and the run refuses. Kill check: removing the
+        replaced-during-the-post guard in `_finish` fails this."""
+        self.pending("plan")
+        gh = FakeGitHub()
+        real = gh.__call__
+
+        def typed_mid_post(argv, **kw):
+            if "--method" in argv:
+                self.pending("plan", now=NOW + timedelta(minutes=1))
+            return real(argv, **kw)
+
+        with self.assertRaisesRegex(SystemExit, "replaced during the post"):
+            G.record(KEY, now=NOW, runner=typed_mid_post)
+        grant = G.read_grant(KEY)
+        self.assertEqual(grant["plan"]["status"], "pending")
+        self.assertEqual(grant["plan"]["granted_at"], G.imc_waiver._iso(NOW + timedelta(minutes=1)))
+        self.assertFalse(grant.get("recorded"))
 
     def test_an_expired_plan_never_blocks_a_merge_record(self):
         """Pass-2 survivor 1: modes are independent; an expired entry is dropped."""
@@ -292,7 +278,7 @@ class FindRecord(unittest.TestCase):
 
 class BrandHandoff(unittest.TestCase):
     """AC6/AC7 reforged: a mandatory `**UI change:**` declaration that fails
-    closed; the brand-path scanner is a cross-check behind `none`."""
+    closed; a declared change needs the recorded plan grant."""
 
     #: HRSE2's real `brand` list (frontend/ui-version.toml).
     BRAND = ["frontend/src/assets/**", "frontend/public/favicon.svg", "frontend/src/index.css",
@@ -328,29 +314,6 @@ class BrandHandoff(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(self.check(self.body(ui_change=value)))
 
-    def test_none_naming_a_brand_path_is_refused(self):
-        for row in ("| frontend/src/assets/cymagraph-small-dark.svg | 1-9 | Replace |",
-                    "| frontend/src/index.css:40-52 | 40-52 | Modify |",
-                    "| `frontend/src/index.css:40–52` | x | Modify |",
-                    "| frontend/src/assets/ | dir | Add a mark |",
-                    "| ./frontend/src | dir | Restyle |",
-                    "| HRSE2 `frontend/public/favicon.svg` | whole | Replace |",
-                    "| vitalharmony/hrse frontend/src/components/ui/button.tsx | 3 | Modify |",
-                    "| frontend/src/assets/*.svg | all | Replace |",
-                    "| extension/static/** | all | Replace |"):
-            with self.subTest(row=row):
-                self.assertIn("says `**UI change:** none` but names brand path",
-                              self.refused(self.body(row)))
-
-    def test_the_real_hrse_2614_handoff_with_none_is_refused(self):
-        body = (HERE / "fixtures" / "hrse-2614-handoff.md").read_text().replace(
-            "**Threat model:** good-faith\n", "**Threat model:** good-faith\n**UI change:** none\n", 1)
-        reason = self.refused(body)
-        for path in ("frontend/public/favicon.svg", "frontend/src/assets/cymagraph-small-dark.svg",
-                     "frontend/src/index.css"):
-            self.assertIn(path, reason)
-        self.assertNotIn("scripts/generate_chladni_mark.py", reason)
-
     def test_the_template_lead_declares_none(self):
         template = (HERE.parents[1] / "templates" / "lane1-handoff.md").read_text()
         template = template[template.index("## Handoff:"):]  # a post starts at its heading
@@ -370,41 +333,14 @@ class BrandHandoff(unittest.TestCase):
                       self.refused(body, comments=[{"login": "kytxii", "body": record}]))
         self.assertIsNone(self.check(body, comments=[{"login": "vitalharmony", "body": record}]))
 
-    def test_a_forge_handoff_naming_hrse2_brand_paths_is_refused(self):
-        import l1_post  # noqa: PLC0415
-        import batch_auth  # noqa: PLC0415
-        toml = 'version = 1\ndigest = "x"\ncorpus = ["frontend/src/assets/**"]\nbrand = ["frontend/src/assets/**"]\n'
-        reads: list[str] = []
-
-        def fake_run(*args, **_kw):
-            reads.append(args[2])
-            if args[2].startswith("repos/vitalharmony/hrse/contents/"):
-                return _done(toml)
-            return _done("", 1, "gh: Not Found (HTTP 404)")
-
-        with mock.patch.object(l1_post, "run", fake_run), \
-                mock.patch.object(batch_auth, "REPO_PREFIXES", PREFIXES):
-            for row in ("| HRSE2 frontend/src/assets/x.svg | new | Add |",
-                        "| frontend/src/assets/x.svg | new | Add |"):
-                with self.subTest(row=row), self.assertRaisesRegex(
-                        SystemExit, r"names brand path.*frontend/src/assets/x\.svg \(vitalharmony/hrse\)"):
-                    l1_post.validate_ui_brand(self.body(row), FORGE, 1274)
-        self.assertFalse(any(r.startswith("repos/kenekted/") for r in reads))  # owner-bound
-
-    def test_an_unreadable_version_file_refuses(self):
-        import l1_post  # noqa: PLC0415
-        result = _done("", 1, "gh: Server Error (HTTP 502)")
-        with mock.patch.object(l1_post, "run", return_value=result), \
-                self.assertRaisesRegex(SystemExit, "cannot read frontend/ui-version.toml"):
-            l1_post.validate_ui_brand(self.body("| frontend/src/assets/x.svg | 1 | Add |"), HRSE, ISSUE)
-
-    def test_a_repo_without_a_version_file_has_no_brand_paths(self):
-        import l1_post  # noqa: PLC0415
-        result = _done("", 1, "gh: Not Found (HTTP 404)")
-        with mock.patch.object(l1_post, "run", return_value=result):
-            self.assertEqual(l1_post.brand_globs(HRSE), [])
-            self.assertIsNone(l1_post.validate_ui_brand(
-                self.body("| frontend/src/assets/x.svg | 1 | Add |"), HRSE, ISSUE))
+    def test_none_passes_on_the_declaration_alone(self):
+        """The Affected Files scanner was deleted (sticky-wicket 6702216500,
+        operator ruling 2026-11-07): `none` is not cross-checked against brand
+        paths; the merge-time `ui-approval` status is the stop."""
+        for row in ("| frontend/src/assets/cymagraph-small-dark.svg | 1-9 | Replace |",
+                    "- frontend/src/index.css"):
+            with self.subTest(row=row):
+                self.assertIsNone(self.check(self.body(row)))
 
     def test_a_repo_outside_the_owner_is_unaffected(self):
         self.assertIsNone(self.check(self.body(ui_change=None), repo="kenekted/kenekted-platform"))
@@ -430,7 +366,6 @@ class MainWiring(_harness().Harness):
             for name in self.QUIET:
                 stack.enter_context(mock.patch.object(dry.L, name))
             stack.enter_context(mock.patch.object(dry.L, "issue_labels", return_value=set()))
-            stack.enter_context(mock.patch.object(dry.L, "brand_globs", return_value=[]))
             argv = ("--repo", dry.REPO, "--issue", dry.ISSUE, "--kind", "handoff", "--sha", dry.SHA_A,
                     "--branch", "main", "--file", self.body(text), "--plan-first", "false")
             return self.run_main(*argv, "--dry-run")

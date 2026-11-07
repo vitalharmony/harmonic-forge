@@ -1932,104 +1932,6 @@ def validate_sticky_wicket(repo: str, issue: int, *, kind: str | None = None,
         fail(reason)
 
 
-#: harmonic-forge#1274 AC6: a backticked token anywhere in Affected Files.
-_BACKTICKED = re.compile(r"`([^`\n]+)`")
-#: A `:N` or `:N-M` line suffix on a named path (`frontend/src/index.css:40-52`).
-_LINE_SUFFIX = re.compile(r":\d+(?:\s*[-\u2013]\s*\d+)?$")
-
-
-def normalize_named_path(token: str) -> str:
-    """One Affected Files token as a repo-relative path: backticks, wrapping
-    punctuation, a `:N-M` suffix, a leading `./` and a trailing `/` stripped.
-    "" when nothing path-like is left."""
-    text = token.strip().strip("`").strip().strip("()[],;\"'").strip("`")
-    text = _LINE_SUFFIX.sub("", text)
-    while text.startswith("./"):
-        text = text[2:]
-    text = text.rstrip("/")
-    return "" if text in ("", ".") else text
-
-
-def affected_tokens(section: str) -> list[str]:
-    """Every token Affected Files names, normalized: each whitespace-separated
-    token of every table row's first cell (so a bare template row, a
-    `<repo> path` row and a `path:40-52` row are all read; a leading repo token
-    is read too, and matches no brand glob), plus every backticked token in the
-    section (preclose pass 1, condition A: backticks alone missed the
-    template's own row shape)."""
-    raw: list[str] = []
-    for line in section.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            continue
-        first = stripped.strip("|").split("|")[0]
-        if not first.strip() or set(first.strip()) <= set("-: "):
-            continue  # an empty first cell or the separator row
-        raw.extend(first.split())
-    for match in _BACKTICKED.findall(section):
-        raw.extend(match.split())
-    return [t for t in dict.fromkeys(normalize_named_path(r) for r in raw) if t]
-
-
-def _fixed_prefix(pattern: str) -> str:
-    """The path components before a pattern's first wildcard component."""
-    parts: list[str] = []
-    for part in pattern.strip().strip("/").split("/"):
-        if ui_grant._has_wildcard(part):
-            break
-        parts.append(part)
-    return "/".join(parts)
-
-
-def _dir_at_or_above(upper: str, lower: str) -> bool:
-    return upper == "" or lower == upper or lower.startswith(upper + "/")
-
-
-def brand_match(path: str, globs) -> bool:
-    """Whether a named path can touch a brand glob: it matches one, it is a
-    directory at or above a glob's fixed prefix (`frontend/src` names
-    `frontend/src/assets/**`), or, when it is itself a pattern, its fixed prefix
-    and a glob's are one at or above the other. Leans toward a match: a false
-    refusal costs one `UI <KEY>: <reason>` line, a false allow is hrse#18 again."""
-    globs = [str(g).strip() for g in globs or () if str(g).strip()]
-    if ui_grant._has_wildcard(path):
-        fixed = _fixed_prefix(path)
-        return any(_dir_at_or_above(fixed, _fixed_prefix(g))
-                   or _dir_at_or_above(_fixed_prefix(g), fixed) for g in globs)
-    if ui_grant.matches(path, globs):
-        return True
-    return any(_dir_at_or_above(path, _fixed_prefix(g)) for g in globs)
-
-
-def brand_globs(repo: str) -> list[str]:
-    """The target repo's `brand` globs from its `main` version file; [] when the
-    repo has not opted in (HTTP 404). Any other read failure refuses."""
-    result = run("gh", "api", f"repos/{repo}/contents/{ui_grant.UI_VERSION_PATH}?ref=main",
-                 "-H", "Accept: application/vnd.github.raw")
-    if result.returncode:
-        detail = f"{result.stderr} {result.stdout}"
-        if "HTTP 404" in detail or "Not Found" in detail:
-            return []
-        fail(f"cannot read {ui_grant.UI_VERSION_PATH} on {repo}'s main to check brand paths "
-             f"(harmonic-forge#1274): {detail.strip()[:160]}")
-    try:
-        return list(ui_grant.parse_version_file(result.stdout).get("brand", []))
-    except ValueError as exc:
-        fail(f"{repo}'s main {exc} (harmonic-forge#1274)")
-    return []
-
-
-def brand_repos(repo: str) -> list[str]:
-    """Whose brand globs a handoff on `repo` is checked against: the issue's own
-    repo plus every registered repo under the same owner account (preclose pass
-    1, condition C). A handoff may name another repo's paths, with or without a
-    prefix, so no per-row repo is guessed; the owner bound keeps every read on
-    the one account's credentials (cross-account reads are refused by policy)."""
-    from batch_auth import REPO_PREFIXES  # noqa: PLC0415
-    owner = repo.split("/")[0].lower()
-    return list(dict.fromkeys([repo, *(r for r in REPO_PREFIXES if r.split("/")[0].lower() == owner)]))
-
-
 #: A `**UI change:**` value declaring no UI change.
 _UI_NONE = re.compile(r"^`?none`?\.?$", re.IGNORECASE)
 
@@ -2040,12 +1942,14 @@ def validate_ui_brand(body: str, repo: str, issue: int, globs=None, comments=Non
 
     Every handoff on an issue under the vitalharmony owner carries a
     `**UI change:**` lead line: `none`, or in plain words what is replaced and
-    what goes away. Absent or unfilled: refuse. `none`: the Affected Files path
-    scanner runs as a cross-check against every opted-in repo's `brand` globs,
-    and a match refuses. Anything else needs the operator's plan grant recorded
-    on the issue (`## UI plan grant — <KEY>`, `ui_grant.find_record`). A scanner
-    miss now means Lane 1 answered the question; the required `ui-approval`
-    status is the hard stop. `globs` and `comments` (tests) replace the reads."""
+    what goes away. Absent or unfilled: refuse. `none` passes on the
+    declaration alone: the Affected Files path scanner that cross-checked it
+    was deleted (sticky-wicket 6702216500, operator ruling 2026-11-07), because
+    a free-text recognizer failed open on every new row shape. Anything else
+    needs the operator's plan grant recorded on the issue (`## UI plan grant —
+    <KEY>`, `ui_grant.find_record`). The required `ui-approval` status is the
+    hard stop at merge. `globs` (unused, kept for callers) and `comments`
+    (tests) replace the reads."""
     if not repo.lower().startswith(ui_grant.imc_waiver.VITALHARMONY):
         return
     key = ui_grant.imc_waiver.issue_key(repo, issue) or f"{repo}#{issue}"
@@ -2056,16 +1960,6 @@ def validate_ui_brand(body: str, repo: str, issue: int, globs=None, comments=Non
              "(harmonic-forge#1274): write `**UI change:** none`, or say in plain words what is "
              "replaced and what goes away")
     if _UI_NONE.match(value):
-        paths = affected_tokens(heading_content(body, "Affected Files"))
-        if not paths:
-            return
-        by_repo = ({repo: list(globs)} if globs is not None
-                   else {r: brand_globs(r) for r in brand_repos(repo)})
-        named = [f"{p} ({r})" for p in paths for r, g in by_repo.items() if g and brand_match(p, g)]
-        if named:
-            fail(f"handoff on {repo}#{issue} says `**UI change:** none` but names brand path(s) "
-                 f"{', '.join(named)} (harmonic-forge#1274): declare the change in plain words, "
-                 f"under the operator's `UI {key}: <reason>` plan grant")
         return
     try:
         thread = comments if comments is not None else ui_grant.issue_comments(repo, issue)
