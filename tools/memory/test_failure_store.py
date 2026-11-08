@@ -32,7 +32,7 @@ def rec(ts: str, tool: str | None = None, klass: str | None = None, probe: str |
     return {"ts": ts, "caught_by": "self", "rule_existed": "none", "rule_ref": rule_ref,
             "expected": "x", "happened": "y", "lane": "1", "repo": None, "issue": 7,
             "session": session, "turns_lost": None, "work_discarded": None, "account": None,
-            "turn": turn, "tool": tool, "class": klass, "probe": probe, "command": None,
+            "turn": turn, "tool": tool, "class": klass, "probe": probe,
             "class_list_version": 1 if klass else None}
 
 
@@ -163,6 +163,54 @@ class Build(Store):
                         self.assertEqual(fs.main([*argv, *command]), fs.EXIT_ERROR)
                     self.assertNotEqual(fs.EXIT_ERROR, 1)
                     self.assertIn("error", err.getvalue())
+
+    def _main_argv(self) -> list[str]:
+        return ["--db", str(self.db), "--memory-log", str(self.memory), "--testplan-log",
+                str(self.testplan), "--overlays", str(self.overlays)]
+
+    def assert_exits_3(self, label: str) -> None:
+        for command in (["build"], ["latest", "--tool", "l1_post", "--class", "cwd"]):
+            with self.subTest(case=label, command=command[0]):
+                err = io.StringIO()
+                with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                    self.assertEqual(fs.main([*self._main_argv(), *command]), fs.EXIT_ERROR,
+                                     err.getvalue())
+                self.assertIn("error", err.getvalue())
+
+    def test_an_unreadable_log_exits_3_never_1(self):
+        """Pass-2 survivor 4: an unreadable log read as empty, so `latest`
+        exited 1 ("no precedent") and `build` reported 0 failures."""
+        self.write(self.testplan, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+        self.memory.mkdir(parents=True)  # a directory: IsADirectoryError, not FileNotFoundError
+        self.assert_exits_3("directory")
+        self.memory.rmdir()
+        if os.geteuid() != 0:
+            self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+            self.memory.chmod(0)
+            self.addCleanup(self.memory.chmod, 0o600)
+            self.assert_exits_3("permission")
+
+    def test_only_a_missing_log_reads_as_empty(self):
+        self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+        self.assertEqual(fs._read_bytes(self.root / "absent.jsonl"), None)
+        self.assertEqual(self.build()["failures"], {"memory": 1, "testplan": 0})
+
+    def test_an_overflowing_integer_field_exits_3_never_1(self):
+        """Pass-2 survivor 6: class_list_version = 2**100 raised an uncaught
+        OverflowError instead of exiting 3."""
+        record = rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")
+        record["class_list_version"] = 2 ** 100
+        self.write(self.memory, [record])
+        self.assert_exits_3("overflow")
+
+    def test_a_legacy_command_key_is_not_stored(self):
+        record = rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")
+        record["command"] = "legacy text"
+        self.write(self.memory, [record])
+        self.build()
+        columns = [row[1] for row in self.query("PRAGMA table_info(failures)")]
+        self.assertNotIn("command", columns)
+        self.assertNotIn("command", fs.COLUMNS)
 
     def test_db_over_a_source_refuses(self):
         """Survivor 5: `--db` naming a log or an overlay replaced it with the

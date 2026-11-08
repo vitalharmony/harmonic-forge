@@ -36,9 +36,12 @@ name the tool, the missing-precondition class and the check that would have
 caught the slip. All three are required under a precheck rule
 (`PRECHECK_RULES`) or when a hook or gate caught it, a partial key is always
 refused, and each flag may be given once: one slip per record. Every record
-carries a session and a turn id; an unresolved one refuses. `--command` and
-`--probe` pass a secret scan, and a target inside a harmonic-forge checkout is
-refused, because failure data never enters the public repo.
+carries a session and a turn id; an unresolved one refuses. The command that
+failed is not stored: it is recovered from the session transcript through
+`(session, turn)`. `--probe` is one line of at most 200 characters and passes a
+blunt, exemption-free secret scan (`secret_scan.probe_findings`), and a target
+inside a harmonic-forge checkout is refused, because failure data never enters
+the public repo.
 """
 from __future__ import annotations
 
@@ -250,11 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "current class-list version, or other:<name>. Once "
                              "per record.")
     parser.add_argument("--probe", action="append", default=None,
-                        help="Failure key: the check that would have caught it. "
-                             "Secret-scanned. Once per record.")
-    parser.add_argument("--command", default=None,
-                        help="The command that failed, verbatim. Secret-scanned; "
-                             "a hit refuses the capture.")
+                        help="Failure key: the check that would have caught it, "
+                             "described in one line of at most "
+                             f"{secret_scan.MAX_PROBE} characters. No credential "
+                             "keyword, @, :// or token shape. Once per record.")
     parser.add_argument("--turns-lost", type=int, default=None,
                         help="Turns spent on the failure and its recovery.")
     parser.add_argument("--work-discarded", default=None,
@@ -334,13 +336,13 @@ def validate_ids(args: argparse.Namespace) -> str | None:
 
 
 def validate_secrets(args: argparse.Namespace) -> str | None:
-    for flag, value in (("--command", args.command), ("--probe", args.probe)):
-        kinds = secret_scan.findings(value)
-        if kinds:
-            return (f"{flag} holds a secret-shaped value ({', '.join(kinds)}). "
-                    "Nothing was written; the matched text is not repeated here. "
-                    "Replace it with a placeholder or a whole-value $VARIABLE (upper "
-                    "case), ${name} or $(...) and capture again.")
+    kinds = secret_scan.probe_findings(args.probe)
+    if kinds:
+        return (f"--probe is refused ({', '.join(kinds)}). Nothing was written; "
+                "the text is not repeated here. Describe the check in one line of "
+                f"at most {secret_scan.MAX_PROBE} characters, with no credential "
+                "keyword, @, :// or token, and capture again. The command itself "
+                "is recovered from the transcript through (session, turn).")
     return None
 
 
@@ -392,7 +394,6 @@ def build_record(args: argparse.Namespace) -> dict:
         "tool": args.tool,
         "class": args.klass,
         "probe": args.probe,
-        "command": args.command,
         "class_list_version": load_classes()["current"],
     }
     return record

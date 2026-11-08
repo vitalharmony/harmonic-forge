@@ -27,7 +27,8 @@ The database, the logs and the overlays live in
 checkout or worktree is refused: harmonic-forge is public and failure data
 never enters it, and so is a `--db` that is a log or overlay path or lacks a
 database suffix (`.sqlite`, `.sqlite3`, `.db`). Exit codes: 0 found or built,
-1 no stored failure for that key, 2 refused, 3 an I/O or SQLite error.
+1 no stored failure for that key, 2 refused, 3 any other error (I/O, SQLite,
+an unreadable log, a record SQLite cannot bind).
 Stdlib `sqlite3` only, no network.
 """
 from __future__ import annotations
@@ -58,7 +59,7 @@ DEFAULT_LOGS = {
 }
 
 COLUMNS = ("log", "line", "ts", "session", "turn", "lane", "repo", "issue", "caught_by",
-           "rule_existed", "rule_ref", "tool", "class", "probe", "command", "class_list_version")
+           "rule_existed", "rule_ref", "tool", "class", "probe", "class_list_version")
 
 
 class Refused(Exception):
@@ -72,10 +73,14 @@ def _guard(path: Path, flag: str) -> None:
 
 
 def _read_bytes(path: Path) -> bytes | None:
+    """The file's bytes, or None when it does not exist. Only a missing file
+    reads as an empty log; any other OSError (permissions, a directory, an I/O
+    error) propagates, so an unreadable log is a build error (exit 3) and never
+    reads as "no precedent"."""
     try:
         with path.open("rb") as handle:
             return handle.read()
-    except OSError:
+    except FileNotFoundError:
         return None
 
 
@@ -312,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
-    except (OSError, sqlite3.Error) as exc:
+    except Exception as exc:  # noqa: BLE001 - every non-refusal error is exit 3, never 1
         print(f"failure-store: error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_ERROR
     if row is None:

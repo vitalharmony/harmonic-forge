@@ -139,14 +139,16 @@ since the last build, and skips the rebuild if another process finished one
 while it waited for the lock. Neither opens a log for writing. `--db` must end
 in `.sqlite`, `.sqlite3` or `.db` and must not be a log, an overlay or inside the
 overlays folder. Exit codes: 0 found or built, 1 no stored failure for the key,
-2 refused, 3 an I/O or SQLite error. An overlay row is `{"log_line": N, "key_v1": "tool|class",
+2 refused, 3 any other error (an unreadable log, an I/O or SQLite error, a record
+SQLite cannot bind); only a missing log reads as empty. An overlay row is `{"log_line": N, "key_v1": "tool|class",
 "probe"?: "...", "log"?: "memory"|"testplan"}`; files apply in name order, rows
 in file order, the last match wins, and a row with an empty `key_v1` is skipped
 and counted. Records are never rewritten.
 
 **No failure data enters this repo, and no fixture copy of it either.**
-harmonic-forge is public, and failure records hold internal issue text and
-command strings. `capture_failure.py --path` and `failure_store.py --db` refuse
+harmonic-forge is public, and failure records hold internal issue text. No
+record stores the command that failed: it is recovered from the session
+transcript through `(session, turn)`. `capture_failure.py --path` and `failure_store.py --db` refuse
 a target inside a harmonic-forge checkout or worktree; `.gitignore` covers
 `*.sqlite`, `*.sqlite3`, `protocol-failures*.jsonl` and `failure-overlays/`;
 every test fixture is synthetic. Copying an overlay into

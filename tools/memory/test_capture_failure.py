@@ -26,7 +26,7 @@ MINIMAL = [
 ]
 
 #: A full, valid failure key.
-KEY = ["--tool", "l1_post", "--class", "cwd", "--probe", "pwd"]
+KEY = ["--tool", "l1_post", "--class", "cwd", "--probe", "ls the target dir"]
 
 _PATCHES: list = []
 
@@ -428,18 +428,19 @@ class TestClassList(_Quiet):
     def test_new_key_fields_are_null_not_omitted(self):
         self.assertEqual(self.capture(*self.base()), 0)
         record = self.lines()[0]
-        for key in ("tool", "class", "probe", "command"):
+        for key in ("tool", "class", "probe"):
             with self.subTest(key=key):
                 self.assertIn(key, record)
                 self.assertIsNone(record[key])
+        self.assertNotIn("command", record)
         self.assertEqual(record["class_list_version"], m.load_classes()["current"])
         self.assertEqual((record["session"], record["turn"]), ("s", "t"))
 
     def test_key_fields_round_trip(self):
-        self.assertEqual(self.capture(*self.base(caught_by="hook"), *KEY, "--command", "l1_post --x"), 0)
+        self.assertEqual(self.capture(*self.base(caught_by="hook"), *KEY), 0)
         record = self.lines()[0]
-        self.assertEqual([record[k] for k in ("tool", "class", "probe", "command")],
-                         ["l1_post", "cwd", "pwd", "l1_post --x"])
+        self.assertEqual([record[k] for k in ("tool", "class", "probe")],
+                         ["l1_post", "cwd", "ls the target dir"])
 
 
 def _no_ids(argv: list[str]) -> list[str]:
@@ -552,59 +553,78 @@ class TestOneSlip(_Quiet):
 
 #: Token-shaped values, built by concatenation so no literal token sits here.
 GH_TOKEN_SHAPE = "gh" + "p_" + "A1b2C3d4" * 5
-AWS_SHAPE = "AK" + "IA" + "ABCDEFGHIJ234567"
+
+#: The sticky-wicket REFORGE verdict's strings, every one given as a --probe
+#: (harmonic-forge#1288, pass 1 and pass 2 survivors plus the verdict's own).
+#: Each must refuse; `test_secret_scan.SURVIVORS` names the rule per string.
+PROBE_SURVIVORS = [
+    "export DB_PASS" + "WORD='$3cr3tHunter2'", "PASS" + "WORD=$'literal'",
+    "postgresql://app:" + "$ecretPw@db/x", "headers={'Author" + "ization': 'Bearer q9A1b2'}",
+    "curl https://alice" + "@localhost/x", "mail person" + "@evilnoreply.github.com",
+    "export DB_PASS" + "WORD=${PREFIX}hunter2", "TOK" + "EN=$(echo hunter2)",
+    "mvn deploy -Dpass" + "word=hunter2", "tool --access" + "Token=hunter2",
+    'curl -d "{\\"pass' + 'word\\":\\"hunter2\\"}" https://x', "PASS" + "WORD=Bearer hunter2",
+    "echo hunter2 | gh auth login --with-" + "token",
+]
 
 
 class TestSecretScan(_Quiet):
-    """AC5."""
+    """AC5: --probe is one line, at most 200 characters, and carries no
+    credential keyword, @, :// or token shape. No command is stored."""
 
-    def test_token_in_command_refuses_without_writing(self):
-        for command in (f"gh api -H 'x' --token {GH_TOKEN_SHAPE}", f"aws s3 ls # {AWS_SHAPE}",
-                        "curl -u someone@" + "example.com https://x"):
-            with self.subTest(command=command[:12]):
-                self.assert_refused_unchanged(*self.base(), "--command", command)
+    def probe(self, value: str) -> list[str]:
+        return [*self.base(caught_by="hook"), "--tool", "gh-api", "--class", "env", "--probe", value]
+
+    def test_every_survivor_refuses_as_a_probe(self):
+        for value in PROBE_SURVIVORS:
+            with self.subTest(value=value[:16]):
+                self.assert_refused_unchanged(*self.probe(value))
         self.assertFalse(self.log.exists())
 
-    def test_secret_in_probe_refuses(self):
-        self.assert_refused_unchanged(*self.base(caught_by="hook"), "--tool", "gh-api", "--class", "env",
-                                      "--probe", "export API_" + "KEY=abc123def")
+    def test_over_length_probe_refuses(self):
+        self.assert_refused_unchanged(*self.probe("x" * 201))
+        self.assertIn("over-length", self.err.getvalue())
+
+    def test_two_line_probe_refuses(self):
+        self.assert_refused_unchanged(*self.probe("first line\nsecond line"))
+        self.assertIn("multi-line", self.err.getvalue())
+
+    def test_a_200_character_one_line_probe_is_stored(self):
+        value = ("ls the target dir " * 12)[:200]
+        self.assertEqual(self.capture(*self.probe(value)), 0)
+        self.assertEqual(self.lines()[0]["probe"], value)
 
     def test_refusal_never_echoes_the_secret(self):
-        self.assertEqual(self.capture(*self.base(), "--command", f"run {GH_TOKEN_SHAPE}"), 2)
+        self.assertEqual(self.capture(*self.probe(f"run {GH_TOKEN_SHAPE}")), 2)
         message = self.err.getvalue()
         self.assertIn("github-token", message)
         self.assertNotIn(GH_TOKEN_SHAPE, message)
         self.assertNotIn(GH_TOKEN_SHAPE[:12], message)
 
     def test_refusal_never_echoes_any_kind(self):
-        """Every kind, end to end: exit 2, the log byte-identical, the kind
-        named, the value never repeated."""
+        """Every content kind, end to end: exit 2, the log byte-identical, the
+        kind named, the value never repeated."""
         mixed = "A1b2C3d4E5f6G7h8"
         cases = {
-            "credential-assignment": ("export DB_PASS" + "WORD='$3cr3tHunter2'", "$3cr3tHunter2"),
-            "authorization-header": ('{"Author' + 'ization": "Bearer ' + "q9" + mixed + '"}', "q9" + mixed),
-            "basic-auth": ("curl -u deploy:" + "hunt" + "er2zz https://x", "hunter2zz"),
-            "url-credentials": ("postgresql://app:" + "$ecretPw" + "@db/x", "$ecretPw"),
+            "credential-keyword": ("set DB_PASS" + "WORD to hunter2zz", "hunter2zz"),
+            "at-sign": ("mail person@" + "evil.example", "person@evil"),
+            "url-scheme": ("open ftp:" + "//hunter2zz", "hunter2zz"),
             "jwt": ("ey" + "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.sig9", "JhbGciOiJIUzI1NiIs"),
-            "email-address": ("mail person@" + "evilnoreply.github.com", "person@evil"),
             "opaque-token": ("key AI" + "za" + mixed * 2 + "Qz9", "za" + mixed),
         }
         self.assertEqual(self.capture(*self.base()), 0)
-        for kind, (command, secret) in cases.items():
-            for flag in ("--command", "--probe"):
-                with self.subTest(kind=kind, flag=flag):
-                    extra = (["--command", command] if flag == "--command" else
-                             ["--tool", "gh-api", "--class", "env", "--probe", command])
-                    self.assert_refused_unchanged(*self.base(), *extra)
-                    message = self.err.getvalue()
-                    self.assertIn(kind, message)
-                    self.assertNotIn(secret, message)
-                    self.assertNotIn(command, message)
+        for kind, (value, secret) in cases.items():
+            with self.subTest(kind=kind):
+                self.assert_refused_unchanged(*self.probe(value))
+                message = self.err.getvalue()
+                self.assertIn(kind, message)
+                self.assertNotIn(secret, message)
+                self.assertNotIn(value, message)
 
-    def test_clean_command_is_stored_verbatim(self):
-        command = 'GH_TOKEN="$TOKEN" python3 l1_post.py --repo a/b --body "x y" | tee out'
-        self.assertEqual(self.capture(*self.base(), "--command", command), 0)
-        self.assertEqual(self.lines()[0]["command"], command)
+    def test_command_flag_is_gone(self):
+        with self.assertRaises(SystemExit):
+            self.capture(*self.base(), "--command", "ls")
+        self.assertFalse(self.log.exists())
 
 
 class TestForgeHoldsNoData(_Quiet):
@@ -687,7 +707,8 @@ class TestFailureKeySkill(unittest.TestCase):
 
     def test_the_skill_documents_the_key_rules(self):
         text = self.SKILL.read_text(encoding="utf-8")
-        for needle in ("--tool", "--class", "--probe", "--command", "--turn", "One slip per record",
+        for needle in ("--tool", "--class", "--probe", "--turn", "One slip per record",
+                       "The command that failed is not stored", "at most 200",
                        "other:reasoning", "A Codex caller passes `--session` and\n`--turn` itself"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)

@@ -28,7 +28,6 @@ CREATE TABLE failures (
   tool               TEXT,
   class              TEXT,
   probe              TEXT,
-  command            TEXT,
   class_list_version INTEGER,
   PRIMARY KEY (log, line)
 );
@@ -58,7 +57,7 @@ WITH last_overlay AS (
   WHERE rn = 1
 )
 SELECT f.log, f.line, f.ts, f.session, f.turn, f.lane, f.repo, f.issue,
-       f.caught_by, f.rule_existed, f.rule_ref, f.command, f.class_list_version,
+       f.caught_by, f.rule_existed, f.rule_ref, f.class_list_version,
        coalesce(o.tool, f.tool)   AS tool,
        coalesce(o.class, f.class) AS class,
        coalesce(o.probe, f.probe) AS probe,

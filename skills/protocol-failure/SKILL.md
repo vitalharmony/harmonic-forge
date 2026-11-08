@@ -13,7 +13,6 @@ skipped capture is indistinguishable from a clean session.
 python3 ~/harmonic-forge/tools/memory/capture_failure.py \
   --caught-by <how> --rule-existed <what> [--rule-ref <id>] \
   [--tool <id> --class <class> --probe "the check that would have caught it"] \
-  [--command "the command that failed, verbatim"] \
   --expected "what the protocol required" \
   --happened "what actually happened" \
   --account "the narrative"
@@ -96,7 +95,8 @@ improvement loop proposes registry changes from (harmonic-forge#1279).
   `--class other:reasoning`: a reasoning error no tool would have caught, whose
   `--probe` names the check that would have (for example "re-read the issue's
   AC before claiming"). For a gate-caught code defect, `--tool` is the gate's
-  tool (`mise-check`, `pytest`, `run_tests`) and `--probe` the failing command.
+  tool (`mise-check`, `pytest`, `run_tests`) and `--probe` a one-line
+  description of the failing check.
 - **`--class`** is from the current class-list version, or `other:<name>`
   (`[a-z][a-z0-9-]*`, not an existing class). The improvement loop reviews
   `other:` classes. A published version is never edited; a change is a new
@@ -120,15 +120,20 @@ Class-list version 1:
 | `owed-work` | owed work was done or reported before stopping |
 | `policy` | the action is allowed (operator-only steps, raw writes, scan refusals) |
 
-`--command` and `--probe` pass a local secret scan
-(`tools/memory/secret_scan.py`). A token-, key-, credential- or email-shaped
-value refuses the capture; the refusal names the kind, never the text. A
-credential keyword in any key position (`KEY=`, `"key":`, `key:=`, `key =>`,
-`--key value`) refuses unless its whole value is one shell expansion (`$NAME`
-with an upper-case name, `${name}`, `$(...)`), unquoted or double-quoted;
-single-quoted and `$'...'` values never pass. Use such an expansion or a
-placeholder instead. A blank or whitespace-only `--tool`, `--class` or
-`--probe` counts as absent.
+**The command that failed is not stored.** It is recovered from the session
+transcript through the record's `(session, turn)`, which every record carries.
+
+`--probe` is a short description, not a command: one line, at most 200
+characters. It passes a blunt local scan (`tools/memory/secret_scan.py`) with
+no shell awareness and no exemptions. Any of these refuses the capture (exit 2,
+nothing written; the refusal names the kind, never the text): a credential
+keyword anywhere, case-insensitive (`token`, `secret`, `password`, `passwd`,
+`pwd`, `api_key`/`apikey`, `auth_key`, `private_key`, `authorization`), any `@`,
+any `://`, a vendor token shape, a JWT header, a PEM private-key header, or a
+32+ character mixed-case alphanumeric run. Rephrase the probe without it ("the
+gh call ran under the wrong account", not the command). A secret with none of
+those marks and under 32 characters is out of scope. A blank or
+whitespace-only `--tool`, `--class` or `--probe` counts as absent.
 
 ## Where it writes
 
