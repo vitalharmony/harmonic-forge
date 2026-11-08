@@ -356,6 +356,29 @@ The grant file and the public comment are an audit trail, not proof
 against a session that can write the grant store.
 <!-- /R-0418 -->
 
+## `PARK` — the operator lets an open issue leave a lane's task list
+
+Grammar: **`PARK` + issue key, optionally `:` + reason**, e.g. `PARK H2621`
+or `PARK H2621: moved to 3.2`, as the prompt's first line, typed unindented
+and uppercase (FORCE's placement).
+
+Direction: operator → any LANE-set session.
+
+<!-- R-0421 -->
+The hook writes one grant (`tools/hooks/park_grant.py`, 1h TTL) only for an
+operator-typed first line passing R-0117 in a LANE-set session, bound to that
+session and that key. It lets the session complete or delete that open
+issue's last task-list entry once, which R-0413 otherwise holds until the
+issue closes; the hold consumes it, makes no GitHub read for it, and denies
+while an entry update is still owed for the key, keeping the grant. Parking
+writes nothing to GitHub. The issue comes back by the session's own next
+post, merge, PR or close on the key (Stop then requires an entry carrying
+it), or by the belt once its milestone is active. A grant spent on a
+TaskUpdate that then fails is gone; type `PARK <KEY>` again. The grant file
+is an audit trail, not proof against a session that can write the grant
+store.
+<!-- /R-0421 -->
+
 ## `UI` — the operator's approval of a rendered-UI change
 
 Grammar: **`UI` + issue key + optional digest + `:` + reason**, FORCE's

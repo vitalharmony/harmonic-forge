@@ -2841,3 +2841,14 @@ text_sha = "36a08172b543114c"
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
 ]
+
+[[rule]]
+id = "R-0421"
+file = "rules/lane-shorthand.md"
+anchor = "park"
+statement = "An operator-typed first-line PARK <KEY>[: <reason>] in a LANE-set session writes one 1h grant bound to that session and key; the R-0413 hold consumes it to let that open issue's last task-list entry be completed or deleted once, makes no GitHub read for it, denies while an entry update is owed for the key (keeping the grant), and parking writes nothing to GitHub (harmonic-forge#1281)."
+text_sha = "9dc63377575926d0"
+hooks = [
+  { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+  { script = "tasklist_hold.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json"] },
+]
