@@ -1350,10 +1350,29 @@ class StatusChecks(unittest.TestCase):
         state, detail = self._judge(checks=[check("verify", "failure")], fail=("/statuses",))
         self.assertEqual(state, "red", detail)
 
+    def test_unreadable_status_with_unrequired_red_job_is_unknown(self):
+        """Pass 1 survivor: only a red REQUIRED job makes a failed read red."""
+        state, detail = self._judge(checks=[check("verify"), check("lint", "failure")],
+                                    fail=("/statuses",))
+        self.assertEqual(state, "unknown", detail)
+        state, detail = self._judge(
+            checks=[check("verify")], fail=("/statuses",),
+            bare_runs=[{"name": "ui-approval", "status": "completed", "conclusion": "cancelled"}])
+        self.assertEqual(state, "unknown", detail)
+
+    def test_unreadable_status_with_required_red_and_unrequired_pending_is_red(self):
+        state, detail = self._judge(
+            checks=[check("verify", "failure"), check("lint", "in_progress", status="in_progress")],
+            fail=("/statuses",))
+        self.assertEqual(state, "red", detail)
+
     def test_cancelled_jobless_run_does_not_hide_status(self):
         state, detail = self._judge(
-            bare_runs=[{"name": "ui-approval", "status": "completed", "conclusion": "cancelled"}],
-            statuses=[status("ui-approval")])
+            # started_at after the status's updated_at, so _latest_per_name would
+            # pick the run if the replacement did not drop it (pass 1 survivor).
+            bare_runs=[{"name": "ui-approval", "status": "completed", "conclusion": "cancelled",
+                        "started_at": "2026-11-07T19:10:00Z"}],
+            statuses=[status("ui-approval", updated_at="2026-11-07T19:09:37Z")])
         self.assertEqual(state, "green", detail)
 
     def test_red_jobless_run_without_status_stays_red(self):

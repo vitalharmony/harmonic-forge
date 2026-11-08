@@ -741,8 +741,12 @@ def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[s
         return runs, None
     records, failure = _status_records(repo, sha, missing, run=run)
     if failure is not None:
-        if runs and _judge_runs(runs, sha, None)[0] == "red":
-            return [], _judge_runs(runs, sha, None)
+        # Only real jobs the branch requires decide a red here (harmonic-forge#1283
+        # preclose pass 1): a red unrequired job, or a job-less run record, must
+        # not turn a transient read failure into a terminal red.
+        scoped = [r for r in runs if not r.get("jobless_run") and r.get("name") in required]
+        if scoped and _judge_runs(scoped, sha, None)[0] == "red":
+            return [], _judge_runs(scoped, sha, None)
         return [], failure
     replaced = {r["name"] for r in records}
     kept = [r for r in runs if not (r.get("jobless_run") and r.get("name") in replaced)]
