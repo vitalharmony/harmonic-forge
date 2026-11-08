@@ -776,7 +776,7 @@ def check_pass_cap(repo: str, issue: int, head_sha: str, main_ref: str, force: b
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         # harmonic-forge#838 AC5: the operator's --force still needs the
         # post-verdict check in the sticky-wicket case.
-        reason = preclose_passes.post_verdict_refusal(receipt, head_sha, repo, issue)
+        reason = preclose_passes.post_verdict_refusal(receipt, head_sha, repo, issue, main_ref)
         if reason:
             raise SystemExit(f"preclose-check: {repo}#{issue} at {head_sha[:12]}: {reason}")
         return
