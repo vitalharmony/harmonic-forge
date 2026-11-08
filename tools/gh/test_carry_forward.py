@@ -65,6 +65,10 @@ def fake_ci(mode="green"):
         target = cmd[2] if cmd[1] == "api" and cmd[2] != "--paginate" else cmd[3]
         if target.endswith("/protection"):
             return 0, '["verify"]'
+        if "/statuses" in target:
+            # harmonic-forge#1283: no commit statuses, so a missing `verify`
+            # job still reads `absent`, not `unknown`.
+            return 0, ""
         if "actions/runs?head_sha=" in target:
             if mode == "absent":
                 return 0, ""
@@ -252,6 +256,7 @@ class CarryForwardValidateTests(_Fixture):
     def test_ci_conclusion_is_called_with_required(self):
         with mock.patch.object(gate_ci, "required_checks", return_value={"verify"}) as req, \
                 mock.patch.object(gate_ci, "_read_check_runs", return_value=([], None)), \
+                mock.patch.object(gate_ci, "_status_records", return_value=([], None)), \
                 mock.patch.object(gate_ci, "_judge_runs", return_value=("green", "verify:success")) as ci:
             self.assertEqual(cf.check_ci(REPO, "a" * 40, run="R"), [])
         req.assert_called_once_with(REPO, run="R")

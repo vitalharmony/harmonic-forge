@@ -28,7 +28,8 @@ _READABLE = object()
 
 def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bare_runs=(),
             message="ordinary commit\n", attempts=(), run_status="completed",
-            extra_runs=(), total_count=None, runs_listed=None, jobs_by_id=None):
+            extra_runs=(), total_count=None, runs_listed=None, jobs_by_id=None,
+            statuses=()):
     """A `run` stand-in that ROUTES BY ENDPOINT.
 
     The first version returned one payload for every command, which worked only
@@ -92,6 +93,11 @@ def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bar
         if re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-fA-F]+", url):
             # Short-SHA resolution (`--jq .sha`): the fixture's SHAs are hex, padded to 40.
             return 0, url.rsplit("/", 1)[1].ljust(40, "0")
+        if "/statuses" in url:
+            # harmonic-forge#1283: the commit status LIST, newest first, as
+            # `--jq '.[] | {context, state, creator: .creator.login, updated_at}'`
+            # streams it (one object per line, `creator` already flattened).
+            return 0, "\n".join(json.dumps(s) for s in statuses)
         if "/actions/runs?" in url and runs_listed is not None:
             return 0, "\n".join(json.dumps(o) for o in runs_listed)
         if "/actions/runs/" in url and "/jobs" in url and jobs_by_id is not None:
@@ -1285,6 +1291,114 @@ class RegressionFixTests(unittest.TestCase):
         state, detail = gate_ci.authorizing_conclusion("o/r", "a" * 40, set(), run=run)
         self.assertEqual(len(calls), 1)
         self.assertEqual(state, "green", detail)
+
+
+def status(context, state="success", creator="github-actions[bot]",
+           updated_at="2026-11-07T19:09:37Z"):
+    return {"context": context, "state": state, "creator": creator, "updated_at": updated_at}
+
+
+class StatusChecks(unittest.TestCase):
+    """harmonic-forge#1283: a required context satisfied by a commit status."""
+
+    SHA = "a" * 40
+    REQ = {"verify", "ui-approval"}
+
+    def _judge(self, required=None, **kw):
+        kw.setdefault("checks", [check("verify")])
+        return gate_ci.authorizing_conclusion(
+            "o/r", self.SHA, self.REQ if required is None else required,
+            run=fake_gh(required=self.REQ, **kw))
+
+    def test_required_status_from_actions_bot_is_green(self):
+        state, detail = self._judge(statuses=[status("ui-approval")])
+        self.assertEqual(state, "green", detail)
+        self.assertIn("ui-approval:success", detail)
+
+    def test_status_from_user_token_is_ignored(self):
+        state, detail = self._judge(statuses=[status("ui-approval", creator="vitalharmony")])
+        self.assertEqual(state, "absent", detail)
+        self.assertIn("ui-approval", detail)
+
+    def test_older_bot_status_behind_newer_user_status_is_green(self):
+        state, detail = self._judge(statuses=[
+            status("ui-approval", "failure", creator="vitalharmony"),
+            status("ui-approval", "success")])
+        self.assertEqual(state, "green", detail)
+
+    def test_failure_and_error_status_are_red(self):
+        for raw in ("failure", "error"):
+            with self.subTest(state=raw):
+                state, detail = self._judge(statuses=[status("ui-approval", raw)])
+                self.assertEqual(state, "red", detail)
+
+    def test_pending_status_is_pending(self):
+        state, detail = self._judge(statuses=[status("ui-approval", "pending")])
+        self.assertEqual(state, "pending", detail)
+
+    def test_newest_status_per_context_wins(self):
+        state, detail = self._judge(statuses=[
+            status("ui-approval", "failure", updated_at="2026-11-07T20:00:00Z"),
+            status("ui-approval", "success", updated_at="2026-11-07T19:00:00Z")])
+        self.assertEqual(state, "red", detail)
+
+    def test_unreadable_status_is_unknown(self):
+        state, detail = self._judge(fail=("/statuses",))
+        self.assertEqual(state, "unknown", detail)
+
+    def test_unreadable_status_with_red_job_is_red(self):
+        state, detail = self._judge(checks=[check("verify", "failure")], fail=("/statuses",))
+        self.assertEqual(state, "red", detail)
+
+    def test_unreadable_status_with_unrequired_red_job_is_unknown(self):
+        """Pass 1 survivor: only a red REQUIRED job makes a failed read red."""
+        state, detail = self._judge(checks=[check("verify"), check("lint", "failure")],
+                                    fail=("/statuses",))
+        self.assertEqual(state, "unknown", detail)
+        state, detail = self._judge(
+            checks=[check("verify")], fail=("/statuses",),
+            bare_runs=[{"name": "ui-approval", "status": "completed", "conclusion": "cancelled"}])
+        self.assertEqual(state, "unknown", detail)
+
+    def test_unreadable_status_with_required_red_and_unrequired_pending_is_red(self):
+        state, detail = self._judge(
+            checks=[check("verify", "failure"), check("lint", "in_progress", status="in_progress")],
+            fail=("/statuses",))
+        self.assertEqual(state, "red", detail)
+
+    def test_cancelled_jobless_run_does_not_hide_status(self):
+        state, detail = self._judge(
+            # started_at after the status's updated_at, so _latest_per_name would
+            # pick the run if the replacement did not drop it (pass 1 survivor).
+            bare_runs=[{"name": "ui-approval", "status": "completed", "conclusion": "cancelled",
+                        "started_at": "2026-11-07T19:10:00Z"}],
+            statuses=[status("ui-approval", updated_at="2026-11-07T19:09:37Z")])
+        self.assertEqual(state, "green", detail)
+
+    def test_red_jobless_run_without_status_stays_red(self):
+        state, detail = self._judge(
+            bare_runs=[{"name": "ui-approval", "status": "completed",
+                        "conclusion": "startup_failure"}])
+        self.assertEqual(state, "red", detail)
+
+    def test_no_status_read_when_jobs_cover_required(self):
+        inner = fake_gh(checks=[check("verify"), check("ui-approval")], required=self.REQ)
+
+        def run(cmd):
+            url = next((a for a in cmd if a.startswith("repos/")), "")
+            if "/statuses" in url:
+                raise AssertionError("statuses read although jobs cover every required name")
+            return inner(cmd)
+        state, detail = gate_ci.authorizing_conclusion("o/r", self.SHA, self.REQ, run=run)
+        self.assertEqual(state, "green", detail)
+
+    def test_unprotected_repo_reads_no_status(self):
+        """AC8: on the DEFAULT_REQUIRED_CHECKS fallback, a bot `verify` status
+        alone never satisfies the gate."""
+        state, detail = gate_ci.authorizing_conclusion(
+            "o/r", self.SHA, set(),
+            run=fake_gh(checks=[check("lint")], required=None, statuses=[status("verify")]))
+        self.assertEqual(state, "absent", detail)
 
 
 if __name__ == "__main__":
