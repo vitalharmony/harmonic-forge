@@ -3308,8 +3308,13 @@ def _discharge_handoff_owed(repo: str, issue: int) -> None:
 
 #: harmonic-forge#1036: flags a carry-forward never takes -- each one waives or
 #: widens something the carry-forward's own live checks must decide alone.
+#: harmonic-forge#1297: `--ack-overlap` is not among them. A sibling-worktree
+#: overlap is a coordination check between lane worktrees, not part of the
+#: carried PASS's authority, so it is the one world check a carry-forward may
+#: acknowledge, recorded in the body under the digest as on every other kind.
+#: The carried PASS is still verified in full by `_carry_forward.py`.
 CARRY_FORWARD_REFUSED_FLAGS = (
-    ("ack_no_pr_required", "--ack-no-pr-required"), ("ack_overlap", "--ack-overlap"),
+    ("ack_no_pr_required", "--ack-no-pr-required"),
     ("prod_run", "--prod-run"), ("mutates_live", "--mutates-live"),
     ("spec_comment", "--spec-comment"), ("cross_repo", "--cross-repo"),
 )

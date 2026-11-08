@@ -552,6 +552,99 @@ class LaneOneOnlyAndArgsTests(unittest.TestCase):
         import l1_post  # noqa: PLC0415
         self.assertEqual(l1_post.LEAD_FIELDS["carry-forward"], ("Target", "Carried", "Next"))
 
+    def test_ack_overlap_with_carry_forward_is_accepted(self):
+        """harmonic-forge#1297 AC1 (CLI form): the refusal text is absent. Exit
+        code is not asserted -- `--file /nonexistent` exits non-zero later."""
+        result = self.run_l1(self.CF + ["--ack-overlap", "H2531 rebases after this merges"], "1")
+        self.assertNotIn("--ack-overlap is not valid", result.stderr)
+
+    def test_the_other_refused_flags_are_still_refused(self):
+        """harmonic-forge#1297 AC3: every other refused flag still refuses."""
+        cases = {"--ack-no-pr-required": ["--ack-no-pr-required", "because"],
+                 "--prod-run": ["--prod-run", "count-label=Person"],
+                 "--mutates-live": ["--mutates-live"],
+                 "--spec-comment": ["--spec-comment", "9"],
+                 "--cross-repo": ["--cross-repo"]}
+        for flag, extra in cases.items():
+            with self.subTest(flag=flag):
+                result = self.run_l1(self.CF + extra, "1")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{flag} is not valid with --kind carry-forward", result.stderr)
+
+
+class CarryForwardOverlapTests(unittest.TestCase):
+    """harmonic-forge#1297: a carry-forward may acknowledge a sibling-worktree
+    overlap. The real `world_checks` runs; only its git/GitHub reads are patched."""
+
+    SIBLING = "feat/9-sibling"
+    REASON = "H9 rebases onto this after it merges"
+    TARGET, FROM = "b" * 40, "a" * 40
+    BODY = (f"## Gate carry-forward — F7\n\n**Target:** {'b' * 40}\n"
+            f"**Carried:** PASS {PASS_ID}\n**Next:** merge\n")
+
+    def setUp(self):
+        import l1_post  # noqa: PLC0415
+        self.l1 = l1_post
+
+    def args(self, **overrides):
+        import argparse  # noqa: PLC0415
+        values = {"kind": "carry-forward", "from_sha": self.FROM, "pass_comment": PASS_ID,
+                  "ack_no_pr_required": None, "ack_overlap": None, "prod_run": None,
+                  "mutates_live": False, "spec_comment": None, "cross_repo": False}
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def post(self, ack_overlap):
+        l1 = self.l1
+        captured = {}
+
+        def fake_run(*cmd, **_kwargs):
+            out = f"{self.TARGET}\trefs/heads/{BRANCH}\n" if "ls-remote" in cmd else "c" * 40 + "\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        def fake_comment_body(repo, issue, body):
+            captured["body"] = body
+            return f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-1", 1
+
+        with mock.patch.object(l1, "issue_is_open"), \
+                mock.patch.object(l1, "run", fake_run), \
+                mock.patch.object(l1, "changed_files", return_value={"tools/x.py"}), \
+                mock.patch.object(l1, "active_worktree_branches", return_value={BRANCH, "main", self.SIBLING}), \
+                mock.patch.object(l1, "sibling_overlaps", return_value=[(self.SIBLING, {"tools/x.py"})]), \
+                mock.patch.object(l1, "comment_body", fake_comment_body), \
+                mock.patch.object(l1, "write_receipt"), \
+                mock.patch.object(l1, "_record_attrib"), \
+                mock.patch.object(l1, "_tasklist_owed", None), \
+                mock.patch.object(l1, "validate_sticky_wicket"):
+            l1.post_kind(REPO, ISSUE, "carry-forward", self.BODY, self.TARGET, BRANCH,
+                         ack_overlap=ack_overlap, carry_forward=(self.FROM, PASS_ID))
+        return captured["body"]
+
+    def test_ack_overlap_passes_argument_validation(self):
+        """AC1: a non-empty --ack-overlap with --from-sha/--pass-comment does not fail."""
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            self.l1.validate_carry_forward_args(self.args(ack_overlap=self.REASON))
+
+    def test_acknowledged_overlap_posts_with_the_override_section(self):
+        """AC1: the posted body names the sibling and the reason."""
+        body = self.post(self.REASON)
+        self.assertIn("### Sibling-overlap override (operator-acknowledged)", body)
+        self.assertIn(self.SIBLING, body)
+        self.assertIn(self.REASON, body)
+        self.assertIn("kind=carry-forward;", body)
+
+    def test_unacknowledged_overlap_still_refuses(self):
+        """AC2: without --ack-overlap an overlapping sibling refuses the post."""
+        with self.assertRaises(SystemExit) as raised:
+            self.post(None)
+        self.assertIn(f"active sibling branch {self.SIBLING!r} overlaps target files", str(raised.exception))
+
+    def test_override_is_covered_by_the_carry_forward_digest(self):
+        """AC4: the body-sha256 covers the override, so lane1-rebase trusts it."""
+        body = self.post(self.REASON)
+        self.assertTrue(lane1_rebase._carry_forward_intact({"body": body}))
+        self.assertEqual(lane1_rebase._carry_forward_fields(body)["sha"], self.TARGET)
+
 
 class PostingGuardWiringTests(unittest.TestCase):
     """F1036 preclose survivor 1: `l1_post.main` runs `_carry_forward.validate`
