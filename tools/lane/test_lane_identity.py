@@ -178,8 +178,12 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(cell["extra_env"]["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"], "false")
 
     def test_codex_lane_leaves_prompt_suggestions_alone(self):
-        cell = self.tree.run("2", [], LANE_CLI="codex",
-                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION")
+        # harmonic-forge#1284 preclose pass 1: export the value a Claude Code lane
+        # session carries, so the capture's scrub is exercised from any shell (CI,
+        # a Codex lane, a plain terminal), not only from a Claude session.
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"}):
+            cell = self.tree.run("2", [], LANE_CLI="codex",
+                                 LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION")
         self.assertTrue(cell["launched"], cell.get("stderr"))
         self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"])
 
