@@ -296,6 +296,48 @@ class RuleCheckBypass(unittest.TestCase):
                 lint.FEEDBACK_ALLOWLIST = original
 
 
+class NestedRuleCheck(unittest.TestCase):
+    """harmonic-forge#1284: Check 9 reads a `rule_check` nested under
+    `metadata:`, where the harness puts it; the hook's inputs never change."""
+
+    VALID = "---\nname: a\ndescription: d\nmetadata:\n  type: feedback\n  rule_check: R-0039\n---\nbody\n"
+    BAD = "---\nname: a\ndescription: d\nmetadata:\n  type: feedback\n  rule_check: none\n---\nbody\n"
+    BOTH = ("---\nname: a\ndescription: d\nrule_check: none (searched: x)\nmetadata:\n"
+            "  type: feedback\n  rule_check: nope\n---\nbody\n")
+
+    def _check9(self, files: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            for name, text in files.items():
+                (store / name).write_text(text)
+            original = lint.FEEDBACK_ALLOWLIST
+            lint.FEEDBACK_ALLOWLIST = store / "no-allowlist.txt"
+            try:
+                return lint.check_rule_check(store)
+            finally:
+                lint.FEEDBACK_ALLOWLIST = original
+
+    def test_check9_accepts_nested_rule_check(self) -> None:
+        self.assertEqual(self._check9({"feedback_nested.md": self.VALID}), [])
+
+    def test_check9_reports_malformed_nested_rule_check(self) -> None:
+        for name, text in (("feedback_bad.md", self.BAD), ("feedback_both.md", self.BOTH)):
+            with self.subTest(case=name):
+                findings = self._check9({name: text})
+                self.assertEqual(len(findings), 1, findings)
+                self.assertIn("malformed gate frontmatter", findings[0])
+                self.assertIn("`rule_check: ", findings[0])
+
+    def test_nested_rule_check_never_reaches_hook_inputs(self) -> None:
+        for text in (self.VALID, self.BAD):
+            with self.subTest(text=text):
+                gate = lint.GateFrontmatter(text)
+                self.assertIsNone(gate.rule_check)
+                self.assertEqual(gate.errors, [])
+        both = lint.GateFrontmatter(self.BOTH)
+        self.assertEqual(both.rule_check, "none (searched: x)")
+        self.assertEqual(both.errors, [])
+
 class IssueReferences(unittest.TestCase):
     """TC5 — `[[hrse#1303]]` is not a broken memory link."""
 

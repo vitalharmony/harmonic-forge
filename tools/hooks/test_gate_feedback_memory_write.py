@@ -188,12 +188,15 @@ AMBIGUOUS = [
     ("lesson_block.md", "---\nname: a\ndescription: |\n  type: feedback\n---\nbody\n"),
     ("lesson_deep.md", "---\nname: a\nmetadata:\n    type: feedback\n---\nbody\n"),
     ("lesson_unclosed.md", "---\nname: a\ntype: feedback\nbody with no closing marker\n"),
-    ("feedback_nested_rc.md", "---\nname: a\nmetadata:\n  rule_check: none (searched: x)\n---\nbody\n"),
+    ("feedback_nested_bad_rc.md", "---\nname: a\nmetadata:\n  rule_check: none\n---\nbody\n"),
 ]
 
 
 class SharedReader(unittest.TestCase):
-    """The hook and Check 9 agree on every ambiguous or undeclared case."""
+    """The hook and Check 9 agree on every ambiguous or undeclared case, with
+    one named exception: a well-formed `rule_check` nested under `metadata:`
+    (harmonic-forge#1284), which the hook denies and Check 9 accepts, because
+    the harness nests the key during a Write the hook saw it top-level in."""
 
     def test_hook_denies_and_lint_reports_each_case(self) -> None:
         import memory_lint  # tools/memory is on sys.path via the hook module
@@ -213,6 +216,26 @@ class SharedReader(unittest.TestCase):
         for name, _text in AMBIGUOUS:
             with self.subTest(case=name, side="lint"):
                 self.assertIn(name, reported)
+
+
+class NestedRuleCheckSplit(unittest.TestCase):
+    """harmonic-forge#1284 AC4: the one case the hook and Check 9 split on."""
+
+    def test_nested_rule_check_hook_denies_lint_accepts(self) -> None:
+        import memory_lint
+        name = "feedback_nested_rc.md"
+        text = "---\nname: a\nmetadata:\n  rule_check: none (searched: x)\n---\nbody\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            self.assertIsNotNone(gate.decide(
+                "Write", {"file_path": str(store / name), "content": text}, store, IDS))
+            (store / name).write_text(text)
+            original = memory_lint.FEEDBACK_ALLOWLIST
+            memory_lint.FEEDBACK_ALLOWLIST = store / "no-allowlist.txt"
+            try:
+                self.assertEqual(memory_lint.check_rule_check(store), [])
+            finally:
+                memory_lint.FEEDBACK_ALLOWLIST = original
 
 
 class NonFeedbackYaml(Decide):

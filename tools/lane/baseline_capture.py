@@ -220,7 +220,12 @@ def capture_cell(
                     "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                     "GH_CONFIG_DIR", "GOOGLE_CLOUD_PROJECT",
                     # harmonic-forge#1014: never retitle the operator's pane.
-                    "TMUX", "TMUX_PANE", "LANE_LABEL"):
+                    "TMUX", "TMUX_PANE", "LANE_LABEL",
+                    # harmonic-forge#1284 (folded, operator 2026-11-07): a
+                    # Claude Code lane session exports this as `false`, so a
+                    # capture run from one read the session's value back
+                    # instead of what the launcher set.
+                    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)
