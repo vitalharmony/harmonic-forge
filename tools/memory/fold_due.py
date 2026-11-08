@@ -8,7 +8,8 @@ snapshot `--record` writes after each fold. Any one trigger is enough:
 
 1. volume: 15 or more feedback memories absent from the last snapshot;
 2. recurrence: the same non-empty `rule_ref` in two or more
-   `protocol-failures.jsonl` records appended since the marker;
+   `protocol-failures.jsonl` events appended since the marker (records sharing
+   a `(session, turn)` are one event);
 3. growth: `MEMORY.md` bytes, or this repo's always-loaded surface
    (`context_budget.surface`), up 10% or more since the snapshot. Absolute
    budgets are not used: HRSE2 is over its budget by design, and a fold
@@ -228,14 +229,22 @@ def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[tu
     offset = marker["failures_offset"]
     if offset > len(lines) or _head_hash(lines, offset) != marker["failures_head"]:
         offset = 0  # the log was truncated or replaced: count all of it
-    counts: dict[str, int] = {}
-    for line in lines[offset:]:
+    # A split event (one slip per record, harmonic-forge#1288) writes several
+    # records sharing an explicit `--event` within one session: it counts once.
+    # Every other record counts once per line, legacy records included. A turn
+    # is not an event: one operator prompt can span unrelated slips.
+    units: dict[str, set] = {}
+    for line_no, line in enumerate(lines[offset:], start=offset):
         try:
-            ref = json.loads(line).get("rule_ref")
+            data = json.loads(line)
+            ref = data.get("rule_ref")
         except (ValueError, AttributeError):
             continue
         if isinstance(ref, str) and ref.strip():
-            counts[ref.strip()] = counts.get(ref.strip(), 0) + 1
+            session, event = data.get("session"), data.get("event")
+            unit = ("event", str(session), str(event)) if session and event else ("line", line_no)
+            units.setdefault(ref.strip(), set()).add(unit)
+    counts = {ref: len(seen) for ref, seen in units.items()}
     recurring = sorted(r for r, n in counts.items() if n >= RECURRENCE_THRESHOLD)
     if recurring:
         fired.append(("recurrence", f"{', '.join(recurring)} failed again since the last fold"))

@@ -131,6 +131,21 @@ class PurePythonTests(Fixture):
         self.assertEqual(rows[1][6:9], ("unresolved", "vitalharmony", "hrse"))
         self.assertEqual(rows[0][9], "narrative")
 
+    def test_event_is_session_event_else_log_line_else_row(self) -> None:
+        records = [dict(_miss("R-9001"), session="s", turn="t", event="e1"),
+                   dict(_miss("R-9001"), session="s", turn="t"), dict(_miss("R-9001"), event="e1"),
+                   dict(_miss("R-9001"), _source="/x/log.jsonl:4"), _miss("R-9001")]
+        events = [row[10] for row in dr.miss_rows(records, None, None, None)]
+        self.assertEqual(events, ["s/event:e1", "row:1", "row:2", "/x/log.jsonl:4", "row:4"])
+        self.assertEqual(dr.MISS_COLUMNS[-1], "event")
+
+    def test_read_misses_tags_log_and_line(self) -> None:
+        log = self.write_log([_miss("R-9001"), _miss("R-9002")])
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write("\n" + json.dumps(_miss("R-9003")) + "\n")
+        records, _ = dr.read_misses([log])
+        self.assertEqual([r[dr.SOURCE_KEY] for r in records], [f"{log}:0", f"{log}:1", f"{log}:3"])
+
     def test_unresolved_rule_ref_counted_not_guessed(self) -> None:
         rows = dr.miss_rows(BASE_MISSES, None, None, None)
         self.assertEqual(dr.unresolved_rule_refs(rows), 1)
@@ -190,6 +205,42 @@ class ViewTests(Fixture):
         report = self.run_report(BASE_MISSES + [_miss("R-9999"), _miss("R-9999")])
         self.assertNotIn("R-9999", report)
         self.assertIn("3 candidate(s) suppressed (protected target).", report)
+
+    def test_d1_shared_session_and_turn_without_event_is_two_misses(self) -> None:
+        """harmonic-forge#1288 (a): a turn is not an event, so two records
+        sharing (session, turn) with no --event are two misses."""
+        rows = [dict(_miss("R-9001"), session="s1", turn="t1") for _ in range(2)]
+        row = self.row_of(self.run_report(rows), "R-9001")
+        self.assertIsNotNone(row)
+        self.assertIn("| 2 | 0 |", row)
+
+    def test_d1_shared_event_in_one_session_is_one_miss(self) -> None:
+        """(b): records sharing an explicit --event within one session are one."""
+        split = [dict(_miss("R-9001", caught="operator"), session="s1", turn=t, event="e1")
+                 for t in ("t1", "t1", "t2")]
+        self.assertIsNone(self.row_of(self.run_report(split), "R-9001"))
+        row = self.row_of(self.run_report(split + [dict(_miss("R-9001"), session="s1", event="e2")]),
+                          "R-9001")
+        self.assertIsNotNone(row)
+        self.assertIn("| 2 | 1 |", row)
+
+    def test_d1_same_event_in_two_sessions_is_two_misses(self) -> None:
+        """(c): --event is scoped by session."""
+        rows = [dict(_miss("R-9001"), session=s, turn="t1", event="1") for s in ("s1", "s2")]
+        row = self.row_of(self.run_report(rows), "R-9001")
+        self.assertIsNotNone(row)
+        self.assertIn("| 2 | 0 |", row)
+
+    def test_same_line_in_both_logs_is_two_events(self) -> None:
+        memory = self.write_log([_miss("R-9001")], "memory.jsonl")
+        testplan = self.write_log([_miss("R-9001")], "testplan.jsonl")
+        code = dr.main(["--miss-log", str(memory), "--miss-log", str(testplan), "--registry", str(self.registry),
+                        "--views", str(self.views), "--out-dir", str(self.out), "--date", "2026-10-22",
+                        "--base-checks", str(self.tmp / "no-base-checks")])
+        self.assertEqual(code, 0)
+        row = self.row_of((self.out / "2026-10-22.md").read_text(encoding="utf-8"), "R-9001")
+        self.assertIsNotNone(row)
+        self.assertIn("| 2 | 0 |", row)
 
     def test_report_files_nothing_outside_out_dir(self) -> None:
         before = sorted(p for p in self.tmp.rglob("*") if p.is_file())

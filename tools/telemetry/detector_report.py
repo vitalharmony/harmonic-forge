@@ -8,7 +8,10 @@ change. Read-only and LLM-free: it files nothing and edits nothing (AC3).
 
 Tables:
   misses_raw  the rows of both protocol-failures.jsonl logs (a missing log is
-              empty), each tagged with `account`/`org`/`repo` partitions (AC4).
+              empty), each tagged with `account`/`org`/`repo` partitions (AC4)
+              and an `event` (`session/event:<id>` when the record carries an
+              explicit `--event` and a session, else `log:line`; records of one
+              split event share it, harmonic-forge#1288).
               The record's own `account` key is free-text narrative, so it is
               kept as `account_note`; `org`/`repo` come from the record's
               `repo` when it names one, and are `unresolved` otherwise. The
@@ -45,7 +48,9 @@ UNRESOLVED = "unresolved"
 RULE_ID_RE = re.compile(r"R-\d{4}")
 IN_FORCE = ("rule", "scoped_out")
 MISS_COLUMNS = ("ts", "caught_by", "rule_existed", "rule_ref", "lane", "issue",
-                "account", "org", "repo", "account_note")
+                "account", "org", "repo", "account_note", "event")
+#: The private key `read_misses` stores each record's (log, line) under.
+SOURCE_KEY = "_source"
 
 DEFAULT_LOGS = [default_log_path(None), default_log_path("3")]
 DEFAULT_REGISTRY = ROOT / "tools" / "rules" / "registry.toml"
@@ -138,12 +143,14 @@ def partition(record: dict) -> tuple[str, str, str]:
 
 def read_misses(logs: list[Path]) -> tuple[list[dict], int]:
     """`(records, malformed)`. A torn append must not stop every later
-    report, so a line that is not a JSON object is skipped and counted."""
+    report, so a line that is not a JSON object is skipped and counted. Each
+    record keeps its log path and 0-based line under `SOURCE_KEY`, the event
+    of a record without session and turn ids (harmonic-forge#1288)."""
     rows, malformed = [], 0
     for log in logs:
         if not log.is_file():
             continue
-        for line in log.read_text(encoding="utf-8").splitlines():
+        for line_no, line in enumerate(log.read_text(encoding="utf-8").splitlines()):
             if not line.strip():
                 continue
             try:
@@ -151,24 +158,36 @@ def read_misses(logs: list[Path]) -> tuple[list[dict], int]:
             except ValueError:
                 record = None
             if isinstance(record, dict):
+                record[SOURCE_KEY] = f"{log}:{line_no}"
                 rows.append(record)
             else:
                 malformed += 1
     return rows, malformed
 
 
+def event_of(record: dict, position: int) -> str:
+    """One failure event: `session/event:<id>` when the record carries both a
+    session and an explicit `event` (a split event's records share it), else
+    `log:line`, else a per-row fallback so two bare records never merge. A turn
+    is not an event: one operator prompt can span unrelated slips."""
+    session, event = record.get("session"), record.get("event")
+    if session and event:
+        return f"{session}/event:{event}"
+    return str(record.get(SOURCE_KEY) or f"row:{position}")
+
+
 def miss_rows(records: list[dict], account: str | None, org: str | None, repo: str | None) -> list[tuple]:
     """Partition filters keep a matching row and an `unresolved` one: an
     unresolved row is never dropped by a guess about where it belongs."""
     rows = []
-    for record in records:
+    for position, record in enumerate(records):
         acct, rec_org, rec_repo = partition(record)
         if any(want and have not in (want, UNRESOLVED)
                for want, have in ((account, acct), (org, rec_org), (repo, rec_repo))):
             continue
         rows.append((record.get("ts"), record.get("caught_by"), record.get("rule_existed"),
                      record.get("rule_ref") or "", record.get("lane"), str(record.get("issue") or ""),
-                     acct, rec_org, rec_repo, record.get("account")))
+                     acct, rec_org, rec_repo, record.get("account"), event_of(record, position)))
     return rows
 
 
@@ -178,7 +197,7 @@ def unresolved_rule_refs(rows: list[tuple]) -> int:
 
 TABLE_DDL = {
     "misses_raw": "ts VARCHAR, caught_by VARCHAR, rule_existed VARCHAR, rule_ref VARCHAR, lane VARCHAR, "
-                  "issue VARCHAR, account VARCHAR, org VARCHAR, repo VARCHAR, account_note VARCHAR",
+                  "issue VARCHAR, account VARCHAR, org VARCHAR, repo VARCHAR, account_note VARCHAR, event VARCHAR",
     "rule_hooks": "rule_id VARCHAR, hook_count INTEGER, scripts VARCHAR, protected BOOLEAN",
     "base_checks": "sha VARCHAR, complete BOOLEAN, failures VARCHAR[], mtime DOUBLE",
     "base_check_protected": "test VARCHAR, protected BOOLEAN",

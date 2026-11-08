@@ -10,3 +10,9 @@ __pycache__/
 # harmonic-forge#883: the transaction log is rendered from git at read time
 # (`mise run transaction-log`); a stray local copy must never be committed.
 transaction-log.md
+# harmonic-forge#1288: failure data never enters this public repo. The logs,
+# the derived SQLite store and the overlays live in operator-memory.
+*.sqlite
+*.sqlite3
+protocol-failures*.jsonl
+failure-overlays/

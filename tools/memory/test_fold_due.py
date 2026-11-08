@@ -86,6 +86,38 @@ class Triggers(Base):
         fired = self.owed(marker)
         self.assertTrue(any("R-0039 failed again" in f for f in fired), fired)
 
+    def _write(self, records: list[dict]) -> None:
+        (self.store / "protocol-failures.jsonl").write_text(
+            "\n".join(json.dumps(x) for x in records) + "\n")
+
+    def test_shared_session_and_turn_without_event_counts_per_line(self) -> None:
+        """harmonic-forge#1288 (a): one operator prompt can span unrelated
+        slips, so two records sharing (session, turn) with no --event are two."""
+        marker = self.record(NOW - timedelta(days=1))
+        self._write([{"rule_ref": "R-0419", "session": "s1", "turn": "t1"}] * 2)
+        self.assertTrue(any("R-0419 failed again" in f for f in self.owed(marker)))
+
+    def test_shared_event_in_one_session_counts_once(self) -> None:
+        """(b): records sharing an explicit --event within one session are one
+        event, whatever their turns."""
+        marker = self.record(NOW - timedelta(days=1))
+        self._write([{"rule_ref": "R-0419", "session": "s1", "turn": t, "event": "e1"}
+                     for t in ("t1", "t1", "t2")])
+        self.assertEqual(self.owed(marker), [])
+
+    def test_same_event_in_two_sessions_counts_twice(self) -> None:
+        """(c): --event is scoped by session; two sessions reusing an id merge
+        nothing."""
+        marker = self.record(NOW - timedelta(days=1))
+        self._write([{"rule_ref": "R-0419", "session": s, "turn": "t1", "event": "1"}
+                     for s in ("s1", "s2")])
+        self.assertTrue(any("R-0419 failed again" in f for f in self.owed(marker)))
+
+    def test_an_event_without_a_session_counts_per_line(self) -> None:
+        marker = self.record(NOW - timedelta(days=1))
+        self._write([{"rule_ref": "R-0419", "session": None, "event": "e1"}] * 2)
+        self.assertTrue(any("R-0419 failed again" in f for f in self.owed(marker)))
+
     def test_none_or_empty_rule_ref_never_recurs(self) -> None:
         marker = self.record(NOW - timedelta(days=1))
         lines = [{"rule_ref": None}] * 3 + [{"rule_ref": ""}] * 3
