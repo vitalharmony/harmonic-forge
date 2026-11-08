@@ -146,7 +146,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
             m = re.match(r"\s+type:\s*(.+)", line)
             if m:
                 result["metadata.type"] = m.group(1).strip()
-            m = re.match(rf"\s+({'|'.join(_NESTED_MARKER_KEYS)}):\s*(.+)", line)
+            m = re.match(rf"\s+({'|'.join(_NESTED_MARKER_KEYS)}):\s*(.*)$", line)
             if m:
                 value = m.group(2).strip()
                 if m.group(1) in ("promoted", "rule_check"):

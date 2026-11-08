@@ -764,6 +764,19 @@ class NestedAgingTests(unittest.TestCase):
         self.assertEqual([f for f in findings if "missing" in f], [])
         self.assertEqual([f for f in findings if "feedback_nested" in f], [])
 
+    def test_aging_reads_nested_promoted(self) -> None:
+        """harmonic-forge#1282 preclose pass 1 survivor: over both promotion
+        thresholds, a nested `promoted` naming a real rule clears the
+        'needs promoted' finding."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            (store / "feedback_p.md").write_text(
+                "---\nname: feedback_p\ndescription: d\nmetadata:\n"
+                "  type: feedback\n  first_seen: 2026-09-04\n  instances: 37\n"
+                "  promoted: R-0039\n---\n\nPromoted to R-0039.\n", encoding="utf-8")
+            findings = lint.check_aging(store, today=datetime.date(2026, 11, 7))
+        self.assertEqual([f for f in findings if "feedback_p" in f], [])
+
 
 class NestedBackfillTests(unittest.TestCase):
     """harmonic-forge#1282 AC6: a nested marker counts as present."""
@@ -779,6 +792,23 @@ class NestedBackfillTests(unittest.TestCase):
                 encoding="utf-8")
             rows = backfill_frontmatter.plan(store)
         row = next(r for r in rows if r["file"] == "feedback_nested.md")
+        self.assertIsNone(row["first_seen"])
+        self.assertIsNone(row["instances"])
+
+    def test_backfill_skips_blank_nested_fields(self) -> None:
+        """harmonic-forge#1282 preclose pass 1 survivor (cross-family): a nested
+        key with no value still counts as present, so backfill plans no
+        top-level value beside it."""
+        sys.path.insert(0, str(HERE))
+        import backfill_frontmatter
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            (store / "feedback_blank.md").write_text(
+                "---\nname: feedback_blank\ndescription: d\nmetadata:\n"
+                "  type: feedback\n  first_seen:\n  instances:\n---\n\nbody\n",
+                encoding="utf-8")
+            rows = backfill_frontmatter.plan(store)
+        row = next(r for r in rows if r["file"] == "feedback_blank.md")
         self.assertIsNone(row["first_seen"])
         self.assertIsNone(row["instances"])
 
