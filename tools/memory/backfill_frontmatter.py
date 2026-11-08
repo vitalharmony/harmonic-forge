@@ -75,7 +75,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from memory_lint import memory_files, resolve_store  # noqa: E402
+from memory_lint import _parse_frontmatter, memory_files, resolve_store  # noqa: E402
 
 #: Ordinal words → the count they denote. "second occurrence" means 2 have
 #: happened, not 2 more.
@@ -183,7 +183,11 @@ def body_of(text: str) -> str:
 
 def has_field(frontmatter: list[str], field: str) -> bool:
     """Top-level only. A `metadata:`-nested key of the same name is a
-    different fact and must not suppress the backfill of the top-level one.
+    different fact and must not suppress the backfill of the top-level one,
+    except for `first_seen` and `instances`: the harness moves those under
+    `metadata:` during a memory Write, so there a nested value IS the
+    memory's own marker, and `plan` treats it as present
+    (harmonic-forge#1282).
     """
     return any(line.startswith(f"{field}:") for line in frontmatter)
 
@@ -298,11 +302,12 @@ def plan(store: Path) -> list[dict]:
         frontmatter, _rest = split
         body = body_of(text)
         row: dict = {"file": path.name, "path": path}
-        if has_field(frontmatter, "first_seen"):
+        nested = _parse_frontmatter(text)
+        if has_field(frontmatter, "first_seen") or "metadata.first_seen" in nested:
             row["first_seen"] = None  # already present, untouched
         else:
             row["first_seen"], row["first_seen_source"] = parse_first_seen(path, text)
-        if has_field(frontmatter, "instances"):
+        if has_field(frontmatter, "instances") or "metadata.instances" in nested:
             row["instances"] = None
         else:
             row["instances"], row["instances_evidence"] = parse_instances(body)

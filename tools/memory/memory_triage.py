@@ -73,6 +73,7 @@ from memory_lint import (  # noqa: E402
     _allow_unpromoted,
     _body_text,
     _parse_frontmatter,
+    field as fm_field,
     _repo_roots,
     memory_files,
     resolve_store,
@@ -308,11 +309,11 @@ def classify(path: Path, rules: list[Rule], roots: list[Path],
     body = _body_text(text)
     kind = fm.get("metadata.type", "")
     try:
-        instances = int(fm.get("instances", "") or 0)
+        instances = int(fm_field(fm, "instances") or 0)
     except ValueError:
         instances = 0
     row = Row(name=path.stem, path=path, kind=kind, instances=instances,
-              first_seen=fm.get("first_seen", ""), promoted=fm.get("promoted", ""),
+              first_seen=fm_field(fm, "first_seen"), promoted=fm_field(fm, "promoted"),
               verdict="", evidence="")
 
     if kind == "project":
