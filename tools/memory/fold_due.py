@@ -8,7 +8,8 @@ snapshot `--record` writes after each fold. Any one trigger is enough:
 
 1. volume: 15 or more feedback memories absent from the last snapshot;
 2. recurrence: the same non-empty `rule_ref` in two or more
-   `protocol-failures.jsonl` records appended since the marker;
+   `protocol-failures.jsonl` events appended since the marker (records sharing
+   a `(session, turn)` are one event);
 3. growth: `MEMORY.md` bytes, or this repo's always-loaded surface
    (`context_budget.surface`), up 10% or more since the snapshot. Absolute
    budgets are not used: HRSE2 is over its budget by design, and a fold
@@ -228,14 +229,21 @@ def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[tu
     offset = marker["failures_offset"]
     if offset > len(lines) or _head_hash(lines, offset) != marker["failures_head"]:
         offset = 0  # the log was truncated or replaced: count all of it
-    counts: dict[str, int] = {}
-    for line in lines[offset:]:
+    # A split event (one slip per record, harmonic-forge#1288) writes several
+    # records with one (session, turn): it counts once. A legacy record without
+    # both ids counts once per line, exactly as before.
+    units: dict[str, set] = {}
+    for line_no, line in enumerate(lines[offset:], start=offset):
         try:
-            ref = json.loads(line).get("rule_ref")
+            data = json.loads(line)
+            ref = data.get("rule_ref")
         except (ValueError, AttributeError):
             continue
         if isinstance(ref, str) and ref.strip():
-            counts[ref.strip()] = counts.get(ref.strip(), 0) + 1
+            session, turn = data.get("session"), data.get("turn")
+            unit = ("event", str(session), str(turn)) if session and turn else ("line", line_no)
+            units.setdefault(ref.strip(), set()).add(unit)
+    counts = {ref: len(seen) for ref, seen in units.items()}
     recurring = sorted(r for r, n in counts.items() if n >= RECURRENCE_THRESHOLD)
     if recurring:
         fired.append(("recurrence", f"{', '.join(recurring)} failed again since the last fold"))

@@ -45,6 +45,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "memory"))
 
 import memory_lint  # noqa: E402
+from capture_failure import PRECHECK_RULES  # noqa: E402
 
 TOOLS = {"Write", "Edit", "MultiEdit"}
 _RULE_ID = re.compile(r"\bR-\d{4}\b")
@@ -119,7 +120,21 @@ def _store_grep(store: Path, rid: str) -> str:
     return f'grep -l "{rid}" {store}/feedback_*.md'
 
 
+_KEY_FLAGS = '--tool <id> --class <class> --probe "…"'
+
+
+def _key_flags(rid: str) -> tuple[str, str]:
+    """The failure-key flags for the suggested command, and the line saying
+    when they are required (harmonic-forge#1288)."""
+    if rid in PRECHECK_RULES:
+        return (f" {_KEY_FLAGS}",
+                f"     The key flags are REQUIRED: {rid} is a precheck rule. One slip per record.\n")
+    return (f" [{_KEY_FLAGS}]",
+            "     The key flags are REQUIRED with --caught-by hook (or gate); optional otherwise.\n")
+
+
 def _restates(rid: str, store: Path, why: str) -> str:
+    flags, note = _key_flags(rid)
     return (
         f"Blocked (harmonic-forge#981): this new feedback memory {why} {rid}, "
         "an existing rule. A rule that exists and did not fire needs its failure "
@@ -127,7 +142,8 @@ def _restates(rid: str, store: Path, why: str) -> str:
         f"  1. quote the rule: python3 ~/harmonic-forge/tools/rules/query_rules.py --id {rid}\n"
         "  2. record the failure: python3 ~/harmonic-forge/tools/memory/capture_failure.py "
         f'--caught-by <operator|self|hook> --rule-existed rule --rule-ref {rid} '
-        '--expected "…" --happened "…"\n'
+        f'--expected "…" --happened "…"{flags}\n'
+        f"{note}"
         "  3. raise `instances:` on the memory already pointing at that rule "
         f"({_store_grep(store, rid)}) instead of writing a new one.\n"
         "There is no override. Writing the same memory through Bash is a protocol "

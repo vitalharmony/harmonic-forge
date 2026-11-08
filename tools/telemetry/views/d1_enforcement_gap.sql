@@ -1,12 +1,13 @@
 -- D1 enforcement gap (harmonic-forge#1159): rules missed twice or more while
 -- in force, split into "no hook" and "hook not binding" (a hook exists now and
 -- misses were recorded; the registry cannot say when it was wired, so read
--- last_miss). Reads only the tables detector_report.py registers.
+-- last_miss). Reads only the tables detector_report.py registers. A miss is an
+-- event, so the records of one split event (harmonic-forge#1288) count once.
 CREATE OR REPLACE VIEW d1_enforcement_gap AS
 WITH misses AS (
   SELECT regexp_extract(rule_ref, 'R-\d{4}') AS rule_id,
-         count(*) AS misses,
-         count(*) FILTER (WHERE caught_by = 'operator') AS operator_caught,
+         count(DISTINCT event) AS misses,
+         count(DISTINCT event) FILTER (WHERE caught_by = 'operator') AS operator_caught,
          max(ts) AS last_miss
   FROM misses_raw
   WHERE rule_existed IN ('rule', 'scoped_out')

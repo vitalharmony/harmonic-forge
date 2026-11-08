@@ -86,6 +86,25 @@ class Triggers(Base):
         fired = self.owed(marker)
         self.assertTrue(any("R-0039 failed again" in f for f in fired), fired)
 
+    def test_split_event_counts_once(self) -> None:
+        """harmonic-forge#1288: one slip per record splits an event into several
+        records sharing (session, turn); the event recurs only once."""
+        marker = self.record(NOW - timedelta(days=1))
+        log = self.store / "protocol-failures.jsonl"
+        split = [{"rule_ref": "R-0419", "session": "s1", "turn": "t1"}] * 3
+        log.write_text("\n".join(json.dumps(x) for x in split) + "\n")
+        self.assertEqual(self.owed(marker), [])
+        with log.open("a") as handle:
+            handle.write(json.dumps({"rule_ref": "R-0419", "session": "s1", "turn": "t2"}) + "\n")
+        self.assertTrue(any("R-0419 failed again" in f for f in self.owed(marker)))
+
+    def test_a_record_missing_either_id_counts_per_line(self) -> None:
+        marker = self.record(NOW - timedelta(days=1))
+        lines = [{"rule_ref": "R-0419", "session": "s1", "turn": None},
+                 {"rule_ref": "R-0419", "session": "s1", "turn": None}]
+        (self.store / "protocol-failures.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+        self.assertTrue(any("R-0419 failed again" in f for f in self.owed(marker)))
+
     def test_none_or_empty_rule_ref_never_recurs(self) -> None:
         marker = self.record(NOW - timedelta(days=1))
         lines = [{"rule_ref": None}] * 3 + [{"rule_ref": ""}] * 3

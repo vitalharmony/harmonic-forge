@@ -51,6 +51,21 @@ class Decide(unittest.TestCase):
         self.assertIn("--rule-ref R-0039", msg)
         self.assertIn(f'grep -l "R-0039" {self.store}/feedback_*.md', msg)
 
+    def test_suggested_command_requires_the_key_for_a_precheck_rule(self) -> None:
+        """harmonic-forge#1288: the key flags print as required for a precheck
+        rule, and as optional (required only under hook/gate) otherwise."""
+        rid = sorted(gate.PRECHECK_RULES)[0]
+        msg = gate.decide("Write", {"file_path": str(self.store / "feedback_p.md"), "content": memory(rid)},
+                          self.store, IDS | {rid})
+        self.assertIsNotNone(msg)
+        self.assertIn('--tool <id> --class <class> --probe "…"\n', msg)
+        self.assertNotIn("[--tool", msg)
+        self.assertIn(f"REQUIRED: {rid} is a precheck rule", msg)
+        other = self.write("feedback_x.md", memory("R-0039"))
+        self.assertIn('[--tool <id> --class <class> --probe "…"]', other)
+        self.assertIn("REQUIRED with --caught-by hook", other)
+        self.assertNotIn("is a precheck rule", other)
+
     def test_ac1_untyped_feedback_filename_is_gated(self) -> None:
         msg = self.write("feedback_x.md", memory("R-0039", mtype="project"))
         self.assertIsNotNone(msg)

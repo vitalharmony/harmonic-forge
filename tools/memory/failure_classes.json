@@ -1,0 +1,57 @@
+{
+  "current": 1,
+  "versions": {
+    "1": [
+      "args",
+      "cwd",
+      "freshness",
+      "receipt",
+      "target-state",
+      "exists",
+      "env",
+      "local-check",
+      "body",
+      "shell",
+      "provenance",
+      "owed-work",
+      "policy"
+    ]
+  },
+  "interim_tools": [
+    "batch-imc-line",
+    "batch_auth",
+    "belt-arm",
+    "board_fields",
+    "capture_failure",
+    "cypher",
+    "drift_check",
+    "gh-api",
+    "gh-issue-close",
+    "gh-issue-list",
+    "gh-new-issue",
+    "gh-pr-create",
+    "gh-pr-merge",
+    "gh-workflow-run",
+    "git-commit",
+    "git-push",
+    "imc_waiver",
+    "internal-api",
+    "kill_check",
+    "l1_post",
+    "l2_post",
+    "lane1-rebase",
+    "mise-check",
+    "post-comment",
+    "post-lane-discussion",
+    "preclose_check",
+    "pytest",
+    "run_tests",
+    "sendmessage",
+    "stop-hook",
+    "tasklist"
+  ],
+  "pseudo_tools": [
+    "bash-string",
+    "operator-commands-block"
+  ]
+}

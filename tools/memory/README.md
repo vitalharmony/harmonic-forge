@@ -103,6 +103,49 @@ a unique file** — it never selects a file, so it cannot select the wrong one.
 Because the shortened-`name:` convention makes a genuine collision reachable,
 two files normalizing to the same key is itself a gating finding.
 
+## Failure store
+
+`protocol-failures.jsonl` is the system of record for protocol failures
+(`capture_failure.py`, harmonic-forge#520 and #1288): append-only, one slip per
+record, each with a session and turn id and, where required, a failure key
+(`--tool`, `--class`, `--probe`; the versioned class list is
+`failure_classes.json`). `failure_store.py` projects it into SQLite, a derived
+store that is rebuilt, never migrated.
+
+| what | where |
+|---|---|
+| the memory log | `~/Harmonic_Projects/operator-memory/protocol-failures.jsonl` |
+| Lane 3's log | `~/Harmonic_Projects/testplan/protocol-failures.jsonl` |
+| overlays (relabels) | `~/Harmonic_Projects/operator-memory/failure-overlays/*.jsonl` |
+| the store | `~/Harmonic_Projects/operator-memory/failure-store.sqlite` |
+| the schema | `tools/memory/failure_store.sql` (this repo) |
+
+Schema: `meta` (the build's fingerprint and counts), `failures` (one row per
+log line, keyed `(log, line)` with `line` the 0-based index), `overlays`, and
+the `failure_keys` view, where an overlay's key wins over the record's own.
+`failures` is indexed on `(tool, class, ts)`.
+
+```bash
+python3 ~/harmonic-forge/tools/memory/failure_store.py build
+python3 ~/harmonic-forge/tools/memory/failure_store.py latest --tool l1_post --class cwd
+```
+
+`build` writes a `mkstemp` temp file beside the store, swaps it in, and removes
+temp files left by earlier failed builds. `latest` rebuilds first when a log or
+overlay changed (size and sha256 of each) since the last build. Neither opens a
+log for writing. An overlay row is `{"log_line": N, "key_v1": "tool|class",
+"probe"?: "...", "log"?: "memory"|"testplan"}`; files apply in name order, rows
+in file order, the last match wins, and a row with an empty `key_v1` is skipped
+and counted. Records are never rewritten.
+
+**No failure data enters this repo, and no fixture copy of it either.**
+harmonic-forge is public, and failure records hold internal issue text and
+command strings. `capture_failure.py --path` and `failure_store.py --db` refuse
+a target inside a harmonic-forge checkout or worktree; `.gitignore` covers
+`*.sqlite`, `*.sqlite3`, `protocol-failures*.jsonl` and `failure-overlays/`;
+every test fixture is synthetic. Copying an overlay into
+`operator-memory/failure-overlays/` is a local step, never a commit.
+
 ## Not here
 
 The lesson-aging check (`first_seen:` / `instances:` / `promoted:` /

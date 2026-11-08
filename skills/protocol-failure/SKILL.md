@@ -12,10 +12,18 @@ skipped capture is indistinguishable from a clean session.
 ```bash
 python3 ~/harmonic-forge/tools/memory/capture_failure.py \
   --caught-by <how> --rule-existed <what> [--rule-ref <id>] \
+  [--tool <id> --class <class> --probe "the check that would have caught it"] \
+  [--command "the command that failed, verbatim"] \
   --expected "what the protocol required" \
   --happened "what actually happened" \
   --account "the narrative"
 ```
+
+`--session` defaults to `$CLAUDE_CODE_SESSION_ID` and `--turn` to the newest
+`promptId` in that session's transcript. Either one unresolved refuses the
+capture (exit 2, nothing written). **A Codex caller passes `--session` and
+`--turn` itself, and so does a background subagent**: it shares the parent's
+session id, so the transcript's newest turn is the parent's, not its own.
 
 Run it **when you notice**, not at the end. The two required fields are
 answerable in the moment and much harder an hour later, which is the whole
@@ -68,13 +76,64 @@ belt dumps was caught by the operator asking a question and not one by a
 mechanism. Each `operator` record is a claim that the machinery had its chance
 and missed.
 
+## The failure key: `--tool`, `--class`, `--probe`
+
+The key names the tool, the missing-precondition class, and the probe that
+would have caught the slip. Every gate, lint or provenance refusal cites the
+latest stored failure with the same key, and repeating keys are what the
+improvement loop proposes registry changes from (harmonic-forge#1279).
+
+- **Required** when `--rule-ref` names a precheck rule (`R-0419`), or when
+  `--caught-by` is `hook` or `gate`. Otherwise optional.
+- **All three or none.** A partial key is refused under every flag combination.
+- **One slip per record.** Each key flag may be given once; a repeat refuses.
+  A bundled event is one call per slip, and the calls share the session and
+  turn ids by default.
+- **`--tool`** is on the interim closed list in
+  `tools/memory/failure_classes.json` (`interim_tools`), or one of the two
+  pseudo-tools `bash-string` and `operator-commands-block`. There is no
+  `other:` escape for tools. `--tool none` is accepted only with
+  `--class other:reasoning`: a reasoning error no tool would have caught, whose
+  `--probe` names the check that would have (for example "re-read the issue's
+  AC before claiming"). For a gate-caught code defect, `--tool` is the gate's
+  tool (`mise-check`, `pytest`, `run_tests`) and `--probe` the failing command.
+- **`--class`** is from the current class-list version, or `other:<name>`
+  (`[a-z][a-z0-9-]*`, not an existing class). The improvement loop reviews
+  `other:` classes. A published version is never edited; a change is a new
+  version, and every record carries `class_list_version`.
+
+Class-list version 1:
+
+| class | the precondition the missing probe would have checked |
+|---|---|
+| `args` | the arguments have the shape the tool takes |
+| `cwd` | the command runs from the right directory or repo |
+| `freshness` | the input was read recently enough to still be true |
+| `receipt` | a required receipt or preflight exists before the step |
+| `target-state` | the target is in the state assumed (open, on origin, unlocked, not in use by another worktree) |
+| `exists` | the thing named exists |
+| `env` | the environment is as assumed (variables, account, CI green) |
+| `local-check` | a fast local test or lint passes before the full check |
+| `body` | the post or file body has the required shape and fields |
+| `shell` | the shell string is safe (quoting, path variables, timeouts, one step per call) |
+| `provenance` | a claim in a post was verified before it was posted |
+| `owed-work` | owed work was done or reported before stopping |
+| `policy` | the action is allowed (operator-only steps, raw writes, scan refusals) |
+
+`--command` and `--probe` pass a local secret scan
+(`tools/memory/secret_scan.py`). A token-, key-, credential- or email-shaped
+value refuses the capture; the refusal names the kind, never the text. Use a
+`$VARIABLE` or a placeholder instead.
+
 ## Where it writes
 
 A parameter with a per-lane default. Lane 3 writes to
 `~/Harmonic_Projects/testplan/protocol-failures.jsonl`, honoring its
 write restriction; every other lane writes to
 `~/Harmonic_Projects/operator-memory/protocol-failures.jsonl`, the store shared
-across all repos and lanes. Override with `--path`.
+across all repos and lanes. Override with `--path`. A path inside a
+harmonic-forge checkout or worktree is refused: harmonic-forge is public, and
+failure data never enters it.
 
 Append-only. There is no rewrite path in the writer, and no write-time dedup:
 deciding two records are the same event is an analysis-time judgment, and
