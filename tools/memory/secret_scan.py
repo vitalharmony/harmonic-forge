@@ -41,8 +41,11 @@ KEYWORDS: tuple[str, ...] = ("token", "secret", "password", "passwd", "pwd", "ap
                              "private_key", "private-key", "privatekey", "authorization")
 
 #: Standard and URL-safe base64 both: `/` and `+` never split a run, and
-#: trailing `=` padding belongs to it.
-_RUN = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/-]{32,}=*(?![A-Za-z0-9_+/=-])")
+#: trailing `=` padding belongs to it. No lookarounds: a greedy `finditer`
+#: already yields only maximal runs, so any character outside the run alphabet
+#: (`=`, `:`, a quote, a bracket, a space) on either side bounds a run instead
+#: of hiding it (`KEY=<run>`, `<run>=y`).
+_RUN = re.compile(r"[A-Za-z0-9_+/-]{32,}=*")
 _UUID = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
 
 #: Fixed-shape kinds: `(kind, pattern)`. Unanchored: a shape embedded after or

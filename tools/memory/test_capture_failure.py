@@ -551,6 +551,46 @@ class TestOneSlip(_Quiet):
         self.assertFalse(self.log.exists())
 
 
+class TestEvent(_Quiet):
+    """AC9 (harmonic-forge#1288, operator ruling option A): an optional,
+    constrained --event groups the records of one split event."""
+
+    def test_event_is_null_when_absent(self):
+        self.assertEqual(self.capture(*self.base()), 0, self.err.getvalue())
+        self.assertIn("event", self.lines()[0])
+        self.assertIsNone(self.lines()[0]["event"])
+
+    def test_event_is_stored(self):
+        for value in ("e1", "1", "bundled-push-" + "a" * 19):
+            with self.subTest(value=value):
+                self.assertEqual(self.capture(*self.base(), "--event", value), 0, self.err.getvalue())
+                self.assertEqual(self.lines()[-1]["event"], value)
+
+    def test_event_given_twice_refuses(self):
+        self.assert_refused_unchanged(*self.base(), "--event", "e1", "--event", "e2")
+        self.assertIn("--event was given 2 times", self.err.getvalue())
+        self.assert_refused_unchanged(*self.base(), "--event", "e1", "--event", "e1")
+        self.assertFalse(self.log.exists())
+
+    def test_malformed_event_refuses_without_repeating_it(self):
+        for value in ("", "E1", "-e1", "e_1", "e 1", "e1\n", "e.1", "a" * 33, "\u00e91"):
+            with self.subTest(value=repr(value)):
+                self.assert_refused_unchanged(*self.base(), f"--event={value}")
+                self.assertIn("--event is refused (malformed)", self.err.getvalue())
+                if len(value) > 3:
+                    self.assertNotIn(value, self.err.getvalue())
+        self.assertFalse(self.log.exists())
+
+    def test_secret_shaped_event_refuses_by_kind(self):
+        self.capture(*self.base())
+        for value in ("my-" + "token", "pass" + "word-1", "x-" + "secret"):
+            with self.subTest(value=value):
+                self.assert_refused_unchanged(*self.base(), "--event", value)
+                self.assertIn("credential-keyword", self.err.getvalue())
+                self.assertNotIn(value, self.err.getvalue())
+        self.assertEqual(len(self.lines()), 1)
+
+
 #: Token-shaped values, built by concatenation so no literal token sits here.
 GH_TOKEN_SHAPE = "gh" + "p_" + "A1b2C3d4" * 5
 

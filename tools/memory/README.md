@@ -109,7 +109,10 @@ two files normalizing to the same key is itself a gating finding.
 (`capture_failure.py`, harmonic-forge#520 and #1288): append-only, one slip per
 record, each with a session and turn id and, where required, a failure key
 (`--tool`, `--class`, `--probe`; the versioned class list is
-`failure_classes.json`). `failure_store.py` projects it into SQLite, a derived
+`failure_classes.json`). An optional `--event <id>`
+(`[a-z0-9][a-z0-9-]{0,31}`, secret-scanned, null when absent) groups the slips
+of one bundled event: records sharing it within one session count once in
+`fold_due.py` and D1, and every other record counts once. `failure_store.py` projects it into SQLite, a derived
 store that is rebuilt, never migrated.
 
 | what | where |
@@ -149,7 +152,8 @@ and counted. Records are never rewritten.
 **No failure data enters this repo, and no fixture copy of it either.**
 harmonic-forge is public, and failure records hold internal issue text. No
 record stores the command that failed: it is recovered from the session
-transcript through `(session, turn)`. `capture_failure.py --path` and `failure_store.py --db` refuse
+transcript through `(session, turn)`, where `turn` is the capture turn (a slip
+caught later passes its own `--turn`, or is found by searching back from it). `capture_failure.py --path` and `failure_store.py --db` refuse
 a target inside a harmonic-forge checkout or worktree; `.gitignore` covers
 `*.sqlite`, `*.sqlite3`, `protocol-failures*.jsonl` and `failure-overlays/`;
 every test fixture is synthetic. Copying an overlay into

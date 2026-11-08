@@ -13,6 +13,7 @@ skipped capture is indistinguishable from a clean session.
 python3 ~/harmonic-forge/tools/memory/capture_failure.py \
   --caught-by <how> --rule-existed <what> [--rule-ref <id>] \
   [--tool <id> --class <class> --probe "the check that would have caught it"] \
+  [--event <id>] \
   --expected "what the protocol required" \
   --happened "what actually happened" \
   --account "the narrative"
@@ -23,6 +24,9 @@ python3 ~/harmonic-forge/tools/memory/capture_failure.py \
 capture (exit 2, nothing written). **A Codex caller passes `--session` and
 `--turn` itself, and so does a background subagent**: it shares the parent's
 session id, so the transcript's newest turn is the parent's, not its own.
+`turn` is the turn the capture ran in, not necessarily the slip's: a slip
+caught in a later turn passes `--turn <the slip's promptId>`, or its command is
+found by searching the transcript back from the capture turn.
 
 Run it **when you notice**, not at the end. The two required fields are
 answerable in the moment and much harder an hour later, which is the whole
@@ -86,8 +90,12 @@ improvement loop proposes registry changes from (harmonic-forge#1279).
   `--caught-by` is `hook` or `gate`. Otherwise optional.
 - **All three or none.** A partial key is refused under every flag combination.
 - **One slip per record.** Each key flag may be given once; a repeat refuses.
-  A bundled event is one call per slip, and the calls share the session and
-  turn ids by default.
+  A bundled event is one call per slip, each with the same `--event <id>`
+  (`[a-z0-9][a-z0-9-]{0,31}`, given once, secret-scanned; the record's
+  `event` is null when absent). Records sharing an `--event` within one
+  session count once in the recurrence trigger and the D1 detector; every
+  other record counts once. A turn is not an event: one operator prompt can
+  span unrelated slips.
 - **`--tool`** is on the interim closed list in
   `tools/memory/failure_classes.json` (`interim_tools`), or one of the two
   pseudo-tools `bash-string` and `operator-commands-block`. There is no
@@ -122,6 +130,8 @@ Class-list version 1:
 
 **The command that failed is not stored.** It is recovered from the session
 transcript through the record's `(session, turn)`, which every record carries.
+The turn is the capture turn: for a slip caught later, pass its own `--turn`, or
+search the transcript back from the capture turn.
 
 `--probe` is a short description, not a command: one line, at most 200
 characters. It passes a blunt local scan (`tools/memory/secret_scan.py`) with

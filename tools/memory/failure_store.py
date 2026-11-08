@@ -327,19 +327,32 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "build":
             print(_summary(args.db, build(args.db, logs, args.overlays)))
+            sys.stdout.flush()
             return 0
         row = latest(args.db, logs, args.overlays, args.tool, args.klass)
         if row is None:
             print(f"failure-store: no stored failure with key {args.tool}|{args.klass}", file=sys.stderr)
             return 1
-        # Inside the handler: an I/O error writing the result exits 3, never 1.
+        # Inside the handler, and flushed here: an I/O error writing the result
+        # exits 3, never 1.
         print(json.dumps(row, separators=(",", ":")))
+        sys.stdout.flush()
         return 0
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - every non-refusal error is exit 3, never 1
         print(f"failure-store: error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        # The failed write stays in stdout's buffer, and the interpreter flushes
+        # it again at shutdown, which turns this exit 3 into 120. Point stdout's
+        # descriptor at devnull so that last flush succeeds (the Python docs'
+        # "Note on SIGPIPE" pattern).
+        with contextlib.suppress(OSError, ValueError):
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull, sys.stdout.fileno())
+            finally:
+                os.close(devnull)
         return EXIT_ERROR
 
 

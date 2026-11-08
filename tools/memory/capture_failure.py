@@ -36,9 +36,14 @@ name the tool, the missing-precondition class and the check that would have
 caught the slip. All three are required under a precheck rule
 (`PRECHECK_RULES`) or when a hook or gate caught it, a partial key is always
 refused, and each flag may be given once: one slip per record. Every record
-carries a session and a turn id; an unresolved one refuses. The command that
-failed is not stored: it is recovered from the session transcript through
-`(session, turn)`. `--probe` is one line of at most 200 characters and passes a
+carries a session and a turn id; an unresolved one refuses. `turn` is the turn
+the capture ran in, not necessarily the slip's: a slip caught in a later turn
+passes its own `--turn <the slip's promptId>`, or its command is found by
+searching the transcript back from the capture turn. The command that failed is
+not stored: it is recovered from the session transcript that way. Slips that
+are one event (a bundled call that broke two preconditions) are captured one
+call per slip with the same `--event <id>`; records sharing an `--event`
+within one session count once, and every other record counts once. `--probe` is one line of at most 200 characters and passes a
 blunt, exemption-free secret scan (`secret_scan.probe_findings`), and a target
 inside a harmonic-forge checkout is refused, because failure data never enters
 the public repo.
@@ -118,6 +123,9 @@ NO_TOOL = "none"
 _OTHER_CLASS = re.compile(r"^other:[a-z][a-z0-9-]*$")
 _RULE_ID = re.compile(r"R-\d{4}")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+#: `--event`: a short slug the caller picks, never free text.
+_EVENT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 #: Claude Code's per-session transcripts: `<root>/<project-slug>/<session>.jsonl`.
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
@@ -244,6 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--turn", default=None,
                         help="Turn id. Defaults to the newest promptId in the "
                              "session's transcript; refused when neither resolves.")
+    parser.add_argument("--event", action="append", default=None,
+                        help="Optional event id, [a-z0-9][a-z0-9-]{0,31}: records "
+                             "sharing one --event within a session count as one "
+                             "event. Once per record.")
     parser.add_argument("--tool", action="append", default=None,
                         help="Failure key: the tool whose precondition was missed "
                              "(interim closed list, or a pseudo-tool). `none` only "
@@ -279,8 +291,8 @@ def _single(args: argparse.Namespace) -> str | None:
         values = getattr(args, attr)
         if values is not None and len(values) > 1:
             return (f"--{flag} was given {len(values)} times. One slip per record: "
-                    "capture each slip with its own call (the calls share the "
-                    "session and turn ids).")
+                    "capture each slip with its own call, each with the same "
+                    "--event <id>.")
         value = values[0] if values else None
         if flag == "probe":
             # The form checks run on the raw value, before a blank probe is
@@ -289,6 +301,29 @@ def _single(args: argparse.Namespace) -> str | None:
             if kinds:
                 return _probe_refusal(kinds)
         setattr(args, attr, value if value is not None and value.strip() else None)
+    return None
+
+
+def validate_event(args: argparse.Namespace) -> str | None:
+    """Collapse `--event` to one value and check its form. The value is stored,
+    so it is a constrained slug that also passes the secret scan; a refusal
+    names the reason only, never the value."""
+    values = args.event
+    if values is not None and len(values) > 1:
+        return (f"--event was given {len(values)} times. One event id per record: "
+                "every slip of one event passes the same --event once.")
+    value = values[0] if values else None
+    args.event = value
+    if value is None:
+        return None
+    if not _EVENT_ID.fullmatch(value):
+        return ("--event is refused (malformed). Nothing was written; the text is "
+                "not repeated here. Use 1 to 32 characters of [a-z0-9-], starting "
+                "with a letter or digit.")
+    kinds = secret_scan.findings(value)
+    if kinds:
+        return (f"--event is refused ({', '.join(kinds)}). Nothing was written; the "
+                "text is not repeated here.")
     return None
 
 
@@ -346,7 +381,8 @@ def _probe_refusal(kinds: list[str]) -> str:
             "the text is not repeated here. Describe the check in one line of "
             f"at most {secret_scan.MAX_PROBE} characters, with no credential "
             "keyword, @, :// or token, and capture again. The command itself "
-            "is recovered from the transcript through (session, turn).")
+            "is recovered from the transcript: the record's turn is the capture turn, "
+            "so a slip caught later passes its own --turn.")
 
 
 def validate_secrets(args: argparse.Namespace) -> str | None:
@@ -374,7 +410,7 @@ def validate(args: argparse.Namespace) -> str | None:
 
 def refusal_for(args: argparse.Namespace, path: Path) -> str | None:
     """Every refusal, in order, before anything is written."""
-    for check in (lambda: _single(args), lambda: validate(args),
+    for check in (lambda: _single(args), lambda: validate_event(args), lambda: validate(args),
                   lambda: validate_key(args, load_classes()), lambda: validate_ids(args),
                   lambda: validate_secrets(args), lambda: forge_refusal(path, "--path")):
         refusal = check()
@@ -399,6 +435,7 @@ def build_record(args: argparse.Namespace) -> dict:
         "work_discarded": args.work_discarded,
         "account": args.account,
         "turn": args.turn,
+        "event": args.event,
         "tool": args.tool,
         "class": args.klass,
         "probe": args.probe,

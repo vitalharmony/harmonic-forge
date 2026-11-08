@@ -326,6 +326,22 @@ class Latest(Store):
                     self.assertEqual(fs.main([*argv, *command]), fs.EXIT_ERROR)
                 self.assertIn("error", err.getvalue())
 
+    @unittest.skipUnless(Path("/dev/full").exists(), "needs /dev/full")
+    def test_a_full_stdout_exits_3_out_of_process(self):
+        """Reforge pass-2 survivor 3: a buffered write that fails is flushed
+        again at interpreter shutdown, outside the handler, and the process
+        exits 120. Only a child process sees the shutdown flush."""
+        self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+        argv = [sys.executable, str(HERE / "failure_store.py"), "--db", str(self.db),
+                "--memory-log", str(self.memory), "--testplan-log", str(self.testplan),
+                "--overlays", str(self.overlays)]
+        for command in (["latest", "--tool", "l1_post", "--class", "cwd"], ["build"]):
+            with self.subTest(command=command[0]), open("/dev/full", "w", encoding="utf-8") as full:
+                proc = subprocess.run(argv + command, stdout=full, stderr=subprocess.PIPE, text=True,
+                                      timeout=60, check=False)
+                self.assertEqual(proc.returncode, fs.EXIT_ERROR, proc.stderr)
+                self.assertIn("error", proc.stderr)
+
     def test_cli_prints_one_json_line(self):
         self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
         argv = ["--db", str(self.db), "--memory-log", str(self.memory), "--testplan-log", str(self.testplan),

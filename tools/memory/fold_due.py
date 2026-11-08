@@ -230,8 +230,9 @@ def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[tu
     if offset > len(lines) or _head_hash(lines, offset) != marker["failures_head"]:
         offset = 0  # the log was truncated or replaced: count all of it
     # A split event (one slip per record, harmonic-forge#1288) writes several
-    # records with one (session, turn): it counts once. A legacy record without
-    # both ids counts once per line, exactly as before.
+    # records sharing an explicit `--event` within one session: it counts once.
+    # Every other record counts once per line, legacy records included. A turn
+    # is not an event: one operator prompt can span unrelated slips.
     units: dict[str, set] = {}
     for line_no, line in enumerate(lines[offset:], start=offset):
         try:
@@ -240,8 +241,8 @@ def owed(store: Path, repo: Path, now: datetime, marker: dict | None) -> list[tu
         except (ValueError, AttributeError):
             continue
         if isinstance(ref, str) and ref.strip():
-            session, turn = data.get("session"), data.get("turn")
-            unit = ("event", str(session), str(turn)) if session and turn else ("line", line_no)
+            session, event = data.get("session"), data.get("event")
+            unit = ("event", str(session), str(event)) if session and event else ("line", line_no)
             units.setdefault(ref.strip(), set()).add(unit)
     counts = {ref: len(seen) for ref, seen in units.items()}
     recurring = sorted(r for r, n in counts.items() if n >= RECURRENCE_THRESHOLD)

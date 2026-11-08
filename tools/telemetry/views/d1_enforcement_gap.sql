@@ -2,7 +2,8 @@
 -- in force, split into "no hook" and "hook not binding" (a hook exists now and
 -- misses were recorded; the registry cannot say when it was wired, so read
 -- last_miss). Reads only the tables detector_report.py registers. A miss is an
--- event, so the records of one split event (harmonic-forge#1288) count once.
+-- event, so records sharing an explicit --event within one session
+-- (harmonic-forge#1288) count once; every other record counts once.
 CREATE OR REPLACE VIEW d1_enforcement_gap AS
 WITH misses AS (
   SELECT regexp_extract(rule_ref, 'R-\d{4}') AS rule_id,

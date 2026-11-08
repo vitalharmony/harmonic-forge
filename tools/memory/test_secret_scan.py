@@ -63,6 +63,18 @@ SURVIVORS: dict[str, set[str]] = {
 BASE64 = ["check creds before s3 cp: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE" + "KEY",
           "a1B2c3D4e5F6g7H8+i9J0k1L2m3N4o5P6q7R8/s9T0=="]
 
+#: The 40-character standard-base64 run the adjacency tests place, split so
+#: this file is not itself a secret-scanner hit.
+RUN = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE" + "KEY"
+
+#: Reforge pass-2 survivor 1, verbatim: a run next to `=` on either side.
+EQUALS_ADJACENT = ["S3" + "KEY=" + RUN, "export AWS_SAK=" + RUN, "--key=" + RUN,
+                   "a=" + RUN, RUN + "=y"]
+
+#: Every ASCII punctuation character outside the run alphabet (`_+/-` and the
+#: alphanumerics), plus space and `==`: each bounds a run on either side.
+BOUNDARIES = [c for c in "!\"#$%&'()*,.:;<=>?@[\\]^`{|}~ "] + ["=="]
+
 #: Reforge pass-1 survivor 4: vendor shapes embedded after or before a word
 #: character.
 EMBEDDED: dict[str, str] = {
@@ -127,6 +139,17 @@ class Findings(unittest.TestCase):
         for value in BASE64:
             with self.subTest(value=value[:12]):
                 self.assertIn("opaque-token", s.probe_findings(value))
+
+    def test_a_run_next_to_equals_is_an_opaque_token(self):
+        for value in EQUALS_ADJACENT:
+            with self.subTest(value=value[:8]):
+                self.assertIn("opaque-token", s.probe_findings(value))
+
+    def test_a_run_next_to_any_boundary_on_either_side_is_an_opaque_token(self):
+        for c in BOUNDARIES:
+            for value in (c + RUN, RUN + c, c + RUN + c, "x" + c + RUN + c + "y"):
+                with self.subTest(boundary=c, value=value.replace(RUN, "<run>")):
+                    self.assertIn("opaque-token", s.findings(value))
 
     def test_embedded_vendor_shapes_refuse(self):
         for value, kind in EMBEDDED.items():

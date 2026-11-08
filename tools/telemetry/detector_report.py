@@ -9,7 +9,8 @@ change. Read-only and LLM-free: it files nothing and edits nothing (AC3).
 Tables:
   misses_raw  the rows of both protocol-failures.jsonl logs (a missing log is
               empty), each tagged with `account`/`org`/`repo` partitions (AC4)
-              and an `event` (`session/turn`, else `log:line`; records of one
+              and an `event` (`session/event:<id>` when the record carries an
+              explicit `--event` and a session, else `log:line`; records of one
               split event share it, harmonic-forge#1288).
               The record's own `account` key is free-text narrative, so it is
               kept as `account_note`; `org`/`repo` come from the record's
@@ -165,12 +166,13 @@ def read_misses(logs: list[Path]) -> tuple[list[dict], int]:
 
 
 def event_of(record: dict, position: int) -> str:
-    """One failure event: `session/turn` when both are set (a split event's
-    records share it), else `log:line`, else a per-row fallback so two bare
-    records never merge."""
-    session, turn = record.get("session"), record.get("turn")
-    if session and turn:
-        return f"{session}/{turn}"
+    """One failure event: `session/event:<id>` when the record carries both a
+    session and an explicit `event` (a split event's records share it), else
+    `log:line`, else a per-row fallback so two bare records never merge. A turn
+    is not an event: one operator prompt can span unrelated slips."""
+    session, event = record.get("session"), record.get("event")
+    if session and event:
+        return f"{session}/event:{event}"
     return str(record.get(SOURCE_KEY) or f"row:{position}")
 
 
