@@ -101,16 +101,89 @@ class Build(Store):
 
     def test_build_swaps_in_and_removes_stale_temp_files(self):
         self.db.parent.mkdir(parents=True)
-        stale = self.db.parent / (self.db.name + ".abc123")
-        stale.write_bytes(b"left by a failed build")
+        stale = [self.db.parent / (self.db.name + ".build-4242-abc_123.tmp"),
+                 self.db.parent / (self.db.name + ".build-4242-abc_123.tmp-journal")]
+        for path in stale:
+            path.write_bytes(b"left by a failed build")
         other = self.db.parent / "unrelated.sqlite.keep"
         other.write_bytes(b"x")
         self.build()
         self.assertTrue(self.db.is_file())
-        self.assertFalse(stale.exists())
+        for path in stale:
+            self.assertFalse(path.exists())
         self.assertTrue(other.exists())
         self.assertEqual(sorted(p.name for p in self.db.parent.iterdir() if p.name.startswith(self.db.name)),
-                         [self.db.name])
+                         [self.db.name, self.db.name + ".lock"])
+
+    def test_build_never_deletes_a_file_that_is_not_its_temp_file(self):
+        """Survivor 1: the sweep was a `<db>.*` glob, so any file sharing the
+        database's name prefix was deleted."""
+        self.db.parent.mkdir(parents=True)
+        kept = [self.db.parent / (self.db.name + suffix)
+                for suffix in (".keep", ".abc123", ".bak", ".build-x.tmp", ".build-1-a.tmp.old")]
+        for path in kept:
+            path.write_bytes(b"not a temp file")
+        self.build()
+        for path in kept:
+            with self.subTest(path=path.name):
+                self.assertEqual(path.read_bytes(), b"not a temp file")
+
+    def test_concurrent_rebuilds_never_crash(self):
+        """Survivor 1: two builds at once swept each other's live temp file.
+        Builds are serialized, so every concurrent `build` and `latest` exits 0
+        and leaves no temp file behind."""
+        self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "pwd")])
+        argv = [sys.executable, str(HERE / "failure_store.py"), "--db", str(self.db),
+                "--memory-log", str(self.memory), "--testplan-log", str(self.testplan),
+                "--overlays", str(self.overlays)]
+        for round_ in range(4):
+            self.write(self.memory, [rec(f"2026-11-02T00:00:0{round_}Z", "l1_post", "cwd", "pwd")], mode="a")
+            procs = [subprocess.Popen(argv + (["build"] if i % 2 else ["latest", "--tool", "l1_post",
+                                                                         "--class", "cwd"]),
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                     for i in range(8)]
+            for proc in procs:
+                _out, err = proc.communicate(timeout=60)
+                with self.subTest(round=round_):
+                    self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(sorted(p.name for p in self.db.parent.iterdir() if p.name.startswith(self.db.name)),
+                         [self.db.name, self.db.name + ".lock"])
+
+    def test_a_build_error_exits_3_not_latests_not_found_1(self):
+        """Survivor 1: a crashed rebuild exited 1, which `latest` also uses for
+        "no stored failure", so a caller read a crash as "no precedent"."""
+        argv = ["--db", str(self.db), "--memory-log", str(self.memory), "--testplan-log",
+                str(self.testplan), "--overlays", str(self.overlays)]
+        for command in (["build"], ["latest", "--tool", "l1_post", "--class", "cwd"]):
+            for error in (OSError("disk I/O error"), sqlite3.OperationalError("disk I/O error")):
+                with self.subTest(command=command[0], error=type(error).__name__):
+                    err = io.StringIO()
+                    with mock.patch.object(fs.sqlite3, "connect", side_effect=error), \
+                            redirect_stderr(err), redirect_stdout(io.StringIO()):
+                        self.assertEqual(fs.main([*argv, *command]), fs.EXIT_ERROR)
+                    self.assertNotEqual(fs.EXIT_ERROR, 1)
+                    self.assertIn("error", err.getvalue())
+
+    def test_db_over_a_source_refuses(self):
+        """Survivor 5: `--db` naming a log or an overlay replaced it with the
+        SQLite file."""
+        self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "pwd")])
+        self.write(self.testplan, [rec("2026-11-01T00:00:00Z")])
+        self.overlay("0001.jsonl", [{"log_line": 0, "key_v1": "git-push|target-state"}])
+        sources = [self.memory, self.testplan, self.overlays / "0001.jsonl"]
+        before = {p: p.read_bytes() for p in sources}
+        for db in (*sources, self.memory.with_suffix(""), self.overlays / "store.sqlite",
+                   self.root / "operator-memory" / "x" / ".." / "protocol-failures.jsonl"):
+            for command in (["build"], ["latest", "--tool", "l1_post", "--class", "cwd"]):
+                with self.subTest(db=str(db), command=command[0]):
+                    err = io.StringIO()
+                    with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                        code = fs.main(["--db", str(db), "--memory-log", str(self.memory), "--testplan-log",
+                                        str(self.testplan), "--overlays", str(self.overlays), *command])
+                    self.assertEqual(code, 2, err.getvalue())
+        self.assertEqual({p: p.read_bytes() for p in sources}, before)
+        self.assertFalse((self.overlays / "store.sqlite").exists())
+        self.assertFalse(self.memory.with_suffix("").exists())
 
     def test_build_never_changes_a_log(self):
         self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "pwd")])

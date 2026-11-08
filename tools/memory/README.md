@@ -130,10 +130,16 @@ python3 ~/harmonic-forge/tools/memory/failure_store.py build
 python3 ~/harmonic-forge/tools/memory/failure_store.py latest --tool l1_post --class cwd
 ```
 
-`build` writes a `mkstemp` temp file beside the store, swaps it in, and removes
-temp files left by earlier failed builds. `latest` rebuilds first when a log or
-overlay changed (size and sha256 of each) since the last build. Neither opens a
-log for writing. An overlay row is `{"log_line": N, "key_v1": "tool|class",
+`build` writes a temp file beside the store (`<db>.build-<pid>-<random>.tmp`)
+and swaps it in. Builds of one store are serialized by an exclusive lock on
+`<db>.lock`, so temp files left by earlier failed builds are provably abandoned
+and are removed by that exact name pattern; no other file is ever deleted.
+`latest` rebuilds first when a log or overlay changed (size and sha256 of each)
+since the last build, and skips the rebuild if another process finished one
+while it waited for the lock. Neither opens a log for writing. `--db` must end
+in `.sqlite`, `.sqlite3` or `.db` and must not be a log, an overlay or inside the
+overlays folder. Exit codes: 0 found or built, 1 no stored failure for the key,
+2 refused, 3 an I/O or SQLite error. An overlay row is `{"log_line": N, "key_v1": "tool|class",
 "probe"?: "...", "log"?: "memory"|"testplan"}`; files apply in name order, rows
 in file order, the last match wins, and a row with an empty `key_v1` is skipped
 and counted. Records are never rewritten.

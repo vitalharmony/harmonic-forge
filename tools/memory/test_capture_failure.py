@@ -350,6 +350,24 @@ class TestFailureKey(_Quiet):
                     self.assert_refused_unchanged(*base, *partial)
         self.assertFalse(self.log.exists())
 
+    def test_blank_key_field_counts_as_absent(self):
+        """Survivor 7: a whitespace-only key field counted as present."""
+        for blank in ("", " ", "\t ", "\n"):
+            for flag in ("--tool", "--class", "--probe"):
+                key = list(KEY)
+                key[key.index(flag) + 1] = blank
+                for base in (self.base(existed="rule", ref="R-0419"), self.base(caught_by="hook"),
+                             self.base()):
+                    with self.subTest(blank=blank, flag=flag, base=base[:4]):
+                        self.assert_refused_unchanged(*base, *key)
+        self.assertFalse(self.log.exists())
+        # All three blank is no key at all: refused where a key is required...
+        blank_key = ["--tool", " ", "--class", " ", "--probe", " "]
+        self.assert_refused_unchanged(*self.base(existed="rule", ref="R-0419"), *blank_key)
+        # ...and stored as null, never as blanks, where it is not.
+        self.assertEqual(self.capture(*self.base(), *blank_key), 0)
+        self.assertEqual([self.lines()[0][f] for f in ("tool", "class", "probe")], [None, None, None])
+
     def test_record_without_key_is_accepted(self):
         self.assertEqual(self.capture(*self.base(caught_by="operator")), 0)
         self.assertEqual(self.capture(*self.base(existed="rule", ref="R-0344")), 0)
@@ -558,6 +576,31 @@ class TestSecretScan(_Quiet):
         self.assertNotIn(GH_TOKEN_SHAPE, message)
         self.assertNotIn(GH_TOKEN_SHAPE[:12], message)
 
+    def test_refusal_never_echoes_any_kind(self):
+        """Every kind, end to end: exit 2, the log byte-identical, the kind
+        named, the value never repeated."""
+        mixed = "A1b2C3d4E5f6G7h8"
+        cases = {
+            "credential-assignment": ("export DB_PASS" + "WORD='$3cr3tHunter2'", "$3cr3tHunter2"),
+            "authorization-header": ('{"Author' + 'ization": "Bearer ' + "q9" + mixed + '"}', "q9" + mixed),
+            "basic-auth": ("curl -u deploy:" + "hunt" + "er2zz https://x", "hunter2zz"),
+            "url-credentials": ("postgresql://app:" + "$ecretPw" + "@db/x", "$ecretPw"),
+            "jwt": ("ey" + "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.sig9", "JhbGciOiJIUzI1NiIs"),
+            "email-address": ("mail person@" + "evilnoreply.github.com", "person@evil"),
+            "opaque-token": ("key AI" + "za" + mixed * 2 + "Qz9", "za" + mixed),
+        }
+        self.assertEqual(self.capture(*self.base()), 0)
+        for kind, (command, secret) in cases.items():
+            for flag in ("--command", "--probe"):
+                with self.subTest(kind=kind, flag=flag):
+                    extra = (["--command", command] if flag == "--command" else
+                             ["--tool", "gh-api", "--class", "env", "--probe", command])
+                    self.assert_refused_unchanged(*self.base(), *extra)
+                    message = self.err.getvalue()
+                    self.assertIn(kind, message)
+                    self.assertNotIn(secret, message)
+                    self.assertNotIn(command, message)
+
     def test_clean_command_is_stored_verbatim(self):
         command = 'GH_TOKEN="$TOKEN" python3 l1_post.py --repo a/b --body "x y" | tee out'
         self.assertEqual(self.capture(*self.base(), "--command", command), 0)
@@ -601,6 +644,28 @@ class TestForgeHoldsNoData(_Quiet):
         link = self.root / "looks-safe"
         link.symlink_to(forge)
         self.refused_at(link / "f.jsonl")
+
+    def test_tilde_path_is_expanded_once(self):
+        """Survivor 6: a literal `~` passed the guard (which expanded it) and
+        was then written unexpanded, under the working directory."""
+        home = self.root / "home"
+        home.mkdir()
+        forge = self.fake_forge("forge-cwd")
+        cwd = os.getcwd()
+        os.chdir(forge)
+        self.addCleanup(os.chdir, cwd)
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                self.assertEqual(m.main([*self.base(), "--path", "~/protocol-failures.jsonl"]), 0)
+            self.assertTrue((home / "protocol-failures.jsonl").is_file())
+            self.assertFalse((forge / "~").exists())
+            # A `~` path that expands into forge is refused.
+            (home / "hf").symlink_to(forge)
+            with redirect_stderr(err):
+                self.assertEqual(m.main([*self.base(), "--path", "~/hf/f.jsonl"]), 2)
+            self.assertFalse((forge / "f.jsonl").exists())
+            self.assertFalse((forge / "~").exists())
 
     def test_a_git_repo_that_is_not_forge_is_accepted(self):
         other = self.root / "other-repo"

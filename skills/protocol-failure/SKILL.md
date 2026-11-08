@@ -122,8 +122,13 @@ Class-list version 1:
 
 `--command` and `--probe` pass a local secret scan
 (`tools/memory/secret_scan.py`). A token-, key-, credential- or email-shaped
-value refuses the capture; the refusal names the kind, never the text. Use a
-`$VARIABLE` or a placeholder instead.
+value refuses the capture; the refusal names the kind, never the text. A
+credential keyword in any key position (`KEY=`, `"key":`, `key:=`, `key =>`,
+`--key value`) refuses unless its whole value is one shell expansion (`$NAME`
+with an upper-case name, `${name}`, `$(...)`), unquoted or double-quoted;
+single-quoted and `$'...'` values never pass. Use such an expansion or a
+placeholder instead. A blank or whitespace-only `--tool`, `--class` or
+`--probe` counts as absent.
 
 ## Where it writes
 

@@ -7,8 +7,11 @@ from it, so a lost or stale database costs one rebuild and nothing else.
 
   build   rebuild the database from both logs (the memory log and Lane 3's
           testplan log) plus every `failure-overlays/*.jsonl`, through a
-          uniquely named temp file in the database's folder that is swapped
-          in; stale temp files from earlier failed builds are removed.
+          uniquely named temp file (`<db>.build-<pid>-<random>.tmp`) in the
+          database's folder that is swapped in. Builds of one database are
+          serialized by an exclusive lock on `<db>.lock`, so temp files left
+          by earlier failed builds are provably abandoned and are removed by
+          that exact name pattern; no other file is ever deleted.
   latest  print the newest failure with an effective key `--tool T --class C`
           and its probe, as one JSON line (the precedent-citation lookup).
           Rebuilds first when a log or overlay changed since the last build.
@@ -22,14 +25,20 @@ A row with an empty `key_v1` re-keys nothing and is counted as skipped.
 The database, the logs and the overlays live in
 ~/Harmonic_Projects/operator-memory/. A `--db` inside a harmonic-forge
 checkout or worktree is refused: harmonic-forge is public and failure data
-never enters it. Stdlib `sqlite3` only, no network.
+never enters it, and so is a `--db` that is a log or overlay path or lacks a
+database suffix (`.sqlite`, `.sqlite3`, `.db`). Exit codes: 0 found or built,
+1 no stored failure for that key, 2 refused, 3 an I/O or SQLite error.
+Stdlib `sqlite3` only, no network.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -149,40 +158,96 @@ def overlay_rows(overlays: Path) -> tuple[list[tuple], int, int]:
     return rows, skipped, malformed
 
 
-def build(db: Path, logs: dict[str, Path], overlays: Path) -> dict:
-    """Rebuild `db` from the logs and overlays; return the row counts."""
-    db = Path(db).expanduser()
+#: The database suffixes `--db` accepts. Anything else is refused, so the store
+#: can never be pointed at a log, an overlay or any other non-database file.
+DB_SUFFIXES = (".sqlite", ".sqlite3", ".db")
+
+#: Exit code for a build that crashed (an I/O or SQLite error), distinct from
+#: `latest`'s 1 ("no stored failure") and a refusal's 2.
+EXIT_ERROR = 3
+
+
+def _guard_db(db: Path, logs: dict[str, Path], overlays: Path) -> None:
+    """Refuse a `--db` that could overwrite a source: one without a database
+    suffix, one that resolves to a log or an overlay file, or one inside the
+    overlays folder."""
     _guard(db, "--db")
-    db.parent.mkdir(parents=True, exist_ok=True)
-    stamp = fingerprint(logs, overlays)
-    counts: dict = {"failures": {}, "malformed": 0}
-    fd, tmp_name = tempfile.mkstemp(dir=db.parent, prefix=db.name + ".")
-    os.close(fd)
-    tmp = Path(tmp_name)
+    if db.suffix.lower() not in DB_SUFFIXES:
+        raise Refused(f"--db {db} must end in one of {', '.join(DB_SUFFIXES)}.")
+    target = db.resolve()
+    sources = {Path(p).expanduser().resolve() for p in logs.values()}
+    sources |= {p.resolve() for p in overlay_files(Path(overlays).expanduser())}
+    if target in sources or target.parent == Path(overlays).expanduser().resolve():
+        raise Refused(f"--db {db} is a log or overlay path, or inside the overlays "
+                      "folder; the store never writes over its own sources.")
+
+
+def _temp_pattern(db: Path) -> re.Pattern[str]:
+    """A build's temp file: `<db>.build-<pid>-<random>.tmp`, plus SQLite's
+    `-journal`/`-wal`/`-shm` siblings. Nothing else matches."""
+    return re.compile(re.escape(db.name) + r"\.build-\d+-[A-Za-z0-9_]+\.tmp(?:-journal|-wal|-shm)?")
+
+
+@contextlib.contextmanager
+def _build_lock(db: Path):
+    """Serialize builds of one database with an exclusive `flock` on
+    `<db>.lock`. The lock file is kept; the kernel drops the lock when the
+    holder exits, so a crashed build never wedges the next one."""
+    fd = os.open(db.parent / (db.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        _guard(tmp, "the build's temp file")
-        con = sqlite3.connect(tmp)
-        try:
-            con.executescript(SCHEMA.read_text(encoding="utf-8"))
-            for name, path in logs.items():
-                rows, malformed = failure_rows(name, path)
-                con.executemany(f"INSERT INTO failures VALUES ({', '.join('?' * len(COLUMNS))})", rows)
-                counts["failures"][name] = len(rows)
-                counts["malformed"] += malformed
-            rows, skipped, bad = overlay_rows(overlays)
-            con.executemany("INSERT INTO overlays VALUES (?, ?, ?, ?, ?, ?)", rows)
-            counts.update(overlays=len(rows), skipped=skipped, overlay_malformed=bad)
-            con.executemany("INSERT INTO meta VALUES (?, ?)",
-                            [("fingerprint", stamp), ("counts", json.dumps(counts))])
-            con.commit()
-        finally:
-            con.close()
-        tmp.replace(db)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
     finally:
-        tmp.unlink(missing_ok=True)
-    for stale in db.parent.glob(db.name + ".*"):
-        stale.unlink(missing_ok=True)
-    return counts
+        os.close(fd)
+
+
+def build(db: Path, logs: dict[str, Path], overlays: Path, *, if_stale: bool = False) -> dict | None:
+    """Rebuild `db` from the logs and overlays; return the row counts.
+
+    Builds of one database are serialized by `_build_lock`, so while it is
+    held no other build is running and every temp file left in the folder is
+    provably abandoned: only those, by their exact name pattern, are removed.
+    With `if_stale`, a build that finds the store already current once it holds
+    the lock (another process rebuilt it meanwhile) does nothing and returns
+    None."""
+    db = Path(db).expanduser()
+    _guard_db(db, logs, overlays)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with _build_lock(db):
+        pattern = _temp_pattern(db)
+        for stale in db.parent.iterdir():
+            if pattern.fullmatch(stale.name) and stale.is_file():
+                stale.unlink(missing_ok=True)
+        stamp = fingerprint(logs, overlays)
+        if if_stale and stored_fingerprint(db) == stamp:
+            return None
+        counts: dict = {"failures": {}, "malformed": 0}
+        fd, tmp_name = tempfile.mkstemp(dir=db.parent, prefix=f"{db.name}.build-{os.getpid()}-",
+                                        suffix=".tmp")
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            _guard(tmp, "the build's temp file")
+            con = sqlite3.connect(tmp)
+            try:
+                con.executescript(SCHEMA.read_text(encoding="utf-8"))
+                for name, path in logs.items():
+                    rows, malformed = failure_rows(name, path)
+                    con.executemany(f"INSERT INTO failures VALUES ({', '.join('?' * len(COLUMNS))})", rows)
+                    counts["failures"][name] = len(rows)
+                    counts["malformed"] += malformed
+                rows, skipped, bad = overlay_rows(overlays)
+                con.executemany("INSERT INTO overlays VALUES (?, ?, ?, ?, ?, ?)", rows)
+                counts.update(overlays=len(rows), skipped=skipped, overlay_malformed=bad)
+                con.executemany("INSERT INTO meta VALUES (?, ?)",
+                                [("fingerprint", stamp), ("counts", json.dumps(counts))])
+                con.commit()
+            finally:
+                con.close()
+            tmp.replace(db)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return counts
 
 
 def stored_fingerprint(db: Path) -> str | None:
@@ -203,9 +268,9 @@ def latest(db: Path, logs: dict[str, Path], overlays: Path, tool: str, klass: st
     """The newest failure whose effective key is `tool|klass`, rebuilding first
     when the logs or overlays changed since the last build."""
     db = Path(db).expanduser()
-    _guard(db, "--db")
+    _guard_db(db, logs, overlays)
     if stored_fingerprint(db) != fingerprint(logs, overlays):
-        build(db, logs, overlays)
+        build(db, logs, overlays, if_stale=True)
     con = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
@@ -247,6 +312,9 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
+    except (OSError, sqlite3.Error) as exc:
+        print(f"failure-store: error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     if row is None:
         print(f"failure-store: no stored failure with key {args.tool}|{args.klass}", file=sys.stderr)
         return 1

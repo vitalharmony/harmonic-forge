@@ -268,7 +268,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _single(args: argparse.Namespace) -> str | None:
     """Collapse each key flag to one value, refusing a repeat. argparse would
-    otherwise keep the last one silently, and a bundled event is two slips."""
+    otherwise keep the last one silently, and a bundled event is two slips.
+
+    A blank or whitespace-only value counts as absent, so the partial-key and
+    missing-key refusals apply to it rather than storing an empty key field."""
     for flag in KEY_FLAGS:
         attr = "klass" if flag == "class" else flag
         values = getattr(args, attr)
@@ -276,7 +279,8 @@ def _single(args: argparse.Namespace) -> str | None:
             return (f"--{flag} was given {len(values)} times. One slip per record: "
                     "capture each slip with its own call (the calls share the "
                     "session and turn ids).")
-        setattr(args, attr, values[0] if values else None)
+        value = values[0] if values else None
+        setattr(args, attr, value if value is not None and value.strip() else None)
     return None
 
 
@@ -287,7 +291,7 @@ def key_required(args: argparse.Namespace) -> bool:
 
 def validate_key(args: argparse.Namespace, classes: dict) -> str | None:
     given = {flag: getattr(args, "klass" if flag == "class" else flag) for flag in KEY_FLAGS}
-    present = [flag for flag, value in given.items() if value]
+    present = [flag for flag, value in given.items() if value is not None and value.strip()]
     if present and len(present) < len(KEY_FLAGS):
         missing = ", ".join(f"--{f}" for f in KEY_FLAGS if f not in present)
         return (f"a partial failure key is refused: missing {missing}. Give all "
@@ -335,7 +339,8 @@ def validate_secrets(args: argparse.Namespace) -> str | None:
         if kinds:
             return (f"{flag} holds a secret-shaped value ({', '.join(kinds)}). "
                     "Nothing was written; the matched text is not repeated here. "
-                    "Replace it with a placeholder or a $VARIABLE and capture again.")
+                    "Replace it with a placeholder or a whole-value $VARIABLE (upper "
+                    "case), ${name} or $(...) and capture again.")
     return None
 
 
@@ -410,7 +415,8 @@ def append(record: dict, path: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    path = Path(args.path) if args.path else default_log_path(args.lane)
+    # Expanded once, here: the forge guard and the writer use this one path.
+    path = Path(args.path).expanduser() if args.path else default_log_path(args.lane)
     refusal = refusal_for(args, path)
     if refusal:
         print(f"refused: {refusal}", file=sys.stderr)
