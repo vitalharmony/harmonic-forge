@@ -28,7 +28,7 @@ The database, the logs and the overlays live in
 checkout or worktree is refused: harmonic-forge is public and failure data
 never enters it, and so is a `--db` that is a log or overlay path or lacks a
 database suffix (`.sqlite`, `.sqlite3`, `.db`). Exit codes: 0 found or built,
-1 no stored failure for that key, 2 refused, 3 any other error (I/O, SQLite,
+4 no stored failure for that key, 2 refused, 3 any other error (I/O, SQLite,
 an unreadable or missing memory log, a record SQLite cannot bind). A missing
 testplan log reads as empty.
 Stdlib `sqlite3` only, no network.
@@ -183,8 +183,11 @@ def overlay_rows(overlays: Path) -> tuple[list[tuple], int, int]:
 DB_SUFFIXES = (".sqlite", ".sqlite3", ".db")
 
 #: Exit code for a build that crashed (an I/O or SQLite error), distinct from
-#: `latest`'s 1 ("no stored failure") and a refusal's 2.
+#: a refusal's 2 and `latest`'s EXIT_NOT_FOUND.
 EXIT_ERROR = 3
+#: `latest` found no stored failure for the key (operator ruling, harmonic-forge#1288):
+#: never 1, which is also what any uncaught Python exception returns.
+EXIT_NOT_FOUND = 4
 
 
 def _guard_db(db: Path, logs: dict[str, Path], overlays: Path) -> None:
@@ -332,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         row = latest(args.db, logs, args.overlays, args.tool, args.klass)
         if row is None:
             print(f"failure-store: no stored failure with key {args.tool}|{args.klass}", file=sys.stderr)
-            return 1
+            return EXIT_NOT_FOUND
         # Inside the handler, and flushed here: an I/O error writing the result
         # exits 3, never 1.
         print(json.dumps(row, separators=(",", ":")))

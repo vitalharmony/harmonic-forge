@@ -141,7 +141,7 @@ and are removed by that exact name pattern; no other file is ever deleted.
 or the schema file or `STORE_VERSION` changed, since the last build, and skips the rebuild if another process finished one
 while it waited for the lock. Neither opens a log for writing. `--db` must end
 in `.sqlite`, `.sqlite3` or `.db` and must not be a log, an overlay or inside the
-overlays folder. Exit codes: 0 found or built, 1 no stored failure for the key,
+overlays folder. Exit codes: 0 found or built, 4 no stored failure for the key (never 1, which an uncaught exception also returns),
 2 refused, 3 any other error (an unreadable or missing memory log, an I/O or
 SQLite error, a record SQLite cannot bind, an error writing the result); only a
 missing testplan log reads as empty. An overlay row is `{"log_line": N, "key_v1": "tool|class",

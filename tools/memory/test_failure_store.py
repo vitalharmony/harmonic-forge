@@ -172,6 +172,7 @@ class Build(Store):
                             redirect_stderr(err), redirect_stdout(io.StringIO()):
                         self.assertEqual(fs.main([*argv, *command]), fs.EXIT_ERROR)
                     self.assertNotEqual(fs.EXIT_ERROR, 1)
+                    self.assertNotEqual(fs.EXIT_NOT_FOUND, 1)
                     self.assertIn("error", err.getvalue())
 
     def _main_argv(self) -> list[str]:
@@ -351,7 +352,7 @@ class Latest(Store):
             self.assertEqual(fs.main([*argv, "latest", "--tool", "l1_post", "--class", "cwd"]), 0)
         self.assertEqual(json.loads(out.getvalue())["probe"], "p")
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(fs.main([*argv, "latest", "--tool", "l1_post", "--class", "env"]), 1)
+            self.assertEqual(fs.main([*argv, "latest", "--tool", "l1_post", "--class", "env"]), fs.EXIT_NOT_FOUND)
             self.assertEqual(fs.main([*argv, "build"]), 0)
 
 
@@ -484,3 +485,11 @@ class ForgeHoldsNoData(Store):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNotFoundExitCode(unittest.TestCase):
+    """harmonic-forge#1288 operator ruling: 'no stored failure' is exit 4, never 1."""
+
+    def test_not_found_is_4_and_distinct_from_every_other_code(self):
+        self.assertEqual(fs.EXIT_NOT_FOUND, 4)
+        self.assertNotIn(fs.EXIT_NOT_FOUND, (0, 1, 2, fs.EXIT_ERROR))
