@@ -483,9 +483,6 @@ class ForgeHoldsNoData(Store):
         self.assertEqual(data, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestNotFoundExitCode(unittest.TestCase):
     """harmonic-forge#1288 operator ruling: 'no stored failure' is exit 4, never 1."""
@@ -493,3 +490,7 @@ class TestNotFoundExitCode(unittest.TestCase):
     def test_not_found_is_4_and_distinct_from_every_other_code(self):
         self.assertEqual(fs.EXIT_NOT_FOUND, 4)
         self.assertNotIn(fs.EXIT_NOT_FOUND, (0, 1, 2, fs.EXIT_ERROR))
+
+
+if __name__ == "__main__":
+    unittest.main()
