@@ -153,6 +153,16 @@ class PassCapTests(ScratchRepo):
         self.assertIsNotNone(preclose_passes.post_verdict_refusal(
             self.receipt(), head, REPO, ISSUE, "no-such-ref"))
 
+    def test_check_pass_cap_passes_its_main_ref_to_the_waiver(self) -> None:
+        """harmonic-forge#1294: the cap check hands its own base to the waiver,
+        so a clean replay against that base is not refused for a post-verdict
+        check (the grant check that follows is a separate gate)."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.rebase_onto_moved_base()
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+        preclose.check_pass_cap(REPO, ISSUE, head, "base", True)
+
     def test_post_verdict_check_is_not_a_pass_and_survives_later_writes(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
         self.run_pass("scripts/b.py", SURVIVOR)
