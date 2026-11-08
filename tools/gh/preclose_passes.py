@@ -582,12 +582,16 @@ def _post_verdict(receipt: dict | None) -> dict:
     return {"post_verdict_check": check} if isinstance(check, dict) else {}
 
 
-def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int) -> str | None:
+def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int,
+                         main_ref: str = MAIN_REF) -> str | None:
     """Why a forced receipt at ``sha`` must not be written yet, or None.
     Only the sticky-wicket case needs the check; the operator case (not both
-    passes with survivors) is unchanged."""
+    passes with survivors) is unchanged. A head the latest pass already
+    accepts has no patch for a post-verdict check to read (harmonic-forge#1294)."""
     passes = current(history(receipt))
     if len(passes) < MAX_PASSES or cap_message(passes) != STICKY_WICKET:
+        return None
+    if accepts_entry(passes[-1], sha, None, main_ref):
         return None
     check = _post_verdict(receipt).get("post_verdict_check") or {}
     if check.get("head_sha") == sha:

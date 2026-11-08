@@ -129,6 +129,40 @@ class PassCapTests(ScratchRepo):
             self.plan(tier="fast", force=True)
         self.assertIn("--post-verdict", str(refused.exception))
 
+    def test_force_at_the_pass_two_head_needs_no_post_verdict_check(self) -> None:
+        """harmonic-forge#1294 AC1: a PATCH verdict that changes nothing leaves
+        no patch for the post-verdict check to read, so --force at the pass-2
+        head itself is not refused for want of one."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.complete(findings=SURVIVOR, not_triggered=True, force=True)
+        receipt = self.receipt()
+        self.assertEqual(receipt["pass_count"], 3)
+        self.assertNotIn("post_verdict_check", receipt)
+
+    def test_post_verdict_refusal_accepts_a_clean_replay_of_the_pass_two_head(self) -> None:
+        """harmonic-forge#1294: the function waives the check for a clean replay
+        too. Production cannot reach it with a grant, which binds to the exact
+        pass-2 SHA; this is the one test that exercises `main_ref`."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.rebase_onto_moved_base()
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+        self.assertIsNone(preclose_passes.post_verdict_refusal(
+            self.receipt(), head, REPO, ISSUE, "base"))
+        self.assertIsNotNone(preclose_passes.post_verdict_refusal(
+            self.receipt(), head, REPO, ISSUE, "no-such-ref"))
+
+    def test_check_pass_cap_passes_its_main_ref_to_the_waiver(self) -> None:
+        """harmonic-forge#1294: the cap check hands its own base to the waiver,
+        so a clean replay against that base is not refused for a post-verdict
+        check (the grant check that follows is a separate gate)."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        self.rebase_onto_moved_base()
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+        preclose.check_pass_cap(REPO, ISSUE, head, "base", True)
+
     def test_post_verdict_check_is_not_a_pass_and_survives_later_writes(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
         self.run_pass("scripts/b.py", SURVIVOR)
