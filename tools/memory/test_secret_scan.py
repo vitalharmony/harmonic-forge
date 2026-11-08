@@ -69,10 +69,10 @@ EMBEDDED: dict[str, str] = {
     "id" + "AK" + "IA" + "IOSFODNN7EXAMPLE": "aws-access-key",
     "AK" + "IA" + "IOSFODNN7EXAMPLE" + "X": "aws-access-key",
     "xyz" + "xo" + "xb-" + "1234567890-abc": "slack-token",
-    "x" + "ey" + "J" + ALNUM + ".ey" + "J" + ALNUM + "." + ALNUM: "jwt",
+    "1" + "ey" + "J" + ALNUM + ".ey" + "J" + ALNUM + "." + ALNUM: "jwt",
     "my" + "gh" + "p_" + ALNUM * 3: "github-token",
     "x" + "sk-" + "ant-" + ALNUM * 2: "anthropic-key",
-    "x" + "sk-" + "proj-" + ALNUM * 2: "openai-key",
+    "_" + "sk-" + "proj-" + ALNUM * 2: "openai-key",
 }
 
 #: The operator's extras with no keyword, no `@` or `://`, no vendor shape and
@@ -98,6 +98,10 @@ HITS = {
 
 #: Probes that must stay clean.
 CLEAN = [
+    # A letter before `sk-`/`eyJ` is English, not a key (mise task names, identifiers).
+    "run mise run task-runner-for-the-whole-repo",
+    "check the pre-task-hooks-are-not-running-now flag",
+    "grep keyJsonValidator.validate.call",
     "re-read the issue's AC before claiming",
     "ls the target dir before writing",
     "git -C the worktree status before the commit",

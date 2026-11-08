@@ -50,11 +50,13 @@ _UUID = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}
 _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("github-token", re.compile(r"(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})")),
     ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
-    ("openai-key", re.compile(r"sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}")),
+    # A letter right before `sk-`/`eyJ` is ordinary English (`task-…`, `keyJson…`), so those two
+    # keep a letter boundary; a digit, `_` or symbol before them still hits.
+    ("openai-key", re.compile(r"(?<![A-Za-z])sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}")),
     ("aws-access-key", re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}")),
     ("slack-token", re.compile(r"xox[abposr]-[A-Za-z0-9-]{10,}|hooks\.slack\.com/services/[A-Za-z0-9/]+")),
     # Anchored on the header alone: an empty-claims payload (`e30`) still hits.
-    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*")),
+    ("jwt", re.compile(r"(?<![A-Za-z])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*")),
     ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
 )
 
