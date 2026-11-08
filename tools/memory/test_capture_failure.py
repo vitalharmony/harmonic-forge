@@ -585,6 +585,17 @@ class TestSecretScan(_Quiet):
         self.assert_refused_unchanged(*self.probe("x" * 201))
         self.assertIn("over-length", self.err.getvalue())
 
+    def test_a_blank_probe_still_gets_the_form_checks(self):
+        """Reforge pass-1 survivor 5: a whitespace-only probe was normalized
+        to absent before the form checks, so 201 spaces or a lone newline
+        were accepted (stored as null)."""
+        for value, kind in ((" " * 201, "over-length"), ("\n", "multi-line"), (" \n ", "multi-line")):
+            for base in (self.base(), self.base(caught_by="hook")):
+                with self.subTest(value=repr(value[:3]), base=base[:4]):
+                    self.assert_refused_unchanged(*base, "--tool", " ", "--class", " ", "--probe", value)
+                    self.assertIn(kind, self.err.getvalue())
+        self.assertFalse(self.log.exists())
+
     def test_two_line_probe_refuses(self):
         self.assert_refused_unchanged(*self.probe("first line\nsecond line"))
         self.assertIn("multi-line", self.err.getvalue())

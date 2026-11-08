@@ -88,11 +88,21 @@ class Build(Store):
         self.assertEqual(rows, [("memory", 0, "l1_post", "cwd", "7", 1), ("memory", 3, None, None, "7", None),
                                 ("testplan", 0, "pytest", "local-check", "7", 1)])
 
-    def test_missing_logs_build_an_empty_store(self):
+    def test_a_missing_testplan_log_builds_empty(self):
+        self.write(self.memory, [])
         self.assertEqual(self.build()["failures"], {"memory": 0, "testplan": 0})
         self.assertEqual(self.query("SELECT count(*) FROM failures"), [(0,)])
 
+    def test_a_missing_memory_log_exits_3_never_1(self):
+        """Reforge pass-1 survivor 3: a missing memory log built an empty
+        store, so `latest` exited 1 ("no precedent") on a log it never read."""
+        self.write(self.testplan, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+        self.assert_exits_3("missing memory log")
+        with self.assertRaises(FileNotFoundError):
+            self.build()
+
     def test_schema_has_the_key_index_and_view(self):
+        self.write(self.memory, [])
         self.build()
         names = {r[0] for r in self.query("SELECT name FROM sqlite_master")}
         self.assertTrue({"meta", "failures", "overlays", "failure_keys", "failures_key"} <= names)
@@ -100,7 +110,7 @@ class Build(Store):
         self.assertIn("(tool, class, ts)", index)
 
     def test_build_swaps_in_and_removes_stale_temp_files(self):
-        self.db.parent.mkdir(parents=True)
+        self.write(self.memory, [])
         stale = [self.db.parent / (self.db.name + ".build-4242-abc_123.tmp"),
                  self.db.parent / (self.db.name + ".build-4242-abc_123.tmp-journal")]
         for path in stale:
@@ -118,7 +128,7 @@ class Build(Store):
     def test_build_never_deletes_a_file_that_is_not_its_temp_file(self):
         """Survivor 1: the sweep was a `<db>.*` glob, so any file sharing the
         database's name prefix was deleted."""
-        self.db.parent.mkdir(parents=True)
+        self.write(self.memory, [])
         kept = [self.db.parent / (self.db.name + suffix)
                 for suffix in (".keep", ".abc123", ".bak", ".build-x.tmp", ".build-1-a.tmp.old")]
         for path in kept:
@@ -280,6 +290,41 @@ class Latest(Store):
         self.build()
         with mock.patch.object(fs, "build", side_effect=AssertionError("rebuilt")):
             self.assertIsNotNone(self.latest("l1_post", "cwd"))
+
+    def test_a_store_from_an_older_schema_or_version_is_rebuilt(self):
+        """Reforge pass-1 survivor 2: the fingerprint hashed only the logs and
+        overlays, so a store built by an older schema (one with a `command`
+        column) was served unchanged."""
+        self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+        old_schema = self.root / "old.sql"
+        old_schema.write_text(fs.SCHEMA.read_text(encoding="utf-8") + "\n-- older\n", encoding="utf-8")
+        for label, patch in (("schema", mock.patch.object(fs, "SCHEMA", old_schema)),
+                             ("version", mock.patch.object(fs, "STORE_VERSION", fs.STORE_VERSION - 1))):
+            with self.subTest(older=label):
+                with patch:
+                    self.build()
+                with mock.patch.object(fs, "build", side_effect=AssertionError("rebuilt")):
+                    with self.assertRaises(AssertionError):
+                        self.latest("l1_post", "cwd")
+                self.assertEqual(self.latest("l1_post", "cwd")["probe"], "p")
+
+    def test_an_error_writing_the_result_exits_3(self):
+        """Reforge pass-1 survivor 6: the result was printed outside the
+        exit-3 handler, so a closed pipe or full disk exited 1."""
+        self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])
+        argv = ["--db", str(self.db), "--memory-log", str(self.memory), "--testplan-log", str(self.testplan),
+                "--overlays", str(self.overlays)]
+
+        class Broken(io.StringIO):
+            def write(self, _text):
+                raise OSError("No space left on device")
+
+        for command in (["latest", "--tool", "l1_post", "--class", "cwd"], ["build"]):
+            with self.subTest(command=command[0]):
+                err = io.StringIO()
+                with redirect_stdout(Broken()), redirect_stderr(err):
+                    self.assertEqual(fs.main([*argv, *command]), fs.EXIT_ERROR)
+                self.assertIn("error", err.getvalue())
 
     def test_cli_prints_one_json_line(self):
         self.write(self.memory, [rec("2026-11-01T00:00:00Z", "l1_post", "cwd", "p")])

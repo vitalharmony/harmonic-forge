@@ -59,6 +59,22 @@ SURVIVORS: dict[str, set[str]] = {
     "echo hunter2 | gh auth login --with-" + "token": {KW},
 }
 
+#: Reforge pass-1 survivor 1: a standard-base64 secret split by `/` or `+`.
+BASE64 = ["check creds before s3 cp: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE" + "KEY",
+          "a1B2c3D4e5F6g7H8+i9J0k1L2m3N4o5P6q7R8/s9T0=="]
+
+#: Reforge pass-1 survivor 4: vendor shapes embedded after or before a word
+#: character.
+EMBEDDED: dict[str, str] = {
+    "id" + "AK" + "IA" + "IOSFODNN7EXAMPLE": "aws-access-key",
+    "AK" + "IA" + "IOSFODNN7EXAMPLE" + "X": "aws-access-key",
+    "xyz" + "xo" + "xb-" + "1234567890-abc": "slack-token",
+    "x" + "ey" + "J" + ALNUM + ".ey" + "J" + ALNUM + "." + ALNUM: "jwt",
+    "my" + "gh" + "p_" + ALNUM * 3: "github-token",
+    "x" + "sk-" + "ant-" + ALNUM * 2: "anthropic-key",
+    "x" + "sk-" + "proj-" + ALNUM * 2: "openai-key",
+}
+
 #: The operator's extras with no keyword, no `@` or `://`, no vendor shape and
 #: under 32 characters: explicitly OUT OF SCOPE under the rewritten AC5. They
 #: are listed so the residual is named, not discovered.
@@ -89,6 +105,8 @@ CLEAN = [
     "0123456789abcdef0123456789abcdef01234567",
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "promptId 3f2c9a1e-5b6d-4c7e-8f90-123456789abc",
+    "ls /home/user/Harmonic_Projects/harmonic-forge/tools before writing",
+    "git -C /home/user/Harmonic_Projects/harmonic-forge log 0123456789abcdef0123456789abcdef01234567",
     "",
 ]
 
@@ -100,6 +118,16 @@ class Findings(unittest.TestCase):
                 found = set(s.probe_findings(value))
                 self.assertTrue(found, "a survivor must refuse")
                 self.assertTrue(kinds <= found, f"expected {kinds}, got {found}")
+
+    def test_a_standard_base64_secret_is_one_opaque_run(self):
+        for value in BASE64:
+            with self.subTest(value=value[:12]):
+                self.assertIn("opaque-token", s.probe_findings(value))
+
+    def test_embedded_vendor_shapes_refuse(self):
+        for value, kind in EMBEDDED.items():
+            with self.subTest(kind=kind, value=value[:12]):
+                self.assertIn(kind, s.probe_findings(value))
 
     def test_out_of_scope_strings_have_no_mark(self):
         """The named residual: no keyword, @, :// or shape, under 32 chars."""

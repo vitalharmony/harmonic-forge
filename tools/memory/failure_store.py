@@ -14,7 +14,8 @@ from it, so a lost or stale database costs one rebuild and nothing else.
           that exact name pattern; no other file is ever deleted.
   latest  print the newest failure with an effective key `--tool T --class C`
           and its probe, as one JSON line (the precedent-citation lookup).
-          Rebuilds first when a log or overlay changed since the last build.
+          Rebuilds first when a log, an overlay, the schema file or
+          `STORE_VERSION` changed since the last build.
 
 Logs are only ever read. Overlays relabel without rewriting: a row
 `{"log_line": N, "key_v1": "tool|class", "probe"?: "...", "log"?: "memory"|
@@ -28,7 +29,8 @@ checkout or worktree is refused: harmonic-forge is public and failure data
 never enters it, and so is a `--db` that is a log or overlay path or lacks a
 database suffix (`.sqlite`, `.sqlite3`, `.db`). Exit codes: 0 found or built,
 1 no stored failure for that key, 2 refused, 3 any other error (I/O, SQLite,
-an unreadable log, a record SQLite cannot bind).
+an unreadable or missing memory log, a record SQLite cannot bind). A missing
+testplan log reads as empty.
 Stdlib `sqlite3` only, no network.
 """
 from __future__ import annotations
@@ -57,6 +59,11 @@ DEFAULT_LOGS = {
     "memory": capture_failure.default_log_path(None),
     "testplan": capture_failure.default_log_path("3"),
 }
+
+#: The store's code version. Part of the staleness fingerprint with the schema
+#: file's bytes, so a store built by older code or an older schema is rebuilt,
+#: never served. Bump it when the projection changes without a schema change.
+STORE_VERSION = 2
 
 COLUMNS = ("log", "line", "ts", "session", "turn", "lane", "repo", "issue", "caught_by",
            "rule_existed", "rule_ref", "tool", "class", "probe", "class_list_version")
@@ -89,8 +96,9 @@ def overlay_files(overlays: Path) -> list[Path]:
 
 
 def fingerprint(logs: dict[str, Path], overlays: Path) -> str:
-    """Size and sha256 of every log and overlay file, as one JSON string."""
-    parts = []
+    """`STORE_VERSION`, the schema file's sha256, and the size and sha256 of
+    every log and overlay file, as one JSON string."""
+    parts: list = [["store", STORE_VERSION, hashlib.sha256(SCHEMA.read_bytes()).hexdigest()]]
     for name, path in sorted(logs.items()):
         data = _read_bytes(path)
         parts.append([f"log:{name}", None if data is None else len(data),
@@ -118,8 +126,15 @@ def _lines(path: Path) -> list[str]:
     return [] if data is None else data.decode("utf-8", errors="replace").splitlines()
 
 
+#: The log that must exist. A missing memory log is an unreadable source (exit
+#: 3), never "no precedent"; only Lane 3's testplan log may be absent.
+REQUIRED_LOG = "memory"
+
+
 def failure_rows(name: str, path: Path) -> tuple[list[tuple], int]:
     """`(rows, malformed)` for one log; `line` is the 0-based line index."""
+    if name == REQUIRED_LOG and not Path(path).exists():
+        raise FileNotFoundError(f"the {name} log {path} does not exist")
     rows, malformed = [], 0
     for index, line in enumerate(_lines(path)):
         if not line.strip():
@@ -314,17 +329,18 @@ def main(argv: list[str] | None = None) -> int:
             print(_summary(args.db, build(args.db, logs, args.overlays)))
             return 0
         row = latest(args.db, logs, args.overlays, args.tool, args.klass)
+        if row is None:
+            print(f"failure-store: no stored failure with key {args.tool}|{args.klass}", file=sys.stderr)
+            return 1
+        # Inside the handler: an I/O error writing the result exits 3, never 1.
+        print(json.dumps(row, separators=(",", ":")))
+        return 0
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - every non-refusal error is exit 3, never 1
         print(f"failure-store: error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    if row is None:
-        print(f"failure-store: no stored failure with key {args.tool}|{args.klass}", file=sys.stderr)
-        return 1
-    print(json.dumps(row, separators=(",", ":")))
-    return 0
 
 
 if __name__ == "__main__":

@@ -16,8 +16,8 @@ to be judged safe:
   substring with no separator, quoting or position logic;
 - no `@` and no `://`;
 - no fixed vendor token shape, JWT header or PEM private-key header;
-- no opaque token (the backstop: a 32+ character mixed-case alphanumeric run
-  that is not hex or a UUID).
+- no opaque token (the backstop: a 32+ character mixed-case run of base64
+  characters, standard or URL-safe, with a digit, that is not hex or a UUID).
 
 A secret with no keyword, no `@` or `://`, under 32 characters and no vendor
 shape (`pw=hunter2`, `mysql -phunter2`) is out of scope: the irreducible
@@ -40,18 +40,21 @@ KEYWORDS: tuple[str, ...] = ("token", "secret", "password", "passwd", "pwd", "ap
                              "api-key", "apikey", "auth_key", "auth-key", "authkey",
                              "private_key", "private-key", "privatekey", "authorization")
 
-_RUN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{32,}(?![A-Za-z0-9_-])")
+#: Standard and URL-safe base64 both: `/` and `+` never split a run, and
+#: trailing `=` padding belongs to it.
+_RUN = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/-]{32,}=*(?![A-Za-z0-9_+/=-])")
 _UUID = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
 
-#: Fixed-shape kinds: `(kind, pattern)`.
+#: Fixed-shape kinds: `(kind, pattern)`. Unanchored: a shape embedded after or
+#: before a word character (`idAKIA…`, `xyzxoxb-…`) still hits.
 _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})")),
-    ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}")),
-    ("openai-key", re.compile(r"\bsk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}")),
-    ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("slack-token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}|hooks\.slack\.com/services/[A-Za-z0-9/]+")),
+    ("github-token", re.compile(r"(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})")),
+    ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
+    ("openai-key", re.compile(r"sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}")),
+    ("aws-access-key", re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}")),
+    ("slack-token", re.compile(r"xox[abposr]-[A-Za-z0-9-]{10,}|hooks\.slack\.com/services/[A-Za-z0-9/]+")),
     # Anchored on the header alone: an empty-claims payload (`e30`) still hits.
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*")),
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*")),
     ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
 )
 
@@ -93,9 +96,18 @@ def probe_findings(text: str | None) -> list[str]:
     than one line, longer than `MAX_PROBE`) and then the content kinds."""
     if not text:
         return []
+    return form_findings(text) + findings(text)
+
+
+def form_findings(text: str | None) -> list[str]:
+    """The form kinds alone (more than one line, longer than `MAX_PROBE`).
+    Checked on the raw value, so a blank probe that will be stored as null is
+    still refused when it is too long or not one line."""
+    if not text:
+        return []
     form = []
     if text.splitlines() != [text]:
         form.append("multi-line")
     if len(text) > MAX_PROBE:
         form.append("over-length")
-    return form + findings(text)
+    return form

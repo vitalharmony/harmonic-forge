@@ -282,6 +282,12 @@ def _single(args: argparse.Namespace) -> str | None:
                     "capture each slip with its own call (the calls share the "
                     "session and turn ids).")
         value = values[0] if values else None
+        if flag == "probe":
+            # The form checks run on the raw value, before a blank probe is
+            # normalized to absent: 201 spaces or a lone newline still refuses.
+            kinds = secret_scan.form_findings(value)
+            if kinds:
+                return _probe_refusal(kinds)
         setattr(args, attr, value if value is not None and value.strip() else None)
     return None
 
@@ -335,15 +341,17 @@ def validate_ids(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _probe_refusal(kinds: list[str]) -> str:
+    return (f"--probe is refused ({', '.join(kinds)}). Nothing was written; "
+            "the text is not repeated here. Describe the check in one line of "
+            f"at most {secret_scan.MAX_PROBE} characters, with no credential "
+            "keyword, @, :// or token, and capture again. The command itself "
+            "is recovered from the transcript through (session, turn).")
+
+
 def validate_secrets(args: argparse.Namespace) -> str | None:
     kinds = secret_scan.probe_findings(args.probe)
-    if kinds:
-        return (f"--probe is refused ({', '.join(kinds)}). Nothing was written; "
-                "the text is not repeated here. Describe the check in one line of "
-                f"at most {secret_scan.MAX_PROBE} characters, with no credential "
-                "keyword, @, :// or token, and capture again. The command itself "
-                "is recovered from the transcript through (session, turn).")
-    return None
+    return _probe_refusal(kinds) if kinds else None
 
 
 def validate(args: argparse.Namespace) -> str | None:
