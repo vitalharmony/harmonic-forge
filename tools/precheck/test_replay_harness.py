@@ -48,6 +48,10 @@ class Harness(unittest.TestCase):
         self.sample = self.store / "never-refuse" / "never-refuse-sample-v1.jsonl"
         self.records: list[dict] = []
         self.overlay: list[dict] = []
+        # The sample size is pinned at 10,000; the fixture sample is 4 rows.
+        size = mock.patch.object(rh.never_refuse_sample, "SIZE", 4)
+        size.start()
+        self.addCleanup(size.stop)
         self.write_sample([f"ls /srv/{COMMAND_MARK}{i}" for i in range(4)])
 
     # fixture builders --------------------------------------------------
@@ -67,7 +71,7 @@ class Harness(unittest.TestCase):
         (self.overlays / "replay-overlay-v1.jsonl").write_text(
             "".join(json.dumps(o) + "\n" for o in self.overlay), encoding="utf-8")
 
-    def write_sample(self, commands: list[str]) -> None:
+    def write_sample(self, commands: list[str], size: int | None = None) -> None:
         self.sample.parent.mkdir(parents=True, exist_ok=True)
         rows = [{"n": i, "id": f"t{i}", "ts": None, "session": None, "sidechain": False,
                  "version": "2.0.0", "cwd": "/srv/work", "class": "read", "command": c}
@@ -75,11 +79,18 @@ class Harness(unittest.TestCase):
         data = "".join(json.dumps(r) + "\n" for r in rows).encode("utf-8")
         self.sample.write_bytes(data)
         self.sample.with_name(self.sample.name + ".manifest.json").write_text(
-            json.dumps({"version": 1, "size": len(rows), "sha256": hashlib.sha256(data).hexdigest()}),
+            json.dumps({"version": 1, "size": len(rows) if size is None else size,
+                        "sha256": hashlib.sha256(data).hexdigest()}),
             encoding="utf-8")
 
     def layer_set(self, layers: list[dict], existing: dict | None = None,
-                  accepted: list[str] | None = None) -> Path:
+                  accepted: list[str] | None = None, raw: bool = False) -> Path:
+        """Each layer without a `bar` gets a sample bar, which is
+        not-measurable with no module, so tests about other fields still load;
+        `raw=True` writes the layers exactly as given."""
+        if not raw:
+            layers = [layer if "bar" in layer else {**layer, "bar": {"sample_max_refusals": 0}}
+                      for layer in layers]
         path = self.tmp / f"layers-{len(list(self.tmp.glob('layers-*')))}.json"
         path.write_text(json.dumps({"version": 1, "layers": layers, "existing": existing or {},
                                     "accepted_uncovered": accepted or []}), encoding="utf-8")
@@ -299,6 +310,52 @@ class Bars(Harness):
         self.assertEqual(code, 0)
         self.assertIn("gate.replay (declared claims) 1/1 holds", out)
 
+    def test_s16_misspelled_bar_key_refuses(self):
+        # Survivor 16: a misspelled bar key loaded with zero bars and scored PASS.
+        self.slip("gh-api|args")
+        for layer in ({"name": "gate", "claims": ["*|args"], "module": None,
+                       "bars": {"replay": {"classes": ["args"], "min_share": 1.0}}},
+                      {"name": "gate", "claims": ["*|args"], "module": None,
+                       "bar": {"replay": {"classes": ["args"], "min_share": 1.0}, "sample_max_refusal": 0}},
+                      {"name": "gate", "claims": ["*|args"], "module": None,
+                       "bar": {"replay": {"classes": ["args"], "min_share": 1.0, "min_shares": 0}}}):
+            with self.subTest(layer=layer):
+                code, _out, err = self.run_score(self.layer_set([layer], raw=True), "--strict")
+                self.assertEqual(code, 2, err)
+                self.assertIn("unknown key", err)
+
+    def test_layer_with_no_bar_refuses(self):
+        self.slip("gh-api|args")
+        for bar in ({}, None):
+            layer = {"name": "gate", "claims": ["*|args"], "module": None}
+            if bar is not None:
+                layer["bar"] = bar
+            with self.subTest(bar=bar):
+                code, _out, err = self.run_score(self.layer_set([layer], raw=True), "--strict")
+                self.assertEqual(code, 2, err)
+                self.assertIn("needs a bar", err)
+
+    def test_bar_with_only_null_values_refuses(self):
+        self.slip("gh-api|args")
+        layer = {"name": "gate", "claims": ["*|args"], "module": None,
+                 "bar": {"replay": None, "sample_max_refusals": None}}
+        code, _out, err = self.run_score(self.layer_set([layer], raw=True), "--strict")
+        self.assertEqual(code, 2, err)
+        self.assertIn("sets neither", err)
+
+    def test_layer_set_with_no_layers_refuses(self):
+        self.slip("gh-api|args")
+        code, _out, err = self.run_score(self.layer_set([], raw=True), "--strict")
+        self.assertEqual(code, 2, err)
+        self.assertIn("no layers", err)
+
+    def test_unknown_top_level_key_refuses(self):
+        path = self.tmp / "layers-top.json"
+        path.write_text(json.dumps({"version": 1, "layers": [], "acepted_uncovered": []}), encoding="utf-8")
+        with self.assertRaises(rh.Refused) as caught:
+            rh.load_layer_set(path)
+        self.assertIn("unknown key", str(caught.exception))
+
     def test_unknown_claims_basis_refuses(self):
         layers = self.layer_set([{"name": "gate", "claims": ["*|receipt"], "claims_basis": "assumed",
                                   "module": None}])
@@ -330,6 +387,18 @@ class NoData(Harness):
         code, _out, err = self.run_score(layers)
         self.assertEqual(code, 2)
         self.assertIn("sha256", err)
+
+    def test_s17_sample_not_exactly_the_pinned_size_refuses(self):
+        # Survivor 17's score side: a sample of any other size refuses,
+        # whether its manifest agrees with it or not.
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": None}])
+        for commands, size in ((["ls a", "ls b", "ls c"], None), (["ls a", "ls b", "ls c"], 4), ([], None)):
+            with self.subTest(rows=len(commands), size=size):
+                self.slip("gh-api|args")
+                self.write_sample(commands, size)
+                code, _out, err = self.run_score(layers)
+                self.assertEqual(code, 2, err)
+                self.assertIn("a sample is exactly 4 rows", err)
 
     def test_missing_sample_refuses(self):
         self.slip("gh-api|args")

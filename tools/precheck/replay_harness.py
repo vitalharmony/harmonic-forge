@@ -18,8 +18,10 @@ never a command and never a stored probe.
 
 Exit codes: 0 every measurable bar holds (with `--strict`, a not-measurable
 bar also fails; without it the verdict line names how many bars were not
-measured); 4 a bar fails, including a replay bar with no slips to score; 2 refused (a malformed layer set, a sample
-without its manifest or with a changed sha256, a store path inside forge);
+measured); 4 a bar fails, including a replay bar with no slips to score; 2 refused (a malformed layer set, including
+an unknown key at any level, a layer with no bar and a set with no layers; a
+sample without its manifest, with a changed sha256, or not exactly 10,000 rows;
+a store path inside forge);
 3 any other error. Never 1.
 
 Stdlib only, no network and no subprocess.
@@ -71,6 +73,21 @@ def _claim(text, classes: set[str], where: str) -> tuple[str, str]:
     return tool, klass
 
 
+#: Every key the loader reads, per level. Absent input refuses
+#: (harmonic-forge#1289 epoch 2): a misspelled key is unknown, never ignored,
+#: so it can never leave a layer with no bar that then scores nothing.
+LAYER_SET_KEYS = frozenset({"version", "layers", "existing", "accepted_uncovered"})
+LAYER_KEYS = frozenset({"name", "claims", "claims_basis", "module", "bar"})
+BAR_KEYS = frozenset({"replay", "sample_max_refusals"})
+REPLAY_KEYS = frozenset({"classes", "min_share"})
+
+
+def _unknown_keys(value: dict, allowed: frozenset, where: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise Refused(f"{where}: unknown key(s) {', '.join(map(repr, unknown))}")
+
+
 def load_layer_set(path: Path) -> dict:
     path = Path(path).expanduser()
     try:
@@ -80,12 +97,14 @@ def load_layer_set(path: Path) -> dict:
     classes = current_classes()
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("layers"), list):
         raise Refused(f"layer set {path} needs version 1 and a layers list")
+    _unknown_keys(data, LAYER_SET_KEYS, f"layer set {path}")
     layers = []
     for index, layer in enumerate(data["layers"]):
         where = f"layer {index}"
         if not isinstance(layer, dict) or not isinstance(layer.get("name"), str) or not layer["name"]:
             raise Refused(f"{where} needs a name")
         where = f"layer {layer['name']}"
+        _unknown_keys(layer, LAYER_KEYS, where)
         claims = layer.get("claims")
         if not isinstance(claims, list) or not claims:
             raise Refused(f"{where} needs a non-empty claims list")
@@ -97,17 +116,26 @@ def load_layer_set(path: Path) -> dict:
             if not module_path.is_file():
                 raise Refused(f"{where}: module {module_path} does not exist")
             module = module_path
-        bar = layer.get("bar") or {}
+        bar = layer.get("bar")
+        if not isinstance(bar, dict) or not bar:
+            raise Refused(f"{where} needs a bar: a replay bar, a sample_max_refusals bar or both")
+        _unknown_keys(bar, BAR_KEYS, f"{where} bar")
         replay = bar.get("replay")
         if replay is not None:
+            if not isinstance(replay, dict):
+                raise Refused(f"{where}: replay bar must be an object")
+            _unknown_keys(replay, REPLAY_KEYS, f"{where} replay bar")
             share = replay.get("min_share")
             if (not isinstance(replay.get("classes"), list) or not replay["classes"]
                     or any(c not in classes for c in replay["classes"])
                     or not isinstance(share, (int, float)) or not 0 <= share <= 1):
                 raise Refused(f"{where}: replay bar needs known classes and a min_share in 0..1")
         max_refusals = bar.get("sample_max_refusals")
-        if max_refusals is not None and (not isinstance(max_refusals, int) or max_refusals < 0):
+        if max_refusals is not None and (not isinstance(max_refusals, int) or isinstance(max_refusals, bool)
+                                         or max_refusals < 0):
             raise Refused(f"{where}: sample_max_refusals must be a non-negative integer")
+        if replay is None and max_refusals is None:
+            raise Refused(f"{where}: bar sets neither a replay bar nor sample_max_refusals")
         # "declared": the layer's claims are what it says it guards, not what a
         # dry run was shown to validate (operator ruling, harmonic-forge#1289:
         # design-v1's gate claims stay declared until issue C's per-tool
@@ -123,6 +151,8 @@ def load_layer_set(path: Path) -> dict:
     if (not isinstance(existing, dict) or any(k not in classes for k in existing)
             or not isinstance(accepted, list) or any(c not in classes for c in accepted)):
         raise Refused(f"layer set {path}: existing and accepted_uncovered must name known classes")
+    if not layers:
+        raise Refused(f"layer set {path} has no layers, so no bars: nothing scored is never a pass")
     return {"layers": layers, "existing": existing, "accepted_uncovered": list(accepted)}
 
 
@@ -209,11 +239,18 @@ def read_sample(path: Path) -> list[dict]:
     manifest = never_refuse_sample.manifest_path(path)
     if not path.exists():
         raise Refused(f"no sample at {path}: run never_refuse_sample.py derive first")
-    expected = json.loads(manifest.read_text(encoding="utf-8")).get("sha256")
+    meta = json.loads(manifest.read_text(encoding="utf-8"))
     data = path.read_bytes()
-    if hashlib.sha256(data).hexdigest() != expected:
+    if not isinstance(meta, dict) or hashlib.sha256(data).hexdigest() != meta.get("sha256"):
         raise Refused(f"sample {path} does not match its manifest's sha256; it was edited")
-    return [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
+    rows = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
+    # Absent input refuses (harmonic-forge#1289 epoch 2): a sample of any
+    # other size, however it was made, holds a bar over fewer rows than 10,000.
+    size = never_refuse_sample.SIZE
+    if meta.get("size") != size or len(rows) != size:
+        raise Refused(f"sample {path} has {len(rows)} rows (manifest size {meta.get('size')!r}); "
+                      f"a sample is exactly {size} rows")
+    return rows
 
 
 def load_module(path: Path):

@@ -94,10 +94,11 @@ class Base(unittest.TestCase):
         corpus = nrs.read_corpus(self.root, nrs._parse_ts(UNTIL))
         return nrs.build_pool(corpus, HOME, os.getuid())
 
-    def derive(self, *extra: str, out: Path | None = None) -> tuple[int, str, str]:
+    def derive(self, *extra: str, out: Path | None = None, size: int = nrs.SIZE) -> tuple[int, str, str]:
+        """`size` patches the pinned sample size: there is no `--size` option."""
         stdout, stderr = io.StringIO(), io.StringIO()
         argv = ["derive", "--root", str(self.root), "--out", str(out or self.out), "--until", UNTIL, *extra]
-        with redirect_stdout(stdout), redirect_stderr(stderr):
+        with redirect_stdout(stdout), redirect_stderr(stderr), mock.patch.object(nrs, "SIZE", size):
             code = nrs.main(argv)
         return code, stdout.getvalue(), stderr.getvalue()
 
@@ -113,8 +114,8 @@ class Base(unittest.TestCase):
         self.assertFalse(folder.exists() and any(folder.iterdir()), "derive wrote something")
 
 
-def classify(command: str, cwd: str | None = "/srv/work") -> str | None:
-    return nrs.classify(command, cwd, HOME)
+def classify(command: str) -> str | None:
+    return nrs.classify(command)
 
 
 # --------------------------------------------------------------------------
@@ -185,24 +186,9 @@ class RanCheck(Base):
 # 2. The per-version shape guard.
 
 class ShapeGuard(Base):
-    def test_version_with_zero_joined_results_refuses(self):
-        self.transcript(filler(3) + [call("b1", "ls /srv/b", version="9.9.9")])
-        code, _out, err = self.derive("--size", "1")
-        self.assertEqual(code, 3)
-        self.assertIn("version 9.9.9", err)
-        self.assertNothingWritten()
-
-    def test_version_without_stdout_results_refuses(self):
-        self.transcript(filler(3) + [call("b1", "ls /srv/b", version="9.9.9"),
-                                     result("b1", "fine", stdout=False)])
-        code, _out, err = self.derive("--size", "1")
-        self.assertEqual(code, 3)
-        self.assertIn("version 9.9.9", err)
-        self.assertNothingWritten()
-
     def test_unrecognized_result_shape_refuses(self):
         self.transcript(filler(3) + [call("b1", "ls /srv/b"), result("b1", content={"text": "fine"})])
-        code, _out, err = self.derive("--size", "1")
+        code, _out, err = self.derive(size=1)
         self.assertEqual(code, 3)
         self.assertIn("unrecognized shape", err)
         self.assertNothingWritten()
@@ -211,64 +197,173 @@ class ShapeGuard(Base):
         self.transcript(filler(3) + filler(2, prefix="v"))
         for record in self.root.joinpath("proj", "s1.jsonl").read_text().splitlines():
             self.assertNotIn("permissionDecision", record)
-        code, _out, _err = self.derive("--size", "5")
+        code, _out, _err = self.derive(size=5)
         self.assertEqual(code, 0)
         self.assertEqual(len(self.rows()), 5)
 
+    def test_s18_in_flight_call_on_a_new_version_is_reported_not_refused(self):
+        # Survivor 18: a still-running call on a just-updated version has no
+        # joined result. It fails safe through the ran-check (no_result), so
+        # derive writes, and the manifest reports no_result per version.
+        self.transcript(filler(3) + [call("b1", "ls /srv/b", version="9.9.9")])
+        code, _out, err = self.derive(size=3)
+        self.assertEqual(code, 0, err)
+        manifest = self.manifest()
+        self.assertEqual(manifest["versions"]["9.9.9"],
+                         {"calls": 1, "joined": 0, "no_result": 1, "ok_with_stdout": 0})
+        self.assertEqual(manifest["excluded_by_bucket"], {"no_result": 1})
+        self.assertNotIn("ls /srv/b", self.out.read_text(encoding="utf-8"))
+
+    def test_version_without_stdout_results_is_reported_not_refused(self):
+        # The stdout-dict clause tripped the same way on a fresh version.
+        self.transcript(filler(3) + [call("b1", "ls /srv/b", version="9.9.9"),
+                                     result("b1", "fine", stdout=False)])
+        code, _out, err = self.derive(size=4)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.manifest()["versions"]["9.9.9"]["ok_with_stdout"], 0)
+
 
 # --------------------------------------------------------------------------
-# 3-4. The parser as the classifier sees it, and the classifier holes.
+# 3-4. The recognizer (harmonic-forge#1289 epoch-2 sticky-wicket REFORGE).
 
-class Classifier(unittest.TestCase):
-    def assertNotOrdinary(self, command: str, cwd: str | None = "/srv/work", reason: str | None = None):
+class Recognizer(unittest.TestCase):
+    """Each admitted simple command matches a literal row; everything else
+    raises. The survivor tests below each name the epoch-2 pass-1 finding
+    they pin, and each fails if the rule it tests is removed (the kill
+    checks are recorded on the issue)."""
+
+    def assertNotOrdinary(self, command: str, reason: str | None = None):
         with self.assertRaises(nrs.NotOrdinary) as caught:
-            classify(command, cwd)
+            classify(command)
         if reason:
             self.assertEqual(str(caught.exception), reason)
 
-    def test_output_process_substitution_is_not_ordinary(self):
-        self.assertNotOrdinary("ls >(cat)", cwd="/tmp/a", reason="process-substitution-write")
+    # -- The 12 holes ------------------------------------------------------
 
-    def test_loop_body_program_is_classified(self):
-        self.assertEqual(classify('for f in /tmp/a /tmp/b; do rm "$f"; done'), "scratch-write")
-        self.assertNotOrdinary('for f in a; do rm "$f"; done')
+    def test_s01_quoted_operator_is_refused_not_lexed(self):
+        self.assertNotOrdinary("rm -rf /tmp/a '<' /home/u/repo", reason="quoted-operator")
+        for quoted in ("echo 'a;b'", 'echo "a|b"', "echo 'a\nb'", "grep '#' f"):
+            with self.subTest(command=quoted):
+                self.assertNotOrdinary(quoted, reason="quoted-operator")
 
-    def test_shell_c_body_redirect_is_seen(self):
-        self.assertNotOrdinary('bash -c "cat f > ~/x"', cwd="/tmp/a", reason="redirect")
-        self.assertEqual(classify('bash -c "cat f > /tmp/x"'), "scratch-write")
+    def test_s02_comment_is_refused(self):
+        self.assertNotOrdinary("ls /tmp # don't\nrm -rf /home/u/proj", reason="comment")
+        self.assertNotOrdinary("ls # x", reason="comment")
 
-    def test_quoted_substitution_is_classified(self):
-        self.assertNotOrdinary('echo "$(rm -rf ~/x)"', cwd="/tmp/a")
-        self.assertNotOrdinary('echo "`rm -rf ~/x`"', cwd="/tmp/a")
+    def test_s03_env_is_a_refused_prefix(self):
+        for command in ("env --chdir=/home/u/repo rm -rf build", "env -C /home/u rm -rf build",
+                        "env -S 'rm -rf x'", "env ls"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="prefix")
 
-    def test_cd_rebases_relative_operands(self):
-        self.assertNotOrdinary("cd ~/repo && rm -rf x", cwd="/tmp/a")
-        self.assertEqual(classify("cd /tmp/a && rm -rf y", cwd=HOME), "scratch-write")
+    def test_s04_prefix_assignment_is_refused(self):
+        for command in ("TMPDIR=/home/u mktemp -d", "GIT_EXTERNAL_DIFF=/tmp/x.sh git diff",
+                        "LD_PRELOAD=/tmp/x.so ls", "X=1"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="prefix")
+        for wrapper in ("sudo", "nice", "timeout", "command", "nohup", "time", "stdbuf", "xargs"):
+            with self.subTest(wrapper=wrapper):
+                self.assertNotOrdinary(f"{wrapper} ls", reason="prefix")
 
-    def test_subshell_cd_does_not_leak(self):
-        self.assertNotOrdinary("(cd /tmp/a); rm -rf y", cwd=HOME)
-        self.assertEqual(classify("(cd /tmp/a && rm -rf y)", cwd=HOME), "scratch-write")
+    def test_s05_brace_write_target_is_not_scratch(self):
+        self.assertNotOrdinary("rm -rf /tmp/{a,../home/u/repo}", reason="write-target")
+        for target in ("/tmp/*", "/tmp/a?", "/tmp/../home/x", "/tmp/a/../../home", "/tmp/./x",
+                       "/tmp/a b", "~/x", "/tmp"):
+            with self.subTest(target=target):
+                self.assertFalse(nrs.is_scratch(target, frozenset()))
 
-    def test_piped_cd_unknown_directory(self):
-        self.assertNotOrdinary("cd /tmp/a | true; rm -rf y", cwd=HOME)
+    def test_s06_assigned_value_never_binds(self):
+        self.assertNotOrdinary('X="/tmp/a /home/u"; rm -rf $X', reason="prefix")
+        self.assertNotOrdinary("for X in /tmp/a /home/u; do rm -rf $X; done", reason="write-target")
+        self.assertNotOrdinary("for X in /tmp/a /tmp/b; do rm -rf $X; done", reason="write-target")
 
-    def test_dotdot_out_of_tmp_is_not_scratch(self):
-        self.assertNotOrdinary("rm -rf /tmp/../home/x", cwd=HOME)
+    def test_s07_relative_write_target_is_refused_whatever_cd_did(self):
+        for command in ("cd /tmp/missing; rm -rf build", "cd /tmp/x || rm -rf build",
+                        "cd /tmp/x && rm -rf build", "rm -rf build"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="write-target")
+        self.assertEqual(classify("cd /tmp/x && rm -rf /tmp/x/build"), "scratch-write")
 
-    def test_mktemp_assignment_binds_scratch(self):
-        self.assertEqual(classify("d=$(mktemp -d); echo hi > $d/x", cwd=HOME), "scratch-write")
-        self.assertEqual(classify('d="$(mktemp -d)"; echo hi > "$d/x"', cwd=HOME), "scratch-write")
+    def test_s08_binding_inside_a_group_or_pipe_does_not_leak(self):
+        for command in ("(D=$(mktemp -d)); rm -rf $D/x", "echo $(D=$(mktemp -d)); rm -rf $D/x",
+                        "D=$(mktemp -d) | true; rm -rf $D/x", "D=$(mktemp -d) || true; rm -rf $D/x",
+                        "ls; D=$(mktemp -d); rm -rf $D/x"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="prefix")
 
-    def test_non_mktemp_substitution_does_not_bind(self):
-        self.assertNotOrdinary("x=$(cat f); echo hi > $x/y", cwd=HOME)
+    def test_s09_bound_name_reassigned_refuses(self):
+        self.assertNotOrdinary("D=$(mktemp -d); for D in /home/u; do rm -rf $D; done", reason="rebind")
+        self.assertNotOrdinary("x=$(mktemp -d); x=$(cat f); rm -rf $x", reason="rebind")
+        self.assertNotOrdinary("D=$(mktemp -d); D+=/../x; rm -rf $D", reason="rebind")
 
-    def test_bound_variable_cannot_climb_out_of_tmp(self):
-        self.assertNotOrdinary("d=$(mktemp -d); rm -rf $d/../../home/x", cwd=HOME)
+    def test_s10_probe_only_on_allowlisted_programs(self):
+        for command in ("python3 -c pass --help", "awk 1 --help", "./x.sh --help", "tar --help",
+                        "/bin/ls --help"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="unclassified")
+        for command in ("ls --help", "rm --help", "git --help", "gh --help"):
+            with self.subTest(command=command):
+                self.assertEqual(classify(command), "probe")
 
-    def test_mktemp_with_a_shared_target_is_not_ordinary(self):
-        self.assertNotOrdinary("mktemp -p ~/shared", reason="mktemp")
+    def test_s11_mktemp_options_go_through_its_row(self):
+        for command in ("mktemp -p/home/u", "mktemp -dp/home/u", "mktemp --tmp=/home/u",
+                        "mktemp --tmpdir=/tmp/a", "mktemp -p /tmp/a", "mktemp -t x.XXXX"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="option")
+        self.assertNotOrdinary("mktemp /home/u/x.XXXX", reason="mktemp")
         self.assertEqual(classify("mktemp -d"), "scratch-write")
-        self.assertEqual(classify("mktemp --tmpdir=/tmp/a /tmp/a/x.XXXX"), "scratch-write")
+        self.assertEqual(classify("mktemp /tmp/x.XXXX"), "scratch-write")
+
+    def test_s12_ln_needs_two_operands(self):
+        self.assertNotOrdinary("ln -s /tmp/foo", reason="unclassified")
+        self.assertEqual(classify("ln -s /tmp/foo /tmp/bar"), "scratch-write")
+
+    # -- The 3 rules no test pinned ----------------------------------------
+
+    def test_s13_probe_is_exactly_prog_help(self):
+        for command in ("rm -- /home/u/x --help", "rm /home/u/x --help", "rm -rf --help",
+                        "git commit -m --help"):
+            with self.subTest(command=command), self.assertRaises(nrs.NotOrdinary):
+                classify(command)
+
+    def test_s14_cd_dash_never_rebases_a_write(self):
+        self.assertNotOrdinary("cd /tmp/a; cd -; rm -rf y", reason="write-target")
+
+    def test_s15_substitution_in_a_redirect_target_is_refused(self):
+        self.assertNotOrdinary('cat < "$(rm -rf ~/x)"', reason="quoted-operator")
+        self.assertNotOrdinary("cat < $(rm -rf ~/x)", reason="write-target")
+        self.assertNotOrdinary("cat < `rm -rf ~/x`", reason="backtick")
+
+    # -- The recognizer's other rows ---------------------------------------
+
+    def test_heredoc_rows(self):
+        self.assertEqual(classify("cat <<'EOF' > /tmp/x\nhi $(x) don't\nEOF"), "scratch-write")
+        self.assertEqual(classify("cat <<EOF > /tmp/x\nhello\nEOF"), "scratch-write")
+        # An unquoted body runs its substitutions.
+        self.assertNotOrdinary("cat <<EOF > /tmp/x\n$(rm -rf ~)\nEOF", reason="heredoc")
+        # `<<<WORD` is a here-string: the lines after it run.
+        self.assertNotOrdinary("cat <<< x\nrm -rf ~\nx", reason="heredoc")
+
+    def test_backslash_blank_is_refused(self):
+        self.assertNotOrdinary("rm /tmp/a\\ b", reason="lexer")
+
+    def test_shell_and_wrapper_are_never_unwrapped(self):
+        self.assertNotOrdinary('bash -c "ls"', reason="unclassified")
+        self.assertNotOrdinary("sh -c 'rm -rf /tmp/x'", reason="unclassified")
+        self.assertNotOrdinary('sh -c "cat f > /tmp/x"', reason="quoted-operator")
+
+    def test_output_process_substitution_is_not_ordinary(self):
+        self.assertNotOrdinary("ls >(cat)", reason="process-substitution-write")
+
+    def test_mktemp_binding_rows(self):
+        self.assertEqual(classify("d=$(mktemp -d); echo hi > $d/x"), "scratch-write")
+        self.assertEqual(classify('D=$(mktemp -d) && echo hi > "$D/x"'), "scratch-write")
+        self.assertEqual(classify("A=$(mktemp)\nB=$(mktemp -d)\ncp $A ${B}/y"), "scratch-write")
+        self.assertEqual(classify('D=$(mktemp -d); rm -rf "$D"'), "scratch-write")
+        self.assertNotOrdinary('d="$(mktemp -d)"; echo hi > "$d/x"', reason="quoted-operator")
+        self.assertNotOrdinary("d=$(mktemp -d); rm -rf $d/../../home/x", reason="write-target")
+        self.assertNotOrdinary("d=$(mktemp -d); rm -rf $d*", reason="write-target")
+        self.assertNotOrdinary("d=$(mktemp -p /home/u)", reason="prefix")
 
     def test_gh_api_glued_and_equals_forms_are_not_read(self):
         for form in ("gh api -XPOST repos/o/r/issues", "gh api --method=POST repos/o/r/issues",
@@ -291,22 +386,16 @@ class Classifier(unittest.TestCase):
             with self.subTest(form=form):
                 self.assertNotOrdinary(form)
 
-    def test_dash_h_is_not_a_probe(self):
-        self.assertNotOrdinary("tar -h")
-        self.assertEqual(classify("tar --help"), "probe")
-
     def test_shared_state_command_is_excluded(self):
         for form in ("git push", "gh pr merge 1", "sed -i s/a/b/ f", "find . -delete", "echo x > ~/f",
                      "rm -rf ~/x", "cp a ~/b", "python3 x.py", "sh x.sh"):
             with self.subTest(form=form):
-                self.assertNotOrdinary(form, cwd="/tmp/a")
+                self.assertNotOrdinary(form)
 
-    def test_unassigned_variable_target_is_not_scratch(self):
-        self.assertNotOrdinary("echo hi > $X/y", cwd="/tmp/a")
-        self.assertNotOrdinary("rm -rf ${X}", cwd="/tmp/a")
-
-    def test_other_users_home_is_not_scratch(self):
-        self.assertNotOrdinary("rm ~other/x", cwd="/tmp/a")
+    def test_unbound_variable_target_is_not_scratch(self):
+        self.assertNotOrdinary("echo hi > $X/y", reason="redirect")
+        self.assertNotOrdinary("rm -rf ${X}", reason="write-target")
+        self.assertNotOrdinary("rm ~other/x", reason="write-target")
 
     def test_classes(self):
         self.assertEqual(classify("grep -n x f | head -5"), "read")
@@ -315,14 +404,15 @@ class Classifier(unittest.TestCase):
         self.assertEqual(classify("ls > /dev/null"), "read")
         self.assertEqual(classify("git log --oneline -3"), "read")
         self.assertEqual(classify("gh pr view 3"), "read")
-        self.assertEqual(classify("x=1"), None)
-        self.assertEqual(classify("cat <<EOF > /tmp/x\nhello\nEOF"), "scratch-write")
+        self.assertEqual(classify("for f in a b; do cat $f; done"), "read")
 
-    def test_depth_is_capped(self):
-        nested = "ls"
-        for _ in range(6):
-            nested = f"bash -c {json.dumps(nested)}"
-        self.assertNotOrdinary(nested, reason="depth")
+    def test_no_function_computes_a_shell_effect(self):
+        # The convergence test, by construction: the interpreter helpers are gone.
+        for name in ("resolve_path", "strip_invocation_prefix", "_mktemp_scratch", "_is_probe",
+                     "substitution_bodies", "MAX_DEPTH"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(nrs, name))
+        self.assertEqual(list(inspect.signature(nrs.classify).parameters), ["command"])
 
 
 class FailClosed(Base):
@@ -340,25 +430,16 @@ class FailClosed(Base):
         "cd /tmp; D=x; cd ~; rm -rf $D", "mv /tmp/a 2 > /dev/null",
         "awk -f /tmp/p.awk f", "sed -f /tmp/s.sed f", "rg --pre /tmp/x pat .", "date -s 2020-01-01",
         "git grep -O pat", "tree --output /home/u/x", "date 010100002020",
-        # The probe class (operator ruling): only a trailing --help.
         "python3 tools/gh/preclose_check.py --plan", "git commit -m --dry-run",
-        "rm /home/u/x -- --help", "git commit -m --help",
+        "rm /home/u/x -- --help", "git commit -m --help", "D=/tmp/x; rm -rf $D",
     ]
     ORDINARY = [
         ("ls -la /srv", "read"), ("grep -rn foo .", "read"), ("git log --oneline -5", "read"),
         ("sed -n 1,20p f", "read"), ('sed "s/a/b/g" f', "read"), ("cat a | head -20", "read"),
         ("rm -rf /tmp/x", "scratch-write"), ('find . -name "*.py" -type f', "read"),
         ("date +%F", "read"), ("gh pr view 12 --json title", "read"), ("jq -r .x f", "read"),
-        ("ls /tmp 2>/dev/null", "read"), ("D=/tmp/x; rm -rf $D", "scratch-write"),
-        ('D=$(mktemp -d); rm -rf "$D"', "scratch-write"),
+        ("ls /tmp 2>/dev/null", "read"), ('D=$(mktemp -d); rm -rf "$D"', "scratch-write"),
     ]
-
-    def test_probe_is_a_trailing_help_only(self):
-        self.assertEqual(classify("tar --help"), "probe")
-        self.assertEqual(classify("python3 tools/gh/preclose_check.py --help"), "probe")
-        for command in ("tool --plan", "tool --dry-run", "tool --check x"):
-            with self.subTest(command=command), self.assertRaises(nrs.NotOrdinary):
-                classify(command)
 
     def test_every_seed_is_excluded(self):
         for command in self.SEEDS:
@@ -393,7 +474,7 @@ class Unparseable(Base):
 class SecretScan(Base):
     def test_secret_shaped_command_is_never_written(self):
         self.transcript(filler(3) + ran("x", "echo " + GH_TOKEN))
-        code, _out, _err = self.derive("--size", "3")
+        code, _out, _err = self.derive(size=3)
         self.assertEqual(code, 0)
         self.assertNotIn(GH_TOKEN, self.out.read_text(encoding="utf-8"))
         manifest = self.manifest()
@@ -410,7 +491,7 @@ class SecretScan(Base):
     def test_rescan_aborts_before_write(self):
         self.transcript(filler(2) + ran("x", "echo " + GH_TOKEN))
         with mock.patch.object(nrs, "drop_secrets", lambda distinct, home, uid: (distinct, {})):
-            code, _out, err = self.derive("--size", "3")
+            code, _out, err = self.derive(size=3)
         self.assertEqual(code, 3)
         self.assertIn("re-scan", err)
         self.assertNothingWritten()
@@ -456,12 +537,12 @@ class Determinism(Base):
         records = filler(20)
         pairs = [records[i:i + 2] for i in range(0, len(records), 2)]
         self.transcript([r for pair in pairs for r in pair], project="one")
-        code1, _o, _e = self.derive("--size", "5")
+        code1, _o, _e = self.derive(size=5)
         # The same calls, written in reverse line order: the same pool.
         self.root = self.tmp / "projects2"
         self.transcript([r for pair in reversed(pairs) for r in pair], project="one")
         second = self.tmp / "second" / "never-refuse-sample-v1.jsonl"
-        code2, _o, _e = self.derive("--size", "5", out=second)
+        code2, _o, _e = self.derive(size=5, out=second)
         self.assertEqual((code1, code2), (0, 0))
         self.assertEqual(self.out.read_bytes(), second.read_bytes())
         self.assertEqual(self.manifest()["sha256"], self.manifest(second)["sha256"])
@@ -482,7 +563,7 @@ class Frozen(Base):
             return real(folder, data)
 
         with mock.patch.object(nrs, "_write_temp", failing):
-            code, _out, _err = self.derive("--size", "2")
+            code, _out, _err = self.derive(size=2)
         self.assertEqual(code, 3)
         self.assertFalse(self.out.exists())
         self.assertFalse(nrs.manifest_path(self.out).exists())
@@ -502,7 +583,7 @@ class Frozen(Base):
             return path
 
         with mock.patch.object(nrs, "_write_temp", racing):
-            code, _out, err = self.derive("--size", "2")
+            code, _out, err = self.derive(size=2)
         self.assertEqual(code, 2, err)
         self.assertIn("appeared while this derive ran", err)
         self.assertEqual(self.out.read_bytes(), frozen)
@@ -513,7 +594,7 @@ class Frozen(Base):
         self.transcript(filler(3))
         self.out.parent.mkdir(parents=True)
         self.out.write_text("{}\n", encoding="utf-8")
-        code, _out, err = self.derive("--size", "2")
+        code, _out, err = self.derive(size=2)
         self.assertEqual(code, 2)
         self.assertIn("orphan sample", err)
         self.assertEqual(self.out.read_text(encoding="utf-8"), "{}\n")
@@ -533,7 +614,7 @@ class Frozen(Base):
         self.transcript(filler(3))
         self.out.parent.mkdir(parents=True)
         nrs.manifest_path(self.out).write_text("{}", encoding="utf-8")
-        code, _out, err = self.derive("--size", "2")
+        code, _out, err = self.derive(size=2)
         self.assertEqual(code, 2)
         self.assertIn("orphan manifest", err)
 
@@ -541,7 +622,7 @@ class Frozen(Base):
         self.transcript(filler(3))
         self.out.parent.mkdir(parents=True)
         (self.out.parent / "never-refuse-sampleab12cd.tmp").write_text("", encoding="utf-8")
-        code, _out, err = self.derive("--size", "2")
+        code, _out, err = self.derive(size=2)
         self.assertEqual(code, 2)
         self.assertIn("leftover temp", err)
         self.assertFalse(self.out.exists())
@@ -558,22 +639,29 @@ class Frozen(Base):
             return made[-1]
 
         with mock.patch.object(nrs, "_write_temp", recording):
-            code, _out, _err = self.derive("--size", "2")
+            code, _out, _err = self.derive(size=2)
         self.assertEqual(code, 0)
         self.assertEqual(len(made), 2)
         for path in made:
             self.assertTrue(any(fnmatch.fnmatch(path.name, p) for p in patterns), path.name)
         self.assertEqual(oct(self.out.stat().st_mode & 0o777), "0o600")
 
-    def test_default_size_is_10000(self):
-        args = nrs.build_parser().parse_args(["derive"])
-        self.assertEqual((args.size, args.seed), (10000, 1279))
+    def test_s17_size_is_pinned_at_10000_with_no_option(self):
+        # Survivor 17: `derive --size 0` wrote an empty sample whose bars held
+        # at 0/0. The option is deleted; the size is a constant.
+        self.assertEqual(nrs.SIZE, 10000)
+        self.assertEqual(nrs.build_parser().parse_args(["derive"]).seed, 1279)
+        self.transcript(filler(3))
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            nrs.main(["derive", "--root", str(self.root), "--out", str(self.out), "--size", "0"])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertNothingWritten()
 
     def test_existing_sample_is_never_overwritten(self):
         self.transcript(filler(3))
-        self.assertEqual(self.derive("--size", "2")[0], 0)
+        self.assertEqual(self.derive(size=2)[0], 0)
         before = self.out.read_bytes()
-        code, _out, err = self.derive("--size", "3")
+        code, _out, err = self.derive(size=3)
         self.assertEqual(code, 2)
         # Refused up front, before the corpus read; not by the publish backstop.
         self.assertIn("and its manifest exist", err)
@@ -581,27 +669,27 @@ class Frozen(Base):
 
     def test_pool_smaller_than_size_writes_nothing(self):
         self.transcript(filler(3))
-        code, _out, err = self.derive("--size", "4")
+        code, _out, err = self.derive(size=4)
         self.assertEqual(code, 3)
-        self.assertIn("fewer than --size", err)
+        self.assertIn("fewer than the sample size 4", err)
         self.assertNothingWritten()
 
     def test_wrong_name_refuses(self):
         self.transcript(filler(3))
-        code, _out, _err = self.derive("--size", "2", out=self.tmp / "sample.jsonl")
+        code, _out, _err = self.derive(size=2, out=self.tmp / "sample.jsonl")
         self.assertEqual(code, 2)
 
     def test_manifest_counts_and_rows(self):
         self.transcript(filler(3) + ran("w", "echo hi > /tmp/a/x") + [call("r", "ls /srv/r"),
                                                                     result("r", "fine", decision="reject")])
-        code, out, _err = self.derive("--size", "4")
+        code, out, _err = self.derive(size=4)
         self.assertEqual(code, 0)
         manifest = self.manifest()
         self.assertEqual((manifest["bash_calls"], manifest["ran"], manifest["distinct"]), (5, 4, 4))
         self.assertEqual(manifest["excluded_by_bucket"], {"decision:reject": 1})
         self.assertEqual(manifest["pool_by_class"], {"read": 3, "scratch-write": 1})
         self.assertEqual(manifest["sample_by_class"], {"read": 3, "scratch-write": 1})
-        self.assertEqual(manifest["versions"], {"2.0.0": {"calls": 5, "joined": 5, "ok_with_stdout": 5}})
+        self.assertEqual(manifest["versions"], {"2.0.0": {"calls": 5, "joined": 5, "no_result": 0, "ok_with_stdout": 5}})
         rows = self.rows()
         self.assertEqual([r["n"] for r in rows], [1, 2, 3, 4])
         self.assertEqual(set(rows[0]), {"n", "id", "ts", "session", "sidechain", "version", "cwd", "class",
@@ -620,7 +708,7 @@ class NoDataInForge(Base):
         (forge / "tools" / "memory" / "capture_failure.py").write_text("", encoding="utf-8")
         self.transcript(filler(3))
         out = forge / "data" / "never-refuse-sample-v1.jsonl"
-        code, _out, err = self.derive("--size", "2", out=out)
+        code, _out, err = self.derive(size=2, out=out)
         self.assertEqual(code, 2)
         self.assertIn("inside a harmonic-forge checkout", err)
         self.assertFalse((forge / "data").exists())

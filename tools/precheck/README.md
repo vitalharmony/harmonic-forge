@@ -35,16 +35,18 @@ owners, coarse bucket labels and a layer's own refusal reasons.
 ```
 python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
     [--out <operator-memory>/never-refuse/never-refuse-sample-v1.jsonl]
-    [--size 10000] [--seed 1279] [--until <ISO timestamp, default now>]
+    [--seed 1279] [--until <ISO timestamp, default now>]
 ```
 
 1. Reads `*/*.jsonl` and `*/*/subagents/*.jsonl` under `--root` in sorted path
    order, and joins each Bash `tool_use` to its `tool_result`s by
    `tool_use_id`.
 2. **Shape guard** (exit 3): any Bash result whose `content` is neither a
-   string nor a list of text items, or whose `is_error` is not a bool; or any
-   Claude Code `version` with no joined result or no non-error result carrying
-   a `toolUseResult.stdout`.
+   string nor a list of text items, or whose `is_error` is not a bool. Per
+   Claude Code `version` the manifest reports `calls`, `joined`, `no_result`
+   and `ok_with_stdout`; there is no per-version floor, because a version with
+   no joined result (a still-running call on a just-updated version) already
+   fails safe: the ran-check excludes each such call as `no_result`.
 3. **Ran-check**, positive: a call is kept only when it has a result, no
    joined decision is `reject` or `cancelled`, and every result is non-error
    or starts `Exit code `. Everything else is excluded and counted by a coarse
@@ -55,11 +57,27 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    `/tmp/claude-<uid>/<project-dir>` (exact strings), runs
    `tools/memory/secret_scan.findings()` unchanged, and drops the string on any
    hit. The stored command is the original string.
-6. **Ordinary classifier** over `tools/hooks/shell_parse.simple_commands()`:
-   every simple command must be a read, a probe or a scratch write (a path
-   under `/tmp/` after normalization). Anything else is excluded with a counted
-   reason; a string that does not parse is counted as `unparseable`.
-7. Samples `--size` strings with `random.Random(seed)` over the sorted pool
+6. **Ordinary classifier**, a recognizer of literal shapes, not an
+   interpreter (harmonic-forge#1289 epoch-2 REFORGE): nothing computes a shell
+   effect. It refuses before lexing any backtick, any unquoted `#`, any quoted
+   span holding `;&|()<>#` or a newline, a backslash-escaped blank, an
+   unquoted-delimiter heredoc in a string holding `$(`, and `<<<WORD`. Then
+   every simple command from `tools/hooks/shell_parse.simple_commands()` must
+   match one row: a READ program or git/gh read under its option allowlist;
+   a SCRATCH_WRITE program whose every operand is a scratch target; `mktemp`
+   under its own option row; `for NAME in ...`; or a probe, exactly
+   `[prog, "--help"]` with `prog` on a READ or SCRATCH_WRITE row or git/gh.
+   `argv[0]` is matched as written: an assignment, a path or a wrapper
+   (`env`, `sudo`, `nice`, `timeout`, `command`, `xargs`, ...) is refused, and
+   no shell `-c` string is unwrapped. A scratch target is a literal
+   `/tmp/<segment>/...` (no `..`, `.`, braces, globs, `$`, `~` or blanks;
+   never relative, so `cd` is never consulted), or `$NAME`/`${NAME}` plus
+   literal segments where NAME was bound by a leading
+   `NAME=$(mktemp)`/`NAME=$(mktemp -d)` row and is never assigned again.
+   Anything else is excluded with a counted reason; a string that does not
+   parse is counted as `unparseable`.
+7. Samples exactly 10,000 strings (pinned; there is no `--size`) with
+   `random.Random(seed)` over the sorted pool
    (exit 3 if the pool is smaller), re-scans every row before writing (exit 3
    on any hit), and writes the manifest temp, then the sample temp, then
    renames the sample, then the manifest.
@@ -79,7 +97,9 @@ these, and the next run refuses naming it:
 | the manifest without the sample | orphan manifest | delete the manifest, re-run |
 | both | already derived | nothing: the sample is frozen; delete both to re-derive |
 
-`score` also refuses a sample whose sha256 no longer matches its manifest.
+`score` also refuses a sample whose sha256 no longer matches its manifest,
+and a sample that is not exactly 10,000 rows (by count and by manifest
+`size`).
 
 ## `replay_harness.py score`
 
@@ -122,6 +142,10 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
 }
 ```
 
+- Every key is one the loader reads, at every level; an unknown key refuses
+  (exit 2), so a misspelled key never silently drops a bar. Every layer needs a
+  `bar` setting a `replay` bar, a `sample_max_refusals` bar or both, and a set
+  with no layers refuses: nothing scored is never a pass.
 - A claim is `*|<class>` (any tool) or `<tool>|<class>` (one tool's mode). Every
   class must be in `tools/memory/failure_classes.json`'s current version; the
   loader refuses (exit 2) anything else.

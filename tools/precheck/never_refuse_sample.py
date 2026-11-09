@@ -7,7 +7,8 @@ from Claude Code transcripts (harmonic-forge#1289).
           excluded and counted), de-duplicate exact strings, drop any string
           with a secret-shaped hit after blanking the record's own paths,
           keep only ordinary reads, probes and scratch writes, and write a
-          seeded `--size` sample plus its manifest, manifest first.
+          seeded sample of exactly `SIZE` (10,000) rows plus its manifest,
+          manifest first.
 
 The sample holds command text, so it lives in operator-memory and never in
 harmonic-forge: an `--out` inside a forge checkout is refused. Nothing here
@@ -16,7 +17,7 @@ prints a command or a result text; only counts and coarse bucket labels.
 Exit codes: 0 written; 2 refused, nothing written (an `--out` inside forge, a
 wrong name, an existing sample, an orphan sample or manifest, a leftover temp
 file); 3 nothing written for any other reason (a transcript shape this code
-does not recognize, a pool smaller than `--size`, a secret hit on the pre-write
+does not recognize, a pool smaller than `SIZE`, a secret hit on the pre-write
 re-scan, an I/O error). Never 1.
 
 Stdlib only, no network and no subprocess.
@@ -48,17 +49,18 @@ sys.path.insert(0, str(TOOLS / "hooks"))
 import capture_failure  # noqa: E402
 import secret_scan  # noqa: E402
 from shell_parse import (  # noqa: E402
-    _ASSIGNMENT,
+    HEREDOC_START,
     GroupMarker,
     NotOrdinary,
+    mask_heredoc_bodies,
     simple_commands,
-    strip_invocation_prefix,
-    substitution_bodies,
 )
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"
 DEFAULT_OUT = capture_failure.MEMORY_STORE / "never-refuse" / "never-refuse-sample-v1.jsonl"
-DEFAULT_SIZE = 10000
+#: The sample size, pinned (operator ruling 1, harmonic-forge#1289): there is
+#: no `--size` option, and `score` refuses a sample of any other size.
+SIZE = 10000
 DEFAULT_SEED = 1279
 NAME_PATTERN = "never-refuse-sample*.jsonl"
 TEMP_PREFIX = "never-refuse-sample"
@@ -163,8 +165,6 @@ READ: dict[str, Opts] = {
     "ps": _o("aAuxefwlHj", "opUC"),
     "pgrep": _o("falnoxcvi", "uUPgGst"),
 }
-#: Read programs checked by their own rule below rather than an Opts row.
-SPECIAL_READ = frozenset({"cd", "find", "sed", "date", "test", "["})
 #: Scratch writers: only these options, and every operand must be scratch.
 #: Options that name a destination (`-t`, `--target-directory`) are absent,
 #: so the destination is always an operand the scratch check sees.
@@ -218,52 +218,108 @@ SED_SAFE = re.compile(
     r"(?:\\.|(?!(?P=d))[^\\\n])*(?P=d)[gIip0-9]*$")
 SED_OPTS = _o("nEr", "e")
 DATE_OPTS = _o("uRI", "d", ("--utc", "--iso-8601", "--rfc-3339"))
-_MKTEMP_EXACT = re.compile(r"^(?:\$\(mktemp(?: -d)?\)|`mktemp(?: -d)?`)$")
-#: A probe is `--help` as the last word, with no `--` before it and not the
-#: value of an option (operator ruling, harmonic-forge#1289): `--plan`,
-#: `--gate`, `--check` and `--dry-run` are tool-specific and can write (a
-#: preclose `--plan` writes a receipt), so none of them makes a probe.
+#: mktemp's row: `-d`, `-q`, `-u` and at most one template operand, which is a
+#: scratch literal. No `-p`/`--tmpdir`/`-t`/`--suffix`: unlisted, so excluded.
+MKTEMP_OPTS = _o("dqu")
+#: A probe is exactly `[prog, "--help"]` with `prog` on a READ or
+#: SCRATCH_WRITE row, or git or gh (operator ruling 1 on the epoch-2
+#: sticky-wicket, harmonic-forge#1289). Nothing else is a probe.
 PROBE = "--help"
-SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+PROBE_PROGRAMS = frozenset(READ) | frozenset(SCRATCH_WRITE) | {"git", "gh"}
+#: Wrappers and prefixes that change what, where or how a command runs. The
+#: classifier never strips them; their presence is the refusal (an
+#: assignment as argv[0] is refused the same way).
+PREFIX_PROGRAMS = frozenset({"env", "sudo", "doas", "nice", "ionice", "timeout", "command", "builtin",
+                             "exec", "nohup", "time", "stdbuf", "setsid", "chrt", "taskset",
+                             "unbuffer", "xargs", "gh-as", "gha"})
 READ_REDIRECTS = frozenset({"<", "<<", "<<<", "<&"})
-BACKGROUND_SEPS = frozenset({"|", "|&", "&"})
-_VAR = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$", re.S)
 RANK = {"read": 1, "probe": 2, "scratch-write": 3}
-MAX_DEPTH = 4
+_ASSIGNMENT_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+#: One path segment: these characters only, and never `.` or `..`.
+_SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9._@+-]+"
+#: The one write-target shape: a literal absolute path under `/tmp/`. No
+#: `..`, no braces, globs, quotes, `$`, `~` or whitespace, and nothing
+#: relative: a relative target would need the cwd, which is never computed.
+SCRATCH_LITERAL = re.compile(rf"^/tmp/{_SEGMENT}(?:/{_SEGMENT})*/?$")
+#: A use of a bound name: `$NAME` or `${NAME}`, then literal segments.
+_BOUND_USE = re.compile(rf"^\$(?:\{{(?P<a>[A-Za-z_][A-Za-z0-9_]*)\}}|(?P<b>[A-Za-z_][A-Za-z0-9_]*))"
+                        rf"(?:/{_SEGMENT})*/?$")
+#: The one binding row: `NAME=$(mktemp)` or `NAME=$(mktemp -d)`, standalone,
+#: at the very start of the string (repeatable), followed by a newline, `;`,
+#: `&&` or the end. Anywhere else an assignment is a refused prefix.
+_BINDING = re.compile(r"\A[ \t]*([A-Za-z_][A-Za-z0-9_]*)=\$\(mktemp(?: -d)?\)[ \t]*(?:\n|;|&&|\Z)[ \t\n]*")
+#: Characters a quoted span may not hold: an operator, `#` or a newline.
+_QUOTED_REFUSED = frozenset(";&|()<>#\n")
 
 
-def resolve_path(word: str, cur: str | None, home: str, binds: dict[str, bool]) -> str | None:
-    """The normalized absolute path `word` names, or None when it cannot be
-    known. A word led by a name bound to a scratch path resolves under a
-    placeholder one level below `/tmp/`, the shallowest a scratch path can be,
-    so a `..` that could leave `/tmp/` does."""
-    if word == "~" or word.startswith("~/"):
-        word = home + word[1:]
-    elif word.startswith("~"):
-        return None  # another user's home
-    elif word == "$HOME" or word.startswith("$HOME/"):
-        word = home + word[5:]
-    elif word.startswith("${HOME}"):
-        word = home + word[7:]
-    match = _VAR.match(word)
-    if match:
-        name = match.group(1) or match.group(2)
-        rest = match.group(3)
-        if not binds.get(name) or (rest and not rest.startswith("/")):
-            return None
-        word = f"/tmp/.bound-{name}{rest}"
-    if "$" in word or "`" in word:
-        return None
-    if not word.startswith("/"):
-        if cur is None:
-            return None
-        word = os.path.join(cur, word)
-    return os.path.normpath(word)
+def lexer_hazards(text: str) -> None:
+    """Refuse, never interpret (harmonic-forge#1289 epoch 2): a backtick, any
+    unquoted `#` (a comment or not), a quoted span holding an operator, `#`
+    or a newline, and a backslash-escaped blank. Raises `ValueError` on an
+    unbalanced quote. Runs on the heredoc-masked text."""
+    if "`" in text:
+        raise NotOrdinary("backtick")
+    state: str | None = None
+    refused = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if state is None:
+            if char == "\\":
+                if text[index + 1:index + 2] in (" ", "\t"):
+                    raise NotOrdinary("lexer")
+                index += 2
+                continue
+            if char in "'\"":
+                state, refused = char, False
+            elif char == "#":
+                raise NotOrdinary("comment")
+        elif state == '"' and char == "\\":
+            index += 2
+            continue
+        elif char == state:
+            if refused:
+                raise NotOrdinary("quoted-operator")
+            state = None
+        elif char in _QUOTED_REFUSED:
+            refused = True
+        index += 1
+    if state is not None:
+        raise ValueError("unbalanced quote")
 
 
-def is_scratch(word: str, cur: str | None, home: str, binds: dict[str, bool]) -> bool:
-    resolved = resolve_path(word, cur, home, binds)
-    return resolved is not None and resolved.startswith("/tmp/")
+def heredoc_hazards(command: str) -> None:
+    """A heredoc is admitted only with a quoted delimiter, or an unquoted one
+    in a string holding no `$(`: an unquoted body runs its substitutions.
+    `<<<WORD` is a here-string, never a heredoc: `mask_heredoc_bodies` would
+    hide the lines after it, so it is refused."""
+    for match in HEREDOC_START.finditer(command):
+        if match.start() > 0 and command[match.start() - 1] == "<":
+            raise NotOrdinary("heredoc")
+        if not match.group("quote") and "$(" in command:
+            raise NotOrdinary("heredoc")
+
+
+def bindings(text: str) -> tuple[frozenset[str], str]:
+    """`(names, rest)`: the leading binding rows and the text after them. A
+    bound name assigned again anywhere in the rest (`NAME=`, `NAME+=`, or as
+    a `for`/`select`/`read` variable) refuses the whole string."""
+    names: set[str] = set()
+    while match := _BINDING.match(text):
+        names.add(match.group(1))
+        text = text[match.end():]
+    for name in names:
+        if re.search(rf"(?<![A-Za-z0-9_$]){name}\+?=|\b(?:for|select|read)\b[^\n;]*\b{name}\b", text):
+            raise NotOrdinary("rebind")
+    return frozenset(names), text
+
+
+def is_scratch(word: str, binds: frozenset[str]) -> bool:
+    """True only for a literal `/tmp/` path or a bound name's literal use."""
+    if SCRATCH_LITERAL.match(word):
+        return True
+    match = _BOUND_USE.match(word)
+    return bool(match) and (match.group("a") or match.group("b")) in binds
 
 
 def parse_opts(words: list[str], spec: Opts, reason: str) -> tuple[list[str], list[tuple[str, str]]]:
@@ -308,12 +364,6 @@ def parse_opts(words: list[str], spec: Opts, reason: str) -> tuple[list[str], li
     return found, valued
 
 
-def operands(argv: list[str]) -> list[str]:
-    """Words after the program that are not options, for `cd` (whose only
-    options, `-L`/`-P`, take no value)."""
-    return parse_opts(argv[1:], _o("LP"), "option")[0]
-
-
 def _find_ok(words: list[str]) -> None:
     index = 0
     while index < len(words):
@@ -348,166 +398,98 @@ def _date_ok(words: list[str]) -> None:
         raise NotOrdinary("option")
 
 
-def _mktemp_scratch(argv: list[str], cur: str | None, home: str, binds: dict[str, bool]) -> bool:
-    """True when mktemp has no template operand and no `-p`/`--tmpdir`, or
-    every template operand and directory value is scratch."""
-    values: list[str] = []
-    index = 1
-    ended = False
-    while index < len(argv):
-        word = argv[index]
-        if ended or not word.startswith("-") or word == "-":
-            values.append(word)
-        elif word == "--":
-            ended = True
-        elif word in ("-p", "--tmpdir"):
-            if index + 1 >= len(argv):
-                return False
-            values.append(argv[index + 1])
-            index += 1
-        elif word.startswith("--tmpdir="):
-            values.append(word[len("--tmpdir="):])
-        index += 1
-    return all(is_scratch(v, cur, home, binds) for v in values)
-
-
-def _is_probe(argv: list[str]) -> bool:
-    return (len(argv) >= 2 and argv[-1] == PROBE and "--" not in argv
-            and not (len(argv) >= 3 and argv[-2].startswith("-")))
-
-
 def _better(best: str | None, cls: str | None) -> str | None:
     if cls is None or cls == "neutral":
         return best
     return cls if best is None or RANK[cls] > RANK[best] else best
 
 
-def classify(command: str, cwd: str | None, home: str, depth: int = 0) -> str | None:
+def row(argv: list[str], binds: frozenset[str]) -> str:
+    """The literal row `argv` matches: "read", "probe", "scratch-write" or
+    "neutral". Raises `NotOrdinary` when it matches none. `argv[0]` is
+    matched as written: no path, no wrapper, no assignment."""
+    prog = argv[0]
+    if _ASSIGNMENT_WORD.match(prog) or prog in PREFIX_PROGRAMS:
+        raise NotOrdinary("prefix")
+    if argv == [prog, PROBE] and prog in PROBE_PROGRAMS:
+        return "probe"
+    if prog == "for":
+        if len(argv) >= 3 and argv[2] == "in":
+            return "neutral"  # binds nothing: its variable is never a scratch name
+        raise NotOrdinary("unclassified")
+    if prog == "mktemp":
+        templates, _valued = parse_opts(argv[1:], MKTEMP_OPTS, "option")
+        if len(templates) > 1 or not all(is_scratch(t, binds) for t in templates):
+            raise NotOrdinary("mktemp")
+        return "scratch-write"
+    if prog == "cd":
+        parse_opts(argv[1:], _o("LP"), "option")
+        return "read"  # never consulted for a write target
+    if prog == "git":
+        # The subcommand comes first: a global option (`-C`, `-c`) is not ordinary.
+        if len(argv) < 2 or argv[1] not in GIT_READ:
+            raise NotOrdinary("unclassified")
+        parse_opts(argv[2:], GIT_OPTS, "option")
+        return "read"
+    if prog == "gh":
+        if len(argv) >= 2 and argv[1] == "api" and gh_api_allowlisted(argv[2:]):
+            return "read"
+        if len(argv) >= 3 and (argv[1], argv[2]) in GH_READ:
+            parse_opts(argv[3:], GH_OPTS, "option")
+            return "read"
+        raise NotOrdinary("unclassified")
+    if prog in ("test", "["):
+        return "read"
+    if prog == "find":
+        _find_ok(argv[1:])
+        return "read"
+    if prog == "sed":
+        _sed_ok(argv[1:])
+        return "read"
+    if prog == "date":
+        _date_ok(argv[1:])
+        return "read"
+    if prog in READ:
+        found, _valued = parse_opts(argv[1:], READ[prog], "option")
+        if prog == "uniq" and len(found) >= 2:
+            raise NotOrdinary("option")  # uniq IN OUT writes OUT
+        return "read"
+    if prog in SCRATCH_WRITE:
+        targets, valued = parse_opts(argv[1:], SCRATCH_WRITE[prog], "option")
+        if prog == "truncate":
+            valued = []  # -s SIZE is a size, not a path
+        # `ln` with one operand writes an implicit `./NAME`: two or more only.
+        if not targets or (prog == "ln" and len(targets) < 2):
+            raise NotOrdinary("unclassified")
+        if not all(is_scratch(t, binds) for t in [*targets, *(v for _n, v in valued)]):
+            raise NotOrdinary("write-target")
+        return "scratch-write"
+    raise NotOrdinary("unclassified")
+
+
+def classify(command: str) -> str | None:
     """The class of an ordinary command: "read", "probe" or "scratch-write";
     None when every simple command is neutral. Raises `NotOrdinary(reason)`
-    for anything else and `ValueError` when the text does not parse."""
-    if depth > MAX_DEPTH:
-        raise NotOrdinary("depth")
-    cur = cwd
-    stack: list[str | None] = []
-    binds: dict[str, bool] = {}
-    best: str | None = None
-    pending_bind: str | None = None
-    for item in simple_commands(command):
+    for anything else and `ValueError` when the text does not parse.
+
+    A recognizer, not an interpreter (harmonic-forge#1289 epoch-2
+    sticky-wicket REFORGE): no step here computes a shell effect (where `cd`
+    leaves you, what a variable holds, what a wrapper or a brace expands
+    to). Every simple command must match one literal row; everything else
+    raises."""
+    heredoc_hazards(command)
+    masked = mask_heredoc_bodies(command)
+    lexer_hazards(masked)
+    binds, rest = bindings(masked)
+    best: str | None = "scratch-write" if binds else None
+    for item in simple_commands(rest):
         if isinstance(item, GroupMarker):
-            if item.kind == "open":
-                stack.append(cur)
-            elif stack:
-                cur = stack.pop()
             continue
-        argv = list(item.argv)
-        bind_now, pending_bind = pending_bind, None
-
-        for word in argv + [target for _op, target in item.redirects if target]:
-            for body in substitution_bodies(word):
-                best = _better(best, classify(body, cur, home, depth + 1))
-
-        index = 0
-        while index < len(argv) and _ASSIGNMENT.match(argv[index]):
-            index += 1
-        assignments, rest = argv[:index], strip_invocation_prefix(argv, unwrap_shells=False)
-        for word in assignments:
-            name, value = word.split("=", 1)
-            if rest:
-                # A prefix assignment does not apply to its own command's
-                # expansions: `D=/tmp/x rm -rf "$D/"` runs `rm -rf /`. Bind
-                # nothing, and drop any earlier binding of the name.
-                binds.pop(name, None)
-            elif value == "$" and word is assignments[-1]:
-                pending_bind = name
-            else:
-                # Only an absolute scratch path or exactly `$(mktemp)` /
-                # `$(mktemp -d)` binds: a relative value is re-read against
-                # whatever directory a later command runs in.
-                binds[name] = bool(_MKTEMP_EXACT.match(value)) or (
-                    value.startswith("/") and is_scratch(value, None, home, binds))
-
-        cls: str | None
-        prog = os.path.basename(rest[0]) if rest else None
-        if prog is None:
-            cls = "neutral"
-        elif prog in ("for", "case", "select"):
-            if prog == "for" and len(rest) >= 3 and rest[2] == "in":
-                words = rest[3:]
-                binds[rest[1]] = bool(words) and all(
-                    w.startswith("/") and is_scratch(w, None, home, binds) for w in words)
-            cls = "neutral"
-        elif prog in SHELLS:
-            if len(rest) >= 3 and rest[1] in ("-c", "-lc", "--command"):
-                cls = classify(rest[2], cur, home, depth + 1) or "neutral"
-            else:
-                raise NotOrdinary("shell")
-        elif _is_probe(rest):
-            cls = "probe"
-        elif prog == "mktemp":
-            if not _mktemp_scratch(rest, cur, home, binds):
-                raise NotOrdinary("mktemp")
-            cls = "scratch-write"
-            if bind_now:
-                binds[bind_now] = True
-        elif prog == "cd":
-            targets = operands(rest)
-            if item.sep_before in BACKGROUND_SEPS or item.sep_after in BACKGROUND_SEPS:
-                cur = None
-            elif not targets:
-                cur = home
-            elif targets[0] == "-":
-                cur = None
-            else:
-                cur = resolve_path(targets[0], cur, home, binds)
-            cls = "read"
-        elif prog == "git":
-            # The subcommand comes first: a global option (`-C`, `-c`) is not ordinary.
-            if len(rest) < 2 or rest[1] not in GIT_READ:
-                raise NotOrdinary("unclassified")
-            parse_opts(rest[2:], GIT_OPTS, "option")
-            cls = "read"
-        elif prog == "gh":
-            if len(rest) >= 2 and rest[1] == "api" and gh_api_allowlisted(rest[2:]):
-                cls = "read"
-            elif len(rest) >= 3 and (rest[1], rest[2]) in GH_READ:
-                parse_opts(rest[3:], GH_OPTS, "option")
-                cls = "read"
-            else:
-                raise NotOrdinary("unclassified")
-        elif prog in ("test", "["):
-            cls = "read"
-        elif prog == "find":
-            _find_ok(rest[1:])
-            cls = "read"
-        elif prog == "sed":
-            _sed_ok(rest[1:])
-            cls = "read"
-        elif prog == "date":
-            _date_ok(rest[1:])
-            cls = "read"
-        elif prog in READ:
-            found, _valued = parse_opts(rest[1:], READ[prog], "option")
-            if prog == "uniq" and len(found) >= 2:
-                raise NotOrdinary("option")  # uniq IN OUT writes OUT
-            cls = "read"
-        elif prog in SCRATCH_WRITE:
-            targets, valued = parse_opts(rest[1:], SCRATCH_WRITE[prog], "option")
-            if prog == "truncate":
-                valued = []  # -s SIZE is a size, not a path
-            if not targets or not all(is_scratch(t, cur, home, binds)
-                                      for t in [*targets, *(v for _n, v in valued)]):
-                raise NotOrdinary("unclassified")
-            cls = "scratch-write"
-        else:
-            raise NotOrdinary("unclassified")
-
+        cls = row(list(item.argv), binds) if item.argv else "neutral"
         for op, target in item.redirects:
-            if op in READ_REDIRECTS or target is None:
+            if op in READ_REDIRECTS or target is None or target == "/dev/null":
                 continue
-            if target == "/dev/null":
-                continue
-            if not is_scratch(target, cur, home, binds):
+            if not is_scratch(target, binds):
                 raise NotOrdinary("redirect")
             if cls in ("neutral", "read"):
                 cls = "scratch-write"
@@ -607,30 +589,31 @@ def read_corpus(root: Path, until: dt.datetime, progress=None) -> Corpus:
     return corpus
 
 
+VERSION_COUNTS = ("calls", "joined", "no_result", "ok_with_stdout")
+
+
 def shape_guard(corpus: Corpus) -> dict:
-    """Per-version counts; raises `Failed` on a result shape this code does not
-    recognize or a version with no joined result or no non-error result
-    carrying a `stdout` dict."""
+    """Per-version counts, `no_result` among them; raises `Failed` only on a
+    result shape this code does not recognize.
+
+    No per-version floor (harmonic-forge#1289 epoch 2): a still-running call
+    on a just-updated Claude Code version has no joined result, and a
+    version with none already fails safe, since the ran-check excludes every
+    such call as `no_result`. The manifest reports the counts instead."""
     versions: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     unrecognized = 0
     for call_id, (_key, _command, meta) in corpus.calls.items():
         results = corpus.results.get(call_id, [])
         counts = versions[meta["version"]]
         counts["calls"] += 1
-        if results:
-            counts["joined"] += 1
+        counts["joined" if results else "no_result"] += 1
         if any(not err and stdout for err, _t, _d, stdout, _s in results):
             counts["ok_with_stdout"] += 1
         unrecognized += sum(1 for *_x, shape in results if not shape)
     if unrecognized:
         raise Failed(f"shape guard: {unrecognized} Bash result(s) have an unrecognized shape "
                      "(content neither a string nor a list of text items, or is_error not a bool)")
-    for version, counts in sorted(versions.items()):
-        if counts["joined"] == 0 or counts["ok_with_stdout"] == 0:
-            raise Failed(f"shape guard: version {version} has {counts['calls']} Bash call(s), "
-                         f"{counts['joined']} with a joined result and {counts['ok_with_stdout']} "
-                         "with a non-error stdout result; its transcript shape is not recognized")
-    return {v: {k: c[k] for k in ("calls", "joined", "ok_with_stdout")} for v, c in sorted(versions.items())}
+    return {v: {k: c[k] for k in VERSION_COUNTS} for v, c in sorted(versions.items())}
 
 
 def bucket(text: str) -> str:
@@ -720,7 +703,7 @@ def build_pool(corpus: Corpus, home: str, uid: int) -> tuple[dict, dict]:
     not_ordinary: collections.Counter = collections.Counter()
     for command, (_key, meta, call_id) in clean.items():
         try:
-            cls = classify(command, meta.get("cwd") or None, home)
+            cls = classify(command)
         except NotOrdinary as exc:
             not_ordinary[str(exc)] += 1
             continue
@@ -795,16 +778,17 @@ def rescan(rows: list[dict], manifest: dict, home: str, uid: int) -> int:
     return hits
 
 
-def derive(root: Path, out: Path, size: int, seed: int, until: dt.datetime, home: str,
+def derive(root: Path, out: Path, seed: int, until: dt.datetime, home: str,
            progress=None) -> dict:
     out = Path(out).expanduser()
     refusal = out_refusal(out)
     if refusal:
         raise Refused(refusal)
+    size = SIZE
     corpus = read_corpus(Path(root).expanduser(), until, progress)
     pool, stats = build_pool(corpus, home, os.getuid())
     if len(pool) < size:
-        raise Failed(f"the ordinary pool holds {len(pool)} distinct commands, fewer than --size {size}")
+        raise Failed(f"the ordinary pool holds {len(pool)} distinct commands, fewer than the sample size {size}")
     chosen = random.Random(seed).sample(sorted(pool), size)
     rows = []
     for n, command in enumerate(chosen, 1):
@@ -866,7 +850,6 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("derive", help="Derive and freeze the sample.")
     d.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     d.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    d.add_argument("--size", type=int, default=DEFAULT_SIZE)
     d.add_argument("--seed", type=int, default=DEFAULT_SEED)
     d.add_argument("--until", default=None, help="ISO timestamp; records after it are skipped (default now).")
     return parser
@@ -878,7 +861,7 @@ def main(argv: list[str] | None = None) -> int:
         until = _parse_ts(args.until) if args.until else dt.datetime.now(dt.timezone.utc)
         if until is None:
             raise Refused(f"--until {args.until!r} is not an ISO timestamp")
-        manifest = derive(args.root, args.out, args.size, args.seed, until,
+        manifest = derive(args.root, args.out, args.seed, until,
                           os.path.expanduser("~"),
                           progress=lambda msg: print(msg, file=sys.stderr))
         print(_summary(Path(args.out).expanduser(), manifest))
