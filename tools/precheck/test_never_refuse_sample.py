@@ -575,7 +575,8 @@ class Frozen(Base):
         before = self.out.read_bytes()
         code, _out, err = self.derive("--size", "3")
         self.assertEqual(code, 2)
-        self.assertIn("already derived", err)
+        # Refused up front, before the corpus read; not by the publish backstop.
+        self.assertIn("and its manifest exist", err)
         self.assertEqual(self.out.read_bytes(), before)
 
     def test_pool_smaller_than_size_writes_nothing(self):
