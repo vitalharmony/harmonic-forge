@@ -395,6 +395,21 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
                       if (done := _parse_time(p.get("completed_at"))) is None or done >= granted]
         if not post_grant:
             return "pass cap reached before the waiver (no pass can run under it)"
+    # harmonic-forge#1300: a current-epoch REFORGE verdict whose passes all
+    # predate the grant. REFORGE blocks every ordinary pass until the
+    # operator's `--force --reforge`, and the waiver refuses `--reforge`, so
+    # no pass can run under it: the #1154 class. Same time test as above (an
+    # unreadable time counts as after). A session can record REFORGE itself
+    # after the grant on a pre-grant cluster and reach this stop; that is
+    # accepted, because ending revokes the BATCH grant and restores R-0229,
+    # and the new epoch still needs the operator's FORCE reforge line.
+    if (granted is not None and passes and cluster
+            and cluster.get("verdict") == "REFORGE"):
+        post_grant = [p for p in passes
+                      if (done := _parse_time(p.get("completed_at"))) is None or done >= granted]
+        if not post_grant:
+            return ("REFORGE verdict before the waiver (the new epoch needs --force --reforge, "
+                    "which the waiver refuses)")
     return None
 
 
@@ -516,7 +531,8 @@ def end(key: str, *, reason: str, now: datetime | None = None,
                         "shows neither two current-epoch passes run under this waiver (forced "
                         "cross-family) that both left surviving findings nor a current-epoch "
                         "PATCH/REFORGE mechanism-cluster verdict after such a pass, nor an epoch "
-                        "already at the pass cap before the waiver. `end` is the "
+                        "already at the pass cap before the waiver, nor a current-epoch REFORGE "
+                        "verdict whose passes all predate the waiver. `end` is the "
                         "exit from that stop, never a way around the forced cross-family pass.")
                 ending = {**data, "status": "ending", "end_reason": reason.strip(),
                           "ended_at": _iso(moment), "end_stop": stop}
