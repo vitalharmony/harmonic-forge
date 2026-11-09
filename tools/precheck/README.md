@@ -61,7 +61,9 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    interpreter (harmonic-forge#1289 epoch-2 REFORGE): nothing computes a shell
    effect. It refuses before lexing any backtick, any unquoted `#`, any quoted
    span holding `;&|()<>#` or a newline, a backslash-escaped blank, an
-   unquoted-delimiter heredoc in a string holding `$(`, and `<<<WORD`. Then
+   unquoted-delimiter heredoc in a string holding `$(` or whose body holds a
+   backtick, a `$` or a backslash (an unquoted body must be literal text,
+   epoch-3 PATCH), and `<<<WORD`. Then
    every simple command from `tools/hooks/shell_parse.simple_commands()` must
    match one row: a READ program or git/gh read under its option allowlist;
    a SCRATCH_WRITE program whose every operand is a scratch target; `mktemp`
@@ -99,7 +101,9 @@ these, and the next run refuses naming it:
 
 `score` also refuses a sample whose sha256 no longer matches its manifest,
 and a sample that is not exactly 10,000 rows (by count and by manifest
-`size`).
+`size`). Each row is parsed: a JSON object with exactly the keys derive
+writes, `n` a unique integer, `command` a non-empty string and `cwd` a string
+or null; a blank or unparseable line refuses rather than being skipped.
 
 ## `replay_harness.py score`
 
@@ -114,7 +118,10 @@ python3 tools/precheck/replay_harness.py score --layers <layer-set.json>
   first layer whose claims match, else to `existing[class]`, else to
   `accepted-uncovered:<class>`, else `UNCOVERED`. `repeat_owned` and
   `repeat_unowned` count slips whose effective `tool|class` appeared earlier,
-  by whether a layer owns them.
+  by whether a layer owns them. The build's overlay accounting is read
+  back: any malformed overlay row, or any overlay row that matches no failure
+  record, refuses (a dropped row could only raise a share). Rows with an
+  empty `key_v1` are deliberate and are printed as `skipped`.
 - **Sample**: every layer with a `module` runs over every row.
   `--control` adds a `null` layer (never refuses) and an `all` layer (always
   refuses).
@@ -134,7 +141,7 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
 {
   "version": 1,
   "layers": [
-    {"name": "lint", "claims": ["*|shell"], "module": null,
+    {"name": "lint", "claims": ["*|shell"], "claims_basis": "validated", "module": null,
      "bar": {"replay": {"classes": ["shell"], "min_share": 1.0}, "sample_max_refusals": 0}}
   ],
   "existing": {"policy": "existing deny hooks"},
@@ -142,10 +149,19 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
 }
 ```
 
-- Every key is one the loader reads, at every level; an unknown key refuses
-  (exit 2), so a misspelled key never silently drops a bar. Every layer needs a
-  `bar` setting a `replay` bar, a `sample_max_refusals` bar or both, and a set
-  with no layers refuses: nothing scored is never a pass.
+- Parsed, never validated (harmonic-forge#1289 epoch 3): at every level the
+  keys must be exactly the ones shown, and every one is required. An unknown
+  key and an absent key both refuse (exit 2); there are no defaults. Write
+  `null` for no module or for an unused bar half, and `{}`/`[]` for an empty
+  `existing`/`accepted_uncovered`. Every layer needs a `bar` setting a
+  `replay` bar, a `sample_max_refusals` bar or both, a layer with a `module`
+  must set `sample_max_refusals`, and a set with no layers refuses: nothing
+  scored is never a pass.
+- Layer names are unique. A claim appears once per layer, a class is never
+  both `existing` and `accepted_uncovered`, and an `existing` owner is a
+  non-empty label that is not a layer name, `UNCOVERED` or
+  `accepted-uncovered:*`. Ownership is scored as an identity (a layer's
+  index, an existing class, an accepted class), never by comparing labels.
 - A claim is `*|<class>` (any tool) or `<tool>|<class>` (one tool's mode). Every
   class must be in `tools/memory/failure_classes.json`'s current version; the
   loader refuses (exit 2) anything else.
@@ -159,9 +175,10 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
   ```
 
   `env_names` is the harness process's live environment names. A layer that
-  raises fails its sample bar.
+  raises, or returns anything but `None` or a non-empty `str` (`""`, `False`,
+  `0`), is counted as an error, and an error fails its sample bar.
 
-- `claims_basis` is `validated` (the default: each claim is a class the
+- `claims_basis` (required) is `validated` (each claim is a class the
   layer's check was shown to validate) or `declared` (the layer says it
   guards these classes, not yet shown). A declared layer's replay bar prints
   as `<name>.replay (declared claims)`, so its holds is never read as measured

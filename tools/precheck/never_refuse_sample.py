@@ -288,15 +288,42 @@ def lexer_hazards(text: str) -> None:
         raise ValueError("unbalanced quote")
 
 
+#: Characters an unquoted heredoc body may not hold (harmonic-forge#1289
+#: epoch-3 PATCH): bash expands `$` (parameters, `$(`, `$((`), runs
+#: backticks and honors `\` in an unquoted body. A literal body has none.
+_HEREDOC_BODY_REFUSED = frozenset("`$\\")
+
+
+def _heredoc_body(command: str, match: re.Match) -> str:
+    """The body text of the heredoc `match` starts: the lines after its own
+    line up to the delimiter line, or to the end of the string when it is
+    never closed. A superset when several heredocs share one line."""
+    line_end = command.find("\n", match.end())
+    if line_end == -1:
+        return ""
+    delimiter = match.group("delimiter")
+    body: list[str] = []
+    for line in command[line_end + 1:].split("\n"):
+        if (line.lstrip("\t") if match.group("strip_tabs") else line) == delimiter:
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
 def heredoc_hazards(command: str) -> None:
     """A heredoc is admitted only with a quoted delimiter, or an unquoted one
-    in a string holding no `$(`: an unquoted body runs its substitutions.
-    `<<<WORD` is a here-string, never a heredoc: `mask_heredoc_bodies` would
-    hide the lines after it, so it is refused."""
+    whose body is literal text: no backtick, no `$` and no backslash (an
+    unquoted body runs its substitutions). `<<<WORD` is a here-string, never
+    a heredoc: `mask_heredoc_bodies` would hide the lines after it, so it is
+    refused."""
     for match in HEREDOC_START.finditer(command):
         if match.start() > 0 and command[match.start() - 1] == "<":
             raise NotOrdinary("heredoc")
+        # The PATCH narrows the epoch-2 row and admits nothing it refused:
+        # a `$(` anywhere in the string still refuses an unquoted heredoc.
         if not match.group("quote") and "$(" in command:
+            raise NotOrdinary("heredoc")
+        if not match.group("quote") and not _HEREDOC_BODY_REFUSED.isdisjoint(_heredoc_body(command, match)):
             raise NotOrdinary("heredoc")
 
 

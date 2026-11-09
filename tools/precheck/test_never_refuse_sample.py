@@ -344,6 +344,26 @@ class Recognizer(unittest.TestCase):
         # `<<<WORD` is a here-string: the lines after it run.
         self.assertNotOrdinary("cat <<< x\nrm -rf ~\nx", reason="heredoc")
 
+    # -- Epoch-3 heredoc PATCH: an unquoted body must be literal text --------
+    # Each seed fails if its character leaves _HEREDOC_BODY_REFUSED.
+
+    def test_e3_unquoted_heredoc_body_with_backtick_is_refused(self):
+        self.assertNotOrdinary("cat <<EOF > /tmp/notes.md\nRun `rm -rf ~/proj` first\nEOF", reason="heredoc")
+        self.assertEqual(classify("cat <<'EOF' > /tmp/notes.md\nRun `x` first\nEOF"), "scratch-write")
+
+    def test_e3_unquoted_heredoc_body_with_parameter_is_refused(self):
+        self.assertNotOrdinary("cat <<EOF > /tmp/x\nhome is $HOME\nEOF", reason="heredoc")
+        self.assertNotOrdinary("cat <<EOF > /tmp/x\n${X:=y}\nEOF", reason="heredoc")
+        self.assertNotOrdinary("cat <<-EOF > /tmp/x\n\t$((1+1))\n\tEOF", reason="heredoc")
+
+    def test_e3_unquoted_heredoc_body_with_backslash_is_refused(self):
+        self.assertNotOrdinary("cat <<EOF > /tmp/x\nline one \\\nEOF\nmore\nEOF", reason="heredoc")
+        self.assertNotOrdinary("cat <<EOF > /tmp/x\na\\tb\nEOF", reason="heredoc")
+
+    def test_e3_unquoted_heredoc_literal_body_is_admitted(self):
+        self.assertEqual(classify("cat <<EOF > /tmp/x\nplain prose, no specials.\nEOF"), "scratch-write")
+        self.assertEqual(classify('cat <<"EOF" > /tmp/x\n$HOME `x` \\\nEOF'), "scratch-write")
+
     def test_backslash_blank_is_refused(self):
         self.assertNotOrdinary("rm /tmp/a\\ b", reason="lexer")
 

@@ -85,12 +85,16 @@ class Harness(unittest.TestCase):
 
     def layer_set(self, layers: list[dict], existing: dict | None = None,
                   accepted: list[str] | None = None, raw: bool = False) -> Path:
-        """Each layer without a `bar` gets a sample bar, which is
-        not-measurable with no module, so tests about other fields still load;
-        `raw=True` writes the layers exactly as given."""
+        """The fixture writes what each test leaves out, since the loader has
+        no defaults (epoch 3): `claims_basis` validated, `module` null, a
+        sample bar (not-measurable with no module) and a null bar half.
+        `raw=True` writes the layers, and the top-level keys, exactly as given."""
         if not raw:
-            layers = [layer if "bar" in layer else {**layer, "bar": {"sample_max_refusals": 0}}
-                      for layer in layers]
+            filled = []
+            for layer in layers:
+                bar = {"replay": None, "sample_max_refusals": None, **layer.get("bar", {"sample_max_refusals": 0})}
+                filled.append({"claims_basis": "validated", "module": None, **layer, "bar": bar})
+            layers = filled
         path = self.tmp / f"layers-{len(list(self.tmp.glob('layers-*')))}.json"
         path.write_text(json.dumps({"version": 1, "layers": layers, "existing": existing or {},
                                     "accepted_uncovered": accepted or []}), encoding="utf-8")
@@ -313,12 +317,12 @@ class Bars(Harness):
     def test_s16_misspelled_bar_key_refuses(self):
         # Survivor 16: a misspelled bar key loaded with zero bars and scored PASS.
         self.slip("gh-api|args")
-        for layer in ({"name": "gate", "claims": ["*|args"], "module": None,
-                       "bars": {"replay": {"classes": ["args"], "min_share": 1.0}}},
-                      {"name": "gate", "claims": ["*|args"], "module": None,
-                       "bar": {"replay": {"classes": ["args"], "min_share": 1.0}, "sample_max_refusal": 0}},
-                      {"name": "gate", "claims": ["*|args"], "module": None,
-                       "bar": {"replay": {"classes": ["args"], "min_share": 1.0, "min_shares": 0}}}):
+        base = {"name": "gate", "claims": ["*|args"], "claims_basis": "validated", "module": None}
+        for layer in ({**base, "bars": {"replay": {"classes": ["args"], "min_share": 1.0}}},
+                      {**base, "bar": {"replay": {"classes": ["args"], "min_share": 1.0},
+                                       "sample_max_refusal": 0}},
+                      {**base, "bar": {"replay": {"classes": ["args"], "min_share": 1.0, "min_shares": 0},
+                                       "sample_max_refusals": None}}):
             with self.subTest(layer=layer):
                 code, _out, err = self.run_score(self.layer_set([layer], raw=True), "--strict")
                 self.assertEqual(code, 2, err)
@@ -326,18 +330,18 @@ class Bars(Harness):
 
     def test_layer_with_no_bar_refuses(self):
         self.slip("gh-api|args")
-        for bar in ({}, None):
-            layer = {"name": "gate", "claims": ["*|args"], "module": None}
-            if bar is not None:
+        for bar in ({}, None, "absent"):
+            layer = {"name": "gate", "claims": ["*|args"], "claims_basis": "validated", "module": None}
+            if bar != "absent":
                 layer["bar"] = bar
             with self.subTest(bar=bar):
                 code, _out, err = self.run_score(self.layer_set([layer], raw=True), "--strict")
                 self.assertEqual(code, 2, err)
-                self.assertIn("needs a bar", err)
+                self.assertIn("absent key(s) 'bar'" if bar == "absent" else "needs a bar", err)
 
     def test_bar_with_only_null_values_refuses(self):
         self.slip("gh-api|args")
-        layer = {"name": "gate", "claims": ["*|args"], "module": None,
+        layer = {"name": "gate", "claims": ["*|args"], "claims_basis": "validated", "module": None,
                  "bar": {"replay": None, "sample_max_refusals": None}}
         code, _out, err = self.run_score(self.layer_set([layer], raw=True), "--strict")
         self.assertEqual(code, 2, err)
@@ -408,6 +412,225 @@ class NoData(Harness):
         code, _out, err = self.run_score(layers)
         self.assertEqual(code, 2)
         self.assertIn("derive", err)
+
+
+# --------------------------------------------------------------------------
+# Epoch 3 REFORGE: one parser per input, and each rule's own regression test
+# (each fails when its rule is removed; the kill checks map them).
+
+ARGS_REPLAY = {"replay": {"classes": ["args"], "min_share": 1.0}, "sample_max_refusals": None}
+
+
+class LayerSetParser(Harness):
+    def refused(self, layers: Path, needle: str) -> None:
+        code, _out, err = self.run_score(layers)
+        self.assertEqual(code, 2, err)
+        self.assertIn(needle, err)
+
+    def test_e3_duplicate_layer_names_refuse(self):
+        # Survivor / codex #2: a second "gate" passed on the first one's claims.
+        self.slip("gh-api|args")
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"]},
+                                 {"name": "gate", "claims": ["*|cwd"], "bar": ARGS_REPLAY}])
+        self.refused(layers, "layer names must be unique")
+
+    def test_e3_absent_claims_basis_refuses(self):
+        # Survivor / codex #3: an absent claims_basis defaulted to validated.
+        self.slip("gh-api|receipt")
+        layer = {"name": "gate", "claims": ["*|receipt"], "module": None,
+                 "bar": {"replay": {"classes": ["receipt"], "min_share": 1.0}, "sample_max_refusals": None}}
+        self.refused(self.layer_set([layer], raw=True), "absent key(s) 'claims_basis'")
+
+    def test_e3_every_layer_and_set_key_is_required(self):
+        self.slip("gh-api|args")
+        full = {"name": "gate", "claims": ["*|args"], "claims_basis": "validated", "module": None,
+                "bar": ARGS_REPLAY}
+        for key in ("module", "claims", "bar"):
+            with self.subTest(layer_key=key):
+                layer = {k: v for k, v in full.items() if k != key}
+                self.refused(self.layer_set([layer], raw=True), f"absent key(s) '{key}'")
+        for key in ("existing", "accepted_uncovered"):
+            with self.subTest(set_key=key):
+                path = self.tmp / f"layers-top-{key}.json"
+                data = {"version": 1, "layers": [full], "existing": {}, "accepted_uncovered": []}
+                del data[key]
+                path.write_text(json.dumps(data), encoding="utf-8")
+                self.refused(path, f"absent key(s) '{key}'")
+
+    def test_e3_existing_owner_named_like_a_layer_refuses(self):
+        # Survivor: {"freshness": "gate"} counted as the gate layer's claim.
+        self.slip("gh-api|freshness")
+        layers = self.layer_set([{"name": "gate", "claims": ["*|receipt"],
+                                  "bar": {"replay": {"classes": ["freshness"], "min_share": 1.0},
+                                          "sample_max_refusals": None}}],
+                                existing={"freshness": "gate"})
+        self.refused(layers, "not a layer name")
+        for label in ("UNCOVERED", "accepted-uncovered:exists", "", 7):
+            with self.subTest(label=label):
+                self.refused(self.layer_set([{"name": "gate", "claims": ["*|receipt"]}],
+                                            existing={"freshness": label}), "existing owner")
+
+    def test_e3_module_needs_a_sample_bar(self):
+        # Codex #10: a module's errors were ignored when only a replay bar was set.
+        self.slip("gh-api|args")
+        module = self.module("def refuses(command, cwd, env_names):\n    raise RuntimeError('boom')\n")
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": module, "bar": ARGS_REPLAY}])
+        self.refused(layers, "must set sample_max_refusals")
+
+    def test_e3_layer_set_contradictions_refuse(self):
+        self.slip("gh-api|args")
+        cases = (
+            ([{"name": "gate", "claims": ["*|args", "*|args"]}], {}, [], "a claim appears twice"),
+            ([{"name": "gate", "claims": ["*|args"]}], {"policy": "hooks"}, ["policy"], "both existing"),
+            ([{"name": "gate", "claims": ["*|args"]}], {}, ["exists", "exists"], "names a class twice"),
+        )
+        for layers, existing, accepted, needle in cases:
+            with self.subTest(needle=needle):
+                self.refused(self.layer_set(layers, existing=existing, accepted=accepted), needle)
+
+
+class OwnerIdentity(Harness):
+    def test_e3_a_slip_owned_by_another_layer_never_counts_for_this_one(self):
+        # Ownership is ("layer", index): the first claimer owns the slip, and
+        # the second layer's bar counts it as not claimed.
+        self.slip("gh-api|args")
+        layers = self.layer_set([{"name": "lint", "claims": ["*|args"]},
+                                 {"name": "gate", "claims": ["*|args"], "bar": ARGS_REPLAY}])
+        code, out, _err = self.run_score(layers)
+        self.assertEqual(code, 4)
+        self.assertIn("gate.replay 0/1 fails", out)
+
+    def test_e3_owner_is_an_identity_tuple(self):
+        layer_set = {"layers": [{"index": 0, "name": "gate", "claims": [("*", "receipt")]}],
+                     "existing": {"freshness": "gate"}, "accepted_uncovered": []}
+        replay = rh.score_replay([("gh-api", "freshness", None, None)], layer_set)
+        self.assertEqual(replay["_rows"], [(("gh-api", "freshness"), ("existing", "freshness"))])
+        bar = rh.replay_bar({**layer_set["layers"][0], "claims_basis": "validated",
+                             "replay_bar": {"classes": ["freshness"], "min_share": 1.0}}, replay)
+        self.assertEqual((bar["claimed"], bar["status"]), (0, "fails"))
+
+
+class OverlayAccounting(Harness):
+    def test_e3_malformed_overlay_row_refuses(self):
+        # Survivor: a malformed row was dropped, so 1/2 read as 1/1 holds.
+        self.slip("gh-api|args")
+        self.records.append(rec("2026-11-01T00:00:59Z"))
+        for bad in ({"log_line": "1", "key_v1": "gh-api|args"}, {"log_line": 1, "key_v1": "noseparator"}):
+            with self.subTest(row=bad):
+                self.overlay = self.overlay[:1] + [bad]
+                layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+                code, _out, err = self.run_score(layers)
+                self.assertEqual(code, 2, err)
+                self.assertIn("malformed overlay row", err)
+
+    def test_e3_overlay_row_with_no_failure_record_refuses(self):
+        self.slip("gh-api|args")
+        self.overlay.append({"log_line": 99, "key_v1": "git-push|args"})
+        layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+        code, _out, err = self.run_score(layers)
+        self.assertEqual(code, 2, err)
+        self.assertIn("match no failure record", err)
+
+    def test_e3_store_without_overlay_counts_refuses(self):
+        import sqlite3
+        db = self.tmp / "bare.sqlite"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        con.execute("INSERT INTO meta VALUES ('counts', '{\"overlay_malformed\": null, \"skipped\": 0}')")
+        con.commit()
+        with self.assertRaises(rh.Refused):
+            rh._overlay_counts(con)
+        con.close()
+
+    def test_e3_skipped_overlay_rows_are_printed(self):
+        self.slip("gh-api|args")
+        self.records.append(rec("2026-11-01T00:00:59Z"))
+        self.overlay.append({"log_line": 1, "key_v1": ""})
+        layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+        code, out, _err = self.run_score(layers)
+        self.assertEqual(code, 0)
+        self.assertIn("1 overlay row(s) skipped, empty key_v1", out)
+
+
+SAMPLE_ROW = {"n": 1, "id": "t1", "ts": None, "session": None, "sidechain": False, "version": "2.0.0",
+              "cwd": "/srv/work", "class": "read", "command": "ls"}
+
+
+class SampleRowParser(Harness):
+    ROW = SAMPLE_ROW
+
+    def write_rows(self, lines: list[str]) -> None:
+        data = "".join(line + "\n" for line in lines).encode("utf-8")
+        self.sample.write_bytes(data)
+        self.sample.with_name(self.sample.name + ".manifest.json").write_text(
+            json.dumps({"version": 1, "size": 4, "sha256": hashlib.sha256(data).hexdigest()}),
+            encoding="utf-8")
+
+    def rows_with(self, index: int, row) -> list[str]:
+        good = [json.dumps({**self.ROW, "n": i}) for i in range(1, 5)]
+        good[index] = row if isinstance(row, str) else json.dumps(row)
+        return good
+
+    def assert_refused(self, lines: list[str], needle: str) -> None:
+        self.slip("gh-api|args")
+        self.write_rows(lines)
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"]}])
+        code, _out, err = self.run_score(layers)
+        self.assertEqual(code, 2, err)
+        self.assertIn(needle, err)
+
+    def test_e3_rows_need_exactly_derives_keys(self):
+        # Codex #8: null rows with a matching sha were run as commands.
+        self.assert_refused(self.rows_with(2, "null"), "must be an object")
+        self.assert_refused(self.rows_with(2, {k: v for k, v in self.ROW.items() if k != "id"} | {"n": 3}),
+                            "absent key(s) 'id'")
+        self.assert_refused(self.rows_with(2, {**self.ROW, "n": 3, "extra": 1}), "unknown key(s) 'extra'")
+
+    def test_e3_row_n_is_an_integer(self):
+        self.assert_refused(self.rows_with(2, {**self.ROW, "n": "3"}), "n must be an integer")
+        self.assert_refused(self.rows_with(2, {**self.ROW, "n": True}), "n must be an integer")
+
+    def test_e3_row_command_is_a_non_empty_string(self):
+        for command in (None, "", 5):
+            with self.subTest(command=command):
+                self.assert_refused(self.rows_with(2, {**self.ROW, "n": 3, "command": command}),
+                                    "command must be a non-empty string")
+
+    def test_e3_row_cwd_is_a_string_or_null(self):
+        self.assert_refused(self.rows_with(2, {**self.ROW, "n": 3, "cwd": 7}), "cwd must be a string or null")
+
+    def test_e3_row_n_is_unique(self):
+        self.assert_refused(self.rows_with(2, {**self.ROW, "n": 2}), "appears twice")
+
+    def test_e3_blank_line_is_never_skipped(self):
+        lines = self.rows_with(2, {**self.ROW, "n": 3})
+        self.assert_refused(lines[:2] + [""] + lines[2:], "is not JSON")
+
+
+class LayerReturnContract(Harness):
+    def test_e3_a_falsey_non_none_return_is_an_error(self):
+        # Codex #9: "" or False counted as allow.
+        self.slip("gh-api|args")
+        for value in ('""', "False", "0", "[]", "True", "b'x'"):
+            with self.subTest(value=value):
+                module = self.module(f"def refuses(command, cwd, env_names):\n    return {value}\n")
+                layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": module,
+                                          "bar": {"sample_max_refusals": 4}}])
+                code, report = self.report(layers)
+                self.assertEqual((report["layers"]["lint"]["errors"], report["layers"]["lint"]["refusals"]),
+                                 (4, 0))
+                self.assertEqual(report["bars"][0]["status"], "fails")
+                self.assertEqual(code, 4)
+
+    def test_e3_none_allows_and_a_string_refuses(self):
+        self.slip("gh-api|args")
+        module = self.module("def refuses(command, cwd, env_names):\n"
+                             "    return 'no' if command.endswith('0') else None\n")
+        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": module,
+                                  "bar": {"sample_max_refusals": 1}}])
+        code, report = self.report(layers)
+        self.assertEqual((report["layers"]["lint"]["refusals"], report["layers"]["lint"]["errors"]), (1, 0))
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":
