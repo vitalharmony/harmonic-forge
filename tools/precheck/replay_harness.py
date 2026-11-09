@@ -11,7 +11,8 @@ never-refuse sample (harmonic-forge#1289).
 
 A layer set is a JSON file (see README.md and `layersets/design-v1.json`).
 A layer module defines `refuses(command, cwd, env_names) -> str | None`;
-`env_names` is the harness process's live environment names.
+`env_names` is always the empty set: the harness never passes its own
+environment to historical rows.
 
 The report prints counts, owners and up to 20 `(n, reason)` pairs per layer;
 never a command and never a stored probe.
@@ -34,7 +35,6 @@ import contextlib
 import hashlib
 import importlib.util
 import json
-import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -398,7 +398,9 @@ def run_layer(refuses, rows: list[dict], env_names: frozenset[str]) -> dict:
     for row in rows:
         try:
             reason = refuses(row["command"], row["cwd"], env_names)
-        except Exception:  # noqa: BLE001 - a layer that raises is counted, never trusted
+        # SystemExit too: a layer calling sys.exit is an error, never the
+        # harness's exit (harmonic-forge#1289 epoch 4). KeyboardInterrupt propagates.
+        except (Exception, SystemExit):  # noqa: BLE001 - a layer that raises is counted, never trusted
             errors += 1
             continue  # fail-direction: counted as an error, and errors fail the bar
         if reason is None:
@@ -430,7 +432,10 @@ def score(layer_file: Path, sample: Path, db: Path, logs: dict, overlays: Path,
     replay["keyed_not_overlaid"] = other
     replay["overlay_skipped"] = skipped
     rows = read_sample(sample)
-    env_names = frozenset(os.environ)
+    # Empty, never the harness's own os.environ: the sample rows are
+    # historical, so the shell scoring them must not change a verdict
+    # (harmonic-forge#1289 epoch 4).
+    env_names: frozenset[str] = frozenset()
     bars, layers = [], {}
     for layer in layer_set["layers"]:
         bar = replay_bar(layer, replay)
@@ -523,7 +528,9 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
-    except Exception as exc:  # noqa: BLE001 - every other error is exit 3, never 1
+    # SystemExit too: a layer module calling sys.exit at load is exit 3, never
+    # its own code (harmonic-forge#1289 epoch 4). KeyboardInterrupt propagates.
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - every other error is exit 3, never 1
         print(f"replay-harness: error: {type(exc).__name__}", file=sys.stderr)
         with contextlib.suppress(OSError, ValueError):
             sys.stdout.flush()

@@ -121,7 +121,8 @@ python3 tools/precheck/replay_harness.py score --layers <layer-set.json>
   by whether a layer owns them. The build's overlay accounting is read
   back: any malformed overlay row, or any overlay row that matches no failure
   record, refuses (a dropped row could only raise a share). Rows with an
-  empty `key_v1` are deliberate and are printed as `skipped`.
+  empty-string `key_v1` are deliberate and are printed as `skipped`; an
+  absent, null or false `key_v1` is malformed and refuses.
 - **Sample**: every layer with a `module` runs over every row.
   `--control` adds a `null` layer (never refuses) and an `all` layer (always
   refuses).
@@ -174,9 +175,13 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
       """A short refusal reason, or None to allow."""
   ```
 
-  `env_names` is the harness process's live environment names. A layer that
-  raises, or returns anything but `None` or a non-empty `str` (`""`, `False`,
-  `0`), is counted as an error, and an error fails its sample bar.
+  `env_names` is always the empty set: the sample rows are historical, so
+  the harness never passes its own live environment to them, and the shell
+  it runs from cannot change a verdict. A layer that raises (including
+  `SystemExit`; `KeyboardInterrupt` still stops the run), or returns anything
+  but `None` or a non-empty `str` (`""`, `False`, `0`), is counted as an
+  error, and an error fails its sample bar. A module that exits while loading
+  is exit 3.
 
 - `claims_basis` (required) is `validated` (each claim is a class the
   layer's check was shown to validate) or `declared` (the layer says it

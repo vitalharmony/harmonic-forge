@@ -402,10 +402,13 @@ class Overlays(Store):
         self.assertEqual(self.key("memory", 0)[:2], ("gh-api", "args"))
 
     def test_empty_key_rekeys_nothing_and_is_counted(self):
-        self.overlay("0001.jsonl", [{"log_line": 0, "key_v1": ""}, {"log_line": 1}, "not json",
+        # Only "" is a skip: an absent, null or false key_v1 is malformed
+        # (harmonic-forge#1289 epoch 4).
+        self.overlay("0001.jsonl", [{"log_line": 0, "key_v1": ""}, {"log_line": 0, "key_v1": ""}, {"log_line": 1},
+                                    {"log_line": 1, "key_v1": None}, {"log_line": 1, "key_v1": False}, "not json",
                                     {"log_line": 1, "key_v1": "no-separator"}])
         counts = self.build()
-        self.assertEqual((counts["overlays"], counts["skipped"], counts["overlay_malformed"]), (0, 2, 2))
+        self.assertEqual((counts["overlays"], counts["skipped"], counts["overlay_malformed"]), (0, 2, 5))
         self.assertEqual(self.key("memory", 0), ("l1_post", "cwd", "own probe", "l1_post", "cwd", 0))
         out = io.StringIO()
         with redirect_stdout(out):

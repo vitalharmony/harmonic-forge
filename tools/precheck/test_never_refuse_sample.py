@@ -367,6 +367,25 @@ class Recognizer(unittest.TestCase):
     def test_backslash_blank_is_refused(self):
         self.assertNotOrdinary("rm /tmp/a\\ b", reason="lexer")
 
+    # -- Epoch-4 survivors ---------------------------------------------------
+
+    def test_e4_quoted_or_escaped_dollar_is_never_the_bound_name(self):
+        # bash removes a file literally named `$X` in the cwd; quote removal
+        # made the word read as the bound scratch path.
+        for command in ("X=$(mktemp -d)\nrm -rf '$X'", "X=$(mktemp -d); rm -rf \\$X",
+                        'X=$(mktemp -d); rm -rf "\\$X"', "X=$(mktemp -d); echo hi > '$X/y'"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="lexer")
+        self.assertEqual(classify('X=$(mktemp -d); rm -rf "$X"'), "scratch-write")
+
+    def test_e4_sed_e_and_w_without_a_space_are_refused(self):
+        # Every earlier w/e seed carried a space, so the `$` anchor refused it
+        # whether or not SED_SAFE admitted the letter.
+        for command in ("sed s/a/b/e f", "sed e f", "sed -n 1e f", "sed s/a/b/wp f",
+                        "sed -n 1w f", "sed w f"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="option")
+
     def test_shell_and_wrapper_are_never_unwrapped(self):
         self.assertNotOrdinary('bash -c "ls"', reason="unclassified")
         self.assertNotOrdinary("sh -c 'rm -rf /tmp/x'", reason="unclassified")

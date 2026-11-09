@@ -164,15 +164,17 @@ class Replay(Harness):
 # AC1 decision 2: the live environment.
 
 class LiveEnvironment(Harness):
-    def test_layer_receives_live_env_names(self):
+    def test_e4_layer_receives_an_empty_env_names_set(self):
+        # Survivor (epoch 4): the harness's own os.environ changed a verdict
+        # by the shell it ran from. Layers always receive the empty set.
         self.slip("gh-api|args")
         module = self.module("def refuses(command, cwd, env_names):\n"
-                             "    return None if 'PRECHECK_FIXTURE_VAR' in env_names else 'unset'\n")
+                             "    return None if env_names == frozenset() else 'env leaked'\n")
         layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": module,
                                   "bar": {"sample_max_refusals": 0}}])
         with mock.patch.dict(os.environ, {"PRECHECK_FIXTURE_VAR": "1"}):
             code, report = self.report(layers)
-        self.assertEqual(report["layers"]["lint"]["refusals"], 0)
+        self.assertEqual((report["layers"]["lint"]["refusals"], report["layers"]["lint"]["errors"]), (0, 0))
         self.assertEqual(code, 0)
 
 
@@ -542,6 +544,18 @@ class OverlayAccounting(Harness):
             rh._overlay_counts(con)
         con.close()
 
+    def test_e4_absent_null_or_false_key_v1_is_malformed_never_skipped(self):
+        # Survivor (epoch 4, codex): these read as skipped and the bar held.
+        self.slip("gh-api|args")
+        self.records.append(rec("2026-11-01T00:00:59Z"))
+        for bad in ({"log_line": 1}, {"log_line": 1, "key_v1": None}, {"log_line": 1, "key_v1": False}):
+            with self.subTest(row=bad):
+                self.overlay = self.overlay[:1] + [bad]
+                layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+                code, _out, err = self.run_score(layers)
+                self.assertEqual(code, 2, err)
+                self.assertIn("malformed overlay row", err)
+
     def test_e3_skipped_overlay_rows_are_printed(self):
         self.slip("gh-api|args")
         self.records.append(rec("2026-11-01T00:00:59Z"))
@@ -621,6 +635,34 @@ class LayerReturnContract(Harness):
                                  (4, 0))
                 self.assertEqual(report["bars"][0]["status"], "fails")
                 self.assertEqual(code, 4)
+
+    def test_e4_a_layer_calling_sys_exit_is_an_error(self):
+        # Survivor (epoch 4): sys.exit(0) in a layer ended the harness with exit 0 and no report.
+        self.slip("gh-api|args")
+        module = self.module("import sys\ndef refuses(command, cwd, env_names):\n    sys.exit(0)\n")
+        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": module,
+                                  "bar": {"sample_max_refusals": 4}}])
+        code, report = self.report(layers)
+        self.assertEqual((report["layers"]["lint"]["errors"], report["bars"][0]["status"]), (4, "fails"))
+        self.assertEqual(code, 4)
+
+    def test_e4_a_module_exiting_at_load_is_exit_3(self):
+        self.slip("gh-api|args")
+        module = self.module("import sys\nsys.exit(0)\n")
+        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": module,
+                                  "bar": {"sample_max_refusals": 4}}])
+        code, out, err = self.run_score(layers)
+        self.assertEqual(code, 3, err)
+        self.assertEqual(out, "")
+        self.assertIn("SystemExit", err)
+
+    def test_e4_keyboard_interrupt_still_propagates(self):
+        self.slip("gh-api|args")
+        module = self.module("def refuses(command, cwd, env_names):\n    raise KeyboardInterrupt\n")
+        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": module,
+                                  "bar": {"sample_max_refusals": 4}}])
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_score(layers)
 
     def test_e3_none_allows_and_a_string_refuses(self):
         self.slip("gh-api|args")

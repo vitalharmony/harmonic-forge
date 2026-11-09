@@ -255,8 +255,11 @@ _QUOTED_REFUSED = frozenset(";&|()<>#\n")
 def lexer_hazards(text: str) -> None:
     """Refuse, never interpret (harmonic-forge#1289 epoch 2): a backtick, any
     unquoted `#` (a comment or not), a quoted span holding an operator, `#`
-    or a newline, and a backslash-escaped blank. Raises `ValueError` on an
-    unbalanced quote. Runs on the heredoc-masked text."""
+    or a newline, a backslash-escaped blank, and a `$` inside single quotes
+    or right after a backslash: bash expands neither, but the words the
+    classifier reads have had their quotes removed, so `'$X'` would read as
+    the bound name `$X` (harmonic-forge#1289 epoch 4). Raises `ValueError` on
+    an unbalanced quote. Runs on the heredoc-masked text."""
     if "`" in text:
         raise NotOrdinary("backtick")
     state: str | None = None
@@ -266,7 +269,7 @@ def lexer_hazards(text: str) -> None:
         char = text[index]
         if state is None:
             if char == "\\":
-                if text[index + 1:index + 2] in (" ", "\t"):
+                if text[index + 1:index + 2] in (" ", "\t", "$"):
                     raise NotOrdinary("lexer")
                 index += 2
                 continue
@@ -275,8 +278,12 @@ def lexer_hazards(text: str) -> None:
             elif char == "#":
                 raise NotOrdinary("comment")
         elif state == '"' and char == "\\":
+            if text[index + 1:index + 2] == "$":
+                raise NotOrdinary("lexer")
             index += 2
             continue
+        elif state == "'" and char == "$":
+            raise NotOrdinary("lexer")
         elif char == state:
             if refused:
                 raise NotOrdinary("quoted-operator")
