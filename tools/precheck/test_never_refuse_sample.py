@@ -325,6 +325,49 @@ class Classifier(unittest.TestCase):
         self.assertNotOrdinary(nested, reason="depth")
 
 
+class FailClosed(Base):
+    """harmonic-forge#1289 sticky-wicket REFORGE: every write form the pass-1
+    panel and sticky-wicket found is excluded because it is not on an
+    allowlist, never because it is on a list of write forms."""
+
+    SEEDS = [
+        "ls /tmp # list\nrm -rf /home/u/repo", "git status # x\ngit push origin main",
+        "echo ${#X}\nrm -rf ~/repo", "echo a#b; rm -rf /home/u/repo",
+        "cp --target-directory=/home/u/repo /tmp/a", "mv -t/home/u/proj /tmp/a",
+        'sed -n "w /home/u/out" /tmp/f', 'sed -n "1w /home/u/out" f', 'sed "s/a/b/w /home/u/o" f',
+        'sed "1e rm x" f', 'awk -i inplace "{print}" /home/u/f',
+        'D="$(mktemp -d)/../../home/u"; rm -rf $D', 'D=/tmp/x rm -rf "$D/"',
+        "cd /tmp; D=x; cd ~; rm -rf $D", "mv /tmp/a 2 > /dev/null",
+        "awk -f /tmp/p.awk f", "sed -f /tmp/s.sed f", "rg --pre /tmp/x pat .", "date -s 2020-01-01",
+        "git grep -O pat", "tree --output /home/u/x", "date 010100002020",
+    ]
+    ORDINARY = [
+        ("ls -la /srv", "read"), ("grep -rn foo .", "read"), ("git log --oneline -5", "read"),
+        ("sed -n 1,20p f", "read"), ('sed "s/a/b/g" f', "read"), ("cat a | head -20", "read"),
+        ("rm -rf /tmp/x", "scratch-write"), ('find . -name "*.py" -type f', "read"),
+        ("date +%F", "read"), ("gh pr view 12 --json title", "read"), ("jq -r .x f", "read"),
+        ("ls /tmp 2>/dev/null", "read"), ("D=/tmp/x; rm -rf $D", "scratch-write"),
+        ('D=$(mktemp -d); rm -rf "$D"', "scratch-write"),
+    ]
+
+    def test_every_seed_is_excluded(self):
+        for command in self.SEEDS:
+            with self.subTest(command=command), self.assertRaises(nrs.NotOrdinary):
+                classify(command)
+
+    def test_allowlisted_forms_stay_ordinary(self):
+        for command, cls in self.ORDINARY:
+            with self.subTest(command=command):
+                self.assertEqual(classify(command), cls)
+
+    def test_unlisted_option_on_a_read_program_is_excluded(self):
+        # The rule, not an instance: options nobody listed.
+        for command in ("ls -Q /srv", "cat --anything /srv/f", "grep --colour=always x f"):
+            with self.subTest(command=command), self.assertRaises(nrs.NotOrdinary) as caught:
+                classify(command)
+            self.assertEqual(str(caught.exception), "option")
+
+
 class Unparseable(Base):
     def test_unparseable_is_excluded_and_counted(self):
         self.transcript(filler(1) + ran("x", 'echo "unterminated'))

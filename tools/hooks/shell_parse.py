@@ -254,6 +254,11 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
                         punctuation_chars=_SIMPLE_PUNCTUATION)
     lexer.whitespace_split = True
     lexer.whitespace = lexer.whitespace.replace("\n", "")
+    # shlex starts a comment at `#` even mid-word and swallows the newline
+    # after it, joining the next line's command to this one; bash does
+    # neither. `#` stays an ordinary character, so a comment reads as words
+    # (harmonic-forge#1289 pass 1).
+    lexer.commenters = ""
     items: list[tuple[str, str]] = []
     for token in lexer:
         if token and all(char in _SIMPLE_PUNCTUATION for char in token):
@@ -310,8 +315,9 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
             end(value)
             out.append(GroupMarker("open"))
         else:
-            if argv and argv[-1].isdigit():
-                argv.pop()
+            # A digit word before a redirect stays in argv: shlex cannot tell
+            # `2>f` (a descriptor) from `2 >f` (an argument), and dropping it
+            # would hide an argument (harmonic-forge#1289 pass 1).
             pending = value
     if pending is not None:
         raise ValueError(f"redirect {pending} has no target")

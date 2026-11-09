@@ -38,7 +38,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent
@@ -97,26 +97,132 @@ gh_api_allowlisted = _load_gh_api_rule()
 # --------------------------------------------------------------------------
 # The ordinary classifier.
 
-READ = frozenset({"cd", "ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "jq", "sed", "awk",
-                  "sort", "uniq", "cut", "tr", "diff", "cmp", "comm", "stat", "file", "echo", "printf",
-                  "pwd", "which", "type", "test", "[", "true", "false", "date", "basename", "dirname",
-                  "realpath", "readlink", "du", "df", "printenv", "column", "sha256sum", "md5sum",
-                  "tree", "sleep", "ps", "pgrep"})
+class Opts(NamedTuple):
+    """The options a program may carry and still be ordinary. Fail-closed
+    (harmonic-forge#1289 sticky-wicket REFORGE): any option not listed here,
+    any `--name=value` whose name is not in `long_values`, and any short
+    letter not in `flags`/`values` makes the command not ordinary. Nothing
+    is enumerated as a write form; everything unlisted is excluded."""
+    flags: str = ""                       # short letters taking no value
+    values: str = ""                      # short letters taking a value
+    long: frozenset = frozenset()         # long flags taking no value
+    long_values: frozenset = frozenset()  # long flags taking a value
+    numeric: bool = False                 # `-20` style counts (head, tail, git log)
+
+
+def _o(flags: str = "", values: str = "", long: tuple = (), long_values: tuple = (),
+       numeric: bool = False) -> Opts:
+    return Opts(flags, values, frozenset(long), frozenset(long_values), numeric)
+
+
+#: Programs whose every form allowed here only reads. `awk` is absent: its
+#: script is a program, and no narrow shape of it was worth the risk.
+READ: dict[str, Opts] = {
+    "ls": _o("lahtrR1dAFSiGgonsU", "", ("--all", "--human-readable", "--color")),
+    "cat": _o("nAvEeTsb"),
+    "head": _o("qv", "nc", numeric=True),
+    "tail": _o("qvfF", "nc", numeric=True),
+    "grep": _o("inrRvlLcEFwoHhqsxzPZaI", "ABCemf", ("--color", "--line-number", "--recursive",
+               "--ignore-case", "--count", "--files-with-matches", "--only-matching"),
+               ("--include", "--exclude", "--exclude-dir")),
+    "rg": _o("inlcwFvuSsLHNz.", "gtTABCmeM", ("--files", "--hidden", "--no-ignore", "--json",
+             "--count", "--fixed-strings", "--line-number", "--no-heading",
+             "--files-with-matches", "--color", "--ignore-case", "--multiline"),
+             ("--glob", "--type", "--max-count", "--context", "--type-not")),
+    "wc": _o("lwcmL"),
+    "jq": _o("rcsenSjM", "", ("--raw-output", "--compact-output", "--slurp", "--sort-keys",
+             "--exit-status", "--null-input")),
+    "sort": _o("rnuftVhsbdgiMR", "kt"),
+    "uniq": _o("cdui", "fs"),
+    "cut": _o("s", "dfcb", ("--complement",)),
+    "tr": _o("dsc"),
+    "diff": _o("uqrNwiBbaty", "U", ("--brief", "--recursive", "--unified", "--color")),
+    "cmp": _o("sl", "n"),
+    "comm": _o("123i"),
+    "stat": _o("Lt", "c"),
+    "file": _o("biLkz"),
+    "echo": _o("neE"),
+    "printf": _o(),
+    "pwd": _o("LP"),
+    "which": _o("a"),
+    "type": _o("aptP"),
+    "true": _o(),
+    "false": _o(),
+    "basename": _o("az", "s"),
+    "dirname": _o("z"),
+    "realpath": _o("emsqzL"),
+    "readlink": _o("fenmqsvz"),
+    "du": _o("hsckmabxL", "d"),
+    "df": _o("hTiklP", "t"),
+    "printenv": _o("0"),
+    "column": _o("tnxe", "sco"),
+    "sha256sum": _o("bctwz"),
+    "md5sum": _o("bctwz"),
+    "tree": _o("adfFiCnpshugDlrtvxJ", "LIP"),
+    "sleep": _o(),
+    "ps": _o("aAuxefwlHj", "opUC"),
+    "pgrep": _o("falnoxcvi", "uUPgGst"),
+}
+#: Read programs checked by their own rule below rather than an Opts row.
+SPECIAL_READ = frozenset({"cd", "find", "sed", "date", "test", "["})
+#: Scratch writers: only these options, and every operand must be scratch.
+#: Options that name a destination (`-t`, `--target-directory`) are absent,
+#: so the destination is always an operand the scratch check sees.
+SCRATCH_WRITE: dict[str, Opts] = {
+    "rm": _o("rRfvid", "", ("--recursive", "--force")),
+    "mv": _o("fvinu"),
+    "cp": _o("rRpfvaiunLHPdsl"),
+    "tee": _o("ai"),
+    "mkdir": _o("pv"),
+    "touch": _o("acm"),
+    "ln": _o("sfnvrT"),
+    "truncate": _o("c", "s"),
+    "rmdir": _o("pv"),
+}
 GIT_READ = frozenset({"log", "status", "diff", "show", "rev-parse", "ls-files", "ls-tree",
                       "ls-remote", "cat-file", "blame", "grep", "describe", "merge-base", "shortlog",
                       "for-each-ref"})
+#: One option allowlist for every GIT_READ subcommand. No `--output`, no
+#: `--ext-diff`/`--textconv`, no `-O` (git grep's open-in-pager).
+GIT_OPTS = _o("nqspvlaibrcwzte", "n", (
+    "--oneline", "--stat", "--name-only", "--name-status", "--short", "--porcelain", "--branch",
+    "--all", "--graph", "--decorate", "--abbrev-ref", "--show-toplevel", "--cached", "--staged",
+    "--is-ancestor", "--verify", "--quiet", "--reverse", "--first-parent", "--merges",
+    "--no-merges", "--heads", "--tags", "--exit-code", "--word-diff", "--color", "--patch",
+    "--shortstat", "--numstat", "--count", "--git-dir", "--show-current", "--no-color",
+    "--summary", "--follow", "--ignore-case", "--line-number", "--fork-point"),
+    ("--format", "--pretty", "--since", "--until", "--author", "--grep", "--max-count",
+     "--untracked-files", "--abbrev", "--sort", "--date"), numeric=True)
 GH_READ = frozenset({("issue", "view"), ("issue", "list"), ("pr", "view"), ("pr", "list"),
                      ("pr", "diff"), ("pr", "checks"), ("run", "view"), ("run", "list"),
                      ("repo", "view")})
+#: No `--web` (opens a browser) and no `--watch`.
+GH_OPTS = _o("c", "qRLslAS", ("--comments", "--log", "--log-failed", "--name-only", "--patch",
+             "--required"), ("--json", "--jq", "--repo", "--limit", "--state", "--label",
+             "--search", "--template", "--author", "--assignee", "--base", "--head", "--branch",
+             "--workflow", "--job"))
+FIND_VALUES = frozenset({"-name", "-iname", "-path", "-ipath", "-type", "-maxdepth", "-mindepth",
+                         "-newer", "-mtime", "-mmin", "-size", "-user", "-group", "-perm", "-regex",
+                         "-iregex", "-wholename"})
+FIND_FLAGS = frozenset({"-print", "-print0", "-o", "-a", "-or", "-and", "-not", "!", "(", ")",
+                        "-prune", "-empty", "-L", "-H", "-P", "-follow", "-xdev", "-depth",
+                        "-readable", "-writable", "-executable"})
+#: sed is ordinary only as `-n`/`-E`/`-r`/`-e` with scripts of this shape:
+#: print, quit, delete or `=` at an optional address, or `s///` whose flags
+#: are among `gIip` and digits (never `w`, `e` or `m`). `-f`, `-i`, `-s` and
+#: anything else are excluded.
+_SED_ADDR = r"(?:\d+|\$|/[^/\n]*/)"
+SED_SAFE = re.compile(
+    rf"^(?:{_SED_ADDR}(?:,{_SED_ADDR})?)?\s*!?\s*[pqd=]$"
+    rf"|^(?:{_SED_ADDR}(?:,{_SED_ADDR})?)?\s*s(?P<d>[/|#,:@])(?:\\.|(?!(?P=d))[^\\\n])*(?P=d)"
+    r"(?:\\.|(?!(?P=d))[^\\\n])*(?P=d)[gIip0-9]*$")
+SED_OPTS = _o("nEr", "e")
+DATE_OPTS = _o("uRI", "d", ("--utc", "--iso-8601", "--rfc-3339"))
+_MKTEMP_EXACT = re.compile(r"^(?:\$\(mktemp(?: -d)?\)|`mktemp(?: -d)?`)$")
 PROBE = frozenset({"--help", "--dry-run", "--check", "--gate", "--plan", "--validate"})
-SCRATCH_WRITE = frozenset({"rm", "mv", "cp", "tee", "mkdir", "touch", "ln", "truncate", "rmdir",
-                           "install"})
 SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
-FIND_WRITES = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0",
-                         "-fprintf", "-fls"})
 READ_REDIRECTS = frozenset({"<", "<<", "<<<", "<&"})
 BACKGROUND_SEPS = frozenset({"|", "|&", "&"})
-AWK_WRITE = re.compile(r"system\s*\(|\|\s*getline|\bprintf?\b[^;}]*(>|\|)")
 _VAR = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$", re.S)
 RANK = {"read": 1, "probe": 2, "scratch-write": 3}
 MAX_DEPTH = 4
@@ -156,38 +262,86 @@ def is_scratch(word: str, cur: str | None, home: str, binds: dict[str, bool]) ->
     return resolved is not None and resolved.startswith("/tmp/")
 
 
-def operands(argv: list[str]) -> list[str]:
-    out: list[str] = []
-    ended = False
-    for word in argv[1:]:
-        if not ended and word == "--":
+def parse_opts(words: list[str], spec: Opts, reason: str) -> tuple[list[str], list[tuple[str, str]]]:
+    """Split `words` (argv without the program) into operands and
+    `(option, value)` pairs under `spec`. Raises `NotOrdinary(reason)` on
+    any option the spec does not list. Fail-closed by construction."""
+    found: list[str] = []
+    valued: list[tuple[str, str]] = []
+    index, ended = 0, False
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if ended or word == "-" or not word.startswith("-"):
+            found.append(word)
+        elif word == "--":
             ended = True
-        elif not ended and word.startswith("-") and word != "-":
+        elif word.startswith("--"):
+            name, eq, value = word.partition("=")
+            if name in spec.long_values:
+                if not eq:
+                    if index >= len(words):
+                        raise NotOrdinary(reason)
+                    value, index = words[index], index + 1
+                valued.append((name, value))
+            elif eq or name not in spec.long:
+                raise NotOrdinary(reason)
+        elif spec.numeric and word[1:].isdigit():
             continue
         else:
-            out.append(word)
-    return out
+            letters = word[1:]
+            for pos, letter in enumerate(letters):
+                if letter in spec.values:
+                    value = letters[pos + 1:]
+                    if not value:
+                        if index >= len(words):
+                            raise NotOrdinary(reason)
+                        value, index = words[index], index + 1
+                    valued.append(("-" + letter, value))
+                    break
+                if letter not in spec.flags:
+                    raise NotOrdinary(reason)
+    return found, valued
 
 
-def _short_option_has(argv: list[str], letter: str) -> bool:
-    return any(w.startswith("-") and not w.startswith("--") and letter in w for w in argv[1:])
+def operands(argv: list[str]) -> list[str]:
+    """Words after the program that are not options, for `cd` (whose only
+    options, `-L`/`-P`, take no value)."""
+    return parse_opts(argv[1:], _o("LP"), "option")[0]
 
 
-def _read_writes(prog: str, argv: list[str]) -> bool:
-    """A READ program in a form that writes."""
-    if prog == "sed":
-        return any(w.startswith("--in-place") for w in argv) or _short_option_has(argv, "i")
-    if prog == "find":
-        return any(w in FIND_WRITES for w in argv)
-    if prog == "sort":
-        return any(w.startswith("--output") for w in argv) or _short_option_has(argv, "o")
-    if prog == "uniq":
-        return len(operands(argv)) >= 2
-    if prog == "tree":
-        return any(w.startswith("-o") for w in argv[1:])
-    if prog == "awk":
-        return any(AWK_WRITE.search(w) for w in argv[1:])
-    return False
+def _find_ok(words: list[str]) -> None:
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if word in FIND_VALUES:
+            if index >= len(words):
+                raise NotOrdinary("option")
+            index += 1
+        elif word.startswith("-") or word in ("!", "(", ")"):
+            if word not in FIND_FLAGS:
+                raise NotOrdinary("option")
+
+
+def _sed_ok(words: list[str]) -> None:
+    found, valued = parse_opts(words, SED_OPTS, "option")
+    scripts = [value for _name, value in valued]
+    if not scripts:
+        if not found:
+            raise NotOrdinary("option")
+        scripts = [found[0]]
+    for script in scripts:
+        pieces = [p.strip() for p in script.split(";") if p.strip()]
+        if not pieces or not all(SED_SAFE.match(p) for p in pieces):
+            raise NotOrdinary("option")
+
+
+def _date_ok(words: list[str]) -> None:
+    found, _valued = parse_opts(words, DATE_OPTS, "option")
+    # An operand that is not a `+FORMAT` sets the clock.
+    if not all(word.startswith("+") for word in found):
+        raise NotOrdinary("option")
 
 
 def _mktemp_scratch(argv: list[str], cur: str | None, home: str, binds: dict[str, bool]) -> bool:
@@ -246,15 +400,23 @@ def classify(command: str, cwd: str | None, home: str, depth: int = 0) -> str | 
 
         index = 0
         while index < len(argv) and _ASSIGNMENT.match(argv[index]):
-            name, value = argv[index].split("=", 1)
-            if value == "$" and index == len(argv) - 1:
-                pending_bind = name
-            elif value.startswith("$(mktemp") or value.startswith("`mktemp"):
-                binds[name] = True
-            else:
-                binds[name] = bool(value) and is_scratch(value, cur, home, binds)
             index += 1
-        rest = strip_invocation_prefix(argv, unwrap_shells=False)
+        assignments, rest = argv[:index], strip_invocation_prefix(argv, unwrap_shells=False)
+        for word in assignments:
+            name, value = word.split("=", 1)
+            if rest:
+                # A prefix assignment does not apply to its own command's
+                # expansions: `D=/tmp/x rm -rf "$D/"` runs `rm -rf /`. Bind
+                # nothing, and drop any earlier binding of the name.
+                binds.pop(name, None)
+            elif value == "$" and word is assignments[-1]:
+                pending_bind = name
+            else:
+                # Only an absolute scratch path or exactly `$(mktemp)` /
+                # `$(mktemp -d)` binds: a relative value is re-read against
+                # whatever directory a later command runs in.
+                binds[name] = bool(_MKTEMP_EXACT.match(value)) or (
+                    value.startswith("/") and is_scratch(value, None, home, binds))
 
         cls: str | None
         prog = os.path.basename(rest[0]) if rest else None
@@ -263,7 +425,8 @@ def classify(command: str, cwd: str | None, home: str, depth: int = 0) -> str | 
         elif prog in ("for", "case", "select"):
             if prog == "for" and len(rest) >= 3 and rest[2] == "in":
                 words = rest[3:]
-                binds[rest[1]] = bool(words) and all(is_scratch(w, cur, home, binds) for w in words)
+                binds[rest[1]] = bool(words) and all(
+                    w.startswith("/") and is_scratch(w, None, home, binds) for w in words)
             cls = "neutral"
         elif prog in SHELLS:
             if len(rest) >= 3 and rest[1] in ("-c", "-lc", "--command"):
@@ -290,26 +453,41 @@ def classify(command: str, cwd: str | None, home: str, depth: int = 0) -> str | 
                 cur = resolve_path(targets[0], cur, home, binds)
             cls = "read"
         elif prog == "git":
-            sub = next((w for w in rest[1:] if not w.startswith("-")), None)
-            if (sub in GIT_READ and not any(w.startswith("--output") for w in rest)
-                    and "-C" not in rest):
-                cls = "read"
-            else:
+            # The subcommand comes first: a global option (`-C`, `-c`) is not ordinary.
+            if len(rest) < 2 or rest[1] not in GIT_READ:
                 raise NotOrdinary("unclassified")
+            parse_opts(rest[2:], GIT_OPTS, "option")
+            cls = "read"
         elif prog == "gh":
             if len(rest) >= 2 and rest[1] == "api" and gh_api_allowlisted(rest[2:]):
                 cls = "read"
             elif len(rest) >= 3 and (rest[1], rest[2]) in GH_READ:
+                parse_opts(rest[3:], GH_OPTS, "option")
                 cls = "read"
             else:
                 raise NotOrdinary("unclassified")
+        elif prog in ("test", "["):
+            cls = "read"
+        elif prog == "find":
+            _find_ok(rest[1:])
+            cls = "read"
+        elif prog == "sed":
+            _sed_ok(rest[1:])
+            cls = "read"
+        elif prog == "date":
+            _date_ok(rest[1:])
+            cls = "read"
         elif prog in READ:
-            if _read_writes(prog, rest):
-                raise NotOrdinary("read-write")
+            found, _valued = parse_opts(rest[1:], READ[prog], "option")
+            if prog == "uniq" and len(found) >= 2:
+                raise NotOrdinary("option")  # uniq IN OUT writes OUT
             cls = "read"
         elif prog in SCRATCH_WRITE:
-            targets = operands(rest)
-            if not targets or not all(is_scratch(t, cur, home, binds) for t in targets):
+            targets, valued = parse_opts(rest[1:], SCRATCH_WRITE[prog], "option")
+            if prog == "truncate":
+                valued = []  # -s SIZE is a size, not a path
+            if not targets or not all(is_scratch(t, cur, home, binds)
+                                      for t in [*targets, *(v for _n, v in valued)]):
                 raise NotOrdinary("unclassified")
             cls = "scratch-write"
         else:
