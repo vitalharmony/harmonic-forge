@@ -372,7 +372,8 @@ class FailClosed(Base):
 
     def test_unlisted_option_on_a_read_program_is_excluded(self):
         # The rule, not an instance: options nobody listed.
-        for command in ("ls -Q /srv", "cat --anything /srv/f", "grep --colour=always x f"):
+        for command in ("ls -Q /srv", "cat --anything /srv/f", "grep --colour=always x f",
+                        "grep --color=always x f"):
             with self.subTest(command=command), self.assertRaises(nrs.NotOrdinary) as caught:
                 classify(command)
             self.assertEqual(str(caught.exception), "option")
