@@ -3002,18 +3002,28 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) 
               file=sys.stderr)
 
 
-def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None) -> None:
+def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
+                      note_unconcluded: bool = False) -> None:
     """harmonic-forge#1016: read the attested SHA's required `verify`
     conclusion once, before the full local check. `red` refuses and records
     one `refused-ci` attempt; every other state proceeds unchanged, and
     nothing waits or polls. Fails open: no source repo, or any error reading
-    CI, returns without refusing (as the refused-check snapshot does)."""
+    CI, returns without refusing (as the refused-check snapshot does).
+
+    harmonic-forge#1301: `note_unconcluded` (the dry run's call only) prints
+    one stderr line when `verify` is `pending` or `absent`, so a clean dry run
+    no longer reads as a prediction about CI it never made. The real post
+    keeps the default and is unchanged."""
     try:
         source_repo = _cwd_repo_from_git(None)
         if not source_repo:
             return
         state, detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
     except Exception:  # noqa: BLE001 - fail open
+        return
+    if note_unconcluded and state in ("pending", "absent"):
+        print(f"[l1-post] dry run: CI on {sha[:12]} has not concluded ({state}: {detail}); "
+              "the real post refuses if CI is red when it reads it", file=sys.stderr)
         return
     if state != "red":
         return
@@ -3423,7 +3433,7 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
 
     steps = [world]
     if kind == "ready-for-l3":
-        steps.append(lambda: _refuse_if_ci_red(repo, issue, sha, None))
+        steps.append(lambda: _refuse_if_ci_red(repo, issue, sha, None, note_unconcluded=True))
     if kind in ("ready-for-l3", "ae") and not (kind == "ae" and grant_on_main):
         def pr() -> None:
             try:
