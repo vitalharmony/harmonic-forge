@@ -394,6 +394,71 @@ class EndTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.end()
 
+    # harmonic-forge#1300: a REFORGE verdict recorded before the waiver.
+    # The grant is self.now, 2026-10-17T01:02:03Z.
+    PRE_GRANT = {"completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True}
+
+    def test_end_accepts_a_reforge_verdict_before_the_waiver(self) -> None:
+        """harmonic-forge#1300 AC1 (the harmonic-forge#1289 shape)."""
+        self.preclose = {"status": "complete",
+                         "pass_history": [{"sha": "a", "surviving": 3, **self.PRE_GRANT}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE"}}
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_refuses_a_patch_verdict_before_the_waiver(self) -> None:
+        """harmonic-forge#1300 AC2: after PATCH a pass can still run under the waiver."""
+        self.preclose = {"status": "complete",
+                         "pass_history": [{"sha": "a", "surviving": 3, **self.PRE_GRANT}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "PATCH"}}
+        with self.assertRaises(SystemExit):
+            self.end()
+        self.assertTrue((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_refuses_reforge_with_a_pass_after_the_grant(self) -> None:
+        """harmonic-forge#1300 AC2: a current-epoch pass at or after the grant."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 3, **self.PRE_GRANT},
+            {"sha": "b", "surviving": 1, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": False}],
+            "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE"}}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_refuses_reforge_with_an_unreadable_pass_time(self) -> None:
+        """harmonic-forge#1300 AC2: an unreadable time counts as after the grant."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 3, "completed_at": "not a time", "cross_family_ran": True}],
+            "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE"}}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_reforge_before_the_waiver_needs_a_grant_time(self) -> None:
+        """harmonic-forge#1300 AC2: no granted_at, no stop."""
+        import imc_waiver  # noqa: PLC0415
+        self.preclose = {"status": "complete",
+                         "pass_history": [{"sha": "a", "surviving": 3, **self.PRE_GRANT}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE"}}
+        self.assertIsNone(imc_waiver.imc_stop("o/r", 1, None))
+
+    def test_reforge_with_no_passes_is_no_stop(self) -> None:
+        """harmonic-forge#1300 AC2: a REFORGE cluster with an empty pass history."""
+        import imc_waiver  # noqa: PLC0415
+        self.preclose = {"status": "complete", "pass_history": [],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE"}}
+        self.assertIsNone(imc_waiver.imc_stop("o/r", 1, imc_waiver._iso(self.now)))
+
+    def test_end_accepts_reforge_recorded_after_the_grant_on_a_pre_grant_pass(self) -> None:
+        """harmonic-forge#1300 threat model: the manufacturable path is accepted
+        on purpose. The cluster carries no recorded time, so a REFORGE verdict
+        written after the grant on a pre-grant pass cannot be told apart, and
+        ending is the stricter state (BATCH revoked, R-0229 owed)."""
+        self.preclose = {"status": "complete",
+                         "pass_history": [{"sha": "a", "surviving": 3, **self.PRE_GRANT}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "REFORGE",
+                                               "comment_url": "https://example.invalid/after-grant"}}
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
     def test_end_refuses_a_new_epoch_after_a_capped_one(self) -> None:
         """harmonic-forge#1154 (f): only the current epoch is counted."""
         self.preclose = {"status": "complete", "pass_history": [
