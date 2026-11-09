@@ -241,6 +241,23 @@ class Bars(Harness):
         self.assertEqual(self.report(layers)[0], 0)
         self.assertEqual(self.report(layers, "--strict")[0], 4)
 
+    def test_replay_bar_with_nothing_to_score_fails(self):
+        # No slips at all: the empty-overlays case. Never a pass.
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": None,
+                                  "bar": {"replay": {"classes": ["args"], "min_share": 1.0}}}])
+        code, out, _err = self.run_score(layers)
+        self.assertEqual(code, 4)
+        self.assertIn("gate.replay 0/0 fails", out)
+        self.assertNotIn("verdict: PASS", out)
+
+    def test_unmeasured_bar_never_prints_bare_pass(self):
+        self.slip("gh-api|args")
+        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": None,
+                                  "bar": {"sample_max_refusals": 0}}])
+        code, out, _err = self.run_score(layers)
+        self.assertEqual(code, 0)
+        self.assertIn("verdict: PASS with 1 bar(s) not measured:", out)
+
     def test_failed_bar_exits_4(self):
         self.slip("gh-api|args")
         self.slip("gh-api|cwd")

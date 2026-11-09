@@ -383,6 +383,21 @@ class Determinism(Base):
         call_id, meta, _cls = pool[same]
         self.assertEqual((call_id, meta["session"]), ("a1", "sA"))
 
+    def test_earlier_ts_wins_over_earlier_path(self):
+        # The earlier call sits in the later-sorted file: ts must decide, not path.
+        same = "ls /srv/shared"
+        self.transcript(ran("b1", same, ts="2026-11-01T00:00:00Z", session="sB"), project="b-proj")
+        self.transcript(ran("a1", same, ts="2026-11-01T00:00:05Z", session="sA"), project="a-proj")
+        pool, _stats = self.pool()
+        call_id, meta, _cls = pool[same]
+        self.assertEqual((call_id, meta["session"]), ("b1", "sB"))
+
+    def test_same_ts_same_file_earlier_line_wins(self):
+        same = "ls /srv/shared"
+        self.transcript(ran("l2", "ls /srv/other") + ran("l1", same) + ran("l3", same))
+        pool, _stats = self.pool()
+        self.assertEqual(pool[same][0], "l1")
+
     def test_same_inputs_same_sample(self):
         records = filler(20)
         pairs = [records[i:i + 2] for i in range(0, len(records), 2)]
@@ -417,6 +432,28 @@ class Frozen(Base):
         self.assertEqual(code, 3)
         self.assertFalse(self.out.exists())
         self.assertFalse(nrs.manifest_path(self.out).exists())
+        left = sorted(p.name for p in self.out.parent.iterdir()) if self.out.parent.exists() else []
+        self.assertEqual(left, [], "a failed derive leaves no temp or sample file behind")
+
+    def test_concurrent_derive_never_overwrites_a_frozen_sample(self):
+        # Another derive publishes after this one's check and before its publish.
+        self.transcript(filler(3))
+        real = nrs._write_temp
+        frozen = b'{"other":"run"}\n'
+
+        def racing(folder, data):
+            path = real(folder, data)
+            if not self.out.exists() and b'"secret_hits_stored"' not in data:
+                self.out.write_bytes(frozen)
+            return path
+
+        with mock.patch.object(nrs, "_write_temp", racing):
+            code, _out, err = self.derive("--size", "2")
+        self.assertEqual(code, 2, err)
+        self.assertIn("appeared while this derive ran", err)
+        self.assertEqual(self.out.read_bytes(), frozen)
+        self.assertFalse(nrs.manifest_path(self.out).exists())
+        self.assertEqual(sorted(p.name for p in self.out.parent.iterdir()), [self.out.name])
 
     def test_orphan_sample_is_named_on_rerun(self):
         self.transcript(filler(3))

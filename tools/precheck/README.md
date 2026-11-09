@@ -100,7 +100,10 @@ python3 tools/precheck/replay_harness.py score --layers <layer-set.json>
   refuses).
 - **Bars**: a replay bar holds when claimed/total >= `min_share`; a sample bar
   holds when refusals <= `sample_max_refusals` and the layer raised no error. A
-  layer with no module reports its sample bar `not-measurable`.
+  replay bar with no slips in its classes fails: an empty or mistyped
+  `--overlays` scores nothing, and nothing scored is never a pass. A layer with
+  no module reports its sample bar `not-measurable`, and the verdict line then
+  reads `PASS with N bar(s) not measured`, never a bare `PASS`.
 
 Exit codes: 0 every measurable bar holds (`--strict`: a not-measurable bar also
 fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.

@@ -635,11 +635,32 @@ def derive(root: Path, out: Path, size: int, seed: int, until: dt.datetime, home
                               separators=(",", ":")) + "\n" for r in rows).encode("utf-8")
     manifest["sha256"] = hashlib.sha256(data).hexdigest()
 
+    # The read above takes minutes: check again, then publish with os.link,
+    # which refuses an existing name, so a second derive racing this one can
+    # never overwrite a frozen sample (harmonic-forge#1289 pass 1).
+    refusal = out_refusal(out)
+    if refusal:
+        raise Refused(refusal)
     out.parent.mkdir(parents=True, exist_ok=True)
-    manifest_tmp = _write_temp(out.parent, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
-    sample_tmp = _write_temp(out.parent, data)
-    os.replace(sample_tmp, out)
-    os.replace(manifest_tmp, manifest_path(out))
+    manifest_tmp = sample_tmp = None
+    try:
+        manifest_tmp = _write_temp(out.parent, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+        sample_tmp = _write_temp(out.parent, data)
+        try:
+            os.link(sample_tmp, out)
+        except FileExistsError:
+            raise Refused(f"already derived: {out} appeared while this derive ran; the sample is frozen") from None
+        try:
+            os.link(manifest_tmp, manifest_path(out))
+        except FileExistsError:
+            out.unlink()  # ours: the link above just created it
+            raise Refused(f"orphan manifest appeared while this derive ran: delete {manifest_path(out)} "
+                          "and re-run") from None
+    finally:
+        for tmp in (sample_tmp, manifest_tmp):
+            if tmp is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    tmp.unlink()
     return manifest
 
 

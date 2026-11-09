@@ -17,7 +17,8 @@ The report prints counts, owners and up to 20 `(n, reason)` pairs per layer;
 never a command and never a stored probe.
 
 Exit codes: 0 every measurable bar holds (with `--strict`, a not-measurable
-bar also fails); 4 a bar fails; 2 refused (a malformed layer set, a sample
+bar also fails; without it the verdict line names how many bars were not
+measured); 4 a bar fails, including a replay bar with no slips to score; 2 refused (a malformed layer set, a sample
 without its manifest or with a changed sha256, a store path inside forge);
 3 any other error. Never 1.
 
@@ -181,7 +182,9 @@ def replay_bar(layer: dict, replay: dict) -> dict | None:
     relevant = [owner for (_tool, klass), owner in replay["_rows"] if klass in bar["classes"]]
     total, claimed = len(relevant), sum(1 for owner in relevant if owner == layer["name"])
     if total == 0:
-        return {"bar": f"{layer['name']}.replay", "status": "not-measurable", "claimed": 0, "total": 0}
+        # Nothing to score is a failure, never a pass: an empty or mistyped
+        # --overlays leaves every replay bar here (harmonic-forge#1289 pass 1).
+        return {"bar": f"{layer['name']}.replay", "status": "fails", "claimed": 0, "total": 0}
     holds = claimed / total >= bar["min_share"]
     return {"bar": f"{layer['name']}.replay", "status": "holds" if holds else "fails",
             "claimed": claimed, "total": total}
@@ -297,7 +300,9 @@ def render(report: dict, code: int) -> str:
             continue
         lines.append(f"  {name}: {result['refusals']}/{result['size']} refused, {result['errors']} errors")
         lines += [f"    n={n}: {reason}" for n, reason in result["reasons"]]
-    verdict = "PASS" if code == EXIT_OK else "FAIL"
+    unmeasured = sum(1 for b in report["bars"] if b["status"] == "not-measurable")
+    verdict = "FAIL" if code != EXIT_OK else (
+        f"PASS with {unmeasured} bar(s) not measured" if unmeasured else "PASS")
     lines.append(f"verdict: {verdict}: " + "; ".join(_bar_text(b) for b in report["bars"]))
     return "\n".join(lines)
 
