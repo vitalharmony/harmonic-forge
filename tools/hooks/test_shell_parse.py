@@ -126,9 +126,6 @@ class TimeoutNiceStdbufTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # harmonic-forge#1289: `simple_commands` and `substitution_bodies`, additive.
 from shell_parse import GroupMarker, SimpleCommand, simple_commands, substitution_bodies  # noqa: E402
@@ -186,3 +183,7 @@ class SimpleCommandsTests(unittest.TestCase):
         for text in ("$(open", "`open"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 substitution_bodies(text)
+
+
+if __name__ == "__main__":
+    unittest.main()
