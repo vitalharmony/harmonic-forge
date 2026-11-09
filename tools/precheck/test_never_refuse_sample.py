@@ -340,6 +340,9 @@ class FailClosed(Base):
         "cd /tmp; D=x; cd ~; rm -rf $D", "mv /tmp/a 2 > /dev/null",
         "awk -f /tmp/p.awk f", "sed -f /tmp/s.sed f", "rg --pre /tmp/x pat .", "date -s 2020-01-01",
         "git grep -O pat", "tree --output /home/u/x", "date 010100002020",
+        # The probe class (operator ruling): only a trailing --help.
+        "python3 tools/gh/preclose_check.py --plan", "git commit -m --dry-run",
+        "rm /home/u/x -- --help", "git commit -m --help",
     ]
     ORDINARY = [
         ("ls -la /srv", "read"), ("grep -rn foo .", "read"), ("git log --oneline -5", "read"),
@@ -349,6 +352,13 @@ class FailClosed(Base):
         ("ls /tmp 2>/dev/null", "read"), ("D=/tmp/x; rm -rf $D", "scratch-write"),
         ('D=$(mktemp -d); rm -rf "$D"', "scratch-write"),
     ]
+
+    def test_probe_is_a_trailing_help_only(self):
+        self.assertEqual(classify("tar --help"), "probe")
+        self.assertEqual(classify("python3 tools/gh/preclose_check.py --help"), "probe")
+        for command in ("tool --plan", "tool --dry-run", "tool --check x"):
+            with self.subTest(command=command), self.assertRaises(nrs.NotOrdinary):
+                classify(command)
 
     def test_every_seed_is_excluded(self):
         for command in self.SEEDS:

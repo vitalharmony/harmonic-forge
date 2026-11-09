@@ -137,5 +137,14 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
   `env_names` is the harness process's live environment names. A layer that
   raises fails its sample bar.
 
+- `claims_basis` is `validated` (the default: each claim is a class the
+  layer's check was shown to validate) or `declared` (the layer says it
+  guards these classes, not yet shown). A declared layer's replay bar prints
+  as `<name>.replay (declared claims)`, so its holds is never read as measured
+  coverage.
+
 `layersets/design-v1.json` is the design record's layer set (lint, gate,
-provenance) with no modules yet; issues D, E and F supply them.
+provenance) with no modules yet; issues D, E and F supply them. Its gate
+claims are `declared` (operator ruling, harmonic-forge#1289): decision 3 wants
+each registry mode to claim only the classes its dry run validates, and that
+registry is issue C, which replaces the wildcard claims with per-tool ones.

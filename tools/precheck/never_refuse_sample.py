@@ -219,7 +219,11 @@ SED_SAFE = re.compile(
 SED_OPTS = _o("nEr", "e")
 DATE_OPTS = _o("uRI", "d", ("--utc", "--iso-8601", "--rfc-3339"))
 _MKTEMP_EXACT = re.compile(r"^(?:\$\(mktemp(?: -d)?\)|`mktemp(?: -d)?`)$")
-PROBE = frozenset({"--help", "--dry-run", "--check", "--gate", "--plan", "--validate"})
+#: A probe is `--help` as the last word, with no `--` before it and not the
+#: value of an option (operator ruling, harmonic-forge#1289): `--plan`,
+#: `--gate`, `--check` and `--dry-run` are tool-specific and can write (a
+#: preclose `--plan` writes a receipt), so none of them makes a probe.
+PROBE = "--help"
 SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 READ_REDIRECTS = frozenset({"<", "<<", "<<<", "<&"})
 BACKGROUND_SEPS = frozenset({"|", "|&", "&"})
@@ -367,6 +371,11 @@ def _mktemp_scratch(argv: list[str], cur: str | None, home: str, binds: dict[str
     return all(is_scratch(v, cur, home, binds) for v in values)
 
 
+def _is_probe(argv: list[str]) -> bool:
+    return (len(argv) >= 2 and argv[-1] == PROBE and "--" not in argv
+            and not (len(argv) >= 3 and argv[-2].startswith("-")))
+
+
 def _better(best: str | None, cls: str | None) -> str | None:
     if cls is None or cls == "neutral":
         return best
@@ -433,7 +442,7 @@ def classify(command: str, cwd: str | None, home: str, depth: int = 0) -> str | 
                 cls = classify(rest[2], cur, home, depth + 1) or "neutral"
             else:
                 raise NotOrdinary("shell")
-        elif any(word in PROBE for word in rest):
+        elif _is_probe(rest):
             cls = "probe"
         elif prog == "mktemp":
             if not _mktemp_scratch(rest, cur, home, binds):

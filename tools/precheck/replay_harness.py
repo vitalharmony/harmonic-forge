@@ -108,8 +108,16 @@ def load_layer_set(path: Path) -> dict:
         max_refusals = bar.get("sample_max_refusals")
         if max_refusals is not None and (not isinstance(max_refusals, int) or max_refusals < 0):
             raise Refused(f"{where}: sample_max_refusals must be a non-negative integer")
+        # "declared": the layer's claims are what it says it guards, not what a
+        # dry run was shown to validate (operator ruling, harmonic-forge#1289:
+        # design-v1's gate claims stay declared until issue C's per-tool
+        # registry replaces them). Its replay bar is labeled, never bare.
+        basis = layer.get("claims_basis", "validated")
+        if basis not in ("validated", "declared"):
+            raise Refused(f"{where}: claims_basis must be validated or declared")
         layers.append({"name": layer["name"], "claims": [_claim(c, classes, where) for c in claims],
-                       "module": module, "replay_bar": replay, "sample_max_refusals": max_refusals})
+                       "module": module, "replay_bar": replay, "sample_max_refusals": max_refusals,
+                       "claims_basis": basis})
     existing = data.get("existing") or {}
     accepted = data.get("accepted_uncovered") or []
     if (not isinstance(existing, dict) or any(k not in classes for k in existing)
@@ -181,13 +189,13 @@ def replay_bar(layer: dict, replay: dict) -> dict | None:
         return None
     relevant = [owner for (_tool, klass), owner in replay["_rows"] if klass in bar["classes"]]
     total, claimed = len(relevant), sum(1 for owner in relevant if owner == layer["name"])
+    name = f"{layer['name']}.replay" + (" (declared claims)" if layer["claims_basis"] == "declared" else "")
     if total == 0:
         # Nothing to score is a failure, never a pass: an empty or mistyped
         # --overlays leaves every replay bar here (harmonic-forge#1289 pass 1).
-        return {"bar": f"{layer['name']}.replay", "status": "fails", "claimed": 0, "total": 0}
+        return {"bar": name, "status": "fails", "claimed": 0, "total": 0}
     holds = claimed / total >= bar["min_share"]
-    return {"bar": f"{layer['name']}.replay", "status": "holds" if holds else "fails",
-            "claimed": claimed, "total": total}
+    return {"bar": name, "status": "holds" if holds else "fails", "claimed": claimed, "total": total}
 
 
 # --------------------------------------------------------------------------

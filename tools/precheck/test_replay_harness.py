@@ -286,6 +286,24 @@ class Bars(Harness):
         layer_set = rh.load_layer_set(DESIGN)
         self.assertEqual([layer["name"] for layer in layer_set["layers"]], ["lint", "gate", "provenance"])
         self.assertEqual(layer_set["accepted_uncovered"], ["exists", "local-check"])
+        # Decision 3 is not met yet: the gate's wildcard claims are labeled declared.
+        self.assertEqual([layer["claims_basis"] for layer in layer_set["layers"]],
+                         ["validated", "declared", "validated"])
+
+    def test_declared_claims_label_the_replay_bar(self):
+        self.slip("gh-api|receipt")
+        layers = self.layer_set([{"name": "gate", "claims": ["*|receipt"], "claims_basis": "declared",
+                                  "module": None,
+                                  "bar": {"replay": {"classes": ["receipt"], "min_share": 1.0}}}])
+        code, out, _err = self.run_score(layers)
+        self.assertEqual(code, 0)
+        self.assertIn("gate.replay (declared claims) 1/1 holds", out)
+
+    def test_unknown_claims_basis_refuses(self):
+        layers = self.layer_set([{"name": "gate", "claims": ["*|receipt"], "claims_basis": "assumed",
+                                  "module": None}])
+        code, _out, err = self.run_score(layers)
+        self.assertEqual(code, 2, err)
 
 
 # --------------------------------------------------------------------------
