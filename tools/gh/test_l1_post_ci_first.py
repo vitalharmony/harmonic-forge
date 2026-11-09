@@ -45,10 +45,12 @@ class CiFirstTests(unittest.TestCase):
         L.fail("stop after static_checks")
 
     def _run(self, state: str) -> str:
+        err = io.StringIO()
         with mock.patch.object(L.gate_ci, "ci_conclusion", return_value=(state, "verify: failure")), \
              mock.patch.object(L, "static_checks", side_effect=self._check), \
-             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+             contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
             L.post_kind(REPO, 5, "ready-for-l3", BODY, SHA, "br")
+        self.stderr = err.getvalue()
         return str(ctx.exception.code or "")
 
     def events(self) -> list[dict]:
@@ -95,6 +97,64 @@ class CiFirstTests(unittest.TestCase):
         with mock.patch.object(L, "_cwd_repo_from_git", return_value=None):
             self._run("red")
         self.assertEqual(self.check_calls, [SHA])
+
+    def test_the_real_post_prints_no_dry_run_note(self):
+        """harmonic-forge#1301 AC2: the real post's call keeps the default."""
+        for state in ("pending", "absent"):
+            self._run(state)
+            self.assertNotIn("has not concluded", self.stderr, state)
+
+
+class DryRunNoteTests(unittest.TestCase):
+    """harmonic-forge#1301 AC1/AC3: the dry run's flag, state by state."""
+
+    def _call(self, state, *, side_effect=None, flag=True) -> str:
+        err = io.StringIO()
+        conclusion = (mock.patch.object(L.gate_ci, "ci_conclusion", side_effect=side_effect) if side_effect
+                      else mock.patch.object(L.gate_ci, "ci_conclusion", return_value=(state, "verify: in_progress")))
+        with conclusion, mock.patch.object(L, "_cwd_repo_from_git", return_value="o/checkout"), \
+             contextlib.redirect_stderr(err):
+            L._refuse_if_ci_red(REPO, 5, SHA, None, note_unconcluded=flag)
+        return err.getvalue()
+
+    def test_pending_and_absent_print_one_line_and_proceed(self):
+        for state in ("pending", "absent"):
+            out = self._call(state)
+            self.assertIn(f"CI on {SHA[:12]} has not concluded ({state}: verify: in_progress)", out)
+            self.assertEqual(out.count("\n"), 1, out)
+
+    def test_green_prints_nothing(self):
+        self.assertEqual(self._call("green"), "")
+
+    def test_red_still_refuses(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self._call("red")
+        self.assertIn("is red", str(ctx.exception.code))
+
+    def test_unknown_and_a_read_error_fail_open_silently(self):
+        self.assertEqual(self._call("unknown"), "")
+        self.assertEqual(self._call(None, side_effect=RuntimeError("gh down")), "")
+
+    def test_the_dry_run_step_passes_the_flag(self):
+        """harmonic-forge#1301 pitch finding 1: the `ready-for-l3` dry-run
+        step list (not `_refuse_if_ci_red` called directly) prints the note,
+        so dropping the flag at the call site fails here."""
+        with mock.patch.object(L, "refresh_main"), mock.patch.object(L, "world_checks"), \
+             mock.patch.object(L, "require_open_pr"):
+            steps = L._publish_checks(REPO, 5, "ready-for-l3", SHA, "br", ack_overlap=None,
+                                      ack_no_pr_required=None, grant_on_main=False)
+        err = io.StringIO()
+        with mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("pending", "verify: queued")), \
+             mock.patch.object(L, "_cwd_repo_from_git", return_value="o/checkout"), \
+             mock.patch.object(L, "refresh_main"), mock.patch.object(L, "world_checks"), \
+             mock.patch.object(L, "require_open_pr"), contextlib.redirect_stderr(err):
+            for step in steps:
+                step()
+        self.assertIn("has not concluded (pending: verify: queued)", err.getvalue())
+
+    def test_without_the_flag_nothing_is_printed(self):
+        for state in ("pending", "absent"):
+            self.assertEqual(self._call(state, flag=False), "", state)
 
 
 if __name__ == "__main__":
