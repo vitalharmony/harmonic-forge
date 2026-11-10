@@ -779,8 +779,11 @@ cases the test does not decide, resolved here rather than left open:
 A session reports its own work only. It never surveys, tracks, relays or reminds about another lane's owed work unless the operator asks in that message. The lanes monitor each other.
 <!-- /R-0395 -->
 <!-- R-0396 -->
-Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session.
+Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session. Where the lane cannot see the source, the line says "not visible" or is left out, and an absence claim names the range it searched.
 <!-- /R-0396 -->
+<!-- R-0422 -->
+A message to the operator that says work is done, committed or posted carries, in the same message, the evidence for what it claims: the commit SHA read from `git log` for a commit, the comment id refetched after the post for a post. Without it, the message says what is not yet confirmed.
+<!-- /R-0422 -->
 
 ## SURGICAL CHANGES (KARPATHY PRINCIPLE)
 

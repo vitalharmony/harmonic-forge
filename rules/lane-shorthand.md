@@ -15,10 +15,10 @@ Grammar: **`L` + lane digit + one letter.**
 | Token | Meaning | Direction |
 |---|---|---|
 | `L2D` | Lane 2 done — implementation posted | lane → operator |
-| `L2S` | Lane 2's spec/plan is done, **ready for Lane 1 review** | lane → **Lane 1**, via operator |
+| `L2S` | Lane 2's spec/plan is done, **ready for Lane 1 review** | lane → **Lane 1** |
 | `L3P` | Lane 3 gate **passed** | lane → operator |
 | `L3F` | Lane 3 gate **failed** — the gate ran, something failed | lane → operator |
-| `L3S` | Lane 3's spec is done, **ready for Lane 1 review** | lane → **Lane 1**, via operator |
+| `L3S` | Lane 3's spec is done, **ready for Lane 1 review** | lane → **Lane 1** |
 | `L<N>B` | Lane N is **blocked** — it could not run | lane → operator |
 
 <!-- R-0112 -->
@@ -415,7 +415,7 @@ owes=spec` belt event is `Spec H<N>`. One addition (harmonic-forge#895):
 always on a `BATCH` line (R-0384).
 <!-- /R-0343 -->
 <!-- R-0408 -->
-While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues the event per R-0375.
+While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. A lane that has posted L2D, L2S or L2B never asks the operator to send that token or its comment id to Lane 1; it says it is waiting on Lane 1. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues the event per R-0375.
 <!-- /R-0408 -->
 
 ## Repo prefixes

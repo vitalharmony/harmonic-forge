@@ -1720,8 +1720,8 @@ folded_obligations = ["Every trigger names the issue explicitly (`#N`); an unnum
 id = "R-0203"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "The only channel between lanes is a GitHub issue comment HITL relays; no lane contacts another lane's live session directly, regardless of content or urgency."
-text_sha = "8b9b5db6df7ebf6d"
+statement = "The only channel between lanes is a GitHub issue comment, relayed by HITL or an armed belt; no lane contacts another lane's live session directly, regardless of content or urgency."
+text_sha = "723f6b4019d34b4b"
 hooks = [
   { script = "deny_cross_session_contact.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
 ]
@@ -2666,8 +2666,16 @@ hooks = []
 id = "R-0396"
 file = "rules/universal-agent.md"
 anchor = "report-discipline"
-statement = "Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session."
-text_sha = "4fa97b23b938a58c"
+statement = "Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session. Where the lane cannot see the source, the line says \"not visible\" or is left out, and an absence claim names the range it searched."
+text_sha = "31b8dc774837ec88"
+hooks = []
+
+[[rule]]
+id = "R-0422"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "A message to the operator that says work is done, committed or posted carries, in the same message, the evidence for what it claims: the commit SHA read from `git log` for a commit, the comment id refetched after the post for a post. Without it, the message says what is not yet confirmed."
+text_sha = "028b29e794098cb6"
 hooks = []
 
 [[rule]]
@@ -2754,8 +2762,8 @@ hooks = []
 id = "R-0408"
 file = "rules/lane-shorthand.md"
 anchor = "operator-lane-triggers"
-statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues it per R-0375."
-text_sha = "d67d5d3b526c0f18"
+statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. A lane that has posted L2D, L2S or L2B never asks the operator to send that token or its comment id to Lane 1; it says it is waiting on Lane 1. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues it per R-0375."
+text_sha = "d02bda494419f392"
 hooks = []
 
 [[rule]]
