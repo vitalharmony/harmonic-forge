@@ -16,6 +16,9 @@ done
 # harmonic-forge#1181: the orphan reaper's units live beside it in tools/lane/.
 install -m 644 "$here/../lane/systemd/forge-orphan-reap.service" \
   "$here/../lane/systemd/forge-orphan-reap.timer" "$dest/"
+# harmonic-forge#1305: the CLI updater's units live beside it in tools/lane/.
+install -m 644 "$here/../lane/systemd/forge-cli-update.service" \
+  "$here/../lane/systemd/forge-cli-update.timer" "$dest/"
 systemctl --user daemon-reload
-systemctl --user enable --now forge-transcript-backup.timer forge-ci-history.timer forge-thread-extract.timer forge-detector-report.timer forge-orphan-reap.timer forge-llm-usage.timer
-systemctl --user list-timers --no-pager | grep -E "forge-(transcript-backup|ci-history|thread-extract|detector-report|orphan-reap|llm-usage)"
+systemctl --user enable --now forge-transcript-backup.timer forge-ci-history.timer forge-thread-extract.timer forge-detector-report.timer forge-orphan-reap.timer forge-llm-usage.timer forge-cli-update.timer
+systemctl --user list-timers --no-pager | grep -E "forge-(transcript-backup|ci-history|thread-extract|detector-report|orphan-reap|llm-usage|cli-update)"

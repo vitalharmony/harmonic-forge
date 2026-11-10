@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep every operator CLI current every four hours (harmonic-forge#1305)
+
+[Timer]
+# Every four hours, so a deferred npm update retries within the same working window.
+OnCalendar=*-*-* 00/4:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

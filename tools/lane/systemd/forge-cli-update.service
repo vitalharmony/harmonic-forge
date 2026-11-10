@@ -1,0 +1,11 @@
+[Unit]
+Description=Harmonic Forge: keep every operator CLI current (harmonic-forge#1305)
+
+[Service]
+Type=oneshot
+# The user manager's default PATH has none of the CLIs; the registry uses
+# absolute paths, and npm and the Node CLIs resolve `node` through this PATH.
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/harmonic-forge/tools/lane/cli_update.py
+StandardOutput=append:%h/Harmonic_Projects/logs/forge-cli-update.log
+StandardError=append:%h/Harmonic_Projects/logs/forge-cli-update.log
