@@ -101,7 +101,7 @@ def record_snapshot(repo: str, issue: int, route: gates.Route) -> Optional[str]:
     newest EVALUATED route (an operator override is a floor that `current()`
     merges in, and comparing against it dropped real tightenings). Returns a
     message to print when the route was not recorded (a looser result is printed
-    as a proposal, never stored). Raises on a store error; the caller prints it
+    as a proposal, and only its Tier floor, if any, is stored: harmonic-forge#1267). Raises on a store error; the caller prints it
     and never raises past the post.
 
     The compare-and-append is atomic: `route_store.record_if_not_looser` holds a
@@ -111,6 +111,8 @@ def record_snapshot(repo: str, issue: int, route: gates.Route) -> Optional[str]:
     key = f"{repo}#{issue}"
     event, evaluated = route_store.record_if_not_looser(key, route, decider="l1-post", checkpoint="handoff")
     if event is None:
+        recorded = (f"path not recorded, Tier floor {route.tier_floor} held" if route.tier_floor
+                    else "not recorded")
         return (f"[route] handoff snapshot proposes path {route.path} ({route.gate_id}), looser than "
-                f"path {evaluated} in force for {key}; not recorded")
+                f"path {evaluated} in force for {key}; {recorded}")
     return None

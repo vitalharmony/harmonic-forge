@@ -132,7 +132,19 @@ def _gate_half(repo: str, paths: list[str], scope: Scope, threat: str | None) ->
 
 
 def evaluate(scope: Scope) -> Route:
-    """The route for `scope`: each half gated alone, the strictest half wins."""
+    """The route for `scope`, with the Tier floor its threat model sets.
+
+    A floor is a property of the threat model over the whole scope and is
+    independent of the path, so whichever gate returns first keeps it
+    (harmonic-forge#1267 AC3)."""
+    route = _strictest(scope)
+    if _threat(scope.threat_model) == HOSTILE and route.tier_floor is None:
+        return replace(route, tier_floor="deep", floor_gate="authorization")
+    return route
+
+
+def _strictest(scope: Scope) -> Route:
+    """Each half gated alone; the strictest half wins."""
     issue_repo = _repo(scope.repo)
     if _foreign(issue_repo):
         return Route(1, "cross-account", f"{issue_repo} is not a {HOME_OWNER} repo")
@@ -149,10 +161,4 @@ def evaluate(scope: Scope) -> Route:
     threat = _threat(scope.threat_model)
     routes = [_gate_half(repo, paths, scope, threat) for repo, paths in sorted(halves.items())]
     # On a tie, report the gate that fired over the fall-through default.
-    winner = min(routes, key=lambda r: (r.path, r.gate_id == "default"))
-    # A floor is independent of the path, so a stricter half never drops another
-    # half's floor (harmonic-forge#1267 AC3).
-    floored = next((r for r in routes if r.tier_floor), None)
-    if winner.tier_floor is None and floored is not None:
-        return replace(winner, tier_floor=floored.tier_floor, floor_gate=floored.floor_gate)
-    return winner
+    return min(routes, key=lambda r: (r.path, r.gate_id == "default"))

@@ -52,6 +52,23 @@ class Gates(unittest.TestCase):
         self.assertEqual((route.path, route.gate_id, route.tier_floor, route.floor_gate),
                          (1, "hrse-product", "deep", "authorization"))
 
+    def test_f1267_a_hostile_scope_is_floored_whichever_gate_returns_first(self):
+        for name, scope in (
+                ("same-half product", Scope(HRSE, {HRSE: ["tools/hooks/x.py", "backend/app/x.py"]})),
+                ("junk row", Scope(FORGE, {FORGE: ["tools/hooks/x.py", "../noop"]})),
+                ("no scope", Scope(FORGE, {})),
+                ("empty half", Scope(FORGE, {FORGE: ["tools/hooks/x.py"], HRSE: []})),
+                ("foreign issue", Scope("acme/x", {"acme/x": ["a.py"]})),
+                ("foreign half sorts first", Scope(FORGE, {"acme/x": ["a.py"], FORGE: ["tools/hooks/x.py"]}))):
+            with self.subTest(name):
+                scope.threat_model = "hostile-author"
+                route = evaluate(scope)
+                self.assertEqual((route.tier_floor, route.floor_gate), ("deep", "authorization"))
+
+    def test_f1267_a_good_faith_scope_is_never_floored(self):
+        route = evaluate(Scope(HRSE, {HRSE: ["backend/app/x.py"]}, threat_model="good-faith"))
+        self.assertEqual((route.tier_floor, route.floor_gate), (None, None))
+
     def test_authorization_before_lane_machinery(self):
         """Pass-2 #6: gate 3 wins over gate 4 and keeps the deep floor."""
         route = evaluate(Scope(FORGE, {FORGE: ["tools/hooks/x.py"]}, threat_model="hostile-author"))
@@ -438,6 +455,22 @@ class Store(unittest.TestCase):
         attrs = route_store.current(self.key)["attrs"]
         self.assertEqual((attrs["path"], attrs["tier_floor"], attrs["shadow_gate"], attrs["floor_gate"]),
                          (1, "deep", "authorization", "authorization"))
+
+    def test_f1267_a_later_non_deep_floor_does_not_replace_the_deep_one(self):
+        route_store.record(self.key, self._floored(), "evaluator", "handoff")
+        for value in ("standard", ""):
+            with self.subTest(value=value):
+                route_store.record(self.key, gates.Route(2, "te-label", "r", tier_floor=value), "evaluator", "handoff")
+                attrs = route_store.current(self.key)["attrs"]
+                self.assertEqual((attrs["tier_floor"], attrs["floor_gate"]), ("deep", "authorization"))
+
+    def test_f1267_a_held_floor_copies_the_evaluated_route_never_the_override(self):
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        looser = gates.Route(3, "authorization", "r", tier_floor="deep", floor_gate="authorization")
+        route_store.record_if_not_looser(self.key, looser, "evaluator", "handoff")
+        self.assertEqual(route_store.evaluated_path(self.key), 2)
+        self.assertEqual(route_store.current(self.key)["attrs"]["tier_floor"], "deep")
 
     def test_f1267_a_never_floored_issue_reports_none_and_still_refuses_looser(self):
         route_store.record(self.key, gates.Route(1, "default", "r"), "evaluator", "filing")

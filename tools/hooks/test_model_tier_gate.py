@@ -1028,10 +1028,24 @@ class RouteFloorTests(unittest.TestCase):
         import gates
         import route_store
         key = f"{self.REPO}#1249"
-        route_store.record(key, gates.Route(1, "unparsed-path", "r"), "evaluator", "filing")
-        route_store.record_if_not_looser(
-            key, gates.Route(2, "authorization", "r", tier_floor="deep", floor_gate="authorization"),
-            "evaluator", "handoff")
+        route_store.record(key, gates.Route(2, "authorization", "r", tier_floor="deep",
+                                            floor_gate="authorization"), "evaluator", "handoff")
+        route_store.record(key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        with patch.object(m, "resolve_repo", return_value=self.REPO):
+            self.assertEqual(m.resolve_route_floor("/tmp/x", 1249), "authorization")
+        out = self._gate("claude-sonnet-5")
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("authorization", out)
+
+    def test_f1267_the_deny_names_the_floor_gate_not_the_shadow_gate(self):
+        import gates
+        import route_store
+        key = f"{self.REPO}#1249"
+        route_store.record(key, gates.Route(2, "authorization", "r", tier_floor="deep",
+                                            floor_gate="authorization"), "evaluator", "handoff")
+        route_store.record(key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        route_store.record(key, gates.Route(1, "override", "r"), "override", "override")
+        self.assertEqual(route_store.current(key)["attrs"]["shadow_gate"], "te-label")
         with patch.object(m, "resolve_repo", return_value=self.REPO):
             self.assertEqual(m.resolve_route_floor("/tmp/x", 1249), "authorization")
 

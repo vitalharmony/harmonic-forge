@@ -121,7 +121,7 @@ def current(key: str) -> Optional[dict[str, Any]]:
                 floor = event
         else:
             evaluated = event
-            if attrs.get("tier_floor"):
+            if attrs.get("tier_floor") == "deep" and floored is None:
                 floored = event
     if evaluated is None and floor is None:
         return None
@@ -140,7 +140,7 @@ def current(key: str) -> Optional[dict[str, Any]]:
     # harmonic-forge#1267: nor may a later evaluated event. An event written
     # before #1267 has no `floor_gate`, and its own gate set the floor.
     if floored is not None:
-        result["attrs"].setdefault("tier_floor", floored["attrs"]["tier_floor"])
+        result["attrs"]["tier_floor"] = floored["attrs"]["tier_floor"]
         result["attrs"]["floor_gate"] = floored["attrs"].get("floor_gate") or floored["attrs"]["gate_id"]
     if shadow is not None and int(shadow["attrs"]["path"]) != int(in_force["attrs"]["path"]):
         result["attrs"]["shadow_path"] = int(shadow["attrs"]["path"])
