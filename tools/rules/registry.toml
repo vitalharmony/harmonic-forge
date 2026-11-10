@@ -2666,8 +2666,16 @@ hooks = []
 id = "R-0396"
 file = "rules/universal-agent.md"
 anchor = "report-discipline"
-statement = "Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session."
-text_sha = "4fa97b23b938a58c"
+statement = "Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session. Where the lane cannot see the source, the line says \"not visible\" or is left out, and an absence claim names the range it searched."
+text_sha = "31b8dc774837ec88"
+hooks = []
+
+[[rule]]
+id = "R-0422"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "A message that says work is done, committed or posted carries, in the same message, the commit SHA read from `git log` and the comment id refetched after the post; without both it says what is still running."
+text_sha = "776d8b43413d4d58"
 hooks = []
 
 [[rule]]
@@ -2754,8 +2762,8 @@ hooks = []
 id = "R-0408"
 file = "rules/lane-shorthand.md"
 anchor = "operator-lane-triggers"
-statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues it per R-0375."
-text_sha = "d67d5d3b526c0f18"
+statement = "While a lane's belt is armed, a `queued-for-<lane>` event is that lane's trigger. The lane picks it up without asking, and Plan/Implement/Fix, L2D/L2S/L2B or L3S/L3P/L3F relays are never operator actions. The event authorizes only the lane's owed step: merging and closing still need the operator's `close` (or R-0351 / R-0415), and a mid-task lane queues it per R-0375."
+text_sha = "81045e3da0779c22"
 hooks = []
 
 [[rule]]
