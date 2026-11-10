@@ -22,6 +22,7 @@ sys.path.insert(0, str(_HERE))
 
 import block_route_tightened_merge as hook  # noqa: E402
 import block_missing_preclose_inspection as pre  # noqa: E402
+import force_grant  # noqa: E402
 import gates  # noqa: E402
 import route_store  # noqa: E402
 
@@ -88,6 +89,11 @@ class _Case(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.store = Path(tmp.name)
+        grants = tempfile.TemporaryDirectory()
+        self.addCleanup(grants.cleanup)
+        patcher = mock.patch.object(force_grant, "FORCE_STATE_DIR", Path(grants.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def seed(self, key, path, gate_id, checkpoint, decider="evaluator"):
         route_store.record(key, gates.Route(path, gate_id, "seed"), decider=decider,
@@ -400,6 +406,128 @@ class TitleMapping(_Case):
                         files=[".claude/settings.json"])
         result = self.run_hook(gh)
         self.assertIn(f"no route recorded for {HRSE}#1243", result["systemMessage"])
+
+
+class RouteGrant(_Case):
+    """harmonic-forge#1244 AC2-AC4. Kill checks: no `consume`; no grant fallback;
+    consume before the head-binding check; `mode="route"` dropped from `require`."""
+
+    KEY = "H2600"
+
+    def setUp(self):
+        super().setUp()
+        self.seed(f"{HRSE}#2600", 2, "te-label", "handoff")
+
+    def grant(self, mode="route", sha=None, prefix=HEAD, status="usable", key=None, repo=HRSE):
+        key = key or self.KEY
+        grant = force_grant.write_pending(key, repo, 2600, sha, "r", "s1", "FORCE line",
+                                          mode=mode, sha_prefix=prefix)
+        path = force_grant.grant_path(key)
+        path.write_text(json.dumps({**grant, "status": status}))
+
+    def gh(self, **kwargs):
+        """No tooling-exception label: the preclose hook has no say on this merge."""
+        return FakeGitHub(HRSE, labels=(), **kwargs)
+
+    def status(self, key=None):
+        return force_grant.read_grant(key or self.KEY)["status"]
+
+    def test_refusal_names_the_line_the_operator_may_type(self):
+        result = self.run_hook(self.gh())
+        self.assertTrue(self.denied(result))
+        self.assertIn(f"FORCE {self.KEY} route {HEAD}: <reason>", result["systemMessage"])
+        self.assertIn("no FORCE grant exists", result["systemMessage"])
+
+    def test_a_covering_grant_releases_one_merge_and_is_spent(self):
+        self.grant()
+        result = self.run_hook(self.gh())
+        self.assertFalse(self.denied(result))
+        self.assertIn("released by the operator's FORCE route grant", result["systemMessage"])
+        self.assertEqual(self.status(), "consumed")
+        self.assertTrue(self.denied(self.run_hook(self.gh())))
+
+    def test_a_bad_match_head_commit_leaves_the_grant_usable(self):
+        self.grant()
+        command = f"gh pr merge 9 --repo {HRSE} --squash --match-head-commit {OTHER}"
+        self.assertTrue(self.denied(self.run_hook(self.gh(), command=command)))
+        self.assertEqual(self.status(), "usable")
+
+    def test_another_modes_grant_never_clears_the_refusal(self):
+        for mode, sha, prefix in (("plain", HEAD, None), ("reforge", HEAD, HEAD[:12]),
+                                  ("cluster", HEAD, None)):
+            with self.subTest(mode=mode):
+                self.grant(mode, sha, prefix)
+                self.assertTrue(self.denied(self.run_hook(self.gh())))
+                self.assertEqual(self.status(), "usable")
+
+    def test_a_grant_for_another_head_refuses(self):
+        self.grant(prefix=OTHER)
+        result = self.run_hook(self.gh())
+        self.assertTrue(self.denied(result))
+        self.assertIn(f"names {OTHER[:12]}", result["systemMessage"])
+        self.assertEqual(self.status(), "usable")
+
+    def test_an_unrecorded_grant_refuses(self):
+        self.grant(status="pending")
+        self.assertTrue(self.denied(self.run_hook(self.gh())))
+        self.assertEqual(self.status(), "pending")
+
+    def test_a_cleared_merge_does_not_spend_the_grant(self):
+        self.grant()
+        gh = FakeGitHub(HRSE, comments=[comment(1, gate_body("PASS", HEAD))])
+        self.assertFalse(self.denied(self.run_hook(gh)))
+        self.assertEqual(self.status(), "usable")
+
+    def test_preclose_owned_refusal_offers_no_grant(self):
+        """A route grant would be spent and the preclose hook would still deny."""
+        self.seed(f"{FORGE}#2600", 3, "runner", "override", decider=route_store.OVERRIDE)
+        gh = FakeGitHub(FORGE, files=["tools/hooks/x.py"],
+                        labels=["tooling-exception", pre.PRECLOSE_LABEL])
+        result = self.run_hook(gh)
+        self.assertTrue(self.denied(result))
+        self.assertNotIn("FORCE", result["systemMessage"])
+
+    def test_path_two_without_the_label_still_offers_the_grant(self):
+        self.seed(f"{FORGE}#2600", 3, "runner", "override", decider=route_store.OVERRIDE)
+        gh = FakeGitHub(FORGE, files=["tools/hooks/x.py"], labels=[pre.PRECLOSE_LABEL])
+        result = self.run_hook(gh)
+        self.assertTrue(self.denied(result))
+        self.assertIn("FORCE F2600 route", result["systemMessage"])
+
+    def test_a_command_outside_the_bound_form_never_releases(self):
+        """Only `BOUND_MERGE` releases: anything else keeps the grant unspent."""
+        pin = f"gh pr merge 9 --repo {HRSE} --squash --match-head-commit {HEAD}"
+        for command in (f"{pin}#x --match-head-commit {OTHER}", f"{pin} && gh pr merge 10 --repo {HRSE} --squash --match-head-commit {OTHER}",
+                        f"{pin} --auto", f"{pin} --disable-auto", f"{pin} --admin", f"{pin} --rebase",
+                        f"gh pr merge 9 --repo {HRSE} --merge --match-head-commit {HEAD}",
+                        f"gh pr merge 9 --repo {HRSE} --match-head-commit {HEAD}",
+                        f"GH_HOST=other.example {pin}"):
+            with self.subTest(command=command):
+                self.grant()
+                result = self.run_hook(self.gh(), command=command)
+                self.assertTrue(self.denied(result))
+                self.assertEqual(self.status(), "usable")
+
+    def test_a_refused_spend_denies_the_merge(self):
+        """The refusal behind AC2's once, for two merges racing one grant."""
+        self.grant()
+        with mock.patch.object(force_grant, "consume", side_effect=force_grant.GrantRefused("spent")):
+            result = self.run_hook(self.gh())
+        self.assertTrue(self.denied(result))
+        self.assertIn("could not be spent", result["systemMessage"])
+
+    def test_a_grant_is_spent_even_where_preclose_then_denies(self):
+        """The handoff's accepted trade (R-0418): a merge another hook stops needs a new line."""
+        self.grant()
+        result = self.run_hook(FakeGitHub(HRSE, labels=("tooling-exception",)))
+        self.assertFalse(self.denied(result))
+        self.assertEqual(self.status(), "consumed")
+
+    def test_a_tooling_exception_merge_with_a_receipt_releases(self):
+        self.grant()
+        gh = FakeGitHub(HRSE, labels=("tooling-exception", pre.PRECLOSE_LABEL))
+        self.assertFalse(self.denied(self.run_hook(gh, receipt_ok=True)))
+        self.assertEqual(self.status(), "consumed")
 
 
 if __name__ == "__main__":

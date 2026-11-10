@@ -38,8 +38,18 @@ with a warning, as `block_missing_preclose_inspection.py` allows it.
 Parsing is not re-implemented: merge commands, repo resolution, labels, the
 head SHA, the preclose receipt and `--match-head-commit` all come from
 `block_missing_preclose_inspection.py`, and gate reports are read only through
-`_carry_forward`'s checks. The operator's FORCE `route` line is A4b
-(harmonic-forge#1244); its seam is `clearers`.
+`_carry_forward`'s checks.
+
+When no clearer holds, the operator's `FORCE <KEY> route <sha>: <reason>`
+releases one merge of that head (harmonic-forge#1244). It releases this hook's
+refusal only; every other merge hook decides independently. A release needs the
+one bound form (`BOUND_MERGE`), so bash and this hook cannot read the pin two
+ways, no later target can deny the command after the spend, and the merge
+happens now. The grant is spent here, after the head-binding
+check and before the merge runs, so a merge another hook then stops needs a new
+line (the fail-closed trade `preclose_check` makes).
+The grant binds the head, not the PR's base: a base changed after the line releases
+the changed diff, a residual the operator accepted (R-0418).
 
 Trust level (good-faith): an author session can append to the route store
 directly, and a forged `posted-by=LANE3` marker passes `check_pass_comment`.
@@ -73,6 +83,8 @@ RUNNER_WARNING = ("runner (path 3) merge exempt from the route recheck until chi
                   "carries runner eligibility (harmonic-forge#1229)")
 #: `... (harmonic-forge#1242)` -- the issue a PR is for, named in its title
 #: (operator ruling 2026-11-02, "1 A"). The slug is a repo under the PR's owner.
+#: The only command a route grant releases (harmonic-forge#1244).
+BOUND_MERGE = re.compile(r"gh pr merge \d+ --repo [\w.-]+/[\w.-]+ --squash --match-head-commit [0-9a-f]{40}")
 TITLE_ISSUE = re.compile(r"\((?P<slug>[A-Za-z0-9_.-]+)#(?P<number>\d+)\)\s*$")
 
 
@@ -205,9 +217,7 @@ def _carry_forward():
 
 def clearers(deadline: Deadline, repo: str, issue: str, pr_repo: str, pr: str, head: str,
              diff: gates.Route, base_path: int, labels: set[str]) -> tuple[bool, str]:
-    """Whether the stricter path's clearer holds for `head`, and what is missing.
-
-    A4b (harmonic-forge#1244) adds the operator's FORCE `route` grant here."""
+    """Whether the stricter path's clearer holds for `head`, and what is missing."""
     if diff.path == 1:
         comments = _comments(deadline, repo, issue)
         if comments is None:
@@ -229,6 +239,31 @@ def clearers(deadline: Deadline, repo: str, issue: str, pr_repo: str, pr: str, h
             return True, "a pre-close receipt covers the head"
         return False, missing
     return False, f"a clearer for path {diff.path} (none is defined)"
+
+
+def _force_grant():
+    import force_grant  # noqa: PLC0415 -- only a refused merge needs the grant store
+    return force_grant
+
+
+def _route_grant(repo: str, issue: str, head: str) -> tuple[dict | None, str]:
+    """The usable `route` grant covering `head`, or None and why not."""
+    grants = _force_grant()
+    try:
+        return grants.require(repo, int(issue), head, mode="route"), ""
+    except grants.GrantRefused as exc:
+        return None, str(exc)
+
+
+def _release_text(repo: str, issue: str, head: str, refusal: str) -> str:
+    """What the refusal adds about a route grant: why none applied and the line
+    the operator may type. Empty where FORCE fails closed (a cross-account repo)."""
+    waiver = _force_grant().imc_waiver
+    key = waiver.issue_key(repo, int(issue))
+    if key is None or not repo.lower().startswith(waiver.VITALHARMONY):
+        return ""
+    return (f"\n\n  route grant: {refusal}\nThe operator may release this one merge by typing, "
+            f"as a prompt's first line: `FORCE {key} route {head}: <reason>` (harmonic-forge#1244).")
 
 
 def _route_text(path, gate_id, extra: str = "") -> str:
@@ -295,7 +330,19 @@ def recheck(deadline: Deadline, command: str, pr_repo: str, pr: str) -> str | No
         route_store.record_if_not_looser(key, diff, decider=DECIDER, checkpoint=CHECKPOINT)
 
     cleared, why = clearers(deadline, repo, issue, pr_repo, pr, head, diff, base_path, labels)
+    grant, refusal = None, ""
     if not cleared:
+        if BOUND_MERGE.fullmatch(command):
+            grant, refusal = _route_grant(repo, issue, head)
+        else:
+            refusal = ("a route grant releases only `gh pr merge <PR> --repo <repo> "
+                       "--squash --match-head-commit <full head>`, alone")
+    if not cleared and grant is None:
+        # On a tooling-exception issue the path-2-from-3 clearer is the preclose
+        # hook's own predicate, so the refusal does not offer a grant there.
+        preclose_owns = (diff.path == 2 and base_path == 3
+                         and pre.TOOLING_EXCEPTION_LABEL in labels)
+        release = "" if preclose_owns else _release_text(repo, issue, head, refusal)
         raise Refused(
             f"Blocked: PR #{pr}'s diff routes {key} stricter than the path its work took "
             f"(harmonic-forge#1243).\n"
@@ -305,11 +352,23 @@ def recheck(deadline: Deadline, command: str, pr_repo: str, pr: str) -> str | No
             f"  missing:  {why}\n\n"
             f"The tightened route is recorded at checkpoint pre-merge; recording it does not "
             f"clear the merge. A retry is refused the same way until the head carries what "
-            f"path {diff.path} requires.")
+            f"path {diff.path} requires.{release}")
     given = pre.merge_head_commits(command, pr)
     if any((value or "").lower() != head.lower() for value in given):
         raise Refused(pre._match_head_message(repo, issue, pr, head))
-    return None
+    if grant is None:
+        return None
+    # Spent only here, past the head-binding check, so a mistyped
+    # --match-head-commit never costs the operator's line.
+    grants = _force_grant()
+    try:
+        grants.consume(grant["key"], grant["granted_at"], head, mode="route")
+    except grants.GrantRefused as exc:
+        raise Refused(f"Blocked: the route grant for {key} could not be spent ({exc}), so "
+                      f"PR #{pr}'s stricter route stays refused (harmonic-forge#1244).") from exc
+    return (f"route recheck released by the operator's FORCE route grant "
+            f"{grant.get('comment_url') or grant['key']} for head {head[:12]}, now spent "
+            f"(missing: {why})")
 
 
 def _timed_out() -> None:

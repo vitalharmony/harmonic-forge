@@ -142,5 +142,44 @@ class ForceModes(ForceTrigger):
         receipt = self.force("FORCE F1166 cluster: second")
         self.assertIn("replaces the plain grant at cccccccccccc", receipt)
 
+    def test_a_route_grant_binds_the_typed_sha_with_no_receipt(self) -> None:
+        """harmonic-forge#1244 AC1 (kill check: the receipt lookup back on route)."""
+        with mock.patch.object(force_grant, "covered_head", lambda repo, issue: None):
+            receipt = self.force("FORCE F1166 route " + "ABCDEF1234" * 4 + ": release this merge")
+        self.assertIn("pending route grant", receipt)
+        self.assertIn("then the merge", receipt)
+        self.assertNotIn("--force run", receipt)
+        grant = self.grant()
+        self.assertEqual((grant["mode"], grant["sha_prefix"], grant["sha"], grant["status"]),
+                         ("route", "abcdef1234" * 4, None, "pending"))
+
+    def test_route_without_sha_refuses_and_says_why(self) -> None:
+        self.assertIn("names the head it releases", self.force("FORCE F1166 route: release"))
+        self.assertIsNone(self.grant())
+
+    def test_malformed_route_lines_write_nothing_and_say_why(self) -> None:
+        for line, why in (("FORCE F1166 route abc12z456789: x", "not a full 40-character"),
+                          ("FORCE F1166 route abc123: x", "not a full 40-character"),
+                          ("FORCE F1166 route abcdef123456: x", "not a full 40-character"),
+                          ("FORCE F1166 route " + "a" * 41 + ": x", "not a full 40-character"),
+                          ("FORCE F1166 route abcdef123456 abcdef123456: x", "names the head it releases"),
+                          ("FORCE F1166 Route abcdef123456: x", "unknown FORCE mode")):
+            with self.subTest(line=line):
+                self.assertIn(why, self.force(line))
+                self.assertIsNone(self.grant())
+
+    def test_a_colonless_line_says_the_colon_is_missing(self) -> None:
+        for line in ("FORCE F1166 route", "FORCE F1166 route abcdef123456", "FORCE F1166",
+                     "FORCE route abcdef123456: release", "FORCE F1166a route abcdef123456: x",
+                     "FORCE F1234567 route abcdef123456: x"):
+            with self.subTest(line=line):
+                receipt = self.force(line)
+                self.assertIn("needs a key like F1244 and a colon", receipt)
+                self.assertNotIn("first line", receipt)
+                self.assertIsNone(self.grant())
+
+    def test_unknown_mode_names_route(self) -> None:
+        self.assertIn("`route <sha>`", self.force("FORCE F1166 rebase: x"))
+
 if __name__ == "__main__":
     unittest.main()

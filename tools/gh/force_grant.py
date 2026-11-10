@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""The FORCE grant: an operator-typed, single-use authorization for one plain
-`preclose_check.py --force` (harmonic-forge#1169).
+"""The FORCE grant: an operator-typed, single-use authorization for one
+preclose override (harmonic-forge#1169, #1174) or one merge past the route
+recheck (harmonic-forge#1244).
 
 `FORCE <KEY>: <reason>`, typed as the prompt's first line in a LANE=1 session,
 is honored by `expand_lane_shorthand.py` on `UserPromptSubmit` (R-0117, the
@@ -14,13 +15,14 @@ head the force covers. Nothing can use it yet:
   and completes it (the IMC waiver's two-step shape, `imc_waiver.record`).
 - `require()` answers whether a usable, unexpired, unconsumed grant covers
   exactly this repo#issue at this head, and names which test failed if not.
-- `consume()` marks it spent. Only `--complete --force` consumes; `--plan
-  --force` only checks.
+- `consume()` marks it spent. `--complete --force` and the route recheck
+  consume; `--plan --force` only checks.
 
-It covers the plain force only. `--force --reforge` and `--cluster-verdict
---force` take no grant (harmonic-forge#1174 is that follow-up), and nothing
-here touches `imc_refusal`: an issue holding an IMC receipt is refused before
-any grant is consulted (operator ruling 2026-10-22).
+Each mode authorizes only its own action. Nothing here touches `imc_refusal`:
+an issue holding an IMC receipt is refused before any preclose grant is
+consulted (operator ruling 2026-10-22). A route grant is not refused on an IMC
+receipt (operator ruling on harmonic-forge#1244's handoff): it releases only
+the route recheck, and every other merge hook still decides that merge.
 
 Like BATCH and IMC, this trusts the operator-typed line and the session. The
 grant file and the public comment are an audit trail, not proof against a
@@ -105,8 +107,9 @@ def write_pending(key: str, repo: str, issue: int, sha: str | None, reason: str,
                   session_id: str | None, line: str, now: datetime | None = None,
                   mode: str = "plain", sha_prefix: str | None = None) -> dict:
     """The hook's write. A new FORCE line replaces any earlier grant for the key.
-    `mode` is plain, reforge or cluster (harmonic-forge#1174): plain and cluster
-    bind the full `sha`; reforge binds the operator-typed `sha_prefix`."""
+    `mode` is plain, reforge, route or cluster (harmonic-forge#1174, #1244): plain
+    and cluster bind the full `sha`; reforge and route bind the operator-typed
+    `sha_prefix`."""
     moment = now or imc_waiver._now()
     grant = {
         "key": key.upper(), "repo": repo, "issue": issue, "sha": sha, "reason": reason,
@@ -126,6 +129,8 @@ def heading(key: str) -> str:
 
 
 def comment_body(grant: dict) -> str:
+    limit = ("only the route recheck's refusal, never another merge hook's"
+             if _mode(grant) == "route" else "never past an IMC receipt")
     return "\n".join([
         heading(grant["key"]),
         "",
@@ -134,7 +139,7 @@ def comment_body(grant: dict) -> str:
         f"- **When:** `{grant.get('granted_at')}`, usable until `{grant.get('expires_at')}`.",
         f"- **What it authorizes:** {_authorizes(grant)} for "
         f"{grant['repo']}#{grant['issue']} at `{_bound(grant)[:12]}`, single use, and nothing "
-        "else: never another mode, and never past an IMC receipt.",
+        f"else: never another mode, and {limit}.",
         f"- **Reason:** {grant['reason']}",
         "",
         f"<!-- force-grant key={grant['key']} granted_at={grant.get('granted_at')} "
@@ -187,7 +192,10 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> d
 #: harmonic-forge#1174: what each mode authorizes, for the public comment.
 _AUTHORIZES = {"plain": "one plain `preclose_check.py --force`",
                "reforge": "one `preclose_check.py --force --reforge`",
+               "route": "one merge past the route recheck (block_route_tightened_merge.py)",
                "cluster": "one `preclose_check.py --cluster-verdict ... --force`"}
+#: The modes bound to the operator-typed SHA prefix, not the covered head.
+_PREFIX_MODES = ("reforge", "route")
 
 
 def _mode(grant: dict) -> str:
@@ -200,7 +208,7 @@ def _authorizes(grant: dict) -> str:
 
 
 def _bound(grant: dict) -> str:
-    return str((grant.get("sha_prefix") if _mode(grant) == "reforge" else grant.get("sha")) or "")
+    return str((grant.get("sha_prefix") if _mode(grant) in _PREFIX_MODES else grant.get("sha")) or "")
 
 
 def _scope(grant: dict) -> str:
@@ -215,10 +223,10 @@ def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str) -> str | N
     if _mode(grant) != mode:
         return (f"the FORCE grant for {key} authorizes a {_mode(grant)} force, not a {mode} one; "
                 f"the operator types `FORCE {key}{'' if mode == 'plain' else ' ' + mode} ...: <reason>`")
-    if mode == "reforge":
+    if mode in _PREFIX_MODES:
         prefix = str(grant.get("sha_prefix") or "")
-        if len(prefix) < 12 or not head_sha or not head_sha.startswith(prefix):
-            return f"the reforge grant for {key} names {prefix[:12] or '?'}, not {head_sha[:12]}"
+        if len(prefix) < (40 if mode == "route" else 12) or not head_sha or not head_sha.startswith(prefix):
+            return f"the {mode} grant for {key} names {prefix[:12] or '?'}, not {head_sha[:12]}"
         return None
     if not head_sha or str(grant.get("sha")) != head_sha:
         return (f"the FORCE grant for {key} covers {str(grant.get('sha'))[:12]}, not "
@@ -234,8 +242,9 @@ def require(repo: str, issue: int, head_sha: str, now: datetime | None = None,
         raise GrantRefused(f"{repo}#{issue} has no repo-prefixed issue key")
     grant = imc_waiver.read_json(grant_path(key))
     if grant is None:
+        typed = "" if mode == "plain" else f" {mode} ..."
         raise GrantRefused(f"no FORCE grant exists for {key}. The operator types "
-                           f"`FORCE {key}: <reason>` as the first line of a prompt")
+                           f"`FORCE {key}{typed}: <reason>` as the first line of a prompt")
     if grant.get("repo", "").lower() != repo.lower() or int(grant.get("issue") or 0) != issue:
         raise GrantRefused(f"the FORCE grant for {key} names {grant.get('repo')}#{grant.get('issue')}")
     status = grant.get("status")
