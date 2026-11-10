@@ -794,7 +794,7 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
 
 #: `FORCE <KEY>: <reason>` (harmonic-forge#1169): uppercase, unindented, on the
 #: prompt's first line. A lowercase or misplaced FORCE is refused out loud.
-#: harmonic-forge#1174: `FORCE <KEY> [reforge <sha> | cluster]: <reason>`. The
+#: harmonic-forge#1174, #1244: `FORCE <KEY> [reforge <sha> | route <sha> | cluster]: <reason>`. The
 #: tokens between the key and the colon are captured loosely and validated in
 #: `_force_mode`, so a malformed mode gets its own refusal, never the
 #: "first line" message.
@@ -813,11 +813,17 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
         if not _FORCE_SHA_RE.match(rest[0].lower()):
             return f"{rest[0]!r} is not a 12-40 character hex commit SHA"
         return "reforge", rest[0].lower()
+    if word == "route":
+        if len(rest) != 1:
+            return "a route FORCE names the head it releases: `FORCE <KEY> route <sha>: <reason>`"
+        if not _FORCE_SHA_RE.match(rest[0].lower()):
+            return f"{rest[0]!r} is not a 12-40 character hex commit SHA"
+        return "route", rest[0].lower()
     if word == "cluster":
         if rest:
             return "a cluster FORCE takes no SHA: `FORCE <KEY> cluster: <reason>`"
         return "cluster", None
-    return f"unknown FORCE mode {word!r}: the modes are `reforge <sha>` and `cluster` (lowercase)"
+    return f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>` and `cluster` (lowercase)"
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
 
 
@@ -874,9 +880,9 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
                 "there. No grant written.")
     grants = _force_module()
     head = None
-    if mode != "reforge":
-        # A reforge binds the head the operator typed; it may start before
-        # that head has any receipt (harmonic-forge#1174).
+    if mode not in ("reforge", "route"):
+        # A reforge or route grant binds the head the operator typed; that
+        # head may have no receipt (harmonic-forge#1174, #1244).
         head = grants.covered_head(repo, number)
         if not head:
             return (f"FORCE REFUSED for {key}: {repo}#{number} has no preclose receipt, so there is "
@@ -889,9 +895,10 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     if previous:
         replaced = (f" It replaces the {previous.get('mode') or 'plain'} grant at "
                     f"{str(previous.get('sha') or previous.get('sha_prefix') or '?')[:12]}.")
+    after = "the merge" if mode == "route" else "the non-force preflight and the --force run"
     return (f"FORCE: pending {mode} grant written for {key} at {bound} (single use, until "
             f"{grant['expires_at']}).{replaced} Next: `python3 tools/gh/force_grant.py record --key "
-            f"{key}`, then the non-force preflight and the --force run (harmonic-forge#1169, #1174).")
+            f"{key}`, then {after} (harmonic-forge#1169, #1174, #1244).")
 
 
 #: `PARK <KEY>[: <reason>]` (harmonic-forge#1281): FORCE's placement. It lets

@@ -259,5 +259,40 @@ class ModeBindingTests(Store):
             G.consume(KEY, grant["granted_at"], SHA, NOW, mode="plain")
         self.assertEqual(G.consume(KEY, grant["granted_at"], SHA, NOW, mode="cluster")["status"], "consumed")
 
+    def test_route_grant_authorizes_no_preclose_override(self):
+        """harmonic-forge#1244 AC3. The grant carries the full SHA too, so only
+        the mode check can refuse (kill check: route read as plain in `_mode`)."""
+        self.usable("route", SHA, SHA[:12])
+        for mode in ("plain", "reforge", "cluster"):
+            with self.subTest(mode=mode), self.assertRaises(G.GrantRefused) as ctx:
+                G.require(REPO, ISSUE, SHA, NOW, mode=mode)
+            self.assertIn(f"authorizes a route force, not a {mode} one", str(ctx.exception))
+
+    def test_route_grant_binds_its_prefix_and_refuses_another_head(self):
+        """harmonic-forge#1244 AC4 (kill check: prefix binding removed for route)."""
+        grant = self.usable("route", None, SHA[:12])
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="route")["mode"], "route")
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, MOVED, NOW, mode="route")
+        self.assertIn("the route grant for F1166 names aaaaaaaaaaaa", str(ctx.exception))
+        self.assertEqual(G.consume(KEY, grant["granted_at"], SHA, NOW, mode="route")["status"], "consumed")
+        self.assertEqual(G._bound({"mode": "route", "sha": None, "sha_prefix": SHA[:12]}), SHA[:12])
+
+    def test_no_grant_refusal_names_the_requested_mode(self):
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, SHA, NOW, mode="route")
+        self.assertIn(f"`FORCE {KEY} route ...: <reason>`", str(ctx.exception))
+        with self.assertRaises(G.GrantRefused) as ctx:
+            G.require(REPO, ISSUE, SHA, NOW)
+        self.assertIn(f"`FORCE {KEY}: <reason>`", str(ctx.exception))
+
+    def test_only_the_route_comment_drops_the_imc_claim(self):
+        """Operator ruling on harmonic-forge#1244's handoff: no IMC refusal for route."""
+        route = G.comment_body(self.usable("route", None, SHA[:12]))
+        self.assertNotIn("IMC", route)
+        self.assertIn("only the route recheck's refusal", route)
+        self.assertIn("one merge past the route recheck", route)
+        self.assertIn("never past an IMC receipt", G.comment_body(self.usable()))
+
 if __name__ == "__main__":
     unittest.main()
