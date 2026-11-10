@@ -93,10 +93,19 @@ class ManifestCoverage(unittest.TestCase):
             self.assertTrue(deny_check.denied(path), path)
             self.assertTrue(self.glob_hit(path), f"{path} has no glob")
 
+    def test_the_router_is_denied(self):
+        """harmonic-forge#1319 AC2: the router and the store it writes through."""
+        for path in ("tools/routing/gates.py", "tools/gh/_route_snapshot.py", "tools/gh/gh_issue.py",
+                     "tools/telemetry/emit.py"):
+            self.assertTrue(deny_check.denied(path), path)
+            self.assertTrue(self.glob_hit(path), f"{path} has no glob")
+
     def test_ordinary_tooling_is_not_denied(self):
-        # tools/gh/gh_issue.py left this list in harmonic-forge#1319: it records
-        # the filing route, so it is router code the runner may not edit.
-        for path in ("tools/telemetry/emit.py", "tools/gh/post_lane_discussion.py", "docs/x.md",
+        # tools/gh/gh_issue.py and tools/telemetry/emit.py left this list in
+        # harmonic-forge#1319: one records the filing route, the other locates,
+        # locks and appends the route store, so both are router code the runner
+        # may not edit.
+        for path in ("tools/telemetry/llm_usage.py", "tools/gh/post_lane_discussion.py", "docs/x.md",
                      "tools/x/conftest_helper.py", "docs/pyproject.toml.md",
                      "tools/x/sitecustomize_notes.md"):
             self.assertFalse(deny_check.denied(path), path)

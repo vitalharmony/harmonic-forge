@@ -105,6 +105,7 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(^|/)tools/routing/"), "semantic router — decides each issue's path and floor"),
     (re.compile(r"(^|/)tools/gh/_route_snapshot\.py$"), "semantic router — the handoff route snapshot"),
     (re.compile(r"(^|/)tools/gh/gh_issue\.py$"), "semantic router — evaluates and records the filing route"),
+    (re.compile(r"(^|/)tools/telemetry/emit\.py$"), "semantic router — the route store's location, lock and append"),
     (re.compile(r"(^|/)tools/gate/"), "production gate — mints a production-run grant from the AE"),
     (re.compile(r"(^|/)scripts/.*migrat"), "migration — touches live data"),
     (re.compile(r"(^|/)backend/app/"), "application code — not tooling at all"),

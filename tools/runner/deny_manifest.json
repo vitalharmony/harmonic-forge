@@ -169,7 +169,8 @@
       "globs": [
         "./**/tools/routing/**",
         "./**/tools/gh/_route_snapshot.py",
-        "./**/tools/gh/gh_issue.py"
+        "./**/tools/gh/gh_issue.py",
+        "./**/tools/telemetry/emit.py"
       ],
       "regexes": []
     },
