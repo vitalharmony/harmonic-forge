@@ -371,8 +371,9 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
     """AC2: the reason this issue is at an IMC stop, or None. Read from the
     preclose receipt through preclose_check's own reader and preclose_passes'
     own sticky-wicket and cluster logic (the test `post_verdict` applies).
-    Only passes run under this waiver (`granted_at`) count, so `end` cannot
-    dodge the forced cross-family call with passes recorded before it."""
+    Below the pass cap only passes run under this waiver (`granted_at`) count,
+    so `end` cannot dodge the forced cross-family call with passes recorded
+    before it; at the cap no further pass can run (harmonic-forge#1310)."""
     import preclose_check  # noqa: PLC0415  (preclose_check imports this module)
     import preclose_passes  # noqa: PLC0415
     granted = _parse_time(granted_at)
@@ -382,6 +383,13 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
     if (len(waived) >= preclose_passes.MAX_PASSES
             and preclose_passes.cap_message(waived) == preclose_passes.STICKY_WICKET):
         return "sticky-wicket stop (two passes both left surviving findings)"
+    # harmonic-forge#1310: a waiver granted between the two passes. No third pass
+    # can run and `--force` is refused while the receipt exists, so `end` is the
+    # only exit, and at least one of the two ran the forced cross-family call.
+    if (len(passes) >= preclose_passes.MAX_PASSES
+            and preclose_passes.cap_message(passes) == preclose_passes.STICKY_WICKET
+            and any(_under_waiver(p, granted) for p in passes[-preclose_passes.MAX_PASSES:])):
+        return "sticky-wicket stop (the pass cap reached with passes on both sides of the waiver)"
     epoch = max((int(p.get("epoch") or 0) for p in preclose_passes.history(receipt)), default=0)
     cluster = preclose_passes._mechanism_cluster(receipt, epoch)
     if cluster and cluster.get("verdict") in ("PATCH", "REFORGE") and waived:
@@ -531,7 +539,9 @@ def end(key: str, *, reason: str, now: datetime | None = None,
                         "shows neither two current-epoch passes run under this waiver (forced "
                         "cross-family) that both left surviving findings nor a current-epoch "
                         "PATCH/REFORGE mechanism-cluster verdict after such a pass, nor an epoch "
-                        "already at the pass cap before the waiver, nor a current-epoch REFORGE "
+                        "already at the pass cap before the waiver, nor a pass cap reached with "
+                        "the last pass or the one before it under the waiver and both left "
+                        "surviving findings, nor a current-epoch REFORGE "
                         "verdict whose passes all predate the waiver. `end` is the "
                         "exit from that stop, never a way around the forced cross-family pass.")
                 ending = {**data, "status": "ending", "end_reason": reason.strip(),
