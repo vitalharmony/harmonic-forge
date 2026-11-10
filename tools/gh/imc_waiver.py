@@ -371,8 +371,9 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
     """AC2: the reason this issue is at an IMC stop, or None. Read from the
     preclose receipt through preclose_check's own reader and preclose_passes'
     own sticky-wicket and cluster logic (the test `post_verdict` applies).
-    Only passes run under this waiver (`granted_at`) count, so `end` cannot
-    dodge the forced cross-family call with passes recorded before it."""
+    Below the pass cap only passes run under this waiver (`granted_at`) count,
+    so `end` cannot dodge the forced cross-family call with passes recorded
+    before it; at the cap no further pass can run (harmonic-forge#1310)."""
     import preclose_check  # noqa: PLC0415  (preclose_check imports this module)
     import preclose_passes  # noqa: PLC0415
     granted = _parse_time(granted_at)
@@ -410,6 +411,14 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
         if not post_grant:
             return ("REFORGE verdict before the waiver (the new epoch needs --force --reforge, "
                     "which the waiver refuses)")
+    # harmonic-forge#1310: the cap reached with the waiver partway through it. No
+    # third pass can run and `--force` is refused while the receipt exists, so
+    # `end` is the only exit, whether or not the first of the two left survivors,
+    # and at least one of the two ran the forced cross-family call.
+    if (len(passes) >= preclose_passes.MAX_PASSES
+            and int(passes[-1].get("surviving") or 0) > 0
+            and any(_under_waiver(p, granted) for p in passes[-preclose_passes.MAX_PASSES:])):
+        return "pass cap reached with survivors on the last pass and a pass under the waiver"
     return None
 
 
@@ -531,7 +540,9 @@ def end(key: str, *, reason: str, now: datetime | None = None,
                         "shows neither two current-epoch passes run under this waiver (forced "
                         "cross-family) that both left surviving findings nor a current-epoch "
                         "PATCH/REFORGE mechanism-cluster verdict after such a pass, nor an epoch "
-                        "already at the pass cap before the waiver, nor a current-epoch REFORGE "
+                        "already at the pass cap before the waiver, nor a pass cap reached with "
+                        "survivors on the last pass and that pass or the one before it under "
+                        "the waiver, nor a current-epoch REFORGE "
                         "verdict whose passes all predate the waiver. `end` is the "
                         "exit from that stop, never a way around the forced cross-family pass.")
                 ending = {**data, "status": "ending", "end_reason": reason.strip(),

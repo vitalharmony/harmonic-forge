@@ -394,6 +394,63 @@ class EndTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.end()
 
+    def test_end_stops_on_a_cap_with_passes_on_both_sides_of_the_waiver(self) -> None:
+        """harmonic-forge#1310 AC1: the harmonic-forge#1244 shape."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 8, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 6, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_refuses_a_cap_whose_last_pass_is_clean(self) -> None:
+        """harmonic-forge#1310 AC3."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 8, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 0, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_refuses_when_the_only_waived_pass_is_outside_the_last_two(self) -> None:
+        """harmonic-forge#1310 AC1: the slice over the last two passes."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 2, "completed_at": "2026-10-17T03:00:00Z", "cross_family_ran": False},
+            {"sha": "c", "surviving": 2, "completed_at": "2026-10-17T04:00:00Z", "cross_family_ran": False}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_stops_on_a_cap_whose_first_pass_was_clean(self) -> None:
+        """harmonic-forge#1310 AC1 as amended: clean, then survivors under the waiver."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 0, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 3, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}]}
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_stops_when_the_waived_pass_is_the_older_of_the_last_two(self) -> None:
+        """harmonic-forge#1310 AC1: the waived pass may be either of the two."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 2, "completed_at": "2026-10-17T03:00:00Z", "cross_family_ran": False}]}
+        self.end()
+        self.assertFalse((self.state / f"{KEY}.waiver.json").exists())
+
+    def test_end_refuses_a_post_grant_pass_in_an_earlier_epoch(self) -> None:
+        """harmonic-forge#1310: the cap is the current epoch's alone."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "epoch": 0, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 2, "epoch": 1, "completed_at": "2026-10-17T03:00:00Z", "cross_family_ran": True}]}
+        with self.assertRaises(SystemExit):
+            self.end()
+
+    def test_end_keeps_the_cluster_reason_at_a_cap_with_a_waived_pass(self) -> None:
+        """harmonic-forge#1310 AC4: the cap stop never replaces an existing reason."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "PATCH"}}
+        self.assertIn("mechanism-cluster verdict PATCH", self.end()["end_stop"])
+
     # harmonic-forge#1300: a REFORGE verdict recorded before the waiver.
     # The grant is self.now, 2026-10-17T01:02:03Z.
     PRE_GRANT = {"completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True}
