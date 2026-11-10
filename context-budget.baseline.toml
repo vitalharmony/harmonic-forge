@@ -223,9 +223,9 @@ is loaded beside FORCE and UI.
 [[increase]]
 date = "2026-11-09"
 files = [".claude/rules/lane-shorthand.md"]
-bytes = 7129
+bytes = 7154
 why = """
-Cumulative since the last baseline: 6724 (entry above) plus harmonic-forge#1244 (405):
+Cumulative since the last baseline: 6724 (entry above) plus harmonic-forge#1244 (430):
 the FORCE table's `route` row and R-0418's clause that a route grant releases only the
 route recheck and is spent before the merge runs. The route recheck's refusal names the
 line to type, and the operator types it in that turn, so the grammar stays loaded.

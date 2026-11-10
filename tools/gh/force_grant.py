@@ -225,7 +225,7 @@ def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str) -> str | N
                 f"the operator types `FORCE {key}{'' if mode == 'plain' else ' ' + mode} ...: <reason>`")
     if mode in _PREFIX_MODES:
         prefix = str(grant.get("sha_prefix") or "")
-        if len(prefix) < 12 or not head_sha or not head_sha.startswith(prefix):
+        if len(prefix) < (40 if mode == "route" else 12) or not head_sha or not head_sha.startswith(prefix):
             return f"the {mode} grant for {key} names {prefix[:12] or '?'}, not {head_sha[:12]}"
         return None
     if not head_sha or str(grant.get("sha")) != head_sha:

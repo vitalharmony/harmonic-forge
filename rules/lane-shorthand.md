@@ -341,14 +341,14 @@ prompt's first line, typed unindented and uppercase. Four modes:
 | `FORCE F1169: <reason>` | `plain`, bound to the covered head | `preclose_check.py --complete --force` |
 | `FORCE F1174 reforge <sha>: <reason>` | `reforge`, bound to the typed 12–40 hex SHA prefix | `--plan`/`--complete --force --reforge` on a head starting with it |
 | `FORCE F1174 cluster: <reason>` | `cluster`, bound to the covered head | `--cluster-verdict --force` |
-| `FORCE F1244 route <sha>: <reason>` | `route`, bound to the typed SHA prefix | one merge past the route recheck |
+| `FORCE F1244 route <sha>: <reason>` | `route`, bound to the full typed SHA | one merge past the route recheck |
 
 <!-- R-0418 -->
 The hook writes one grant per issue (`force_grant.py`, 1h TTL) only for an
 operator-typed first line passing R-0117; a later FORCE line replaces the
 grant and its receipt names the one replaced. An unknown mode, a reforge
-or route with no SHA or a malformed one, or a cluster with a SHA refuses and
-writes nothing. A route grant releases only the route recheck, never a
+or route with no SHA or a malformed one (a route needs all 40 hex), or a
+cluster with a SHA refuses and writes nothing. A route grant releases only the route recheck, never a
 preclose refusal, and is spent before the merge runs, so a merge that does
 not then run needs a new line. It binds the head, not the PR's base, so a
 base changed after the line releases the changed diff: an accepted residual. Each override requires and consumes the grant of its own mode: a

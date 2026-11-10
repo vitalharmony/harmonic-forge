@@ -43,10 +43,9 @@ head SHA, the preclose receipt and `--match-head-commit` all come from
 When no clearer holds, the operator's `FORCE <KEY> route <sha>: <reason>`
 releases one merge of that head (harmonic-forge#1244). It releases this hook's
 refusal only; every other merge hook decides independently. A release needs the
-one bound form, a single plain `gh pr merge` with no `--auto`, so bash and this
-hook cannot read the pin two ways, no later target can deny the command after
-the spend, and the merge happens now. It is withheld where the preclose hook
-would deny the same merge. The grant is spent here, after the head-binding
+one bound form (`BOUND_MERGE`), so bash and this hook cannot read the pin two
+ways, no later target can deny the command after the spend, and the merge
+happens now. The grant is spent here, after the head-binding
 check and before the merge runs, so a merge another hook then stops needs a new
 line (the fail-closed trade `preclose_check` makes).
 The grant binds the head, not the PR's base: a base changed after the line releases
@@ -68,7 +67,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "routing"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 
-import batch_auth  # noqa: E402
 import block_missing_preclose_inspection as pre  # noqa: E402
 import gates  # noqa: E402
 import hook_watchdog  # noqa: E402
@@ -85,6 +83,8 @@ RUNNER_WARNING = ("runner (path 3) merge exempt from the route recheck until chi
                   "carries runner eligibility (harmonic-forge#1229)")
 #: `... (harmonic-forge#1242)` -- the issue a PR is for, named in its title
 #: (operator ruling 2026-11-02, "1 A"). The slug is a repo under the PR's owner.
+#: The only command a route grant releases (harmonic-forge#1244).
+BOUND_MERGE = re.compile(r"gh pr merge \d+ --repo [\w.-]+/[\w.-]+ --squash --match-head-commit [0-9a-f]{40}")
 TITLE_ISSUE = re.compile(r"\((?P<slug>[A-Za-z0-9_.-]+)#(?P<number>\d+)\)\s*$")
 
 
@@ -255,25 +255,6 @@ def _route_grant(repo: str, issue: str, head: str) -> tuple[dict | None, str]:
         return None, str(exc)
 
 
-def _bound_release_form(command: str) -> bool:
-    """One plain `gh pr merge` with no `--auto`: the only command a grant releases.
-    Batch's plain-string test (harmonic-forge#1178): `#`, `&&` and quotes all fail it."""
-    tokens = command.split()
-    return (bool(batch_auth._PLAIN_COMMAND_RE.fullmatch(command))
-            and tokens[:3] == ["gh", "pr", "merge"] and "--auto" not in tokens)
-
-
-def _preclose_denies(deadline: Deadline, repo: str, issue: str, pr_repo: str, pr: str,
-                     head: str, labels: set[str]) -> bool:
-    """Whether the preclose hook will deny this merge whatever this hook decides."""
-    if pre.TOOLING_EXCEPTION_LABEL not in labels:
-        return False
-    if pre.PRECLOSE_LABEL not in labels:
-        return True
-    deadline.need(pre.FETCH_BUDGET_SECONDS, "checking the pre-close receipt")
-    return not pre._preclose_receipt_ok(repo, issue, head, pr if pr_repo == repo else None)
-
-
 def _release_text(repo: str, issue: str, head: str, refusal: str) -> str:
     """What the refusal adds about a route grant: why none applied and the line
     the operator may type. Empty where FORCE fails closed (a cross-account repo)."""
@@ -350,16 +331,17 @@ def recheck(deadline: Deadline, command: str, pr_repo: str, pr: str) -> str | No
 
     cleared, why = clearers(deadline, repo, issue, pr_repo, pr, head, diff, base_path, labels)
     grant, refusal = None, ""
-    # A grant here would be spent and the merge still denied, so it is neither
-    # offered nor consulted.
-    preclose_owns = not cleared and _preclose_denies(deadline, repo, issue, pr_repo, pr, head, labels)
-    if not cleared and not preclose_owns:
-        if _bound_release_form(command):
+    if not cleared:
+        if BOUND_MERGE.fullmatch(command):
             grant, refusal = _route_grant(repo, issue, head)
         else:
-            refusal = ("a route grant releases only one plain `gh pr merge <PR> --repo <repo> "
-                       "--squash --match-head-commit <head>`, alone and with no `--auto`")
+            refusal = ("a route grant releases only `gh pr merge <PR> --repo <repo> "
+                       "--squash --match-head-commit <full head>`, alone")
     if not cleared and grant is None:
+        # On a tooling-exception issue the path-2-from-3 clearer is the preclose
+        # hook's own predicate, so the refusal does not offer a grant there.
+        preclose_owns = (diff.path == 2 and base_path == 3
+                         and pre.TOOLING_EXCEPTION_LABEL in labels)
         release = "" if preclose_owns else _release_text(repo, issue, head, refusal)
         raise Refused(
             f"Blocked: PR #{pr}'s diff routes {key} stricter than the path its work took "

@@ -800,6 +800,9 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
 #: "first line" message.
 _FORCE_RE = re.compile(r"^FORCE[ \t]+([A-Za-z]\d{1,6})((?:[ \t]+[^ \t:]+)*?)[ \t]*:[ \t]*(.*)$")
 _FORCE_SHA_RE = re.compile(r"^[0-9a-f]{12,40}$")
+#: A route grant binds the whole head: a 12-hex prefix is birthday-searchable when
+#: the author controls both commits (harmonic-forge#1244).
+_FORCE_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
@@ -816,8 +819,8 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
     if word == "route":
         if len(rest) != 1:
             return "a route FORCE names the head it releases: `FORCE <KEY> route <sha>: <reason>`"
-        if not _FORCE_SHA_RE.match(rest[0].lower()):
-            return f"{rest[0]!r} is not a 12-40 character hex commit SHA"
+        if not _FORCE_FULL_SHA_RE.match(rest[0].lower()):
+            return f"{rest[0]!r} is not a full 40-character hex commit SHA"
         return "route", rest[0].lower()
     if word == "cluster":
         if rest:
@@ -825,8 +828,8 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
         return "cluster", None
     return f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>` and `cluster` (lowercase)"
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
-#: An unindented, uppercase FORCE line with no colon: well placed, malformed.
-_FORCE_NO_COLON_RE = re.compile(r"^FORCE[ \t]+[A-Za-z]\d{1,6}\b[^:]*$")
+#: An unindented, uppercase FORCE first line that is not the grammar: well placed, malformed.
+_FORCE_MALFORMED_RE = re.compile(r"^FORCE[ \t]+\S")
 
 
 def _force_module():
@@ -849,15 +852,17 @@ def authorize_force(prompt: str, session_id: str | None, lane: str | None, now=N
 
 def _authorize_force(prompt, session_id, lane, now) -> str:
     lines = prompt.splitlines()
-    if not any(_FORCE_ANY_RE.match(line) for line in lines):
+    head = next((text for text in lines if text.strip()), "")
+    if not any(_FORCE_ANY_RE.match(line) for line in lines) and not _FORCE_MALFORMED_RE.match(head):
         return ""
     # The same placement rule IMC is honored by: the prompt's first line, typed
     # unindented, uppercase. Anywhere else it is quotation (harmonic-forge#895).
     first = next((i for i, text in enumerate(lines) if text.strip()), None)
     match = _FORCE_RE.match(lines[first]) if first is not None else None
-    if match is None and first is not None and _FORCE_NO_COLON_RE.match(lines[first]):
-        return ("FORCE REFUSED: the line has no colon and reason. The form is `FORCE <KEY> "
-                "[reforge <sha> | route <sha> | cluster]: <reason>`. No grant written.")
+    if match is None and first is not None and _FORCE_MALFORMED_RE.match(lines[first]):
+        return ("FORCE REFUSED: the line needs a key like F1244 and a colon before the reason. "
+                "The form is `FORCE <KEY> [reforge <sha> | route <sha> | cluster]: <reason>`. "
+                "No grant written.")
     if match is None:
         return ("FORCE REFUSED: FORCE is honored only as the prompt's first line, typed "
                 "unindented and uppercase, as `FORCE <KEY>: <reason>`. No grant written.")

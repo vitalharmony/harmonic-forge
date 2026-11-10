@@ -270,7 +270,7 @@ class ModeBindingTests(Store):
 
     def test_route_grant_binds_its_prefix_and_refuses_another_head(self):
         """harmonic-forge#1244 AC4 (kill check: prefix binding removed for route)."""
-        grant = self.usable("route", None, SHA[:12])
+        grant = self.usable("route", None, SHA)
         self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="route")["mode"], "route")
         with self.assertRaises(G.GrantRefused) as ctx:
             G.require(REPO, ISSUE, MOVED, NOW, mode="route")
@@ -280,7 +280,7 @@ class ModeBindingTests(Store):
 
     def test_route_grant_with_no_usable_prefix_binds_nothing(self):
         """Survivor 7: `"".startswith` is true, so only the length test stops this."""
-        for prefix in (None, "", SHA[:11]):
+        for prefix in (None, "", SHA[:11], SHA[:12], SHA[:39]):
             with self.subTest(prefix=prefix):
                 self.usable("route", None, prefix)
                 with self.assertRaises(G.GrantRefused):

@@ -402,7 +402,7 @@ class RouteGrant(_Case):
         super().setUp()
         self.seed(f"{HRSE}#2600", 2, "te-label", "handoff")
 
-    def grant(self, mode="route", sha=None, prefix=HEAD[:12], status="usable", key=None, repo=HRSE):
+    def grant(self, mode="route", sha=None, prefix=HEAD, status="usable", key=None, repo=HRSE):
         key = key or self.KEY
         grant = force_grant.write_pending(key, repo, 2600, sha, "r", "s1", "FORCE line",
                                           mode=mode, sha_prefix=prefix)
@@ -445,7 +445,7 @@ class RouteGrant(_Case):
                 self.assertEqual(self.status(), "usable")
 
     def test_a_grant_for_another_head_refuses(self):
-        self.grant(prefix=OTHER[:12])
+        self.grant(prefix=OTHER)
         result = self.run_hook(self.gh())
         self.assertTrue(self.denied(result))
         self.assertIn(f"names {OTHER[:12]}", result["systemMessage"])
@@ -479,10 +479,13 @@ class RouteGrant(_Case):
         self.assertIn("FORCE F2600 route", result["systemMessage"])
 
     def test_a_command_outside_the_bound_form_never_releases(self):
-        """Survivors 1, 3 and 8: a `#` pin, a second target, and `--auto`."""
+        """Only `BOUND_MERGE` releases: anything else keeps the grant unspent."""
         pin = f"gh pr merge 9 --repo {HRSE} --squash --match-head-commit {HEAD}"
         for command in (f"{pin}#x --match-head-commit {OTHER}", f"{pin} && gh pr merge 10 --repo {HRSE} --squash --match-head-commit {OTHER}",
-                        f"{pin} --auto"):
+                        f"{pin} --auto", f"{pin} --disable-auto", f"{pin} --admin", f"{pin} --rebase",
+                        f"gh pr merge 9 --repo {HRSE} --merge --match-head-commit {HEAD}",
+                        f"gh pr merge 9 --repo {HRSE} --match-head-commit {HEAD}",
+                        f"GH_HOST=other.example {pin}"):
             with self.subTest(command=command):
                 self.grant()
                 result = self.run_hook(self.gh(), command=command)
@@ -497,14 +500,12 @@ class RouteGrant(_Case):
         self.assertTrue(self.denied(result))
         self.assertIn("could not be spent", result["systemMessage"])
 
-    def test_a_tooling_exception_merge_preclose_will_deny_keeps_the_grant(self):
-        for labels in (("tooling-exception",), ("tooling-exception", pre.PRECLOSE_LABEL)):
-            with self.subTest(labels=labels):
-                self.grant()
-                result = self.run_hook(FakeGitHub(HRSE, labels=labels))
-                self.assertTrue(self.denied(result))
-                self.assertNotIn("FORCE", result["systemMessage"])
-                self.assertEqual(self.status(), "usable")
+    def test_a_grant_is_spent_even_where_preclose_then_denies(self):
+        """The handoff's accepted trade (R-0418): a merge another hook stops needs a new line."""
+        self.grant()
+        result = self.run_hook(FakeGitHub(HRSE, labels=("tooling-exception",)))
+        self.assertFalse(self.denied(result))
+        self.assertEqual(self.status(), "consumed")
 
     def test_a_tooling_exception_merge_with_a_receipt_releases(self):
         self.grant()
