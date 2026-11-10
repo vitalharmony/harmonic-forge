@@ -109,15 +109,27 @@ class Build(_Tmp):
         def unknown_block_key(d): d["hooks"]["Stop"][0]["extra"] = 1
         def schema_two(d): d["schema"] = 2
         def lane_only_stale(d): d["lane_only"].append("no_such_hook.py")
-        for mutate in (event_not_a_list, block_without_hooks, handler_without_command,
-                       type_not_command, non_integer_timeout, bool_timeout, zero_timeout,
-                       uncompilable_matcher, non_string_matcher, unknown_event,
-                       unknown_top_level_key, unknown_handler_key, unknown_block_key,
-                       schema_two, lane_only_stale):
+        # Each violation is pinned to the check that names it, so a check that
+        # only a later one happens to back up still shows as removed.
+        for mutate, reason in ((event_not_a_list, "must be a non-empty list"),
+                               (block_without_hooks, "a block must be"),
+                               (handler_without_command, "has no command"),
+                               (type_not_command, "type is not"),
+                               (non_integer_timeout, "not a positive integer"),
+                               (bool_timeout, "not a positive integer"),
+                               (zero_timeout, "not a positive integer"),
+                               (uncompilable_matcher, "does not compile"),
+                               (non_string_matcher, "matcher is not a string"),
+                               (unknown_event, "unknown hook event"),
+                               (unknown_top_level_key, "unknown top-level"),
+                               (unknown_handler_key, "a handler must be"),
+                               (unknown_block_key, "a block must be"),
+                               (schema_two, "schema"),
+                               (lane_only_stale, "lane_only")):
             with self.subTest(mutate=mutate.__name__):
                 data = _set()
                 mutate(data)
-                with self.assertRaises(hs.SetError):
+                with self.assertRaisesRegex(hs.SetError, reason):
                     self.build(data)
 
     def test_disable_all_hooks_must_be_declared_false(self):
