@@ -443,6 +443,14 @@ class EndTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.end()
 
+    def test_end_keeps_the_cluster_reason_at_a_cap_with_a_waived_pass(self) -> None:
+        """harmonic-forge#1310 AC4: the cap stop never replaces an existing reason."""
+        self.preclose = {"status": "complete", "pass_history": [
+            {"sha": "a", "surviving": 2, "completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True},
+            {"sha": "b", "surviving": 2, "completed_at": "2026-10-17T02:00:00Z", "cross_family_ran": True}],
+                         "mechanism_cluster": {"epoch": 0, "verdict": "PATCH"}}
+        self.assertIn("mechanism-cluster verdict PATCH", self.end()["end_stop"])
+
     # harmonic-forge#1300: a REFORGE verdict recorded before the waiver.
     # The grant is self.now, 2026-10-17T01:02:03Z.
     PRE_GRANT = {"completed_at": "2026-10-16T22:00:00Z", "cross_family_ran": True}

@@ -383,14 +383,6 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
     if (len(waived) >= preclose_passes.MAX_PASSES
             and preclose_passes.cap_message(waived) == preclose_passes.STICKY_WICKET):
         return "sticky-wicket stop (two passes both left surviving findings)"
-    # harmonic-forge#1310: the cap reached with the waiver partway through it. No
-    # third pass can run and `--force` is refused while the receipt exists, so
-    # `end` is the only exit, whether or not the first of the two left survivors,
-    # and at least one of the two ran the forced cross-family call.
-    if (len(passes) >= preclose_passes.MAX_PASSES
-            and int(passes[-1].get("surviving") or 0) > 0
-            and any(_under_waiver(p, granted) for p in passes[-preclose_passes.MAX_PASSES:])):
-        return "pass cap reached with survivors on the last pass and a pass under the waiver"
     epoch = max((int(p.get("epoch") or 0) for p in preclose_passes.history(receipt)), default=0)
     cluster = preclose_passes._mechanism_cluster(receipt, epoch)
     if cluster and cluster.get("verdict") in ("PATCH", "REFORGE") and waived:
@@ -419,6 +411,14 @@ def imc_stop(repo: str, issue: int, granted_at: str | None = None) -> str | None
         if not post_grant:
             return ("REFORGE verdict before the waiver (the new epoch needs --force --reforge, "
                     "which the waiver refuses)")
+    # harmonic-forge#1310: the cap reached with the waiver partway through it. No
+    # third pass can run and `--force` is refused while the receipt exists, so
+    # `end` is the only exit, whether or not the first of the two left survivors,
+    # and at least one of the two ran the forced cross-family call.
+    if (len(passes) >= preclose_passes.MAX_PASSES
+            and int(passes[-1].get("surviving") or 0) > 0
+            and any(_under_waiver(p, granted) for p in passes[-preclose_passes.MAX_PASSES:])):
+        return "pass cap reached with survivors on the last pass and a pass under the waiver"
     return None
 
 
