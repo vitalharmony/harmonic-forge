@@ -87,6 +87,10 @@ def _path(path: str) -> str:
     return posixpath.normpath(path) if path else path
 
 
+#: `hostile-author`, alone or as the templated `hostile-author: <kind>`.
+_HOSTILE_DECLARED = re.compile(r"hostile[-_ ]author(?![a-z0-9])", re.IGNORECASE)
+
+
 def _threat(model: str | None) -> str | None:
     """None stays None; good-faith in any spelling is good-faith; anything
     else that is set reads as hostile-author."""
@@ -118,8 +122,7 @@ def _gate_half(repo: str, paths: list[str], scope: Scope, threat: str | None) ->
         if product:
             return Route(1, "hrse-product", f"hrse product code: {product[0]}")
     if threat == HOSTILE:
-        return Route(2, "authorization", "hostile-author threat model: an R-0371 authorization",
-                     tier_floor="deep", floor_gate="authorization")
+        return Route(2, "authorization", "hostile-author threat model: an R-0371 authorization")
     for path in paths:
         why = _lane_machinery(path)
         if why:
@@ -136,9 +139,11 @@ def evaluate(scope: Scope) -> Route:
 
     A floor is a property of the threat model over the whole scope and is
     independent of the path, so whichever gate returns first keeps it
-    (harmonic-forge#1267 AC3)."""
+    (harmonic-forge#1267 AC3). Only an explicit hostile-author declaration sets
+    one: a floor cannot be removed, so unrecognized text, which `_threat` routes
+    fail-closed, must not."""
     route = _strictest(scope)
-    if _threat(scope.threat_model) == HOSTILE and route.tier_floor is None:
+    if _HOSTILE_DECLARED.match((scope.threat_model or "").strip()):
         return replace(route, tier_floor="deep", floor_gate="authorization")
     return route
 
