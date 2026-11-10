@@ -9,6 +9,9 @@
 #                          session keeps its binary: always runs `update_cmd`.
 #   kind = "npm-global"    rewrites the package folder in place: compared with
 #                          `latest_cmd`, and deferred while a process of it runs.
+#
+# `latest_cmd` is required for every entry: after an update that exits 0 the
+# installed version must equal it, or the entry is `failed`.
 
 log = "%h/Harmonic_Projects/logs/cli-versions.jsonl"
 npm_root_cmd = ["%h/.npm-global/bin/npm", "root", "-g"]
@@ -21,6 +24,7 @@ name = "claude"
 kind = "side-by-side"
 binary = "%h/.local/bin/claude"
 version_cmd = ["%h/.local/bin/claude", "--version"]
+latest_cmd = ["%h/.npm-global/bin/npm", "view", "@anthropic-ai/claude-code", "version"]
 update_cmd = ["%h/.local/bin/claude", "update"]
 
 [[cli]]

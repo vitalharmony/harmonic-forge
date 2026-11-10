@@ -5,18 +5,27 @@ The lane model aliases follow the installed CLI, not the vendor catalog, so a
 stale CLI silently runs an agent on the wrong model. `forge-cli-update.timer`
 runs this every four hours over the registry in `cli_update.toml`:
 
-- a CLI whose binary is missing is logged `absent` and skipped, never an error;
+- a CLI that is not installed is logged `absent` and skipped, never an error:
+  its binary path is missing (`os.path.lexists`) and, for an npm-global CLI, its
+  package folder is missing under the npm root too. A dangling link or a missing
+  link beside a package folder is a broken install, not an absent one: an
+  npm-global CLI goes on to the update path (and its deferral), a side-by-side
+  CLI is `failed`;
 - a `side-by-side` CLI (Claude Code keeps old versions beside the new one) runs
-  its update command every time, and is `updated` or `current` from the version
-  read before and after;
+  its update command every time, regardless of a running process;
 - an `npm-global` CLI is compared with the published version; when they differ
   it is updated, unless a process of that CLI is running, in which case it is
   `deferred` to the next tick (npm rewrites the package folder in place, which
-  breaks a running Node CLI that loads modules lazily).
+  breaks a running Node CLI that loads modules lazily);
+- after an update that exits 0 the installed version is compared with the
+  published one (`latest_cmd`, required for every entry): equal is `updated` when
+  it moved and `current` when it did not, different is `failed`. A side-by-side
+  CLI whose published version cannot be read keeps the before-and-after status.
 
 A process belongs to an npm CLI when the real path of `/proc/<pid>/exe`, or of
-its first argument when the executable is node, is under the package folder in
-`npm root -g`. Command-line text is never matched: it would catch an agent shell
+the first argument after argv[0] that does not start with `-` when the
+executable is node, is under the package folder in `npm root -g`. The npm root
+is read from stdout only and must be an absolute existing directory. Command-line text is never matched: it would catch an agent shell
 that merely mentions the CLI and miss the native child codex hands off to.
 
 Each run appends one JSON line per CLI (`ts`, `name`, `before`, `after`,
@@ -58,6 +67,25 @@ def run(argv: list[str], timeout: int) -> tuple[int, str]:
     return done.returncode, (done.stdout or "") + (done.stderr or "")
 
 
+def run_stdout(argv: list[str], timeout: int) -> tuple[int, str]:
+    """Run argv without a shell; return (exit code, stdout only). npm warns on stderr."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ""
+    return done.returncode, done.stdout or ""
+
+
+def read_npm_root(cmd: list[str], runner: Runner) -> Optional[Path]:
+    """`npm root -g` from stdout alone, or None unless it is an absolute existing directory."""
+    code, out = runner(cmd, VERSION_TIMEOUT)
+    lines = out.strip().splitlines() if code == 0 else []
+    if not lines:
+        return None
+    root = Path(lines[-1].strip())
+    return root if root.is_absolute() and root.is_dir() else None
+
+
 def _expand(value, home: str):
     if isinstance(value, str):
         return value.replace("%h", home)
@@ -72,13 +100,13 @@ def load_registry(path: Path, home: str) -> dict:
     clis = []
     for raw in data.get("cli", []):
         entry = {k: _expand(v, home) for k, v in raw.items()}
-        for key in ("name", "kind", "binary", "version_cmd", "update_cmd"):
+        for key in ("name", "kind", "binary", "version_cmd", "latest_cmd", "update_cmd"):
             if key not in entry:
                 raise ValueError(f"{path}: entry {entry.get('name')!r} has no {key!r}")
         if entry["kind"] not in KINDS:
             raise ValueError(f"{path}: {entry['name']!r} kind must be one of {KINDS}")
-        if entry["kind"] == "npm-global" and not (entry.get("package") and entry.get("latest_cmd")):
-            raise ValueError(f"{path}: npm-global {entry['name']!r} needs package and latest_cmd")
+        if entry["kind"] == "npm-global" and not entry.get("package"):
+            raise ValueError(f"{path}: npm-global {entry['name']!r} needs a package")
         clis.append(entry)
     return {
         "log": Path(_expand(data["log"], home)),
@@ -124,8 +152,9 @@ def running_pids(package_dir: Path, proc_root: Path = Path("/proc"), own_pid: Op
                 argv = (entry / "cmdline").read_bytes().split(b"\0")
             except OSError:
                 continue
-            if len(argv) > 1 and argv[1]:
-                first = argv[1].decode(errors="replace")
+            script = next((a for a in argv[1:] if a and not a.startswith(b"-")), None)
+            if script is not None:
+                first = script.decode(errors="replace")
                 if not os.path.isabs(first):
                     try:
                         first = os.path.join(os.readlink(entry / "cwd"), first)
@@ -139,26 +168,34 @@ def running_pids(package_dir: Path, proc_root: Path = Path("/proc"), own_pid: Op
 def update_one(entry: dict, runner: Runner, npm_root: Optional[Path], proc_root: Path) -> dict:
     """One CLI's log line, without `ts`. Raises only on a bug; the caller isolates it."""
     line = {"name": entry["name"], "before": None, "after": None}
-    if not Path(entry["binary"]).exists():
-        return {**line, "status": "absent"}
+    npm = entry["kind"] == "npm-global"
+    package_dir = npm_root / entry["package"] if npm and npm_root is not None else None
+    if not os.path.lexists(entry["binary"]):
+        if not npm or (package_dir is not None and not package_dir.exists()):
+            return {**line, "status": "absent"}
+    elif not npm and not os.path.exists(entry["binary"]):
+        return {**line, "status": "failed", "detail": "binary is a dangling link"}
     before = _version(entry, runner)
     line["before"] = before
-    if entry["kind"] == "npm-global":
-        code, out = runner(entry["latest_cmd"], VERSION_TIMEOUT)
-        latest = parse_version(out) if code == 0 else None
+    code, out = runner(entry["latest_cmd"], VERSION_TIMEOUT)
+    latest = parse_version(out) if code == 0 else None
+    if npm:
         if latest is None:
             return {**line, "after": before, "status": "failed", "detail": "latest version unreadable"}
         if before == latest:
             return {**line, "after": before, "status": "current"}
         if npm_root is None:
             return {**line, "after": before, "status": "failed", "detail": "npm root unreadable"}
-        if running_pids(npm_root / entry["package"], proc_root, os.getpid()):
+        if running_pids(package_dir, proc_root, os.getpid()):
             return {**line, "after": before, "status": "deferred"}
     code, out = runner(entry["update_cmd"], UPDATE_TIMEOUT)
     after = _version(entry, runner)
     line["after"] = after
     if code != 0 or after is None:
         return {**line, "status": "failed", "detail": (out or "").strip()[-300:] or f"exit {code}"}
+    if latest is not None and after != latest:
+        return {**line, "status": "failed",
+                "detail": f"update exited 0 but {after} is installed and {latest} is published"}
     return {**line, "status": "updated" if after != before else "current"}
 
 
@@ -178,14 +215,14 @@ def deferred_streak(log: Path, name: str) -> int:
 
 
 def main(argv: Optional[list[str]] = None, *, runner: Runner = run,
-         proc_root: Path = Path("/proc"), now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> int:
+         root_runner: Runner = run_stdout, proc_root: Path = Path("/proc"),
+         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--registry", type=Path, default=REGISTRY)
     parser.add_argument("--home", default=os.path.expanduser("~"))
     args = parser.parse_args(argv)
     reg = load_registry(args.registry, args.home)
-    code, out = runner(reg["npm_root_cmd"], VERSION_TIMEOUT)
-    npm_root = Path(out.strip().splitlines()[-1]) if code == 0 and out.strip() else None
+    npm_root = read_npm_root(reg["npm_root_cmd"], root_runner)
     reg["log"].parent.mkdir(parents=True, exist_ok=True)
     failed, stuck = [], []
     for entry in reg["cli"]:
