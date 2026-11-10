@@ -1024,6 +1024,17 @@ class RouteFloorTests(unittest.TestCase):
         self.addCleanup(self.emit_patcher.start)
         self.assertNotEqual(route_store.emit.store_root(), Path(route_store.emit.REAL_STORE).expanduser())
 
+    def test_f1267_a_later_unfloored_event_still_denies_naming_the_gate(self):
+        import gates
+        import route_store
+        key = f"{self.REPO}#1249"
+        route_store.record(key, gates.Route(1, "unparsed-path", "r"), "evaluator", "filing")
+        route_store.record_if_not_looser(
+            key, gates.Route(2, "authorization", "r", tier_floor="deep", floor_gate="authorization"),
+            "evaluator", "handoff")
+        with patch.object(m, "resolve_repo", return_value=self.REPO):
+            self.assertEqual(m.resolve_route_floor("/tmp/x", 1249), "authorization")
+
     def test_override_inherits_floor_from_earlier_event(self):
         """An operator override carries no tier_floor (`route set`); a stricter
         one must not drop the evaluated route's floor (route_store.current)."""

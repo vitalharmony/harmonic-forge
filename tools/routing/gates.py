@@ -31,7 +31,7 @@ from __future__ import annotations
 import posixpath
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
@@ -56,6 +56,8 @@ class Route:
     gate_id: str
     reason: str
     tier_floor: str | None = None
+    #: The gate that set `tier_floor`, which may not be the gate that won.
+    floor_gate: str | None = None
 
 
 @dataclass
@@ -117,7 +119,7 @@ def _gate_half(repo: str, paths: list[str], scope: Scope, threat: str | None) ->
             return Route(1, "hrse-product", f"hrse product code: {product[0]}")
     if threat == HOSTILE:
         return Route(2, "authorization", "hostile-author threat model: an R-0371 authorization",
-                     tier_floor="deep")
+                     tier_floor="deep", floor_gate="authorization")
     for path in paths:
         why = _lane_machinery(path)
         if why:
@@ -147,4 +149,10 @@ def evaluate(scope: Scope) -> Route:
     threat = _threat(scope.threat_model)
     routes = [_gate_half(repo, paths, scope, threat) for repo, paths in sorted(halves.items())]
     # On a tie, report the gate that fired over the fall-through default.
-    return min(routes, key=lambda r: (r.path, r.gate_id == "default"))
+    winner = min(routes, key=lambda r: (r.path, r.gate_id == "default"))
+    # A floor is independent of the path, so a stricter half never drops another
+    # half's floor (harmonic-forge#1267 AC3).
+    floored = next((r for r in routes if r.tier_floor), None)
+    if winner.tier_floor is None and floored is not None:
+        return replace(winner, tier_floor=floored.tier_floor, floor_gate=floored.floor_gate)
+    return winner

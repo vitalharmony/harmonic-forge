@@ -561,8 +561,9 @@ def resolve_route_floor(cwd: str, issue_number: int, repo_hint: str | None = Non
         return LOOKUP_FAILED
     if attrs.get("tier_floor") != "deep":
         return None
-    # An override never sets a floor; under one, the gate that did is the shadow.
-    return str(attrs.get("shadow_gate") or attrs.get("gate_id") or "unknown")
+    # `current` names the gate that set the floor; the other two are only for an
+    # event it did not stamp.
+    return str(attrs.get("floor_gate") or attrs.get("shadow_gate") or attrs.get("gate_id") or "unknown")
 
 
 def _codex_switch_hint() -> str:

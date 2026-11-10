@@ -46,6 +46,12 @@ class Gates(unittest.TestCase):
         route = evaluate(Scope(FORGE, {FORGE: ["tools/gh/x.py"]}, threat_model="hostile-author"))
         self.assertEqual((route.path, route.gate_id, route.tier_floor), (2, "authorization", "deep"))
 
+    def test_f1267_a_stricter_half_keeps_another_halfs_floor(self):
+        route = evaluate(Scope(FORGE, {FORGE: ["tools/hooks/x.py"], HRSE: ["backend/app/x.py"]},
+                               threat_model="hostile-author"))
+        self.assertEqual((route.path, route.gate_id, route.tier_floor, route.floor_gate),
+                         (1, "hrse-product", "deep", "authorization"))
+
     def test_authorization_before_lane_machinery(self):
         """Pass-2 #6: gate 3 wins over gate 4 and keeps the deep floor."""
         route = evaluate(Scope(FORGE, {FORGE: ["tools/hooks/x.py"]}, threat_model="hostile-author"))
@@ -394,6 +400,53 @@ class Store(unittest.TestCase):
         route_store.record(self.key, gates.Route(2, "te-label", "r"), "te-label", "filing")
         route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
         self.assertNotIn("tier_floor", route_store.current(self.key)["attrs"])
+
+    def _floored(self):
+        return gates.Route(2, "authorization", "r", tier_floor="deep", floor_gate="authorization")
+
+    def test_f1267_a_looser_floored_handoff_records_the_floor_and_keeps_the_path(self):
+        route_store.record(self.key, gates.Route(1, "unparsed-path", "filed"), "evaluator", "filing")
+        event, baseline = route_store.record_if_not_looser(self.key, self._floored(), "evaluator", "handoff")
+        self.assertEqual((event, baseline), (None, 1))
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["gate_id"], attrs["reason"], attrs["checkpoint"],
+                          attrs["tier_floor"], attrs["floor_gate"]),
+                         (1, "unparsed-path", "filed", "filing", "deep", "authorization"))
+
+    def test_f1267_a_second_looser_floored_route_adds_no_event(self):
+        route_store.record(self.key, gates.Route(1, "unparsed-path", "filed"), "evaluator", "filing")
+        for _ in range(2):
+            route_store.record_if_not_looser(self.key, self._floored(), "evaluator", "handoff")
+        self.assertEqual(len(route_store.load(self.key)), 2)
+
+    def test_f1267_a_later_event_with_no_floor_does_not_lose_it(self):
+        route_store.record(self.key, self._floored(), "evaluator", "handoff")
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "evaluator", "pre-merge")
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["gate_id"], attrs["tier_floor"], attrs["floor_gate"]),
+                         (2, "te-label", "deep", "authorization"))
+
+    def test_f1267_an_event_from_before_floor_gate_names_its_own_gate(self):
+        route_store.record(self.key, gates.Route(2, "authorization", "r", tier_floor="deep"),
+                           "evaluator", "handoff")
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "evaluator", "pre-merge")
+        self.assertEqual(route_store.current(self.key)["attrs"]["floor_gate"], "authorization")
+
+    def test_f1267_route_set_over_a_floor_keeps_it(self):
+        route_store.record(self.key, self._floored(), "evaluator", "handoff")
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["tier_floor"], attrs["shadow_gate"], attrs["floor_gate"]),
+                         (1, "deep", "authorization", "authorization"))
+
+    def test_f1267_a_never_floored_issue_reports_none_and_still_refuses_looser(self):
+        route_store.record(self.key, gates.Route(1, "default", "r"), "evaluator", "filing")
+        event, _ = route_store.record_if_not_looser(self.key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        self.assertIsNone(event)
+        self.assertEqual(len(route_store.load(self.key)), 1)
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertNotIn("tier_floor", attrs)
+        self.assertNotIn("floor_gate", attrs)
 
     def test_bad_key(self):
         with self.assertRaises(ValueError):

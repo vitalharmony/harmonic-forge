@@ -137,6 +137,22 @@ class RefuseStricterDiff(_Case):
         self.assertEqual(self.premerge(key), [])
 
 
+class FloorOnlyEventKeepsTheBaseline(_Case):
+    """harmonic-forge#1267: a floor-only event copies its checkpoint, so it never
+    becomes the baseline a tightening is compared against."""
+
+    def test_a_hostile_handoff_after_pre_merge_leaves_the_merge_refused(self):
+        key = f"{HRSE}#2600"
+        self.seed(key, 2, "te-label", "handoff")
+        gh = FakeGitHub(HRSE)
+        self.assertTrue(self.denied(self.run_hook(gh)))
+        route_store.record_if_not_looser(
+            key, gates.Route(2, "authorization", "r", tier_floor="deep", floor_gate="authorization"),
+            decider="evaluator", checkpoint="handoff")
+        self.assertEqual(route_store.current(key)["attrs"]["tier_floor"], "deep")
+        self.assertTrue(self.denied(self.run_hook(gh)))
+
+
 class RefusalPersists(_Case):
     """AC2. Kill check: the baseline uses `evaluated_path(K)` (no pre-merge filter)."""
 
