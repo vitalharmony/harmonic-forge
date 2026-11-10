@@ -110,6 +110,7 @@ import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 import _lane3_env  # noqa: E402  (harmonic-forge#1218)
 import ui_grant  # noqa: E402  (harmonic-forge#1274)
 import _route_snapshot  # noqa: E402  (harmonic-forge#1231)
+import route_store  # noqa: E402  (harmonic-forge#1318; on sys.path through _route_snapshot)
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -3275,6 +3276,15 @@ def _post_kind(
                 print(note)
         except Exception as exc:
             print(f"[route] handoff snapshot not recorded: {type(exc).__name__}: {exc}")
+    if kind == "rework" and rework_kind == "correction":
+        # harmonic-forge#1318: a correction rework raises the issue's route
+        # floor to deep, so Lane 2 works the fix on the high-tier model. After
+        # the post, so a refused or failed post records nothing; a store error
+        # or an issue with no route is printed and never raised.
+        try:
+            route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
+        except Exception as exc:
+            print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
         # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one

@@ -205,13 +205,38 @@ def record_if_not_looser(key: str, route: Route, decider: str, checkpoint: str, 
         if baseline is not None and route.path > baseline:
             in_force = current(key)
             if route.tier_floor and not (in_force and in_force["attrs"].get("tier_floor")):
-                newest = [e for e in load(key) if e["attrs"].get("decider") != OVERRIDE][-1]["attrs"]
-                held = Route(int(newest["path"]), newest["gate_id"], newest.get("reason", ""),
-                             tier_floor=route.tier_floor, floor_gate=route.floor_gate or route.gate_id)
-                _append(key, held, decider, newest["checkpoint"],
-                        **{k: v for k, v in kwargs.items() if k != "reason"})
+                _hold_floor(key, route.tier_floor, route.floor_gate or route.gate_id, decider, **kwargs)
             return None, baseline
         return _append(key, route, decider, checkpoint, **kwargs), baseline
+
+
+def record_floor(key: str, tier_floor: str, floor_gate: str, decider: str, **kwargs
+                 ) -> Optional[dict[str, Any]]:
+    """Record a Tier floor on `key` without moving its path (harmonic-forge#1318).
+
+    The floor rides a copy of the newest evaluated route, so the path, gate and
+    checkpoint in force and the merge recheck's baseline are unchanged. The
+    first deep floor wins: an issue already reporting one gets no new event, and
+    its gate stays the one reported. An issue with no evaluated route has
+    nothing to copy, so this raises and the caller says so."""
+    with _route_lock(key):
+        in_force = current(key)
+        if in_force and in_force["attrs"].get("tier_floor") == "deep":
+            return None
+        if evaluated_path(key) is None:
+            raise ValueError(f"no evaluated route for {key} to hold the floor on")
+        return _hold_floor(key, tier_floor, floor_gate, decider, **kwargs)
+
+
+def _hold_floor(key: str, tier_floor: str, floor_gate: str, decider: str, **kwargs
+                ) -> dict[str, Any]:
+    """Append the floor on a copy of the newest evaluated route; the caller holds
+    `_route_lock(key)` and has checked that one exists."""
+    newest = [e for e in load(key) if e["attrs"].get("decider") != OVERRIDE][-1]["attrs"]
+    held = Route(int(newest["path"]), newest["gate_id"], newest.get("reason", ""),
+                 tier_floor=tier_floor, floor_gate=floor_gate)
+    return _append(key, held, decider, newest["checkpoint"],
+                   **{k: v for k, v in kwargs.items() if k != "reason"})
 
 
 def record(key: str, route: Route, decider: str, checkpoint: str, **kwargs) -> dict[str, Any]:

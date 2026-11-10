@@ -436,6 +436,36 @@ class Store(unittest.TestCase):
     def _floored(self):
         return gates.Route(2, "authorization", "r", tier_floor="deep", floor_gate="authorization")
 
+    def test_f1318_record_floor_keeps_path_gate_and_checkpoint(self):
+        route_store.record(self.key, gates.Route(2, "te-label", "labelled"), "evaluator", "handoff")
+        route_store.record(self.key, gates.Route(1, "hrse-product", "diff"), "evaluator", "pre-merge")
+        route_store.record_floor(self.key, "deep", "correction-rework", decider="l1-post")
+        attrs = route_store.current(self.key)["attrs"]
+        self.assertEqual((attrs["path"], attrs["gate_id"], attrs["reason"], attrs["checkpoint"],
+                          attrs["tier_floor"], attrs["floor_gate"]),
+                         (1, "hrse-product", "diff", "pre-merge", "deep", "correction-rework"))
+        self.assertEqual(route_store.evaluated_path(self.key), 1)
+
+    def test_f1318_the_first_floor_wins(self):
+        route_store.record(self.key, self._floored(), "evaluator", "handoff")
+        self.assertIsNone(route_store.record_floor(self.key, "deep", "correction-rework", decider="l1-post"))
+        self.assertEqual(route_store.current(self.key)["attrs"]["floor_gate"], "authorization")
+        self.assertEqual(len(route_store.load(self.key)), 1)
+
+    def test_f1318_a_second_correction_adds_no_event(self):
+        route_store.record(self.key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        route_store.record_floor(self.key, "deep", "correction-rework", decider="l1-post")
+        self.assertIsNone(route_store.record_floor(self.key, "deep", "correction-rework", decider="l1-post"))
+        self.assertEqual(len(route_store.load(self.key)), 2)
+
+    def test_f1318_no_evaluated_route_raises(self):
+        with self.assertRaises(ValueError):
+            route_store.record_floor(self.key, "deep", "correction-rework", decider="l1-post")
+        route_store.record(self.key, gates.Route(1, "override", "r"), "override", "override")
+        with self.assertRaises(ValueError):
+            route_store.record_floor(self.key, "deep", "correction-rework", decider="l1-post")
+        self.assertEqual(len(route_store.load(self.key)), 1)
+
     def test_f1267_a_looser_floored_handoff_records_the_floor_and_keeps_the_path(self):
         route_store.record(self.key, gates.Route(1, "unparsed-path", "filed"), "evaluator", "filing")
         event, baseline = route_store.record_if_not_looser(self.key, self._floored(), "evaluator", "handoff")
