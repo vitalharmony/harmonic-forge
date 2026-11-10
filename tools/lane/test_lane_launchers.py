@@ -2328,6 +2328,14 @@ class LaneHookSet(unittest.TestCase):
     def test_claude_code_safe_mode_refuses_from_env_and_from_a_settings_env_block(self):
         self._refuses_env("CLAUDE_CODE_SAFE_MODE")
 
+    def test_claude_code_restricted_refuses_from_env_and_from_a_settings_env_block(self):
+        """Pass 1 survivor 2: what `--restricted` sets, so project deny hooks drop."""
+        self._refuses_env("CLAUDE_CODE_RESTRICTED")
+
+    def test_claude_code_use_cowork_plugins_refuses_from_env_and_from_a_settings_env_block(self):
+        """User settings come from cowork_settings.json, so user-level hooks drop."""
+        self._refuses_env("CLAUDE_CODE_USE_COWORK_PLUGINS")
+
     def test_lane3_passes_one_settings_holding_policy_and_set(self):
         """Kill check 5: the Lane 3 policy and the set reach the session as one
         merged `--settings`, and both take effect."""
@@ -2366,7 +2374,8 @@ class LaneHookSet(unittest.TestCase):
     def test_the_registry_declares_the_set_and_the_refusals(self):
         source = (LANE_DIR / "_agent_registry.sh").read_text()
         self.assertIn('declare -A AGENT_HOOK_SET=(\n  [claude]="lane_hooks.json"\n  [codex]=""', source)
-        self.assertIn('[claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE"', source)
+        self.assertIn('[claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_RESTRICTED '
+                      'CLAUDE_CODE_USE_COWORK_PLUGINS"', source)
 
 
 if __name__ == "__main__":

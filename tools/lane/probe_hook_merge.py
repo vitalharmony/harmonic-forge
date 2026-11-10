@@ -18,7 +18,15 @@ variant would run; nothing is launched. With it, each variant runs one real
 `claude -p` (haiku, a scratch project, one Bash call) and prints how many times
 each tagged stub hook fired. Read the counts against the four properties.
 
-    python3 tools/lane/probe_hook_merge.py [--dir D] [--real-run]
+`--env NAME=VALUE` (repeatable) adds a variable to every launch, to measure
+whether it drops a hook (the refused-environment list in `_agent_registry.sh`
+is classified this way, not from `--help` text). The stub log only sees the
+fixture's `--settings` and project hooks, so a real run also prints, per
+event, the hook runs the CLI reported (`--include-hook-events`) beyond the
+stub's: the user-level hooks of the real `~/.claude/settings.json`, which is
+read and never written to.
+
+    python3 tools/lane/probe_hook_merge.py [--dir D] [--variant V] [--env N=V] [--real-run]
 """
 from __future__ import annotations
 
@@ -96,7 +104,26 @@ def write_fixture(root: Path, variant: str) -> tuple[Path, dict]:
 
 def command(flag: dict) -> list[str]:
     return ["claude", "-p", PROMPT, "--model", "haiku", "--permission-mode", "acceptEdits",
-            "--allowedTools", "Bash(true)", "--settings", json.dumps(flag, separators=(",", ":"))]
+            "--allowedTools", "Bash(true)", "--output-format", "stream-json", "--verbose",
+            "--include-hook-events", "--settings", json.dumps(flag, separators=(",", ":"))]
+
+
+def other_hooks(stream: str, log: Path) -> list[str]:
+    """Per event, the hook runs the CLI reported (`hook_started`) minus the
+    fixture stub's runs: what is left is the user-level (or managed) hooks.
+    The events carry no command, so the split is by count."""
+    started = collections.Counter()
+    for line in stream.splitlines():
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("subtype") == "hook_started":
+            started[str(msg.get("hook_event"))] += 1
+    stub = collections.Counter(line.rsplit("event=", 1)[-1].strip()
+                               for line in log.read_text().splitlines() if "event=" in line)
+    return [f"{started[ev] - stub[ev]:7d} OTHER {ev} (cli reported {started[ev]}, stub {stub[ev]})"
+            for ev in sorted(set(started) | set(stub))]
 
 
 def counts(log: Path) -> list[str]:
@@ -107,21 +134,36 @@ def counts(log: Path) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dir", type=Path, help="fixture directory (default: a new temp dir)")
+    parser.add_argument("--variant", action="append", choices=VARIANTS,
+                        help="run only this variant (repeatable; default: all four)")
+    parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
+                        help="set this variable on every launch (repeatable)")
     parser.add_argument("--real-run", action="store_true",
                         help="launch one real `claude -p` per variant (haiku)")
     args = parser.parse_args()
     root = (args.dir or Path(tempfile.mkdtemp(prefix="probe_hook_merge-"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("LANE", "CLAUDE_CODE_"))}
-    for variant in VARIANTS:
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("LANE", "CLAUDE_CODE_")) and k != "CLAUDECODE"}
+    for pair in args.env:
+        name, sep, value = pair.partition("=")
+        if not sep or not name:
+            parser.error(f"--env takes NAME=VALUE, not {pair!r}")
+        env[name] = value
+    if args.env:
+        print("env: " + " ".join(args.env))
+    for variant in args.variant or VARIANTS:
         proj, flag = write_fixture(root, variant)
         argv = command(flag)
         if not args.real_run:
             print(f"== {variant}: (cd {proj} && {' '.join(argv[:-1])} '<inline JSON>')")
             continue
-        proc = subprocess.run(argv, cwd=proj, env=env, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(argv, cwd=proj, env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=300)
+        (root / f"{variant}.stream.jsonl").write_text(proc.stdout)
         print(f"== {variant} (inline JSON --settings) exit={proc.returncode}")
-        print("\n".join(counts(root / "log.txt")) or "      (no lines: no hook ran)")
+        print("\n".join(counts(root / "log.txt")) or "      (no lines: no stub hook ran)")
+        print("\n".join(other_hooks(proc.stdout, root / "log.txt")) or "      (the CLI reported no hook run)")
     return 0
 
 

@@ -169,15 +169,25 @@ declare -A AGENT_LAUNCH_REFUSED_ENV=(
   [codex]=""
 )
 
-# harmonic-forge#1307: environment that switches hooks off, so a lane started
-# with it would run none of the Forge lane hook set. `CLAUDE_CODE_SIMPLE` is what
-# `--bare` sets; `CLAUDE_CODE_SAFE_MODE` is what `--safe-mode` sets (`claude
-# --help`, 2.1.322). Checked in the launcher's environment AND in Claude settings
-# `env` blocks, like AGENT_LAUNCH_REFUSED_ENV, but a separate table: that one's
-# refusal says the variable would override the launch model/effort, and these
-# would disable the lane's guards.
+# harmonic-forge#1307: environment that drops hooks, so a lane started with it
+# would lose guards: the Forge lane hook set, the project's deny hooks, or the
+# user-level ones. Built from every CLAUDE_CODE_* name in the installed 2.1.322
+# binary, not from `--help` text (which is how CLAUDE_CODE_RESTRICTED was
+# missed); each one here was measured with `probe_hook_merge.py --real-run
+# --env NAME=1`, and the names reviewed and left out are classified in the
+# issue's L2D. Re-run that sweep after a CLI update. Checked in the launcher's
+# environment AND in Claude settings `env` blocks, like AGENT_LAUNCH_REFUSED_ENV,
+# but a separate table: that one's refusal says the variable would override the
+# launch model/effort, and these would disable the lane's guards.
+#   CLAUDE_CODE_SIMPLE            what `--bare` sets: no hook runs (measured)
+#   CLAUDE_CODE_SAFE_MODE         what `--safe-mode` sets: no hook runs (measured)
+#   CLAUDE_CODE_RESTRICTED        what `--restricted` sets: project and user-level
+#                                 hooks do not run, only `--settings` ones (measured)
+#   CLAUDE_CODE_USE_COWORK_PLUGINS  user settings are read from
+#                                 cowork_settings.json, not settings.json: the
+#                                 user-level hooks do not run (measured)
 declare -A AGENT_HOOKS_REFUSED_ENV=(
-  [claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE"
+  [claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_RESTRICTED CLAUDE_CODE_USE_COWORK_PLUGINS"
   [codex]=""
 )
 

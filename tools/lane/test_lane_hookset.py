@@ -345,15 +345,53 @@ sys.stdout.flush()
 sys.stderr.write("\nPROBE " + json.dumps({"code": code, "hits": hits}) + "\n")
 '''
 
-    def _payload(self, event: str, matcher: str | None) -> dict:
-        tool = (matcher or "Bash").split("|")[0]
+    # Inputs that reach each lane-only hook's gated branch (pass 1 survivor 3):
+    # with its LANE gate removed, every one of the 11 then prints, exits
+    # non-zero, or touches the fixture HOME, a subprocess or the network.
+    _SESSION = "sess-1307"
+    _PROMPT = ("H1307 harmonic-forge#1307\n"
+               "ALLOW EDIT probe\n"
+               "ALLOW LOOP probe\n"
+               "/model opus")
+    _COMMAND = ("gh issue comment 1307 --repo vitalharmony/harmonic-forge --body 'L2D H1307'"
+                " && gh issue comment 1307 --repo vitalharmony/harmonic-forge --body '## AE H1307'"
+                " && gh issue close 1307 --repo vitalharmony/harmonic-forge"
+                " && mise run check && git commit -m x")
+    # What lane_launch_notice.py and tier_model_trigger_check.py read: a lane
+    # launch exports them, and with them set only the LANE gate keeps either quiet.
+    _LANE_ENV = {"LANE_REFRESH_STATUS": "current", "LANE_REFRESH_FROM": "a" * 40,
+                 "LANE_REFRESH_TO": "b" * 40, "LANE_REFRESH_DETAIL": "probe",
+                 "LANE_REFRESH_ENV": "relinked", "LANE_MODEL": "opus"}
+
+    def _seed(self, home: Path) -> Path:
+        """Fixture state each gated branch reads: an open task entry, an owed
+        marker and a pending removal, and a transcript on a high model whose
+        last reply asks a question. Returns the transcript path."""
+        tasks = home / ".claude" / "tasks" / self._SESSION
+        tasks.mkdir(parents=True)
+        (tasks / "1.json").write_text(json.dumps(
+            {"id": "1", "subject": "H1307 — x", "status": "in_progress"}))
+        owed = home / ".cache" / "harmonic-forge" / "tasklist_owed" / self._SESSION
+        (owed / ".pending").mkdir(parents=True)
+        (owed / "H1307.json").write_text(json.dumps({"key": "H1307", "kind": "post", "ts": 1}))
+        (owed / ".pending" / "1").write_text("H1307")
+        transcript = home / "transcript.jsonl"
+        transcript.write_text(json.dumps({"type": "assistant", "message": {
+            "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": "Shall I go on?"}]}}) + "\n")
+        return transcript
+
+    def _payload(self, event: str, matcher: str | None, transcript: Path) -> dict:
+        # TaskUpdate where a matcher offers it: a TaskCreate carrying a
+        # completed status returns before tasklist_hold's PostToolUse branch.
+        tools = (matcher or "Bash").split("|")
+        tool = "TaskUpdate" if "TaskUpdate" in tools else tools[0]
         return {
-            "hook_event_name": event, "session_id": "sess-1307", "cwd": str(self.tmp),
-            "transcript_path": str(self.tmp / "home" / "transcript.jsonl"),
+            "hook_event_name": event, "session_id": self._SESSION, "cwd": str(self.tmp),
+            "transcript_path": str(transcript),
             "tool_name": tool, "source": "startup", "stop_hook_active": False,
-            "prompt": "AE H1307 ALLOW EDIT ALLOW LOOP /model opus",
-            "tool_input": {"command": "gh issue comment 1307 --repo vitalharmony/harmonic-forge "
-                                      "--body 'L2D H1307' && git commit -m x",
+            "prompt": self._PROMPT,
+            "tool_input": {"command": self._COMMAND,
                            "file_path": str(self.tmp / "x.py"), "content": "x",
                            "taskId": "1", "subject": "H1307 — x", "status": "completed"},
             "tool_response": {"stdout": "https://github.com/vitalharmony/harmonic-forge/issues/1307#issuecomment-1"},
@@ -365,11 +403,12 @@ sys.stderr.write("\nPROBE " + json.dumps({"code": code, "hits": hits}) + "\n")
         fixture HOME, no subprocess, no network. This is what makes removing it
         from a project's settings safe for a non-lane session."""
         home = self.fixture_home()
-        (home / ".claude" / "tasks" / "sess-1307").mkdir(parents=True)
+        transcript = self._seed(home)
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("LANE", "CLAUDE_", "GH_", "XDG_"))}
         env.update(HOME=str(home), CLAUDE_CONFIG_DIR=str(home / ".claude"),
-                   XDG_CACHE_HOME=str(home / ".cache"), XDG_STATE_HOME=str(home / ".state"))
+                   XDG_CACHE_HOME=str(home / ".cache"), XDG_STATE_HOME=str(home / ".state"),
+                   **self._LANE_ENV)
         seen = set()
         for event, matcher, handler in hs.handlers(_set()["hooks"]):
             for script in hs.SCRIPT_RE.findall(handler["command"]):
@@ -379,7 +418,7 @@ sys.stderr.write("\nPROBE " + json.dumps({"code": code, "hits": hits}) + "\n")
                 with self.subTest(script=script, event=event, matcher=matcher):
                     proc = subprocess.run(
                         [sys.executable, "-c", self._PROBE, str(ROOT / "tools" / "hooks" / script)],
-                        input=json.dumps(self._payload(event, matcher)), env=env,
+                        input=json.dumps(self._payload(event, matcher, transcript)), env=env,
                         cwd=self.tmp, capture_output=True, text=True, timeout=60)
                     report = json.loads(proc.stderr.rsplit("PROBE ", 1)[1])
                     self.assertEqual(report["code"], 0, proc.stderr[-500:])
@@ -446,6 +485,29 @@ class Doubled(unittest.TestCase):
             self.assertIn("DOUBLED", proc.stdout)
             self.assertIn("batch_gate.py runs twice", proc.stdout)
 
+    def test_the_cli_reads_home_user_settings_by_default(self):
+        """Pass 1 survivor 4: with no --user-settings, `doubled` reads
+        `~/.claude/settings.json` -- here a temporary HOME's, never the real one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            (home / ".claude").mkdir(parents=True)
+            (home / "harmonic-forge").mkdir()
+            (home / "harmonic-forge" / "tools").symlink_to(ROOT / "tools")
+            user = home / ".claude" / "settings.json"
+            user.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+                {"type": "command", "command": "python3 /x/harmonic-forge/tools/hooks/batch_gate.py"}]}]}}))
+            env = dict(os.environ, HOME=str(home))
+            cli = [sys.executable, "-I", str(HERE / "lane_hookset.py"), "doubled"]
+            proc = subprocess.run(cli, capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn(f"DOUBLED {user}", proc.stdout)
+            self.assertIn("batch_gate.py runs twice", proc.stdout)
+            # The control: skipping the user file reports no double, so the one
+            # above came from the default path.
+            proc = subprocess.run([*cli, "--user-settings", ""], capture_output=True,
+                                  text=True, env=env)
+            self.assertEqual((proc.returncode, proc.stdout), (0, ""), proc.stderr)
+
     def test_a_byte_identical_class_a_entry_is_removable_and_class_b_is_not(self):
         settings = {"hooks": {}}
         for script in ("require_ci_plan.py", "deny_cross_session_contact.py"):
@@ -505,6 +567,30 @@ class ProbeFixture(_Tmp):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.count("== "), 4)
         self.assertTrue((self.tmp / "proj" / ".claude" / "settings.json").is_file())
+
+    def test_variant_and_env_select_without_launching(self):
+        """The refused-env sweep's measurement form, launch-free."""
+        base = [sys.executable, str(HERE / "probe_hook_merge.py"), "--dir", str(self.tmp)]
+        env = {**os.environ, "PATH": "/nonexistent"}
+        proc = subprocess.run([*base, "--variant", "merge", "--env", "CLAUDE_CODE_X=1"],
+                              capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.count("== "), 1)
+        self.assertIn("env: CLAUDE_CODE_X=1", proc.stdout)
+        proc = subprocess.run([*base, "--env", "NOEQUALS"], capture_output=True, text=True,
+                              env=env, timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("NAME=VALUE", proc.stderr)
+
+    def test_other_hooks_are_the_cli_count_less_the_stub_count(self):
+        import probe_hook_merge as probe
+        log = self.write("log.txt", "A event=PreToolUse\nB event=PreToolUse\n")
+        stream = "\n".join(json.dumps({"type": "system", "subtype": "hook_started",
+                                       "hook_event": ev}) for ev in
+                           ["PreToolUse"] * 5 + ["Stop"]) + "\nnot json\n"
+        self.assertEqual(probe.other_hooks(stream, log), [
+            "      3 OTHER PreToolUse (cli reported 5, stub 2)",
+            "      1 OTHER Stop (cli reported 1, stub 0)"])
 
 
 if __name__ == "__main__":

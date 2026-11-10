@@ -244,8 +244,9 @@ def capture_cell(
                     # capture run from one read the session's value back
                     # instead of what the launcher set.
                     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
-                    # harmonic-forge#1307: either refuses every Claude launch.
-                    "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"):
+                    # harmonic-forge#1307: each refuses every Claude launch.
+                    "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE",
+                    "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)
