@@ -3259,6 +3259,18 @@ def _post_kind(
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
+    if kind == "rework" and rework_kind == "correction":
+        # harmonic-forge#1318: a correction rework raises the issue's route
+        # floor to deep, so Lane 2 works the fix on the high-tier model. Directly
+        # after the comment lands, ahead of the receipt and every later step
+        # that can exit; a refused or failed post records nothing. A read-back
+        # failure inside comment_body exits before this line, and its message
+        # sends the operator to the thread. A store error or an issue with no
+        # route is printed and never raised.
+        try:
+            route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
+        except Exception as exc:
+            print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
                    **({"rework_kind": rework_kind} if kind == "rework" else {}),  # harmonic-forge#1247
@@ -3276,15 +3288,6 @@ def _post_kind(
                 print(note)
         except Exception as exc:
             print(f"[route] handoff snapshot not recorded: {type(exc).__name__}: {exc}")
-    if kind == "rework" and rework_kind == "correction":
-        # harmonic-forge#1318: a correction rework raises the issue's route
-        # floor to deep, so Lane 2 works the fix on the high-tier model. After
-        # the post, so a refused or failed post records nothing; a store error
-        # or an issue with no route is printed and never raised.
-        try:
-            route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
-        except Exception as exc:
-            print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
         # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one

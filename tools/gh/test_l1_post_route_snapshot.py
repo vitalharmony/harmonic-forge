@@ -321,6 +321,13 @@ class CorrectionRework(TempStore):
             self._rework(comment=comment)
         self.assertEqual(len(route_store.load(KEY)), 1)
 
+    def test_a_landed_rework_keeps_its_floor_when_a_later_step_fails(self):
+        """harmonic-forge#1318 pass 1: the floor is written before the receipt."""
+        with patch.object(post, "write_receipt", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                self._rework()
+        self.assertEqual(route_store.current(KEY)["attrs"]["floor_gate"], "correction-rework")
+
     def test_a_store_error_prints_one_line_and_the_post_succeeds(self):
         """AC4."""
         with patch.object(post.route_store, "record_floor", side_effect=RuntimeError("store down")), \
