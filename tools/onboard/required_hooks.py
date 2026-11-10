@@ -1,5 +1,10 @@
-"""Platform hooks every onboarded checkout's settings.json must register
+"""Platform hooks every onboarded checkout's lane sessions must run
 (harmonic-forge#918). Its own module: `forge_onboard.py` is far past R-0006's cap.
+
+Since harmonic-forge#1307 the requirement is checked over the Forge lane hook
+set (`tools/lane/lane_hooks.json`, passed at every Claude lane launch) plus the
+project's own settings.json, so the set meets it for every project; a project
+need not register these itself.
 
 Each requirement is `(script, event, tools)`. `tools` is the set of tool names
 the registration's matcher must cover -- tested as the regex Claude Code treats

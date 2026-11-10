@@ -209,24 +209,24 @@ class VerifyTests(Base):
         got = self.statuses(self.project(self.make_repo("noprotocol"), protocol=None))
         self.assertEqual(got["protocol"], fo.FAIL)
 
-    def test_a_settings_file_with_no_hooks_block_fails(self) -> None:
-        """AC2 names hooks DRIFT as the expected real-world gap, and the only
-        hooks test exercised the missing-FILE branch. Mutating `if not hooks:`
-        to `if 0:` left the suite green: `hooks=None` then fell through the
-        `isinstance(..., dict)` guard to `ok — 0 event(s)`."""
+    def test_a_settings_file_with_no_hooks_block_passes(self) -> None:
+        """Inverted by harmonic-forge#1307: the lane hooks come from the Forge
+        set at launch, so a project with no hooks of its own is valid -- the
+        required hooks and wake-up sources are judged over the set plus the
+        project. (Before #1307 this asserted FAIL.)"""
         repo = self.make_repo("nohooks", hooks=False)
         settings = repo / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"permissions": {}}), encoding="utf-8")
         got = self.statuses(self.project(repo))
-        self.assertEqual(got["hooks"], fo.FAIL)
+        self.assertEqual(got["hooks"], fo.OK)
 
-    def test_an_empty_hooks_block_fails(self) -> None:
+    def test_an_empty_hooks_block_passes(self) -> None:
         repo = self.make_repo("emptyhooks", hooks=False)
         settings = repo / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
-        self.assertEqual(self.statuses(self.project(repo))["hooks"], fo.FAIL)
+        self.assertEqual(self.statuses(self.project(repo))["hooks"], fo.OK)
 
     def test_a_dangling_rules_symlink_fails(self) -> None:
         repo = self.make_repo("dangle")
@@ -421,6 +421,12 @@ class HookContentTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        # harmonic-forge#1307: these exercise the project-file logic alone, so
+        # the Forge lane hook set contributes nothing here; LaneHookSetCheckTests
+        # covers the union.
+        no_set = mock.patch.object(fo, "_lane_set", return_value=({}, None))
+        no_set.start()
+        self.addCleanup(no_set.stop)
         self.root = Path(self._tmp.name)
         self.script = self.root / "harmonic-forge" / "tools" / "hooks" / "belt_wakeup.py"
         self.script.parent.mkdir(parents=True)
@@ -621,6 +627,108 @@ class HookContentTests(unittest.TestCase):
         self.assertIn("gone.py", check.detail)
 
 
+class LaneHookSetCheckTests(unittest.TestCase):
+    """harmonic-forge#1307 Part 7: the hooks check judges coverage over the
+    Forge lane hook set plus the project's own hooks."""
+
+    SET = Path(__file__).resolve().parents[1] / "lane" / "lane_hooks.json"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _project(self, name: str, settings: dict) -> mf.Project:
+        checkout = self.root / name
+        (checkout / ".claude").mkdir(parents=True)
+        (checkout / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        return mf.Project(name=name, prefix="Z", path=str(checkout))
+
+    def _set_entry(self, script: str) -> tuple[str, dict]:
+        data = json.loads(self.SET.read_text(encoding="utf-8"))
+        for event, blocks in data["hooks"].items():
+            for block in blocks:
+                for handler in block["hooks"]:
+                    if script in handler["command"]:
+                        return event, {"matcher": block.get("matcher"), "hooks": [dict(handler)]}
+        raise AssertionError(script)
+
+    def test_a_required_hook_in_the_set_satisfies_the_check(self) -> None:
+        """A project that has removed `require_ci_plan.py` (class A, in the set)
+        is not reported: the set covers it at every lane launch."""
+        check = fo.check_hooks(self._project("noreq", {"hooks": {}}))
+        self.assertEqual(check.status, fo.OK, check.detail)
+        self.assertNotIn("require_ci_plan.py", check.detail)
+
+    def test_a_project_with_no_hooks_of_its_own_passes(self) -> None:
+        check = fo.check_hooks(self._project("bare", {"permissions": {}}))
+        self.assertEqual(check.status, fo.OK, check.detail)
+        self.assertIn("52 from the Forge set, 0 project-specific, 0 removable", check.detail)
+
+    def test_a_byte_identical_class_a_entry_is_counted_removable(self) -> None:
+        event, block = self._set_entry("require_ci_plan.py")
+        check = fo.check_hooks(self._project("dup", {"hooks": {event: [block]}}))
+        self.assertEqual(check.status, fo.OK, check.detail)
+        self.assertIn("0 project-specific, 1 removable", check.detail)
+
+    def test_a_doubled_entry_fails_the_hooks_check(self) -> None:
+        """Same script, same event, a different command string: it runs twice."""
+        event, block = self._set_entry("deny_cross_session_contact.py")
+        block["hooks"][0]["command"] = (
+            'python3 "${CLAUDE_PROJECT_DIR}/tools/hooks/deny_cross_session_contact.py"')
+        check = fo.check_hooks(self._project("doubled", {"hooks": {event: [block]}}))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("deny_cross_session_contact.py runs twice", check.detail)
+
+    def test_a_different_timeout_is_a_doubled_entry(self) -> None:
+        event, block = self._set_entry("block_data_migration_close.py")
+        block["hooks"][0]["timeout"] = 5
+        check = fo.check_hooks(self._project("timeout", {"hooks": {event: [block]}}))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("differs from the set's 25", check.detail)
+
+    def test_an_unloadable_set_fails_every_project(self) -> None:
+        with mock.patch.object(fo, "LANE_HOOK_SET", self.root / "no-such-set.json"):
+            for name in ("a", "b"):
+                check = fo.check_hooks(self._project(name, {"hooks": {}}))
+                self.assertEqual(check.status, fo.FAIL)
+                self.assertIn("lane hook set does not load", check.detail)
+
+    def test_the_set_validates_against_this_checkout(self) -> None:
+        data, error = fo._lane_set()
+        self.assertIsNone(error)
+        self.assertTrue(data["hooks"])
+
+    def test_a_worktree_with_a_doubled_entry_is_reported(self) -> None:
+        repo = self.root / "wtrepo"
+        repo.mkdir()
+
+        def run(*args, cwd=None):
+            return subprocess.run(["git", "-C", str(cwd or repo), *args],
+                                  capture_output=True, text=True, check=True)
+        run("init", "-q", "-b", "main")
+        _quiet_git_repo(run)
+        (repo / "f").write_text("x")
+        run("add", "-A")
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one")
+        lanes = self.root / "lanes"
+        lanes.mkdir()
+        lane2 = lanes / "wtrepo-lane2"
+        run("worktree", "add", "-q", "--detach", str(lane2), "HEAD")
+        event, block = self._set_entry("deny_cross_session_contact.py")
+        block["hooks"][0]["command"] = "python3 /x/tools/hooks/deny_cross_session_contact.py"
+        (lane2 / ".claude").mkdir()
+        (lane2 / ".claude" / "settings.json").write_text(json.dumps({"hooks": {event: [block]}}))
+        project = mf.Project(
+            name="wtrepo", prefix="W", path=str(repo), worktree_dir=str(lanes),
+            protocol=mf.Protocol(
+                worktree_name="{checkout}-lane{lane}", l1_post_task="l1-post",
+                lane_comment_task="lane-comment", gate_checkout_task="gate-checkout",
+                lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
+                runs_lane3=False))
+        self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
+
+
 class SessionStartMatcherSemanticsTests(unittest.TestCase):
     """harmonic-forge#560 preclose. A matcher is a REGEX, not a pipe list.
 
@@ -679,6 +787,11 @@ class AdvanceStaleWorktreeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # harmonic-forge#1307: the worktree checks here are about the project
+        # file; the Forge lane hook set's own coverage is tested elsewhere.
+        no_set = mock.patch.object(fo, "_lane_set", return_value=({}, None))
+        no_set.start()
+        self.addCleanup(no_set.stop)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()

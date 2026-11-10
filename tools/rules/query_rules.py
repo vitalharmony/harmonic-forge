@@ -56,6 +56,9 @@ _WIRING_LOCATIONS = {
     "forge": _HOME / "harmonic-forge" / ".claude" / "settings.json",
     "forge-lane2": _HOME / "Harmonic_Projects" / "harmonic-forge-lane2" / ".claude" / "settings.json",
     "forge-lane3": _HOME / "Harmonic_Projects" / "harmonic-forge-lane3" / ".claude" / "settings.json",
+    # harmonic-forge#1307: the Forge lane hook set every Claude lane launch
+    # passes as `--settings`, in any project. Read from THIS checkout.
+    "forge-lane-set": _PLATFORM_ROOT / "tools" / "lane" / "lane_hooks.json",
 }
 
 _SCRIPT_RE = re.compile(r"([\w./-]+\.py)")

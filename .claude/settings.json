@@ -85,7 +85,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 5
           }
         ]
@@ -172,7 +172,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -280,12 +280,12 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/enforce_handoff_owed.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_handoff_owed.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           },
           {
@@ -322,7 +322,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/record_tasklist_post.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 90
           }
         ]
@@ -332,7 +332,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -344,12 +344,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/record_tasklist_post.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 90
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/record_failed_command.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_failed_command.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 5
           }
         ]
@@ -359,7 +359,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/tools/hooks/tasklist_hold.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]

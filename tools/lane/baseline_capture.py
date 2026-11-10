@@ -136,6 +136,24 @@ def write_codex_hooks(checkout: Path) -> None:
     hooks_json.write_text(json.dumps(config))
 
 
+def link_forge_tools(home: Path, tools: Path) -> None:
+    """Make `<home>/harmonic-forge/tools` the checkout under test's `tools/`.
+
+    harmonic-forge#1307 (Lane 1 change 3): every Claude launch validates the
+    Forge lane hook set, whose commands name `${HOME}/harmonic-forge/tools/
+    hooks/<script>`, so under a fixture HOME with no checkout every Claude
+    launch would refuse. Only `tools/` is linked, never the checkout itself:
+    `$HOME/harmonic-forge/sync_rules.py --pull` would otherwise run a real
+    `git pull --ff-only` on the checkout under test, and the harmonic-forge#651
+    test relies on the fixture HOME having no `sync_rules.py`.
+    """
+    forge = home / "harmonic-forge"
+    forge.mkdir(parents=True, exist_ok=True)
+    link = forge / "tools"
+    if not link.exists():
+        link.symlink_to(tools.resolve())
+
+
 def build_fixture_tree(
     root: Path,
     project: str = "proj",
@@ -225,7 +243,9 @@ def capture_cell(
                     # Claude Code lane session exports this as `false`, so a
                     # capture run from one read the session's value back
                     # instead of what the launcher set.
-                    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"):
+                    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
+                    # harmonic-forge#1307: either refuses every Claude launch.
+                    "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)
@@ -252,14 +272,36 @@ def capture_cell(
         return payload
 
 
+LANE_SETTINGS = "<LANE_SETTINGS>"
+
+
+def _is_json_object(value: str) -> bool:
+    try:
+        return isinstance(json.loads(value), dict)
+    except ValueError:
+        return False
+
+
 def _normalize(cell: dict, root: Path, lane_dir: Path,
                home: Path | None = None) -> dict:
     """Replace fixture-specific absolute paths with stable placeholders.
 
     Without this the fixture would record a `/tmp/xxxx` that differs on every
     run, and the AC8 diff would be pure noise.
+
+    harmonic-forge#1307: the inline JSON object after `--settings` (the Forge
+    lane hook set, merged with the Lane 3 policy where installed) becomes
+    `<LANE_SETTINGS>`. Its content is asserted by the LaneHookSet tests, not
+    frozen into twelve cells.
     """
     home = str(home) if home else os.environ.get("HOME", "")
+    argv = cell.get("argv") if isinstance(cell, dict) else None
+    if isinstance(argv, list):
+        argv = list(argv)
+        for i in range(1, len(argv)):
+            if argv[i - 1] == "--settings" and _is_json_object(argv[i]):
+                argv[i] = LANE_SETTINGS
+        cell = {**cell, "argv": argv}
 
     def sub(value):
         if isinstance(value, str):
@@ -290,6 +332,7 @@ def capture_all(lane_dir: Path) -> dict:
         # this pass locally while failing on CI (harmonic-forge#783).
         home = root / "home"
         write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
+        link_forge_tools(home, lane_dir.parent)
         for lane in LANES:
             for agent in AGENTS:
                 for shape, args in ARG_SHAPES.items():
@@ -329,6 +372,11 @@ def capture_all(lane_dir: Path) -> dict:
 #      Declared here, never re-captured into the fixture.
 #   4. harmonic-forge#1250 -- a Claude lane loads the route-floor mod, just
 #      before that session name. Declared the same way.
+#
+#   Not a delta: harmonic-forge#1307's `--settings <LANE_SETTINGS>` (the Forge
+#   lane hook set, at step 4's argv position) was written INTO the fixture's
+#   twelve Claude cells, each checked against a capture, and its JSON value is
+#   normalized by `_normalize`. The Codex cells did not change.
 # ---------------------------------------------------------------------------
 DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why",
                    "F1014:session-name", "F1250:route-floor-mod")

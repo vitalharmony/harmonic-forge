@@ -1,0 +1,421 @@
+{
+  "schema": 1,
+  "source": {
+    "repo": "vitalharmony/hrse",
+    "commit": "a60f9969cc9db363ee4edcafbc864d43f96973d2",
+    "path": ".claude/settings.json",
+    "blob": "bc0c239889876dce129b5136bec9356fe7fbe2eb"
+  },
+  "entries": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane2_status_claims.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_irreversible_ops.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/mypy_cwd_trap.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_inline_prose.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_data_migration_close.py\"",
+      "timeout": 25
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_missing_preclose_inspection.py\"",
+      "timeout": 25
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
+      "timeout": 25
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_undetermined_phase_close.py\"",
+      "timeout": 25
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_stale_script_execution.py\"",
+      "timeout": 25
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/lane3_cloud_cli_policy.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_raw_board_scan.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/block_direct_dismiss_cypher.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_unbounded_poll.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 5
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash|Read",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_reload_probe.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Edit|Write",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Edit|Write",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash|Monitor|Write|Edit|MultiEdit|NotebookEdit|CronCreate|ScheduleWakeup|RemoteTrigger",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "SendMessage",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\"",
+      "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/require_ci_plan.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Write|Edit|MultiEdit",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/gate_feedback_memory_write.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "TaskUpdate",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "CronCreate|CronDelete",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "jq -r '.tool_input.command // empty' | grep -qE \"(^|[;&|])[[:space:]]*(gh[[:space:]]+issue[[:space:]]+(create|close)([[:space:]]|$)|([^[:space:];&|]*python[0-9.]*|uv[[:space:]]+run)[[:space:]]+[^;&|]*gh_issue\\.py|mise[[:space:]]+run[[:space:]]+gh-new-issue([[:space:]]|$))\" && [ \"${LANE:-}\" = \"1\" ] && echo '{\"systemMessage\":\"GitHub issue set just changed (create/close) on vitalharmony/hrse or vitalharmony/harmonic-forge. docs/PRIORITIES.md reconciliation may be owed -- run /sprint-plan when convenient (hrse#1141).\"}' || true",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/remind_gate_readiness_sweep.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 90
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "TaskCreate|TaskUpdate",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "grep -qiE 'display|show me|\\bsummar' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"REMINDER (repeat-offense guard): this prompt asks to display/show/summarize something. If your response involves output from any tool call (a script, a file, a generated report), you must paste that output VERBATIM as literal text in your response -- never write your own condensed paraphrase or bullet recap in its place, and never let a tool-result pane substitute for pasted text. This specific failure has recurred multiple times in this project; treat it as a hard requirement, not a style preference. Exception: output that is published rather than delivered in chat -- sprint-plan generator output (milestone_summary.py, drift_check.py; publish via mise run sprint-summary-publish and report only the delta) and any lane/issue/subagent/gate output (link it) -- is never pasted (hrse#2192).\"}}' || true",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
+      "timeout": 25
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/grant_loop_override.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_trigger_check.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 30
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/memory_fold_notice.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 15
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/grant_ci_plan_override.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/scripts/enforce_sprint_plan_summary.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_stop_backstop.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 25
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_downshift_reminder.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 25
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/claim_selfref_shadow.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 25
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_handoff_owed.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/require_probed_operator_commands.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_session_model.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "compact",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_marker.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "compact",
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/scripts/directive_provenance.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "compact",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/transaction_log_context.py\"; [ -f \"$f\" ] && python3 \"$f\" --boundary version-minor:frontend/package.json || true",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "compact",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/memory_fold_notice.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 15
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/belt_wakeup.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/scripts/directive_provenance.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/transaction_log_context.py\"; [ -f \"$f\" ] && python3 \"$f\" --boundary version-minor:frontend/package.json || true",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/lane_launch_notice.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/memory_fold_notice.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 15
+    },
+    {
+      "event": "PostToolUseFailure",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 90
+    },
+    {
+      "event": "PostToolUseFailure",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_failed_command.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 5
+    },
+    {
+      "event": "PostToolUseFailure",
+      "matcher": "TaskUpdate",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    }
+  ],
+  "project_specific": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/block_direct_dismiss_cypher.py\"",
+      "reason": "HRSE2's own script under scripts/, not a Forge hook"
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "jq -r '.tool_input.command // empty' | grep -qE \"(^|[;&|])[[:space:]]*(gh[[:space:]]+issue[[:space:]]+(create|close)([[:space:]]|$)|([^[:space:];&|]*python[0-9.]*|uv[[:space:]]+run)[[:space:]]+[^;&|]*gh_issue\\.py|mise[[:space:]]+run[[:space:]]+gh-new-issue([[:space:]]|$))\" && [ \"${LANE:-}\" = \"1\" ] && echo '{\"systemMessage\":\"GitHub issue set just changed (create/close) on vitalharmony/hrse or vitalharmony/harmonic-forge. docs/PRIORITIES.md reconciliation may be owed -- run /sprint-plan when convenient (hrse#1141).\"}' || true",
+      "reason": "inline shell nudge that names HRSE2's docs/PRIORITIES.md"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "grep -qiE 'display|show me|\\bsummar' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"REMINDER (repeat-offense guard): this prompt asks to display/show/summarize something. If your response involves output from any tool call (a script, a file, a generated report), you must paste that output VERBATIM as literal text in your response -- never write your own condensed paraphrase or bullet recap in its place, and never let a tool-result pane substitute for pasted text. This specific failure has recurred multiple times in this project; treat it as a hard requirement, not a style preference. Exception: output that is published rather than delivered in chat -- sprint-plan generator output (milestone_summary.py, drift_check.py; publish via mise run sprint-summary-publish and report only the delta) and any lane/issue/subagent/gate output (link it) -- is never pasted (hrse#2192).\"}}' || true",
+      "reason": "inline shell reminder carrying HRSE2's own repeat-offense text"
+    },
+    {
+      "event": "Stop",
+      "matcher": null,
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/scripts/enforce_sprint_plan_summary.py\"",
+      "reason": "HRSE2's own script under scripts/, not a Forge hook"
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "compact",
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/scripts/directive_provenance.py\"",
+      "reason": "HRSE2's own script under scripts/, not a Forge hook"
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "compact",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/transaction_log_context.py\"; [ -f \"$f\" ] && python3 \"$f\" --boundary version-minor:frontend/package.json || true",
+      "reason": "Forge script with a per-project argument (HRSE2 passes --boundary version-minor:frontend/package.json, harmonic-forge passes recent:30); the script's docstring makes it opt-in per repo"
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/scripts/directive_provenance.py\"",
+      "reason": "HRSE2's own script under scripts/, not a Forge hook"
+    },
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume|clear|fork",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/transaction_log_context.py\"; [ -f \"$f\" ] && python3 \"$f\" --boundary version-minor:frontend/package.json || true",
+      "reason": "Forge script with a per-project argument (HRSE2 passes --boundary version-minor:frontend/package.json, harmonic-forge passes recent:30); the script's docstring makes it opt-in per repo"
+    }
+  ]
+}

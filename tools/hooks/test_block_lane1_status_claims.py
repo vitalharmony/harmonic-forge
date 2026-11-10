@@ -702,6 +702,15 @@ class TestBashMatcherIsWired(unittest.TestCase):
 
     _OWN = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
 
+    def test_the_lane_hook_set_carries_it_on_bash_and_edits(self):
+        """harmonic-forge#1307: every lane launch carries it, in any project."""
+        import json
+        hooks = json.loads((self._OWN.parents[1] / "tools" / "lane" / "lane_hooks.json")
+                           .read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+        for matcher in ("Bash", "Edit|Write"):
+            blocks = [e for e in hooks if e.get("matcher") == matcher]
+            self.assertIn("block_lane1_status_claims.py", json.dumps(blocks), matcher)
+
     def test_bash_matcher_carries_this_hook(self):
         import json
         data = json.loads(self._OWN.read_text(encoding="utf-8"))
