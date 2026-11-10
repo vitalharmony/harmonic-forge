@@ -21,9 +21,11 @@ runs this every four hours over the registry in `cli_update.toml`:
   published one (`latest_cmd`, required for every entry): equal is `updated` when
   it moved and `current` when it did not, different is `failed`. A side-by-side
   CLI whose published version cannot be read keeps the before-and-after status.
+  Versions are compared for equality only: a CLI ahead of `latest_cmd` reads as
+  `failed` until the published version catches up.
 
 A process belongs to an npm CLI when the real path of `/proc/<pid>/exe`, or of
-the first argument after argv[0] that does not start with `-` when the
+any argument after argv[0] that does not start with `-` when the
 executable is node, is under the package folder in `npm root -g`. The npm root
 is read from stdout only and must be an absolute existing directory. Command-line text is never matched: it would catch an agent shell
 that merely mentions the CLI and miss the native child codex hands off to.
@@ -134,7 +136,7 @@ def _under(path: str, root: Path) -> bool:
 
 
 def running_pids(package_dir: Path, proc_root: Path = Path("/proc"), own_pid: Optional[int] = None) -> list[int]:
-    """Processes whose executable, or node's first argument, resolves under `package_dir`."""
+    """Processes whose executable, or any of node's arguments, resolves under `package_dir`."""
     root = Path(os.path.realpath(package_dir))
     found = []
     for entry in proc_root.iterdir() if proc_root.is_dir() else []:
@@ -152,16 +154,13 @@ def running_pids(package_dir: Path, proc_root: Path = Path("/proc"), own_pid: Op
                 argv = (entry / "cmdline").read_bytes().split(b"\0")
             except OSError:
                 continue
-            script = next((a for a in argv[1:] if a and not a.startswith(b"-")), None)
-            if script is not None:
-                first = script.decode(errors="replace")
-                if not os.path.isabs(first):
-                    try:
-                        first = os.path.join(os.readlink(entry / "cwd"), first)
-                    except OSError:
-                        continue
-                if _under(first, root):
-                    found.append(int(entry.name))
+            try:
+                cwd = os.readlink(entry / "cwd")
+            except OSError:
+                cwd = ""
+            args = [a.decode(errors="replace") for a in argv[1:] if a and not a.startswith(b"-")]
+            if any(_under(os.path.join(cwd, a), root) for a in args if cwd or os.path.isabs(a)):
+                found.append(int(entry.name))
     return found
 
 
@@ -171,7 +170,7 @@ def update_one(entry: dict, runner: Runner, npm_root: Optional[Path], proc_root:
     npm = entry["kind"] == "npm-global"
     package_dir = npm_root / entry["package"] if npm and npm_root is not None else None
     if not os.path.lexists(entry["binary"]):
-        if not npm or (package_dir is not None and not package_dir.exists()):
+        if not npm or package_dir is None or not package_dir.exists():
             return {**line, "status": "absent"}
     elif not npm and not os.path.exists(entry["binary"]):
         return {**line, "status": "failed", "detail": "binary is a dangling link"}
@@ -204,12 +203,12 @@ def deferred_streak(log: Path, name: str) -> int:
     if not log.exists():
         return 0
     streak = 0
-    for raw in log.read_text(encoding="utf-8").splitlines():
+    for raw in log.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             row = json.loads(raw)
         except ValueError:
             continue
-        if row.get("name") == name:
+        if isinstance(row, dict) and row.get("name") == name:
             streak = streak + 1 if row.get("status") == "deferred" else 0
     return streak
 

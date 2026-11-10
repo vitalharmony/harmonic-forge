@@ -40,6 +40,7 @@ const die = (msg) => { process.stderr.write(msg + "\n"); process.exit(1); };
 if (name === "claude") {
   if (is(args, ["--version"])) console.log(state.installed.claude + " (Claude Code)");
   else if (is(args, ["update"])) {
+    state.update_calls = (state.update_calls || 0) + 1; save();
     if (has("fail", "claude")) die("update failed");
     if (!has("stuck", "claude")) { state.installed.claude = state.latest.claude; save(); heal("claude"); }
   }
@@ -118,6 +119,7 @@ class Statuses(unittest.TestCase):
         self.assertEqual((row["before"], row["after"], row["status"]), ("2.1.319", "2.1.322", "updated"))
         self.assertEqual(home.run(), 0)
         self.assertEqual(home.last()["claude"]["status"], "current")
+        self.assertEqual(home.state()["update_calls"], 2, "the update command runs on every tick")
 
     def test_an_npm_cli_at_the_published_version_is_current_and_not_reinstalled(self):
         home = Home(dict(CURRENT), dict(CURRENT), fail=("@openai/codex",))
@@ -139,6 +141,12 @@ class Statuses(unittest.TestCase):
         self.assertEqual(home.run(), 0)
         self.assertEqual(home.last()["gemini"], {**home.last()["gemini"], "before": None, "after": None,
                                                 "status": "absent"})
+
+    def test_a_missing_binary_with_an_unreadable_npm_root_is_absent(self):
+        home = Home(dict(CURRENT), dict(CURRENT), root_out="/no/such/directory")
+        (home.dir / ".npm-global" / "bin" / "gemini").unlink()
+        self.assertEqual(home.run(), 0)
+        self.assertEqual(home.last()["gemini"]["status"], "absent")
 
     def test_a_failing_update_is_logged_the_rest_still_run_and_the_run_exits_non_zero(self):
         home = Home({**CURRENT, "@openai/codex": "0.166.0", "@google/gemini-cli": "0.66.0"},
@@ -201,6 +209,26 @@ class Statuses(unittest.TestCase):
                 row = home.last()["gemini"]
                 self.assertEqual((row["status"], row["detail"]), ("failed", "npm root unreadable"))
                 self.assertEqual(home.state()["installed"]["@google/gemini-cli"], "0.66.0")
+
+    def test_a_relative_npm_root_that_exists_from_the_cwd_is_still_unreadable(self):
+        home = Home({**CURRENT, "@google/gemini-cli": "0.66.0"}, dict(CURRENT), root_out="relative/root")
+        (home.dir / "relative" / "root").mkdir(parents=True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(home.dir)
+        self.assertEqual(home.run(), 1)
+        row = home.last()["gemini"]
+        self.assertEqual((row["status"], row["detail"]), ("failed", "npm root unreadable"))
+
+    def test_a_dangling_link_with_the_package_folder_gone_is_not_absent(self):
+        home = Home({**CURRENT, "@google/gemini-cli": "0.66.0"}, dict(CURRENT))
+        link = home.dir / ".npm-global" / "bin" / "gemini"
+        target = home.root / "@google" / "gemini-cli" / "bin" / "gemini"
+        link.unlink()
+        shutil.rmtree(home.root / "@google" / "gemini-cli")
+        link.symlink_to(target)
+        home.set_state(heal={"gemini": str(target)})
+        self.assertEqual(home.run(), 0)
+        self.assertEqual(home.last()["gemini"]["status"], "updated")
 
     def test_a_dangling_link_with_nothing_running_is_updated_not_absent(self):
         home = Home({**CURRENT, "@google/gemini-cli": "0.66.0"}, dict(CURRENT))
@@ -269,6 +297,13 @@ class Deferral(unittest.TestCase):
         home.run()
         self.assertEqual(home.last()["gemini"]["status"], "deferred")
 
+    def test_a_node_flag_value_before_the_script_does_not_hide_a_running_cli(self):
+        home = self.stale()
+        script = home.root / "@google/gemini-cli" / "bundle" / "gemini.js"
+        home.process(4704, "/usr/bin/node", ["node", "--require", "/tmp/hook.js", str(script)])
+        home.run()
+        self.assertEqual(home.last()["gemini"]["status"], "deferred")
+
     def test_a_node_process_launched_through_a_symlinked_shim_defers_the_cli(self):
         home = self.stale()
         script = home.root / "@google/gemini-cli" / "bundle" / "gemini.js"
@@ -327,6 +362,15 @@ class Deferral(unittest.TestCase):
         self.assertEqual(codes, [0, 0, 0, 0, 0, 1])
         self.assertEqual(cli_update.deferred_streak(home.log, "gemini"), 6)
 
+    def test_a_log_line_that_is_not_an_object_does_not_stop_the_run(self):
+        for bad in (b"null\n5\n[1]\n", b"\xff\n"):
+            with self.subTest(bad=bad):
+                home = Home(dict(CURRENT), dict(CURRENT))
+                home.log.parent.mkdir(parents=True)
+                home.log.write_bytes(bad)
+                self.assertEqual(home.run(), 0)
+                self.assertEqual(home.log.read_bytes().count(b'"status"'), 3)
+
     def test_an_update_between_deferrals_resets_the_streak(self):
         home = self.stale()
         lines = [{"name": "gemini", "status": "deferred"}] * 5 + [{"name": "gemini", "status": "updated"}]
@@ -345,6 +389,8 @@ class UnitPath(unittest.TestCase):
     def test_under_the_units_path_no_installed_cli_is_absent(self):
         home = Home({**CURRENT, "@google/gemini-cli": "0.66.0"}, dict(CURRENT))
         path = self.unit_path().replace("%h", str(home.dir))
+        if shutil.which("node", path="/usr/bin:/bin") is None:
+            self.skipTest("this host has no node in /usr/bin or /bin, where the unit's PATH finds it")
         done = subprocess.run(
             [sys.executable, str(HERE / "cli_update.py"), "--home", str(home.dir)],
             env={"PATH": path, "HOME": str(home.dir), "FAKE_HOME": str(home.dir)},
