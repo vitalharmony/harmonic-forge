@@ -73,9 +73,10 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    (`env`, `sudo`, `nice`, `timeout`, `command`, `xargs`, ...) is refused, and
    no shell `-c` string is unwrapped. A scratch target is a literal
    `/tmp/<segment>/...` (no `..`, `.`, braces, globs, `$`, `~` or blanks;
-   never relative, so `cd` is never consulted), or `$NAME`/`${NAME}` plus
-   literal segments where NAME was bound by a leading
-   `NAME=$(mktemp)`/`NAME=$(mktemp -d)` row and is never assigned again.
+   never relative, so `cd` is never consulted). Before any of this the raw text
+   must pass one character-class check: outside single quotes it holds none of
+   backslash, backtick, `$`, `#`, `{` or `}`. A loop whose body runs `sleep` is
+   a poll and is excluded.
    Anything else is excluded with a counted reason; a string that does not
    parse is counted as `unparseable`.
 7. Samples exactly 10,000 strings (pinned; there is no `--size`) with
@@ -126,7 +127,10 @@ python3 tools/precheck/replay_harness.py score --layers <layer-set.json>
 - **Sample**: every layer with a `module` runs over every row.
   `--control` adds a `null` layer (never refuses) and an `all` layer (always
   refuses).
-- **Bars**: a replay bar holds when claimed/total >= `min_share`; a sample bar
+- **Bars**: a replay bar reports as `<layer>.coverage`, declaration coverage: it
+  holds when claimed/total >= `min_share`, and no layer runs on a slip, because
+  a failure record stores no command. Only a sample bar executes a layer. A
+  sample bar
   holds when refusals <= `sample_max_refusals` and the layer raised no error. A
   replay bar with no slips in its classes fails: an empty or mistyped
   `--overlays` scores nothing, and nothing scored is never a pass. A layer with
@@ -186,7 +190,7 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
 - `claims_basis` (required) is `validated` (each claim is a class the
   layer's check was shown to validate) or `declared` (the layer says it
   guards these classes, not yet shown). A declared layer's replay bar prints
-  as `<name>.replay (declared claims)`, so its holds is never read as measured
+  as `<name>.coverage (declared claims)`, so its holds is never read as measured
   coverage.
 
 `layersets/design-v1.json` is the design record's layer set (lint, gate,

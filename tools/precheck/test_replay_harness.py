@@ -238,7 +238,7 @@ class Bars(Harness):
         layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": None,
                                   "bar": {"replay": {"classes": ["args"], "min_share": 1.0}}}])
         code, report = self.report(layers)
-        self.assertEqual(report["bars"], [{"bar": "gate.replay", "status": "holds", "claimed": 2, "total": 2}])
+        self.assertEqual(report["bars"], [{"bar": "gate.coverage", "status": "holds", "claimed": 2, "total": 2}])
         self.assertEqual(code, 0)
 
     def test_layer_exception_fails_sample_bar(self):
@@ -264,7 +264,7 @@ class Bars(Harness):
                                   "bar": {"replay": {"classes": ["args"], "min_share": 1.0}}}])
         code, out, _err = self.run_score(layers)
         self.assertEqual(code, 4)
-        self.assertIn("gate.replay 0/0 fails", out)
+        self.assertIn("gate.coverage 0/0 fails", out)
         self.assertNotIn("verdict: PASS", out)
 
     def test_unmeasured_bar_never_prints_bare_pass(self):
@@ -282,7 +282,7 @@ class Bars(Harness):
                                   "bar": {"replay": {"classes": ["args", "cwd"], "min_share": 1.0}}}])
         code, out, _err = self.run_score(layers)
         self.assertEqual(code, 4)
-        self.assertIn("gate.replay 1/2 fails", out)
+        self.assertIn("gate.coverage 1/2 fails", out)
 
     def test_first_claiming_layer_owns(self):
         self.slip("gh-api|args")
@@ -314,7 +314,7 @@ class Bars(Harness):
                                   "bar": {"replay": {"classes": ["receipt"], "min_share": 1.0}}}])
         code, out, _err = self.run_score(layers)
         self.assertEqual(code, 0)
-        self.assertIn("gate.replay (declared claims) 1/1 holds", out)
+        self.assertIn("gate.coverage (declared claims) 1/1 holds", out)
 
     def test_s16_misspelled_bar_key_refuses(self):
         # Survivor 16: a misspelled bar key loaded with zero bars and scored PASS.
@@ -500,7 +500,7 @@ class OwnerIdentity(Harness):
                                  {"name": "gate", "claims": ["*|args"], "bar": ARGS_REPLAY}])
         code, out, _err = self.run_score(layers)
         self.assertEqual(code, 4)
-        self.assertIn("gate.replay 0/1 fails", out)
+        self.assertIn("gate.coverage 0/1 fails", out)
 
     def test_e3_owner_is_an_identity_tuple(self):
         layer_set = {"layers": [{"index": 0, "name": "gate", "claims": [("*", "receipt")]}],
@@ -524,6 +524,42 @@ class OverlayAccounting(Harness):
                 code, _out, err = self.run_score(layers)
                 self.assertEqual(code, 2, err)
                 self.assertIn("malformed overlay row", err)
+
+    def test_e4_unknown_overlay_class_refuses(self):
+        # Epoch-4 #3: a misspelled class matched no bar and raised a share.
+        self.slip("gh-api|args")
+        self.overlay.append({"log_line": len(self.records), "key_v1": "git-push|reciept"})
+        self.records.append(rec("2026-11-01T00:00:59Z"))
+        layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+        code, _out, err = self.run_score(layers)
+        self.assertEqual(code, 2, err)
+        self.assertIn("not in failure_classes.json", err)
+
+    def test_e4_boolean_or_negative_log_line_is_malformed(self):
+        # Epoch-4 #14: `false` aliased line 0, so a slip disappeared.
+        self.slip("gh-api|args")
+        for bad in (False, -1):
+            with self.subTest(log_line=bad):
+                self.overlay = self.overlay[:1] + [{"log_line": bad, "key_v1": "gh-api|args"}]
+                layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+                code, _out, err = self.run_score(layers)
+                self.assertEqual(code, 2, err)
+                self.assertIn("malformed overlay row", err)
+
+    def test_e4_store_replaced_during_the_run_refuses(self):
+        # Epoch-4 #4: a concurrent build must not be scored as this run's.
+        self.slip("gh-api|args")
+        layers = self.layer_set([{"name": "gate", "claims": ["gh-api|args"], "bar": ARGS_REPLAY}])
+        real, calls = rh.failure_store.fingerprint, []
+
+        def stale_first(logs, overlays):
+            calls.append(1)
+            return "another-run" if len(calls) == 1 else real(logs, overlays)
+
+        with mock.patch.object(rh.failure_store, "fingerprint", stale_first):
+            code, _out, err = self.run_score(layers)
+        self.assertEqual(code, 2, err)
+        self.assertIn("changed during this run", err)
 
     def test_e3_overlay_row_with_no_failure_record_refuses(self):
         self.slip("gh-api|args")

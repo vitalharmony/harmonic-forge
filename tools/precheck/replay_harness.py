@@ -10,6 +10,10 @@ never-refuse sample (harmonic-forge#1289).
           bars.
 
 A layer set is a JSON file (see README.md and `layersets/design-v1.json`).
+A layer's replay bar reports as `<layer>.coverage`: declaration coverage, not
+a refusal measurement. A failure record stores no command, so nothing can run
+a layer on a past slip; only the sample bars execute a layer.
+
 A layer module defines `refuses(command, cwd, env_names) -> str | None`;
 `env_names` is always the empty set: the harness never passes its own
 environment to historical rows.
@@ -234,14 +238,28 @@ def _overlay_counts(con: sqlite3.Connection) -> dict:
     return {"skipped": counts["skipped"]}
 
 
+def _parsed_classes(rows: list[tuple]) -> None:
+    """Every scored slip's class is a known class (harmonic-forge#1289 epoch 4):
+    a misspelled overlay class matches no bar and would raise a share."""
+    unknown = sorted({row[1] for row in rows} - current_classes())
+    if unknown:
+        raise Refused(f"{len(unknown)} overlay class(es) not in failure_classes.json: fix the overlay")
+
+
 def read_replay(db: Path, logs: dict, overlays: Path) -> tuple[list[tuple], int, int]:
     """`(rows, keyed_not_overlaid, skipped)`: the overlay-keyed slips in time
     order, each `(tool, class, own_tool, own_class)`; the effective key is the
     first pair. `skipped` counts overlay rows with an empty `key_v1`, which
     F1288 documents as deliberate (re-keys nothing)."""
+    stamp = failure_store.fingerprint(logs, overlays)
     failure_store.build(db, logs, overlays, if_stale=True)
     con = sqlite3.connect(f"{Path(db).expanduser().resolve().as_uri()}?mode=ro", uri=True)
     try:
+        # Another run may have replaced the store between build and open:
+        # this connection must be reading what this run's inputs built.
+        stored = con.execute("SELECT value FROM meta WHERE key = 'fingerprint'").fetchone()
+        if stored is None or stored[0] != stamp:
+            raise Refused("the failure store changed during this run; run it again")
         accounting = _overlay_counts(con)
         rows = con.execute("SELECT tool, class, own_tool, own_class FROM failure_keys WHERE overlaid "
                            "ORDER BY ts, log, line").fetchall()
@@ -249,6 +267,7 @@ def read_replay(db: Path, logs: dict, overlays: Path) -> tuple[list[tuple], int,
                             "AND class IS NOT NULL").fetchone()[0]
     finally:
         con.close()
+    _parsed_classes(rows)
     return rows, other, accounting["skipped"]
 
 
@@ -313,13 +332,17 @@ def score_replay(rows: list[tuple], layer_set: dict) -> dict:
 
 
 def replay_bar(layer: dict, replay: dict) -> dict | None:
+    """Declaration coverage (harmonic-forge#1289 ruling 1, issuecomment-6755838889):
+    the share of a class's slips this layer's claims cover. No layer runs on a
+    slip, because a failure record stores no command, so `holds` says what is
+    claimed and never that a slip would be refused. Only the sample bars execute."""
     bar = layer["replay_bar"]
     if bar is None:
         return None  # refuses: a layer with no replay bar has a sample bar (parser)
     relevant = [owner for (_tool, klass), owner in replay["_rows"] if klass in bar["classes"]]
     # Identity, never the name: ("layer", index) is this layer and no other.
     total, claimed = len(relevant), sum(1 for owner in relevant if owner == ("layer", layer["index"]))
-    name = f"{layer['name']}.replay" + (" (declared claims)" if layer["claims_basis"] == "declared" else "")
+    name = f"{layer['name']}.coverage" + (" (declared claims)" if layer["claims_basis"] == "declared" else "")
     if total == 0:
         # Nothing to score is a failure, never a pass: an empty or mistyped
         # --overlays leaves every replay bar here (harmonic-forge#1289 pass 1).

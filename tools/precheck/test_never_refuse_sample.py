@@ -142,7 +142,7 @@ class RanCheck(Base):
         pool, stats = self.pool()
         self.assertNotIn("ls /srv/twice", pool)
         self.assertEqual(stats["multi_result_ids"], 1)
-        self.assertEqual(stats["excluded_by_bucket"], {"error:Blocked: not": 1})
+        self.assertEqual(stats["excluded_by_bucket"], {"error:Blocked:": 1})
 
     def test_call_without_result_is_excluded(self):
         self.transcript(filler(1) + [call("x", "ls /srv/orphan")])
@@ -176,7 +176,7 @@ class RanCheck(Base):
                                      result("x", "Blocked: '/x/" + GH_TOKEN, is_error=True)])
         _pool, stats = self.pool()
         labels = list(stats["excluded_by_bucket"])
-        self.assertEqual(labels, ["error:Blocked: <arg>"])
+        self.assertEqual(labels, ["error:Blocked:"])
         for label in labels:
             self.assertNotIn("/", label)
             self.assertEqual(secret_scan.findings(label), [])
@@ -247,8 +247,8 @@ class Recognizer(unittest.TestCase):
                 self.assertNotOrdinary(quoted, reason="quoted-operator")
 
     def test_s02_comment_is_refused(self):
-        self.assertNotOrdinary("ls /tmp # don't\nrm -rf /home/u/proj", reason="comment")
-        self.assertNotOrdinary("ls # x", reason="comment")
+        self.assertNotOrdinary("ls /tmp # don't\nrm -rf /home/u/proj", reason="grammar")
+        self.assertNotOrdinary("ls # x", reason="grammar")
 
     def test_s03_env_is_a_refused_prefix(self):
         for command in ("env --chdir=/home/u/repo rm -rf build", "env -C /home/u rm -rf build",
@@ -266,16 +266,16 @@ class Recognizer(unittest.TestCase):
                 self.assertNotOrdinary(f"{wrapper} ls", reason="prefix")
 
     def test_s05_brace_write_target_is_not_scratch(self):
-        self.assertNotOrdinary("rm -rf /tmp/{a,../home/u/repo}", reason="write-target")
+        self.assertNotOrdinary("rm -rf /tmp/{a,../home/u/repo}", reason="grammar")
         for target in ("/tmp/*", "/tmp/a?", "/tmp/../home/x", "/tmp/a/../../home", "/tmp/./x",
                        "/tmp/a b", "~/x", "/tmp"):
             with self.subTest(target=target):
-                self.assertFalse(nrs.is_scratch(target, frozenset()))
+                self.assertFalse(nrs.is_scratch(target))
 
     def test_s06_assigned_value_never_binds(self):
-        self.assertNotOrdinary('X="/tmp/a /home/u"; rm -rf $X', reason="prefix")
-        self.assertNotOrdinary("for X in /tmp/a /home/u; do rm -rf $X; done", reason="write-target")
-        self.assertNotOrdinary("for X in /tmp/a /tmp/b; do rm -rf $X; done", reason="write-target")
+        self.assertNotOrdinary('X="/tmp/a /home/u"; rm -rf $X', reason="grammar")
+        self.assertNotOrdinary("for X in /tmp/a /home/u; do rm -rf $X; done", reason="grammar")
+        self.assertNotOrdinary("for X in /tmp/a /tmp/b; do rm -rf $X; done", reason="grammar")
 
     def test_s07_relative_write_target_is_refused_whatever_cd_did(self):
         for command in ("cd /tmp/missing; rm -rf build", "cd /tmp/x || rm -rf build",
@@ -284,17 +284,12 @@ class Recognizer(unittest.TestCase):
                 self.assertNotOrdinary(command, reason="write-target")
         self.assertEqual(classify("cd /tmp/x && rm -rf /tmp/x/build"), "scratch-write")
 
-    def test_s08_binding_inside_a_group_or_pipe_does_not_leak(self):
-        for command in ("(D=$(mktemp -d)); rm -rf $D/x", "echo $(D=$(mktemp -d)); rm -rf $D/x",
-                        "D=$(mktemp -d) | true; rm -rf $D/x", "D=$(mktemp -d) || true; rm -rf $D/x",
-                        "ls; D=$(mktemp -d); rm -rf $D/x"):
+    def test_s08_no_substitution_is_ever_admitted(self):
+        # The binding row is gone (epoch-4 REFORGE): a `$` outside single quotes refuses.
+        for command in ("(D=$(mktemp -d)); rm -rf $D/x", "D=$(mktemp -d); rm -rf $D/x",
+                        "A=$(mktemp)\nB=$(mktemp -d)\ncp $A ${B}/y", "echo $(ls)"):
             with self.subTest(command=command):
-                self.assertNotOrdinary(command, reason="prefix")
-
-    def test_s09_bound_name_reassigned_refuses(self):
-        self.assertNotOrdinary("D=$(mktemp -d); for D in /home/u; do rm -rf $D; done", reason="rebind")
-        self.assertNotOrdinary("x=$(mktemp -d); x=$(cat f); rm -rf $x", reason="rebind")
-        self.assertNotOrdinary("D=$(mktemp -d); D+=/../x; rm -rf $D", reason="rebind")
+                self.assertNotOrdinary(command, reason="grammar")
 
     def test_s10_probe_only_on_allowlisted_programs(self):
         for command in ("python3 -c pass --help", "awk 1 --help", "./x.sh --help", "tar --help",
@@ -330,9 +325,9 @@ class Recognizer(unittest.TestCase):
         self.assertNotOrdinary("cd /tmp/a; cd -; rm -rf y", reason="write-target")
 
     def test_s15_substitution_in_a_redirect_target_is_refused(self):
-        self.assertNotOrdinary('cat < "$(rm -rf ~/x)"', reason="quoted-operator")
-        self.assertNotOrdinary("cat < $(rm -rf ~/x)", reason="write-target")
-        self.assertNotOrdinary("cat < `rm -rf ~/x`", reason="backtick")
+        self.assertNotOrdinary('cat < "$(rm -rf ~/x)"', reason="grammar")
+        self.assertNotOrdinary("cat < $(rm -rf ~/x)", reason="grammar")
+        self.assertNotOrdinary("cat < `rm -rf ~/x`", reason="grammar")
 
     # -- The recognizer's other rows ---------------------------------------
 
@@ -365,18 +360,62 @@ class Recognizer(unittest.TestCase):
         self.assertEqual(classify('cat <<"EOF" > /tmp/x\n$HOME `x` \\\nEOF'), "scratch-write")
 
     def test_backslash_blank_is_refused(self):
-        self.assertNotOrdinary("rm /tmp/a\\ b", reason="lexer")
+        self.assertNotOrdinary("rm /tmp/a\\ b", reason="grammar")
 
     # -- Epoch-4 survivors ---------------------------------------------------
 
-    def test_e4_quoted_or_escaped_dollar_is_never_the_bound_name(self):
-        # bash removes a file literally named `$X` in the cwd; quote removal
-        # made the word read as the bound scratch path.
-        for command in ("X=$(mktemp -d)\nrm -rf '$X'", "X=$(mktemp -d); rm -rf \\$X",
-                        'X=$(mktemp -d); rm -rf "\\$X"', "X=$(mktemp -d); echo hi > '$X/y'"):
+    def test_e4_quoted_or_escaped_dollar_never_reads_as_scratch(self):
+        # bash removes a file literally named `$X`; inside single quotes the
+        # grammar admits the character, so the write-target row must refuse it.
+        self.assertNotOrdinary("rm -rf '$X'", reason="write-target")
+        self.assertNotOrdinary("echo hi > '$X/y'", reason="redirect")
+        for command in ("rm -rf \\$X", 'rm -rf "\\$X"', 'rm -rf "$X"'):
             with self.subTest(command=command):
-                self.assertNotOrdinary(command, reason="lexer")
-        self.assertEqual(classify('X=$(mktemp -d); rm -rf "$X"'), "scratch-write")
+                self.assertNotOrdinary(command, reason="grammar")
+
+    # -- The epoch-4 REFORGE ------------------------------------------------
+
+    def test_raw_grammar_refuses_each_character_outside_single_quotes_only(self):
+        for char in "\\`$#{}":
+            for command in (f"echo a{char}b", f'echo "a{char}b"'):
+                with self.subTest(command=command):
+                    self.assertNotOrdinary(command, reason="grammar")
+        for command in ("grep 'a\\b' f", "cat 'a$b'", "echo 'a{b}'"):
+            with self.subTest(command=command):
+                self.assertEqual(classify(command), "read")
+
+    def test_raw_grammar_has_no_branch_on_a_bash_feature(self):
+        # The convergence test: a character class plus the quote state machine.
+        self.assertFalse(hasattr(nrs, "lexer_hazards"))
+        source = inspect.getsource(nrs.raw_grammar)
+        for feature in ('"$("', "comment", "backtick"):
+            self.assertNotIn(feature, source)
+
+    def test_a_plain_newline_is_not_refused(self):
+        self.assertEqual(classify("ls /srv/a\nls /srv/b"), "read")
+
+    def test_the_binding_row_is_gone(self):
+        for name in ("bindings", "_BINDING", "_BOUND_USE"):
+            self.assertFalse(hasattr(nrs, name))
+        self.assertEqual(list(inspect.signature(nrs.row).parameters), ["argv"])
+        self.assertEqual(list(inspect.signature(nrs.is_scratch).parameters), ["word"])
+
+    def test_a_loop_whose_body_sleeps_is_a_poll(self):
+        for command in ("while true; do sleep 5; done", "until ls /srv/x; do sleep 1; done",
+                        "for i in 1 2 3; do ls /srv/x; sleep 1; done", "ls /srv; while true; do sleep 5; done",
+                        "if true; then while true; do sleep 5; done; fi"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="poll-loop")
+
+    def test_sleep_outside_a_loop_and_a_loop_without_sleep_stay_ordinary(self):
+        self.assertEqual(classify("sleep 5"), "read")
+        self.assertEqual(classify("ls /srv/a; sleep 1; ls /srv/a"), "read")
+        self.assertEqual(classify("for f in a b; do cat /srv/x; done"), "read")
+
+    # -- Pinned guards (epoch-4 pass 2, #5-#8) ------------------------------
+
+    def test_a_gh_read_option_outside_the_row_is_refused(self):
+        self.assertNotOrdinary("gh pr view 1 --web", reason="option")
 
     def test_e4_sed_e_and_w_without_a_space_are_refused(self):
         # Every earlier w/e seed carried a space, so the `$` anchor refused it
@@ -393,16 +432,6 @@ class Recognizer(unittest.TestCase):
 
     def test_output_process_substitution_is_not_ordinary(self):
         self.assertNotOrdinary("ls >(cat)", reason="process-substitution-write")
-
-    def test_mktemp_binding_rows(self):
-        self.assertEqual(classify("d=$(mktemp -d); echo hi > $d/x"), "scratch-write")
-        self.assertEqual(classify('D=$(mktemp -d) && echo hi > "$D/x"'), "scratch-write")
-        self.assertEqual(classify("A=$(mktemp)\nB=$(mktemp -d)\ncp $A ${B}/y"), "scratch-write")
-        self.assertEqual(classify('D=$(mktemp -d); rm -rf "$D"'), "scratch-write")
-        self.assertNotOrdinary('d="$(mktemp -d)"; echo hi > "$d/x"', reason="quoted-operator")
-        self.assertNotOrdinary("d=$(mktemp -d); rm -rf $d/../../home/x", reason="write-target")
-        self.assertNotOrdinary("d=$(mktemp -d); rm -rf $d*", reason="write-target")
-        self.assertNotOrdinary("d=$(mktemp -p /home/u)", reason="prefix")
 
     def test_gh_api_glued_and_equals_forms_are_not_read(self):
         for form in ("gh api -XPOST repos/o/r/issues", "gh api --method=POST repos/o/r/issues",
@@ -432,8 +461,8 @@ class Recognizer(unittest.TestCase):
                 self.assertNotOrdinary(form)
 
     def test_unbound_variable_target_is_not_scratch(self):
-        self.assertNotOrdinary("echo hi > $X/y", reason="redirect")
-        self.assertNotOrdinary("rm -rf ${X}", reason="write-target")
+        self.assertNotOrdinary("echo hi > $X/y", reason="grammar")
+        self.assertNotOrdinary("rm -rf ${X}", reason="grammar")
         self.assertNotOrdinary("rm ~other/x", reason="write-target")
 
     def test_classes(self):
@@ -443,7 +472,7 @@ class Recognizer(unittest.TestCase):
         self.assertEqual(classify("ls > /dev/null"), "read")
         self.assertEqual(classify("git log --oneline -3"), "read")
         self.assertEqual(classify("gh pr view 3"), "read")
-        self.assertEqual(classify("for f in a b; do cat $f; done"), "read")
+        self.assertEqual(classify("for f in a b; do cat /srv/x; done"), "read")
 
     def test_no_function_computes_a_shell_effect(self):
         # The convergence test, by construction: the interpreter helpers are gone.
@@ -477,7 +506,7 @@ class FailClosed(Base):
         ("sed -n 1,20p f", "read"), ('sed "s/a/b/g" f', "read"), ("cat a | head -20", "read"),
         ("rm -rf /tmp/x", "scratch-write"), ('find . -name "*.py" -type f', "read"),
         ("date +%F", "read"), ("gh pr view 12 --json title", "read"), ("jq -r .x f", "read"),
-        ("ls /tmp 2>/dev/null", "read"), ('D=$(mktemp -d); rm -rf "$D"', "scratch-write"),
+        ("ls /tmp 2>/dev/null", "read"), ("mktemp -d", "scratch-write"),
     ]
 
     def test_every_seed_is_excluded(self):
@@ -534,6 +563,42 @@ class SecretScan(Base):
         self.assertEqual(code, 3)
         self.assertIn("re-scan", err)
         self.assertNothingWritten()
+
+    def test_rescan_covers_the_whole_line_not_chosen_fields(self):
+        rows = [{"n": 1, "command": "ls /srv", "cwd": "/srv", "session": GH_TOKEN, "_slug": "p"}]
+        hits = nrs.rescan(rows, {"versions": {}}, HOME, os.getuid())
+        self.assertEqual(hits, 1)
+
+    def test_a_cwd_with_a_secret_is_stored_as_null(self):
+        meta = {"cwd": "/srv/" + GH_TOKEN, "slug": "p"}
+        self.assertIsNone(nrs.stored_cwd(meta, HOME, os.getuid()))
+        self.assertEqual(nrs.stored_cwd({"cwd": HOME + "/repo", "slug": "p"}, HOME, os.getuid()), HOME + "/repo")
+
+    def test_a_cwd_is_never_its_own_mask(self):
+        self.assertEqual(set(nrs.masks_for({"cwd": "/srv/x", "slug": "p"}, HOME, 1000)),
+                         {HOME, "/tmp/claude-1000/p"})
+
+    def test_a_root_mask_is_never_used(self):
+        # Epoch-4 #6: a "/" mask would split every base64 run below the token length.
+        self.assertNotIn("/", nrs.masks_for({"slug": "p"}, "/", 1000))
+
+    def test_every_bucket_is_from_the_fixed_vocabulary(self):
+        for text, want in (("Blocked: not now", "Blocked:"), ("Blocked: raw GitHub", "Blocked: raw"),
+                           ("Blocked: " + GH_TOKEN, "Blocked:"), ("anything else", "other"),
+                           (GH_TOKEN, "other")):
+            with self.subTest(text=text):
+                self.assertEqual(nrs.bucket(text), want)
+
+    def test_a_string_is_error_value_fails_the_shape_guard(self):
+        # Epoch-4 #5: a string "true" must not pass as a recognized result shape.
+        self.assertFalse(nrs._shape_ok({"content": "x", "is_error": "true"}))
+        self.assertTrue(nrs._shape_ok({"content": "x", "is_error": True}))
+
+    def test_a_record_after_until_is_not_read(self):
+        # Epoch-4 #7: the manifest records --until, so a later call must not enter.
+        self.transcript(filler(1) + ran("late", "ls /srv/late", ts="2026-12-05T00:00:00Z"))
+        pool, _stats = self.pool()
+        self.assertNotIn("ls /srv/late", pool)
 
     def test_scratchpad_path_command_survives_masking(self):
         slug = "-home-user-Harmonic-Projects-HRSE2"

@@ -158,12 +158,15 @@ def overlay_rows(overlays: Path) -> tuple[list[tuple], int, int]:
     for path in overlay_files(overlays):
         for line in _lines(path):
             if not line.strip():
-                continue
+                continue  # fail-direction: a blank line is no row; a non-blank bad line counts malformed below
             try:
                 row = json.loads(line)
             except ValueError:
-                row = None
-            if not isinstance(row, dict) or not isinstance(row.get("log_line"), int):
+                row = None  # refuses: counted malformed below, and any malformed row refuses the score
+            # refuses: `bool` is an `int` subclass, so `false` would alias line 0
+            # (lines count from 0, `failure_rows`), and a negative line is no
+            # line (harmonic-forge#1289 epoch 4).
+            if not isinstance(row, dict) or type(row.get("log_line")) is not int or row["log_line"] < 0:
                 malformed += 1
                 continue
             # Only the empty string is a deliberate skip; an absent, null or

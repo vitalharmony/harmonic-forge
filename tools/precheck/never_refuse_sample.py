@@ -5,7 +5,7 @@ from Claude Code transcripts (harmonic-forge#1289).
   derive  read every main and subagent transcript under `--root`, keep the
           Bash calls that ran (a positive check: every other result shape is
           excluded and counted), de-duplicate exact strings, drop any string
-          with a secret-shaped hit after blanking the record's own paths,
+          with a secret-shaped hit after blanking `$HOME` and the scratch root,
           keep only ordinary reads, probes and scratch writes, and write a
           seeded sample of exactly `SIZE` (10,000) rows plus its manifest,
           manifest first.
@@ -241,56 +241,41 @@ _SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9._@+-]+"
 #: `..`, no braces, globs, quotes, `$`, `~` or whitespace, and nothing
 #: relative: a relative target would need the cwd, which is never computed.
 SCRATCH_LITERAL = re.compile(rf"^/tmp/{_SEGMENT}(?:/{_SEGMENT})*/?$")
-#: A use of a bound name: `$NAME` or `${NAME}`, then literal segments.
-_BOUND_USE = re.compile(rf"^\$(?:\{{(?P<a>[A-Za-z_][A-Za-z0-9_]*)\}}|(?P<b>[A-Za-z_][A-Za-z0-9_]*))"
-                        rf"(?:/{_SEGMENT})*/?$")
-#: The one binding row: `NAME=$(mktemp)` or `NAME=$(mktemp -d)`, standalone,
-#: at the very start of the string (repeatable), followed by a newline, `;`,
-#: `&&` or the end. Anywhere else an assignment is a refused prefix.
-_BINDING = re.compile(r"\A[ \t]*([A-Za-z_][A-Za-z0-9_]*)=\$\(mktemp(?: -d)?\)[ \t]*(?:\n|;|&&|\Z)[ \t\n]*")
+#: A loop keyword at the head of a command (harmonic-forge#1289 ruling 2 in
+#: issuecomment-6755838889): a loop whose body runs `sleep` is a poll, which
+#: the lint refuses, so the sample may not admit one.
+_LOOP_KEYWORD = re.compile(r"(?:^|[;&|(\n])[ \t]*(?:(?:then|else|elif|do|if|!)[ \t]+)*(?:while|until|for)\b")
 #: Characters a quoted span may not hold: an operator, `#` or a newline.
 _QUOTED_REFUSED = frozenset(";&|()<>#\n")
 
 
-def lexer_hazards(text: str) -> None:
-    """Refuse, never interpret (harmonic-forge#1289 epoch 2): a backtick, any
-    unquoted `#` (a comment or not), a quoted span holding an operator, `#`
-    or a newline, a backslash-escaped blank, and a `$` inside single quotes
-    or right after a backslash: bash expands neither, but the words the
-    classifier reads have had their quotes removed, so `'$X'` would read as
-    the bound name `$X` (harmonic-forge#1289 epoch 4). Raises `ValueError` on
-    an unbalanced quote. Runs on the heredoc-masked text."""
-    if "`" in text:
-        raise NotOrdinary("backtick")
+#: Characters the raw command may not hold outside a single-quoted span
+#: (harmonic-forge#1289 epoch-4 REFORGE). bash and shlex agree inside single
+#: quotes and on these characters' absence everywhere else, so the classifier
+#: reads the words bash would.
+_RAW_REFUSED = frozenset("\\`$#{}")
+
+
+def raw_grammar(text: str) -> None:
+    """The positive grammar of the raw text, before any lexing: a character
+    class and the quote-span state machine, with no branch keyed on a bash
+    feature. Outside single quotes none of `_RAW_REFUSED`; a quoted span holds
+    no operator, `#` or newline. Raises `NotOrdinary`, and `ValueError` on an
+    unbalanced quote. Runs on the heredoc-masked text."""
     state: str | None = None
     refused = False
-    index = 0
-    while index < len(text):
-        char = text[index]
+    for char in text:
+        if state != "'" and char in _RAW_REFUSED:
+            raise NotOrdinary("grammar")
         if state is None:
-            if char == "\\":
-                if text[index + 1:index + 2] in (" ", "\t", "$"):
-                    raise NotOrdinary("lexer")
-                index += 2
-                continue
             if char in "'\"":
                 state, refused = char, False
-            elif char == "#":
-                raise NotOrdinary("comment")
-        elif state == '"' and char == "\\":
-            if text[index + 1:index + 2] == "$":
-                raise NotOrdinary("lexer")
-            index += 2
-            continue
-        elif state == "'" and char == "$":
-            raise NotOrdinary("lexer")
         elif char == state:
             if refused:
                 raise NotOrdinary("quoted-operator")
             state = None
         elif char in _QUOTED_REFUSED:
             refused = True
-        index += 1
     if state is not None:
         raise ValueError("unbalanced quote")
 
@@ -334,26 +319,9 @@ def heredoc_hazards(command: str) -> None:
             raise NotOrdinary("heredoc")
 
 
-def bindings(text: str) -> tuple[frozenset[str], str]:
-    """`(names, rest)`: the leading binding rows and the text after them. A
-    bound name assigned again anywhere in the rest (`NAME=`, `NAME+=`, or as
-    a `for`/`select`/`read` variable) refuses the whole string."""
-    names: set[str] = set()
-    while match := _BINDING.match(text):
-        names.add(match.group(1))
-        text = text[match.end():]
-    for name in names:
-        if re.search(rf"(?<![A-Za-z0-9_$]){name}\+?=|\b(?:for|select|read)\b[^\n;]*\b{name}\b", text):
-            raise NotOrdinary("rebind")
-    return frozenset(names), text
-
-
-def is_scratch(word: str, binds: frozenset[str]) -> bool:
-    """True only for a literal `/tmp/` path or a bound name's literal use."""
-    if SCRATCH_LITERAL.match(word):
-        return True
-    match = _BOUND_USE.match(word)
-    return bool(match) and (match.group("a") or match.group("b")) in binds
+def is_scratch(word: str) -> bool:
+    """True only for a literal `/tmp/` path."""
+    return bool(SCRATCH_LITERAL.match(word))
 
 
 def parse_opts(words: list[str], spec: Opts, reason: str) -> tuple[list[str], list[tuple[str, str]]]:
@@ -438,7 +406,7 @@ def _better(best: str | None, cls: str | None) -> str | None:
     return cls if best is None or RANK[cls] > RANK[best] else best
 
 
-def row(argv: list[str], binds: frozenset[str]) -> str:
+def row(argv: list[str]) -> str:
     """The literal row `argv` matches: "read", "probe", "scratch-write" or
     "neutral". Raises `NotOrdinary` when it matches none. `argv[0]` is
     matched as written: no path, no wrapper, no assignment."""
@@ -449,11 +417,11 @@ def row(argv: list[str], binds: frozenset[str]) -> str:
         return "probe"
     if prog == "for":
         if len(argv) >= 3 and argv[2] == "in":
-            return "neutral"  # binds nothing: its variable is never a scratch name
+            return "neutral"
         raise NotOrdinary("unclassified")
     if prog == "mktemp":
         templates, _valued = parse_opts(argv[1:], MKTEMP_OPTS, "option")
-        if len(templates) > 1 or not all(is_scratch(t, binds) for t in templates):
+        if len(templates) > 1 or not all(is_scratch(t) for t in templates):
             raise NotOrdinary("mktemp")
         return "scratch-write"
     if prog == "cd":
@@ -495,7 +463,7 @@ def row(argv: list[str], binds: frozenset[str]) -> str:
         # `ln` with one operand writes an implicit `./NAME`: two or more only.
         if not targets or (prog == "ln" and len(targets) < 2):
             raise NotOrdinary("unclassified")
-        if not all(is_scratch(t, binds) for t in [*targets, *(v for _n, v in valued)]):
+        if not all(is_scratch(t) for t in [*targets, *(v for _n, v in valued)]):
             raise NotOrdinary("write-target")
         return "scratch-write"
     raise NotOrdinary("unclassified")
@@ -513,17 +481,19 @@ def classify(command: str) -> str | None:
     raises."""
     heredoc_hazards(command)
     masked = mask_heredoc_bodies(command)
-    lexer_hazards(masked)
-    binds, rest = bindings(masked)
-    best: str | None = "scratch-write" if binds else None
-    for item in simple_commands(rest):
+    raw_grammar(masked)
+    loop = bool(_LOOP_KEYWORD.search(masked))
+    best: str | None = None
+    for item in simple_commands(masked):
         if isinstance(item, GroupMarker):
             continue
-        cls = row(list(item.argv), binds) if item.argv else "neutral"
+        if loop and item.argv and item.argv[0] == "sleep":
+            raise NotOrdinary("poll-loop")
+        cls = row(list(item.argv)) if item.argv else "neutral"
         for op, target in item.redirects:
             if op in READ_REDIRECTS or target is None or target == "/dev/null":
                 continue
-            if not is_scratch(target, binds):
+            if not is_scratch(target):
                 raise NotOrdinary("redirect")
             if cls in ("neutral", "read"):
                 cls = "scratch-write"
@@ -650,17 +620,17 @@ def shape_guard(corpus: Corpus) -> dict:
     return {v: {k: c[k] for k in VERSION_COUNTS} for v, c in sorted(versions.items())}
 
 
+#: The refusal families seen in the corpus, longest first where one extends
+#: another (harmonic-forge#1289 handoff hop 3). A fixed vocabulary: nothing of
+#: the result's own text reaches the manifest.
+BUCKETS = ("<tool_use_error>Blocked: sleep", "PreToolUse:Bash hook", "Hook PreToolUse:Bash",
+           "Blocked (harmonic-forge#", "Blocked: this", "Blocked: raw", "Blocked: mypy", "Blocked: PR",
+           "Blocked: a ", "Blocked:", "Permission for", "Permission to", "The user", "This session")
+
+
 def bucket(text: str) -> str:
-    """A coarse, data-free label for an excluded result: its first two words,
-    digits as `N`, each cut to 24 characters, any word carrying a path, quote,
-    variable or secret-shaped text replaced by `<arg>`."""
-    words = []
-    for word in re.sub(r"\d+", "N", text).split()[:2]:
-        word = word[:24]
-        if any(ch in word for ch in "/'\"`$") or secret_scan.findings(word):
-            word = "<arg>"
-        words.append(word)
-    return " ".join(words) or "<empty>"
+    """The family `text` belongs to, or `other`."""
+    return next((family for family in BUCKETS if text.startswith(family)), "other")
 
 
 def ran_check(results: list[tuple]) -> str | None:
@@ -677,13 +647,14 @@ def ran_check(results: list[tuple]) -> str | None:
 
 
 def masks_for(meta: dict, home: str, uid: int) -> list[str]:
-    candidates = {meta.get("cwd") or "", home, f"/tmp/claude-{uid}/{meta.get('slug') or ''}"}
+    """Only `$HOME` and this project's scratch root: a row's cwd is transcript
+    data and is scanned, never used as its own mask (harmonic-forge#1289 #13)."""
+    candidates = {home, f"/tmp/claude-{uid}/{meta.get('slug') or ''}"}
     return sorted((m for m in candidates if len(m) > 1 and not m.endswith("/")), key=len, reverse=True)
 
 
 def masked_findings(command: str, masks: list[str]) -> list[str]:
-    """`secret_scan.findings` after replacing each exact mask string with a
-    space. A mask equals a known path, so no secret hides in it."""
+    """`secret_scan.findings` after replacing each exact mask string with a space."""
     for mask in masks:
         command = command.replace(mask, " ")
     return secret_scan.findings(command)
@@ -803,13 +774,24 @@ def _write_temp(folder: Path, data: bytes) -> Path:
     return Path(name)
 
 
+def serialized(row: dict) -> str:
+    """The exact line derive writes for `row`."""
+    return json.dumps({k: v for k, v in row.items() if k != "_slug"}, ensure_ascii=False, separators=(",", ":"))
+
+
+def stored_cwd(meta: dict, home: str, uid: int) -> str | None:
+    """The row's cwd, or None when it holds anything secret-shaped."""
+    cwd = meta.get("cwd")
+    if not isinstance(cwd, str) or masked_findings(cwd, masks_for(meta, home, uid)):
+        return None  # fail-direction: an unclean cwd is never stored
+    return cwd
+
+
 def rescan(rows: list[dict], manifest: dict, home: str, uid: int) -> int:
-    hits = 0
-    for row in rows:
-        meta = {"cwd": row["cwd"], "slug": row["_slug"]}
-        hits += bool(masked_findings(row["command"], masks_for(meta, home, uid)))
-    hits += sum(bool(secret_scan.findings(label)) for label in manifest["excluded_by_bucket"])
-    return hits
+    """Whole-line: every byte a row writes is scanned, under the one mask set.
+    The manifest carries only counts, fixed vocabulary and version strings."""
+    hits = sum(bool(masked_findings(serialized(r), masks_for({"slug": r["_slug"]}, home, uid))) for r in rows)
+    return hits + sum(bool(secret_scan.findings(version)) for version in manifest["versions"])
 
 
 def derive(root: Path, out: Path, seed: int, until: dt.datetime, home: str,
@@ -828,7 +810,8 @@ def derive(root: Path, out: Path, seed: int, until: dt.datetime, home: str,
     for n, command in enumerate(chosen, 1):
         call_id, meta, cls = pool[command]
         rows.append({"n": n, "id": call_id, "ts": meta["ts"], "session": meta["session"],
-                     "sidechain": meta["sidechain"], "version": meta["version"], "cwd": meta["cwd"],
+                     "sidechain": meta["sidechain"], "version": meta["version"],
+                     "cwd": stored_cwd(meta, home, os.getuid()),
                      "class": cls, "command": command, "_slug": meta["slug"]})
     manifest = {"version": 1, "seed": seed, "size": size, "until": until.isoformat(),
                 "derived_at": dt.datetime.now(dt.timezone.utc).isoformat(), **stats}
@@ -836,8 +819,7 @@ def derive(root: Path, out: Path, seed: int, until: dt.datetime, home: str,
     if rescan(rows, manifest, home, os.getuid()):
         raise Failed("pre-write re-scan found a secret-shaped hit; nothing written")
     manifest["secret_hits_stored"] = 0
-    data = "".join(json.dumps({k: v for k, v in r.items() if k != "_slug"}, ensure_ascii=False,
-                              separators=(",", ":")) + "\n" for r in rows).encode("utf-8")
+    data = "".join(serialized(r) + "\n" for r in rows).encode("utf-8")
     manifest["sha256"] = hashlib.sha256(data).hexdigest()
 
     # The read above takes minutes: check again, then publish with os.link,
