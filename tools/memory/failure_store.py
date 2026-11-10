@@ -21,7 +21,8 @@ Logs are only ever read. Overlays relabel without rewriting: a row
 `{"log_line": N, "key_v1": "tool|class", "probe"?: "...", "log"?: "memory"|
 "testplan"}` re-keys line N (0-based) of that log in the `failure_keys` view.
 Overlay files apply in name order and rows in file order; the last match wins.
-A row with an empty `key_v1` re-keys nothing and is counted as skipped.
+A row with an empty `key_v1` re-keys nothing and is counted as skipped; an
+absent, null or false `key_v1` is malformed.
 
 The database, the logs and the overlays live in
 ~/Harmonic_Projects/operator-memory/. A `--db` inside a harmonic-forge
@@ -63,7 +64,7 @@ DEFAULT_LOGS = {
 #: The store's code version. Part of the staleness fingerprint with the schema
 #: file's bytes, so a store built by older code or an older schema is rebuilt,
 #: never served. Bump it when the projection changes without a schema change.
-STORE_VERSION = 2
+STORE_VERSION = 3
 
 COLUMNS = ("log", "line", "ts", "session", "turn", "lane", "repo", "issue", "caught_by",
            "rule_existed", "rule_ref", "tool", "class", "probe", "class_list_version")
@@ -157,16 +158,21 @@ def overlay_rows(overlays: Path) -> tuple[list[tuple], int, int]:
     for path in overlay_files(overlays):
         for line in _lines(path):
             if not line.strip():
-                continue
+                continue  # fail-direction: a blank line is no row; a non-blank bad line counts malformed below
             try:
                 row = json.loads(line)
             except ValueError:
-                row = None
-            if not isinstance(row, dict) or not isinstance(row.get("log_line"), int):
+                row = None  # refuses: counted malformed below, and any malformed row refuses the score
+            # refuses: `bool` is an `int` subclass, so `false` would alias line 0
+            # (lines count from 0, `failure_rows`), and a negative line is no
+            # line (harmonic-forge#1289 epoch 4).
+            if not isinstance(row, dict) or type(row.get("log_line")) is not int or row["log_line"] < 0:
                 malformed += 1
                 continue
-            key = row.get("key_v1") or ""
-            if not key:
+            # Only the empty string is a deliberate skip; an absent, null or
+            # false key_v1 falls through as malformed (harmonic-forge#1289 epoch 4).
+            key = row.get("key_v1")
+            if key == "":
                 skipped += 1
                 continue
             tool, sep, klass = str(key).partition("|")

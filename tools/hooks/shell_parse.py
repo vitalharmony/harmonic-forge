@@ -15,6 +15,7 @@ decision()/denial() logic. This module only parses; it never denies.
 import re
 import shlex
 from pathlib import Path
+from typing import NamedTuple
 
 HEREDOC_START = re.compile(
     r"<<(?P<strip_tabs>-?)\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
@@ -192,3 +193,159 @@ def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> li
         else:
             break
     return working[index:]
+
+
+# harmonic-forge#1289: simple commands with redirects, for the never-refuse
+# sample's ordinary classifier. Additive: nothing above changes.
+# `command_segments` leaves `>`/`<` inside words, so `2>&1` yields a program
+# `1` and loop keywords and heredoc delimiters read as programs; this lexer
+# treats `<>` as punctuation and returns each simple command's argv apart from
+# its redirects.
+
+_SIMPLE_PUNCTUATION = ";&|()<>\n"
+#: Every operator, longest first within a shared prefix: a punctuation token
+#: from shlex (`&&(`, `);`, `<(`) is split left to right by longest match.
+_OPERATORS = ("&>>", "&>", "<<<", "<<", "<&", "<>", "<(", ">>", ">|", ">&", ">(", "&&", "||",
+              "|&", ";;", ";", "&", "|", "(", ")", "\n", "<", ">")
+_SEPARATORS = frozenset({";", "&", "|", "&&", "||", "|&", ";;", "\n"})
+#: Reserved words stripped from the front of a simple command's argv.
+RESERVED_WORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+                            "{", "}", "!"})
+_HEREDOC_MASK = "__HEREDOC_BODY__"
+
+
+class NotOrdinary(Exception):
+    """A command that parses but is not an ordinary read, probe or scratch
+    write; `str(exc)` is the counted reason."""
+
+
+class SimpleCommand(NamedTuple):
+    argv: list[str]
+    redirects: list[tuple[str, str | None]]
+    sep_before: str | None
+    sep_after: str | None
+
+
+class GroupMarker(NamedTuple):
+    kind: str  # "open" or "close"
+
+
+def _split_operators(token: str) -> list[str]:
+    out: list[str] = []
+    index = 0
+    while index < len(token):
+        for op in _OPERATORS:
+            if token.startswith(op, index):
+                out.append(op)
+                index += len(op)
+                break
+        else:
+            raise ValueError(f"unrecognized shell operator in {token!r}")
+    return out
+
+
+def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
+    """The simple commands of `command`, in order, with grouping markers.
+
+    Raises `ValueError` when the text does not parse (an unbalanced quote, an
+    unknown operator, a redirect with no target) and `NotOrdinary` on an
+    output process substitution `>(`."""
+    lexer = shlex.shlex(mask_heredoc_bodies(command), posix=True,
+                        punctuation_chars=_SIMPLE_PUNCTUATION)
+    lexer.whitespace_split = True
+    lexer.whitespace = lexer.whitespace.replace("\n", "")
+    # shlex starts a comment at `#` even mid-word and swallows the newline
+    # after it, joining the next line's command to this one; bash does
+    # neither. `#` stays an ordinary character, so a comment reads as words
+    # (harmonic-forge#1289 pass 1).
+    lexer.commenters = ""
+    items: list[tuple[str, str]] = []
+    for token in lexer:
+        if token and all(char in _SIMPLE_PUNCTUATION for char in token):
+            items.extend(("op", op) for op in _split_operators(token))
+        else:
+            items.append(("word", token))
+
+    out: list[SimpleCommand | GroupMarker] = []
+    argv: list[str] = []
+    redirects: list[tuple[str, str | None]] = []
+    sep_before: str | None = None
+    pending: str | None = None
+    heredocs: list[str] = []
+    closing_delimiter: str | None = None
+
+    def end(sep: str | None) -> None:
+        nonlocal argv, redirects, sep_before
+        while argv and argv[0] in RESERVED_WORDS:
+            argv.pop(0)
+        if argv or redirects:
+            out.append(SimpleCommand(argv, redirects, sep_before, sep))
+        argv, redirects, sep_before = [], [], sep
+
+    for kind, value in items:
+        if pending is not None:
+            op, pending = pending, None
+            if kind != "word":
+                raise ValueError(f"redirect {op} has no target")
+            if op in (">&", "<&") and (value.isdigit() or value == "-"):
+                redirects.append((op, None))
+            else:
+                if op == "<<":
+                    heredocs.append(value[1:] if value.startswith("-") else value)
+                redirects.append((op, value))
+            continue
+        if kind == "word":
+            if value == _HEREDOC_MASK:
+                closing_delimiter = heredocs.pop(0) if heredocs else None
+                continue
+            if closing_delimiter is not None:
+                delimiter, closing_delimiter = closing_delimiter, None
+                if value == delimiter and not argv and not redirects:
+                    continue
+            argv.append(value)
+            continue
+        if value == ">(":
+            raise NotOrdinary("process-substitution-write")
+        if value in _SEPARATORS:
+            end(value)
+        elif value in ("(", ")"):
+            end(value)
+            out.append(GroupMarker("open" if value == "(" else "close"))
+        elif value == "<(":
+            end(value)
+            out.append(GroupMarker("open"))
+        else:
+            # A digit word before a redirect stays in argv: shlex cannot tell
+            # `2>f` (a descriptor) from `2 >f` (an argument), and dropping it
+            # would hide an argument (harmonic-forge#1289 pass 1).
+            pending = value
+    if pending is not None:
+        raise ValueError(f"redirect {pending} has no target")
+    end(None)
+    return out
+
+
+def substitution_bodies(token: str) -> list[str]:
+    """Every `$(...)` body (matched by parenthesis depth) and every backtick
+    body in one word. Raises `ValueError` when one is unbalanced."""
+    bodies: list[str] = []
+    index = 0
+    while index < len(token):
+        if token.startswith("$(", index):
+            depth, end = 1, index + 2
+            while end < len(token) and depth:
+                depth += {"(": 1, ")": -1}.get(token[end], 0)
+                end += 1
+            if depth:
+                raise ValueError("unbalanced $( substitution")
+            bodies.append(token[index + 2:end - 1])
+            index = end
+        elif token[index] == "`":
+            end = token.find("`", index + 1)
+            if end < 0:
+                raise ValueError("unbalanced backtick substitution")
+            bodies.append(token[index + 1:end])
+            index = end + 1
+        else:
+            index += 1
+    return bodies

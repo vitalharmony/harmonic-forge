@@ -126,5 +126,75 @@ class TimeoutNiceStdbufTests(unittest.TestCase):
         )
 
 
+
+# harmonic-forge#1289: `simple_commands` and `substitution_bodies`, additive.
+from shell_parse import GroupMarker, SimpleCommand, simple_commands, substitution_bodies  # noqa: E402
+
+
+def _programs(command: str) -> list[str]:
+    return [item.argv[0] for item in simple_commands(command)
+            if isinstance(item, SimpleCommand) and item.argv]
+
+
+class SimpleCommandsTests(unittest.TestCase):
+    def test_fd_dup_is_not_a_program(self):
+        self.assertEqual(_programs("x 2>&1 | tee /tmp/a"), ["x", "tee"])
+        first = simple_commands("x 2>&1 | tee /tmp/a")[0]
+        # The descriptor digit stays in argv: shlex cannot tell `2>&1` from
+        # `2 >&1`, so it is never dropped (harmonic-forge#1289 pass 1).
+        self.assertEqual(first.argv, ["x", "2"])
+        self.assertEqual(first.redirects, [(">&", None)])
+
+    def test_redirect_target_is_recorded(self):
+        (item,) = simple_commands("cat a >/tmp/out 2>>/tmp/err")
+        self.assertEqual(item.argv, ["cat", "a", "2"])
+        self.assertEqual(item.redirects, [(">", "/tmp/out"), (">>", "/tmp/err")])
+
+    def test_spaced_digit_before_redirect_is_an_argument(self):
+        (item,) = simple_commands("mv /tmp/a 2 > /dev/null")
+        self.assertEqual(item.argv, ["mv", "/tmp/a", "2"])
+
+    def test_hash_is_not_a_comment(self):
+        # shlex's default would start a comment here and join the next line.
+        self.assertEqual(_programs("ls /tmp # list\nrm -rf /srv/x"), ["ls", "rm"])
+        self.assertEqual(_programs("echo a#b; rm x"), ["echo", "rm"])
+
+    def test_merged_operators_split(self):
+        self.assertEqual(simple_commands("a&&(b)"), [
+            SimpleCommand(["a"], [], None, "&&"), GroupMarker("open"),
+            SimpleCommand(["b"], [], "(", ")"), GroupMarker("close")])
+        self.assertEqual(simple_commands("x);"), [SimpleCommand(["x"], [], None, ")"), GroupMarker("close")])
+        self.assertEqual(simple_commands("diff <(ls a)"), [
+            SimpleCommand(["diff"], [], None, "<("), GroupMarker("open"),
+            SimpleCommand(["ls", "a"], [], "<(", ")"), GroupMarker("close")])
+
+    def test_redirect_ampersand_to_file_is_a_target(self):
+        (item,) = simple_commands("ls >& ~/f")
+        self.assertEqual(item.redirects, [(">&", "~/f")])
+        (dup,) = simple_commands("ls 1>&2")
+        self.assertEqual(dup.redirects, [(">&", None)])
+
+    def test_reserved_words_are_stripped(self):
+        self.assertEqual(_programs("for f in a; do rm x; done"), ["for", "rm"])
+        self.assertEqual(_programs("if test -f a; then cat a; fi"), ["test", "cat"])
+
+    def test_heredoc_delimiter_is_not_a_program(self):
+        self.assertEqual(_programs("cat <<EOF > /tmp/x\nhello world\nEOF\necho done"), ["cat", "echo"])
+        self.assertEqual(_programs("cat <<-'END'\n\tbody\n\tEND\n"), ["cat"])
+
+    def test_unparseable_raises(self):
+        for text in ('echo "open', "cat >", "x > ; y"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                simple_commands(text)
+
+    def test_substitution_bodies(self):
+        self.assertEqual(substitution_bodies("a$(b $(c))d"), ["b $(c)"])
+        self.assertEqual(substitution_bodies("`x y`z$(w)"), ["x y", "w"])
+        self.assertEqual(substitution_bodies("plain"), [])
+        for text in ("$(open", "`open"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                substitution_bodies(text)
+
+
 if __name__ == "__main__":
     unittest.main()

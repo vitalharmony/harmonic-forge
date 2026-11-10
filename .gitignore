@@ -16,3 +16,6 @@ transaction-log.md
 *.sqlite3
 protocol-failures*.jsonl
 failure-overlays/
+# harmonic-forge#1289: the never-refuse sample holds command text; it lives in
+# operator-memory/never-refuse/. Covers the sample, its manifest and temp files.
+never-refuse-sample*
