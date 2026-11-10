@@ -232,3 +232,13 @@ the FORCE table's `route` row and R-0418's clause that a route grant releases on
 route recheck and is spent before the merge runs. The route recheck's refusal names the
 line to type, and the operator types it in that turn, so the grammar stays loaded.
 """
+
+[[increase]]
+date = "2026-11-10"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 7270
+why = """
+harmonic-forge#1244's entry above (7154) was measured against a main that did not yet
+carry harmonic-forge#1304's R-0408 sentence (+116, PR #1309); both are now on main, so the
+surface is 7270. No new text: this entry records the sum the two merges produced.
+"""
