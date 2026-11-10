@@ -241,13 +241,10 @@ _SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9._@+-]+"
 #: `..`, no braces, globs, quotes, `$`, `~` or whitespace, and nothing
 #: relative: a relative target would need the cwd, which is never computed.
 SCRATCH_LITERAL = re.compile(rf"^/tmp/{_SEGMENT}(?:/{_SEGMENT})*/?$")
-#: One loop, keyword to `done` (harmonic-forge#1289 ruling 2 in
-#: issuecomment-6755838889): a loop that runs `sleep` is a poll, which the lint
-#: refuses, so the sample may not admit one. A `sleep` outside the span is not.
-_LOOP_SPAN = re.compile(r"(?:^|(?<=[;&|(\n]))[ \t]*(?:(?:then|else|elif|do|if|!)[ \t]+)*(?:while|until|for)\b.*?\bdone\b",
-                        re.DOTALL)
-#: A `sleep` at the head of a command.
-_SLEEP_COMMAND = re.compile(r"(?:^|[;&|(\n]|\b(?:do|then|else|elif|while|until|if)\b)[ \t]*sleep\b")
+#: A loop keyword at the head of a command. Every loop is refused (operator
+#: ruling on the epoch-5 sticky-wicket, harmonic-forge#1289): 0 of 33,442 pool
+#: rows hold one, and finding a loop's extent is the interpreter this file refuses to be.
+_LOOP_KEYWORD = re.compile(r"(?:^|[;&|(\n])[ \t]*(?:(?:then|else|elif|do|if|!)[ \t]+)*(?:while|until|for)\b")
 #: Characters a quoted span may not hold: an operator, `#` or a newline.
 _QUOTED_REFUSED = frozenset(";&|()<>#\n")
 
@@ -418,10 +415,6 @@ def row(argv: list[str]) -> str:
         raise NotOrdinary("prefix")
     if argv == [prog, PROBE] and prog in PROBE_PROGRAMS:
         return "probe"
-    if prog == "for":
-        if len(argv) >= 3 and argv[2] == "in":
-            return "neutral"
-        raise NotOrdinary("unclassified")
     if prog == "mktemp":
         templates, _valued = parse_opts(argv[1:], MKTEMP_OPTS, "option")
         if len(templates) > 1 or not all(is_scratch(t) for t in templates):
@@ -485,8 +478,8 @@ def classify(command: str) -> str | None:
     heredoc_hazards(command)
     masked = mask_heredoc_bodies(command)
     raw_grammar(masked)
-    if any(_SLEEP_COMMAND.search(span.group(0)) for span in _LOOP_SPAN.finditer(masked)):
-        raise NotOrdinary("poll-loop")
+    if _LOOP_KEYWORD.search(masked):
+        raise NotOrdinary("loop")
     best: str | None = None
     for item in simple_commands(masked):
         if isinstance(item, GroupMarker):

@@ -67,7 +67,7 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    every simple command from `tools/hooks/shell_parse.simple_commands()` must
    match one row: a READ program or git/gh read under its option allowlist;
    a SCRATCH_WRITE program whose every operand is a scratch target; `mktemp`
-   under its own option row; `for NAME in ...`; or a probe, exactly
+   under its own option row; or a probe, exactly
    `[prog, "--help"]` with `prog` on a READ or SCRATCH_WRITE row or git/gh.
    `argv[0]` is matched as written: an assignment, a path or a wrapper
    (`env`, `sudo`, `nice`, `timeout`, `command`, `xargs`, ...) is refused, and
@@ -75,8 +75,8 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    `/tmp/<segment>/...` (no `..`, `.`, braces, globs, `$`, `~` or blanks;
    never relative, so `cd` is never consulted). Before any of this the raw text
    must pass one character-class check: outside single quotes it holds none of
-   backslash, backtick, `$`, `#`, `{` or `}`. A loop whose body runs `sleep` is
-   a poll and is excluded.
+   backslash, backtick, `$`, `#`, `{` or `}`. Every loop (`while`, `until`, `for`)
+   is excluded.
    Anything else is excluded with a counted reason; a string that does not
    parse is counted as `unparseable`.
 7. Samples exactly 10,000 strings (pinned; there is no `--size`) with

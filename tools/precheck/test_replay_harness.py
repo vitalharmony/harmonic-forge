@@ -34,6 +34,10 @@ def rec(ts: str, tool: str | None = None, klass: str | None = None) -> dict:
             "probe": PROBE_MARK, "class_list_version": 1 if klass else None}
 
 
+#: The pass bars AC2 sets (operator ruling 1, issuecomment-6729063022), written out so an edit to the file shows here.
+DESIGN_V1_BARS = {'lint': (['*|shell'], {'replay': {'classes': ['shell'], 'min_share': 1.0}, 'sample_max_refusals': 0}), 'gate': (['*|args', '*|body', '*|cwd', '*|env', '*|freshness', '*|receipt', '*|target-state'], {'replay': {'classes': ['receipt', 'freshness'], 'min_share': 1.0}, 'sample_max_refusals': 0}), 'provenance': (['*|provenance'], {'replay': {'classes': ['provenance'], 'min_share': 1.0}, 'sample_max_refusals': None})}
+
+
 class Harness(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -658,7 +662,9 @@ class ParserValues(Harness):
         def boolmax(d): d["layers"][0]["bar"]["sample_max_refusals"] = True
         def negmax(d): d["layers"][0]["bar"]["sample_max_refusals"] = -1
         def noclaims(d): d["layers"][0]["claims"] = []
-        def nomodule(d): d["layers"][0]["module"] = "/nonexistent/layer.py"
+        def nomodule(d):
+            d["layers"][0]["module"] = "/nonexistent/layer.py"
+            d["layers"][0]["bar"]["sample_max_refusals"] = 0
         def version(d): d["version"] = 2
         def existing(d): d["existing"] = {"not-a-class": "guard"}
         def accepted(d): d["accepted_uncovered"] = ["not-a-class"]
@@ -668,13 +674,8 @@ class ParserValues(Harness):
 
     def test_design_v1_carries_the_ac2_bars(self):
         data = json.loads((rh.HERE / "layersets" / "design-v1.json").read_text(encoding="utf-8"))
-        layers = {layer["name"]: layer for layer in data["layers"]}
-        self.assertEqual(layers["lint"]["bar"]["replay"]["min_share"], 1.0)
-        self.assertEqual(layers["lint"]["bar"]["sample_max_refusals"], 0)
-        self.assertEqual(sorted(layers["gate"]["bar"]["replay"]["classes"]), ["freshness", "receipt"])
-        self.assertEqual(layers["gate"]["bar"]["replay"]["min_share"], 1.0)
-        self.assertIn("*|receipt", layers["gate"]["claims"])
-        self.assertEqual(layers["provenance"]["bar"]["replay"]["min_share"], 1.0)
+        self.assertEqual({layer["name"]: (sorted(layer["claims"]), layer["bar"]) for layer in data["layers"]},
+                         DESIGN_V1_BARS)
 
 
 class SampleRowParser(Harness):
