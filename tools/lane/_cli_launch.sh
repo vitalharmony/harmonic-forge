@@ -317,12 +317,16 @@ unset -f _lane_inject_default
 #     an agent that takes one. Unconditional -- unlike the default flag, this
 #     is directive content, not a mode a caller would ever want to override
 #     per-invocation, so there is no passthrough-already-given check to make.
+#     harmonic-forge#1306: the silence rule (R-0395) rides the same string, after
+#     the directive, so it reaches every Claude lane session in every project and
+#     survives /clear. One constant, citing the rule by id; no second copy of it.
+_lane_silence_rule="Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require."
 _lane_system_prompt_flag="$(registry_lookup AGENT_SYSTEM_PROMPT_FLAG "$_lane_agent")"
 if [ -n "$_lane_system_prompt_flag" ]; then
   cli_args+=("$_lane_system_prompt_flag" \
-    "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing.")
+    "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. $_lane_silence_rule")
 fi
-unset _lane_system_prompt_flag
+unset _lane_system_prompt_flag _lane_silence_rule
 
 # 4. The lane's policy file, if the registry declares one for this agent+lane.
 #

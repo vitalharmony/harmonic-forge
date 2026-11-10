@@ -2016,6 +2016,35 @@ class DeferredToolsLaunchPrompt(unittest.TestCase):
                         self.assertEqual(carried, agent == "claude")
 
 
+class SilenceRuleLaunchPrompt(unittest.TestCase):
+    """harmonic-forge#1306: every Claude lane's appended system prompt carries the
+    silence rule (R-0395) after the hrse#1703 directive, so a fresh or cleared
+    session reads it before its first belt event; Codex launches are unchanged."""
+
+    HEAD = "Silence rule (R-0395)"
+    PHRASES = ("R-0395", "no text", "ScheduleWakeup", "queued-for-", "comment-watch", "operator asks")
+    DIRECTIVE_TAIL = "unavailable from a names-only listing."
+
+    @needs_trusted_lane3_policy
+    def test_every_claude_lane_carries_the_rule_after_the_directive(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for agent in ("claude", "codex"):
+                    with self.subTest(lane=lane, agent=agent):
+                        cell = tree.run(lane, ["--agent", agent])
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        args = _agent_args(cell)
+                        flag = "--append-system-prompt"
+                        value = args[args.index(flag) + 1] if flag in args else ""
+                        carried = all(p in value for p in self.PHRASES)
+                        self.assertEqual(carried, agent == "claude")
+                        self.assertNotIn("not queued-for-", value)
+                        if agent == "claude":
+                            self.assertGreater(value.index(self.HEAD), value.index(self.DIRECTIVE_TAIL))
+                        else:
+                            self.assertFalse(any(self.HEAD in a for a in args))
+
+
 class RouteFloorModWiring(unittest.TestCase):
     """harmonic-forge#1250 AC4: Claude launches load the mod, Codex launches do not,
     and a missing mod refuses with nothing launched."""
