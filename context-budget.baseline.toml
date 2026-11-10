@@ -211,11 +211,11 @@ the grammar is loaded beside FORCE.
 [[increase]]
 date = "2026-11-07"
 files = [".claude/rules/lane-shorthand.md"]
-bytes = 6709
+bytes = 6840
 why = """
 Cumulative since the last baseline: 5561 (entry above) plus harmonic-forge#1281 (1163),
-less 15 from harmonic-forge#1304 (the L2S and L3S rows lose "via operator", and R-0408
-names L2D/L2S/L2B beside the L3 relays):
+plus 116 from harmonic-forge#1304 (the L2S and L3S rows lose "via operator", and R-0408
+says a lane never asks the operator to send its L2 status token):
 the PARK section (R-0421), its grammar, what the grant lets the hold do, the owed-update
 deny, how a parked issue comes back, and the spent-grant residual. The operator types
 PARK in the turn an issue leaves the release, before any file is open, so the grammar
