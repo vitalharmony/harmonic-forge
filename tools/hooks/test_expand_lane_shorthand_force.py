@@ -167,6 +167,14 @@ class ForceModes(ForceTrigger):
                 self.assertIn(why, self.force(line))
                 self.assertIsNone(self.grant())
 
+    def test_a_colonless_line_says_the_colon_is_missing(self) -> None:
+        for line in ("FORCE F1166 route", "FORCE F1166 route abcdef123456", "FORCE F1166"):
+            with self.subTest(line=line):
+                receipt = self.force(line)
+                self.assertIn("no colon and reason", receipt)
+                self.assertNotIn("first line", receipt)
+                self.assertIsNone(self.grant())
+
     def test_unknown_mode_names_route(self) -> None:
         self.assertIn("`route <sha>`", self.force("FORCE F1166 rebase: x"))
 

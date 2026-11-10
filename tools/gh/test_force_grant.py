@@ -278,6 +278,22 @@ class ModeBindingTests(Store):
         self.assertEqual(G.consume(KEY, grant["granted_at"], SHA, NOW, mode="route")["status"], "consumed")
         self.assertEqual(G._bound({"mode": "route", "sha": None, "sha_prefix": SHA[:12]}), SHA[:12])
 
+    def test_route_grant_with_no_usable_prefix_binds_nothing(self):
+        """Survivor 7: `"".startswith` is true, so only the length test stops this."""
+        for prefix in (None, "", SHA[:11]):
+            with self.subTest(prefix=prefix):
+                self.usable("route", None, prefix)
+                with self.assertRaises(G.GrantRefused):
+                    G.require(REPO, ISSUE, SHA, NOW, mode="route")
+
+    def test_route_grant_compares_the_whole_typed_prefix(self):
+        """Survivor 7: a full typed SHA, against a head sharing only its first 12."""
+        near = SHA[:12] + "b" * 28
+        self.usable("route", None, SHA)
+        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="route")["mode"], "route")
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, near, NOW, mode="route")
+
     def test_no_grant_refusal_names_the_requested_mode(self):
         with self.assertRaises(G.GrantRefused) as ctx:
             G.require(REPO, ISSUE, SHA, NOW, mode="route")

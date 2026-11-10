@@ -825,6 +825,8 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
         return "cluster", None
     return f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>` and `cluster` (lowercase)"
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
+#: An unindented, uppercase FORCE line with no colon: well placed, malformed.
+_FORCE_NO_COLON_RE = re.compile(r"^FORCE[ \t]+[A-Za-z]\d{1,6}\b[^:]*$")
 
 
 def _force_module():
@@ -853,6 +855,9 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     # unindented, uppercase. Anywhere else it is quotation (harmonic-forge#895).
     first = next((i for i, text in enumerate(lines) if text.strip()), None)
     match = _FORCE_RE.match(lines[first]) if first is not None else None
+    if match is None and first is not None and _FORCE_NO_COLON_RE.match(lines[first]):
+        return ("FORCE REFUSED: the line has no colon and reason. The form is `FORCE <KEY> "
+                "[reforge <sha> | route <sha> | cluster]: <reason>`. No grant written.")
     if match is None:
         return ("FORCE REFUSED: FORCE is honored only as the prompt's first line, typed "
                 "unindented and uppercase, as `FORCE <KEY>: <reason>`. No grant written.")

@@ -350,7 +350,8 @@ grant and its receipt names the one replaced. An unknown mode, a reforge
 or route with no SHA or a malformed one, or a cluster with a SHA refuses and
 writes nothing. A route grant releases only the route recheck, never a
 preclose refusal, and is spent before the merge runs, so a merge that does
-not then run needs a new line. Each override requires and consumes the grant of its own mode: a
+not then run needs a new line. It binds the head, not the PR's base, so a
+base changed after the line releases the changed diff: an accepted residual. Each override requires and consumes the grant of its own mode: a
 plain grant never authorizes `--reforge` or a cluster bypass, and a grant
 bound to another head refuses. A grant written before harmonic-forge#1174
 has no mode and is plain. `--cluster-verdict --force` reserves its grant
