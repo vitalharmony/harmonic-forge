@@ -18,8 +18,9 @@ A layer module defines `refuses(command, cwd, env_names) -> str | None`;
 `env_names` is always the empty set: the harness never passes its own
 environment to historical rows.
 
-The report prints counts, owners and up to 20 `(n, reason)` pairs per layer;
-never a command and never a stored probe.
+The report prints counts, owners and up to 20 `(n, reason)` pairs per layer.
+The harness never prints a command or a stored probe; a reason is the layer's
+own text, cut to 80 characters, and a layer that quotes its input prints it.
 
 Exit codes: 0 every measurable bar holds (with `--strict`, a not-measurable
 bar also fails; without it the verdict line names how many bars were not
@@ -343,10 +344,11 @@ def replay_bar(layer: dict, replay: dict) -> dict | None:
     # Identity, never the name: ("layer", index) is this layer and no other.
     total, claimed = len(relevant), sum(1 for owner in relevant if owner == ("layer", layer["index"]))
     name = f"{layer['name']}.coverage" + (" (declared claims)" if layer["claims_basis"] == "declared" else "")
-    if total == 0:
-        # Nothing to score is a failure, never a pass: an empty or mistyped
-        # --overlays leaves every replay bar here (harmonic-forge#1289 pass 1).
-        return {"bar": name, "status": "fails", "claimed": 0, "total": 0}
+    # Nothing to score is a failure, never a pass, and that holds per class: one
+    # populated class must not stand in for an empty one (harmonic-forge#1289 epoch 5).
+    present = {klass for (_tool, klass), _owner in replay["_rows"]}
+    if any(klass not in present for klass in bar["classes"]):
+        return {"bar": name, "status": "fails", "claimed": claimed, "total": total}
     holds = claimed / total >= bar["min_share"]
     return {"bar": name, "status": "holds" if holds else "fails", "claimed": claimed, "total": total}
 
@@ -488,6 +490,9 @@ def exit_code(report: dict, strict: bool) -> int:
     for bar in report["bars"]:
         if bar["status"] == "fails" or (strict and bar["status"] == "not-measurable"):
             return EXIT_BAR_FAILED
+    # No bar measured means nothing was scored, which is never a pass.
+    if all(bar["status"] == "not-measurable" for bar in report["bars"]):
+        return EXIT_BAR_FAILED
     return EXIT_OK
 
 

@@ -241,10 +241,13 @@ _SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9._@+-]+"
 #: `..`, no braces, globs, quotes, `$`, `~` or whitespace, and nothing
 #: relative: a relative target would need the cwd, which is never computed.
 SCRATCH_LITERAL = re.compile(rf"^/tmp/{_SEGMENT}(?:/{_SEGMENT})*/?$")
-#: A loop keyword at the head of a command (harmonic-forge#1289 ruling 2 in
-#: issuecomment-6755838889): a loop whose body runs `sleep` is a poll, which
-#: the lint refuses, so the sample may not admit one.
-_LOOP_KEYWORD = re.compile(r"(?:^|[;&|(\n])[ \t]*(?:(?:then|else|elif|do|if|!)[ \t]+)*(?:while|until|for)\b")
+#: One loop, keyword to `done` (harmonic-forge#1289 ruling 2 in
+#: issuecomment-6755838889): a loop that runs `sleep` is a poll, which the lint
+#: refuses, so the sample may not admit one. A `sleep` outside the span is not.
+_LOOP_SPAN = re.compile(r"(?:^|(?<=[;&|(\n]))[ \t]*(?:(?:then|else|elif|do|if|!)[ \t]+)*(?:while|until|for)\b.*?\bdone\b",
+                        re.DOTALL)
+#: A `sleep` at the head of a command.
+_SLEEP_COMMAND = re.compile(r"(?:^|[;&|(\n]|\b(?:do|then|else|elif|while|until|if)\b)[ \t]*sleep\b")
 #: Characters a quoted span may not hold: an operator, `#` or a newline.
 _QUOTED_REFUSED = frozenset(";&|()<>#\n")
 
@@ -253,7 +256,7 @@ _QUOTED_REFUSED = frozenset(";&|()<>#\n")
 #: (harmonic-forge#1289 epoch-4 REFORGE). bash and shlex agree inside single
 #: quotes and on these characters' absence everywhere else, so the classifier
 #: reads the words bash would.
-_RAW_REFUSED = frozenset("\\`$#{}")
+_RAW_REFUSED = frozenset("\\`$#{}\r")
 
 
 def raw_grammar(text: str) -> None:
@@ -482,13 +485,12 @@ def classify(command: str) -> str | None:
     heredoc_hazards(command)
     masked = mask_heredoc_bodies(command)
     raw_grammar(masked)
-    loop = bool(_LOOP_KEYWORD.search(masked))
+    if any(_SLEEP_COMMAND.search(span.group(0)) for span in _LOOP_SPAN.finditer(masked)):
+        raise NotOrdinary("poll-loop")
     best: str | None = None
     for item in simple_commands(masked):
         if isinstance(item, GroupMarker):
             continue
-        if loop and item.argv and item.argv[0] == "sleep":
-            raise NotOrdinary("poll-loop")
         cls = row(list(item.argv)) if item.argv else "neutral"
         for op, target in item.redirects:
             if op in READ_REDIRECTS or target is None or target == "/dev/null":
@@ -768,6 +770,10 @@ def _write_temp(folder: Path, data: bytes) -> Path:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(name)  # the caller never learns this name, so nothing else can remove it
+        raise
     finally:
         if fd != -1:
             os.close(fd)
@@ -779,6 +785,17 @@ def serialized(row: dict) -> str:
     return json.dumps({k: v for k, v in row.items() if k != "_slug"}, ensure_ascii=False, separators=(",", ":"))
 
 
+#: Random identifiers Claude Code generates, not transcript text: a `toolu_`
+#: id holds about 24 base62 characters, so a keyword scan finds `pwd` in about
+#: one in a thousand. Every other byte of the line is scanned.
+_GENERATED_FIELDS = ("id", "session")
+
+
+def scannable(row: dict) -> str:
+    """The line `rescan` reads: `serialized`, with the generated ids blanked."""
+    return serialized({**row, **{field: "" for field in _GENERATED_FIELDS}})
+
+
 def stored_cwd(meta: dict, home: str, uid: int) -> str | None:
     """The row's cwd, or None when it holds anything secret-shaped."""
     cwd = meta.get("cwd")
@@ -788,9 +805,9 @@ def stored_cwd(meta: dict, home: str, uid: int) -> str | None:
 
 
 def rescan(rows: list[dict], manifest: dict, home: str, uid: int) -> int:
-    """Whole-line: every byte a row writes is scanned, under the one mask set.
+    """Whole-line: every byte a row writes is scanned but its generated ids, under the one mask set.
     The manifest carries only counts, fixed vocabulary and version strings."""
-    hits = sum(bool(masked_findings(serialized(r), masks_for({"slug": r["_slug"]}, home, uid))) for r in rows)
+    hits = sum(bool(masked_findings(scannable(r), masks_for({"slug": r["_slug"]}, home, uid))) for r in rows)
     return hits + sum(bool(secret_scan.findings(version)) for version in manifest["versions"])
 
 

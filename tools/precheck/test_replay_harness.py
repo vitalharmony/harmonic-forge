@@ -253,7 +253,9 @@ class Bars(Harness):
 
     def test_strict_fails_unmeasurable_bar(self):
         self.slip("gh-api|args")
-        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": None,
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": None,
+                                  "bar": {"replay": {"classes": ["args"], "min_share": 1.0}}},
+                                 {"name": "lint", "claims": ["*|shell"], "module": None,
                                   "bar": {"sample_max_refusals": 0}}])
         self.assertEqual(self.report(layers)[0], 0)
         self.assertEqual(self.report(layers, "--strict")[0], 4)
@@ -269,7 +271,9 @@ class Bars(Harness):
 
     def test_unmeasured_bar_never_prints_bare_pass(self):
         self.slip("gh-api|args")
-        layers = self.layer_set([{"name": "lint", "claims": ["*|shell"], "module": None,
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": None,
+                                  "bar": {"replay": {"classes": ["args"], "min_share": 1.0}}},
+                                 {"name": "lint", "claims": ["*|shell"], "module": None,
                                   "bar": {"sample_max_refusals": 0}}])
         code, out, _err = self.run_score(layers)
         self.assertEqual(code, 0)
@@ -561,6 +565,35 @@ class OverlayAccounting(Harness):
         self.assertEqual(code, 2, err)
         self.assertIn("changed during this run", err)
 
+    def test_e5_an_overlay_key_with_an_empty_side_is_malformed(self):
+        self.slip("gh-api|args")
+        for key in ("|args", "gh-api|", "noseparator"):
+            with self.subTest(key=key):
+                self.overlay = self.overlay[:1] + [{"log_line": 0, "key_v1": key}]
+                layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "bar": ARGS_REPLAY}])
+                code, _out, err = self.run_score(layers)
+                self.assertEqual(code, 2, err)
+                self.assertIn("malformed overlay row", err)
+
+    def test_e5_a_class_with_no_slip_fails_a_multi_class_bar(self):
+        # One populated class must not stand in for an empty one.
+        self.slip("gh-api|receipt")
+        bar = {"replay": {"classes": ["receipt", "freshness"], "min_share": 1.0}, "sample_max_refusals": None}
+        layers = self.layer_set([{"name": "gate", "claims": ["*|receipt", "*|freshness"], "bar": bar}])
+        code, out, err = self.run_score(layers)
+        self.assertEqual(code, 4, err)
+        self.assertIn("gate.coverage 1/1 fails", out)
+
+    def test_e5_no_measured_bar_is_a_failure(self):
+        layers = self.layer_set([{"name": "x", "claims": ["*|args"], "bar": {"replay": None, "sample_max_refusals": 0}}])
+        code, out, err = self.run_score(layers)
+        self.assertEqual(code, 4, err)
+
+    def test_e5_repeats_are_counted_apart_from_distinct_keys(self):
+        layer_set = rh.load_layer_set(self.layer_set([{"name": "gate", "claims": ["*|args"], "bar": ARGS_REPLAY}]))
+        rows = [("a", "args", None, None), ("b", "args", None, None), ("a", "args", None, None)]
+        self.assertEqual(rh.score_replay(rows, layer_set)["repeat_owned"], 1)
+
     def test_e3_overlay_row_with_no_failure_record_refuses(self):
         self.slip("gh-api|args")
         self.overlay.append({"log_line": 99, "key_v1": "git-push|args"})
@@ -606,6 +639,44 @@ SAMPLE_ROW = {"n": 1, "id": "t1", "ts": None, "session": None, "sidechain": Fals
               "cwd": "/srv/work", "class": "read", "command": "ls"}
 
 
+class ParserValues(Harness):
+    """Epoch 5: every value check on the layer set, one refusal each."""
+
+    def refused(self, mutate) -> None:
+        base = {"version": 1, "layers": [{"name": "gate", "claims": ["*|args"], "claims_basis": "validated", "module": None,
+                                          "bar": {"replay": {"classes": ["args"], "min_share": 1.0}, "sample_max_refusals": None}}],
+                "existing": {}, "accepted_uncovered": []}
+        data = json.loads(json.dumps(base))
+        mutate(data)
+        path = self.tmp / "set.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(rh.Refused):
+            rh.load_layer_set(path)
+
+    def test_each_bad_value_refuses(self):
+        def share(d): d["layers"][0]["bar"]["replay"]["min_share"] = -1
+        def boolmax(d): d["layers"][0]["bar"]["sample_max_refusals"] = True
+        def negmax(d): d["layers"][0]["bar"]["sample_max_refusals"] = -1
+        def noclaims(d): d["layers"][0]["claims"] = []
+        def nomodule(d): d["layers"][0]["module"] = "/nonexistent/layer.py"
+        def version(d): d["version"] = 2
+        def existing(d): d["existing"] = {"not-a-class": "guard"}
+        def accepted(d): d["accepted_uncovered"] = ["not-a-class"]
+        for mutate in (share, boolmax, negmax, noclaims, nomodule, version, existing, accepted):
+            with self.subTest(mutate=mutate.__name__):
+                self.refused(mutate)
+
+    def test_design_v1_carries_the_ac2_bars(self):
+        data = json.loads((rh.HERE / "layersets" / "design-v1.json").read_text(encoding="utf-8"))
+        layers = {layer["name"]: layer for layer in data["layers"]}
+        self.assertEqual(layers["lint"]["bar"]["replay"]["min_share"], 1.0)
+        self.assertEqual(layers["lint"]["bar"]["sample_max_refusals"], 0)
+        self.assertEqual(sorted(layers["gate"]["bar"]["replay"]["classes"]), ["freshness", "receipt"])
+        self.assertEqual(layers["gate"]["bar"]["replay"]["min_share"], 1.0)
+        self.assertIn("*|receipt", layers["gate"]["claims"])
+        self.assertEqual(layers["provenance"]["bar"]["replay"]["min_share"], 1.0)
+
+
 class SampleRowParser(Harness):
     ROW = SAMPLE_ROW
 
@@ -648,6 +719,10 @@ class SampleRowParser(Harness):
 
     def test_e3_row_cwd_is_a_string_or_null(self):
         self.assert_refused(self.rows_with(2, {**self.ROW, "n": 3, "cwd": 7}), "cwd must be a string or null")
+
+    def test_e5_a_null_cwd_parses(self):
+        row = rh.parse_sample_row(json.dumps({**self.ROW, "cwd": None}), 0)
+        self.assertIsNone(row["cwd"])
 
     def test_e3_row_n_is_unique(self):
         self.assert_refused(self.rows_with(2, {**self.ROW, "n": 2}), "appears twice")

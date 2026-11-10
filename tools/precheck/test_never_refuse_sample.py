@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import ast
 import inspect
 import io
 import json
@@ -385,11 +386,14 @@ class Recognizer(unittest.TestCase):
                 self.assertEqual(classify(command), "read")
 
     def test_raw_grammar_has_no_branch_on_a_bash_feature(self):
-        # The convergence test: a character class plus the quote state machine.
+        # The convergence test, structurally: the only string constants raw_grammar
+        # compares are the quote characters; everything else is the character class.
         self.assertFalse(hasattr(nrs, "lexer_hazards"))
-        source = inspect.getsource(nrs.raw_grammar)
-        for feature in ('"$("', "comment", "backtick"):
-            self.assertNotIn(feature, source)
+        tree = ast.parse(inspect.getsource(nrs.raw_grammar))
+        compared = {node.value for cmp in ast.walk(tree) if isinstance(cmp, ast.Compare)
+                    for node in [cmp.left, *cmp.comparators]
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        self.assertLessEqual(compared, {"'", "'\""})
 
     def test_a_plain_newline_is_not_refused(self):
         self.assertEqual(classify("ls /srv/a\nls /srv/b"), "read")
@@ -406,6 +410,28 @@ class Recognizer(unittest.TestCase):
                         "if true; then while true; do sleep 5; done; fi"):
             with self.subTest(command=command):
                 self.assertNotOrdinary(command, reason="poll-loop")
+
+    def test_a_sleep_beside_a_loop_is_not_a_poll(self):
+        for command in ("for f in a b; do cat /srv/x; done; sleep 1", "sleep 1; for f in a b; do cat /srv/x; done",
+                        "sleep 2 && while false; do ls /srv; done"):
+            with self.subTest(command=command):
+                self.assertEqual(classify(command), "read")
+
+    def test_a_poll_is_found_after_every_separator(self):
+        for command in ("cd /srv/x && while true; do sleep 5; done", "ls /srv/a\nwhile true; do sleep 5; done",
+                        "ls /srv | while true; do sleep 5; done", "(while true; do sleep 5; done)",
+                        "if false; then ls /srv; else while true; do sleep 5; done; fi",
+                        "! while true; do sleep 5; done", "while sleep 1; do ls /srv; done"):
+            with self.subTest(command=command):
+                self.assertNotOrdinary(command, reason="poll-loop")
+
+    def test_a_carriage_return_is_refused(self):
+        self.assertNotOrdinary("printf '%s' a\rb", reason="grammar")
+
+    def test_the_highest_class_wins_in_either_order(self):
+        for command in ("rm -rf /tmp/x; ls /srv", "ls /srv; rm -rf /tmp/x"):
+            with self.subTest(command=command):
+                self.assertEqual(classify(command), "scratch-write")
 
     def test_sleep_outside_a_loop_and_a_loop_without_sleep_stay_ordinary(self):
         self.assertEqual(classify("sleep 5"), "read")
@@ -475,11 +501,13 @@ class Recognizer(unittest.TestCase):
         self.assertEqual(classify("for f in a b; do cat /srv/x; done"), "read")
 
     def test_no_function_computes_a_shell_effect(self):
-        # The convergence test, by construction: the interpreter helpers are gone.
-        for name in ("resolve_path", "strip_invocation_prefix", "_mktemp_scratch", "_is_probe",
-                     "substitution_bodies", "MAX_DEPTH"):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(nrs, name))
+        # The convergence test, structurally: the recognizer never calls into
+        # path resolution or the environment, under any helper name.
+        for function in (nrs.classify, nrs.row, nrs.is_scratch):
+            used = {node.attr for node in ast.walk(ast.parse(inspect.getsource(function)))
+                    if isinstance(node, ast.Attribute)}
+            self.assertFalse(used & {"expanduser", "expandvars", "normpath", "abspath", "realpath", "resolve",
+                                     "environ", "getcwd", "chdir"})
         self.assertEqual(list(inspect.signature(nrs.classify).parameters), ["command"])
 
 
@@ -564,11 +592,6 @@ class SecretScan(Base):
         self.assertIn("re-scan", err)
         self.assertNothingWritten()
 
-    def test_rescan_covers_the_whole_line_not_chosen_fields(self):
-        rows = [{"n": 1, "command": "ls /srv", "cwd": "/srv", "session": GH_TOKEN, "_slug": "p"}]
-        hits = nrs.rescan(rows, {"versions": {}}, HOME, os.getuid())
-        self.assertEqual(hits, 1)
-
     def test_a_cwd_with_a_secret_is_stored_as_null(self):
         meta = {"cwd": "/srv/" + GH_TOKEN, "slug": "p"}
         self.assertIsNone(nrs.stored_cwd(meta, HOME, os.getuid()))
@@ -599,6 +622,41 @@ class SecretScan(Base):
         self.transcript(filler(1) + ran("late", "ls /srv/late", ts="2026-12-05T00:00:00Z"))
         pool, _stats = self.pool()
         self.assertNotIn("ls /srv/late", pool)
+
+    def test_a_generated_id_holding_a_keyword_does_not_abort_derive(self):
+        # Epoch 5: `pwd` occurs by chance in about one tool id in a thousand.
+        rows = [{"n": 1, "id": "toolu_01AbPwDcDeFgHiJkLmNoPq", "session": "s", "command": "ls /srv", "cwd": "/srv", "_slug": "p"}]
+        self.assertEqual(nrs.rescan(rows, {"versions": {}}, HOME, os.getuid()), 0)
+
+    def test_every_field_but_the_generated_ids_is_rescanned(self):
+        base = {"n": 1, "id": "i", "session": "s", "ts": "t", "sidechain": False, "version": "v", "cwd": "/srv",
+                "class": "read", "command": "ls /srv", "_slug": "p"}
+        for field in ("ts", "version", "cwd", "class", "command"):
+            with self.subTest(field=field):
+                self.assertEqual(nrs.rescan([{**base, field: GH_TOKEN}], {"versions": {}}, HOME, os.getuid()), 1)
+
+    def test_a_failed_temp_write_leaves_no_file(self):
+        with mock.patch.object(nrs.os, "fsync", side_effect=OSError(28, "no space")), self.assertRaises(OSError):
+            nrs._write_temp(self.tmp, b"partial")
+        self.assertEqual(list(self.tmp.glob("never-refuse-sample*.tmp")), [])
+
+    def test_a_list_result_shape_is_recognized_only_for_text_items(self):
+        self.assertTrue(nrs._shape_ok({"content": [{"type": "text", "text": "x"}], "is_error": False}))
+        self.assertFalse(nrs._shape_ok({"content": [{"type": "image"}], "is_error": False}))
+
+    def test_exit_code_is_anchored_at_the_start_of_the_text(self):
+        self.assertEqual(nrs.ran_check([(True, "Exit code 1 fine", None, False, True)]), None)
+        self.assertIsNotNone(nrs.ran_check([(True, "Blocked: dry run gave Exit code 1", None, False, True)]))
+
+    def test_a_frozen_sample_refuses_before_the_corpus_is_read(self):
+        self.out.parent.mkdir(parents=True)
+        self.out.write_text("x\n")
+        nrs.manifest_path(self.out).write_text("{}")
+        self.transcript(filler(1))
+        with mock.patch.object(nrs, "read_corpus") as read:
+            code, _out, _err = self.derive()
+        self.assertEqual(code, 2)
+        read.assert_not_called()
 
     def test_scratchpad_path_command_survives_masking(self):
         slug = "-home-user-Harmonic-Projects-HRSE2"
