@@ -52,7 +52,7 @@ class Snapshot(unittest.TestCase):
 
     def test_the_router_is_lane_machinery(self):
         """harmonic-forge#1319 AC1."""
-        for path in ("tools/routing/gates.py", "tools/gh/_route_snapshot.py"):
+        for path in ("tools/routing/gates.py", "tools/gh/_route_snapshot.py", "tools/gh/gh_issue.py"):
             with self.subTest(path=path):
                 _line, route = snap.snapshot(_handoff([path]), REPO)
                 self.assertEqual((route.path, route.gate_id), (2, "lane-machinery"))

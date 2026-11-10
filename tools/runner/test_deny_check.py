@@ -94,7 +94,9 @@ class ManifestCoverage(unittest.TestCase):
             self.assertTrue(self.glob_hit(path), f"{path} has no glob")
 
     def test_ordinary_tooling_is_not_denied(self):
-        for path in ("tools/telemetry/emit.py", "tools/gh/gh_issue.py", "docs/x.md",
+        # tools/gh/gh_issue.py left this list in harmonic-forge#1319: it records
+        # the filing route, so it is router code the runner may not edit.
+        for path in ("tools/telemetry/emit.py", "tools/gh/post_lane_discussion.py", "docs/x.md",
                      "tools/x/conftest_helper.py", "docs/pyproject.toml.md",
                      "tools/x/sitecustomize_notes.md"):
             self.assertFalse(deny_check.denied(path), path)

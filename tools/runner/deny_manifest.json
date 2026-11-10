@@ -168,7 +168,8 @@
       "why": "HIGH_BLAST: semantic router (harmonic-forge#1319)",
       "globs": [
         "./**/tools/routing/**",
-        "./**/tools/gh/_route_snapshot.py"
+        "./**/tools/gh/_route_snapshot.py",
+        "./**/tools/gh/gh_issue.py"
       ],
       "regexes": []
     },

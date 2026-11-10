@@ -104,6 +104,7 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # floor, so a change to it is lane machinery whatever its label says.
     (re.compile(r"(^|/)tools/routing/"), "semantic router — decides each issue's path and floor"),
     (re.compile(r"(^|/)tools/gh/_route_snapshot\.py$"), "semantic router — the handoff route snapshot"),
+    (re.compile(r"(^|/)tools/gh/gh_issue\.py$"), "semantic router — evaluates and records the filing route"),
     (re.compile(r"(^|/)tools/gate/"), "production gate — mints a production-run grant from the AE"),
     (re.compile(r"(^|/)scripts/.*migrat"), "migration — touches live data"),
     (re.compile(r"(^|/)backend/app/"), "application code — not tooling at all"),

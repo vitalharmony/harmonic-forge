@@ -93,6 +93,7 @@
       "Edit(./**/docs/decisions/**)",
       "Edit(./**/tools/routing/**)",
       "Edit(./**/tools/gh/_route_snapshot.py)",
+      "Edit(./**/tools/gh/gh_issue.py)",
       "Edit(./tools/runner/**)",
       "Edit(./**/conftest.py)",
       "Edit(./**/pytest.ini)",
