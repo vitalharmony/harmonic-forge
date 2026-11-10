@@ -165,6 +165,14 @@
       ]
     },
     {
+      "why": "HIGH_BLAST: semantic router (harmonic-forge#1319)",
+      "globs": [
+        "./**/tools/routing/**",
+        "./**/tools/gh/_route_snapshot.py"
+      ],
+      "regexes": []
+    },
+    {
       "why": "G2: the runner itself (its fences and this manifest)",
       "globs": [
         "./tools/runner/**"
