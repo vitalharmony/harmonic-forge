@@ -937,7 +937,7 @@ to fall back to `lane-comment` or raw `gh api` as a workaround.
 <!-- /R-0330 -->
 
 <!-- R-0203 -->
-**The only channel between lanes is a GitHub issue comment HITL relays.**
+**The only channel between lanes is a GitHub issue comment, relayed by HITL or an armed belt.**
 No lane contacts another lane's live session directly — cross-session
 messaging or any HITL-bypassing mechanism, regardless of content or
 urgency; seeing another session is fine, addressing it is not. Deny it at

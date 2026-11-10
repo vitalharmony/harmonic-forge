@@ -1720,8 +1720,8 @@ folded_obligations = ["Every trigger names the issue explicitly (`#N`); an unnum
 id = "R-0203"
 file = "3-lane-protocol.md"
 anchor = "HITL Gate Language"
-statement = "The only channel between lanes is a GitHub issue comment HITL relays; no lane contacts another lane's live session directly, regardless of content or urgency."
-text_sha = "8b9b5db6df7ebf6d"
+statement = "The only channel between lanes is a GitHub issue comment, relayed by HITL or an armed belt; no lane contacts another lane's live session directly, regardless of content or urgency."
+text_sha = "723f6b4019d34b4b"
 hooks = [
   { script = "deny_cross_session_contact.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "HRSE2/.claude/settings.json"] },
 ]
@@ -2674,8 +2674,8 @@ hooks = []
 id = "R-0422"
 file = "rules/universal-agent.md"
 anchor = "report-discipline"
-statement = "A message that says work is done, committed or posted carries, in the same message, the commit SHA read from `git log` and the comment id refetched after the post; without both it says what is still running."
-text_sha = "776d8b43413d4d58"
+statement = "A message to the operator that says work is done, committed or posted carries, in the same message, the evidence for what it claims: the commit SHA read from `git log` for a commit, the comment id refetched after the post for a post. Without it, the message says what is not yet confirmed."
+text_sha = "028b29e794098cb6"
 hooks = []
 
 [[rule]]
