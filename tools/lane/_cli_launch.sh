@@ -320,7 +320,7 @@ unset -f _lane_inject_default
 #     harmonic-forge#1306: the silence rule (R-0395) rides the same string, after
 #     the directive, so it reaches every Claude lane session in every project and
 #     survives /clear. One constant, citing the rule by id; no second copy of it.
-_lane_silence_rule="Silence rule (R-0395): you report your own lane's work only. A belt event, loop tick, comment or post that another lane owes, or that is not queued-for-<your lane>, gets no text at all, including a line saying you are ignoring it. A tick with nothing owed ends in ScheduleWakeup alone. Speak only for your own status post (commit SHA plus a refetched comment id) or an action only the operator can take."
+_lane_silence_rule="Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require."
 _lane_system_prompt_flag="$(registry_lookup AGENT_SYSTEM_PROMPT_FLAG "$_lane_agent")"
 if [ -n "$_lane_system_prompt_flag" ]; then
   cli_args+=("$_lane_system_prompt_flag" \

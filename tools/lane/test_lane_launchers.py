@@ -2022,7 +2022,7 @@ class SilenceRuleLaunchPrompt(unittest.TestCase):
     session reads it before its first belt event; Codex launches are unchanged."""
 
     HEAD = "Silence rule (R-0395)"
-    PHRASES = ("R-0395", "no text", "ScheduleWakeup", "queued-for-")
+    PHRASES = ("R-0395", "no text", "ScheduleWakeup", "queued-for-", "comment-watch", "operator asks")
     DIRECTIVE_TAIL = "unavailable from a names-only listing."
 
     @needs_trusted_lane3_policy
@@ -2038,6 +2038,7 @@ class SilenceRuleLaunchPrompt(unittest.TestCase):
                         value = args[args.index(flag) + 1] if flag in args else ""
                         carried = all(p in value for p in self.PHRASES)
                         self.assertEqual(carried, agent == "claude")
+                        self.assertNotIn("not queued-for-", value)
                         if agent == "claude":
                             self.assertGreater(value.index(self.HEAD), value.index(self.DIRECTIVE_TAIL))
                         else:
