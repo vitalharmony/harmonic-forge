@@ -106,9 +106,14 @@ def current(key: str) -> Optional[dict[str, Any]]:
     override is a floor: the route in force is the stricter of the newest
     evaluated route and the strictest override, and only child D's digest line
     removes an override. When the floor holds a looser evaluated route back,
-    that route is reported as `shadow_path`/`shadow_gate`."""
+    that route is reported as `shadow_path`/`shadow_gate`.
+
+    A Tier floor is independent of the path (harmonic-forge#1267): once any
+    evaluated event carries one, the result reports it and `floor_gate`, the
+    gate that set it, whatever later events say."""
     evaluated: Optional[dict[str, Any]] = None
     floor: Optional[dict[str, Any]] = None
+    floored: Optional[dict[str, Any]] = None
     for event in load(key):
         attrs = event["attrs"]
         if attrs.get("decider") == OVERRIDE:
@@ -116,6 +121,8 @@ def current(key: str) -> Optional[dict[str, Any]]:
                 floor = event
         else:
             evaluated = event
+            if attrs.get("tier_floor") == "deep" and floored is None:
+                floored = event
     if evaluated is None and floor is None:
         return None
     # An override replaces the evaluation only when strictly tighter: on a tie
@@ -129,9 +136,12 @@ def current(key: str) -> Optional[dict[str, Any]]:
         in_force, shadow = evaluated, None
     result = dict(in_force, attrs=dict(in_force["attrs"]))
     # harmonic-forge#1234: an override never carries a tier_floor (`route set`
-    # records none), so a stricter override must not drop the evaluated route's.
-    if shadow is not None and "tier_floor" not in result["attrs"] and "tier_floor" in shadow["attrs"]:
-        result["attrs"]["tier_floor"] = shadow["attrs"]["tier_floor"]
+    # records none), so a stricter override must not drop the evaluated route's;
+    # harmonic-forge#1267: nor may a later evaluated event. An event written
+    # before #1267 has no `floor_gate`, and its own gate set the floor.
+    if floored is not None:
+        result["attrs"]["tier_floor"] = floored["attrs"]["tier_floor"]
+        result["attrs"]["floor_gate"] = floored["attrs"].get("floor_gate") or floored["attrs"]["gate_id"]
     if shadow is not None and int(shadow["attrs"]["path"]) != int(in_force["attrs"]["path"]):
         result["attrs"]["shadow_path"] = int(shadow["attrs"]["path"])
         result["attrs"]["shadow_gate"] = shadow["attrs"]["gate_id"]
@@ -184,10 +194,22 @@ def record_if_not_looser(key: str, route: Route, decider: str, checkpoint: str, 
     lock is not reentrant; `record` takes the same lock for the writers that do
     not compare, such as the operator's `route set`. Any future writer that
     compares before it appends must hold the lock across both steps, as this
-    does."""
+    does.
+
+    A looser route carrying a Tier floor still returns None, and records the
+    floor on a copy of the newest evaluated route, checkpoint included, so the
+    path in force and the merge recheck's baseline are unchanged
+    (harmonic-forge#1267 AC2)."""
     with _route_lock(key):
         baseline = evaluated_path(key)
         if baseline is not None and route.path > baseline:
+            in_force = current(key)
+            if route.tier_floor and not (in_force and in_force["attrs"].get("tier_floor")):
+                newest = [e for e in load(key) if e["attrs"].get("decider") != OVERRIDE][-1]["attrs"]
+                held = Route(int(newest["path"]), newest["gate_id"], newest.get("reason", ""),
+                             tier_floor=route.tier_floor, floor_gate=route.floor_gate or route.gate_id)
+                _append(key, held, decider, newest["checkpoint"],
+                        **{k: v for k, v in kwargs.items() if k != "reason"})
             return None, baseline
         return _append(key, route, decider, checkpoint, **kwargs), baseline
 
@@ -221,7 +243,8 @@ def _append(key: str, route: Route, decider: str, checkpoint: str, *,
     owner = repo.split("/")[0]
     attrs = {"path": route.path, "gate_id": route.gate_id,
              "reason": (reason or route.reason)[:200], "decider": decider,
-             "checkpoint": checkpoint, "tier": tier, "tier_floor": route.tier_floor, "ns": ns}
+             "checkpoint": checkpoint, "tier": tier, "tier_floor": route.tier_floor,
+             "floor_gate": route.floor_gate, "ns": ns}
     event = {"ts": now, "source": SOURCE, "repo": repo, "issue": issue, "account": owner, "org": owner,
              "actor": actor, "event_type": EVENT_TYPE, "subject_kind": "route",
              "subject_id": f"route:{key}:{ns}", "provenance": "manual", "validated": True,

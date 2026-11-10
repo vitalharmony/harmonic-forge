@@ -1024,6 +1024,31 @@ class RouteFloorTests(unittest.TestCase):
         self.addCleanup(self.emit_patcher.start)
         self.assertNotEqual(route_store.emit.store_root(), Path(route_store.emit.REAL_STORE).expanduser())
 
+    def test_f1267_a_later_unfloored_event_still_denies_naming_the_gate(self):
+        import gates
+        import route_store
+        key = f"{self.REPO}#1249"
+        route_store.record(key, gates.Route(2, "authorization", "r", tier_floor="deep",
+                                            floor_gate="authorization"), "evaluator", "handoff")
+        route_store.record(key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        with patch.object(m, "resolve_repo", return_value=self.REPO):
+            self.assertEqual(m.resolve_route_floor("/tmp/x", 1249), "authorization")
+        out = self._gate("claude-sonnet-5")
+        self.assertIn('"permissionDecision": "deny"', out)
+        self.assertIn("authorization", out)
+
+    def test_f1267_the_deny_names_the_floor_gate_not_the_shadow_gate(self):
+        import gates
+        import route_store
+        key = f"{self.REPO}#1249"
+        route_store.record(key, gates.Route(2, "authorization", "r", tier_floor="deep",
+                                            floor_gate="authorization"), "evaluator", "handoff")
+        route_store.record(key, gates.Route(2, "te-label", "r"), "evaluator", "handoff")
+        route_store.record(key, gates.Route(1, "override", "r"), "override", "override")
+        self.assertEqual(route_store.current(key)["attrs"]["shadow_gate"], "te-label")
+        with patch.object(m, "resolve_repo", return_value=self.REPO):
+            self.assertEqual(m.resolve_route_floor("/tmp/x", 1249), "authorization")
+
     def test_override_inherits_floor_from_earlier_event(self):
         """An operator override carries no tier_floor (`route set`); a stricter
         one must not drop the evaluated route's floor (route_store.current)."""

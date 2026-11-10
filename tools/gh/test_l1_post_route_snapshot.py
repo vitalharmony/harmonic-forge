@@ -165,6 +165,13 @@ class Recording(TempStore):
         self.assertEqual(route_store.current(KEY)["attrs"]["path"], 1)
         self.assertEqual(len(self._events()), 1)
 
+    def test_f1267_a_looser_floored_route_says_its_floor_is_held(self):
+        snap.record_snapshot(REPO, 1231, gates.Route(1, "unparsed-path", "r"))
+        note = snap.record_snapshot(REPO, 1231, gates.Route(
+            2, "authorization", "r", tier_floor="deep", floor_gate="authorization"))
+        self.assertIn("path not recorded, Tier floor deep held", note)
+        self.assertEqual(route_store.current(KEY)["attrs"]["tier_floor"], "deep")
+
     def test_a_tightening_of_the_evaluated_route_is_recorded_beneath_an_override(self):
         """Pass 2: evaluated path 3, override path 1, a handoff evaluating to path 2.
         It is stricter than the evaluated route, so it is recorded (the override
