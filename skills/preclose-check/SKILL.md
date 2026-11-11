@@ -107,12 +107,28 @@ not proof against a session that can write files.
    `--post-verdict`, and dismissed findings do not require it.
    Where a refuter gave them, also copy `repro` (`{command, reproduced,
    exit_status, ran_at_sha}`) and `threat` (`good-faith` | `hostile-author`)
-   onto the finding (optional; harmonic-forge#1189). They feed only the
+   onto the finding (optional; harmonic-forge#1189). They feed the
    stop-rule shadow that `--complete` and `--post-verdict` record, together
-   with `--threat-model good-faith|hostile-author` (the declared model; absent
-   means `UNKNOWN`) and `--reverify <json>` (a list of `{anchor, command,
-   exit_status, head}` re-verifying the previous pass's blocking findings).
-   The shadow never changes an exit code, a refusal or a printed verdict.
+   with `--threat-model good-faith|hostile-author` (the declared model) and
+   `--reverify <json>` (a list of `{anchor, command, exit_status, head}`
+   re-verifying the previous pass's blocking findings). The shadow never
+   changes an exit code, a refusal or a printed verdict.
+
+   **`--threat-model` is required at `--complete`** (harmonic-forge#1330), and
+   its source is the handoff's `**Threat model:**` line; absent or unknown,
+   `--complete` refuses and records nothing. On a pass declared
+   `hostile-author`, every survivor whose `threat` is not exactly `good-faith`
+   (a `hostile-author` tag, an unknown tag or no tag) refuses the merge gate
+   for the head that pass covers, until a later pass no longer carries it. A
+   `good-faith` pass never blocks. Set each survivor's tag before `--complete`:
+   a no-op commit cannot clear a recorded block. A forced `--complete` records
+   the findings of the review that covered that head; after a sticky-wicket
+   PATCH that is the post-verdict check's findings file, so an unresolved
+   hostile-author post-verdict survivor blocks the forced head. A recorded
+   block clears only by a fix on a new head, or by the operator's plain
+   `FORCE <KEY>:` line re-recording the same head with the finding dismissed
+   and its reason posted verbatim. `--post-verdict` keeps the flag optional;
+   there it feeds only the shadow (absent means `UNKNOWN`).
    Then run:
 
    ```
@@ -145,7 +161,7 @@ not proof against a session that can write files.
    python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \
        --repo <owner/repo> --issue <N> --complete \
        --findings <file> (--envelope <envelope path> --cross-family-ms <ms> | --not-triggered) \
-       --own-model <your session's model> \
+       --own-model <your session's model> --threat-model <good-faith|hostile-author> \
        (--panel-tokens <sum> --panel-ms <ms> | --cost-unavailable "<reason>")
    ```
 
@@ -204,7 +220,9 @@ cluster may be bypassed by the operator's `--force` (with or without
 mode (`rules/lane-shorthand.md` § FORCE, R-0418): `FORCE <KEY>: …` for
 `--force`, `FORCE <KEY> reforge <sha>: …` for `--force --reforge`, and
 `FORCE <KEY> cluster: …` for `--cluster-verdict --force`. The cluster and verdict survive planned and completed receipt
-writes and do not count as a pass.
+writes and do not count as a pass. An issue takes at most two reforge
+epochs (harmonic-forge#1330): once two are recorded, a REFORGE verdict names
+the cap instead of the `--force --reforge` step.
 
 **At most two passes per issue** (operator ruling 2026-09-30,
 harmonic-forge#834). Pass 1 reviews; pass 2 verifies the fixes on the new
@@ -233,7 +251,10 @@ A third pass never runs:
   but **only the operator starts it**: `--reforge` runs only together with
   `--force` (an operator instruction), and even then refuses a diff a
   completed pass already reviewed. No branch name, rename or detached HEAD
-  resets the cap.
+  resets the cap. **At most two reforge epochs per issue**
+  (harmonic-forge#1330): planning a pass and `--complete` both refuse a third
+  `--force --reforge` with or without a FORCE grant, before the grant is
+  spent, and it goes to the operator as a re-scope decision.
 - **Anything else** (pass 2 was clean but the diff changed again, or you
   dispute a finding) → **escalate to the operator**.
 

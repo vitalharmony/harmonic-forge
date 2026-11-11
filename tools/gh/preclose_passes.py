@@ -49,6 +49,14 @@ import os
 import subprocess
 
 MAX_PASSES = 2
+#: harmonic-forge#1330 ruling 2: at most two reforge epochs per issue (epochs 1
+#: and 2; epoch 0 is the original approach). A third goes to the operator.
+MAX_REFORGE_EPOCHS = 2
+REFORGE_CAP = (
+    "Two reforge epochs are complete for this issue. A third --force --reforge is refused, "
+    "with or without a FORCE grant (harmonic-forge#1330): take it to the operator as a "
+    "re-scope decision."
+)
 
 #: harmonic-forge#1189: the stop rule, recorded in shadow beside the cap and
 #: FORCE and never consulted by them. Bump on any change to its classification.
@@ -332,6 +340,13 @@ def covered(passes: list[dict], sha: str, repo_dir=None, main_ref: str = MAIN_RE
     return accepts_entry(passes[-1], sha, repo_dir, main_ref)
 
 
+def reforge_capped(receipt: dict | None) -> bool:
+    """harmonic-forge#1330: True once the highest recorded epoch has reached
+    MAX_REFORGE_EPOCHS, so another --reforge would start one past the cap."""
+    return max((int(p.get("epoch") or 0) for p in history(receipt)),
+               default=0) >= MAX_REFORGE_EPOCHS
+
+
 def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_REF,
             reforge: bool = False, force: bool = False, *, repo: str,
             issue: int | str) -> str | None:
@@ -341,6 +356,8 @@ def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_
     if reforge and not force:
         return ("--reforge is the operator's instruction, never Lane 1's own: it runs only "
                 "with --force, after sticky-wicket's reforge verdict.")
+    if reforge and reforge_capped(receipt):
+        return REFORGE_CAP
     cluster = cluster_message(receipt, repo, issue)
     if force and not reforge:
         if (cluster
@@ -430,6 +447,35 @@ def shadow_error(why: str, threat_model: str | None = None) -> dict:
             "rule_version": SHADOW_RULE_VERSION}
 
 
+def hostile_block(survivors: list, threat_model: str | None) -> list[str]:
+    """harmonic-forge#1330 ruling 1: on a pass declared ``hostile-author``, the
+    anchors of every survivor not tagged exactly ``good-faith`` -- a
+    ``hostile-author`` tag, an unrecognized tag and a missing tag all block,
+    so omitting the tag never clears it. A ``good-faith`` pass blocks nothing.
+    Pure; ``survivors`` is already filtered (dismissed findings are out)."""
+    if threat_model != "hostile-author":
+        return []
+    return [str(finding.get("anchor")) for finding in survivors
+            if isinstance(finding, dict) and finding.get("threat") != "good-faith"]
+
+
+def close_refusal(receipt: dict | None) -> str | None:
+    """harmonic-forge#1330: why the merge gate refuses the head the last
+    completed pass of the current epoch covers, or None. Only that pass is
+    read, so a later pass that no longer carries the block clears it. An entry
+    without ``hostile_blocking`` is a legacy pass and never blocks."""
+    last = reviewed(receipt)
+    blocking = (last or {}).get("hostile_blocking")
+    if not isinstance(blocking, list) or not blocking:
+        return None
+    return (f"Blocked: the last preclose pass was declared hostile-author and left "
+            f"{len(blocking)} surviving finding(s) not tagged good-faith: "
+            f"{', '.join(str(a) for a in blocking)}. The merge gate refuses this head until a "
+            "later pass no longer carries them: fix them on a new head, or the operator's plain "
+            "FORCE line re-records this head with each finding dismissed and its reason posted "
+            "verbatim (harmonic-forge#1330).")
+
+
 def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
     """Every anchor any record of this epoch classed blocking or unknown, on a
     pass or on the post-verdict check. Never cleared from history: a clear is
@@ -450,10 +496,12 @@ def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
 
 def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int,
            mechanisms: list[str] | None = None, branch: str | None = None,
-           reforge: bool = False, cost: dict | None = None, shadow: dict | None = None) -> dict:
+           reforge: bool = False, cost: dict | None = None, shadow: dict | None = None,
+           hostile_blocking: list[str] | None = None) -> dict:
     """The receipt fields for a newly completed pass (AC1). ``cost`` is the
     pass's measured cost and counts (harmonic-forge#889), merged into its
-    ``pass_history`` entry."""
+    ``pass_history`` entry. ``hostile_blocking`` (harmonic-forge#1330) is
+    always written on the new entry, empty when nothing blocks."""
     everything = history(receipt)
     passes = current(everything)
     epoch = max((int(p.get("epoch") or 0) for p in everything), default=0) + (1 if reforge else 0)
@@ -462,7 +510,8 @@ def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int
     everything = everything + [{"sha": sha, "change_identity": identity, "surviving": int(surviving),
                                 "mechanisms": distinct, "branch": branch, "epoch": epoch,
                                 **(cost or {}),
-                                **({"stop_rule_shadow": shadow} if shadow is not None else {})}]
+                                **({"stop_rule_shadow": shadow} if shadow is not None else {}),
+                                "hostile_blocking": list(hostile_blocking or [])}]
     extra = _post_verdict(receipt)
     existing = _mechanism_cluster(receipt, epoch)
     if existing:
@@ -549,6 +598,8 @@ def cluster_message(receipt: dict | None, repo: str, issue: int | str) -> str | 
     if verdict == "PATCH":
         return None
     if verdict == "REFORGE":
+        if reforge_capped(receipt):
+            return REFORGE_CAP
         return (f"Sticky-wicket ruled REFORGE for the pass 1 mechanism cluster ({mechanisms}). "
                 "Only the operator's --force --reforge starts the new epoch.")
     return CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)

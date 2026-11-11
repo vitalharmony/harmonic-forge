@@ -181,6 +181,9 @@ class _Args:
         # about cost get a measured pass, and a cross-family time with an envelope.
         self.panel_tokens, self.panel_ms, self.cost_unavailable = "1000", "2000", None
         self.cross_family_ms = "300" if kwargs.get("envelope") else None
+        # harmonic-forge#1330: --complete requires a declared threat model;
+        # tests not about it declare good-faith, which never blocks.
+        self.threat_model = "good-faith"
         self.__dict__.update(kwargs)
 
 
@@ -964,7 +967,7 @@ class OwnModelCallSiteTests(unittest.TestCase):
         args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, findings="f.json",
                                   base="origin/main", head="HEAD", force=False, envelope=None,
                                   not_triggered=True, own_model="gpt-6-sol",
-                                  panel_tokens="1", panel_ms="1")
+                                  panel_tokens="1", panel_ms="1", threat_model="good-faith")
         # receipt_lock is stubbed: the real one flocks the shared per-issue
         # lock, which a concurrent kill-check run on this issue holds.
         with patch.object(preclose, "require_writable"), \
@@ -1077,6 +1080,22 @@ class OwnModelTests(unittest.TestCase):
                                         findings="f.json", cross_family=False))
                 line = next(l for l in out.getvalue().splitlines() if "--complete" in l)
                 self.assertIn("--own-model", line)
+                self.assertEqual(self._parses(line), 0, line)
+
+    def test_gate_hint_carries_threat_model(self) -> None:
+        """harmonic-forge#1330 TC 1i: the printed --complete names the
+        now-required --threat-model, and still parses as printed."""
+        for required in (True, False):
+            with self.subTest(required=required):
+                out = io.StringIO()
+                with patch.object(preclose, "require_writable"), \
+                     patch.object(preclose, "registered_repo", return_value="vitalharmony/harmonic-forge"), \
+                     patch.object(preclose, "gate_decision", return_value=(required, "why", 1, [])), \
+                     patch("sys.stdout", out):
+                    preclose.gate(_Args(repo="vitalharmony/harmonic-forge", issue=1330,
+                                        findings="f.json", cross_family=False))
+                line = next(l for l in out.getvalue().splitlines() if "--complete" in l)
+                self.assertIn("--threat-model", line)
                 self.assertEqual(self._parses(line), 0, line)
 
     def test_post_verdict_hint_parses(self) -> None:

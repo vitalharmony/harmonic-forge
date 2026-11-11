@@ -531,8 +531,13 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | Non
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
-        last = preclose_passes.reviewed(_receipt(repo, issue))
+        receipt = _receipt(repo, issue)
+        last = preclose_passes.reviewed(receipt)
         if not last:
+            return False
+        # harmonic-forge#1330: a hostile-author pass whose survivors are not
+        # tagged good-faith refuses the head it covers.
+        if preclose_passes.close_refusal(receipt) is not None:
             return False
         recorded = preclose_passes.entry_identity(last)
 
@@ -652,7 +657,13 @@ def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) ->
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
-        last = preclose_passes.reviewed(_receipt(repo, issue))
+        receipt = _receipt(repo, issue)
+        # harmonic-forge#1330: a blocked head is not a cache problem, so the
+        # block is named alone, before any cache-clone note.
+        blocked = preclose_passes.close_refusal(receipt)
+        if blocked:
+            return blocked
+        last = preclose_passes.reviewed(receipt)
         legacy = preclose_passes.legacy_message(last, head_sha)
         if legacy:
             note = f"{legacy}\n\n"
@@ -672,6 +683,9 @@ def _stale_receipt_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         receipt = _receipt(repo, issue)
+        blocked = preclose_passes.close_refusal(receipt)
+        if blocked:
+            return blocked
         cluster = preclose_passes.cluster_message(receipt, repo, issue)
         if cluster:
             return cluster

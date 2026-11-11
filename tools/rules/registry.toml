@@ -936,7 +936,7 @@ id = "R-0108"
 file = "rules/universal-lane1.md"
 anchor = "advisory-triggers"
 statement = "Use sticky-wicket when R-0236's round count reaches two on one issue (rounds counted exactly as R-0236 counts them), or after two preclose passes on one Tooling Exception issue that both left surviving findings (preclose passes counted by R-0108, not R-0236); a PATCH verdict is applied without asking, and FORCE is requested only after the post-verdict check covers the final head."
-text_sha = "01796886b88b45cd"
+text_sha = "083da855a269ca21"
 hooks = []
 
 [[rule]]
@@ -2676,6 +2676,14 @@ file = "rules/universal-agent.md"
 anchor = "report-discipline"
 statement = "A message to the operator that says work is done, committed or posted carries, in the same message, the evidence for what it claims: the commit SHA read from `git log` for a commit, the comment id refetched after the post for a post. Without it, the message says what is not yet confirmed."
 text_sha = "028b29e794098cb6"
+hooks = []
+
+[[rule]]
+id = "R-0423"
+file = "rules/universal-lane1.md"
+anchor = "lane-1-handoff-artifact"
+statement = "For a tool whose output is a measurement, over-refusal is a defect: a preclose finding that the tool refuses or over-counts ordinary input is never dismissed as safe."
+text_sha = "235ae485e23efcb1"
 hooks = []
 
 [[rule]]

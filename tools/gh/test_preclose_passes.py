@@ -720,6 +720,57 @@ class PreclosePassOneFixTests(ScratchRepo):
                     self.plan(tier="fast", reforge=True)
                 self.assertIn("operator's instruction", str(caught.exception))
 
+    def reforge_epoch(self, relpath: str) -> None:
+        """One operator-started reforge epoch on a changed diff."""
+        self.commit(relpath)
+        self.plan(tier="fast", reforge=True, force=True)
+        self.complete_reforge()
+
+    def grant_status(self) -> str:
+        store = Path(os.environ["HOME"]) / ".claude" / "state" / "force" / f"H{ISSUE}.json"
+        return json.loads(store.read_text())["status"]
+
+    def test_second_reforge_still_starts_an_epoch(self) -> None:
+        """harmonic-forge#1330 TC 2b: the cap is two epochs, not one."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.reforge_epoch("scripts/r1.py")
+        self.reforge_epoch("scripts/r2.py")
+        stored = preclose.find_receipt(REPO, ISSUE)
+        self.assertEqual(stored["pass_history"][-1]["epoch"], 2)
+        self.assertEqual(stored["pass_count"], 1)
+
+    def test_third_reforge_is_refused_with_a_live_reforge_grant(self) -> None:
+        """harmonic-forge#1330 TC 2a: refused at --plan and --complete, grant unspent."""
+        self.run_pass("scripts/a.py", SURVIVOR)
+        self.run_pass("scripts/b.py", SURVIVOR)
+        git("checkout", "-q", "-b", "v2", "base", cwd=self.repo)
+        self.reforge_epoch("scripts/r1.py")
+        self.reforge_epoch("scripts/r2.py")
+        self.commit("scripts/r3.py")
+        with self.assertRaises(SystemExit) as planned:
+            self.plan(tier="fast", reforge=True, force=True)
+        self.assertIn(preclose_passes.REFORGE_CAP, str(planned.exception))
+        self.assertEqual(self.grant_status(), "usable")
+        with self.assertRaises(SystemExit) as completed:
+            self.complete_reforge()
+        self.assertIn(preclose_passes.REFORGE_CAP, str(completed.exception))
+        self.assertEqual(self.grant_status(), "usable")
+        self.assertEqual(preclose.find_receipt(REPO, ISSUE)["pass_history"][-1]["epoch"], 2)
+
+    def test_reforge_cluster_at_the_cap_names_the_cap(self) -> None:
+        """harmonic-forge#1330 TC 2c: a REFORGE verdict at the cap never names
+        the refused --force --reforge step."""
+        receipt = {"pass_history": [{"sha": "a", "epoch": 2, "surviving": 2}],
+                   "mechanism_cluster": {"pass_sha": "a", "epoch": 2, "mechanisms": ["m"],
+                                         "verdict": "REFORGE", "comment_url": "u"}}
+        self.assertEqual(preclose_passes.cluster_message(receipt, REPO, ISSUE),
+                         preclose_passes.REFORGE_CAP)
+        receipt["pass_history"][0]["epoch"] = receipt["mechanism_cluster"]["epoch"] = 1
+        self.assertIn("--force --reforge starts the new epoch",
+                      preclose_passes.cluster_message(receipt, REPO, ISSUE))
+
     def test_operator_reforge_on_an_already_reviewed_diff_is_refused(self) -> None:
         self.run_pass("scripts/a.py", SURVIVOR)
         self.run_pass("scripts/b.py", SURVIVOR)

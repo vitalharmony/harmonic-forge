@@ -629,6 +629,49 @@ class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
         self._write_receipt(REPO, 1476, "deadbeef", status="planned")
         self.assertFalse(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
 
+    def _write_history(self, issue, entries):
+        directory = self.preclose_check.receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        self.preclose_check.receipt_path(REPO, issue).write_text(json.dumps({
+            "repo": REPO, "issue": issue, "reviewed_sha": entries[-1]["sha"],
+            "refuters": 5, "status": "complete", "pass_history": entries}))
+
+    def test_blocked_covering_pass_is_not_ok(self):
+        """harmonic-forge#1330 TC 1f: a hostile-author block refuses its own head."""
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                                    "hostile_blocking": ["tools/x.py:1"]}])
+        self.assertFalse(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                                    "hostile_blocking": []}])
+        self.assertTrue(hook._preclose_receipt_ok(REPO, "1476", "deadbeef"))
+
+    def test_a_later_clean_pass_clears_the_block(self):
+        """harmonic-forge#1330 TC 1g: only the last pass of the current epoch blocks."""
+        self._write_history(1476, [
+            {"sha": "old", "epoch": 0, "surviving": 1, "hostile_blocking": ["tools/x.py:1"]},
+            {"sha": "new", "epoch": 0, "surviving": 0, "hostile_blocking": []}])
+        self.assertTrue(hook._preclose_receipt_ok(REPO, "1476", "new"))
+        self._write_history(1476, [
+            {"sha": "old", "epoch": 0, "surviving": 1, "hostile_blocking": ["tools/x.py:1"]},
+            {"sha": "new", "epoch": 1, "surviving": 0, "hostile_blocking": []}])
+        self.assertTrue(hook._preclose_receipt_ok(REPO, "1476", "new"))
+
+    def test_stale_message_names_the_hostile_block(self):
+        """harmonic-forge#1330 TC 1h: the deny names the block, never the cache
+        note, and never offers to run another pass."""
+        self._write_history(1476, [{
+            "sha": "deadbeef", "epoch": 0, "surviving": 1,
+            "change_identity": {"head_sha": "deadbeef", "merge_base": "b", "tree": "t"},
+            "hostile_blocking": ["tools/x.py:1"]}])
+        message = hook._stale_receipt_message(REPO, "1476", "9", "deadbeef")
+        self.assertIn("hostile-author", message)
+        self.assertIn("tools/x.py:1", message)
+        self.assertNotIn("Acceptance replays", message)
+        self.assertNotIn("Run the pre-close pass", message)
+        reason = hook._stale_receipt_reason(REPO, "1476", "9", "deadbeef")
+        self.assertIn("tools/x.py:1", reason)
+        self.assertNotIn("Run the pre-close pass", reason)
+
     def test_stale_head_with_unresolved_cluster_routes_before_offering_a_pass(self):
         directory = self.preclose_check.receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
