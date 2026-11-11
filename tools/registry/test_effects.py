@@ -174,6 +174,14 @@ class TestFamilyMatching(unittest.TestCase):
         self.assertFamily("timeout 60 gh pr merge 5", "gh pr merge", "irreversible")
         self.assertFamily("nice git push", "git push", "external-publish")
 
+    def test_gha_behind_a_wrapper_or_in_a_shell_escape_is_gh(self):
+        # preclose post-verdict check (F1290): the gha alias was never normalized
+        # in the later-token scan or the shell-escape name scan.
+        for command in ("timeout 60 gha vitalharmony pr merge 123",
+                        "sh -c 'cd .; gha vh pr merge 123'",
+                        "timeout 60 sh -c 'cd .; gha vh pr merge 123'"):
+            self.assertFamily(command, "gh pr merge", "irreversible")
+
     def test_ungated(self):
         for command in ("git status", "ls", "git log --oneline", "python3 x.py"):
             self.assertIsNone(classify(command), command)

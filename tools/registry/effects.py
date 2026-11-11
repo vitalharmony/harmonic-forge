@@ -510,11 +510,21 @@ def _write_entry(registry: dict, program: str) -> dict:
     return next(e for e in entries if RANK[e["class"]] == top)
 
 
+#: Wrappers that exec `gh` (`tools/gh/gha` execs `gh-as`, which execs gh):
+#: wherever a program name is read, they count as `gh`.
+GH_ALIASES = ("gha", "gh-as")
+
+
+def _program_name(token: str) -> str:
+    name = Path(token).name
+    return "gh" if name in GH_ALIASES else name
+
+
 def _highest_later(tokens: list[str], registry: dict) -> Outside | None:
     programs = {p for e in registry["outside"] for p in e["programs"]}
     candidates: list[Outside] = []
     for index, token in enumerate(tokens):
-        name = Path(token).name
+        name = _program_name(token)
         if name in gh_hook._SHELL_ESCAPE_COMMANDS:
             found = classify_outside(tokens[index:], registry)
             if found is not None:
@@ -551,9 +561,10 @@ def classify_outside(argv: list[str], registry: dict | None = None) -> Outside |
             if found is not None:
                 candidates.append(found)
         programs = {p for e in registry["outside"] for p in e["programs"]}
-        for name in sorted(programs):
+        for name in sorted(programs | set(GH_ALIASES)):
             if any(re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", t) for t in tokens[1:]):
-                candidates.append(_verdict(_write_entry(registry, name), read=False))
+                family = "gh" if name in GH_ALIASES else name
+                candidates.append(_verdict(_write_entry(registry, family), read=False))
         if not candidates:
             return None
         top = max(RANK[c.klass] for c in candidates)
