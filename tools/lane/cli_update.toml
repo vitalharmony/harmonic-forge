@@ -1,0 +1,46 @@
+# harmonic-forge#1305: every CLI the operator uses, kept current by
+# forge-cli-update.timer. Adding a family (Grok, Kimi, DeepSeek) is one [[cli]]
+# table; a CLI that is not installed is logged `absent` and skipped.
+#
+# `%h` is the home directory. Every command is an argv list run without a shell,
+# and no field here is ever expanded into one.
+#
+#   kind = "side-by-side"  installs a new version beside the old one, so a running
+#                          session keeps its binary: always runs `update_cmd`.
+#   kind = "npm-global"    rewrites the package folder in place: compared with
+#                          `latest_cmd`, and deferred while a process of it runs.
+#
+# `latest_cmd` is required for every entry: after an update that exits 0 the
+# installed version must equal it, or the entry is `failed`.
+
+log = "%h/Harmonic_Projects/logs/cli-versions.jsonl"
+npm_root_cmd = ["%h/.npm-global/bin/npm", "root", "-g"]
+# A CLI deferred this many runs in a row (about a day at a four-hour tick)
+# makes the run exit non-zero, so the unit shows failed.
+defer_streak_limit = 6
+
+[[cli]]
+name = "claude"
+kind = "side-by-side"
+binary = "%h/.local/bin/claude"
+version_cmd = ["%h/.local/bin/claude", "--version"]
+latest_cmd = ["%h/.npm-global/bin/npm", "view", "@anthropic-ai/claude-code", "version"]
+update_cmd = ["%h/.local/bin/claude", "update"]
+
+[[cli]]
+name = "codex"
+kind = "npm-global"
+package = "@openai/codex"
+binary = "%h/.npm-global/bin/codex"
+version_cmd = ["%h/.npm-global/bin/codex", "--version"]
+latest_cmd = ["%h/.npm-global/bin/npm", "view", "@openai/codex", "version"]
+update_cmd = ["%h/.npm-global/bin/npm", "install", "-g", "@openai/codex@latest"]
+
+[[cli]]
+name = "gemini"
+kind = "npm-global"
+package = "@google/gemini-cli"
+binary = "%h/.npm-global/bin/gemini"
+version_cmd = ["%h/.npm-global/bin/gemini", "--version"]
+latest_cmd = ["%h/.npm-global/bin/npm", "view", "@google/gemini-cli", "version"]
+update_cmd = ["%h/.npm-global/bin/npm", "install", "-g", "@google/gemini-cli@latest"]
