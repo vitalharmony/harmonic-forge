@@ -657,7 +657,8 @@ def gate(args: argparse.Namespace) -> int:
             else "--not-triggered") + \
         " --own-model <your session's model> --panel-tokens <sum> --panel-ms <ms>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
-          f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} {tail}"
+          f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} "
+          f"--threat-model <good-faith|hostile-author> {tail}"
           + (" --cross-family" if args.cross_family else ""))
     print()
     print(NOT_A_GATE)
@@ -1094,6 +1095,14 @@ def complete(args: argparse.Namespace) -> int:
             "preclose-check: --complete needs --findings (the panel's findings, JSON) and one of "
             "--envelope/--not-triggered -- a pass is not complete until the cross-family gate "
             "has been evaluated (harmonic-forge#701).")
+    # harmonic-forge#1330 ruling 1: the declared model decides the merge gate,
+    # so it is required here, before the cap check and any grant reservation.
+    if getattr(args, "threat_model", None) not in preclose_passes.THREAT_MODELS:
+        raise SystemExit(
+            f"preclose-check: --complete needs --threat-model "
+            f"{'|'.join(sorted(preclose_passes.THREAT_MODELS))} (got "
+            f"{getattr(args, 'threat_model', None)!r}). Its source is the handoff's "
+            "**Threat model:** line (harmonic-forge#1330). Nothing was recorded.")
     if args.force:
         imc_refusal(repo, args.issue, "--force")
     if getattr(args, "allow_dirty", False):
@@ -1165,9 +1174,10 @@ def complete(args: argparse.Namespace) -> int:
             if enrolled.get("reason"):
                 cost["arm_reason"] = enrolled["reason"]
         shadow = stop_rule_shadow(args, findings, prior, head_sha, reforge)
+        blocking = preclose_passes.hostile_block(surviving_findings(findings), args.threat_model)
         path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
             **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
-                                     current_branch(), reforge, cost, shadow),
+                                     current_branch(), reforge, cost, shadow, blocking),
             "cross_family_required": required,
             "cross_family_reason": why,
             "provenance": provenance,
@@ -1192,6 +1202,9 @@ def complete(args: argparse.Namespace) -> int:
     print(f"  {provenance}")
     print(f"  mechanisms: {', '.join(sorted(set(mechanisms))) or '(none)'}")
     print(f"  cost: {cost_line(cost)}")
+    if blocking:
+        print(f"  hostile-author block: {', '.join(blocking)} -- the merge gate refuses this head "
+              "until a later pass does not carry them (harmonic-forge#1330)")
     route = preclose_passes.cluster_message(read_receipt(path), repo, args.issue)
     if route:
         print(f"  {route}")
@@ -1390,9 +1403,13 @@ def main() -> None:
     parser.add_argument("--own-model",
                         help="The calling session's model (harmonic-forge#848). Required with "
                              "--complete and --post-verdict.")
-    parser.add_argument("--threat-model", choices=("good-faith", "hostile-author"), default=None,
-                        help="With --complete/--post-verdict: the declared threat model for the "
-                             "stop-rule shadow (harmonic-forge#1189 AC6). Absent, the shadow is UNKNOWN.")
+    parser.add_argument("--threat-model", default=None,
+                        help="good-faith|hostile-author: the handoff's declared threat model. "
+                             "Required with --complete, where a hostile-author pass's survivors "
+                             "not tagged good-faith refuse the merge gate (harmonic-forge#1330); "
+                             "optional with --post-verdict, where it feeds only the stop-rule "
+                             "shadow (harmonic-forge#1189 AC6). Validated in --complete, not here, "
+                             "so a printed command with a placeholder still parses.")
     parser.add_argument("--reverify",
                         help="With --complete/--post-verdict: JSON list of {anchor, command, "
                              "exit_status, head} re-verifying prior blocking findings. Read only by "

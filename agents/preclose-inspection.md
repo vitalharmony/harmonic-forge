@@ -141,7 +141,12 @@ Threat: good-faith | hostile-author
 `reproduced` says whether the failure happened; the exit status is recorded
 beside it (a test written to expect the failure exits 0 when it reproduces).
 `Threat` is the least capable author who could cause the failure: a mistake
-(`good-faith`) or a crafted input (`hostile-author`).
+(`good-faith`) or a crafted input (`hostile-author`). On a pass Lane 1
+declares `hostile-author`, this line decides whether your finding blocks the
+merge (harmonic-forge#1330): anything but `good-faith`, an omitted line
+included, blocks. Lane 1 sets each survivor's tag before `--complete`,
+because a no-op commit cannot clear a recorded block (the change identity
+replays to the same tree).
 
 Then a single closing line naming how many findings met the bar and how many
 you discarded for failing it. Nothing else — no summary of the change, no

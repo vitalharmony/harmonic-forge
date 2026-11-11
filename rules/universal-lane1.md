@@ -425,6 +425,10 @@ state, trap or external call) is resolved by deleting the feature it attacks
 or by asking the operator, never by patching the mechanism in. (hrse#2261)
 <!-- /R-0381 -->
 
+<!-- R-0423 -->
+For a tool whose output is a measurement, over-refusal is a defect: a preclose finding that the tool refuses or over-counts ordinary input is never dismissed as safe. (harmonic-forge#1330)
+<!-- /R-0423 -->
+
 <!-- R-0382 -->
 A Tier `fast` diff under 100 changed lines gets one refuter and one pass,
 unless `preclose_check.py --plan` flags a path as high blast radius (hook code
@@ -519,8 +523,9 @@ The advisory roles are read-only advice, never implementation authority.
   — preclose passes are counted by this clause, not by R-0236. The preclose
   verdict is patch (the operator `--force`s the final head) or reforge (a
   new approach whose count restarts, started only by the operator's
-  `--force --reforge`); any other wish for a third pass goes to the
-  operator. A PATCH verdict is applied without asking, and the operator's
+  `--force --reforge`; an issue takes at most two reforge epochs, and a
+  third goes to the operator as a re-scope decision, harmonic-forge#1330);
+  any other wish for a third pass goes to the operator. A PATCH verdict is applied without asking, and the operator's
   FORCE is requested only after the post-verdict check covers the final
   head.
 <!-- /R-0108 -->

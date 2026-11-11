@@ -49,6 +49,14 @@ import os
 import subprocess
 
 MAX_PASSES = 2
+#: harmonic-forge#1330 ruling 2: at most two reforge epochs per issue (epochs 1
+#: and 2; epoch 0 is the original approach). A third goes to the operator.
+MAX_REFORGE_EPOCHS = 2
+REFORGE_CAP = (
+    "Two reforge epochs are complete for this issue. A third --force --reforge is refused, "
+    "with or without a FORCE grant (harmonic-forge#1330): take it to the operator as a "
+    "re-scope decision."
+)
 
 #: harmonic-forge#1189: the stop rule, recorded in shadow beside the cap and
 #: FORCE and never consulted by them. Bump on any change to its classification.
@@ -63,6 +71,17 @@ STICKY_WICKET = (
     "operator --forces the final head; 'reforge' means a new branch, and the pass count "
     "restarts."
 )
+#: harmonic-forge#1330 sticky-wicket PATCH: the sticky-wicket case once the
+#: reforge cap is reached. A separate string, never a change to STICKY_WICKET:
+#: imc_waiver, post_verdict_refusal and preclose_check compare against it.
+STICKY_WICKET_AT_CAP = (
+    "Two preclose passes are complete, and both left surviving findings. Do not run a "
+    "third. Invoke the sticky-wicket agent on this issue: 'patch' means one cross-family "
+    "post-verdict check reads just the patch (the post-verdict mode of preclose_check.py), "
+    "then the operator --forces the final head. Two reforge epochs are already complete, so "
+    "a 'reforge' verdict no longer starts a new branch: REFORGE now goes to the operator as "
+    "a re-scope decision (harmonic-forge#1330)."
+)
 OPERATOR = (
     "Two preclose passes are complete. Do not run a third. Escalate to the operator; "
     "--force is their instruction, not yours."
@@ -74,6 +93,13 @@ CLUSTER_ROUTE = (
     "PATCH --comment-url <url> (or REFORGE, which proceeds only with the operator's "
     "--force --reforge). The operator may bypass an unresolved cluster with --force."
 )
+#: harmonic-forge#1330 post-verdict check: the reforge clause CLUSTER_ROUTE carries,
+#: and what replaces it once two reforge epochs are complete. cluster_message swaps
+#: one for the other, so the route never offers a reforge the cap would refuse.
+CLUSTER_ROUTE_REFORGE = ("(or REFORGE, which proceeds only with the operator's "
+                         "--force --reforge)")
+CLUSTER_ROUTE_REFORGE_AT_CAP = ("(two reforge epochs are complete, so a REFORGE verdict "
+                                "goes to the operator as a re-scope decision)")
 
 
 def normalize_mechanism(mechanism: str) -> str:
@@ -332,6 +358,13 @@ def covered(passes: list[dict], sha: str, repo_dir=None, main_ref: str = MAIN_RE
     return accepts_entry(passes[-1], sha, repo_dir, main_ref)
 
 
+def reforge_capped(receipt: dict | None) -> bool:
+    """harmonic-forge#1330: True once the highest recorded epoch has reached
+    MAX_REFORGE_EPOCHS, so another --reforge would start one past the cap."""
+    return max((int(p.get("epoch") or 0) for p in history(receipt)),
+               default=0) >= MAX_REFORGE_EPOCHS
+
+
 def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_REF,
             reforge: bool = False, force: bool = False, *, repo: str,
             issue: int | str) -> str | None:
@@ -341,6 +374,8 @@ def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_
     if reforge and not force:
         return ("--reforge is the operator's instruction, never Lane 1's own: it runs only "
                 "with --force, after sticky-wicket's reforge verdict.")
+    if reforge and reforge_capped(receipt):
+        return REFORGE_CAP
     cluster = cluster_message(receipt, repo, issue)
     if force and not reforge:
         if (cluster
@@ -355,11 +390,26 @@ def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_
                 "escalate to the operator rather than re-running.")
     if force:
         return None
+    return route_text(receipt, repo, issue)
+
+
+def route_text(receipt: dict | None, repo: str, issue: int | str) -> str | None:
+    """harmonic-forge#1330 sticky-wicket PATCH: the one route a session is
+    sent down instead of another pass, or None. Pure. A cluster route wins;
+    otherwise, at the pass cap, the cap text -- with the sticky-wicket case
+    swapped for STICKY_WICKET_AT_CAP once the reforge cap is reached.
+    ``cap_message`` itself is left alone: three callers compare it to
+    STICKY_WICKET."""
+    cluster = cluster_message(receipt, repo, issue)
     if cluster:
         return cluster
-    if len(passes) >= MAX_PASSES:
-        return cap_message(passes)
-    return None
+    passes = current(history(receipt))
+    if len(passes) < MAX_PASSES:
+        return None
+    capped = cap_message(passes)
+    if capped == STICKY_WICKET and reforge_capped(receipt):
+        return STICKY_WICKET_AT_CAP
+    return capped
 
 
 def _wellformed_repro(repro: object) -> bool:
@@ -430,6 +480,35 @@ def shadow_error(why: str, threat_model: str | None = None) -> dict:
             "rule_version": SHADOW_RULE_VERSION}
 
 
+def hostile_block(survivors: list, threat_model: str | None) -> list[str]:
+    """harmonic-forge#1330 ruling 1: on a pass declared ``hostile-author``, the
+    anchors of every survivor not tagged exactly ``good-faith`` -- a
+    ``hostile-author`` tag, an unrecognized tag and a missing tag all block,
+    so omitting the tag never clears it. A ``good-faith`` pass blocks nothing.
+    Pure; ``survivors`` is already filtered (dismissed findings are out)."""
+    if threat_model != "hostile-author":
+        return []
+    return [str(finding.get("anchor")) for finding in survivors
+            if isinstance(finding, dict) and finding.get("threat") != "good-faith"]
+
+
+def close_refusal(receipt: dict | None) -> str | None:
+    """harmonic-forge#1330: why the merge gate refuses the head the last
+    completed pass of the current epoch covers, or None. Only that pass is
+    read, so a later pass that no longer carries the block clears it. An entry
+    without ``hostile_blocking`` is a legacy pass and never blocks."""
+    last = reviewed(receipt)
+    blocking = (last or {}).get("hostile_blocking")
+    if not isinstance(blocking, list) or not blocking:
+        return None
+    return (f"Blocked: the last preclose pass was declared hostile-author and left "
+            f"{len(blocking)} surviving finding(s) not tagged good-faith: "
+            f"{', '.join(str(a) for a in blocking)}. The merge gate refuses this head until a "
+            "later pass no longer carries them: fix them on a new head, or the operator's plain "
+            "FORCE line re-records this head with each finding dismissed and its reason posted "
+            "verbatim (harmonic-forge#1330).")
+
+
 def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
     """Every anchor any record of this epoch classed blocking or unknown, on a
     pass or on the post-verdict check. Never cleared from history: a clear is
@@ -450,10 +529,12 @@ def prior_blocking(receipt: dict | None, reforge: bool = False) -> list[str]:
 
 def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int,
            mechanisms: list[str] | None = None, branch: str | None = None,
-           reforge: bool = False, cost: dict | None = None, shadow: dict | None = None) -> dict:
+           reforge: bool = False, cost: dict | None = None, shadow: dict | None = None,
+           hostile_blocking: list[str] | None = None) -> dict:
     """The receipt fields for a newly completed pass (AC1). ``cost`` is the
     pass's measured cost and counts (harmonic-forge#889), merged into its
-    ``pass_history`` entry."""
+    ``pass_history`` entry. ``hostile_blocking`` (harmonic-forge#1330) is
+    always written on the new entry, empty when nothing blocks."""
     everything = history(receipt)
     passes = current(everything)
     epoch = max((int(p.get("epoch") or 0) for p in everything), default=0) + (1 if reforge else 0)
@@ -462,7 +543,8 @@ def record(receipt: dict | None, sha: str, identity: dict | None, surviving: int
     everything = everything + [{"sha": sha, "change_identity": identity, "surviving": int(surviving),
                                 "mechanisms": distinct, "branch": branch, "epoch": epoch,
                                 **(cost or {}),
-                                **({"stop_rule_shadow": shadow} if shadow is not None else {})}]
+                                **({"stop_rule_shadow": shadow} if shadow is not None else {}),
+                                "hostile_blocking": list(hostile_blocking or [])}]
     extra = _post_verdict(receipt)
     existing = _mechanism_cluster(receipt, epoch)
     if existing:
@@ -549,9 +631,14 @@ def cluster_message(receipt: dict | None, repo: str, issue: int | str) -> str | 
     if verdict == "PATCH":
         return None
     if verdict == "REFORGE":
+        if reforge_capped(receipt):
+            return REFORGE_CAP
         return (f"Sticky-wicket ruled REFORGE for the pass 1 mechanism cluster ({mechanisms}). "
                 "Only the operator's --force --reforge starts the new epoch.")
-    return CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)
+    route = CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)
+    if reforge_capped(receipt):
+        route = route.replace(CLUSTER_ROUTE_REFORGE, CLUSTER_ROUTE_REFORGE_AT_CAP)
+    return route
 
 
 # harmonic-forge#838 AC5: after a sticky-wicket PATCH verdict, one cross-family

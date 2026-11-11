@@ -156,7 +156,11 @@ class DecisionTests(unittest.TestCase):  # AC1, AC6
 
 
 class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
-    def complete_with(self, findings, *, force=False, threat_model="good-faith", reverify=None):
+    def complete_with(self, findings, *, force=False, threat_model="good-faith", reverify=None,
+                      grant=True):
+        # A pass with survivors does not take the cross-family branch, so it
+        # records the not-triggered label (preclose_check.cross_family_gate).
+        not_triggered = bool(preclose.surviving_findings(findings))
         path = Path(tempfile.mkdtemp()) / "findings.json"
         path.write_text(json.dumps(findings))
         envelope = path.with_name("envelope.txt")
@@ -166,10 +170,11 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
             "target_family": "codex",
             "native": [{"type": "thread.started"},
                        {"type": "item.completed", "item": {"type": "agent_message"}}]}))
-        if force:
+        if force and grant:
             self.grant_force()
         args = _Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
-                     findings=str(path), envelope=str(envelope), not_triggered=False,
+                     findings=str(path), envelope=None if not_triggered else str(envelope),
+                     not_triggered=not_triggered,
                      cross_family=False, force=force, threat_model=threat_model,
                      reverify=reverify)
         out = io.StringIO()
@@ -238,11 +243,71 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
                 self.assertEqual(self._observed(code, out), reference)
                 self.assertEqual(self.last_shadow()["reasons"][0]["why"], "reverify-unparseable")
 
-    def test_absent_threat_model_is_recorded_unknown(self):
-        self.complete_with([], threat_model=None)
-        shadow = self.last_shadow()
-        self.assertEqual(shadow["decision"], "UNKNOWN")
-        self.assertIn("no-threat-model", [r["why"] for r in shadow["reasons"]])
+    # harmonic-forge#1330 TC 1a: was test_absent_threat_model_is_recorded_unknown.
+    # An absent model no longer records an UNKNOWN shadow; --complete refuses.
+    def test_complete_refuses_an_undeclared_threat_model(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                self.setUp()
+                with mock.patch.object(preclose, "reserve_force_grant") as reserved:
+                    code, _out = self.complete_with([], force=force, threat_model=None)
+                self.assertIn("--threat-model", str(code))
+                self.assertEqual(self.receipt(), {})
+                self.assertEqual(reserved.call_count, 0)
+
+    def test_complete_refuses_an_unknown_threat_model(self):  # TC 1b
+        for value in ("hostile", "X", "", "HOSTILE-AUTHOR"):
+            with self.subTest(value=value):
+                self.setUp()
+                code, _out = self.complete_with([], threat_model=value)
+                self.assertIn("--threat-model", str(code))
+                self.assertEqual(self.receipt(), {})
+
+    def last_entry(self):
+        return passes.current(passes.history(self.receipt()))[-1]
+
+    def test_hostile_survivor_is_recorded_as_blocking(self):  # TC 1c
+        code, out = self.complete_with([finding(threat="hostile-author")],
+                                       threat_model="hostile-author")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.last_entry()["hostile_blocking"], ["tools/x.py:1"])
+        self.assertEqual(self.receipt()["pass_count"], 1)
+        self.assertIn("hostile-author block: tools/x.py:1", out)
+        self.assertIn("tools/x.py:1", passes.close_refusal(self.receipt()))
+
+    def test_untagged_survivor_blocks_on_a_hostile_pass(self):  # TC 1d
+        self.complete_with([finding(anchor="a.py:1"), finding(threat="mystery", anchor="b.py:2"),
+                            finding(threat="good-faith", anchor="c.py:3")],
+                           threat_model="hostile-author")
+        self.assertEqual(self.last_entry()["hostile_blocking"], ["a.py:1", "b.py:2"])
+
+    def test_good_faith_pass_never_blocks(self):  # TC 1e
+        self.complete_with([finding(threat="hostile-author"), finding(anchor="b.py:2")],
+                           threat_model="good-faith")
+        self.assertEqual(self.last_entry()["hostile_blocking"], [])
+        self.assertIsNone(passes.close_refusal(self.receipt()))
+        self.setUp()
+        dismissed = {**finding(threat="hostile-author"), "dismissed": "not reachable"}
+        self.complete_with([dismissed], threat_model="hostile-author")
+        self.assertEqual(self.last_entry()["hostile_blocking"], [])
+        self.assertIsNone(passes.close_refusal(self.receipt()))
+
+    def test_forced_rerecord_with_dismissal_clears_the_block(self):  # TC 1j
+        survivor = finding(threat="hostile-author")
+        self.complete_with([survivor], threat_model="hostile-author")
+        self.assertIsNotNone(passes.close_refusal(self.receipt()))
+        dismissed = {**survivor, "dismissed": "operator ruled: not reachable"}
+        # Without the operator's grant the same-head re-record is refused, unforced or forced.
+        code, _out = self.complete_with([dismissed], threat_model="hostile-author")
+        self.assertNotEqual(code, 0)
+        code, _out = self.complete_with([dismissed], force=True, grant=False,
+                                        threat_model="hostile-author")
+        self.assertNotEqual(code, 0)
+        self.assertIsNotNone(passes.close_refusal(self.receipt()))
+        with mock.patch.object(preclose, "emit_force"):
+            code, _out = self.complete_with([dismissed], force=True, threat_model="hostile-author")
+        self.assertEqual(code, 0)
+        self.assertIsNone(passes.close_refusal(self.receipt()))
 
     def test_one_shadow_event_per_decision(self):
         with mock.patch.object(preclose, "emit_shadow") as emitted:
