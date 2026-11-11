@@ -402,20 +402,6 @@ def declaration_problems(registry: dict, root: Path = FORGE_ROOT, dirs=SCANNED_D
 # --------------------------------------------------------------------------
 # Modes (decision 3).
 
-def _token_matches(want: str, argv: list[str]) -> bool:
-    """`want` is present as itself, as `want=value`, or (argparse's default
-    allow_abbrev) as an unambiguous-looking prefix of a long flag: `--prune`
-    matches `--prune-worktrees`. A prefix that fits several modes is resolved
-    by resolve_mode's highest-class rule, so the match fails toward danger."""
-    for a in argv:
-        if a == want or (want.startswith("--") and a.startswith(want + "=")):
-            return True
-        flag = a.split("=", 1)[0]
-        if want.startswith("--") and flag.startswith("--") and len(flag) > 2 and want.startswith(flag):
-            return True
-    return False
-
-
 def find_tool(registry: dict, path: str) -> dict:
     for tool in registry["tools"]:
         if tool["path"] == path:
@@ -425,28 +411,17 @@ def find_tool(registry: dict, path: str) -> dict:
 
 
 def resolve_mode(registry: dict, path: str, argv: list[str]) -> dict:
-    """The highest-class mode among those whose match holds, never merely the
-    first: an argument value that equals another mode's token can only raise
-    the class. A mode whose tokens are a strict subset of another matching
-    mode's is dropped, so `--prune-worktrees --dry-run` stays the dry run. A
-    match-everything mode (`match = []`) counts only when no keyed mode
-    matches. A call no mode matches resolves to the tool's highest-class mode
-    (decision 3), wrappers included."""
+    """An exact form or the ceiling, never parsed in between: a mode declared
+    `exact = true` is returned only when argv equals its `match` exactly;
+    every other call resolves to the tool's highest-class mode (decision 3),
+    wrappers included. argv is never searched for tokens, so no option value,
+    abbreviation or argument order can lower a call's class."""
     tool = find_tool(registry, path)
-    matched = []
     for mode in tool["modes"]:
-        if mode.get("exact"):
-            if list(argv) == mode["match"]:
-                return mode
-        elif mode["match"] and all(_token_matches(t, argv) for t in mode["match"]):
-            matched.append(mode)
-    matched = [m for m in matched
-               if not any(set(m["match"]) < set(o["match"]) for o in matched)]
-    if not matched:
-        matched = [m for m in tool["modes"] if not m["match"] and not m.get("exact")]
-    pool = matched or tool["modes"]
-    top = max(RANK[m["class"]] for m in pool)
-    return next(m for m in pool if RANK[m["class"]] == top)
+        if mode.get("exact") and list(argv) == mode["match"]:
+            return mode
+    top = max(RANK[m["class"]] for m in tool["modes"])
+    return next(m for m in tool["modes"] if RANK[m["class"]] == top)
 
 
 # --------------------------------------------------------------------------
@@ -535,9 +510,29 @@ def _write_entry(registry: dict, program: str) -> dict:
     return next(e for e in entries if RANK[e["class"]] == top)
 
 
+def _highest_later(tokens: list[str], registry: dict) -> Outside | None:
+    programs = {p for e in registry["outside"] for p in e["programs"]}
+    candidates: list[Outside] = []
+    for index, token in enumerate(tokens):
+        name = Path(token).name
+        if name in gh_hook._SHELL_ESCAPE_COMMANDS:
+            found = classify_outside(tokens[index:], registry)
+            if found is not None:
+                candidates.append(found)
+        elif name in programs:
+            candidates.append(_verdict(_write_entry(registry, name), read=False))
+    if not candidates:
+        return None
+    top = max(RANK[c.klass] for c in candidates)
+    return next(c for c in candidates if RANK[c.klass] == top)
+
+
 def classify_outside(argv: list[str], registry: dict | None = None) -> Outside | None:
     """Class one command segment's tokens, or None when no family applies
-    (ungated). Never reads a family from a token's position; reads no grant."""
+    (ungated). A known leading program is classed by its family; behind an
+    unknown one, no position is trusted: every later token naming a family or
+    shell-escape program is a candidate and the highest class among them is
+    returned. Reads no grant."""
     registry = registry if registry is not None else load()
     tokens = _strip(list(argv))
     if not tokens:
@@ -566,15 +561,12 @@ def classify_outside(argv: list[str], registry: dict | None = None) -> Outside |
     for entry in registry["outside"]:
         if program in entry["programs"] and _family_matches(entry, tokens):
             return _verdict(entry, _is_read(entry, tokens))
-    # Fail-closed past an unknown leading program (`timeout 60 gh pr merge`,
-    # `nice git push`, `command gh …`, `env -u X git push`): if a later token
-    # names a family's program, classify from that token, as the shell-escape
-    # branch above does for an escaped segment.
-    programs = {p for e in registry["outside"] for p in e["programs"]}
-    for index in range(1, len(tokens)):
-        if Path(tokens[index]).name in programs:
-            return classify_outside(tokens[index:], registry)
-    return None
+    if program in {p for e in registry["outside"] for p in e["programs"]}:
+        return None
+    # An unknown leading program (`timeout 60 …`, `nice …`, `env -u X …`):
+    # every later token naming a family or shell-escape program is a
+    # candidate, and the highest class among them wins (fail-closed).
+    return _highest_later(tokens[1:], registry)
 
 
 # --------------------------------------------------------------------------

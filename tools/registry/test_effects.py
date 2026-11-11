@@ -165,6 +165,15 @@ class TestFamilyMatching(unittest.TestCase):
         for command in ("nice git push", "nohup git push origin main"):
             self.assertFamily(command, "git push", "external-publish")
 
+    def test_pass_two_wrapper_survivors(self):
+        # preclose pass 2 (F1290): every later family or shell-escape token is
+        # a candidate, the highest wins; no position is trusted.
+        self.assertFamily("timeout 60 sh -c 'git push'", "git push", "external-publish")
+        self.assertFamily("timeout 60 sh -c 'gh pr merge 123'", "gh pr merge", "irreversible")
+        self.assertFamily("env -u docker gh pr merge 123", "gh pr merge", "irreversible")
+        self.assertFamily("timeout 60 gh pr merge 5", "gh pr merge", "irreversible")
+        self.assertFamily("nice git push", "git push", "external-publish")
+
     def test_ungated(self):
         for command in ("git status", "ls", "git log --oneline", "python3 x.py"):
             self.assertIsNone(classify(command), command)
@@ -222,7 +231,16 @@ class TestUnmatchedCall(unittest.TestCase):
         fx = fixture(tool(self.MODES.replace("{high}", "external-publish")))
         self.addCleanup(fx.close)
         self.assertEqual(effects.resolve_mode(fx.load(), "tools/gh/t.py", ["other"])["name"], "high")
+        # A non-exact lower mode documents only: its token never selects it.
+        self.assertEqual(effects.resolve_mode(fx.load(), "tools/gh/t.py", ["low"])["name"], "high")
+
+    def test_an_exact_lower_form_still_resolves_low(self):
+        fx = fixture(tool(self.MODES.replace("{high}", "external-publish")
+                          .replace('match = ["low"]', 'match = ["low"]\n    exact = true')))
+        self.addCleanup(fx.close)
         self.assertEqual(effects.resolve_mode(fx.load(), "tools/gh/t.py", ["low"])["name"], "low")
+        self.assertEqual(effects.resolve_mode(fx.load(), "tools/gh/t.py", ["low", "x"])["name"], "high")
+        self.assertEqual(effects.resolve_mode(REGISTRY, "tools/lane/lanes-claude", ["--dry-run"])["class"], "read")
 
     def test_wrapper(self):
         fx = fixture(tool(self.MODES.replace("{high}", "irreversible"), extra="wrapper = true"))
@@ -246,12 +264,18 @@ class TestUnmatchedCall(unittest.TestCase):
         mode = effects.resolve_mode(REGISTRY, "tools/lane/lanes-claude", ["--dry-run", "--stop-lanes"])
         self.assertEqual(mode["class"], "shared-state")
 
-    def test_an_abbreviated_flag_matches_its_mode(self):
-        # argparse allow_abbrev: --prune is --prune-worktrees.
+    def test_pass_two_survivors_resolve_at_or_above_their_class(self):
+        # preclose pass 2 (F1290): argv is never parsed below the ceiling.
+        mode = effects.resolve_mode(REGISTRY, "tools/gh/l2_post.py", ["post", "--status", "snapshot"])
+        self.assertEqual(mode["class"], "external-publish")
         self.assertEqual(effects.resolve_mode(REGISTRY, "tools/gh/repo_hygiene.py", ["--prune"])["class"],
                          "irreversible")
+        for argv in (["--dry-run", "--stop-lanes"], ["--session", "--dry-run"]):
+            mode = effects.resolve_mode(REGISTRY, "tools/lane/lanes-claude", argv)
+            self.assertEqual(mode["class"], "shared-state", argv)
+        # Not an exact form, so the ceiling: the safe direction.
         mode = effects.resolve_mode(REGISTRY, "tools/gh/repo_hygiene.py", ["--prune-worktrees", "--dry-run"])
-        self.assertEqual(mode["class"], "local-write")
+        self.assertEqual(mode["class"], "irreversible")
 
     def test_alias_resolves_to_its_target(self):
         mode = effects.resolve_mode(REGISTRY, "tools/lane/lane1-rebase", ["repo", "1", "b"])

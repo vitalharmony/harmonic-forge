@@ -23,11 +23,10 @@
 # receipt, lock or admission record another reader acts on; refs this repo
 # owns; a committed or compared artifact; a shared log): shared state.
 #
-# `match` is a list of argument tokens that must all appear (a `--flag` also
-# matches `--flag=value`); the first mode that matches wins, and an empty list
-# matches every call, so it is last; `exact = true` requires the arguments to
-# equal the list. A call no mode matches resolves to the
-# tool's highest-class mode (decision 3). Every `cite` is `path:line` at the
+# A mode below its tool's highest class is ever selected only by an exact
+# form: `exact = true` and the call's arguments equal `match`. Every other
+# call resolves to the tool's highest-class mode (decision 3); argv is never
+# parsed in between. A non-exact mode's `match` documents its shape only. Every `cite` is `path:line` at the
 # commit this file is part of.
 
 data = [
@@ -139,6 +138,7 @@ wrapper = true
   [[tool.mode]]
   name = "--list"
   match = ["--list"]
+  exact = true
   class = "read"
   cite = ["tools/gh/gh-as:39"]
   [[tool.mode]]
@@ -455,6 +455,7 @@ path = "tools/gh/preclose_enrollment.py"
   [[tool.mode]]
   name = "--status"
   match = ["--status"]
+  exact = true
   class = "read"
   cite = ["tools/gh/preclose_enrollment.py:226"]
   [[tool.mode]]
@@ -771,6 +772,7 @@ path = "tools/lane/lane3_audit.py"
   [[tool.mode]]
   name = "show"
   match = ["show"]
+  exact = true
   class = "read"
   cite = ["tools/lane/lane3_audit.py:290"]
   [[tool.mode]]
@@ -785,6 +787,7 @@ path = "tools/lane/lane3_marker.py"
   [[tool.mode]]
   name = "--print-owner"
   match = ["--print-owner"]
+  exact = true
   class = "read"
   cite = ["tools/lane/lane3_marker.py:288-290"]
   [[tool.mode]]
@@ -823,6 +826,7 @@ path = "tools/lane/lanes-claude"
   [[tool.mode]]
   name = "--dry-run"
   match = ["--dry-run"]
+  exact = true
   class = "read"
   cite = ["tools/lane/lanes-claude:77", "tools/lane/lanes-claude:432"]
   [[tool.mode]]
