@@ -158,6 +158,13 @@ class TestFamilyMatching(unittest.TestCase):
         self.assertFamily("bash -c 'gh issue view 1'", "gh pr merge", "irreversible")
         self.assertFamily("eval 'curl -s https://x'", "curl, wget", "external-publish")
 
+    def test_an_unknown_leading_program_is_not_a_bypass(self):
+        # preclose pass 1 (F1290): exec wrappers the strip list does not name.
+        for command in ("timeout 60 gh pr merge 5", "command gh pr merge 5", "env -u X gh pr merge 5"):
+            self.assertFamily(command, "gh pr merge", "irreversible")
+        for command in ("nice git push", "nohup git push origin main"):
+            self.assertFamily(command, "git push", "external-publish")
+
     def test_ungated(self):
         for command in ("git status", "ls", "git log --oneline", "python3 x.py"):
             self.assertIsNone(classify(command), command)
@@ -227,6 +234,24 @@ class TestUnmatchedCall(unittest.TestCase):
         self.assertEqual(mode["class"], "read")
         mode = effects.resolve_mode(REGISTRY, "tools/gh/gh_shim", ["auth", "token", "--extra"])
         self.assertEqual(mode["class"], "shared-state")
+
+    def test_an_argument_value_never_lowers_the_class(self):
+        # preclose pass 1 (F1290): a lower-class mode's token as a flag value.
+        fx = fixture(tool(self.MODES.replace("{high}", "external-publish")))
+        self.addCleanup(fx.close)
+        self.assertEqual(effects.resolve_mode(fx.load(), "tools/gh/t.py", ["high", "--status", "low"])["name"], "high")
+        mode = effects.resolve_mode(REGISTRY, "tools/gh/l2_post.py",
+                                    ["post", "--kind", "completion", "--status", "snapshot"])
+        self.assertEqual(mode["class"], "external-publish")
+        mode = effects.resolve_mode(REGISTRY, "tools/lane/lanes-claude", ["--dry-run", "--stop-lanes"])
+        self.assertEqual(mode["class"], "shared-state")
+
+    def test_an_abbreviated_flag_matches_its_mode(self):
+        # argparse allow_abbrev: --prune is --prune-worktrees.
+        self.assertEqual(effects.resolve_mode(REGISTRY, "tools/gh/repo_hygiene.py", ["--prune"])["class"],
+                         "irreversible")
+        mode = effects.resolve_mode(REGISTRY, "tools/gh/repo_hygiene.py", ["--prune-worktrees", "--dry-run"])
+        self.assertEqual(mode["class"], "local-write")
 
     def test_alias_resolves_to_its_target(self):
         mode = effects.resolve_mode(REGISTRY, "tools/lane/lane1-rebase", ["repo", "1", "b"])
