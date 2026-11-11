@@ -60,7 +60,8 @@ path = "tools/gh/belt_report.py"
   name = "--audit --repo"
   match = ["--audit"]
   class = "read"
-  cite = ["tools/gh/belt_report.py:467-471"]
+  note = "makes API calls; never run on a schedule"
+  cite = ["tools/gh/belt_report.py:461-462", "tools/gh/belt_report.py:467-471"]
   [[tool.mode]]
   name = "--log"
   match = []
