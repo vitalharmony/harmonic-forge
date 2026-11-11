@@ -72,7 +72,7 @@ ROOT = Path(__file__).resolve().parent
 # it -- which is the condition under which a vacuous assertion in the sibling
 # `tools/gh` suite survived review. A doc guard nobody runs is the same
 # failure class this comment already describes one level up.
-TEST_DIRS = ["gate", "gh", "hooks", "lane", "memory", "models", "onboard", "precheck", "routing", "rules", "runner", "telemetry",
+TEST_DIRS = ["gate", "gh", "hooks", "lane", "memory", "models", "onboard", "precheck", "registry", "routing", "rules", "runner", "telemetry",
              "transaction-log",
              "../scripts", "../skills/belt-and-suspenders", "../skills/verification-gate",
              "../skills/sprint-plan", "../skills/sprint-plan/scripts"]

@@ -1,0 +1,1016 @@
+# Effect registry (harmonic-forge#1290).
+#
+# One [[tool]] per script under tools/gh and tools/lane, with one
+# [[tool.mode]] per dispatch branch: its effect class, and for shared state or
+# above its precheck, its guard, or the gap. One [[library]] per file that is
+# only imported or sourced, the data files, and the [[outside]] command table
+# (decision 4). `tools/registry/effects.py` loads and validates this file,
+# renders tools/gh/_preflight.py's inventory table, the decision 6 gap list
+# (`effects.py gaps`) and the replay layer set
+# tools/precheck/layersets/registry-v1.json. A consuming repo extends it with
+# `<repo>/.claude/effects.toml`, which may hold [[tool]] and [[library]]
+# entries only.
+#
+# Classes, in decision 2's order: read, local-write, shared-state,
+# external-publish, irreversible. A mode that does two things takes the higher.
+#
+# Local write versus shared state, in order (the handoff's rule): 1 scratch,
+# temp or an --out that is not a committed or compared artifact: local write.
+# 2 a cache whose authority is elsewhere and which a reader rederives when
+# missing (remote-tracking refs from a fetch, gh-as's identity memo): local
+# write. 3 a _preflight receipt only the same tool's own run reads in the same
+# session: local write. 4 anything else that outlives the run (a grant,
+# receipt, lock or admission record another reader acts on; refs this repo
+# owns; a committed or compared artifact; a shared log): shared state.
+#
+# `match` is a list of argument tokens that must all appear (a `--flag` also
+# matches `--flag=value`); the first mode that matches wins, and an empty list
+# matches every call, so it is last; `exact = true` requires the arguments to
+# equal the list. A call no mode matches resolves to the
+# tool's highest-class mode (decision 3). Every `cite` is `path:line` at the
+# commit this file is part of.
+
+data = [
+  "tools/lane/baseline_launch_tuples.json",
+  "tools/lane/cli_update.toml",
+  "tools/lane/heavy_slot.toml",
+  "tools/lane/lane3_safety_additions.txt",
+  "tools/lane/policies/claude-lane3.json",
+  "tools/lane/systemd/forge-cli-update.service",
+  "tools/lane/systemd/forge-cli-update.timer",
+  "tools/lane/systemd/forge-orphan-reap.service",
+  "tools/lane/systemd/forge-orphan-reap.timer",
+]
+
+# --------------------------------------------------------------------------
+# tools/gh
+
+[[tool]]
+path = "tools/gh/_carry_forward.py"
+  [[tool.mode]]
+  name = "check"
+  match = ["check"]
+  class = "local-write"
+  note = "cache: fetches remote-tracking refs (rule step 2)"
+  cite = ["tools/gh/_carry_forward.py:373", "tools/gh/_carry_forward.py:308", "tools/gh/_carry_forward.py:200"]
+
+[[tool]]
+path = "tools/gh/belt_report.py"
+  [[tool.mode]]
+  name = "--audit --repo"
+  match = ["--audit"]
+  class = "read"
+  cite = ["tools/gh/belt_report.py:467-471"]
+  [[tool.mode]]
+  name = "--log"
+  match = []
+  class = "read"
+  cite = ["tools/gh/belt_report.py:472"]
+
+[[tool]]
+path = "tools/gh/block_closing_keywords.py"
+  [[tool.mode]]
+  name = "hook payload on stdin"
+  match = []
+  class = "read"
+  cite = ["tools/gh/block_closing_keywords.py:106"]
+
+[[tool]]
+path = "tools/gh/board_fields.py"
+replay_tool = "board_fields"
+  [[tool.mode]]
+  name = "set"
+  match = ["set"]
+  class = "shared-state"
+  gap = "writes board fields with no dry run"
+  cite = ["tools/gh/board_fields.py:144"]
+
+[[tool]]
+path = "tools/gh/check_lane3_ready.py"
+  [[tool.mode]]
+  name = "--mark-active"
+  match = ["--mark-active"]
+  class = "shared-state"
+  precheck = "default"
+  binds = []
+  cite = ["tools/gh/check_lane3_ready.py:490-491", "tools/gh/check_lane3_ready.py:528-529"]
+  [[tool.mode]]
+  name = "default"
+  match = []
+  class = "read"
+  cite = ["tools/gh/check_lane3_ready.py:489-546"]
+
+[[tool]]
+path = "tools/gh/fetch_lane1_context.py"
+  [[tool.mode]]
+  name = "--repo --issue"
+  match = []
+  class = "read"
+  cite = ["tools/gh/fetch_lane1_context.py:127", "tools/gh/fetch_lane1_context.py:136-137"]
+
+[[tool]]
+path = "tools/gh/force_grant.py"
+  [[tool.mode]]
+  name = "record"
+  match = ["record"]
+  class = "external-publish"
+  guard_kind = "operator-grant"
+  guard = "FORCE line: refuses with no operator-typed grant (tools/gh/force_grant.py:163-165)"
+  cite = ["tools/gh/force_grant.py:163-165", "tools/gh/force_grant.py:174"]
+  [[tool.mode]]
+  name = "status"
+  match = ["status"]
+  class = "read"
+  cite = ["tools/gh/force_grant.py:302"]
+
+[[tool]]
+path = "tools/gh/gate_ci.py"
+  [[tool.mode]]
+  name = "--repo --file"
+  match = []
+  class = "read"
+  cite = ["tools/gh/gate_ci.py:1041"]
+
+[[tool]]
+path = "tools/gh/gh-as"
+wrapper = true
+  [[tool.mode]]
+  name = "--list"
+  match = ["--list"]
+  class = "read"
+  cite = ["tools/gh/gh-as:39"]
+  [[tool.mode]]
+  name = "--init <account>"
+  match = ["--init"]
+  class = "shared-state"
+  gap = "interactive operator login into the account's config dir"
+  cite = ["tools/gh/gh-as:52-59"]
+  [[tool.mode]]
+  name = "<account> <command>"
+  match = []
+  class = "local-write"
+  note = "cache: the identity memo; a miss re-probes (rule step 2)"
+  cite = ["tools/gh/gh-as:88-104", "tools/gh/gh-as:137-139"]
+
+[[tool]]
+path = "tools/gh/gh_issue.py"
+replay_tool = "gh-new-issue"
+  [[tool.mode]]
+  name = "create"
+  match = []
+  class = "external-publish"
+  gap = "no dry run"
+  guard_note = "deny_advisory_subagent_gh_writes.py:89 covers subagents only"
+  cite = ["tools/gh/gh_issue.py:335"]
+
+[[tool]]
+path = "tools/gh/gh_shim"
+wrapper = true
+  [[tool.mode]]
+  name = "auth token"
+  match = ["auth", "token"]
+  exact = true
+  class = "read"
+  note = "passes through before the override"
+  cite = ["tools/gh/gh_shim:73-74"]
+  [[tool.mode]]
+  name = "api user --jq .login"
+  match = ["api", "user", "--jq", ".login"]
+  exact = true
+  class = "read"
+  note = "passes through before the override"
+  cite = ["tools/gh/gh_shim:73-74"]
+  [[tool.mode]]
+  name = "wrapper"
+  match = []
+  class = "shared-state"
+  gap = "spends the operator's one-shot scan override on the next call"
+  cite = ["tools/gh/gh_shim:84", "tools/gh/gh_scan_patterns.py:384"]
+
+[[tool]]
+path = "tools/gh/gha"
+wrapper = true
+  [[tool.mode]]
+  name = "<account> whoami"
+  match = ["whoami"]
+  class = "local-write"
+  note = "runs gh-as, which writes its memo"
+  cite = ["tools/gh/gha:43"]
+  [[tool.mode]]
+  name = "<account> <gh-args>"
+  match = []
+  class = "local-write"
+  note = "execs gh-as and takes its class"
+  cite = ["tools/gh/gha:52"]
+
+[[tool]]
+path = "tools/gh/imc_waiver.py"
+replay_tool = "imc_waiver"
+  [[tool.mode]]
+  name = "record"
+  match = ["record"]
+  class = "external-publish"
+  guard_kind = "operator-grant"
+  guard = "IMC on a BATCH line: record refuses with no hook-written waiver record (tools/gh/imc_waiver.py:303-306)"
+  cite = ["tools/gh/imc_waiver.py:303-306", "tools/gh/imc_waiver.py:325"]
+  [[tool.mode]]
+  name = "end"
+  match = ["end"]
+  class = "external-publish"
+  gap = "posts the end comment and archives the receipt with no dry run"
+  cite = ["tools/gh/imc_waiver.py:563"]
+  [[tool.mode]]
+  name = "retire --all-closed"
+  match = ["retire", "--all-closed"]
+  class = "shared-state"
+  gap = "archives every closed issue's waiver receipt"
+  cite = ["tools/gh/imc_waiver.py:724", "tools/gh/imc_waiver.py:655", "tools/gh/imc_waiver.py:663"]
+  [[tool.mode]]
+  name = "retire --key"
+  match = ["retire"]
+  class = "shared-state"
+  gap = "archives one waiver receipt"
+  cite = ["tools/gh/imc_waiver.py:731", "tools/gh/imc_waiver.py:655", "tools/gh/imc_waiver.py:663"]
+
+[[tool]]
+path = "tools/gh/install_gh_shim.sh"
+  [[tool.mode]]
+  name = "install"
+  match = []
+  class = "shared-state"
+  gap = "the operator's own action: links ~/.local/bin/gh to the shim"
+  cite = ["tools/gh/install_gh_shim.sh:18", "tools/gh/install_gh_shim.sh:40"]
+
+[[tool]]
+path = "tools/gh/kill_check.py"
+replay_tool = "kill_check"
+  [[tool.mode]]
+  name = "run --validate"
+  match = ["run", "--validate"]
+  class = "local-write"
+  note = "preflight receipt (rule step 3)"
+  cite = ["tools/gh/kill_check.py:415", "tools/gh/kill_check.py:336"]
+  [[tool.mode]]
+  name = "run"
+  match = ["run"]
+  class = "shared-state"
+  precheck = "run --validate"
+  binds = ["head_sha", "checks_file", "args"]
+  binds_cite = "tools/gh/kill_check.py:302-315"
+  cite = ["tools/gh/kill_check.py:345", "tools/gh/kill_check.py:355"]
+  validates = [
+    {class = "receipt", cite = "tools/gh/kill_check.py:336"},
+    {class = "receipt", cite = "tools/gh/kill_check.py:345"},
+    {class = "freshness", cite = "tools/gh/kill_check.py:302-315"},
+    {class = "freshness", cite = "tools/gh/kill_check.py:345"},
+  ]
+  [[tool.mode]]
+  name = "waive"
+  match = ["waive"]
+  class = "shared-state"
+  gap = "writes a waived kill-check receipt"
+  cite = ["tools/gh/kill_check.py:388"]
+
+[[tool]]
+path = "tools/gh/l1_post.py"
+replay_tool = "l1_post"
+  [[tool.mode]]
+  name = "--dry-run"
+  match = ["--dry-run"]
+  class = "local-write"
+  note = "preflight receipt (rule step 3); refresh_main's fetch is a cache (step 2)"
+  cite = ["tools/gh/l1_post.py:3776-3778", "tools/gh/l1_post.py:3466-3468"]
+  [[tool.mode]]
+  name = "post (every --kind)"
+  match = []
+  class = "external-publish"
+  precheck = "--dry-run"
+  binds = ["head_sha", "body_content", "args"]
+  binds_cite = "tools/gh/l1_post.py:3408-3426"
+  cite = ["tools/gh/l1_post.py:3488", "tools/gh/l1_post.py:3608-3613", "tools/gh/l1_post.py:3784"]
+  validates = [
+    {class = "receipt", cite = "tools/gh/l1_post.py:3608-3613"},
+    {class = "freshness", cite = "tools/gh/l1_post.py:3408-3426"},
+    {class = "freshness", cite = "tools/gh/l1_post.py:3607-3611"},
+  ]
+
+[[tool]]
+path = "tools/gh/l2_post.py"
+replay_tool = "l2_post"
+  [[tool.mode]]
+  name = "snapshot"
+  match = ["snapshot"]
+  class = "shared-state"
+  gap = "writes a snapshot receipt a later post reads"
+  cite = ["tools/gh/l2_post.py:509", "tools/gh/l2_post.py:103"]
+  [[tool.mode]]
+  name = "resolve-lock"
+  match = ["resolve-lock"]
+  class = "shared-state"
+  gap = "clears the issue's failure lock"
+  cite = ["tools/gh/l2_post.py:513", "tools/gh/l2_post.py:459"]
+  [[tool.mode]]
+  name = "post"
+  match = ["post"]
+  class = "external-publish"
+  gap = "no dry run"
+  cite = ["tools/gh/l2_post.py:554"]
+
+[[tool]]
+path = "tools/gh/lane_transition_report.py"
+  [[tool.mode]]
+  name = "report"
+  match = []
+  class = "read"
+  cite = ["tools/gh/lane_transition_report.py:281", "tools/gh/lane_transition_report.py:288"]
+
+[[tool]]
+path = "tools/gh/orphan_report.py"
+  [[tool.mode]]
+  name = "report"
+  match = []
+  class = "read"
+  note = "runs the consuming repo's test-graph-orphans task, classed by that repo's extension"
+  cite = ["tools/gh/orphan_report.py:63"]
+
+[[tool]]
+path = "tools/gh/pitch_receipt.py"
+  [[tool.mode]]
+  name = "record"
+  match = ["record"]
+  class = "shared-state"
+  gap = "writes the pitch receipt l1_post reads"
+  cite = ["tools/gh/pitch_receipt.py:141"]
+
+[[tool]]
+path = "tools/gh/post_comment.py"
+replay_tool = "post-comment"
+  [[tool.mode]]
+  name = "post"
+  match = []
+  class = "external-publish"
+  gap = "role-scoped hooks only"
+  guard_note = "deny_lane3_ae_self_post.py:204 acts in Lane 3 on AE or sweep content only; block_lane1_status_claims.py:328-331 is HRSE2-only; deny_advisory_subagent_gh_writes.py:89 covers subagents only"
+  cite = ["tools/gh/post_comment.py:46"]
+
+[[tool]]
+path = "tools/gh/post_lane1_issue.py"
+  [[tool.mode]]
+  name = "fill or amend"
+  match = []
+  class = "external-publish"
+  gap = "validates before the PATCH, no dry run"
+  cite = ["tools/gh/post_lane1_issue.py:154", "tools/gh/post_lane1_issue.py:209"]
+
+[[tool]]
+path = "tools/gh/post_lane_discussion.py"
+replay_tool = "post-lane-discussion"
+  [[tool.mode]]
+  name = "post (every --kind)"
+  match = []
+  class = "external-publish"
+  gap = "no dry run"
+  guard_note = "deny_lane3_ae_self_post.py:204 covers Lane 3 only"
+  cite = ["tools/gh/post_lane_discussion.py:136", "tools/gh/post_lane_discussion.py:618"]
+
+[[tool]]
+path = "tools/gh/preclose_check.py"
+replay_tool = "preclose_check"
+  [[tool.mode]]
+  name = "--gate"
+  match = ["--gate"]
+  class = "local-write"
+  note = "prints the branch; writes only its _preflight receipt (rule step 3)"
+  cite = ["tools/gh/preclose_check.py:635-637", "tools/gh/preclose_check.py:1462-1466", "tools/gh/preclose_check.py:1359"]
+  [[tool.mode]]
+  name = "--post-verdict"
+  match = ["--post-verdict"]
+  class = "shared-state"
+  gap = "writes the pass receipt"
+  cite = ["tools/gh/preclose_check.py:1467", "tools/gh/preclose_check.py:1603"]
+  [[tool.mode]]
+  name = "--cluster-verdict --force"
+  match = ["--cluster-verdict", "--force"]
+  class = "shared-state"
+  precheck = "--cluster-verdict"
+  guard_kind = "operator-grant"
+  guard = "FORCE <key> cluster line (force_grant.require)"
+  binds = []
+  guard_note = "the precheck key binds repo, issue and mode only"
+  cite = ["tools/gh/preclose_check.py:1352-1368", "tools/gh/preclose_check.py:1492", "tools/gh/preclose_check.py:1527-1530"]
+  validates = [
+    {class = "receipt", cite = "tools/gh/preclose_check.py:1365"},
+  ]
+  [[tool.mode]]
+  name = "--cluster-verdict"
+  match = ["--cluster-verdict"]
+  class = "shared-state"
+  gap = "writes the cluster verdict into the receipt"
+  cite = ["tools/gh/preclose_check.py:1478", "tools/gh/preclose_check.py:1536"]
+  [[tool.mode]]
+  name = "--complete --force"
+  match = ["--complete", "--force"]
+  class = "shared-state"
+  precheck = "--complete"
+  guard_kind = "operator-grant"
+  guard = "FORCE line (force_grant.require)"
+  binds = []
+  guard_note = "the precheck key binds repo, issue and mode only"
+  cite = ["tools/gh/preclose_check.py:1352-1368", "tools/gh/preclose_check.py:181"]
+  validates = [
+    {class = "receipt", cite = "tools/gh/preclose_check.py:1365"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:181"},
+  ]
+  [[tool.mode]]
+  name = "--complete"
+  match = ["--complete"]
+  class = "shared-state"
+  gap = "records the pass"
+  cite = ["tools/gh/preclose_check.py:1178"]
+  [[tool.mode]]
+  name = "plan --force [--reforge]"
+  match = ["--force"]
+  class = "shared-state"
+  precheck = "plan"
+  guard_kind = "operator-grant"
+  guard = "FORCE line, plain or reforge (force_grant.require)"
+  binds = []
+  guard_note = "the precheck key binds repo, issue and mode only"
+  cite = ["tools/gh/preclose_check.py:1352-1368", "tools/gh/preclose_check.py:181", "tools/gh/preclose_check.py:927-931"]
+  validates = [
+    {class = "receipt", cite = "tools/gh/preclose_check.py:1365"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:181"},
+  ]
+  [[tool.mode]]
+  name = "plan"
+  match = []
+  class = "shared-state"
+  gap = "writes the planned receipt"
+  cite = ["tools/gh/preclose_check.py:1484", "tools/gh/preclose_check.py:1010"]
+
+[[tool]]
+path = "tools/gh/preclose_enrollment.py"
+  [[tool.mode]]
+  name = "--status"
+  match = ["--status"]
+  class = "read"
+  cite = ["tools/gh/preclose_enrollment.py:226"]
+  [[tool.mode]]
+  name = "--enroll"
+  match = ["--enroll"]
+  class = "shared-state"
+  gap = "writes the experiment file every preclose plan reads"
+  cite = ["tools/gh/preclose_enrollment.py:218", "tools/gh/preclose_enrollment.py:231"]
+  [[tool.mode]]
+  name = "--stop"
+  match = ["--stop"]
+  class = "shared-state"
+  gap = "writes the experiment file every preclose plan reads"
+  cite = ["tools/gh/preclose_enrollment.py:219", "tools/gh/preclose_enrollment.py:231"]
+
+[[tool]]
+path = "tools/gh/preclose_pass_report.py"
+  [[tool.mode]]
+  name = "report"
+  match = []
+  class = "read"
+  cite = ["tools/gh/preclose_pass_report.py:385"]
+
+[[tool]]
+path = "tools/gh/receipt_runner.py"
+wrapper = true
+  [[tool.mode]]
+  name = "--issue N -- <command>"
+  match = []
+  class = "shared-state"
+  gap = "writes the command receipt and, on failure, the issue lock l2_post reads"
+  cite = ["tools/gh/receipt_runner.py:135", "tools/gh/receipt_runner.py:110"]
+
+[[tool]]
+path = "tools/gh/repo_hygiene.py"
+  [[tool.mode]]
+  name = "--prune-worktrees --dry-run"
+  match = ["--prune-worktrees", "--dry-run"]
+  class = "local-write"
+  note = "cache: the report pass fetches first; the dry run only stops the removal"
+  cite = ["tools/gh/repo_hygiene.py:1451", "tools/gh/repo_hygiene.py:1165-1168"]
+  [[tool.mode]]
+  name = "--prune-worktrees"
+  match = ["--prune-worktrees"]
+  class = "irreversible"
+  precheck = "--prune-worktrees --dry-run"
+  binds = []
+  cite = ["tools/gh/repo_hygiene.py:1175", "tools/gh/repo_hygiene.py:1185"]
+  [[tool.mode]]
+  name = "report with --checkout"
+  match = ["--checkout"]
+  class = "local-write"
+  note = "cache: git fetch origin main"
+  cite = ["tools/gh/repo_hygiene.py:1451", "tools/gh/repo_hygiene.py:1302"]
+  [[tool.mode]]
+  name = "report, --repo or --manifest-repos only"
+  match = []
+  class = "read"
+  cite = ["tools/gh/repo_hygiene.py:1414", "tools/gh/repo_hygiene.py:1425"]
+
+[[tool]]
+path = "tools/gh/run_lane1_transport_tests.py"
+  [[tool.mode]]
+  name = "run"
+  match = []
+  class = "local-write"
+  note = "temp directories only"
+  cite = ["tools/gh/run_lane1_transport_tests.py:21", "tools/gh/run_lane1_transport_tests.py:32"]
+
+[[tool]]
+path = "tools/gh/sticky_receipt.py"
+  [[tool.mode]]
+  name = "record"
+  match = ["record"]
+  class = "shared-state"
+  gap = "writes the sticky-wicket receipt"
+  cite = ["tools/gh/sticky_receipt.py:321"]
+
+[[tool]]
+path = "tools/gh/ui_grant.py"
+  [[tool.mode]]
+  name = "status"
+  match = ["status"]
+  class = "read"
+  cite = ["tools/gh/ui_grant.py:417"]
+  [[tool.mode]]
+  name = "record"
+  match = ["record"]
+  class = "external-publish"
+  guard_kind = "operator-grant"
+  guard = "UI line: record refuses with no hook-written pending grant (tools/gh/ui_grant.py:356)"
+  cite = ["tools/gh/ui_grant.py:356", "tools/gh/ui_grant.py:377", "tools/gh/ui_grant.py:387"]
+
+[[tool]]
+path = "tools/gh/verification_report.py"
+  [[tool.mode]]
+  name = "report"
+  match = []
+  class = "read"
+  cite = ["tools/gh/verification_report.py:248"]
+
+[[tool]]
+path = "tools/gh/watch_lane_posts.py"
+  [[tool.mode]]
+  name = "belt run"
+  match = []
+  class = "shared-state"
+  gap = "writes the belt's seen, offer and tick state under ~/.claude/state/belt"
+  guard_note = "enforce_belt_arming.py checks a Monitor command in a LANE session only; deny_retired_belt_sweep.py:27 denies the retired flag only"
+  cite = ["tools/gh/watch_lane_posts.py:653", "tools/gh/watch_lane_posts.py:3015", "tools/gh/watch_lane_posts.py:3271"]
+
+[[tool]]
+path = "tools/gh/wrapper_parity.py"
+  [[tool.mode]]
+  name = "check"
+  match = []
+  class = "read"
+  note = "runs each script's --help"
+  cite = ["tools/gh/wrapper_parity.py:187"]
+
+# --------------------------------------------------------------------------
+# tools/lane
+
+[[tool]]
+path = "tools/lane/baseline_capture.py"
+  [[tool.mode]]
+  name = "--out"
+  match = ["--out"]
+  class = "shared-state"
+  gap = "writes the committed comparison fixture"
+  cite = ["tools/lane/baseline_capture.py:473-474", "tools/lane/baseline_capture.py:11-13"]
+  [[tool.mode]]
+  name = "capture, --compare"
+  match = []
+  class = "local-write"
+  note = "temp directories only"
+  cite = ["tools/lane/baseline_capture.py:211", "tools/lane/baseline_capture.py:285", "tools/lane/baseline_capture.py:477"]
+
+[[tool]]
+path = "tools/lane/belt_plan.py"
+  [[tool.mode]]
+  name = "--repo"
+  match = []
+  class = "read"
+  cite = ["tools/lane/belt_plan.py:105", "tools/lane/belt_plan.py:127"]
+
+[[tool]]
+path = "tools/lane/build_cross_family_brief.py"
+  [[tool.mode]]
+  name = "--out"
+  match = []
+  class = "local-write"
+  cite = ["tools/lane/build_cross_family_brief.py:305"]
+
+[[tool]]
+path = "tools/lane/check_cgroup_delegation.py"
+  [[tool.mode]]
+  name = "check"
+  match = []
+  class = "read"
+  cite = ["tools/lane/check_cgroup_delegation.py:36"]
+
+[[tool]]
+path = "tools/lane/check_installed_lane_sources.py"
+  [[tool.mode]]
+  name = "check"
+  match = []
+  class = "read"
+  cite = ["tools/lane/check_installed_lane_sources.py:75"]
+
+[[tool]]
+path = "tools/lane/ci_plan.py"
+  [[tool.mode]]
+  name = "plan"
+  match = []
+  class = "shared-state"
+  gap = "writes the receipt require_ci_plan.py acts on"
+  cite = ["tools/lane/ci_plan.py:243"]
+
+[[tool]]
+path = "tools/lane/cli_update.py"
+  [[tool.mode]]
+  name = "run"
+  match = []
+  class = "shared-state"
+  gap = "no dry run; runs each CLI's update command and appends the shared log; forge-cli-update.timer runs it"
+  cite = ["tools/lane/cli_update.py:190", "tools/lane/cli_update.py:234"]
+
+[[tool]]
+path = "tools/lane/cross_family_call.sh"
+  [[tool.mode]]
+  name = "any --posture"
+  match = []
+  class = "local-write"
+  cite = ["tools/lane/cross_family_call.sh:52", "tools/lane/cross_family_call.sh:66", "tools/lane/cross_family_call.sh:413-417"]
+
+[[tool]]
+path = "tools/lane/cross_family_provenance.py"
+  [[tool.mode]]
+  name = "label"
+  match = []
+  class = "read"
+  cite = ["tools/lane/cross_family_provenance.py:197"]
+
+[[tool]]
+path = "tools/lane/heavy_slot.py"
+wrapper = true
+  [[tool.mode]]
+  name = "status"
+  match = ["status"]
+  class = "shared-state"
+  gap = "removes holder, lock and ticket files under the machine-wide lock"
+  cite = ["tools/lane/heavy_slot.py:325-327", "tools/lane/heavy_slot.py:186-197", "tools/lane/heavy_slot.py:207-209"]
+  [[tool.mode]]
+  name = "run"
+  match = ["run"]
+  class = "shared-state"
+  gap = "takes a machine-wide admission slot, then runs the command"
+  cite = ["tools/lane/heavy_slot.py:341", "tools/lane/heavy_slot.py:254", "tools/lane/heavy_slot.py:315"]
+
+[[tool]]
+path = "tools/lane/install_lane_hooks.py"
+  [[tool.mode]]
+  name = "--repo"
+  match = []
+  class = "shared-state"
+  gap = "writes hook wrappers and sets core.hooksPath"
+  cite = ["tools/lane/install_lane_hooks.py:108-112"]
+
+[[tool]]
+path = "tools/lane/lane-queue-run"
+  [[tool.mode]]
+  name = "run"
+  match = []
+  class = "shared-state"
+  gap = "saves the queue state file and drives a Codex session"
+  cite = ["tools/lane/lane-queue-run:154", "tools/lane/lane-queue-run:187"]
+
+[[tool]]
+path = "tools/lane/lane1"
+  [[tool.mode]]
+  name = "launch"
+  match = []
+  class = "shared-state"
+  gap = "refreshes the lane checkout's branch"
+  cite = ["tools/lane/lane1:46"]
+
+[[tool]]
+path = "tools/lane/lane1-rebase"
+alias_of = "tools/lane/lane1_rebase.py"
+
+[[tool]]
+path = "tools/lane/lane1_rebase.py"
+replay_tool = "lane1-rebase"
+  [[tool.mode]]
+  name = "--check"
+  match = ["--check"]
+  class = "local-write"
+  note = "preflight receipt (rule step 3); ls-remote, no fetch"
+  cite = ["tools/lane/lane1_rebase.py:879", "tools/lane/lane1_rebase.py:869"]
+  [[tool.mode]]
+  name = "run"
+  match = []
+  class = "external-publish"
+  precheck = "--check"
+  binds = ["origin_branch_sha", "origin_main_sha", "args"]
+  binds_cite = "tools/lane/lane1_rebase.py:808-812"
+  note = "a lease-guarded push; the worktree it removes is its own"
+  cite = ["tools/lane/lane1_rebase.py:893", "tools/lane/lane1_rebase.py:403", "tools/lane/lane1_rebase.py:387"]
+  validates = [
+    {class = "receipt", cite = "tools/lane/lane1_rebase.py:869"},
+    {class = "receipt", cite = "tools/lane/lane1_rebase.py:893"},
+    {class = "freshness", cite = "tools/lane/lane1_rebase.py:795-812"},
+    {class = "freshness", cite = "tools/lane/lane1_rebase.py:893"},
+  ]
+
+[[tool]]
+path = "tools/lane/lane2"
+  [[tool.mode]]
+  name = "launch"
+  match = []
+  class = "shared-state"
+  gap = "refreshes the lane worktree"
+  cite = ["tools/lane/lane2:52"]
+
+[[tool]]
+path = "tools/lane/lane3"
+  [[tool.mode]]
+  name = "launch"
+  match = []
+  class = "shared-state"
+  gap = "refreshes the lane worktree"
+  cite = ["tools/lane/lane3:104"]
+
+[[tool]]
+path = "tools/lane/lane3-provision"
+  [[tool.mode]]
+  name = "repair"
+  match = []
+  class = "shared-state"
+  gap = "moves the Lane 3 worktree's HEAD"
+  cite = ["tools/lane/lane3-provision:50", "tools/lane/lane3-provision:73"]
+
+[[tool]]
+path = "tools/lane/lane3-stage-context"
+  [[tool.mode]]
+  name = "--issue"
+  match = []
+  class = "local-write"
+  cite = ["tools/lane/lane3-stage-context:105-106"]
+
+[[tool]]
+path = "tools/lane/lane3_audit.py"
+  [[tool.mode]]
+  name = "show"
+  match = ["show"]
+  class = "read"
+  cite = ["tools/lane/lane3_audit.py:290"]
+  [[tool.mode]]
+  name = "record"
+  match = ["record"]
+  class = "shared-state"
+  gap = "appends the shared git-common-dir audit log"
+  cite = ["tools/lane/lane3_audit.py:193-203"]
+
+[[tool]]
+path = "tools/lane/lane3_marker.py"
+  [[tool.mode]]
+  name = "--print-owner"
+  match = ["--print-owner"]
+  class = "read"
+  cite = ["tools/lane/lane3_marker.py:288-290"]
+  [[tool.mode]]
+  name = "<marker>"
+  match = []
+  class = "shared-state"
+  gap = "appends the same shared audit log"
+  cite = ["tools/lane/lane3_marker.py:301-303"]
+
+[[tool]]
+path = "tools/lane/lanes-claude"
+  [[tool.mode]]
+  name = "--dry-run"
+  match = ["--dry-run"]
+  class = "read"
+  cite = ["tools/lane/lanes-claude:77", "tools/lane/lanes-claude:432"]
+  [[tool.mode]]
+  name = "--stop-lanes"
+  match = ["--stop-lanes"]
+  class = "shared-state"
+  gap = "stops every lane session process"
+  cite = ["tools/lane/lanes-claude:81", "tools/lane/lanes-claude:347"]
+  [[tool.mode]]
+  name = "--stop-advisor"
+  match = ["--stop-advisor"]
+  class = "shared-state"
+  gap = "stops the advisor session and kills its tmux session"
+  cite = ["tools/lane/lanes-claude:85", "tools/lane/lanes-claude:365"]
+  [[tool.mode]]
+  name = "--record-lanes"
+  match = ["--record-lanes"]
+  class = "shared-state"
+  gap = "writes the session-id state file teardown reads"
+  cite = ["tools/lane/lanes-claude:89", "tools/lane/lanes-claude:343-345", "tools/lane/lanes-claude:266-271"]
+  [[tool.mode]]
+  name = "launch"
+  match = []
+  class = "shared-state"
+  precheck = "--dry-run"
+  binds = []
+  cite = ["tools/lane/lanes-claude:642"]
+
+[[tool]]
+path = "tools/lane/lanes_reap.py"
+  [[tool.mode]]
+  name = "reap-belt-locks DIR"
+  match = ["reap-belt-locks"]
+  class = "shared-state"
+  gap = "removes stale belt locks"
+  cite = ["tools/lane/lanes_reap.py:311", "tools/lane/lanes_reap.py:130"]
+  [[tool.mode]]
+  name = "reap-worktree-servers"
+  match = ["reap-worktree-servers"]
+  class = "shared-state"
+  gap = "stops orphaned worktree dev servers"
+  cite = ["tools/lane/lanes_reap.py:321"]
+
+[[tool]]
+path = "tools/lane/orphan_reap.py"
+  [[tool.mode]]
+  name = "report"
+  match = []
+  class = "read"
+  note = "Report-only"
+  cite = ["tools/lane/orphan_reap.py:256", "tools/lane/orphan_reap.py:290"]
+
+[[tool]]
+path = "tools/lane/queue_resume_args.sh"
+  [[tool.mode]]
+  name = "<lane>"
+  match = []
+  class = "read"
+  cite = ["tools/lane/queue_resume_args.sh:4-6"]
+
+# --------------------------------------------------------------------------
+# Libraries: imported or sourced only, no process entry point.
+
+[[library]]
+path = "tools/gh/_auto_ae.py"
+[[library]]
+path = "tools/gh/_caller_path.py"
+[[library]]
+path = "tools/gh/_exempt_conflict.py"
+[[library]]
+path = "tools/gh/_lane3_env.py"
+[[library]]
+path = "tools/gh/_preflight.py"
+[[library]]
+path = "tools/gh/_prod_run.py"
+[[library]]
+path = "tools/gh/_route_snapshot.py"
+[[library]]
+path = "tools/gh/_scenario_trace.py"
+[[library]]
+path = "tools/gh/_scratch.py"
+[[library]]
+path = "tools/gh/_standing_grant.py"
+[[library]]
+path = "tools/gh/_sweep_tier.py"
+[[library]]
+path = "tools/gh/ae_by_name.py"
+[[library]]
+path = "tools/gh/belt_batch_view.py"
+[[library]]
+path = "tools/gh/belt_candidates.py"
+[[library]]
+path = "tools/gh/belt_mechanics.py"
+[[library]]
+path = "tools/gh/gh_scan_patterns.py"
+[[library]]
+path = "tools/gh/item_list_cache.py"
+[[library]]
+path = "tools/gh/markdown_strip.py"
+[[library]]
+path = "tools/gh/preclose_passes.py"
+[[library]]
+path = "tools/gh/retired_artifacts.py"
+[[library]]
+path = "tools/gh/staleness_ff.py"
+[[library]]
+path = "tools/gh/l1_tools_env.sh"
+sourced_by = "tools/gh/l1_tools_env.sh:21"
+[[library]]
+path = "tools/lane/_agent_registry.sh"
+sourced_by = "tools/lane/_cli_launch.sh:43"
+[[library]]
+path = "tools/lane/_baseline_render.py"
+[[library]]
+path = "tools/lane/_cli_launch.sh"
+sourced_by = "tools/lane/lane1:60"
+[[library]]
+path = "tools/lane/_gh_config_dir.sh"
+sourced_by = "tools/lane/lane1:41"
+[[library]]
+path = "tools/lane/_lane3_policy.py"
+[[library]]
+path = "tools/lane/_lane_args.sh"
+sourced_by = "tools/lane/lane1:39"
+[[library]]
+path = "tools/lane/_lane_cleanup.sh"
+sourced_by = "tools/lane/lane1:62"
+[[library]]
+path = "tools/lane/_lane_identity.sh"
+sourced_by = "tools/lane/lane1:56"
+[[library]]
+path = "tools/lane/_lane_refresh.sh"
+sourced_by = "tools/lane/lane1:45"
+[[library]]
+path = "tools/lane/ci_plan_constraints.py"
+[[library]]
+path = "tools/lane/lane_targets.py"
+[[library]]
+path = "tools/lane/queue_state.py"
+
+# --------------------------------------------------------------------------
+# Outside commands (decision 4), fail-closed by family. For a program, the
+# entries naming it are tried in order; `match` holds when `any_token` is any
+# later token, or `adjacent` is a pair of adjacent tokens anywhere, or the
+# named batch_auth recognizer matches. An entry with no `match` takes every
+# other call of its programs. Inside a family a call is `read` only on its
+# read shape; anything else takes the family's class. Every other outside
+# command is ungated.
+
+[[outside]]
+family = "git push"
+programs = ["git"]
+match = {any_token = "push"}
+class = "external-publish"
+read_shape = "none"
+guard_kind = "hook"
+guard = "block_unchecked_push.py:118 (check_receipt.push_refusal), and check_receipt.py verify at pre-push (:203)"
+guard_note = "refuses a Tooling Exception branch with no check receipt; other pushes pass"
+replay_tool = "git-push"
+validates = [
+  {class = "receipt", cite = "tools/hooks/check_receipt.py:140"},
+  {class = "receipt", cite = "tools/hooks/block_unchecked_push.py:118"},
+]
+
+[[outside]]
+family = "gh pr merge"
+programs = ["gh"]
+match = {adjacent = ["pr", "merge"], recognizer = "classify_pr_merge"}
+class = "irreversible"
+read_shape = "none"
+guard_kind = "hook"
+guard = "batch_gate.py:50 (batch_auth.decide: allow on a live BATCH grant, else ask)"
+replay_tool = "gh-pr-merge"
+validates = [
+  {class = "receipt", cite = "tools/hooks/batch_auth.py:1363-1417"},
+  {class = "receipt", cite = "tools/hooks/batch_gate.py:50"},
+]
+
+[[outside]]
+family = "gh issue close"
+programs = ["gh"]
+match = {adjacent = ["issue", "close"], recognizer = "classify_issue_close"}
+class = "external-publish"
+read_shape = "none"
+guard_kind = "hook"
+guard = "batch_gate.py:50 (batch_auth.decide asks on every close, batch_auth.py:1344-1353)"
+replay_tool = "gh-issue-close"
+
+[[outside]]
+family = "gh"
+programs = ["gh"]
+class = "external-publish"
+read_shape = "gh-permitted"
+gap = "no guard on a gh write outside the named families"
+guard_note = "read shape is deny_advisory_subagent_gh_writes._gh_permitted (:321)"
+replay_tool = ["gh-api", "gh-pr-create", "gh-workflow-run", "gh-issue-list"]
+
+[[outside]]
+family = "curl, wget"
+programs = ["curl", "wget"]
+class = "external-publish"
+read_shape = "flag-allowlist"
+gap = "no guard on an HTTP write"
+  [outside.flags.curl]
+  no_value = ["-s", "--silent", "-S", "--show-error", "-f", "--fail", "-L", "--location", "-i", "--include", "-I", "--head", "-v", "--verbose", "--compressed"]
+  with_value = ["-o", "--output", "-m", "--max-time", "--connect-timeout", "--retry", "-w", "--write-out"]
+  [outside.flags.wget]
+  no_value = ["-q", "--quiet", "-nv", "--no-verbose", "-S", "--server-response", "--spider"]
+  with_value = ["-O", "--output-document", "--timeout", "--tries"]
+
+[[outside]]
+family = "podman, docker"
+programs = ["podman", "docker"]
+class = "shared-state"
+read_shape = "first-token"
+first_token = ["ps", "inspect", "logs", "images", "version"]
+gap = "no guard on a container write"
