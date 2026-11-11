@@ -672,6 +672,63 @@ class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
         self.assertIn("tools/x.py:1", reason)
         self.assertNotIn("Run the pre-close pass", reason)
 
+    def test_block_at_the_pass_cap_keeps_the_sticky_wicket_route(self):
+        """harmonic-forge#1330 pass 1 survivor 1: at MAX_PASSES the cap text
+        leads, and the block is still named after it."""
+        self._write_history(1476, [
+            {"sha": "aaaa", "epoch": 0, "surviving": 2, "hostile_blocking": []},
+            {"sha": "bbbb", "epoch": 0, "surviving": 1, "hostile_blocking": ["tools/x.py:1"]}])
+        for text in (hook._stale_receipt_message(REPO, "1476", "9", "bbbb"),
+                     hook._stale_receipt_reason(REPO, "1476", "9", "bbbb")):
+            self.assertIn("sticky-wicket", text)
+            self.assertIn("tools/x.py:1", text)
+            self.assertNotIn("Run the pre-close pass", text)
+            self.assertLess(text.index("sticky-wicket"), text.index("tools/x.py:1"))
+
+    def test_block_on_a_moved_head_still_says_to_run_a_pass(self):
+        """harmonic-forge#1330 pass 1 survivor 1: a head the blocked pass does
+        not cover is told to run a pass, with the block named after it."""
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                                    "hostile_blocking": ["tools/x.py:1"]}])
+        for text in (hook._stale_receipt_message(REPO, "1476", "9", "fixhead"),
+                     hook._stale_receipt_reason(REPO, "1476", "9", "fixhead")):
+            self.assertIn("Run the pre-close pass", text)
+            self.assertIn("tools/x.py:1", text)
+            self.assertLess(text.index("Run the pre-close pass"), text.index("tools/x.py:1"))
+
+    def _close(self, command: str) -> dict:
+        with mock.patch.object(hook, "resolve_repo", return_value=REPO), \
+             mock.patch.object(hook, "labels_for", return_value={
+                 hook.TOOLING_EXCEPTION_LABEL, hook.PRECLOSE_LABEL}), \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(command)), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        return json.loads(printed.call_args[0][0])
+
+    def _assert_close_follows_the_block(self, command: str) -> None:
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                                    "hostile_blocking": ["tools/x.py:1"]}])
+        payload = self._close(command)
+        output = payload.get("hookSpecificOutput") or {}
+        self.assertEqual(output.get("permissionDecision"), "deny")
+        self.assertIn("tools/x.py:1", output.get("permissionDecisionReason", ""))
+        for entry in ({"sha": "deadbeef", "epoch": 0, "surviving": 1, "hostile_blocking": []},
+                      {"sha": "deadbeef", "epoch": 0, "surviving": 1}):
+            with self.subTest(entry=entry):
+                self._write_history(1476, [entry])
+                self.assertEqual(self._close(command), {})
+
+    def test_bare_issue_close_is_refused_by_a_hostile_block(self):
+        """harmonic-forge#1330 pass 1 survivor 2: `gh issue close` on a blocked
+        receipt is denied; on a clean or legacy receipt it is allowed."""
+        self._assert_close_follows_the_block(f"gh issue close 1476 --repo {REPO}")
+
+    def test_api_close_is_refused_by_a_hostile_block(self):
+        """harmonic-forge#1330 pass 1 survivor 2: the `gh api` close form too."""
+        self._assert_close_follows_the_block(
+            f"gh api -X PATCH repos/{REPO}/issues/1476 -f state=closed")
+
     def test_stale_head_with_unresolved_cluster_routes_before_offering_a_pass(self):
         directory = self.preclose_check.receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)

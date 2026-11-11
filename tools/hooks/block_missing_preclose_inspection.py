@@ -539,6 +539,18 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | Non
         # tagged good-faith refuses the head it covers.
         if preclose_passes.close_refusal(receipt) is not None:
             return False
+        return _accepts_last(repo, head_sha, via_pr, last)
+    except Exception:  # noqa: BLE001 -- fail closed, see above
+        return False
+
+
+def _accepts_last(repo: str, head_sha: str, via_pr: str | None, last: dict | None) -> bool:
+    """Does the completed pass `last` cover `head_sha` by change identity
+    (harmonic-forge#1077)? The cache clone is fetched only when the head is
+    not the recorded one. Any failure is False."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
         recorded = preclose_passes.entry_identity(last)
 
         def checkout() -> str | None:
@@ -547,7 +559,7 @@ def _preclose_receipt_ok(repo: str, issue: str, head_sha: str, via_pr: str | Non
             return _cache_checkout(repo, via_pr, head_sha, recorded)
 
         return preclose_passes.accepts_entry(last, head_sha, checkout, CACHE_MAIN_REF)
-    except Exception:  # noqa: BLE001 -- fail closed, see above
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -658,11 +670,11 @@ def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) ->
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         receipt = _receipt(repo, issue)
-        # harmonic-forge#1330: a blocked head is not a cache problem, so the
-        # block is named alone, before any cache-clone note.
-        blocked = preclose_passes.close_refusal(receipt)
-        if blocked:
-            return blocked
+        # harmonic-forge#1330: a blocked head the blocked pass covers is not a
+        # cache problem, so the block is named alone, before any cache note.
+        lead = _leading_block(repo, issue, via_pr, head_sha, receipt)
+        if lead:
+            return lead
         last = preclose_passes.reviewed(receipt)
         legacy = preclose_passes.legacy_message(last, head_sha)
         if legacy:
@@ -673,19 +685,70 @@ def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) ->
                     f"To rule that out, prime it and retry:\n  {_priming_command(repo, via_pr)}\n\n")
     except Exception:
         pass
-    return note + _stale_receipt_reason(repo, issue, via_pr, head_sha)
+    return note + _routed_reason(repo, issue, via_pr, head_sha)
+
+
+def _leading_block(repo: str, issue: str, via_pr: str, head_sha: str,
+                   receipt: dict | None) -> str | None:
+    """harmonic-forge#1330 pass 1: the hostile block leads the deny only when
+    the PR head is the head the blocked pass covers and neither the pass cap
+    nor a cluster route applies. Otherwise the cap, cluster and run-a-pass
+    text keeps its precedence, and the block is named after it."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+        blocked = preclose_passes.close_refusal(receipt)
+        if not blocked:
+            return None
+        if len(preclose_passes.current(preclose_passes.history(receipt))) >= preclose_passes.MAX_PASSES:
+            return None
+        if preclose_passes.cluster_message(receipt, repo, issue):
+            return None
+        if not _accepts_last(repo, head_sha, via_pr, preclose_passes.reviewed(receipt)):
+            return None
+        return blocked
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _close_block(repo: str, issue: str) -> str | None:
+    """harmonic-forge#1330 pass 1: the `close_refusal` text for a bare close
+    of `repo`#`issue`, or None. An unreadable receipt is None: this path is
+    otherwise label-only and stays so."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+        return preclose_passes.close_refusal(_receipt(repo, issue))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _stale_receipt_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    lead = _leading_block(repo, issue, via_pr, head_sha, _receipt(repo, issue))
+    return lead or _routed_reason(repo, issue, via_pr, head_sha)
+
+
+def _routed_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    """The cap, cluster or run-a-pass text, with any hostile block named
+    after it (harmonic-forge#1330 pass 1)."""
+    blocked = None
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+        import preclose_passes  # noqa: PLC0415
+        blocked = preclose_passes.close_refusal(_receipt(repo, issue))
+    except Exception:
+        pass
+    suffix = f"\n\n{blocked}" if blocked else ""
+    return _base_reason(repo, issue, via_pr, head_sha) + suffix
+
+
+def _base_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
     # harmonic-forge#834 AC4: at the cap, never tell the session to run
     # another pass -- that instruction is what produced #829's third pass.
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         receipt = _receipt(repo, issue)
-        blocked = preclose_passes.close_refusal(receipt)
-        if blocked:
-            return blocked
         cluster = preclose_passes.cluster_message(receipt, repo, issue)
         if cluster:
             return cluster
@@ -779,7 +842,14 @@ def main() -> None:
             # happened once, never which diff. Binding to the head SHA is
             # meaningful only for a merge (a PR has a head that can move
             # after labelling) -- a bare `gh issue close` has no SHA to bind
-            # to, so it stays label-only, exactly as before.
+            # to, so it stays label-only, exactly as before, except that
+            # harmonic-forge#1330 pass 1: a hostile-author block on the
+            # receipt refuses the close as it refuses the merge.
+            if kind != "pr":
+                blocked = _close_block(repo, issue)
+                if blocked:
+                    _deny(blocked, target_key=_acting)
+                    return
             if kind == "pr":
                 head_sha = _pr_head_sha(repo, number)
                 # Preclose finding: this is NOT the same "cannot read GitHub"
