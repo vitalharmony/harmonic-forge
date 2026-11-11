@@ -629,6 +629,22 @@ class HookContentTests(unittest.TestCase):
         self.assertIn("gone.py", check.detail)
 
 
+def _hermetic_home(case: unittest.TestCase, root: Path) -> Path:
+    """A temporary HOME whose `harmonic-forge` is the checkout under test
+    (harmonic-forge#1307 CI rework). `unresolvable_hook_targets` resolves
+    `${HOME}/harmonic-forge/...` against the host's HOME, which is right in
+    production and wrong in a test: on a CI runner there is no
+    `~/harmonic-forge`, and locally it is the canonical checkout, not this one.
+    Same pattern as `test_home_expansion_is_handled`."""
+    home = root / "home"
+    home.mkdir()
+    (home / "harmonic-forge").symlink_to(fo._THIS_CHECKOUT)
+    patcher = mock.patch.dict(os.environ, {"HOME": str(home)})
+    patcher.start()
+    case.addCleanup(patcher.stop)
+    return home
+
+
 class LaneHookSetCheckTests(unittest.TestCase):
     """harmonic-forge#1307 Part 7: the hooks check judges coverage over the
     Forge lane hook set plus the project's own hooks."""
@@ -639,6 +655,7 @@ class LaneHookSetCheckTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
+        self.home = _hermetic_home(self, self.root)
 
     def _project(self, name: str, settings: dict) -> mf.Project:
         checkout = self.root / name
@@ -754,6 +771,7 @@ class SnapshotFloorTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
+        self.home = _hermetic_home(self, self.root)
         self.settings = json.loads(self.FORGE_SETTINGS.read_text(encoding="utf-8"))
 
     def _check(self, settings: dict, repo: str | None = FORGE) -> fo.Check:
@@ -801,6 +819,18 @@ class SnapshotFloorTests(unittest.TestCase):
         check = self._check(settings)
         self.assertEqual(check.status, fo.FAIL)
         self.assertIn("block_batch_stop.py", check.detail)
+
+    def test_a_missing_script_still_fails_under_the_temporary_home(self) -> None:
+        """The existence check is not hollowed out by the hermetic HOME: a set
+        path to a script the checkout does not have still FAILs."""
+        settings = json.loads(json.dumps(self.settings))
+        settings["hooks"]["Stop"].append({"hooks": [{
+            "type": "command",
+            "command": 'python3 "${HOME}/harmonic-forge/tools/hooks/no_such_hook.py"'}]})
+        check = self._check(settings)
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn(f"{self.home}/harmonic-forge/tools/hooks/no_such_hook.py", check.detail)
+        self.assertIn("do not exist", check.detail)
 
     def test_a_project_without_a_snapshot_has_no_floor(self) -> None:
         check = self._check(self._without("batch_gate.py"), repo="example/none")
