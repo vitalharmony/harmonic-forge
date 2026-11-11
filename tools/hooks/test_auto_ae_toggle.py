@@ -315,6 +315,16 @@ class RegistrationTests(unittest.TestCase):
                  if any("auto_ae_toggle.py" in h.get("command", "") for h in g.get("hooks") or [])}
         self.assertEqual(wired, {"^Bash$", "^apply_patch$"})
 
+    def test_the_lane_hook_set_wires_it_once_per_event_in_the_same_form(self):
+        """harmonic-forge#1307: the set's strings are byte-identical to this
+        repo's, so the two run once, not twice."""
+        lane_set = json.loads((HERE.parent / "lane" / "lane_hooks.json").read_text(encoding="utf-8"))
+        for event in ("UserPromptSubmit", "PreToolUse"):
+            in_set = [(block.get("matcher", ""), hook["command"])
+                      for block in lane_set["hooks"][event] for hook in block["hooks"]
+                      if "auto_ae_toggle.py" in hook["command"]]
+            self.assertEqual(in_set, self.wired(event), event)
+
     def test_the_guard_is_wired_once_on_every_tool_it_guards(self):
         wired = self.wired("PreToolUse")
         self.assertEqual(len(wired), 1, wired)

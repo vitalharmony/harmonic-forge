@@ -513,11 +513,10 @@ class Wiring(unittest.TestCase):
             self.assertTrue(_calls_record_post(ROOT / "tools" / "gh" / name), name)
 
     def test_settings_wire_tasklist_hooks(self):
-        # Preclose pass 2 (H): forge checks its own settings only. HRSE2's
-        # wiring is checked by HRSE2's own test (scripts/test_tasklist_hooks_wired.py),
-        # which HRSE2's CI runs; a forge test that skipped HRSE2 where it is
-        # absent covered nothing.
-        hooks = json.loads((ROOT / ".claude" / "settings.json").read_text())["hooks"]
+        # harmonic-forge#1307: both scripts are lane-only (class A), so their
+        # wiring is pinned in the Forge lane hook set every lane launch passes,
+        # not in a project settings file a later change removes them from.
+        hooks = json.loads((ROOT / "tools" / "lane" / "lane_hooks.json").read_text())["hooks"]
 
         def wired(event, matcher, script):
             return any((matcher is None or e.get("matcher") == matcher)
@@ -535,7 +534,7 @@ class Wiring(unittest.TestCase):
     def test_recorder_timeout_exceeds_its_network_budget(self):
         """Preclose epoch 1 pass 2: a hook killed at its timeout writes no marker."""
         import record_tasklist_post  # noqa: PLC0415
-        hooks = json.loads((ROOT / ".claude" / "settings.json").read_text())["hooks"]
+        hooks = json.loads((ROOT / "tools" / "lane" / "lane_hooks.json").read_text())["hooks"]
         timeouts = [h.get("timeout", 60)
                     for event in ("PostToolUse", "PostToolUseFailure")
                     for e in hooks.get(event, []) for h in e["hooks"] if "record_tasklist_post.py" in h["command"]]

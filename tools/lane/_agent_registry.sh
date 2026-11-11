@@ -43,6 +43,11 @@
 #   AGENT_POLICY_FLAG       the flag a per-lane policy file is passed with
 #   AGENT_POLICY_CHECK       precondition check on that file: `toml`, `json`
 #                            or `none`
+#   AGENT_HOOK_SET           the Forge lane hook set file beside the launcher,
+#                            passed through AGENT_POLICY_FLAG; "" loads none
+#   AGENT_HOOKS_REFUSED_ENV  env vars that disable hooks, refusing the launch
+#   AGENT_SETTINGS_ENV_ALLOWED  the only keys a user or managed settings `env`
+#                            block may set at a lane with a hook set
 #
 # Per agent x lane, keyed "<agent>:<lane>":
 #   AGENT_LANE_POLICY        policy filename under tools/lane/policies/, or ""
@@ -76,8 +81,10 @@ declare -A AGENT_VERSION_MIN=(
   [codex]="0.157"
 )
 
+# claude 2.1.322: the CLI the harmonic-forge#1307 `--settings` hook-merge probe
+# ran on (tools/lane/probe_hook_merge.py re-measures it after an update).
 declare -A AGENT_VERSION_QUALIFIED=(
-  [claude]="2.1.250"
+  [claude]="2.1.322"
   [codex]="0.157.0"
 )
 
@@ -164,6 +171,43 @@ declare -A AGENT_LAUNCH_REFUSED_ENV=(
   [codex]=""
 )
 
+# harmonic-forge#1307: environment that drops hooks, so a lane started with it
+# would lose guards: the Forge lane hook set, the project's deny hooks, or the
+# user-level ones. Built from every CLAUDE_CODE_* name in the installed 2.1.322
+# binary, not from `--help` text (which is how CLAUDE_CODE_RESTRICTED was
+# missed); each one here was measured with `probe_hook_merge.py --real-run
+# --env NAME=1`, and the names reviewed and left out are classified in the
+# issue's L2D. Re-run that sweep after a CLI update. Checked in the launcher's
+# own environment only, a separate table from AGENT_LAUNCH_REFUSED_ENV: that
+# one's refusal says the variable would override the launch model/effort, and
+# these would disable the lane's guards. Settings `env` blocks are not checked
+# against this list: they are deny-by-default (AGENT_SETTINGS_ENV_ALLOWED).
+#   CLAUDE_CODE_SIMPLE            what `--bare` sets: no hook runs (measured)
+#   CLAUDE_CODE_SAFE_MODE         what `--safe-mode` sets: no hook runs (measured)
+#   CLAUDE_CODE_RESTRICTED        what `--restricted` sets: project and user-level
+#                                 hooks do not run, only `--settings` ones (measured)
+#   CLAUDE_CODE_USE_COWORK_PLUGINS  user settings are read from
+#                                 cowork_settings.json, not settings.json: the
+#                                 user-level hooks do not run (measured)
+declare -A AGENT_HOOKS_REFUSED_ENV=(
+  [claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_RESTRICTED CLAUDE_CODE_USE_COWORK_PLUGINS"
+  [codex]=""
+)
+
+# harmonic-forge#1307 (pass 2 rescope): Claude settings `env` blocks are
+# deny-by-default at a lane launch. AGENT_HOOKS_REFUSED_ENV above covers only
+# the launcher's own environment; a name list cannot cover a settings `env`
+# block, which reaches every hook process (a `PATH` there swaps the interpreter
+# every set hook runs under). At an agent with a hook set, project and local
+# `env` blocks may set no key at all, and the user and managed blocks may set
+# only the keys listed here. Seeded by operator ruling 2026-11-11 with exactly
+# the keys in the operator's user settings that day. Adding a key is a review
+# of what it does to hook processes, in its own issue.
+declare -A AGENT_SETTINGS_ENV_ALLOWED=(
+  [claude]="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY CLAUDE_CODE_ENABLE_TODO_TOOLS"
+  [codex]=""
+)
+
 # hrse#1703 AC6: reaches the chat surface a comment-time validator cannot
 # see, the same way AGENT_DEFAULT_FLAG already reaches `--permission-mode`.
 # Claude Code's `--append-system-prompt` is a verified, documented flag --
@@ -172,6 +216,19 @@ declare -A AGENT_LAUNCH_REFUSED_ENV=(
 # (harmonic-forge#179: flag injection broke Codex's own argument parsing).
 declare -A AGENT_SYSTEM_PROMPT_FLAG=(
   [claude]="--append-system-prompt"
+  [codex]=""
+)
+
+# harmonic-forge#1307: the one Forge-owned declared set of lane hooks, a file
+# beside the launcher. `_cli_launch.sh` validates it with `lane_hookset.py
+# build` after the rules pull and passes it to every Claude lane as ONE inline
+# `--settings` JSON value (merged with the Lane 3 policy where one is
+# installed), so the session runs the set in any project. A set that is
+# missing, empty or schema-invalid refuses the launch. Codex is out of scope: it
+# loads hooks from a per-project `.codex/hooks.json`, so it gets none here and
+# its launch is unchanged.
+declare -A AGENT_HOOK_SET=(
+  [claude]="lane_hooks.json"
   [codex]=""
 )
 
@@ -229,11 +286,21 @@ declare -A AGENT_SESSION_FLAGS=(
 # Lane 3 caller's own `--settings` would replace the launcher's policy file,
 # and at Lanes 1 and 2 it is the one passthrough that could hand a session the
 # Lane-3-only allow rule (or any other) from an untracked file.
+#
+# harmonic-forge#1307: since every Claude lane now carries the Forge lane hook
+# set in that `--settings`, a caller's own would also replace the set. The four
+# flags after it drop hooks outright (`claude --help`, 2.1.322): `--bare` skips
+# them, `--safe-mode` starts with all customizations off, and `--setting-sources`
+# and `--restricted` make the CLI ignore project settings, losing every
+# project-specific hook.
 declare -A AGENT_SESSION_DENIED=(
-  [claude]="--settings"
+  [claude]="--settings --bare --safe-mode --setting-sources --restricted"
   [codex]="--no-daemon --remote -c --config -p --profile --full-auto --approve-for-me -s"
 )
 
+# The flag a lane's settings reach the CLI with. At every Claude lane it carries
+# the one merged `--settings` value: the Forge lane hook set, plus the Lane 3
+# policy at Lane 3 when installed (harmonic-forge#1307).
 declare -A AGENT_POLICY_FLAG=(
   [claude]="--settings"
   [codex]=""
@@ -357,7 +424,7 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
   AGENT_EFFORT_LEVELS AGENT_LAUNCH_REFUSED_ENV
   AGENT_SESSION_FLAGS AGENT_SESSION_DENIED AGENT_QUEUE_SANDBOX AGENT_NONINTERACTIVE_WORDS
-  AGENT_NAME_FLAG
+  AGENT_NAME_FLAG AGENT_HOOK_SET AGENT_HOOKS_REFUSED_ENV AGENT_SETTINGS_ENV_ALLOWED
 )
 
 _registry_die() {
@@ -395,6 +462,11 @@ registry_assert_integrity() {
       || _registry_die "agent registry: AGENT_VERSION_QUALIFIED[$agent] is empty"
     [ -n "${AGENT_POLICY_CHECK[$agent]}" ] \
       || _registry_die "agent registry: AGENT_POLICY_CHECK[$agent] is empty"
+    # harmonic-forge#1307: a hook set with no flag to pass it would launch the
+    # session without it.
+    if [ -n "${AGENT_HOOK_SET[$agent]}" ] && [ -z "${AGENT_POLICY_FLAG[$agent]}" ]; then
+      _registry_die "agent registry: AGENT_HOOK_SET[$agent] is set but AGENT_POLICY_FLAG[$agent] is empty -- the set could not be passed"
+    fi
     for lane in 1 2 3; do
       [ -v "AGENT_LANE_POLICY[$agent:$lane]" ] \
         || _registry_die "agent registry: no policy slot declared for $agent at lane $lane -- declare it empty rather than omitting it (harmonic-forge#322 NC7)"

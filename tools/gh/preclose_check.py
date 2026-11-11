@@ -83,6 +83,9 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # where they are SWITCHED ON. The module's own motivating incident ("a hook
     # that locked out Bash") edits wiring, not implementation.
     (re.compile(r"(^|/)\.claude/settings(\.local)?\.json$"), "hook wiring — arms/disarms every hook"),
+    # harmonic-forge#1307: the Forge lane hook set, passed at every lane launch.
+    (re.compile(r"(^|/)tools/lane/lane_hook(s\.json|set\.py)$"),
+     "hook wiring — the Forge lane hook set every lane launch passes"),
     # harmonic-forge#1176: after the specific settings entry, so its reason wins.
     (re.compile(r"(^|/)\.claude/"), "Claude Code rules, skills and agents — loaded by every session"),
     (re.compile(r"(^|/)(rules|docs/decisions)/"), "rule and decision text — what every gate enforces"),

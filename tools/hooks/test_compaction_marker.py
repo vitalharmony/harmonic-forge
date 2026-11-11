@@ -378,6 +378,10 @@ class Wiring(unittest.TestCase):
         return (any(e.get("matcher") == "compact" for e in entries)
                 and "compaction_marker.py" in json.dumps(entries))
 
+    def test_wired_in_the_lane_hook_set(self):
+        """harmonic-forge#1307: every lane launch carries it, in any project."""
+        self.assertTrue(self._is_wired(self._OWN.parents[1] / "tools" / "lane" / "lane_hooks.json"))
+
     def test_wired_in_this_repo(self):
         """Deterministic: asserts the tracked file in this checkout."""
         self.assertTrue(self._OWN.exists(), f"missing {self._OWN}")

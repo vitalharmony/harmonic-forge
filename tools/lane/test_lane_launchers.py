@@ -59,6 +59,14 @@ def _place_route_mod(lane_dir: Path) -> None:
     manifest.write_text("{}\n")
 
 
+def _place_hook_set(lane_dir: Path) -> None:
+    """A copied lane dir carries the Forge lane hook set (harmonic-forge#1307).
+    The builder is linked, not copied: it imports `../onboard/hook_targets.py`
+    relative to its own resolved path, which is the real checkout's."""
+    (lane_dir / "lane_hooks.json").write_text((LANE_DIR / "lane_hooks.json").read_text())
+    (lane_dir / "lane_hookset.py").symlink_to(LANE_DIR / "lane_hookset.py")
+
+
 class _FixtureTree:
     """A disposable project tree with stubbed CLIs, as a context manager."""
 
@@ -77,6 +85,8 @@ class _FixtureTree:
         # this tree's HOME differs from capture_cell's default, so HRSE2's
         # copy is written here too.
         bc.write_codex_hooks(self.home / "Harmonic_Projects" / "HRSE2")
+        # harmonic-forge#1307 change 3: the lane hook set's scripts resolve.
+        bc.link_forge_tools(self.home, LANE_DIR.parent)
         self.lane2 = self.root / "proj-lane2"
         self.lane3 = self.root / "proj-lane3"
         self.lane_dir = LANE_DIR
@@ -419,6 +429,7 @@ class RegistryIntegrity(unittest.TestCase):
     def _copy_lane_dir(self, dest: Path) -> Path:
         dest.mkdir()
         _place_route_mod(dest)
+        _place_hook_set(dest)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                      "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
@@ -482,6 +493,40 @@ class RegistryIntegrity(unittest.TestCase):
                 cell = self._run_with_broken_registry(drop)
                 self.assertFalse(cell["launched"], cell.get("stderr"))
                 self.assertNotEqual(cell["returncode"], 0)
+
+    def test_an_unmutated_copy_launches(self):
+        """What makes every refusal in this class non-vacuous."""
+        cell = self._run_with_broken_registry(lambda path: None)
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_every_1307_attribute_is_required(self):
+        """harmonic-forge#1307: dropping either new table's claude entry
+        refuses the launch rather than reading it as "no set" / "no refusal"."""
+        import re
+        for attr in ("AGENT_HOOK_SET", "AGENT_HOOKS_REFUSED_ENV"):
+            with self.subTest(attr=attr):
+                def drop(path: Path, attr=attr) -> None:
+                    text = path.read_text()
+                    block = re.search(rf"declare -A {attr}=\(\n(.*?)\n\)", text, re.S)
+                    self.assertIsNotNone(block, attr)
+                    body = re.sub(r"^  \[claude\]=.*\n?", "", block.group(1), count=1, flags=re.M)
+                    self.assertNotEqual(body, block.group(1), attr)
+                    path.write_text(text[:block.start(1)] + body + text[block.end(1):])
+
+                cell = self._run_with_broken_registry(drop)
+                self.assertFalse(cell["launched"], cell.get("stderr"))
+                self.assertIn(f"{attr}[claude] is not defined", cell["stderr"])
+
+    def test_a_hook_set_with_no_flag_is_an_integrity_failure(self):
+        def no_flag(path: Path) -> None:
+            text = path.read_text()
+            old = 'declare -A AGENT_POLICY_FLAG=(\n  [claude]="--settings"'
+            self.assertIn(old, text)
+            path.write_text(text.replace(old, 'declare -A AGENT_POLICY_FLAG=(\n  [claude]=""', 1))
+
+        cell = self._run_with_broken_registry(no_flag)
+        self.assertFalse(cell["launched"])
+        self.assertIn("the set could not be passed", cell["stderr"])
 
     def test_refused_env_lookup_failure_is_not_swallowed(self):
         """Even if AGENT_LAUNCH_REFUSED_ENV left the required list, a missing
@@ -896,6 +941,7 @@ class ClaudeLane3Settings(unittest.TestCase):
         lane_dir = tree.root / "lanedir"
         lane_dir.mkdir()
         _place_route_mod(lane_dir)
+        _place_hook_set(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
                      "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
@@ -928,6 +974,10 @@ class ClaudeLane3Settings(unittest.TestCase):
                                env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
 
     def test_only_lane3_gets_the_installed_claude_policy(self):
+        """harmonic-forge#1307: every Claude lane now carries one `--settings`
+        holding the Forge lane hook set; only Lane 3's also holds the policy's
+        `permissions`."""
+        policy_permissions = json.loads(self.POLICY.read_text())["permissions"]
         with _FixtureTree() as tree:
             policy = self._install(tree, self.POLICY.read_text())
             lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
@@ -935,12 +985,13 @@ class ClaudeLane3Settings(unittest.TestCase):
                 with self.subTest(lane=lane):
                     cell = self._run(tree, lane_dir, lane)
                     self.assertTrue(cell["launched"], cell.get("stderr"))
-                    self.assertNotIn("--settings", _agent_args(cell))
+                    self.assertEqual(_agent_args(cell).count("--settings"), 1)
+                    self.assertNotIn("permissions", _settings_value(cell))
             cell = self._run(tree, lane_dir)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             args = _agent_args(cell)
             self.assertEqual(args.count("--settings"), 1)
-            self.assertEqual(Path(args[args.index("--settings") + 1]), policy)
+            self.assertEqual(_settings_value(cell)["permissions"], policy_permissions)
 
     def test_the_registry_names_an_absolute_installed_path(self):
         """C1b: never the repo copy, which any session can edit."""
@@ -976,7 +1027,8 @@ class ClaudeLane3Settings(unittest.TestCase):
             lane_dir = self._copy_lane_dir(tree, tree.root / "nowhere" / "p.json", os.getuid())
             cell = self._run(tree, lane_dir)
             self.assertTrue(cell["launched"], cell.get("stderr"))
-            self.assertNotIn("--settings", _agent_args(cell))
+            # harmonic-forge#1307: the set still arrives, with no allow rule.
+            self.assertNotIn("permissions", _settings_value(cell))
             self.assertIn("not installed", cell["stderr"])
 
     def test_a_policy_the_agent_could_widen_refuses_to_launch(self):
@@ -1424,14 +1476,26 @@ class LaunchDefaultModelAndEffort(unittest.TestCase):
                             cell["stderr"].startswith(f"lane2: {var} in {path}"),
                             cell["stderr"])
 
-    def test_unrelated_or_empty_settings_env_still_launches(self):
+    def test_allowlisted_user_settings_env_still_launches(self):
+        """harmonic-forge#1307: the user block may carry the allowlisted keys."""
         with _FixtureTree() as tree:
             path = tree.home / ".claude" / "settings.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"env": {"ANTHROPIC_MODEL": "",
+            path.write_text(json.dumps({"env": {"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
                                                 "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}}))
             cell = tree.run("2", [], LANE_CLI="claude")
             self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_an_empty_model_value_in_settings_env_now_refuses(self):
+        """An empty value no longer passes: the block is deny-by-default by
+        key, whatever the value (harmonic-forge#1307 rescope)."""
+        with _FixtureTree() as tree:
+            path = tree.home / ".claude" / "settings.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"env": {"ANTHROPIC_MODEL": ""}}))
+            cell = tree.run("2", [], LANE_CLI="claude")
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"ANTHROPIC_MODEL in {path}", cell["stderr"])
 
     def test_invalid_effort_refuses_to_launch(self):
         """Exact match against ONE level: typos, fragments and runs of valid
@@ -1751,7 +1815,8 @@ class VersionFloors(unittest.TestCase):
         genuinely too-old CLI; the qualified patch version keeps the parity
         suite's claim (harmonic-forge#325) precise."""
         source = (LANE_DIR / "_agent_registry.sh").read_text()
-        for version in ("2.1.250", "0.157.0"):
+        # harmonic-forge#1307 moved claude to the CLI its hook-merge probe ran on.
+        for version in ('[claude]="2.1.322"', '[codex]="0.157.0"'):
             with self.subTest(version=version):
                 self.assertIn(version, source)
 
@@ -2096,6 +2161,322 @@ class RouteFloorSignal(unittest.TestCase):
     def test_a_codex_launch_drops_an_inherited_value(self):
         with _FixtureTree() as tree:
             self.assertIsNone(self._extra(tree, "2", "codex", LANE_ROUTE_MOD="1"))
+
+
+# ---------------------------------------------------------------------------
+# harmonic-forge#1307 -- every Claude lane runs the Forge lane hook set
+# ---------------------------------------------------------------------------
+SET_FILE = LANE_DIR / "lane_hooks.json"
+
+
+def _settings_value(cell: dict) -> dict:
+    """The one `--settings` value a launch carried, parsed."""
+    args = _agent_args(cell)
+    return json.loads(args[args.index("--settings") + 1])
+
+
+def _copied_forge_tools(tree: _FixtureTree) -> Path:
+    """A real copy of tools/lane beside links to the siblings it reaches
+    (onboard for lane_hookset's import, routing for the mod, hooks for Codex),
+    so a test can change the copy's lane_hooks.json without touching the
+    checkout. Returns the copied lane dir."""
+    tools = tree.root / "ftools"
+    tools.mkdir()
+    shutil.copytree(LANE_DIR, tools / "lane",
+                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    for sibling in ("onboard", "routing", "hooks"):
+        (tools / sibling).symlink_to(LANE_DIR.parent / sibling)
+    return tools / "lane"
+
+
+class LaneHookSet(unittest.TestCase):
+    """AC2/AC5: one validated inline `--settings` at every Claude lane,
+    holding the Forge lane hook set (and the Lane 3 policy where installed)."""
+
+    SHAPES = (["-p", "two words here"], [], ["*.md"], ["--permission-mode", "plan"])
+
+    def setUp(self):
+        self.set_hooks = json.loads(SET_FILE.read_text())["hooks"]
+
+    @needs_trusted_lane3_policy
+    def test_every_claude_lane_passes_the_set_exactly_once(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for shape in self.SHAPES:
+                    with self.subTest(lane=lane, shape=shape):
+                        cell = tree.run(lane, shape, LANE_CLI="claude")
+                        self.assertTrue(cell["launched"], cell.get("stderr"))
+                        self.assertEqual(_agent_args(cell).count("--settings"), 1)
+                        self.assertEqual(_settings_value(cell)["hooks"], self.set_hooks)
+
+    def test_the_settings_precede_the_passthrough(self):
+        """A `resume` or `-p` passthrough still receives the set."""
+        with _FixtureTree() as tree:
+            for shape in (["-p", "x"], ["--resume", "abc"]):
+                with self.subTest(shape=shape):
+                    args = _agent_args(tree.run("2", shape, LANE_CLI="claude"))
+                    self.assertEqual(args[-len(shape):], shape)
+                    self.assertLess(args.index("--settings"), len(args) - len(shape))
+
+    def test_the_settings_sit_at_the_policy_position(self):
+        """Right after the system prompt (step 4), before the mod and the name."""
+        with _FixtureTree() as tree:
+            args = _agent_args(tree.run("1", [], LANE_CLI="claude"))
+            at = args.index("--settings")
+            self.assertEqual(args[at - 2], "--append-system-prompt")
+            self.assertEqual(args[at + 2], "--plugin-dir")
+
+    def test_codex_carries_no_settings(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    cell = tree.run(lane, [], LANE_CLI="codex")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    self.assertNotIn("--settings", _agent_args(cell))
+
+    def test_the_settings_declare_hooks_enabled(self):
+        with _FixtureTree() as tree:
+            value = _settings_value(tree.run("2", [], LANE_CLI="claude"))
+            self.assertIs(value["disableAllHooks"], False)
+            self.assertNotIn("lane_only", value)
+            self.assertNotIn("schema", value)
+
+    def _refused(self, tree, lane_dir, lane="2"):
+        tree.lane_dir = lane_dir
+        cell = tree.run(lane, [], LANE_CLI="claude")
+        self.assertFalse(cell["launched"], "a launch with no valid set must exec nothing")
+        self.assertNotEqual(cell["returncode"], 0)
+        self.assertIn("refusing to start a session with no guards", cell["stderr"])
+        return cell
+
+    def test_a_missing_set_refuses_and_execs_nothing(self):
+        with _FixtureTree() as tree:
+            lane_dir = _copied_forge_tools(tree)
+            (lane_dir / "lane_hooks.json").unlink()
+            self.assertIn("lane hook set is missing", self._refused(tree, lane_dir)["stderr"])
+
+    def test_an_empty_set_refuses(self):
+        for content in ("", "{}", json.dumps({"schema": 1, "disableAllHooks": False,
+                                              "lane_only": [], "hooks": {}})):
+            with self.subTest(content=content), _FixtureTree() as tree:
+                lane_dir = _copied_forge_tools(tree)
+                (lane_dir / "lane_hooks.json").write_text(content)
+                self._refused(tree, lane_dir)
+
+    def test_an_invalid_set_refuses(self):
+        def event_a_string(d):
+            d["hooks"]["Stop"] = "oops"
+
+        def disable_dropped(d):
+            del d["disableAllHooks"]
+
+        def unknown_key(d):
+            d["permissions"] = {"allow": ["Bash(*)"]}
+        for mutate in (event_a_string, disable_dropped, unknown_key):
+            with self.subTest(mutate=mutate.__name__), _FixtureTree() as tree:
+                lane_dir = _copied_forge_tools(tree)
+                data = json.loads(SET_FILE.read_text())
+                mutate(data)
+                (lane_dir / "lane_hooks.json").write_text(json.dumps(data))
+                self._refused(tree, lane_dir)
+
+    def test_the_set_is_built_after_the_rules_pull(self):
+        """A set the rules pull changes is the one passed: the build runs
+        after `sync_rules.py --pull`, not before it."""
+        with _FixtureTree() as tree:
+            lane_dir = _copied_forge_tools(tree)
+            stub = tree.home / "harmonic-forge" / "sync_rules.py"
+            stub.write_text(
+                "import json, sys\n"
+                f"path = {str(lane_dir / 'lane_hooks.json')!r}\n"
+                "data = json.load(open(path))\n"
+                "del data['hooks']['PreToolUse'][[b.get('matcher') for b in data['hooks']"
+                "['PreToolUse']].index('SendMessage')]\n"
+                "json.dump(data, open(path, 'w'))\n")
+            tree.lane_dir = lane_dir
+            cell = tree.run("1", [], LANE_CLI="claude")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            matchers = [b.get("matcher") for b in _settings_value(cell)["hooks"]["PreToolUse"]]
+            self.assertNotIn("SendMessage", matchers)
+
+    def _refuses_flag(self, flag):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                for form in ([flag], [f"{flag}=x"], ["--", flag]):
+                    with self.subTest(lane=lane, form=form):
+                        cell = tree.run(lane, form, LANE_CLI="claude")
+                        self.assertFalse(cell["launched"])
+                        self.assertIn(f"'{flag}' is supplied or excluded", cell["stderr"])
+
+    def test_bare_and_safe_mode_passthrough_are_refused(self):
+        for flag in ("--bare", "--safe-mode"):
+            with self.subTest(flag=flag):
+                self._refuses_flag(flag)
+
+    def test_setting_sources_passthrough_is_refused(self):
+        self._refuses_flag("--setting-sources")
+
+    def test_restricted_passthrough_is_refused(self):
+        self._refuses_flag("--restricted")
+
+    def _refuses_env(self, name):
+        with _FixtureTree() as tree:
+            cell = tree.run("2", [], LANE_CLI="claude", **{name: "1"})
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"{name} is set -- it disables hooks", cell["stderr"])
+            settings = tree.home / ".claude" / "settings.json"
+            settings.parent.mkdir(parents=True, exist_ok=True)
+            settings.write_text(json.dumps({"env": {name: "1"}}))
+            cell = tree.run("2", [], LANE_CLI="claude")
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"{name} in {settings}", cell["stderr"])
+            self.assertIn("is not allowed at a lane", cell["stderr"])
+            settings.unlink()
+            # Codex has no set, so it does not refuse on these.
+            self.assertTrue(tree.run("2", [], LANE_CLI="codex", **{name: "1"})["launched"])
+
+    def test_claude_code_simple_refuses_from_env_and_from_a_settings_env_block(self):
+        self._refuses_env("CLAUDE_CODE_SIMPLE")
+
+    def test_claude_code_safe_mode_refuses_from_env_and_from_a_settings_env_block(self):
+        self._refuses_env("CLAUDE_CODE_SAFE_MODE")
+
+    def test_claude_code_restricted_refuses_from_env_and_from_a_settings_env_block(self):
+        """Pass 1 survivor 2: what `--restricted` sets, so project deny hooks drop."""
+        self._refuses_env("CLAUDE_CODE_RESTRICTED")
+
+    def test_claude_code_use_cowork_plugins_refuses_from_env_and_from_a_settings_env_block(self):
+        """User settings come from cowork_settings.json, so user-level hooks drop."""
+        self._refuses_env("CLAUDE_CODE_USE_COWORK_PLUGINS")
+
+    def _settings_env_cell(self, where, env, **run_env):
+        """Launch Lane 2 with one settings file carrying `env`, then remove it."""
+        with _FixtureTree() as tree:
+            path = {
+                "user": tree.home / ".claude" / "settings.json",
+                "project": tree.lane2 / ".claude" / "settings.json",
+                "project-local": tree.lane2 / ".claude" / "settings.local.json",
+            }[where]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            backup = path.read_text() if path.is_file() else None
+            path.write_text(json.dumps({"env": env}))
+            try:
+                return path, tree.run("2", [], LANE_CLI="claude", **run_env)
+            finally:
+                if backup is None:
+                    path.unlink()
+                else:
+                    path.write_text(backup)
+
+    def test_path_in_a_project_settings_env_block_refuses(self):
+        """Pass 2 survivor 2 (K-18): a `PATH` there would swap the interpreter
+        every set hook runs under. No name list holds it; deny-by-default does."""
+        for where in ("project", "project-local"):
+            with self.subTest(where=where):
+                path, cell = self._settings_env_cell(where, {"PATH": "/tmp/fake-bin"})
+                self.assertFalse(cell["launched"])
+                self.assertIn(f"PATH in {path}", cell["stderr"])
+                self.assertIn("is not allowed at a lane", cell["stderr"])
+
+    def test_an_allowlisted_key_in_a_project_settings_env_block_refuses(self):
+        """The allowlist is for the user and managed tiers only."""
+        path, cell = self._settings_env_cell(
+            "project", {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"})
+        self.assertFalse(cell["launched"])
+        self.assertIn(f"CLAUDE_CODE_ENABLE_TODO_TOOLS in {path}", cell["stderr"])
+
+    def test_an_allowlisted_user_settings_env_key_launches(self):
+        for key in ("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "CLAUDE_CODE_ENABLE_TODO_TOOLS"):
+            with self.subTest(key=key):
+                _, cell = self._settings_env_cell("user", {key: "1"})
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_an_unknown_user_settings_env_key_refuses(self):
+        for key in ("PATH", "LD_PRELOAD", "PYTHONPATH", "SOME_FUTURE_KEY"):
+            with self.subTest(key=key):
+                path, cell = self._settings_env_cell("user", {key: "x"})
+                self.assertFalse(cell["launched"])
+                self.assertIn(f"{key} in {path}", cell["stderr"])
+
+    def test_a_non_object_settings_env_refuses(self):
+        path, cell = self._settings_env_cell("project", ["PATH=/tmp"])
+        self.assertFalse(cell["launched"])
+        self.assertIn(f"a non-object `env` in {path}", cell["stderr"])
+
+    def test_the_user_settings_are_read_where_claude_config_dir_points(self):
+        """The check reads the file the CLI reads: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
+        With the directory pinned, that is $HOME/.claude, trailing slash or not."""
+        with _FixtureTree() as tree:
+            path = tree.home / ".claude" / "settings.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"env": {"PATH": "/tmp/fake-bin"}}))
+            cell = tree.run("2", [], LANE_CLI="claude",
+                            CLAUDE_CONFIG_DIR=f"{tree.home}/.claude/")
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"PATH in {tree.home}/.claude//settings.json", cell["stderr"])
+
+    def test_claude_config_dir_elsewhere_refuses(self):
+        """Pass 2 survivor 1 (K-19): a relocated user tier drops every
+        user-level hook, so only $HOME/.claude is accepted."""
+        with _FixtureTree() as tree:
+            other = tree.root / "elsewhere"
+            other.mkdir()
+            cell = tree.run("2", [], LANE_CLI="claude", CLAUDE_CONFIG_DIR=str(other))
+            self.assertFalse(cell["launched"])
+            self.assertTrue(
+                cell["stderr"].startswith(f"lane2: CLAUDE_CONFIG_DIR is set to '{other}'"),
+                cell["stderr"])
+            for ok in (f"{tree.home}/.claude", f"{tree.home}/.claude/"):
+                with self.subTest(ok=ok):
+                    self.assertTrue(tree.run("2", [], LANE_CLI="claude",
+                                             CLAUDE_CONFIG_DIR=ok)["launched"])
+            # Codex reads no Claude settings, so it is not refused.
+            self.assertTrue(tree.run("2", [], LANE_CLI="codex",
+                                     CLAUDE_CONFIG_DIR=str(other))["launched"])
+
+    def test_lane3_passes_one_settings_holding_policy_and_set(self):
+        """Kill check 5: the Lane 3 policy and the set reach the session as one
+        merged `--settings`, and both take effect."""
+        helper = ClaudeLane3Settings()
+        with _FixtureTree() as tree:
+            policy = helper._install(tree, ClaudeLane3Settings.POLICY.read_text())
+            cell = helper._run(tree, helper._copy_lane_dir(tree, policy, os.getuid()))
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(_agent_args(cell).count("--settings"), 1)
+            value = _settings_value(cell)
+            self.assertEqual(value["hooks"], self.set_hooks)
+            self.assertEqual(value["permissions"],
+                             json.loads(ClaudeLane3Settings.POLICY.read_text())["permissions"])
+            self.assertNotIn(str(policy), _agent_args(cell))
+
+    def test_lane3_with_the_policy_absent_carries_the_set(self):
+        """Change 5: the settings index and path live outside the policy `if`."""
+        helper = ClaudeLane3Settings()
+        with _FixtureTree() as tree:
+            lane_dir = helper._copy_lane_dir(tree, tree.root / "nowhere" / "p.json", os.getuid())
+            cell = helper._run(tree, lane_dir)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            value = _settings_value(cell)
+            self.assertEqual(value["hooks"], self.set_hooks)
+            self.assertNotIn("permissions", value)
+
+    def test_a_policy_carrying_hooks_refuses(self):
+        """Neither source may override the other."""
+        helper = ClaudeLane3Settings()
+        with _FixtureTree() as tree:
+            policy = helper._install(tree, json.dumps({"hooks": {}, "permissions": {"allow": []}}))
+            cell = helper._run(tree, helper._copy_lane_dir(tree, policy, os.getuid()))
+            self.assertFalse(cell["launched"])
+            self.assertIn("refusing to start a session with no guards", cell["stderr"])
+
+    def test_the_registry_declares_the_set_and_the_refusals(self):
+        source = (LANE_DIR / "_agent_registry.sh").read_text()
+        self.assertIn('declare -A AGENT_HOOK_SET=(\n  [claude]="lane_hooks.json"\n  [codex]=""', source)
+        self.assertIn('[claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_RESTRICTED '
+                      'CLAUDE_CODE_USE_COWORK_PLUGINS"', source)
+        # Operator ruling 2026-11-11: exactly the keys in the user settings that day.
+        self.assertIn('declare -A AGENT_SETTINGS_ENV_ALLOWED=(\n  [claude]="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY '
+                      'CLAUDE_CODE_ENABLE_TODO_TOOLS"\n  [codex]=""', source)
 
 
 if __name__ == "__main__":

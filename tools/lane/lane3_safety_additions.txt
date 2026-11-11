@@ -195,5 +195,10 @@ sandbox_workspace_write.exclude_tmpdir_env_var=true
 # `json-immutable`: the installed copy must be root-owned and not group/other-
 # writable, and when it is not installed the launch proceeds WITHOUT it (absence
 # of a widening policy is the safe direction), so fixture runs record no token.
---settings
-/usr/local/share/hrse-gate/claude-lane3.json
+#
+# AMENDMENT 8 RETIRED -- harmonic-forge#1307.  Its two tokens left this list:
+# every Claude lane (1, 2 and 3) now carries ONE `--settings` holding the Forge
+# lane hook set, merged with this policy at Lane 3 when installed, so the flag
+# is in the committed baseline at every Claude lane (as `--settings
+# <LANE_SETTINGS>`) rather than a Lane-3-only addition. The policy's checks are
+# unchanged, and its path never reaches the argv on its own any more.

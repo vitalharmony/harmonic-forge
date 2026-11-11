@@ -5,7 +5,11 @@ Onboarding used to be a hand procedure spread across five places, each keeping
 its own copy of the same facts: `3-lane-protocol.md` § Per-Lane Working
 Directories, `sync_rules.py --project`, a copied `.claude/settings.json` hooks
 block, a prefix letter in `rules/lane-shorthand.md`, a board mapping in
-`gh_issue.py`, and an `autoMemoryDirectory` setting. Four repos are covered
+`gh_issue.py`, and an `autoMemoryDirectory` setting. Since harmonic-forge#1307
+the lane hooks are not copied: they come from the Forge lane hook set
+(`tools/lane/lane_hooks.json`), which every Claude lane launch passes, and a
+project's own settings file holds its project-specific hooks plus the ones that
+must also guard a non-lane session. Four repos are covered
 today and two more are coming, and every one of those steps could be half-done
 without anything noticing.
 
@@ -20,8 +24,8 @@ that returned non-zero for both "found a problem" and "could not look" makes a
 CI gate unable to tell a real finding from its own misconfiguration --
 `memory_lint`'s missing-store case is the local precedent.
 
-**What this does NOT do yet.** The hooks half installs a template and reports
-drift; it does not reconcile. That waits on harmonic-forge#324's declarative
+**What this does NOT do yet.** The hooks half reports drift against the Forge
+lane hook set plus the project's own hooks; it does not reconcile. That waits on harmonic-forge#324's declarative
 agent-surface synchronizer, and pretending otherwise here would mean writing a
 second, competing reconciler that #324 then has to delete.
 """
@@ -43,6 +47,8 @@ import forge_onboard_identity  # noqa: E402
 import forge_onboard_skills  # noqa: E402
 import lane_tasks  # noqa: E402
 from required_hooks import REQUIRED_HOOKS, required_hook_gaps  # noqa: E402,F401
+from hook_targets import (  # noqa: E402,F401  (moved by harmonic-forge#1307)
+    _PLATFORM_HOOK_PATH, _hook_commands, unresolvable_hook_targets)
 from manifest import (  # noqa: E402
     ManifestError, Project, check_prefix_agreement, load, prefixes,
 )
@@ -50,6 +56,8 @@ from manifest import (  # noqa: E402
 #: The checkout this module happens to live in. Fine for reading; NEVER the
 #: source to point another repo's symlinks at.
 _THIS_CHECKOUT = Path(__file__).resolve().parents[2]
+#: The Forge lane hook set every Claude lane launch passes (harmonic-forge#1307).
+LANE_HOOK_SET = _THIS_CHECKOUT / "tools" / "lane" / "lane_hooks.json"
 
 
 def platform_source() -> Path:
@@ -542,53 +550,6 @@ def check_entrypoint(project: Project) -> Check:
     return Check("entrypoint", OK, ", ".join(present))
 
 
-def _hook_commands(hooks: dict) -> list[str]:
-    """Every `command` string in a settings.json hooks block, any event."""
-    found: list[str] = []
-    for matchers in hooks.values():
-        if not isinstance(matchers, list):
-            continue
-        for matcher in matchers:
-            if not isinstance(matcher, dict):
-                continue
-            for entry in matcher.get("hooks") or []:
-                if isinstance(entry, dict) and isinstance(entry.get("command"), str):
-                    found.append(entry["command"])
-    return found
-
-
-_PLATFORM_HOOK_PATH = re.compile(r'["\']?(\$\{HOME\}|~|/[^"\'\s]*?)/(harmonic-forge/[^"\'\s]+\.py)')
-
-
-def unresolvable_hook_targets(hooks: dict) -> list[str]:
-    """Platform hook scripts a settings.json names that do not exist on disk.
-
-    harmonic-forge#547's preclose-inspection: this check read only the event
-    KEY NAMES and never a `command` string, so renaming or moving a platform
-    hook script made every session in every consuming repo run a command that
-    exits 2 and produces no output. For `SessionStart` that does not block the
-    session — it just silently contributes nothing, which is indistinguishable
-    from the pre-#547 state the issue was filed about, and this tool reported
-    green throughout.
-
-    That is the reconciliation half the skills manifest has and hooks lacked.
-    The answer is NOT a `hooks` key on the skills manifest (that manifest
-    exists because gitignored symlinks cannot travel with a clone, which is not
-    hooks' problem) — it is asserting here that what settings.json names
-    actually resolves.
-    """
-    missing: list[str] = []
-    for command in _hook_commands(hooks):
-        match = _PLATFORM_HOOK_PATH.search(command)
-        if not match:
-            continue
-        candidate = Path(os.path.expandvars(os.path.expanduser(
-            f"{match.group(1)}/{match.group(2)}")))
-        if not candidate.is_file():
-            missing.append(str(candidate))
-    return sorted(set(missing))
-
-
 #: `SessionStart` sources a wake-up hook must match to actually reach a lane
 #: session (harmonic-forge#560). `compact` is deliberately NOT here: it has its
 #: own entry running `compaction_marker.py`, whose `build_context()` already
@@ -657,6 +618,88 @@ def sessionstart_source_gaps(hooks: dict) -> list[str]:
             if not any(_matcher_covers(m, s) for m in matchers)]
 
 
+def _lane_hookset_module():
+    """`tools/lane/lane_hookset.py`, loaded by path: `tools/lane` is not put on
+    sys.path, so none of its modules can shadow one of this directory's."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "lane_hookset", _THIS_CHECKOUT / "tools" / "lane" / "lane_hookset.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
+    """(set, error). The set is validated as the launcher's `build` validates
+    it, with each script checked in THIS checkout rather than under `$HOME`, so
+    the answer does not depend on which machine runs the report. A set that
+    does not load is `({}, reason)`: every lane launch refuses then, so every
+    project's hooks check fails with it (harmonic-forge#1307)."""
+    hookset = _lane_hookset_module()
+    try:
+        return hookset.load_set(path or LANE_HOOK_SET, forge_root=_THIS_CHECKOUT), None
+    except hookset.SetError as exc:
+        return {}, str(exc)
+
+
+def _with_set(set_data: dict, hooks: dict) -> dict:
+    """The hooks a lane session runs: the set's, then the project's, per event."""
+    union: dict = {}
+    for source in (set_data.get("hooks") or {}, hooks):
+        for event, blocks in source.items():
+            if isinstance(blocks, list):
+                union.setdefault(event, []).extend(blocks)
+    return union
+
+
+#: Frozen `.claude/settings.json` hook snapshots (`lane_hookset.py freeze`),
+#: each naming the repo it was frozen from in `source.repo`.
+HOOK_SNAPSHOT_DIR = _THIS_CHECKOUT / "tools" / "lane" / "testdata"
+
+
+def frozen_hook_snapshot(repo: str | None) -> dict | None:
+    """The frozen hook snapshot whose `source.repo` is `repo`, or None.
+
+    Only HRSE2 and harmonic-forge carry one; a project without one has no floor
+    here (stated as a residual in `_cli_launch.sh`)."""
+    if not repo:
+        return None
+    for path in sorted(HOOK_SNAPSHOT_DIR.glob("*_hooks_snapshot.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and (data.get("source") or {}).get("repo") == repo:
+            return data
+    return None
+
+
+def snapshot_floor_gaps(project: Project, set_data: dict, hooks: dict) -> list[str]:
+    """Class-B snapshot entries the project's own hooks no longer carry
+    (harmonic-forge#1307 pass 2 survivor 3).
+
+    The Forge set covers a hook only in lane sessions. An entry every script of
+    which the set declares `lane_only` (class A) may leave the project file; any
+    other entry (class B: it acts without LANE, or is project-specific) must
+    stay, since a non-lane session runs only what the file wires. Judged by the
+    existing `snapshot_gaps`, with the project's hooks in the set's place and no
+    exemptions: a dropped, narrowed or shortened class-B entry is a gap.
+    """
+    snapshot = frozen_hook_snapshot(getattr(project, "repo", None))
+    if snapshot is None:
+        return []
+    hookset = _lane_hookset_module()
+    lane_only = set(set_data.get("lane_only") or ())
+
+    def class_a(entry: dict) -> bool:
+        named = set(hookset.SCRIPT_RE.findall(entry.get("command") or ""))
+        return bool(named) and named <= lane_only
+
+    class_b = [e for e in snapshot.get("entries") or () if not class_a(e)]
+    return hookset.snapshot_gaps({"hooks": hooks},
+                                 {"entries": class_b, "project_specific": []})
+
+
 def stale_worktree_hook_gaps(project: Project) -> list[str]:
     """Worktrees of this project whose OWN settings.json misses a source.
 
@@ -682,6 +725,8 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
     if result.returncode != 0:
         return []
     declared = {path.resolve() for path in project.worktrees}
+    set_data, _error = _lane_set()
+    hookset = _lane_hookset_module()
     gaps = []
     for line in result.stdout.splitlines():
         if not line.startswith("worktree "):
@@ -693,10 +738,16 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
         if not settings.is_file():
             continue
         try:
-            hooks = json.loads(settings.read_text(encoding="utf-8")).get("hooks")
+            data = json.loads(settings.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(hooks, dict) and sessionstart_source_gaps(hooks):
+        hooks = data.get("hooks") if isinstance(data, dict) else None
+        if not isinstance(hooks, dict):
+            continue
+        # harmonic-forge#1307: what the set covers is not a gap, and an entry
+        # that would run a set hook twice is one.
+        if (sessionstart_source_gaps(_with_set(set_data, hooks))
+                or hookset.doubled(set_data, {path.name: data})[0]):
             gaps.append(path.name)
     return sorted(gaps)
 
@@ -704,8 +755,13 @@ def stale_worktree_hook_gaps(project: Project) -> list[str]:
 def check_hooks(project: Project) -> Check:
     """Presence, shape, AND that every platform script it names resolves.
 
-    Full reconciliation still waits on harmonic-forge#324; this closes the one
-    gap that made the check actively misleading rather than merely incomplete.
+    harmonic-forge#1307: a lane session runs the Forge lane hook set plus the
+    project's own hooks, so coverage (the required hooks, the wake-up sources)
+    is judged over that union, a project with no hooks of its own is valid, and
+    a project entry that would run a set hook twice is a failure. A set that
+    does not load fails every project: every lane launch refuses with it.
+
+    Full reconciliation still waits on harmonic-forge#324.
     """
     if project.checkout is None:
         return Check("hooks", SKIP, "no checkout")
@@ -716,40 +772,57 @@ def check_hooks(project: Project) -> Check:
         data = json.loads(settings.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return Check("hooks", FAIL, f"unparseable settings.json: {exc}")
-    hooks = data.get("hooks")
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    # harmonic-forge#1307 pass 2 survivor 3: still a failure. The set covers a
+    # lane session only; a non-lane session in this project runs what this file
+    # wires, so a file with no hooks leaves it unguarded (AC3).
     if not hooks:
         return Check("hooks", FAIL, "settings.json declares no hooks block")
+    if not isinstance(hooks, dict):
+        hooks = {}
 
-    events = sorted(hooks) if isinstance(hooks, dict) else []
+    set_data, set_error = _lane_set()
+    hookset = _lane_hookset_module()
+    union = _with_set(set_data, hooks)
+    events = sorted(hooks)
     # Every gap is collected and reported together: a check that returns on its
     # first failure hides the later ones for as long as the first persists
     # (harmonic-forge#918, the same principle as hrse#2221).
     problems: list[str] = []
-    missing = unresolvable_hook_targets(hooks) if isinstance(hooks, dict) else []
+    if set_error:
+        problems.append(f"the Forge lane hook set does not load ({set_error}) -- "
+                        "every lane launch refuses until it does (harmonic-forge#1307)")
+    missing = unresolvable_hook_targets(hooks)
     if missing:
         problems.append(f"{len(events)} event(s) declared, but "
                         f"{len(missing)} named script(s) do not exist: "
                         + ", ".join(missing))
 
-    # Declaring ONE event is not the same as being guarded. Naming the count of
-    # PreToolUse entries stops a repo with a single SessionStart line from
-    # reading identically to one carrying the full guard set — the specific
-    # regression #547 introduced in cymagraph-infra, which had no PreToolUse
-    # hooks at all and flipped from FAIL to OK the moment a settings.json
-    # existed.
     # A wake-up hook that never fires for the launch path in daily use is
     # worse than none: the report reads green and the session is unguarded.
-    gaps = sessionstart_source_gaps(hooks) if isinstance(hooks, dict) else []
+    gaps = sessionstart_source_gaps(union)
     if gaps:
         problems.append("belt_wakeup.py matches no SessionStart source for: "
                         + ", ".join(gaps)
                         + " -- a session started that way is never told its lane "
                           "(harmonic-forge#560)")
 
-    absent = required_hook_gaps(hooks) if isinstance(hooks, dict) else []
+    absent = required_hook_gaps(union)
     if absent:
         problems.append("required platform hook(s) not registered: " + ", ".join(absent)
                         + " -- register them in .claude/settings.json (harmonic-forge#918)")
+
+    floor = snapshot_floor_gaps(project, set_data, hooks)
+    if floor:
+        problems.append("hooks a non-lane session needs are gone from settings.json "
+                        "(frozen in its hook snapshot, not lane-only in the Forge set): "
+                        + "; ".join(floor) + " (harmonic-forge#1307 AC3)")
+
+    doubles, removable = hookset.doubled(set_data, {".claude/settings.json": data})
+    if doubles:
+        problems.append("entries that run a Forge lane hook twice (make each "
+                        "byte-identical to tools/lane/lane_hooks.json): "
+                        + "; ".join(doubles) + " (harmonic-forge#1307)")
 
     # The main checkout being right is not the same as the launcher's checkout
     # being right, and the launchers do not run here.
@@ -763,8 +836,17 @@ def check_hooks(project: Project) -> Check:
     if problems:
         return Check("hooks", FAIL, "; ".join(problems))
 
-    guards = len(hooks.get("PreToolUse") or []) if isinstance(hooks, dict) else 0
-    detail = f"{len(events)} event(s): {', '.join(events)}; {guards} PreToolUse matcher(s)"
+    # Naming the count of PreToolUse entries stops a repo with a single
+    # SessionStart line from reading identically to one carrying the full guard
+    # set -- the regression #547 introduced in cymagraph-infra.
+    guards = len(hooks.get("PreToolUse") or [])
+    set_commands = {(e, h.get("command")) for e, _m, h in hookset.handlers(set_data.get("hooks") or {})}
+    own = [(e, h.get("command")) for e, _m, h in hookset.handlers(hooks)]
+    from_set = sum(1 for _ in hookset.handlers(set_data.get("hooks") or {}))
+    specific = sum(1 for key in own if key not in set_commands)
+    detail = (f"{len(events)} event(s): {', '.join(events)}; {guards} PreToolUse matcher(s); "
+              f"{from_set} from the Forge set, {specific} project-specific, "
+              f"{len(removable)} removable")
     return Check("hooks", OK, detail)
 
 

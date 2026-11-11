@@ -140,6 +140,15 @@ class TestSessionStartSourceCoverage(unittest.TestCase):
         self.assertIsNotNone(matcher, "belt_wakeup is not wired in this repo")
         self.assertLessEqual(self.REQUIRED_SOURCES, set(matcher.split("|")))
 
+    def test_the_lane_hook_set_wakes_on_clear_and_fork(self):
+        """harmonic-forge#1307: the set every lane launch carries, same sources."""
+        hooks = json.loads((Path(__file__).resolve().parents[2] / "tools" / "lane"
+                            / "lane_hooks.json").read_text(encoding="utf-8"))["hooks"]
+        matchers = [b.get("matcher", "") for b in hooks["SessionStart"]
+                    if any("belt_wakeup.py" in h["command"] for h in b["hooks"])]
+        self.assertEqual(len(matchers), 1)
+        self.assertEqual(set(matchers[0].split("|")), self.REQUIRED_SOURCES)
+
     def test_compact_is_excluded_from_the_wakeup_matcher(self):
         """Not an oversight. `compaction_marker.build_context()` already
         carries a wake-up line, so matching `compact` here injects twice."""

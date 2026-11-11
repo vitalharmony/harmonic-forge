@@ -12,6 +12,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "--permission-mode",
         "plan"
       ],
@@ -39,6 +41,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "*.md"
       ],
       "cwd": "<ROOT>/proj",
@@ -64,7 +68,9 @@
         "--model",
         "sonnet",
         "--append-system-prompt",
-        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require."
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>"
       ],
       "cwd": "<ROOT>/proj",
       "env": {
@@ -90,6 +96,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "-p",
         "two words here"
       ],
@@ -212,6 +220,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "--permission-mode",
         "plan"
       ],
@@ -239,6 +249,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane2",
@@ -264,7 +276,9 @@
         "--model",
         "sonnet",
         "--append-system-prompt",
-        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require."
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>"
       ],
       "cwd": "<ROOT>/proj-lane2",
       "env": {
@@ -290,6 +304,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "-p",
         "two words here"
       ],
@@ -418,6 +434,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "--permission-mode",
         "plan"
       ],
@@ -445,6 +463,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "*.md"
       ],
       "cwd": "<ROOT>/proj-lane3",
@@ -470,7 +490,9 @@
         "--model",
         "sonnet",
         "--append-system-prompt",
-        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require."
+        "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>"
       ],
       "cwd": "<ROOT>/proj-lane3",
       "env": {
@@ -496,6 +518,8 @@
         "sonnet",
         "--append-system-prompt",
         "Lead every posted lane artifact (handoff, ready-for-l3, rework, spec, gate-result, sweep, AE) with its required one-line summary fields before any evidence, per hrse#1703 -- l1_post.py/post_lane_discussion.py refuse a post that buries them or that lets the lead itself run past 1,200 bytes. Compose it correctly the first time. MCP tools such as mcp__claude-in-chrome__* may be deferred (names only until loaded): load them with ToolSearch(\"select:<names>\") before concluding a tool is unavailable, and never report a browser or tool as unavailable from a names-only listing. Silence rule (R-0395): on a belt event or loop tick, report your own lane's work only. One that another lane owes gets no text at all, including a line saying you are ignoring it, and a loop tick with nothing owed ends in ScheduleWakeup alone. Work owed to your lane is yours whether it arrives as queued-for-<your lane> or as a comment-watch line. Answer what the operator asks in a message, and keep the lines the belt skill and R-0375 require.",
+        "--settings",
+        "<LANE_SETTINGS>",
         "-p",
         "two words here"
       ],
