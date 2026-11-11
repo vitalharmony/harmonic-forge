@@ -293,5 +293,75 @@ class PostedHandoff(TempStore):
         self.assertEqual(route_store.load(KEY), [])
 
 
+
+class CorrectionRework(TempStore):
+    """harmonic-forge#1318: a correction rework raises the route floor."""
+
+    def _rework(self, kind="correction", comment=None):
+        with patch.object(post, "comment_body", comment or (lambda *a: ("https://example.test/c", 1))):
+            return post._post_kind(REPO, 1231, "rework", "**Finding:** x\n", SHA, "b", rework_kind=kind)
+
+    def setUp(self):
+        super().setUp()
+        for name in ("world_checks", "write_receipt", "validate_sticky_wicket", "_discharge_handoff_owed"):
+            patcher = patch.object(post, name, return_value=(["w"], []) if name == "world_checks" else None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        route_store.record(KEY, gates.Route(2, "te-label", "labelled"), "l1-post", "handoff")
+
+    def test_a_correction_rework_records_the_floor(self):
+        """AC1."""
+        self._rework()
+        attrs = route_store.current(KEY)["attrs"]
+        self.assertEqual((attrs["path"], attrs["gate_id"], attrs["tier_floor"], attrs["floor_gate"]),
+                         (2, "te-label", "deep", "correction-rework"))
+
+    def test_a_rebase_rework_records_nothing(self):
+        """AC2."""
+        self._rework(kind="rebase")
+        self.assertEqual(len(route_store.load(KEY)), 1)
+
+    def test_a_refused_post_records_nothing(self):
+        """AC3, narrowed by the operator: a refused post records nothing."""
+        with patch.object(post, "validate_sticky_wicket", side_effect=SystemExit("refused")):
+            with self.assertRaises(SystemExit):
+                self._rework()
+        self.assertEqual(len(route_store.load(KEY)), 1)
+
+    def test_a_post_whose_read_back_fails_keeps_its_floor(self):
+        """harmonic-forge#1318 pass 2 survivor: the floor is written before the POST,
+        so a POST that lands and whose read-back then fails still has its floor."""
+        def comment(*_):
+            raise SystemExit("posted comment did not match the attested body")
+
+        with self.assertRaises(SystemExit):
+            self._rework(comment=comment)
+        self.assertEqual(route_store.current(KEY)["attrs"]["floor_gate"], "correction-rework")
+
+    def test_a_landed_rework_keeps_its_floor_when_a_later_step_fails(self):
+        """harmonic-forge#1318 pass 1: the floor is written before the receipt."""
+        with patch.object(post, "write_receipt", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                self._rework()
+        self.assertEqual(route_store.current(KEY)["attrs"]["floor_gate"], "correction-rework")
+
+    def test_a_store_error_prints_one_line_and_the_post_succeeds(self):
+        """AC4."""
+        with patch.object(post.route_store, "record_floor", side_effect=RuntimeError("store down")), \
+                patch("builtins.print") as printed:
+            url, _ = self._rework()
+        self.assertEqual(url, "https://example.test/c")
+        lines = [c.args[0] for c in printed.call_args_list if "correction-rework" in str(c.args[0])]
+        self.assertEqual(lines, ["[route] correction-rework floor not recorded: RuntimeError: store down"])
+
+    def test_an_issue_with_no_route_prints_the_line(self):
+        """AC4, pitch inspection change 1."""
+        with patch("builtins.print") as printed, \
+                patch.object(post, "comment_body", lambda *a: ("https://example.test/c", 1)):
+            post._post_kind(REPO, 1232, "rework", "**Finding:** x\n", SHA, "b", rework_kind="correction")
+        self.assertTrue(any("correction-rework floor not recorded: ValueError" in str(c.args[0])
+                            for c in printed.call_args_list))
+
+
 if __name__ == "__main__":
     unittest.main()
