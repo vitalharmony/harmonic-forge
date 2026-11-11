@@ -50,6 +50,14 @@ class Snapshot(unittest.TestCase):
         self.assertEqual((route.path, route.gate_id), (2, "lane-machinery"))
         self.assertTrue(line.startswith("Route (snapshot): path 2 — gate lane-machinery — "))
 
+    def test_the_router_is_lane_machinery(self):
+        """harmonic-forge#1319 AC1."""
+        for path in ("tools/routing/gates.py", "tools/gh/_route_snapshot.py", "tools/gh/gh_issue.py",
+                     "tools/telemetry/emit.py"):
+            with self.subTest(path=path):
+                _line, route = snap.snapshot(_handoff([path]), REPO)
+                self.assertEqual((route.path, route.gate_id), (2, "lane-machinery"))
+
     def test_hrse_product_is_path_1(self):
         line, route = snap.snapshot(_handoff(["`backend/app/x.py`"]), "vitalharmony/hrse")
         self.assertEqual((route.path, route.gate_id), (1, "hrse-product"))
@@ -224,13 +232,14 @@ class PostedHandoff(TempStore):
             posted["text"] = text
             return "https://example.test/c", 1
 
-        self._post(_handoff(["tools/routing/route_store.py"]), comment, labels=labels)
+        self._post(_handoff(["tools/memory/capture_failure.py"]), comment, labels=labels)
         self.line = next(l for l in posted["text"].splitlines() if l.startswith("Route (snapshot):"))
         return route_store.current(KEY)["attrs"]["path"]
 
     def test_a_te_labelled_handoff_records_path_2(self):
-        """harmonic-forge#1242 AC1: `tools/routing/` is not lane machinery, so
-        only the `te-label` gate can give path 2."""
+        """harmonic-forge#1242 AC1: `tools/memory/` is not lane machinery, so
+        only the `te-label` gate can give path 2 (the router became lane
+        machinery in harmonic-forge#1319)."""
         self.assertEqual(self._posted_path({"tooling-exception"}), 2)
         self.assertIn("gate te-label", self.line)
 

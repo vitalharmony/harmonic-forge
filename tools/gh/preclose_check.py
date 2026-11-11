@@ -100,6 +100,12 @@ HIGH_BLAST_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
                 r"sticky_receipt|check_lane3_ready|_prod_run|_exempt_conflict|gate_ci)\.py$"),
      "authorization surface (R-0371) — mints, waives or gates a merge"),
     (re.compile(r"(^|/)tools/runner/"), "unattended runner — decides what is proposed for merge"),
+    # harmonic-forge#1319: the semantic router decides each issue's path and Tier
+    # floor, so a change to it is lane machinery whatever its label says.
+    (re.compile(r"(^|/)tools/routing/"), "semantic router — decides each issue's path and floor"),
+    (re.compile(r"(^|/)tools/gh/_route_snapshot\.py$"), "semantic router — the handoff route snapshot"),
+    (re.compile(r"(^|/)tools/gh/gh_issue\.py$"), "semantic router — evaluates and records the filing route"),
+    (re.compile(r"(^|/)tools/telemetry/emit\.py$"), "semantic router — the route store's location, lock and append"),
     (re.compile(r"(^|/)tools/gate/"), "production gate — mints a production-run grant from the AE"),
     (re.compile(r"(^|/)scripts/.*migrat"), "migration — touches live data"),
     (re.compile(r"(^|/)backend/app/"), "application code — not tooling at all"),

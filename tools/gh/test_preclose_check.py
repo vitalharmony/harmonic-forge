@@ -294,7 +294,9 @@ class PanelSizingTests(unittest.TestCase):
                      ".claude/skills/x/SKILL.md"):
             self.assertTrue(preclose.blast_radius([path]), path)
         self.assertIn("hook wiring", preclose.blast_radius([".claude/settings.json"])[0])
-        for path in ("tools/telemetry/emit.py", "README.md", "scripts/ordinary.py",
+        # tools/telemetry/emit.py left this list in harmonic-forge#1319: it
+        # locates, locks and appends the route store, so it is router code.
+        for path in ("tools/telemetry/llm_usage.py", "README.md", "scripts/ordinary.py",
                      "tools/gh/belt_report.py", "tools/gh/test_imc_waiver.py"):
             self.assertFalse(preclose.blast_radius([path]), path)
 
