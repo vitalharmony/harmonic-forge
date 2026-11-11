@@ -35,6 +35,7 @@ data = [
   "tools/lane/cli_update.toml",
   "tools/lane/heavy_slot.toml",
   "tools/lane/lane3_safety_additions.txt",
+  "tools/lane/lane_hooks.json",
   "tools/lane/policies/claude-lane3.json",
   "tools/lane/systemd/forge-cli-update.service",
   "tools/lane/systemd/forge-cli-update.timer",
@@ -382,13 +383,13 @@ replay_tool = "preclose_check"
   match = ["--gate"]
   class = "local-write"
   note = "prints the branch; writes only its _preflight receipt (rule step 3)"
-  cite = ["tools/gh/preclose_check.py:635-637", "tools/gh/preclose_check.py:1462-1466", "tools/gh/preclose_check.py:1359"]
+  cite = ["tools/gh/preclose_check.py:638-640", "tools/gh/preclose_check.py:1465-1469", "tools/gh/preclose_check.py:1362"]
   [[tool.mode]]
   name = "--post-verdict"
   match = ["--post-verdict"]
   class = "shared-state"
   gap = "writes the pass receipt"
-  cite = ["tools/gh/preclose_check.py:1467", "tools/gh/preclose_check.py:1603"]
+  cite = ["tools/gh/preclose_check.py:1470", "tools/gh/preclose_check.py:1606"]
   [[tool.mode]]
   name = "--cluster-verdict --force"
   match = ["--cluster-verdict", "--force"]
@@ -398,16 +399,16 @@ replay_tool = "preclose_check"
   guard = "FORCE <key> cluster line (force_grant.require)"
   binds = []
   guard_note = "the precheck key binds repo, issue and mode only"
-  cite = ["tools/gh/preclose_check.py:1352-1368", "tools/gh/preclose_check.py:1492", "tools/gh/preclose_check.py:1527-1530"]
+  cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:1495", "tools/gh/preclose_check.py:1530-1533"]
   validates = [
-    {class = "receipt", cite = "tools/gh/preclose_check.py:1365"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
   ]
   [[tool.mode]]
   name = "--cluster-verdict"
   match = ["--cluster-verdict"]
   class = "shared-state"
   gap = "writes the cluster verdict into the receipt"
-  cite = ["tools/gh/preclose_check.py:1478", "tools/gh/preclose_check.py:1536"]
+  cite = ["tools/gh/preclose_check.py:1481", "tools/gh/preclose_check.py:1539"]
   [[tool.mode]]
   name = "--complete --force"
   match = ["--complete", "--force"]
@@ -417,17 +418,17 @@ replay_tool = "preclose_check"
   guard = "FORCE line (force_grant.require)"
   binds = []
   guard_note = "the precheck key binds repo, issue and mode only"
-  cite = ["tools/gh/preclose_check.py:1352-1368", "tools/gh/preclose_check.py:181"]
+  cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:184"]
   validates = [
-    {class = "receipt", cite = "tools/gh/preclose_check.py:1365"},
-    {class = "receipt", cite = "tools/gh/preclose_check.py:181"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:184"},
   ]
   [[tool.mode]]
   name = "--complete"
   match = ["--complete"]
   class = "shared-state"
   gap = "records the pass"
-  cite = ["tools/gh/preclose_check.py:1178"]
+  cite = ["tools/gh/preclose_check.py:1181"]
   [[tool.mode]]
   name = "plan --force [--reforge]"
   match = ["--force"]
@@ -437,17 +438,17 @@ replay_tool = "preclose_check"
   guard = "FORCE line, plain or reforge (force_grant.require)"
   binds = []
   guard_note = "the precheck key binds repo, issue and mode only"
-  cite = ["tools/gh/preclose_check.py:1352-1368", "tools/gh/preclose_check.py:181", "tools/gh/preclose_check.py:927-931"]
+  cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:184", "tools/gh/preclose_check.py:930-934"]
   validates = [
-    {class = "receipt", cite = "tools/gh/preclose_check.py:1365"},
-    {class = "receipt", cite = "tools/gh/preclose_check.py:181"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:184"},
   ]
   [[tool.mode]]
   name = "plan"
   match = []
   class = "shared-state"
   gap = "writes the planned receipt"
-  cite = ["tools/gh/preclose_check.py:1484", "tools/gh/preclose_check.py:1010"]
+  cite = ["tools/gh/preclose_check.py:1487", "tools/gh/preclose_check.py:1013"]
 
 [[tool]]
 path = "tools/gh/preclose_enrollment.py"
@@ -584,13 +585,13 @@ path = "tools/lane/baseline_capture.py"
   match = ["--out"]
   class = "shared-state"
   gap = "writes the committed comparison fixture"
-  cite = ["tools/lane/baseline_capture.py:473-474", "tools/lane/baseline_capture.py:11-13"]
+  cite = ["tools/lane/baseline_capture.py:524-525", "tools/lane/baseline_capture.py:11-13"]
   [[tool.mode]]
   name = "capture, --compare"
   match = []
   class = "local-write"
   note = "temp directories only"
-  cite = ["tools/lane/baseline_capture.py:211", "tools/lane/baseline_capture.py:285", "tools/lane/baseline_capture.py:477"]
+  cite = ["tools/lane/baseline_capture.py:229", "tools/lane/baseline_capture.py:330", "tools/lane/baseline_capture.py:528"]
 
 [[tool]]
 path = "tools/lane/belt_plan.py"
@@ -792,6 +793,30 @@ path = "tools/lane/lane3_marker.py"
   class = "shared-state"
   gap = "appends the same shared audit log"
   cite = ["tools/lane/lane3_marker.py:301-303"]
+
+[[tool]]
+path = "tools/lane/lane_hookset.py"
+  [[tool.mode]]
+  name = "build, doubled, freeze, running"
+  match = []
+  class = "read"
+  note = "every subcommand prints to stdout; git calls are reads"
+  cite = ["tools/lane/lane_hookset.py:258-260", "tools/lane/lane_hookset.py:398-430"]
+
+[[tool]]
+path = "tools/lane/probe_hook_merge.py"
+  [[tool.mode]]
+  name = "--real-run"
+  match = ["--real-run"]
+  class = "local-write"
+  note = "launches one real claude -p per variant in a scratch project; reads ~/.claude/settings.json, never writes it"
+  cite = ["tools/lane/probe_hook_merge.py:161-163", "tools/lane/probe_hook_merge.py:25-27"]
+  [[tool.mode]]
+  name = "fixture only"
+  match = []
+  class = "local-write"
+  note = "writes the fixture to --dir or a new temp dir; launches nothing"
+  cite = ["tools/lane/probe_hook_merge.py:55-57", "tools/lane/probe_hook_merge.py:145"]
 
 [[tool]]
 path = "tools/lane/lanes-claude"
