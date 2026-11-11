@@ -71,6 +71,17 @@ STICKY_WICKET = (
     "operator --forces the final head; 'reforge' means a new branch, and the pass count "
     "restarts."
 )
+#: harmonic-forge#1330 sticky-wicket PATCH: the sticky-wicket case once the
+#: reforge cap is reached. A separate string, never a change to STICKY_WICKET:
+#: imc_waiver, post_verdict_refusal and preclose_check compare against it.
+STICKY_WICKET_AT_CAP = (
+    "Two preclose passes are complete, and both left surviving findings. Do not run a "
+    "third. Invoke the sticky-wicket agent on this issue: 'patch' means one cross-family "
+    "post-verdict check reads just the patch (the post-verdict mode of preclose_check.py), "
+    "then the operator --forces the final head. Two reforge epochs are already complete, so "
+    "a 'reforge' verdict no longer starts a new branch: REFORGE now goes to the operator as "
+    "a re-scope decision (harmonic-forge#1330)."
+)
 OPERATOR = (
     "Two preclose passes are complete. Do not run a third. Escalate to the operator; "
     "--force is their instruction, not yours."
@@ -372,11 +383,26 @@ def refusal(receipt: dict | None, sha: str, repo_dir=None, main_ref: str = MAIN_
                 "escalate to the operator rather than re-running.")
     if force:
         return None
+    return route_text(receipt, repo, issue)
+
+
+def route_text(receipt: dict | None, repo: str, issue: int | str) -> str | None:
+    """harmonic-forge#1330 sticky-wicket PATCH: the one route a session is
+    sent down instead of another pass, or None. Pure. A cluster route wins;
+    otherwise, at the pass cap, the cap text -- with the sticky-wicket case
+    swapped for STICKY_WICKET_AT_CAP once the reforge cap is reached.
+    ``cap_message`` itself is left alone: three callers compare it to
+    STICKY_WICKET."""
+    cluster = cluster_message(receipt, repo, issue)
     if cluster:
         return cluster
-    if len(passes) >= MAX_PASSES:
-        return cap_message(passes)
-    return None
+    passes = current(history(receipt))
+    if len(passes) < MAX_PASSES:
+        return None
+    capped = cap_message(passes)
+    if capped == STICKY_WICKET and reforge_capped(receipt):
+        return STICKY_WICKET_AT_CAP
+    return capped
 
 
 def _wellformed_repro(repro: object) -> bool:

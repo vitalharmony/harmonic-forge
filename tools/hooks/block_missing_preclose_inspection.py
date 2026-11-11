@@ -663,52 +663,54 @@ def _match_head_message(repo: str, issue: str, pr: str, head_sha: str) -> str:
 
 
 def _stale_receipt_message(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
-    """Why the receipt does not cover this head, prefixed by AC6's legacy
-    re-review note (harmonic-forge#1077) or the cache-fetch note when they apply."""
-    note = ""
+    """Why the receipt does not cover this head (harmonic-forge#1330: one composer)."""
+    return _deny_text(repo, issue, via_pr, head_sha)
+
+
+def _stale_receipt_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    return _deny_text(repo, issue, via_pr, head_sha)
+
+
+def _deny_text(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
+    """harmonic-forge#1330 sticky-wicket PATCH: the one place the merge deny's
+    precedence lives. The receipt is read once. The hostile block stands alone
+    only when it applies, the head is the one the blocked pass covers, and no
+    cluster route or pass cap applies. Otherwise: the route (cluster or cap)
+    or the run-a-pass text, then the block if any, then the AC6 legacy or
+    cache-clone note last (harmonic-forge#1077)."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         receipt = _receipt(repo, issue)
-        # harmonic-forge#1330: a blocked head the blocked pass covers is not a
-        # cache problem, so the block is named alone, before any cache note.
-        lead = _leading_block(repo, issue, via_pr, head_sha, receipt)
-        if lead:
-            return lead
+        blocked = preclose_passes.close_refusal(receipt)
+        route = preclose_passes.route_text(receipt, repo, issue)
         last = preclose_passes.reviewed(receipt)
+        if blocked and route is None and _accepts_last(repo, head_sha, via_pr, last):
+            return blocked
+        if route is None:
+            lead = _run_pass_text(repo, issue, via_pr, head_sha)
+        elif route == preclose_passes.cluster_message(receipt, repo, issue):
+            lead = route
+        else:
+            # harmonic-forge#834 AC4: at the cap, never tell the session to
+            # run another pass -- that instruction produced #829's third pass.
+            lead = (f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, has no completed "
+                    f"pre-close receipt covering its current head {head_sha[:12]} "
+                    f"(harmonic-forge#778 AC3).\n\n{route}")
+        parts = [lead]
+        if blocked:
+            parts.append(blocked)
         legacy = preclose_passes.legacy_message(last, head_sha)
         if legacy:
-            note = f"{legacy}\n\n"
+            parts.append(legacy)
         elif preclose_passes.entry_identity(last) is not None:
-            note = (f"Acceptance replays the reviewed commit in the cache clone "
-                    f"({_cache_path(repo)}); a failed or timed-out fetch also lands here. "
-                    f"To rule that out, prime it and retry:\n  {_priming_command(repo, via_pr)}\n\n")
-    except Exception:
-        pass
-    return note + _routed_reason(repo, issue, via_pr, head_sha)
-
-
-def _leading_block(repo: str, issue: str, via_pr: str, head_sha: str,
-                   receipt: dict | None) -> str | None:
-    """harmonic-forge#1330 pass 1: the hostile block leads the deny only when
-    the PR head is the head the blocked pass covers and neither the pass cap
-    nor a cluster route applies. Otherwise the cap, cluster and run-a-pass
-    text keeps its precedence, and the block is named after it."""
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-        import preclose_passes  # noqa: PLC0415
-        blocked = preclose_passes.close_refusal(receipt)
-        if not blocked:
-            return None
-        if len(preclose_passes.current(preclose_passes.history(receipt))) >= preclose_passes.MAX_PASSES:
-            return None
-        if preclose_passes.cluster_message(receipt, repo, issue):
-            return None
-        if not _accepts_last(repo, head_sha, via_pr, preclose_passes.reviewed(receipt)):
-            return None
-        return blocked
+            parts.append(f"Acceptance replays the reviewed commit in the cache clone "
+                         f"({_cache_path(repo)}); a failed or timed-out fetch also lands here. "
+                         f"To rule that out, prime it and retry:\n  "
+                         f"{_priming_command(repo, via_pr)}")
+        return "\n\n".join(parts)
     except Exception:  # noqa: BLE001
-        return None
+        return _run_pass_text(repo, issue, via_pr, head_sha)
 
 
 def _close_block(repo: str, issue: str) -> str | None:
@@ -723,42 +725,7 @@ def _close_block(repo: str, issue: str) -> str | None:
         return None
 
 
-def _stale_receipt_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
-    lead = _leading_block(repo, issue, via_pr, head_sha, _receipt(repo, issue))
-    return lead or _routed_reason(repo, issue, via_pr, head_sha)
-
-
-def _routed_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
-    """The cap, cluster or run-a-pass text, with any hostile block named
-    after it (harmonic-forge#1330 pass 1)."""
-    blocked = None
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-        import preclose_passes  # noqa: PLC0415
-        blocked = preclose_passes.close_refusal(_receipt(repo, issue))
-    except Exception:
-        pass
-    suffix = f"\n\n{blocked}" if blocked else ""
-    return _base_reason(repo, issue, via_pr, head_sha) + suffix
-
-
-def _base_reason(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
-    # harmonic-forge#834 AC4: at the cap, never tell the session to run
-    # another pass -- that instruction is what produced #829's third pass.
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-        import preclose_passes  # noqa: PLC0415
-        receipt = _receipt(repo, issue)
-        cluster = preclose_passes.cluster_message(receipt, repo, issue)
-        if cluster:
-            return cluster
-        passes = preclose_passes.current(preclose_passes.history(receipt))
-        if len(passes) >= preclose_passes.MAX_PASSES:
-            return (f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, has no completed "
-                    f"pre-close receipt covering its current head {head_sha[:12]} "
-                    f"(harmonic-forge#778 AC3).\n\n{preclose_passes.cap_message(passes)}")
-    except Exception:
-        pass
+def _run_pass_text(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
     return (
         f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, carries "
         f"{PRECLOSE_LABEL!r} but no completed pre-close receipt names its "

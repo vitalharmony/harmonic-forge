@@ -696,6 +696,103 @@ class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
             self.assertIn("tools/x.py:1", text)
             self.assertLess(text.index("Run the pre-close pass"), text.index("tools/x.py:1"))
 
+    # harmonic-forge#1330 sticky-wicket PATCH: one test per branch of the
+    # single composer, `_deny_text`. Each asserts the composer and both
+    # public wrappers agree.
+    BLOCK = "tools/x.py:1"
+    IDENT = {"head_sha": "deadbeef", "merge_base_sha": "b", "tree": "t"}
+
+    def _texts(self, head: str) -> list[str]:
+        return [hook._deny_text(REPO, "1476", "9", head),
+                hook._stale_receipt_message(REPO, "1476", "9", head),
+                hook._stale_receipt_reason(REPO, "1476", "9", head)]
+
+    def _receipt_now(self):
+        return self.preclose_check.find_receipt(REPO, 1476)
+
+    def _write_cluster(self, entries):
+        self._write_history(1476, entries)
+        path = self.preclose_check.receipt_path(REPO, 1476)
+        data = json.loads(path.read_text())
+        data["mechanism_cluster"] = {"pass_sha": entries[-1]["sha"], "epoch": 0,
+                                     "mechanisms": ["re-parsing shell text"],
+                                     "verdict": None, "comment_url": None}
+        path.write_text(json.dumps(data))
+
+    def test_deny_text_a_covered_block_is_the_block_alone(self):
+        """(a) Covered head, one pass, no cluster, blocked: exactly close_refusal."""
+        import preclose_passes
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                                    "change_identity": self.IDENT,
+                                    "hostile_blocking": [self.BLOCK]}])
+        expected = preclose_passes.close_refusal(self._receipt_now())
+        for text in self._texts("deadbeef"):
+            self.assertEqual(text, expected)
+            self.assertNotIn("Acceptance replays", text)
+
+    def test_deny_text_an_open_cluster_leads_the_block(self):
+        """(b) Open cluster plus block: the cluster route first, then the block."""
+        import preclose_passes
+        self._write_cluster([{"sha": "deadbeef", "epoch": 0, "surviving": 2,
+                              "change_identity": self.IDENT,
+                              "hostile_blocking": [self.BLOCK]}])
+        route = preclose_passes.CLUSTER_ROUTE.format(
+            mechanisms="re-parsing shell text", repo=REPO, issue="1476")
+        for text in self._texts("deadbeef"):
+            self.assertTrue(text.startswith(route), text[:80])
+            self.assertIn(self.BLOCK, text[len(route):])
+
+    def test_deny_text_the_pass_cap_leads_the_block(self):
+        """(c) Pass cap plus block: the cap text first, then the block."""
+        self._write_history(1476, [
+            {"sha": "aaaa", "epoch": 0, "surviving": 2, "hostile_blocking": []},
+            {"sha": "bbbb", "epoch": 0, "surviving": 1, "hostile_blocking": [self.BLOCK]}])
+        for text in self._texts("cccc"):
+            self.assertTrue(text.startswith("Blocked: PR #9"), text[:80])
+            self.assertLess(text.index("sticky-wicket"), text.index(self.BLOCK))
+            self.assertNotIn("Run the pre-close pass", text)
+
+    def test_deny_text_a_moved_head_runs_a_pass_then_names_the_block(self):
+        """(d) Moved head plus block: the run-a-pass text, then the block."""
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                                    "hostile_blocking": [self.BLOCK]}])
+        for text in self._texts("fixhead"):
+            self.assertTrue(text.startswith("Blocked: PR #9"), text[:80])
+            self.assertLess(text.index("Run the pre-close pass"), text.index(self.BLOCK))
+
+    def test_deny_text_the_cache_note_comes_after_the_route(self):
+        """(e) Cap or cluster with a cache-note-eligible entry: the note is last."""
+        cap = [{"sha": "aaaa", "epoch": 0, "surviving": 2, "hostile_blocking": []},
+               {"sha": "deadbeef", "epoch": 0, "surviving": 1,
+                "change_identity": self.IDENT, "hostile_blocking": [self.BLOCK]}]
+        cluster = [{"sha": "deadbeef", "epoch": 0, "surviving": 2,
+                    "change_identity": self.IDENT, "hostile_blocking": []}]
+        for write, entries in ((self._write_history, cap), (self._write_cluster, cluster)):
+            if write == self._write_history:
+                write(1476, entries)
+            else:
+                write(entries)
+            for text in self._texts("newhead"):
+                with self.subTest(case=len(entries)):
+                    self.assertIn("Acceptance replays", text)
+                    self.assertLess(text.index("sticky-wicket"), text.index("Acceptance replays"))
+
+    def test_route_text_at_both_caps_never_offers_a_new_branch(self):
+        """(f) Epoch 2, both passes with survivors: refusal() and the hook
+        deny carry the cap wording, never "'reforge' means a new branch",
+        and cap_message still returns STICKY_WICKET for its three callers."""
+        import preclose_passes
+        entries = [{"sha": "aaaa", "epoch": 2, "surviving": 2, "hostile_blocking": []},
+                   {"sha": "bbbb", "epoch": 2, "surviving": 1, "hostile_blocking": []}]
+        self._write_history(1476, entries)
+        receipt = self._receipt_now()
+        refused = preclose_passes.refusal(receipt, "cccc", repo=REPO, issue=1476)
+        for text in [refused, *self._texts("cccc")]:
+            self.assertIn("re-scope decision", text)
+            self.assertNotIn("'reforge' means a new branch", text)
+        passes = preclose_passes.current(preclose_passes.history(receipt))
+        self.assertIs(preclose_passes.cap_message(passes), preclose_passes.STICKY_WICKET)
+
     def _close(self, command: str) -> dict:
         with mock.patch.object(hook, "resolve_repo", return_value=REPO), \
              mock.patch.object(hook, "labels_for", return_value={
