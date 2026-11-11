@@ -652,6 +652,54 @@ def _with_set(set_data: dict, hooks: dict) -> dict:
     return union
 
 
+#: Frozen `.claude/settings.json` hook snapshots (`lane_hookset.py freeze`),
+#: each naming the repo it was frozen from in `source.repo`.
+HOOK_SNAPSHOT_DIR = _THIS_CHECKOUT / "tools" / "lane" / "testdata"
+
+
+def frozen_hook_snapshot(repo: str | None) -> dict | None:
+    """The frozen hook snapshot whose `source.repo` is `repo`, or None.
+
+    Only HRSE2 and harmonic-forge carry one; a project without one has no floor
+    here (stated as a residual in `_cli_launch.sh`)."""
+    if not repo:
+        return None
+    for path in sorted(HOOK_SNAPSHOT_DIR.glob("*_hooks_snapshot.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and (data.get("source") or {}).get("repo") == repo:
+            return data
+    return None
+
+
+def snapshot_floor_gaps(project: Project, set_data: dict, hooks: dict) -> list[str]:
+    """Class-B snapshot entries the project's own hooks no longer carry
+    (harmonic-forge#1307 pass 2 survivor 3).
+
+    The Forge set covers a hook only in lane sessions. An entry every script of
+    which the set declares `lane_only` (class A) may leave the project file; any
+    other entry (class B: it acts without LANE, or is project-specific) must
+    stay, since a non-lane session runs only what the file wires. Judged by the
+    existing `snapshot_gaps`, with the project's hooks in the set's place and no
+    exemptions: a dropped, narrowed or shortened class-B entry is a gap.
+    """
+    snapshot = frozen_hook_snapshot(getattr(project, "repo", None))
+    if snapshot is None:
+        return []
+    hookset = _lane_hookset_module()
+    lane_only = set(set_data.get("lane_only") or ())
+
+    def class_a(entry: dict) -> bool:
+        named = set(hookset.SCRIPT_RE.findall(entry.get("command") or ""))
+        return bool(named) and named <= lane_only
+
+    class_b = [e for e in snapshot.get("entries") or () if not class_a(e)]
+    return hookset.snapshot_gaps({"hooks": hooks},
+                                 {"entries": class_b, "project_specific": []})
+
+
 def stale_worktree_hook_gaps(project: Project) -> list[str]:
     """Worktrees of this project whose OWN settings.json misses a source.
 
@@ -725,6 +773,11 @@ def check_hooks(project: Project) -> Check:
     except (OSError, ValueError) as exc:
         return Check("hooks", FAIL, f"unparseable settings.json: {exc}")
     hooks = data.get("hooks") if isinstance(data, dict) else None
+    # harmonic-forge#1307 pass 2 survivor 3: still a failure. The set covers a
+    # lane session only; a non-lane session in this project runs what this file
+    # wires, so a file with no hooks leaves it unguarded (AC3).
+    if not hooks:
+        return Check("hooks", FAIL, "settings.json declares no hooks block")
     if not isinstance(hooks, dict):
         hooks = {}
 
@@ -758,6 +811,12 @@ def check_hooks(project: Project) -> Check:
     if absent:
         problems.append("required platform hook(s) not registered: " + ", ".join(absent)
                         + " -- register them in .claude/settings.json (harmonic-forge#918)")
+
+    floor = snapshot_floor_gaps(project, set_data, hooks)
+    if floor:
+        problems.append("hooks a non-lane session needs are gone from settings.json "
+                        "(frozen in its hook snapshot, not lane-only in the Forge set): "
+                        + "; ".join(floor) + " (harmonic-forge#1307 AC3)")
 
     doubles, removable = hookset.doubled(set_data, {".claude/settings.json": data})
     if doubles:

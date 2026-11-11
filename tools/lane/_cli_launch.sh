@@ -195,7 +195,7 @@ done
 # One function for both refusal tables (harmonic-forge#1307), not two copies.
 _lane_settings_env_hit() {
   python3 - "$1" \
-      "$HOME/.claude/settings.json" "$PWD/.claude/settings.json" \
+      "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "$PWD/.claude/settings.json" \
       "$PWD/.claude/settings.local.json" /etc/claude-code/managed-settings.json <<'PY'
 import json, sys
 refused = sys.argv[1].split()
@@ -220,23 +220,73 @@ if [ -n "$_lane_refused_env" ]; then
   unset _lane_settings_hit
 fi
 
-# harmonic-forge#1307: the same two checks over the variables that switch hooks
-# off. A lane started with one would run none of the Forge lane hook set.
-_lane_hooks_refused_env="$(registry_lookup AGENT_HOOKS_REFUSED_ENV "$_lane_agent")"
-for _var in $_lane_hooks_refused_env; do
-  if [ -n "${!_var:-}" ]; then
-    _lane_launch_die "$_var is set -- it disables hooks, so the lane's guards would not load ($_lane_hooks_refused_env are refused, harmonic-forge#1307). Unset it. Nothing was launched."
+# harmonic-forge#1307: what reaches the session must leave the Forge lane hook
+# set running. Three checks, at an agent with a hook set:
+#
+#  1. The variables that switch hooks off, in the launcher's own environment
+#     (AGENT_HOOKS_REFUSED_ENV, a name list measured from the CLI binary).
+#  2. CLAUDE_CONFIG_DIR is pinned to $HOME/.claude. Set elsewhere, it relocates
+#     the user settings tier, so every user-level hook stops running.
+#  3. Settings `env` blocks are deny-by-default (pass 2 rescope): a project or
+#     local block may set no key, and a user or managed block only the keys in
+#     AGENT_SETTINGS_ENV_ALLOWED. A name list cannot cover these blocks: they
+#     reach every hook process, so a `PATH` there swaps the interpreter every
+#     set hook runs under. The files read are the ones the CLI reads.
+#
+# What no launch check reaches, stated rather than implied (the residual):
+#  - settings edits made after launch: the CLI hot-reloads `hooks` and `env`
+#    from its settings files mid-session (code.claude.com/docs/en/settings);
+#  - same-user writes to ~/harmonic-forge/tools/hooks, ~/.claude or the
+#    interpreter, which the session and the branch's code can make;
+#  - a branch's own code running in a gate, as the operator's user;
+#  - projects with no frozen hook snapshot (only HRSE2 and harmonic-forge carry
+#    one): nothing fails when a project-only deny hook leaves their settings.
+# The set guarantees what reaches the launch, and that its wiring cannot be
+# dropped or narrowed without the snapshot test failing. It does not guarantee
+# that the session's later environment leaves the hooks working.
+#
+# The lookup is a plain assignment, not a substitution inside `[`: `set -e`
+# ignores a failing substitution there, which would skip every check below.
+_lane_has_hook_set="$(registry_lookup AGENT_HOOK_SET "$_lane_agent")"
+if [ -n "$_lane_has_hook_set" ]; then
+  _lane_hooks_refused_env="$(registry_lookup AGENT_HOOKS_REFUSED_ENV "$_lane_agent")"
+  for _var in $_lane_hooks_refused_env; do
+    if [ -n "${!_var:-}" ]; then
+      _lane_launch_die "$_var is set -- it disables hooks, so the lane's guards would not load ($_lane_hooks_refused_env are refused, harmonic-forge#1307). Unset it. Nothing was launched."
+    fi
+  done
+  if [ -n "${CLAUDE_CONFIG_DIR+x}" ] && [ "${CLAUDE_CONFIG_DIR%/}" != "$HOME/.claude" ]; then
+    _lane_launch_die "CLAUDE_CONFIG_DIR is set to '$CLAUDE_CONFIG_DIR' -- it relocates the user settings, so the user-level hooks would not load (only $HOME/.claude is accepted, harmonic-forge#1307). Unset it. Nothing was launched."
   fi
-done
-if [ -n "$_lane_hooks_refused_env" ]; then
-  _lane_settings_hit="$(_lane_settings_env_hit "$_lane_hooks_refused_env")" \
-    || _lane_launch_die "could not read Claude settings files to check for $_lane_hooks_refused_env -- refusing to launch rather than assuming none are set."
+  _lane_settings_env_allowed="$(registry_lookup AGENT_SETTINGS_ENV_ALLOWED "$_lane_agent")"
+  _lane_settings_hit="$(python3 - "$_lane_settings_env_allowed" \
+      "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" /etc/claude-code/managed-settings.json \
+      -- "$PWD/.claude/settings.json" "$PWD/.claude/settings.local.json" <<'PY'
+import json, sys
+allowed = set(sys.argv[1].split())
+split = sys.argv.index("--")
+tiers = [(p, allowed) for p in sys.argv[2:split]] + [(p, set()) for p in sys.argv[split + 1:]]
+for path, ok in tiers:
+    try:
+        env = json.load(open(path)).get("env")
+    except (OSError, ValueError, AttributeError):
+        continue
+    if env is None:
+        continue
+    if not isinstance(env, dict):
+        print(f"a non-object `env` in {path}")
+        raise SystemExit(0)
+    for name in sorted(set(env) - ok):
+        print(f"{name} in {path}")
+        raise SystemExit(0)
+PY
+)" || _lane_launch_die "could not read Claude settings files to check their \`env\` blocks -- refusing to launch rather than assuming they are clear."
   [ -z "$_lane_settings_hit" ] \
-    || _lane_launch_die "$_lane_settings_hit (settings \`env\` block) disables hooks, so the lane's guards would not load ($_lane_hooks_refused_env are refused, harmonic-forge#1307). Remove it. Nothing was launched."
-  unset _lane_settings_hit
+    || _lane_launch_die "$_lane_settings_hit (settings \`env\` block) is not allowed at a lane: it reaches every hook process, so it could switch the lane's guards off. A project or local block may set no key; a user or managed block only: ${_lane_settings_env_allowed:-none} (harmonic-forge#1307). Remove it. Nothing was launched."
+  unset _lane_settings_hit _lane_settings_env_allowed _lane_hooks_refused_env
 fi
 unset -f _lane_settings_env_hit
-unset _lane_hooks_refused_env
+unset _lane_has_hook_set
 
 # An explicit but EMPTY --model/--effort (`--model=`, or `--model ""`) is
 # treated as not given, by operator ruling 2026-09-15: it is dropped from the

@@ -46,6 +46,8 @@
 #   AGENT_HOOK_SET           the Forge lane hook set file beside the launcher,
 #                            passed through AGENT_POLICY_FLAG; "" loads none
 #   AGENT_HOOKS_REFUSED_ENV  env vars that disable hooks, refusing the launch
+#   AGENT_SETTINGS_ENV_ALLOWED  the only keys a user or managed settings `env`
+#                            block may set at a lane with a hook set
 #
 # Per agent x lane, keyed "<agent>:<lane>":
 #   AGENT_LANE_POLICY        policy filename under tools/lane/policies/, or ""
@@ -176,9 +178,10 @@ declare -A AGENT_LAUNCH_REFUSED_ENV=(
 # missed); each one here was measured with `probe_hook_merge.py --real-run
 # --env NAME=1`, and the names reviewed and left out are classified in the
 # issue's L2D. Re-run that sweep after a CLI update. Checked in the launcher's
-# environment AND in Claude settings `env` blocks, like AGENT_LAUNCH_REFUSED_ENV,
-# but a separate table: that one's refusal says the variable would override the
-# launch model/effort, and these would disable the lane's guards.
+# own environment only, a separate table from AGENT_LAUNCH_REFUSED_ENV: that
+# one's refusal says the variable would override the launch model/effort, and
+# these would disable the lane's guards. Settings `env` blocks are not checked
+# against this list: they are deny-by-default (AGENT_SETTINGS_ENV_ALLOWED).
 #   CLAUDE_CODE_SIMPLE            what `--bare` sets: no hook runs (measured)
 #   CLAUDE_CODE_SAFE_MODE         what `--safe-mode` sets: no hook runs (measured)
 #   CLAUDE_CODE_RESTRICTED        what `--restricted` sets: project and user-level
@@ -188,6 +191,20 @@ declare -A AGENT_LAUNCH_REFUSED_ENV=(
 #                                 user-level hooks do not run (measured)
 declare -A AGENT_HOOKS_REFUSED_ENV=(
   [claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_RESTRICTED CLAUDE_CODE_USE_COWORK_PLUGINS"
+  [codex]=""
+)
+
+# harmonic-forge#1307 (pass 2 rescope): Claude settings `env` blocks are
+# deny-by-default at a lane launch. AGENT_HOOKS_REFUSED_ENV above covers only
+# the launcher's own environment; a name list cannot cover a settings `env`
+# block, which reaches every hook process (a `PATH` there swaps the interpreter
+# every set hook runs under). At an agent with a hook set, project and local
+# `env` blocks may set no key at all, and the user and managed blocks may set
+# only the keys listed here. Seeded by operator ruling 2026-11-11 with exactly
+# the keys in the operator's user settings that day. Adding a key is a review
+# of what it does to hook processes, in its own issue.
+declare -A AGENT_SETTINGS_ENV_ALLOWED=(
+  [claude]="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY CLAUDE_CODE_ENABLE_TODO_TOOLS"
   [codex]=""
 )
 
@@ -407,7 +424,7 @@ _REGISTRY_REQUIRED_ATTRS=(
   AGENT_EFFORT_FLAG AGENT_EFFORT_FLAG_ENV AGENT_EFFORT_FLAG_VALUE
   AGENT_EFFORT_LEVELS AGENT_LAUNCH_REFUSED_ENV
   AGENT_SESSION_FLAGS AGENT_SESSION_DENIED AGENT_QUEUE_SANDBOX AGENT_NONINTERACTIVE_WORDS
-  AGENT_NAME_FLAG AGENT_HOOK_SET AGENT_HOOKS_REFUSED_ENV
+  AGENT_NAME_FLAG AGENT_HOOK_SET AGENT_HOOKS_REFUSED_ENV AGENT_SETTINGS_ENV_ALLOWED
 )
 
 _registry_die() {

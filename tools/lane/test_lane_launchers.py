@@ -1476,14 +1476,26 @@ class LaunchDefaultModelAndEffort(unittest.TestCase):
                             cell["stderr"].startswith(f"lane2: {var} in {path}"),
                             cell["stderr"])
 
-    def test_unrelated_or_empty_settings_env_still_launches(self):
+    def test_allowlisted_user_settings_env_still_launches(self):
+        """harmonic-forge#1307: the user block may carry the allowlisted keys."""
         with _FixtureTree() as tree:
             path = tree.home / ".claude" / "settings.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"env": {"ANTHROPIC_MODEL": "",
+            path.write_text(json.dumps({"env": {"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
                                                 "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}}))
             cell = tree.run("2", [], LANE_CLI="claude")
             self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_an_empty_model_value_in_settings_env_now_refuses(self):
+        """An empty value no longer passes: the block is deny-by-default by
+        key, whatever the value (harmonic-forge#1307 rescope)."""
+        with _FixtureTree() as tree:
+            path = tree.home / ".claude" / "settings.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"env": {"ANTHROPIC_MODEL": ""}}))
+            cell = tree.run("2", [], LANE_CLI="claude")
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"ANTHROPIC_MODEL in {path}", cell["stderr"])
 
     def test_invalid_effort_refuses_to_launch(self):
         """Exact match against ONE level: typos, fragments and runs of valid
@@ -2318,7 +2330,8 @@ class LaneHookSet(unittest.TestCase):
             cell = tree.run("2", [], LANE_CLI="claude")
             self.assertFalse(cell["launched"])
             self.assertIn(f"{name} in {settings}", cell["stderr"])
-            self.assertIn("disables hooks", cell["stderr"])
+            self.assertIn("is not allowed at a lane", cell["stderr"])
+            settings.unlink()
             # Codex has no set, so it does not refuse on these.
             self.assertTrue(tree.run("2", [], LANE_CLI="codex", **{name: "1"})["launched"])
 
@@ -2335,6 +2348,91 @@ class LaneHookSet(unittest.TestCase):
     def test_claude_code_use_cowork_plugins_refuses_from_env_and_from_a_settings_env_block(self):
         """User settings come from cowork_settings.json, so user-level hooks drop."""
         self._refuses_env("CLAUDE_CODE_USE_COWORK_PLUGINS")
+
+    def _settings_env_cell(self, where, env, **run_env):
+        """Launch Lane 2 with one settings file carrying `env`, then remove it."""
+        with _FixtureTree() as tree:
+            path = {
+                "user": tree.home / ".claude" / "settings.json",
+                "project": tree.lane2 / ".claude" / "settings.json",
+                "project-local": tree.lane2 / ".claude" / "settings.local.json",
+            }[where]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            backup = path.read_text() if path.is_file() else None
+            path.write_text(json.dumps({"env": env}))
+            try:
+                return path, tree.run("2", [], LANE_CLI="claude", **run_env)
+            finally:
+                if backup is None:
+                    path.unlink()
+                else:
+                    path.write_text(backup)
+
+    def test_path_in_a_project_settings_env_block_refuses(self):
+        """Pass 2 survivor 2 (K-18): a `PATH` there would swap the interpreter
+        every set hook runs under. No name list holds it; deny-by-default does."""
+        for where in ("project", "project-local"):
+            with self.subTest(where=where):
+                path, cell = self._settings_env_cell(where, {"PATH": "/tmp/fake-bin"})
+                self.assertFalse(cell["launched"])
+                self.assertIn(f"PATH in {path}", cell["stderr"])
+                self.assertIn("is not allowed at a lane", cell["stderr"])
+
+    def test_an_allowlisted_key_in_a_project_settings_env_block_refuses(self):
+        """The allowlist is for the user and managed tiers only."""
+        path, cell = self._settings_env_cell(
+            "project", {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"})
+        self.assertFalse(cell["launched"])
+        self.assertIn(f"CLAUDE_CODE_ENABLE_TODO_TOOLS in {path}", cell["stderr"])
+
+    def test_an_allowlisted_user_settings_env_key_launches(self):
+        for key in ("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "CLAUDE_CODE_ENABLE_TODO_TOOLS"):
+            with self.subTest(key=key):
+                _, cell = self._settings_env_cell("user", {key: "1"})
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+
+    def test_an_unknown_user_settings_env_key_refuses(self):
+        for key in ("PATH", "LD_PRELOAD", "PYTHONPATH", "SOME_FUTURE_KEY"):
+            with self.subTest(key=key):
+                path, cell = self._settings_env_cell("user", {key: "x"})
+                self.assertFalse(cell["launched"])
+                self.assertIn(f"{key} in {path}", cell["stderr"])
+
+    def test_a_non_object_settings_env_refuses(self):
+        path, cell = self._settings_env_cell("project", ["PATH=/tmp"])
+        self.assertFalse(cell["launched"])
+        self.assertIn(f"a non-object `env` in {path}", cell["stderr"])
+
+    def test_the_user_settings_are_read_where_claude_config_dir_points(self):
+        """The check reads the file the CLI reads: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
+        With the directory pinned, that is $HOME/.claude, trailing slash or not."""
+        with _FixtureTree() as tree:
+            path = tree.home / ".claude" / "settings.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"env": {"PATH": "/tmp/fake-bin"}}))
+            cell = tree.run("2", [], LANE_CLI="claude",
+                            CLAUDE_CONFIG_DIR=f"{tree.home}/.claude/")
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"PATH in {tree.home}/.claude//settings.json", cell["stderr"])
+
+    def test_claude_config_dir_elsewhere_refuses(self):
+        """Pass 2 survivor 1 (K-19): a relocated user tier drops every
+        user-level hook, so only $HOME/.claude is accepted."""
+        with _FixtureTree() as tree:
+            other = tree.root / "elsewhere"
+            other.mkdir()
+            cell = tree.run("2", [], LANE_CLI="claude", CLAUDE_CONFIG_DIR=str(other))
+            self.assertFalse(cell["launched"])
+            self.assertTrue(
+                cell["stderr"].startswith(f"lane2: CLAUDE_CONFIG_DIR is set to '{other}'"),
+                cell["stderr"])
+            for ok in (f"{tree.home}/.claude", f"{tree.home}/.claude/"):
+                with self.subTest(ok=ok):
+                    self.assertTrue(tree.run("2", [], LANE_CLI="claude",
+                                             CLAUDE_CONFIG_DIR=ok)["launched"])
+            # Codex reads no Claude settings, so it is not refused.
+            self.assertTrue(tree.run("2", [], LANE_CLI="codex",
+                                     CLAUDE_CONFIG_DIR=str(other))["launched"])
 
     def test_lane3_passes_one_settings_holding_policy_and_set(self):
         """Kill check 5: the Lane 3 policy and the set reach the session as one
@@ -2376,6 +2474,9 @@ class LaneHookSet(unittest.TestCase):
         self.assertIn('declare -A AGENT_HOOK_SET=(\n  [claude]="lane_hooks.json"\n  [codex]=""', source)
         self.assertIn('[claude]="CLAUDE_CODE_SIMPLE CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_RESTRICTED '
                       'CLAUDE_CODE_USE_COWORK_PLUGINS"', source)
+        # Operator ruling 2026-11-11: exactly the keys in the user settings that day.
+        self.assertIn('declare -A AGENT_SETTINGS_ENV_ALLOWED=(\n  [claude]="CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY '
+                      'CLAUDE_CODE_ENABLE_TODO_TOOLS"\n  [codex]=""', source)
 
 
 if __name__ == "__main__":

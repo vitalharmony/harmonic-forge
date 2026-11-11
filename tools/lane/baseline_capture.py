@@ -246,7 +246,9 @@ def capture_cell(
                     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
                     # harmonic-forge#1307: each refuses every Claude launch.
                     "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE",
-                    "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS"):
+                    "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS",
+                    # Pinned to $HOME/.claude, and the capture's HOME differs.
+                    "CLAUDE_CONFIG_DIR"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)

@@ -209,24 +209,26 @@ class VerifyTests(Base):
         got = self.statuses(self.project(self.make_repo("noprotocol"), protocol=None))
         self.assertEqual(got["protocol"], fo.FAIL)
 
-    def test_a_settings_file_with_no_hooks_block_passes(self) -> None:
-        """Inverted by harmonic-forge#1307: the lane hooks come from the Forge
-        set at launch, so a project with no hooks of its own is valid -- the
-        required hooks and wake-up sources are judged over the set plus the
-        project. (Before #1307 this asserted FAIL.)"""
+    def test_a_settings_file_with_no_hooks_block_fails(self) -> None:
+        """AC2 names hooks DRIFT as the expected real-world gap, and the only
+        hooks test exercised the missing-FILE branch. Mutating `if not hooks:`
+        to `if 0:` left the suite green: `hooks=None` then fell through the
+        `isinstance(..., dict)` guard to `ok — 0 event(s)`. Restored by
+        harmonic-forge#1307 pass 2 survivor 3: the Forge set guards lane
+        sessions only, so a non-lane session here would run no hook."""
         repo = self.make_repo("nohooks", hooks=False)
         settings = repo / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"permissions": {}}), encoding="utf-8")
         got = self.statuses(self.project(repo))
-        self.assertEqual(got["hooks"], fo.OK)
+        self.assertEqual(got["hooks"], fo.FAIL)
 
-    def test_an_empty_hooks_block_passes(self) -> None:
+    def test_an_empty_hooks_block_fails(self) -> None:
         repo = self.make_repo("emptyhooks", hooks=False)
         settings = repo / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
-        self.assertEqual(self.statuses(self.project(repo))["hooks"], fo.OK)
+        self.assertEqual(self.statuses(self.project(repo))["hooks"], fo.FAIL)
 
     def test_a_dangling_rules_symlink_fails(self) -> None:
         repo = self.make_repo("dangle")
@@ -653,17 +655,28 @@ class LaneHookSetCheckTests(unittest.TestCase):
                         return event, {"matcher": block.get("matcher"), "hooks": [dict(handler)]}
         raise AssertionError(script)
 
+    #: A project-only hook, so a hooks block is present but carries no set entry.
+    OWN = {"Stop": [{"hooks": [{"type": "command", "command": "true"}]}]}
+
     def test_a_required_hook_in_the_set_satisfies_the_check(self) -> None:
         """A project that has removed `require_ci_plan.py` (class A, in the set)
         is not reported: the set covers it at every lane launch."""
-        check = fo.check_hooks(self._project("noreq", {"hooks": {}}))
+        check = fo.check_hooks(self._project("noreq", {"hooks": self.OWN}))
         self.assertEqual(check.status, fo.OK, check.detail)
         self.assertNotIn("require_ci_plan.py", check.detail)
 
-    def test_a_project_with_no_hooks_of_its_own_passes(self) -> None:
-        check = fo.check_hooks(self._project("bare", {"permissions": {}}))
+    def test_a_project_with_no_hooks_of_its_own_fails(self) -> None:
+        """Pass 2 survivor 3: the set guards lane sessions only."""
+        for settings in ({"permissions": {}}, {"hooks": {}}):
+            with self.subTest(settings=settings):
+                check = fo.check_hooks(self._project(f"bare{len(settings)}{id(settings)}", settings))
+                self.assertEqual(check.status, fo.FAIL)
+                self.assertIn("declares no hooks block", check.detail)
+
+    def test_a_project_hook_counts_as_project_specific(self) -> None:
+        check = fo.check_hooks(self._project("own", {"hooks": self.OWN}))
         self.assertEqual(check.status, fo.OK, check.detail)
-        self.assertIn("52 from the Forge set, 0 project-specific, 0 removable", check.detail)
+        self.assertIn("52 from the Forge set, 1 project-specific, 0 removable", check.detail)
 
     def test_a_byte_identical_class_a_entry_is_counted_removable(self) -> None:
         event, block = self._set_entry("require_ci_plan.py")
@@ -690,7 +703,7 @@ class LaneHookSetCheckTests(unittest.TestCase):
     def test_an_unloadable_set_fails_every_project(self) -> None:
         with mock.patch.object(fo, "LANE_HOOK_SET", self.root / "no-such-set.json"):
             for name in ("a", "b"):
-                check = fo.check_hooks(self._project(name, {"hooks": {}}))
+                check = fo.check_hooks(self._project(name, {"hooks": self.OWN}))
                 self.assertEqual(check.status, fo.FAIL)
                 self.assertIn("lane hook set does not load", check.detail)
 
@@ -727,6 +740,77 @@ class LaneHookSetCheckTests(unittest.TestCase):
                 lane3_begin_task="lane3-begin", lane3_end_task="lane3-end", gate_task="check",
                 runs_lane3=False))
         self.assertEqual(fo.stale_worktree_hook_gaps(project), [lane2.name])
+
+
+class SnapshotFloorTests(unittest.TestCase):
+    """harmonic-forge#1307 pass 2 survivor 3 (AC3): a project whose settings
+    were frozen into a hook snapshot keeps every class-B entry of it, since a
+    non-lane session runs only what its own file wires."""
+
+    FORGE = "vitalharmony/harmonic-forge"
+    FORGE_SETTINGS = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.settings = json.loads(self.FORGE_SETTINGS.read_text(encoding="utf-8"))
+
+    def _check(self, settings: dict, repo: str | None = FORGE) -> fo.Check:
+        checkout = self.root / "forge"
+        (checkout / ".claude").mkdir(parents=True, exist_ok=True)
+        (checkout / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        return fo.check_hooks(mf.Project(name="harmonic-forge", prefix="F",
+                                         path=str(checkout), repo=repo))
+
+    def _without(self, script: str) -> dict:
+        settings = json.loads(json.dumps(self.settings))
+        for event, blocks in settings["hooks"].items():
+            for block in blocks:
+                block["hooks"] = [h for h in block["hooks"] if script not in h.get("command", "")]
+            settings["hooks"][event] = [b for b in blocks if b["hooks"]]
+        return settings
+
+    def test_both_snapshotted_repos_have_a_snapshot(self) -> None:
+        self.assertIsNotNone(fo.frozen_hook_snapshot(self.FORGE))
+        self.assertIsNotNone(fo.frozen_hook_snapshot("vitalharmony/hrse"))
+        self.assertIsNone(fo.frozen_hook_snapshot("vitalharmony/cymagraph-infra"))
+
+    def test_forge_settings_as_committed_meet_the_floor(self) -> None:
+        check = self._check(self.settings)
+        self.assertEqual(check.status, fo.OK, check.detail)
+
+    def test_deleting_batch_gate_from_forge_settings_fails(self) -> None:
+        """K-20: `batch_gate.py` acts without LANE (class B)."""
+        check = self._check(self._without("batch_gate.py"))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("batch_gate.py", check.detail)
+        self.assertIn("non-lane session", check.detail)
+
+    def test_deleting_a_lane_only_entry_does_not_fail(self) -> None:
+        """Class A: the set covers `require_ci_plan.py` in every lane session."""
+        check = self._check(self._without("require_ci_plan.py"))
+        self.assertNotIn("non-lane session", check.detail)
+
+    def test_a_shortened_class_b_timeout_fails(self) -> None:
+        settings = json.loads(json.dumps(self.settings))
+        for block in settings["hooks"]["Stop"]:
+            for handler in block["hooks"]:
+                if "block_batch_stop.py" in handler["command"]:
+                    handler["timeout"] = 1
+        check = self._check(settings)
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("block_batch_stop.py", check.detail)
+
+    def test_a_project_without_a_snapshot_has_no_floor(self) -> None:
+        check = self._check(self._without("batch_gate.py"), repo="example/none")
+        self.assertNotIn("non-lane session", check.detail)
+
+    def test_the_forge_snapshot_names_its_source(self) -> None:
+        snapshot = fo.frozen_hook_snapshot(self.FORGE)
+        self.assertEqual(snapshot["source"]["path"], ".claude/settings.json")
+        self.assertEqual(len(snapshot["entries"]), 51)
+        self.assertEqual(len(snapshot["project_specific"]), 7)
 
 
 class SessionStartMatcherSemanticsTests(unittest.TestCase):
