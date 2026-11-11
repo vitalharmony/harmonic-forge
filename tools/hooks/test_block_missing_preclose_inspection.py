@@ -742,6 +742,26 @@ class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
             self.assertTrue(text.startswith(route), text[:80])
             self.assertIn(self.BLOCK, text[len(route):])
 
+    def test_open_cluster_at_the_reforge_cap_never_offers_reforge(self):
+        """harmonic-forge#1330 post-verdict check: an open cluster in epoch 2
+        routes to sticky-wicket without offering the --force --reforge the
+        cap would refuse, in refusal() and in the hook deny."""
+        import preclose_passes
+        self._write_history(1476, [{"sha": "deadbeef", "epoch": 2, "surviving": 2,
+                                    "hostile_blocking": []}])
+        path = self.preclose_check.receipt_path(REPO, 1476)
+        data = json.loads(path.read_text())
+        data["mechanism_cluster"] = {"pass_sha": "deadbeef", "epoch": 2,
+                                     "mechanisms": ["re-parsing shell text"],
+                                     "verdict": None, "comment_url": None}
+        path.write_text(json.dumps(data))
+        receipt = self._receipt_now()
+        refused = preclose_passes.refusal(receipt, "cccc", repo=REPO, issue=1476)
+        for text in [refused, *self._texts("cccc")]:
+            self.assertIn("sticky-wicket", text)
+            self.assertIn(preclose_passes.CLUSTER_ROUTE_REFORGE_AT_CAP, text)
+            self.assertNotIn(preclose_passes.CLUSTER_ROUTE_REFORGE, text)
+
     def test_deny_text_the_pass_cap_leads_the_block(self):
         """(c) Pass cap plus block: the cap text first, then the block."""
         self._write_history(1476, [

@@ -93,6 +93,13 @@ CLUSTER_ROUTE = (
     "PATCH --comment-url <url> (or REFORGE, which proceeds only with the operator's "
     "--force --reforge). The operator may bypass an unresolved cluster with --force."
 )
+#: harmonic-forge#1330 post-verdict check: the reforge clause CLUSTER_ROUTE carries,
+#: and what replaces it once two reforge epochs are complete. cluster_message swaps
+#: one for the other, so the route never offers a reforge the cap would refuse.
+CLUSTER_ROUTE_REFORGE = ("(or REFORGE, which proceeds only with the operator's "
+                         "--force --reforge)")
+CLUSTER_ROUTE_REFORGE_AT_CAP = ("(two reforge epochs are complete, so a REFORGE verdict "
+                                "goes to the operator as a re-scope decision)")
 
 
 def normalize_mechanism(mechanism: str) -> str:
@@ -628,7 +635,10 @@ def cluster_message(receipt: dict | None, repo: str, issue: int | str) -> str | 
             return REFORGE_CAP
         return (f"Sticky-wicket ruled REFORGE for the pass 1 mechanism cluster ({mechanisms}). "
                 "Only the operator's --force --reforge starts the new epoch.")
-    return CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)
+    route = CLUSTER_ROUTE.format(mechanisms=mechanisms, repo=repo, issue=issue)
+    if reforge_capped(receipt):
+        route = route.replace(CLUSTER_ROUTE_REFORGE, CLUSTER_ROUTE_REFORGE_AT_CAP)
+    return route
 
 
 # harmonic-forge#838 AC5: after a sticky-wicket PATCH verdict, one cross-family
