@@ -3256,21 +3256,23 @@ def _post_kind(
         # landing between this read and the post is the same gap every pre-post
         # gate here has; no lock is taken.
         validate_sticky_wicket(repo, issue, kind=kind, sha=sha)
-    url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
-    if attempt is not None:
-        attempt["posted"] = True
     if kind == "rework" and rework_kind == "correction":
         # harmonic-forge#1318: a correction rework raises the issue's route
-        # floor to deep, so Lane 2 works the fix on the high-tier model. Directly
-        # after the comment lands, ahead of the receipt and every later step
-        # that can exit; a refused or failed post records nothing. A read-back
-        # failure inside comment_body exits before this line, and its message
-        # sends the operator to the thread. A store error or an issue with no
-        # route is printed and never raised.
+        # floor to deep, so Lane 2 works the fix on the high-tier model.
+        # Sticky-wicket PATCH (comment 6779901272): written after every
+        # pre-post refusal and before the POST, because a local write cannot
+        # be atomic with a GitHub POST, and any placement after it leaves a
+        # step that can exit between the two. A refused post records nothing
+        # (AC3, narrowed by the operator); a POST that then fails leaves a
+        # floor, which only makes the gate stricter. A store error or an
+        # issue with no route is printed and never raised.
         try:
             route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
         except Exception as exc:
             print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
+    url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
+    if attempt is not None:
+        attempt["posted"] = True
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
                    **({"rework_kind": rework_kind} if kind == "rework" else {}),  # harmonic-forge#1247

@@ -312,14 +312,22 @@ class CorrectionRework(TempStore):
         self._rework(kind="rebase")
         self.assertEqual(len(route_store.load(KEY)), 1)
 
-    def test_a_failed_post_records_nothing(self):
-        """AC3."""
+    def test_a_refused_post_records_nothing(self):
+        """AC3, narrowed by the operator: a refused post records nothing."""
+        with patch.object(post, "validate_sticky_wicket", side_effect=SystemExit("refused")):
+            with self.assertRaises(SystemExit):
+                self._rework()
+        self.assertEqual(len(route_store.load(KEY)), 1)
+
+    def test_a_post_whose_read_back_fails_keeps_its_floor(self):
+        """harmonic-forge#1318 pass 2 survivor: the floor is written before the POST,
+        so a POST that lands and whose read-back then fails still has its floor."""
         def comment(*_):
-            raise SystemExit("post failed")
+            raise SystemExit("posted comment did not match the attested body")
 
         with self.assertRaises(SystemExit):
             self._rework(comment=comment)
-        self.assertEqual(len(route_store.load(KEY)), 1)
+        self.assertEqual(route_store.current(KEY)["attrs"]["floor_gate"], "correction-rework")
 
     def test_a_landed_rework_keeps_its_floor_when_a_later_step_fails(self):
         """harmonic-forge#1318 pass 1: the floor is written before the receipt."""
