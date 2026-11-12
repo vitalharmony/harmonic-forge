@@ -77,6 +77,11 @@ class DeferCase(unittest.TestCase):
                          afk_defer.DENY_MESSAGE)
         self.assertEqual([e["command"] for e in self.lines()], ["gh issue close 5 -R o/r"])
 
+    def test_deny_text_says_whole_command_not_run(self):
+        self.assertEqual(afk_defer.DENY_MESSAGE,
+                         "afk: not run; the whole command is queued for the operator's return "
+                         "(batch_auth would ask); continue with other work.")
+
 
 if __name__ == "__main__":
     unittest.main()

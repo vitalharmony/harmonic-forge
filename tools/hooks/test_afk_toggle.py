@@ -30,7 +30,7 @@ class ToggleCase(unittest.TestCase):
 
     def queue(self, cwd, command):
         afk_toggle.append_queue({"cwd": str(cwd), "workspace": afk_toggle.workspace_of(str(cwd)),
-                                 "command": command})
+                                 "command": command, "ts": "2026-11-12T00:00:00Z"})
 
     def test_on_status_off(self):
         self.assertIn("ON", self.typed("/afk on"))
@@ -67,10 +67,56 @@ class ToggleCase(unittest.TestCase):
         self.queue(self.ws_b, "gh issue close 2")
         self.queue(self.ws_a, "gh issue close 3")
         message = self.typed("/afk off", cwd=self.ws_a)
-        for cwd, n in ((self.ws_a, 1), (self.ws_b, 2), (self.ws_a, 3)):
-            self.assertIn(f"cd {cwd} && gh issue close {n}", message)
-        self.assertEqual(message.count("```"), 2)
+        for i, (cwd, n) in enumerate(((self.ws_a, 1), (self.ws_b, 2), (self.ws_a, 3)), 1):
+            self.assertIn(f"{i}. time: 2026-11-12T00:00:00Z; cwd: {json.dumps(str(cwd))}; "
+                          f"command: {json.dumps(f'gh issue close {n}')}", message)
+        self.assertNotIn("```", message)
+        self.assertNotIn("cd ", message)
+        self.assertIn(str(self.archives()[0]), message)
+        self.assertTrue(message.endswith(afk_toggle.RERUN_SENTENCE))
+        self.assertIn("Ask the session to re-run any of these; do not paste them into a "
+                      "terminal (hooks would not run).", message)
         self.assertFalse(afk_toggle.queue_path().exists())
+
+    def test_hostile_command_listed_intact_as_json(self):
+        self.typed("/afk on")
+        command = 'gh issue close 7 --comment "done `rm -rf ~`"\necho \'x\''
+        self.queue(self.ws_a, command)
+        message = self.typed("/afk off")
+        self.assertIn(f"command: {json.dumps(command)}", message)
+        self.assertNotIn(command, message)
+        self.assertNotIn("cd ", message)
+        self.assertNotIn("```", message)
+        self.assertTrue(message.endswith(afk_toggle.RERUN_SENTENCE))
+
+    def test_append_blocked_on_off_lock_writes_nothing(self):
+        """The append passed its outer is_on() check, then blocks on the lock
+        `_off` holds; it must see afk off, write nothing, and so the caller
+        never denies: the command is never lost."""
+        self.typed("/afk on")
+        self.queue(self.ws_a, "gh issue close 1")
+        self.assertTrue(afk_toggle.is_on())  # the outer check the append passed
+        real_unlink = Path.unlink
+        worker, results = [], []
+
+        def racing_unlink(path, *a, **kw):
+            if path == afk_toggle.state_path() and not worker:
+                t = threading.Thread(target=lambda: results.append(afk_toggle.append_queue(
+                    {"cwd": str(self.ws_b), "command": "gh issue close 9"})))
+                t.start()
+                worker.append(t)
+                time.sleep(0.3)
+            return real_unlink(path, *a, **kw)
+
+        with mock.patch.object(Path, "unlink", racing_unlink):
+            message = self.typed("/afk off")
+        worker[0].join(5)
+        self.assertEqual(results, [False])  # wrote nothing
+        self.assertNotIn("gh issue close 9", message)
+        self.assertFalse(afk_toggle.queue_path().exists())
+        archived = "".join(a.read_text() for a in self.archives())
+        self.assertNotIn("gh issue close 9", archived)
+        # Never lost: False means afk_defer returns no deny, so batch_auth asks.
 
     def test_second_off_prints_nothing(self):
         self.typed("/afk on")

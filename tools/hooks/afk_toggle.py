@@ -11,8 +11,8 @@ inside a longer prompt, from a tool result or from a file changes nothing.
 - `off` is honored from anywhere, first: turning afk off is always safe. It
   unlinks `~/.claude/state/afk/state.json` and, in the same lock every
   queue append takes, renames `queue.jsonl` to `drained-<UTC ts>.jsonl`.
-  It then prints every line from every workspace, exactly once, as one
-  fenced block of `cd <cwd> && <command>` lines. If the archive cannot be
+  It then lists every line from every workspace, exactly once, as data
+  (time, original cwd, JSON-escaped command), never as runnable shell. If the archive cannot be
   read it says afk is off and names the archive path. It says "STILL ON"
   if the unlink fails.
 - `on` and `status` also need an interactive entrypoint (`_interactive`, as
@@ -41,6 +41,8 @@ sys.path.insert(0, str(HERE))
 
 STATE_RELDIR = Path(".claude") / "state" / "afk"
 MAX_PROMPT = 16
+RERUN_SENTENCE = ("Ask the session to re-run any of these; do not paste them into a "
+                  "terminal (hooks would not run).")
 _COMMAND = re.compile(r"/afk(?:[ \t]+(on|off|status))?")
 _MENTION = re.compile(r"^\s*/afk\b", re.I)
 
@@ -173,18 +175,21 @@ def _off(payload: dict) -> str:
                 entry = json.loads(line)
             except ValueError:
                 entry = None
+            n = len(entries) + 1
             if isinstance(entry, dict):
-                entries.append(f"cd {entry.get('cwd')} && {entry.get('command')}")
+                entries.append(f"{n}. time: {entry.get('ts') or 'unknown'}; "
+                               f"cwd: {json.dumps(entry.get('cwd'))}; "
+                               f"command: {json.dumps(entry.get('command'))}")
             else:
-                entries.append(f"# unparseable queue line: {line}")
+                entries.append(f"{n}. unparseable queue line: {json.dumps(line)}")
     except Exception as exc:  # noqa: BLE001
         return (f"afk is OFF; queue archived to {archive}, could not be read "
                 f"({type(exc).__name__}: {exc}).")
     if not entries:
         return f"{head} Nothing was queued (empty archive {archive})."
-    block = "\n".join(entries)
+    listing = "\n".join(entries)
     return (f"{head} {len(entries)} queued command(s), every workspace "
-            f"(archived to {archive}):\n```\n{block}\n```")
+            f"(archived to {archive}):\n{listing}\n{RERUN_SENTENCE}")
 
 
 def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> str | None:
@@ -214,7 +219,7 @@ def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> s
     with Locked():
         _atomic_write(state_path(), json.dumps({"on": True, "since": since}, sort_keys=True) + "\n")
     return (f"afk is ON since {since}: commands batch_auth would ask about are denied and queued; "
-            "`/afk off` prints the queue.")
+            "`/afk off` lists the queue.")
 
 
 def main() -> int:

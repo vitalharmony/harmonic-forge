@@ -17,7 +17,7 @@ The whole prompt, nothing else on the line:
 | Prompt | Effect |
 |---|---|
 | `/afk on` | Typed in Claude Code (Codex has no `/afk` hook). Turns afk on (interactive session, any lane or none): writes `~/.claude/state/afk/state.json`. |
-| `/afk off` | Turns it off, from any session, and prints every queued command from every workspace, exactly once, as one ready-to-run block, and moves the queue to a `drained-<UTC ts>.jsonl` archive. Says **STILL ON** if the state cannot be removed. |
+| `/afk off` | Turns it off, from any session, and lists every queued command from every workspace, exactly once, as data (time, cwd, JSON-escaped command) for the session to re-run, never as runnable shell, and moves the queue to a `drained-<UTC ts>.jsonl` archive. Says **STILL ON** if the state cannot be removed. |
 | `/afk status` or `/afk` | Reports the state; writes nothing. |
 
 Anything else (prose around the command, tool output, a file) changes nothing.

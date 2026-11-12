@@ -27,7 +27,8 @@ sys.path.insert(0, str(HERE))
 
 import afk_toggle  # noqa: E402
 
-DENY_MESSAGE = ("afk: queued for the operator's return (batch_auth would ask); "
+DENY_MESSAGE = ("afk: not run; the whole command is queued for the operator's return "
+                "(batch_auth would ask); "
                 "continue with other work.")
 
 
