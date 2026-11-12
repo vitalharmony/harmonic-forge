@@ -31,6 +31,18 @@ class SkillText(unittest.TestCase):
             self.assertIn("ntfy.py push", text)
             self.assertRegex(text, r"(?s)Tier P spec .*never an auto-AE")
         self.assertRegex(belt, r"(?s)Tier P spec .*never an auto-AE")
+        self.assertIn("Every lane reads this section while afk is on.", belt)
+        self.assertIn('"Do not invoke" above refers only to the Skill tool, which toggles nothing',
+                      belt)
+
+    def test_codex_wires_no_afk_toggle(self):
+        import json
+        codex = json.loads((ROOT / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        text = json.dumps(codex)
+        self.assertNotIn("afk_toggle.py", text)
+        self.assertIn("afk_defer.py", text)
+        afk = (ROOT / "skills" / "afk" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Typed in Claude Code", afk)
 
 
 if __name__ == "__main__":

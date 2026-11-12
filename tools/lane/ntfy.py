@@ -55,7 +55,9 @@ def notify(summary: str, topic_file: str | None, title: str = "orphan-reap",
     try:
         topic = Path(topic_file).read_text().strip()
         if topic:
-            post(topic, summary, title, transport)
+            status = post(topic, summary, title, transport)
+            if not 200 <= status < 300:
+                print(f"{label}ntfy not sent: HTTP {status}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a missed alert never fails the run
         print(f"{label}ntfy not sent: {type(exc).__name__}", file=sys.stderr)
 

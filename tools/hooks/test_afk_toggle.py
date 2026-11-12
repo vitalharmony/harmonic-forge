@@ -73,6 +73,7 @@ class ToggleCase(unittest.TestCase):
         self.assertNotIn("gh issue close", self.typed("/afk off", cwd=self.ws_a))
 
     def test_append_during_drain_is_kept(self):
+        self.typed("/afk on")
         self.queue(self.ws_a, "gh issue close 1")
         real_read = afk_toggle._read_queue
         worker = []
@@ -91,6 +92,30 @@ class ToggleCase(unittest.TestCase):
         self.assertEqual([e["command"] for e in drained], ["gh issue close 1"])
         left = [json.loads(l)["command"] for l in afk_toggle.queue_path().read_text().splitlines()]
         self.assertEqual(left, ["gh issue close 9"])
+
+    def test_append_writes_nothing_once_off(self):
+        self.assertFalse(afk_toggle.append_queue({"command": "gh issue close 1"}))
+        self.assertFalse(afk_toggle.queue_path().exists())
+
+    def test_off_lists_other_workspaces_without_draining_them(self):
+        self.typed("/afk on")
+        self.queue(self.ws_a, "gh issue close 1")
+        self.queue(self.ws_b, "gh issue close 2")
+        self.queue(self.ws_b, "gh issue close 3")
+        message = self.typed("/afk off", cwd=self.ws_a)
+        ws_b = afk_toggle.workspace_of(str(self.ws_b))
+        self.assertIn(f"- {ws_b}: 2", message)
+        self.assertNotIn("gh issue close 2", message)
+        left = [json.loads(l)["command"] for l in afk_toggle.queue_path().read_text().splitlines()]
+        self.assertEqual(left, ["gh issue close 2", "gh issue close 3"])
+
+    def test_drained_lines_are_kept_in_drained_jsonl(self):
+        self.typed("/afk on")
+        self.queue(self.ws_a, "gh issue close 1")
+        self.queue(self.ws_b, "gh issue close 2")
+        self.typed("/afk off", cwd=self.ws_a)
+        kept = [json.loads(l)["command"] for l in afk_toggle.drained_path().read_text().splitlines()]
+        self.assertEqual(kept, ["gh issue close 1"])
 
 
 if __name__ == "__main__":

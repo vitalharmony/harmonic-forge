@@ -58,6 +58,25 @@ class DeferCase(unittest.TestCase):
             self.assertIsNone(afk_defer.defer(_bash(command, self.home)), command)
         self.assertEqual(self.lines(), [])
 
+    def test_off_between_check_and_append_allows(self):
+        self.on()
+        real = afk_toggle.append_queue
+
+        def off_first(entry):
+            afk_toggle.toggle({"prompt": "/afk off", "cwd": str(self.home)}, "cli")
+            return real(entry)
+
+        with mock.patch.object(afk_toggle, "append_queue", off_first):
+            self.assertIsNone(afk_defer.defer(_bash("gh issue close 5", self.home)))
+        self.assertEqual(self.lines(), [])
+
+    def test_parse_failure_ask_stays_with_batch_auth(self):
+        self.on()
+        self.assertIsNone(afk_defer.defer(_bash("echo $'it\\'s ok'", self.home)))
+        self.assertEqual(afk_defer.defer(_bash("gh issue close 5 -R o/r", self.home)),
+                         afk_defer.DENY_MESSAGE)
+        self.assertEqual([e["command"] for e in self.lines()], ["gh issue close 5 -R o/r"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,9 +45,18 @@ def defer(payload: dict, now: float | None = None) -> str | None:
     result = batch_auth.decide(command)
     if not result or result[0] != "ask":
         return None
+    # Only an ask on a segment batch_auth classifies is deferred; a
+    # parse-failure ask stays with batch_auth (its prompt, not a deny).
+    try:
+        segments = batch_auth.command_segments(command)
+    except ValueError:
+        return None
+    if not any(batch_auth._protected_graphql(t) or batch_auth.classify_issue_close(t) is not None
+               or batch_auth.classify_pr_merge(t) is not None for t in segments):
+        return None
     now = time.time() if now is None else now
     cwd = payload.get("cwd") or os.getcwd()
-    afk_toggle.append_queue({
+    queued = afk_toggle.append_queue({
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "session": payload.get("session_id"),
         "lane": os.environ.get("LANE"),
@@ -56,7 +65,8 @@ def defer(payload: dict, now: float | None = None) -> str | None:
         "command": command,
         "reason_head": (str(result[1]).strip().splitlines() or [""])[0][:200],
     })
-    return DENY_MESSAGE
+    # `off` landed between the outer check and the lock: allow (silence).
+    return DENY_MESSAGE if queued else None
 
 
 def main() -> int:

@@ -53,6 +53,15 @@ class PushCase(unittest.TestCase):
         topic = self.home / ntfy.REMINDER_TOPIC_RELPATH
         ntfy.notify("x", str(topic), "t", transport=boom)  # no raise
 
+    def test_notify_reports_non_2xx_without_topic(self):
+        import contextlib, io
+        topic = self.home / ntfy.REMINDER_TOPIC_RELPATH
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            ntfy.notify("x", str(topic), "t", transport=self.transport(500), label="orphan_reap: ")
+        self.assertIn("orphan_reap: ntfy not sent: HTTP 500", err.getvalue())
+        self.assertNotIn("secret-topic", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
