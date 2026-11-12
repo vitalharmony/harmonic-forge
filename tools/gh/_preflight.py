@@ -75,6 +75,7 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 | `lanes-claude` | launch | shared-state | precheck: `--dry-run` |
 | `lanes_reap.py` | reap-belt-locks DIR | shared-state | gap: removes stale belt locks |
 | `lanes_reap.py` | reap-worktree-servers | shared-state | gap: stops orphaned worktree dev servers |
+| `ntfy.py` | push --key --text | external-publish | gap: no hook or grant: any session can push to the operator's phone, bounded only by the per-key hourly limit |
 | `git push` | outside command | external-publish | guard (hook): block_unchecked_push.py:118 (check_receipt.push_refusal), and check_receipt.py verify at pre-push (:203) |
 | `gh pr merge` | outside command | irreversible | guard (hook): batch_gate.py:50 (batch_auth.decide: allow on a live BATCH grant, else ask) |
 | `gh issue close` | outside command | external-publish | guard (hook): batch_gate.py:50 (batch_auth.decide asks on every close, batch_auth.py:1344-1353) |
