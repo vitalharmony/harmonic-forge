@@ -59,6 +59,10 @@
           },
           {
             "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_defer.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
+          },
+          {
+            "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
             "timeout": 25,
             "statusMessage": "Checking the merge route (harmonic-forge#1243)"
@@ -83,6 +87,16 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
           }
         ]
       }
