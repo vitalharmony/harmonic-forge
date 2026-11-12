@@ -719,6 +719,15 @@ class DecideCiGuardTests(StateFixture):
             with self.subTest(cmd=cmd):
                 self.assertEqual(ba.decide(cmd, state_path=self.state_path)[0], "allow")
 
+    def test_leading_short_repo_flag_asks_with_canonical_form(self):
+        """harmonic-forge#1339 ruling 2026-11-12: with a live grant and green CI,
+        a leading `-R` is not the one bound form, so the merge asks and names it."""
+        self._grant()
+        result = ba.decide(f"gh -R vitalharmony/hrse pr merge 1202 --match-head-commit {JUDGED}",
+                           state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+        self.assertIn(ba.CANONICAL_MERGE, result[1])
+
     def test_only_the_canonical_form_binds(self):
         """F1178, operator ruling 2026-10-26 (option a): the hook never models
         gh's flag grammar; anything outside the one closed form asks. Each case
@@ -2536,6 +2545,27 @@ class RepoFlagAnywhereTests(unittest.TestCase):
                     "gh issue close 5 -R=vitalharmony/hrse"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
+
+    def test_named_repo_reads_every_spelling_for_advisory_consumers(self):
+        """harmonic-forge#1339 ruling 2026-11-12: `_named_repo` is advisory."""
+        cases = (("gh issue close 5 --repo o/r --comment x", "o/r"),
+                 ("gh pr merge 7 --repo o/r --squash --subject s", "o/r"),
+                 ("gh pr merge 7 --body -Rx --repo o/r", "o/r"),
+                 ("gh -Ro/r issue close 5 --repo=o/r", "o/r"),
+                 ("gh -R a/b issue close 5 --repo c/d", ba.AMBIGUOUS),
+                 ("gh issue close 5 --comment x", None))
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba._named_repo(cmd.split()[1:]), want)
+
+    def test_closed_keys_retires_a_close_carrying_comment_or_reason(self):
+        runner = lambda *a, **k: self.fail("cwd must not be read")  # noqa: E731
+        for tail in ("--comment x", "--reason completed"):
+            with self.subTest(tail=tail):
+                self.assertEqual(
+                    ba.closed_keys(f"gh issue close 5 --repo vitalharmony/hrse {tail}",
+                                   cwd="/tmp", runner=runner),
+                    [("H5", "vitalharmony/hrse", 5)])
 
     def test_canonical_merge_still_resolves_repo(self):
         cmd = "gh pr merge 7 --repo o/r --squash --delete-branch --match-head-commit " + "a" * 40

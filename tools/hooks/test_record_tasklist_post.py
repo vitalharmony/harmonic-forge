@@ -78,6 +78,19 @@ class Events(unittest.TestCase):
         found = hook.events(bash(command, "https://github.com/vitalharmony/harmonic-forge/pull/1128\n"))
         self.assertEqual(found, [("F1115", "pr")])
 
+    def test_close_with_comment_records_under_the_named_repo(self):
+        """harmonic-forge#1339 ruling 2026-11-12: never the cwd repo."""
+        with mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")):
+            found = hook.events(bash("gh issue close 5 --repo vitalharmony/harmonic-forge "
+                                     "--comment x"))
+        self.assertEqual(found, [("F5", "close")])
+
+    def test_differing_repo_flags_record_nothing(self):
+        with mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")):
+            found = hook.events(bash("gh -R vitalharmony/hrse issue close 5 "
+                                     "--repo vitalharmony/harmonic-forge"))
+        self.assertEqual(found, [])
+
     def test_other_commands_record_nothing(self):
         self.assertEqual(hook.events(bash("git status && gh issue view 12")), [])
 

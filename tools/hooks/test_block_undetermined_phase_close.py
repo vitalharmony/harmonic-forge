@@ -56,16 +56,33 @@ class ParseTests(unittest.TestCase):
             (REPO, "191"))
 
     def test_issue_close_repo_equals(self) -> None:
-        # harmonic-forge#1339 reforge: an `=` repo form is not bound, and is
-        # never resolved from the cwd checkout instead.
-        self.assertIsNone(
+        # harmonic-forge#1339 ruling 2026-11-12: advisory reads every repo-flag
+        # spelling the command names, `=` form included.
+        self.assertEqual(
             hook.classify_issue_close_target(["gh", "issue", "close", "191",
-                                               f"--repo={REPO}"]))
+                                               f"--repo={REPO}"]),
+            (REPO, "191"))
 
-    def test_unbound_repo_flag_never_falls_back_to_cwd(self) -> None:
-        self.assertIsNone(
+    def test_close_with_comment_is_checked_against_the_named_repo(self) -> None:
+        self.assertEqual(
             hook.classify_issue_close_target(["gh", "issue", "close", "5", "--repo",
-                                               REPO, "--comment", "x"]))
+                                               "o/r", "--comment", "x"]),
+            ("o/r", "5"))
+
+    def test_merge_with_extra_flags_reads_the_named_repo(self) -> None:
+        self.assertEqual(
+            hook.classify_pr_merge_target("gh pr merge 7 --repo o/r --squash --subject s".split()),
+            ("o/r", "7"))
+
+    def test_repo_inside_another_flags_value_is_skipped(self) -> None:
+        self.assertEqual(
+            hook.classify_pr_merge_target("gh pr merge 7 --body -Rx --repo o/r".split()),
+            ("o/r", "7"))
+
+    def test_differing_repo_flags_are_ambiguous(self) -> None:
+        import batch_auth  # noqa: PLC0415
+        target = hook.classify_issue_close_target("gh -R a/b issue close 5 --repo c/d".split())
+        self.assertIs(target[0], batch_auth.AMBIGUOUS)
 
     def test_issue_close_url_form(self) -> None:
         self.assertEqual(
@@ -208,6 +225,40 @@ class DecisionTests(unittest.TestCase):
     def test_pr_merge_via_keyword_denies(self) -> None:
         cmd = f"gh pr merge 1813 --repo {REPO} --squash"
         self.assertTrue(denied(self._decide(cmd, labels={"phase"})))
+
+    def test_close_with_comment_is_phase_checked_against_named_repo(self) -> None:
+        with mock.patch.object(hook, "resolve_repo", side_effect=lambda r, c: r) as resolve, \
+             mock.patch.object(hook, "labels_for", return_value={"phase"}) as labels, \
+             mock.patch.object(hook, "_latest_label_event_time", return_value=None), \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash("gh issue close 5 --repo o/r --comment x")), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        resolve.assert_called_with("o/r", None)
+        self.assertEqual(labels.call_args[0][:2], ("o/r", "5"))
+        self.assertTrue(denied(json.loads(printed.call_args[0][0])))
+
+    def test_merge_with_extra_flags_reads_named_repos_pr(self) -> None:
+        with mock.patch.object(hook, "resolve_repo", side_effect=lambda r, c: r), \
+             mock.patch.object(hook, "issues_closed_by_pr", return_value=set()) as pr_read, \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(
+                 "gh pr merge 7 --repo o/r --squash --subject s")), \
+             mock.patch("builtins.print"):
+            hook.main()
+        self.assertEqual(pr_read.call_args[0][:2], ("o/r", "7"))
+
+    def test_differing_repo_flags_deny_and_never_read_cwd(self) -> None:
+        with mock.patch.object(hook, "resolve_repo") as resolve, \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash("gh -R a/b issue close 5 --repo c/d")), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        resolve.assert_not_called()
+        payload = json.loads(printed.call_args[0][0])
+        self.assertTrue(denied(payload))
+        self.assertIn("more than one repository",
+                      payload["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_pr_merge_no_keyword_target_allows(self) -> None:
         cmd = f"gh pr merge 1813 --repo {REPO} --squash"

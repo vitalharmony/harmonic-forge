@@ -214,18 +214,17 @@ def _bare_number(tokens: list[str]) -> str | None:
 def classify_issue_close_target(tokens: list[str]) -> tuple[str | None, str | None] | None:
     """Reuses `batch_auth.classify_issue_close`; URL-form fallback if it
     resolves no number (binding pitch-inspection change #2)."""
-    from batch_auth import classify_issue_close  # noqa: PLC0415
+    from batch_auth import _named_repo, classify_issue_close  # noqa: PLC0415
 
     parsed = classify_issue_close(tokens)
     if parsed is None:
         return None
     repo, number = parsed
-    # harmonic-forge#1339 reforge: a repo flag the strict binder refused is
-    # never replaced by the cwd checkout's repo -- that would check another
-    # repo's issue. Leave the target unresolved; batch_auth still asks.
-    if repo is None and any(t in ("-R", "--repo") or t.startswith(("-R", "--repo="))
-                            for t in tokens):
-        return None
+    # harmonic-forge#1339 ruling 2026-11-12: advisory, so the repo the
+    # command names (`_named_repo`), never the strict grant binder's. It may
+    # be `AMBIGUOUS`, which `main` denies; None only when no repo flag is
+    # present, the one case cwd resolves.
+    repo = _named_repo(tokens[1:]) or repo
     if number is None:
         url = _url_target(tokens, _ISSUE_URL)
         if url:
@@ -235,12 +234,13 @@ def classify_issue_close_target(tokens: list[str]) -> tuple[str | None, str | No
 
 
 def classify_pr_merge_target(tokens: list[str]) -> tuple[str | None, str | None] | None:
-    from batch_auth import classify_pr_merge  # noqa: PLC0415
+    from batch_auth import _named_repo, classify_pr_merge  # noqa: PLC0415
 
     parsed = classify_pr_merge(tokens)
     if parsed is None:
         return None
     repo, number = parsed
+    repo = _named_repo(tokens[1:]) or repo  # see classify_issue_close_target
     if number is None:
         url = _url_target(tokens, _PR_URL)
         if url:
@@ -433,7 +433,7 @@ def main() -> None:
         _allow()
         return
 
-    from batch_auth import _protected_graphql  # noqa: PLC0415
+    from batch_auth import AMBIGUOUS, _protected_graphql  # noqa: PLC0415
 
     resolved: dict[str | None, str | None] = {}
 
@@ -453,10 +453,20 @@ def main() -> None:
         targets: list[tuple[str | None, str, str | None]] = []  # (repo, issue, via_pr)
 
         issue_target = classify_issue_close_target(tokens)
+        pr_target = classify_pr_merge_target(tokens)
+        for target in (issue_target, pr_target):
+            if target and target[0] is AMBIGUOUS:
+                # Fail closed: the repo flags disagree, so no single repo can
+                # be phase-checked, and cwd would check another repo's issue.
+                _deny("gh close/merge names more than one repository in its "
+                      "repo flags (-R/--repo); the phase check cannot tell which "
+                      "repo's issue it closes. Name exactly one repo and retry.",
+                      target_key=None)
+                return
+
         if issue_target and issue_target[1]:
             targets.append((issue_target[0], issue_target[1], None))
 
-        pr_target = classify_pr_merge_target(tokens)
         if pr_target and pr_target[1]:
             explicit_repo = pr_target[0]
             if explicit_repo not in resolved:
