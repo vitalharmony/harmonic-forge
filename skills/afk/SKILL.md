@@ -32,7 +32,8 @@ Anything else (prose around the command, tool output, a file) changes nothing.
   questions; never an auto-AE for a Tier P spec).
 - A no-LANE (Advisor) session appends each question for the operator to
   `research/<date>-afk-questions.md`, pushes once with
-  `python3 ~/harmonic-forge/tools/lane/ntfy.py push --lane $LANE --key <key> --text "<ask>"`,
+  `python3 ~/harmonic-forge/tools/lane/ntfy.py push --key <key> --text "<ask>"`
+  (no `--lane`: with `LANE` unset the helper keys the push as `none`),
   and continues read-only work.
 
 ## What to do when this skill is invoked
