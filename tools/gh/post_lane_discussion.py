@@ -50,8 +50,118 @@ import check_lane3_ready
 
 # harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
 # poster checks with the same one and the two cannot drift.
-from _auto_ae import _P_TOKEN, declared_tier, p_vetoed
+from _auto_ae import _FENCE as _SPEC_FENCE, _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
+
+# harmonic-forge#1342: the Lane 3 spec structure. A `### TC<n>` heading opens a
+# case; a `Run:` line followed by a fenced block is its command; one unfenced
+# header `Graph:` line before the first case names the graph.
+_TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC[ \t]*\d+[a-z]?)\b")
+_RUN_LINE = re.compile(r"(?m)^[ \t]*\**[ \t]*Run:[ \t]*\**[ \t]*$")
+_GRAPH_LINE = re.compile(r"(?m)^[ \t]*\**[ \t]*Graph:[ \t]*\**[ \t]*(?P<value>[^\n]*)$")
+_BOLT = re.compile(r"bolt://\S+")
+_NONE = re.compile(r"(?i)^`?none`?\b(?P<rest>.*)$")
+#: Only an em dash or a spaced hyphen separates `none` from its reason; `:` is
+#: ambiguous right after `Graph:` (pitch finding 5).
+_REASON = re.compile(r"^(?:[ \t]*—[ \t]*|[ \t]+-[ \t]+)(?P<reason>\S.*)$")
+
+
+def _fenced_spans(body: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for m in _SPEC_FENCE.finditer(body)]
+
+
+def _inside(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def _provision_commands(repo_cwd: "Path | None") -> list[str] | None:
+    """The consuming repo's declared provisioning commands, or None when the
+    adapter declares none (then any non-empty command is accepted)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gate"))
+    import adapter  # noqa: PLC0415
+    entry = adapter.declared("spec_graph", repo_cwd)
+    commands = (entry or {}).get("provision_commands")
+    return [c for c in commands if isinstance(c, str) and c.strip()] if commands else None
+
+
+def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[str]:
+    """Every structure problem in a Lane 3 spec (harmonic-forge#1342), or []."""
+    tier = declared_tier(body)
+    spans = _fenced_spans(body)
+    heads = [m for m in _TC_HEAD.finditer(body) if not _inside(m.start(), spans)]
+    problems: list[str] = []
+
+    run_blocks: list[str] = []
+    missing: list[str] = []
+    for index, head in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(body)
+        found = False
+        for run in _RUN_LINE.finditer(body, head.end(), end):
+            if _inside(run.start(), spans):
+                continue
+            after = run.end() + 1
+            nxt = next((s for s in spans if s[0] >= after), None)
+            if nxt and nxt[0] < end and not body[after:nxt[0]].strip() \
+                    and body[nxt[0]:nxt[1]].lstrip(" \t").startswith(("```", "~~~")):
+                found = True
+                run_blocks.append(body[nxt[0]:nxt[1]])
+        if not found:
+            missing.append(re.sub(r"\s+", "", head.group(1)))
+    if missing:
+        problems.append("these test cases have no `Run:` line followed by a fenced command "
+                        f"block (inline backticks never count): {', '.join(missing)}")
+
+    if tier == "R" or tier is None:
+        return problems
+    first = heads[0].start() if heads else len(body)
+    graphs = [m for m in _GRAPH_LINE.finditer(body, 0, first) if not _inside(m.start(), spans)]
+    if not graphs:
+        problems.append(f"Write tier {tier} needs one header `Graph:` line before the first "
+                        "`### TC` naming the provisioning command and the `bolt://` URI"
+                        + (", or `Graph: none — <reason>`" if tier == "W" else ""))
+        return problems
+    if len(graphs) > 1:
+        problems.append(f"the spec has {len(graphs)} header `Graph:` lines; it needs exactly one")
+        return problems
+    value = graphs[0].group("value").strip()
+    commands = _provision_commands(repo_cwd)
+    none = _NONE.match(value)
+    if none:
+        if tier == "P":
+            problems.append("Write tier P refuses `Graph: none`: a production case names its "
+                            "graph (provisioning command and `bolt://` URI)")
+            return problems
+        reason = _REASON.match(none.group("rest"))
+        if not reason:
+            problems.append("`Graph: none` under Write tier W needs a reason after an em dash "
+                            "or a spaced hyphen: `Graph: none — <reason>`")
+            return problems
+        graphy = [b for b in run_blocks
+                  if "bolt://" in b or any(c in b for c in (commands or []))]
+        if graphy:
+            problems.append("`Graph: none` is declared but a `Run:` block names a graph "
+                            "(`bolt://` or a declared provisioning command)")
+        return problems
+    if not _BOLT.search(value):
+        problems.append("the `Graph:` line has no `bolt://` URI")
+    command = _BOLT.sub("", value).replace("`", "").strip(" \t·,;—-")
+    if commands is not None:
+        if not any(c in value for c in commands):
+            problems.append("the `Graph:` line names no declared provisioning command "
+                            f"(adapter `spec_graph.provision_commands`: {', '.join(commands)})")
+    elif not re.search(r"\w", command):
+        problems.append("the `Graph:` line names no provisioning command")
+    return problems
+
+
+def require_spec_structure(body: str, repo_cwd: "Path | None" = None) -> None:
+    """harmonic-forge#1342: refuse a Lane 3 spec without a `Run:` fenced block on
+    every case and, under Write tier W or P, one header `Graph:` line."""
+    problems = spec_structure_problems(body, repo_cwd)
+    if problems:
+        print("[post-comment] refused: the Lane 3 spec structure is incomplete "
+              "(harmonic-forge#1342): " + "; ".join(problems) + ".", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def require_ae_by_name(body: str) -> None:
@@ -615,6 +725,7 @@ def main() -> None:
     if artifact == "spec":
         require_write_tier(final, body_len=len(body.rstrip("\n")))
         require_ae_by_name(final)
+        require_spec_structure(final)
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME

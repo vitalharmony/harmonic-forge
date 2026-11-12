@@ -47,6 +47,22 @@ Read this list once, up front, instead:
   backend is down" when it's just the other checkout's.
 - The spec heading is exactly `## Lane 3 Test Spec — H<N>` (or the repo's own
   prefix) — the mechanical heading check refuses anything looser.
+- Every `### TC<n>` carries a `Run:` line followed by a fenced block with the
+  exact command (inline backticks never count). Under Write tier W or P, one
+  header `Graph:` line before the first case names the provisioning command
+  and the `bolt://` URI; Tier W may instead read `Graph: none — <reason>` when
+  no `Run:` block touches a graph, and Tier P never may
+  (`post_lane_discussion.py` refuses otherwise, harmonic-forge#1342):
+
+  ```
+  Write tier: W
+  Graph: none — every case reads the posted artifacts, no graph
+  ### TC1 — the summary counts
+  Run:
+  ~~~
+  python3 -m pytest -q tests/test_summary.py
+  ~~~
+  ```
 - Anything the AE must name — an install, a free lookup outside the
   `External calls:` grammar, a widened scope — goes on the spec's one
   `**AE by name:** TC1: <what>; TC2: <what>` line (or `none`), never only in

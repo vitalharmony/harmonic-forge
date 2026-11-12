@@ -24,10 +24,21 @@ sys.path.insert(0, str(HERE.parent / "telemetry"))
 import post_lane_discussion as P  # noqa: E402
 import verification_report as VR  # noqa: E402
 
-SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n\n"
+SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n"
+           "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n\n"
            "### Test cases\n- TC1 — a thing.\n- TC2 — another.\n")
-SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n\n"
+SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n"
+           "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n\n"
                  "### Test cases\n1. A thing.\n2. Another.\n")
+_P_GRAPH = "Graph: `python3 scripts/graph_fixture.py up` bolt://localhost:7699\n"
+
+
+def _as_p(spec: str) -> str:
+    """A Tier P spec names its graph (harmonic-forge#1342)."""
+    return spec.replace("tier: W", "tier: P").replace(
+        "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n", _P_GRAPH)
+
+
 GATE_PASS = ("## Lane 3 Gate Results — H1\n\n**Verdict:** PASS — both ran.\n**Finding:** none.\n"
              "**Next:** Lane 1 merges.\n\n### Test cases\n- TC1 — pass\n- TC2 — pass\n")
 GATE_FAIL = GATE_PASS.replace("PASS — both ran", "FAIL — TC2 failed")
@@ -136,7 +147,7 @@ class ASpecDeclaresItsWriteTier(Case):
         self.assertIn("no production writes", err)
 
     def test_a_p_spec_mentioning_tier_p_is_accepted(self):
-        body = SPEC_TC.replace("Write tier: W\n", "Write tier: P\nTC2 is Tier P.\n")
+        body = _as_p(SPEC_TC).replace("Write tier: P\n", "Write tier: P\nTC2 is Tier P.\n")
         self.assertIn("kind=spec", last_line(self.post("spec", body)))
 
     def test_the_posted_body_with_its_footer_carries_no_standalone_p(self):
@@ -168,7 +179,7 @@ class ASpecDeclaresItsWriteTier(Case):
         self.assertFalse(_auto_ae.p_vetoed(posted))
 
     def test_a_p_declaration_is_accepted_by_the_poster(self):
-        self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC.replace("tier: W", "tier: P"))))
+        self.assertIn("kind=spec", last_line(self.post("spec", _as_p(SPEC_TC))))
 
     def test_the_bold_label_forms_are_accepted(self):
         # Preclose pass 1 survivor: `**Write tier:** W` used to be refused.

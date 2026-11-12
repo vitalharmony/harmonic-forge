@@ -84,7 +84,10 @@ for the UI-only variant.
      **Lane 3's spec carries the same declaration** (one unfenced `Write
      tier: R|W|P` line): auto-AE reads the tier from the spec, and
      `post_lane_discussion.py` refuses a spec without one
-     (harmonic-forge#947).
+     (harmonic-forge#947). Each case also carries a `Run:` fenced command,
+     and a W or P spec one header `Graph:` line naming the provisioning
+     command and `bolt://` URI (W only: `Graph: none — <reason>` when no case
+     touches a graph); the same poster refuses one without (harmonic-forge#1342).
      `check_lane3_ready.py` validates the `l1-post` footer, never the
      heading: confirm the byte-exact heading independently — "ready" from
      that tool is necessary, not sufficient.
