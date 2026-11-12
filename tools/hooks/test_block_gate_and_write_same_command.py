@@ -62,6 +62,25 @@ class AC2Allowed(unittest.TestCase):
         self.assertIsNone(hook.write_of(["mise", "run", "restart", "--no-bump", "--no-git"]))
 
 
+class PipedGate(unittest.TestCase):
+    """Folded in from protocol-failures 2026-11-12: `mise run check | tail -25` hid the
+    failing step and the pipe's exit 0 stood in for the check's."""
+
+    def test_piped_gates_are_denied(self):
+        for command in ["mise run check 2>&1 | tail -25", "pytest -q | tail -3",
+                        "gh pr checks 5 | grep fail", "mise run check-full |& tee log"]:
+            with self.subTest(command=command):
+                reason = hook.decide(command)
+                self.assertIsNotNone(reason)
+                self.assertIn("R-0425", reason)
+
+    def test_unpiped_and_non_gate_pipes_are_allowed(self):
+        for command in ["mise run check > /tmp/x.log 2>&1", "git log | head",
+                        "gh pr view 5 | jq .", "echo pytest | tail -1"]:
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+
 class AC3Replay(unittest.TestCase):
     """protocol-failures.jsonl 281 and 287 record the shape, not the literal text:
     281 printed a failing verify result and merged in one command (F1244, PR 1322);

@@ -139,12 +139,31 @@ def find(command: str) -> tuple[Optional[str], Optional[str]]:
     return gate, write
 
 
+def piped_gate(command: str) -> Optional[str]:
+    """A top-level gate whose stdout is piped into another command (`mise run check |
+    tail`): the pipeline's exit status is the last command's, and the gate's own
+    summary may be cut, so its result cannot be read (R-0425). Raises on a parse
+    failure."""
+    for item in shell_parse.simple_commands(command):
+        if isinstance(item, shell_parse.SimpleCommand) and item.sep_after in ("|", "|&"):
+            gate = gate_of(shell_parse.strip_invocation_prefix(item.argv))
+            if gate:
+                return gate
+    return None
+
+
 def decide(command: str) -> Optional[str]:
     """The deny reason, or None to allow."""
     try:
         gate, write = find(command)
+        piped = piped_gate(command)
     except (ValueError, shell_parse.NotOrdinary):
         return None
+    if piped and not write:
+        return (f"Blocked (R-0425, harmonic-forge#1337): the gate `{piped}` is piped into "
+                f"another command, so the exit status is the pipe's and its summary can be "
+                f"cut. Run it unpiped, with output to a file if it is long "
+                f"(`{piped} > <log> 2>&1`), and read its own exit status and summary.")
     if gate and write:
         return (f"Blocked (R-0419, harmonic-forge#1337): this one command runs the gate "
                 f"`{gate}` and the write `{write}` it gates, so the write would run before "
