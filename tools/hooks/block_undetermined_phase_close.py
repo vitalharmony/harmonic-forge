@@ -214,12 +214,17 @@ def _bare_number(tokens: list[str]) -> str | None:
 def classify_issue_close_target(tokens: list[str]) -> tuple[str | None, str | None] | None:
     """Reuses `batch_auth.classify_issue_close`; URL-form fallback if it
     resolves no number (binding pitch-inspection change #2)."""
-    from batch_auth import classify_issue_close  # noqa: PLC0415
+    from batch_auth import _advisory_repo_target, classify_issue_close  # noqa: PLC0415
 
     parsed = classify_issue_close(tokens)
     if parsed is None:
         return None
     repo, number = parsed
+    # harmonic-forge#1339 ruling 2026-11-12: advisory, so the repo the
+    # command names (`_advisory_repo_target`), never guessed. It may
+    # be `AMBIGUOUS`, which `main` denies; None only when no repo flag is
+    # present, the one case cwd resolves.
+    repo = _advisory_repo_target(tokens) or repo
     if number is None:
         url = _url_target(tokens, _ISSUE_URL)
         if url:
@@ -229,12 +234,13 @@ def classify_issue_close_target(tokens: list[str]) -> tuple[str | None, str | No
 
 
 def classify_pr_merge_target(tokens: list[str]) -> tuple[str | None, str | None] | None:
-    from batch_auth import classify_pr_merge  # noqa: PLC0415
+    from batch_auth import _advisory_repo_target, classify_pr_merge  # noqa: PLC0415
 
     parsed = classify_pr_merge(tokens)
     if parsed is None:
         return None
     repo, number = parsed
+    repo = _advisory_repo_target(tokens) or repo  # see classify_issue_close_target
     if number is None:
         url = _url_target(tokens, _PR_URL)
         if url:
@@ -427,7 +433,7 @@ def main() -> None:
         _allow()
         return
 
-    from batch_auth import _protected_graphql  # noqa: PLC0415
+    from batch_auth import AMBIGUOUS, _protected_graphql  # noqa: PLC0415
 
     resolved: dict[str | None, str | None] = {}
 
@@ -447,10 +453,22 @@ def main() -> None:
         targets: list[tuple[str | None, str, str | None]] = []  # (repo, issue, via_pr)
 
         issue_target = classify_issue_close_target(tokens)
+        pr_target = classify_pr_merge_target(tokens)
+        for target in (issue_target, pr_target):
+            if target and target[0] is AMBIGUOUS:
+                # Fail closed: the target repo is not certain, so no single
+                # repo can be phase-checked, and cwd would check another repo's issue.
+                _deny("gh close/merge has an ambiguous target repository: a repo or "
+                      "host flag (-R/--repo/--hostname) is not in the one canonical "
+                      "form, or overrides a `gh api` request path; the phase check "
+                      "cannot tell which repo's issue it closes. Use `--repo OWNER/REPO` "
+                      "in canonical form (or a bare `gh api repos/...` path) and retry.",
+                      target_key=None)
+                return
+
         if issue_target and issue_target[1]:
             targets.append((issue_target[0], issue_target[1], None))
 
-        pr_target = classify_pr_merge_target(tokens)
         if pr_target and pr_target[1]:
             explicit_repo = pr_target[0]
             if explicit_repo not in resolved:

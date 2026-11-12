@@ -63,6 +63,11 @@ derivable from code or Git.
   small revisions with Edit directly. When the operator names a script or tool,
   run it from this session, never through the agent that normally wraps it.
 <!-- /R-0414 -->
+<!-- R-0424 -->
+- After a multi-step check fails on one step and the fix is narrow, re-run
+  only that step's own command, then continue. The PR's CI runs the full
+  suite. Never re-run the whole check because one step failed.
+<!-- /R-0424 -->
 
 <!-- R-0083 -->
 - Prefer `gh api` REST endpoints over GraphQL-backed `gh` subcommands

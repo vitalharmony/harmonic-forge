@@ -2687,6 +2687,14 @@ text_sha = "235ae485e23efcb1"
 hooks = []
 
 [[rule]]
+id = "R-0424"
+file = "rules/universal-claude.md"
+anchor = "batch-subagents-and-run-named-tools-directly"
+statement = "After a multi-step check fails on one step and the fix is narrow, re-run only that step's own command; CI runs the full suite. Never re-run the whole check because one step failed."
+text_sha = "2645489c269d23af"
+hooks = []
+
+[[rule]]
 id = "R-0397"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"

@@ -637,9 +637,15 @@ def closed_keys(command: str, cwd: str | None = None,
         if info is None:
             continue
         repo, number = info
-        # `-R` is a repo `_repo_flag` does not read: never guess past it.
-        named = any(t == "-R" or t.startswith("-R") for t in tokens)
-        if not repo and number and not named and tokens[1:3] == ["issue", "close"]:
+        # Advisory: retiring a waiver matches no grant
+        # (`_advisory_repo_target`). AMBIGUOUS skips; cwd only when no repo
+        # flag is present.
+        named = _advisory_repo_target(tokens)
+        if named is AMBIGUOUS:
+            continue
+        repo = named
+        # A `--hostname` close targets another host, which cwd cannot name.
+        if repo is None and number and not any(t.startswith("--hostname") for t in tokens):
             if not resolved:
                 resolved.append(cwd_repo(cwd, runner))
             repo = resolved[0]
@@ -803,18 +809,102 @@ def _entry_live(entry: dict, now: datetime) -> bool:
         return False
 
 
-def _repo_flag(tokens: list[str]) -> str | None:
-    """Explicit `--repo`/`--repo=` only. REST paths embed the repo directly
-    and are matched separately -- a bare CLI-form command with no --repo
-    flag has no repo to resolve here, and deliberately does not fall back to
-    guessing one from cwd or environment: an unresolved repo can't be
-    matched to an authorization, so `decide()` asks."""
-    for index, token in enumerate(tokens):
-        if token == "--repo" and index + 1 < len(tokens):
-            return tokens[index + 1]
-        if token.startswith("--repo="):
-            return token.partition("=")[2]
-    return None
+def _bound_repo(rest: list[str], verb: tuple[str, str]) -> str | None:
+    """The repo a `gh <sub> <verb>` segment names, only when its argv has one
+    closed shape (harmonic-forge#1339 reforge, the F1178 precedent): exactly
+    one token that is or starts with `--repo`/`-R`, that token the standalone
+    form with its value as the next token matching `_REPO_RE`, and every other
+    token in a closed allow-list -- for `pr merge`, `_pinned_head`'s set; for
+    `issue close`, only the number. Anything else is None, so `decide()` asks
+    and `consume()`/`closed_keys` skip. `rest` is the argv after `gh`. Never
+    guesses a repo from cwd or environment."""
+    repo_tokens = [i for i, t in enumerate(rest) if t.startswith(("--repo", "-R"))]
+    if len(repo_tokens) != 1:
+        return None
+    index = repo_tokens[0]
+    if rest[index] not in ("--repo", "-R") or index + 1 >= len(rest):
+        return None
+    repo = rest[index + 1]
+    if not _REPO_RE.match(repo):
+        return None
+    others = rest[:index] + rest[index + 2:]
+    if others[:2] != list(verb) or len(others) < 3 or not others[2].isdigit():
+        return None
+    tail = others[3:]
+    if verb == ("issue", "close"):
+        return repo if not tail else None
+    seen: set[str] = set()
+    i = 0
+    while i < len(tail):
+        token = tail[i]
+        if token in seen:
+            return None
+        seen.add(token)
+        if token == "--match-head-commit":
+            if i + 1 >= len(tail):
+                return None
+            i += 2
+        elif token in _MERGE_METHODS or token == "--delete-branch":
+            i += 1
+        else:
+            return None
+    return repo
+
+
+#: `_advisory_repo_target`'s answer when the command's repo is not certain.
+AMBIGUOUS = "<ambiguous repo>"
+
+#: Token prefixes that name (or redirect) a `gh` command's repo or host.
+_REPO_FLAG_PREFIXES = ("-R", "--repo", "--hostname")
+
+
+def _advisory_repo_target(tokens: list[str]) -> str | None:
+    """The repo a close/merge segment targets, for ADVISORY consumers only
+    (phase check, task-list marker, waiver retirement; harmonic-forge#1339
+    operator ruling: no flag grammar). Never use it to match, consume or
+    prune a grant: that is `_bound_repo`.
+
+    - `gh api`: the repo comes ONLY from the REST path; any token that is or
+      starts with `-R`/`--repo`/`--hostname` anywhere (glued values included,
+      e.g. `--template -Rx`) makes it `AMBIGUOUS`, so the path is never
+      overridden.
+    - CLI: the repo `_bound_repo` binds; else `AMBIGUOUS` when any such token
+      is present; else None (no repo flag at all -- callers may use cwd)."""
+    tokens = strip_invocation_prefix(tokens)
+    parsed = classify_issue_close(tokens) or classify_pr_merge(tokens)
+    if parsed is None:
+        return None
+    rest = tokens[1:]
+    flagged = any(t.startswith(_REPO_FLAG_PREFIXES) for t in rest)
+    if rest[:1] == ["api"]:
+        return AMBIGUOUS if flagged else parsed[0]
+    if parsed[0]:
+        return parsed[0]
+    return AMBIGUOUS if flagged else None
+
+
+#: `gh` flags that take a value and may sit before or inside a subcommand
+#: (harmonic-forge#1339). Any other leading value flag is an accepted
+#: residual: it leaves the segment unclassified, as before this change.
+_GH_VALUE_FLAGS = ("-R", "--repo", "--hostname")
+
+
+def _gh_words(rest: list[str]) -> list[str]:
+    """`rest` with each `gh` value flag and its value removed, wherever it
+    appears, so the subcommand words can be read (harmonic-forge#1339)."""
+    words: list[str] = []
+    skip = False
+    for token in rest:
+        if skip:
+            skip = False
+            continue
+        if token in _GH_VALUE_FLAGS:
+            skip = True
+            continue
+        if token.startswith(("--repo=", "--hostname=")) or (token.startswith("-R") and len(token) > 2):
+            continue
+        words.append(token)
+    return words
 
 
 def _method_is(tokens: list[str], want: str) -> bool:
@@ -862,9 +952,10 @@ def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | N
             return None
         return api_match.group(1), api_match.group(2)
 
-    if rest[:2] == ["issue", "close"]:
-        repo = _repo_flag(rest)
-        number = next((t for t in rest[2:] if t.isdigit()), None)
+    words = _gh_words(rest)
+    if words[:2] == ["issue", "close"]:
+        repo = _bound_repo(rest, ("issue", "close"))
+        number = next((t for t in words[2:] if t.isdigit()), None)
         return repo, number
 
     return None
@@ -892,12 +983,13 @@ def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None
             return None
         return api_match.group(1), int(api_match.group(2))
 
-    if rest[:2] == ["pr", "merge"]:
-        repo = _repo_flag(rest)
+    words = _gh_words(rest)
+    if words[:2] == ["pr", "merge"]:
+        repo = _bound_repo(rest, ("pr", "merge"))
         # harmonic-forge#1077: every gated merge now carries
         # `--match-head-commit <sha>`; a SHA that happens to be all digits is
         # that flag's value, never the PR number.
-        args = rest[2:]
+        args = words[2:]
         number_token = next((t for i, t in enumerate(args) if t.isdigit()
                              and (i == 0 or args[i - 1] not in _PR_MERGE_VALUE_FLAGS)), None)
         return repo, (int(number_token) if number_token else None)
@@ -1273,6 +1365,12 @@ def _diagnose(tokens: list[str], state: dict, now: datetime) -> str:
     """
     target_info = classify_pr_merge(tokens)
     repo, number = target_info if target_info else (None, None)
+    if repo is None and number is not None and any(
+            t.startswith(("--repo", "-R")) for t in strip_invocation_prefix(tokens)[1:]):
+        # harmonic-forge#1339 reforge: a repo was named, but outside the one
+        # shape `_bound_repo` binds.
+        return (f"[BATCH] This merge names a repo, but not in the one bound form "
+                f"`{CANONICAL_MERGE}`, so no authorization could match it.")
     if repo is None or number is None:
         return ("[BATCH] Could not resolve this command to a repo and number, "
                 "so no authorization could match it. Pass an explicit --repo.")

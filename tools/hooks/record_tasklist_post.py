@@ -46,8 +46,20 @@ def _title_key(tokens: list[str], pr_repo: str) -> str | None:
 
 
 def _short_repo(tokens: list[str]) -> str | None:
-    """`-R owner/repo`, which `batch_auth._repo_flag` does not read."""
+    """`-R owner/repo`, the fallback when `batch_auth`'s strict binder names no repo."""
     return next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == "-R"), None)
+
+
+def _long_repo(tokens: list[str]) -> str | None:
+    """`--repo owner/repo` or `--repo=owner/repo` on `gh pr create`, which
+    `batch_auth._advisory_repo_target` (merge/close only, harmonic-forge#1339) does not read.
+    It only names a task-list marker; it authorizes nothing."""
+    for index, token in enumerate(tokens):
+        if token == "--repo" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith("--repo="):
+            return token.partition("=")[2]
+    return None
 
 
 #: Seconds of network one Bash call can cost this hook: `gh repo view` (15) and
@@ -56,6 +68,17 @@ def _short_repo(tokens: list[str]) -> str | None:
 NETWORK_BUDGET = 15 + 30
 #: This hook's timeout in `.claude/settings.json` (pinned by a test).
 HOOK_TIMEOUT = 90
+
+
+def _advisory_repo(segment: list[str], parsed: str | None, payload: dict) -> str | None:
+    """A close/merge's marker repo: the one its repo flags name
+    (`batch_auth._advisory_repo_target`, harmonic-forge#1339 ruling 2026-11-12); None
+    (skip) when they disagree; cwd only when no repo flag is present."""
+    import batch_auth  # noqa: PLC0415
+    named = batch_auth._advisory_repo_target(strip_invocation_prefix(segment))
+    if named is batch_auth.AMBIGUOUS:
+        return None
+    return named or parsed or _cwd_repo(payload)
 
 
 def _cwd_repo(payload: dict) -> str | None:
@@ -95,19 +118,19 @@ def events(payload: dict, on_event=None) -> list[tuple[str, str]]:
     for segment in command_segments(command):
         close = batch_auth.classify_issue_close(segment)
         if close and close[1]:
-            repo = close[0] or _short_repo(segment) or _cwd_repo(payload)
+            repo = _advisory_repo(segment, close[0], payload)
             if repo:
                 add(batch_auth.issue_key(repo, close[1]), "close")
             continue
         merge = batch_auth.classify_pr_merge(segment)
         if merge and merge[1]:
-            repo = merge[0] or _short_repo(segment) or _cwd_repo(payload)
+            repo = _advisory_repo(segment, merge[0], payload)
             if repo:
                 add(batch_auth.derive_issue_key(repo, merge[1], {}), "merge")
             continue
         tokens = strip_invocation_prefix(segment)
         if tokens[:3] and Path(tokens[0]).name == "gh" and tokens[1:3] == ["pr", "create"]:
-            repo = batch_auth._repo_flag(tokens) or _short_repo(tokens) or _cwd_repo(payload)
+            repo = _long_repo(tokens) or _short_repo(tokens) or _cwd_repo(payload)
             if repo:
                 add(_title_key(tokens, repo), "pr")
     return found

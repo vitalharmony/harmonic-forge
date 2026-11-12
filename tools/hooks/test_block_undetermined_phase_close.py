@@ -55,11 +55,41 @@ class ParseTests(unittest.TestCase):
                                                "--repo", REPO]),
             (REPO, "191"))
 
-    def test_issue_close_repo_equals(self) -> None:
+    def test_issue_close_repo_equals_is_ambiguous(self) -> None:
+        # harmonic-forge#1339 operator ruling: no flag grammar; the `=` form is
+        # not canonical, so it is AMBIGUOUS.
+        import batch_auth  # noqa: PLC0415
+        target = hook.classify_issue_close_target(["gh", "issue", "close", "191",
+                                                    f"--repo={REPO}"])
+        self.assertIs(target[0], batch_auth.AMBIGUOUS)
+
+    def test_close_with_comment_is_ambiguous(self) -> None:
+        # harmonic-forge#1339 operator ruling: no flag grammar, so a repo flag
+        # outside the canonical form is AMBIGUOUS.
+        import batch_auth  # noqa: PLC0415
+        target = hook.classify_issue_close_target(["gh", "issue", "close", "5", "--repo",
+                                                    "o/r", "--comment", "x"])
+        self.assertIs(target[0], batch_auth.AMBIGUOUS)
+
+    def test_repo_glued_inside_another_flags_value_is_ambiguous(self) -> None:
+        import batch_auth  # noqa: PLC0415
+        target = hook.classify_pr_merge_target("gh pr merge 7 --body -Rx --repo o/r".split())
+        self.assertIs(target[0], batch_auth.AMBIGUOUS)
+
+    def test_canonical_forms_still_resolve(self) -> None:
         self.assertEqual(
-            hook.classify_issue_close_target(["gh", "issue", "close", "191",
-                                               f"--repo={REPO}"]),
-            (REPO, "191"))
+            hook.classify_pr_merge_target(
+                "gh pr merge 7 --repo o/r --squash --match-head-commit abc".split()),
+            ("o/r", "7"))
+        self.assertEqual(
+            hook.classify_issue_close_target(
+                "gh api repos/o/r/issues/5 -X PATCH -f state=closed".split()),
+            ("o/r", "5"))
+
+    def test_differing_repo_flags_are_ambiguous(self) -> None:
+        import batch_auth  # noqa: PLC0415
+        target = hook.classify_issue_close_target("gh -R a/b issue close 5 --repo c/d".split())
+        self.assertIs(target[0], batch_auth.AMBIGUOUS)
 
     def test_issue_close_url_form(self) -> None:
         self.assertEqual(
@@ -202,6 +232,48 @@ class DecisionTests(unittest.TestCase):
     def test_pr_merge_via_keyword_denies(self) -> None:
         cmd = f"gh pr merge 1813 --repo {REPO} --squash"
         self.assertTrue(denied(self._decide(cmd, labels={"phase"})))
+
+    def _main_on(self, command: str):
+        with mock.patch.object(hook, "resolve_repo") as resolve, \
+             mock.patch.object(hook, "labels_for") as labels, \
+             mock.patch.object(hook, "issues_closed_by_pr") as pr_read, \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(command)), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        return resolve, labels, pr_read, json.loads(printed.call_args[0][0])
+
+    def test_ambiguous_targets_deny_and_never_read_any_repo(self) -> None:
+        # harmonic-forge#1339 operator ruling: each must deny naming the
+        # ambiguity, and never phase-check cwd's or a guessed repo.
+        for command in ("gh -R a/b issue close 5 --repo c/d",
+                        "gh issue close 5 --repo o/r --comment x",
+                        "gh pr merge 5 -r -R other/repo",
+                        "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
+                        "--template -Rvitalharmony/harmonic-forge"):
+            with self.subTest(command=command):
+                resolve, labels, pr_read, payload = self._main_on(command)
+                resolve.assert_not_called()
+                labels.assert_not_called()
+                pr_read.assert_not_called()
+                self.assertTrue(denied(payload))
+                reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("ambiguous target repository", reason)
+
+    def test_canonical_merge_and_api_close_are_checked_against_their_repo(self) -> None:
+        for command, want in (
+                ("gh pr merge 7 --repo o/r --squash --match-head-commit abc", ("o/r", "7")),
+                ("gh api repos/o/r/issues/5 -X PATCH -f state=closed", ("o/r", "5"))):
+            with self.subTest(command=command), \
+                 mock.patch.object(hook, "resolve_repo", side_effect=lambda r, c: r), \
+                 mock.patch.object(hook, "labels_for", return_value=set()) as labels, \
+                 mock.patch.object(hook, "issues_closed_by_pr", return_value=set()) as pr_read, \
+                 mock.patch("sys.stdin", mock.MagicMock()), \
+                 mock.patch("json.load", return_value=bash(command)), \
+                 mock.patch("builtins.print"):
+                hook.main()
+                called = pr_read if "merge" in command else labels
+                self.assertEqual(called.call_args[0][:2], want)
 
     def test_pr_merge_no_keyword_target_allows(self) -> None:
         cmd = f"gh pr merge 1813 --repo {REPO} --squash"
