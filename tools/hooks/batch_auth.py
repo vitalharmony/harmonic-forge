@@ -637,9 +637,9 @@ def closed_keys(command: str, cwd: str | None = None,
         if info is None:
             continue
         repo, number = info
-        # Any repo flag means the repo was named; never guess past it.
-        named = any(t == "-R" or t.startswith("-R") for t in tokens)
-        if not repo and number and not named and tokens[1:3] == ["issue", "close"]:
+        # `_repo_flag` is the one CLI repo reader. A repo it refused was still
+        # named, so cwd resolves only the bare `gh issue close N`.
+        if not repo and number and tokens[1:] == ["issue", "close", number]:
             if not resolved:
                 resolved.append(cwd_repo(cwd, runner))
             repo = resolved[0]
@@ -803,20 +803,46 @@ def _entry_live(entry: dict, now: datetime) -> bool:
         return False
 
 
-def _repo_flag(tokens: list[str]) -> str | None:
-    """Explicit `--repo`/`--repo=` only. REST paths embed the repo directly
-    and are matched separately -- a bare CLI-form command with no --repo
-    flag has no repo to resolve here, and deliberately does not fall back to
-    guessing one from cwd or environment: an unresolved repo can't be
-    matched to an authorization, so `decide()` asks."""
-    for index, token in enumerate(tokens):
-        if token in ("--repo", "-R") and index + 1 < len(tokens):
-            return tokens[index + 1]
-        if token.startswith("--repo="):
-            return token.partition("=")[2]
-        if token.startswith("-R") and len(token) > 2:
-            return token[2:]
-    return None
+def _repo_flag(rest: list[str], verb: tuple[str, str]) -> str | None:
+    """The repo a `gh <sub> <verb>` segment names, only when its argv has one
+    closed shape (harmonic-forge#1339 reforge, the F1178 precedent): exactly
+    one token that is or starts with `--repo`/`-R`, that token the standalone
+    form with its value as the next token matching `_REPO_RE`, and every other
+    token in a closed allow-list -- for `pr merge`, `_pinned_head`'s set; for
+    `issue close`, only the number. Anything else is None, so `decide()` asks
+    and `consume()`/`closed_keys` skip. `rest` is the argv after `gh`. Never
+    guesses a repo from cwd or environment."""
+    repo_tokens = [i for i, t in enumerate(rest) if t.startswith(("--repo", "-R"))]
+    if len(repo_tokens) != 1:
+        return None
+    index = repo_tokens[0]
+    if rest[index] not in ("--repo", "-R") or index + 1 >= len(rest):
+        return None
+    repo = rest[index + 1]
+    if not _REPO_RE.match(repo):
+        return None
+    others = rest[:index] + rest[index + 2:]
+    if others[:2] != list(verb) or len(others) < 3 or not others[2].isdigit():
+        return None
+    tail = others[3:]
+    if verb == ("issue", "close"):
+        return repo if not tail else None
+    seen: set[str] = set()
+    i = 0
+    while i < len(tail):
+        token = tail[i]
+        if token in seen:
+            return None
+        seen.add(token)
+        if token == "--match-head-commit":
+            if i + 1 >= len(tail):
+                return None
+            i += 2
+        elif token in _MERGE_METHODS or token == "--delete-branch":
+            i += 1
+        else:
+            return None
+    return repo
 
 
 #: `gh` flags that take a value and may sit before or inside a subcommand
@@ -890,7 +916,7 @@ def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | N
 
     words = _gh_words(rest)
     if words[:2] == ["issue", "close"]:
-        repo = _repo_flag(rest)
+        repo = _repo_flag(rest, ("issue", "close"))
         number = next((t for t in words[2:] if t.isdigit()), None)
         return repo, number
 
@@ -921,7 +947,7 @@ def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None
 
     words = _gh_words(rest)
     if words[:2] == ["pr", "merge"]:
-        repo = _repo_flag(rest)
+        repo = _repo_flag(rest, ("pr", "merge"))
         # harmonic-forge#1077: every gated merge now carries
         # `--match-head-commit <sha>`; a SHA that happens to be all digits is
         # that flag's value, never the PR number.
@@ -1301,6 +1327,12 @@ def _diagnose(tokens: list[str], state: dict, now: datetime) -> str:
     """
     target_info = classify_pr_merge(tokens)
     repo, number = target_info if target_info else (None, None)
+    if repo is None and number is not None and any(
+            t.startswith(("--repo", "-R")) for t in strip_invocation_prefix(tokens)[1:]):
+        # harmonic-forge#1339 reforge: a repo was named, but outside the one
+        # shape `_repo_flag` binds.
+        return (f"[BATCH] This merge names a repo, but not in the one bound form "
+                f"`{CANONICAL_MERGE}`, so no authorization could match it.")
     if repo is None or number is None:
         return ("[BATCH] Could not resolve this command to a repo and number, "
                 "so no authorization could match it. Pass an explicit --repo.")

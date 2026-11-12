@@ -56,10 +56,16 @@ class ParseTests(unittest.TestCase):
             (REPO, "191"))
 
     def test_issue_close_repo_equals(self) -> None:
-        self.assertEqual(
+        # harmonic-forge#1339 reforge: an `=` repo form is not bound, and is
+        # never resolved from the cwd checkout instead.
+        self.assertIsNone(
             hook.classify_issue_close_target(["gh", "issue", "close", "191",
-                                               f"--repo={REPO}"]),
-            (REPO, "191"))
+                                               f"--repo={REPO}"]))
+
+    def test_unbound_repo_flag_never_falls_back_to_cwd(self) -> None:
+        self.assertIsNone(
+            hook.classify_issue_close_target(["gh", "issue", "close", "5", "--repo",
+                                               REPO, "--comment", "x"]))
 
     def test_issue_close_url_form(self) -> None:
         self.assertEqual(

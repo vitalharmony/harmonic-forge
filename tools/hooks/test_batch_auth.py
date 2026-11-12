@@ -507,11 +507,15 @@ class ClassifyTests(unittest.TestCase):
     def test_pr_merge_with_match_head_commit_keeps_its_target(self):
         """harmonic-forge#1077: the gated merge carries `--match-head-commit`;
         an all-digit SHA value is never read as the PR number."""
-        for cmd in ("gh pr merge 993 --repo vitalharmony/hrse --squash --match-head-commit abc123",
-                    "gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse",
+        self.assertEqual(ba.classify_pr_merge(
+            "gh pr merge 993 --repo vitalharmony/hrse --squash --match-head-commit abc123".split()),
+            ("vitalharmony/hrse", 993))
+        # harmonic-forge#1339 reforge: off the canonical shape the number is
+        # still read, but no repo binds.
+        for cmd in ("gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse",
                     "gh pr merge --match-head-commit=1234567 993 --repo vitalharmony/hrse"):
             with self.subTest(cmd=cmd):
-                self.assertEqual(ba.classify_pr_merge(cmd.split()), ("vitalharmony/hrse", 993))
+                self.assertEqual(ba.classify_pr_merge(cmd.split()), (None, 993))
 
     def test_unrelated_commands_are_not_classified(self):
         for cmd in ("git status", "gh issue list --repo vitalharmony/hrse", "git clean -fd"):
@@ -2499,7 +2503,7 @@ class RepoFlagAnywhereTests(unittest.TestCase):
                 self.assertEqual(ba.classify_pr_merge(cmd.split()), ("o/r", 5))
                 self.assertEqual(ba.decide(cmd)[0], "ask")
 
-    def test_batched_merge_with_leading_repo_flag_authorizes(self):
+    def test_batched_merge_with_leading_repo_flag_asks(self):
         """AC2 as amended by F1178: a leading-flag merge is classified to its
         target (so a grant can be matched and named), and it asks rather than
         binding, because it is not the one canonical form."""
@@ -2513,11 +2517,30 @@ class RepoFlagAnywhereTests(unittest.TestCase):
                 self.assertIsNone(ba.decide(cmd))
 
     def test_repo_value_is_never_the_issue_number(self):
-        self.assertEqual(ba.classify_issue_close("gh issue close --repo 5 7".split()), ("5", "7"))
+        self.assertEqual(ba.classify_issue_close("gh issue close --repo 5 7".split()), (None, "7"))
 
     def test_short_repo_flag_resolves_repo(self):
         self.assertEqual(ba.classify_issue_close("gh -R o/r issue close 5".split()), ("o/r", "5"))
-        self.assertEqual(ba.classify_issue_close("gh -Ro/r issue close 5".split()), ("o/r", "5"))
+        # Reforge: a `-RX` cluster no longer binds a repo.
+        self.assertEqual(ba.classify_issue_close("gh -Ro/r issue close 5".split()), (None, "5"))
+
+    def test_non_canonical_repo_spellings_bind_no_repo(self):
+        """harmonic-forge#1339 reforge: a repo token where another flag's value
+        belongs, a repeated repo flag, or an `=` form binds no repo."""
+        merge = ba.classify_pr_merge("gh pr merge 5 --body -Rvitalharmony/hrse --repo o/r".split())
+        self.assertIsNone(merge[0])
+        self.assertIsNone(ba.classify_issue_close("gh -R a/b -R c/d issue close 5".split())[0])
+        self.assertIsNone(ba.classify_issue_close("gh issue close 5 -R=o/r".split())[0])
+        runner = lambda *a, **k: self.fail("cwd must not be read")  # noqa: E731
+        for cmd in ("gh -R vitalharmony/a -R vitalharmony/b issue close 5",
+                    "gh issue close 5 -R=vitalharmony/hrse"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
+
+    def test_canonical_merge_still_resolves_repo(self):
+        cmd = "gh pr merge 7 --repo o/r --squash --delete-branch --match-head-commit " + "a" * 40
+        self.assertEqual(ba.classify_pr_merge(cmd.split()), ("o/r", 7))
+        self.assertEqual(ba.classify_issue_close("gh issue close 5 --repo o/r".split()), ("o/r", "5"))
 
     def test_leading_flag_close_never_guesses_repo_from_cwd(self):
         calls = []

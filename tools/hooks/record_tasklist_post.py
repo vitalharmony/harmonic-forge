@@ -46,8 +46,20 @@ def _title_key(tokens: list[str], pr_repo: str) -> str | None:
 
 
 def _short_repo(tokens: list[str]) -> str | None:
-    """`-R owner/repo`, which `batch_auth._repo_flag` does not read."""
+    """`-R owner/repo`, the fallback when `batch_auth`'s strict binder names no repo."""
     return next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == "-R"), None)
+
+
+def _long_repo(tokens: list[str]) -> str | None:
+    """`--repo owner/repo` or `--repo=owner/repo` on `gh pr create`, which
+    `batch_auth._repo_flag` (merge/close only, harmonic-forge#1339) does not read.
+    It only names a task-list marker; it authorizes nothing."""
+    for index, token in enumerate(tokens):
+        if token == "--repo" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith("--repo="):
+            return token.partition("=")[2]
+    return None
 
 
 #: Seconds of network one Bash call can cost this hook: `gh repo view` (15) and
@@ -107,7 +119,7 @@ def events(payload: dict, on_event=None) -> list[tuple[str, str]]:
             continue
         tokens = strip_invocation_prefix(segment)
         if tokens[:3] and Path(tokens[0]).name == "gh" and tokens[1:3] == ["pr", "create"]:
-            repo = batch_auth._repo_flag(tokens) or _short_repo(tokens) or _cwd_repo(payload)
+            repo = _long_repo(tokens) or _short_repo(tokens) or _cwd_repo(payload)
             if repo:
                 add(_title_key(tokens, repo), "pr")
     return found

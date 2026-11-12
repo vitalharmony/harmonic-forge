@@ -220,6 +220,12 @@ def classify_issue_close_target(tokens: list[str]) -> tuple[str | None, str | No
     if parsed is None:
         return None
     repo, number = parsed
+    # harmonic-forge#1339 reforge: a repo flag the strict binder refused is
+    # never replaced by the cwd checkout's repo -- that would check another
+    # repo's issue. Leave the target unresolved; batch_auth still asks.
+    if repo is None and any(t in ("-R", "--repo") or t.startswith(("-R", "--repo="))
+                            for t in tokens):
+        return None
     if number is None:
         url = _url_target(tokens, _ISSUE_URL)
         if url:
