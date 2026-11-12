@@ -78,18 +78,31 @@ class Events(unittest.TestCase):
         found = hook.events(bash(command, "https://github.com/vitalharmony/harmonic-forge/pull/1128\n"))
         self.assertEqual(found, [("F1115", "pr")])
 
-    def test_close_with_comment_records_under_the_named_repo(self):
-        """harmonic-forge#1339 ruling 2026-11-12: never the cwd repo."""
+    def test_close_with_comment_records_nothing_and_never_reads_cwd(self):
+        """harmonic-forge#1339 operator ruling: a non-canonical repo flag is
+        AMBIGUOUS, so no marker -- and never the cwd repo."""
         with mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")):
             found = hook.events(bash("gh issue close 5 --repo vitalharmony/harmonic-forge "
                                      "--comment x"))
-        self.assertEqual(found, [("F5", "close")])
-
-    def test_differing_repo_flags_record_nothing(self):
-        with mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")):
-            found = hook.events(bash("gh -R vitalharmony/hrse issue close 5 "
-                                     "--repo vitalharmony/harmonic-forge"))
         self.assertEqual(found, [])
+
+    def test_ambiguous_target_never_reaches_issue_key(self):
+        """Fails if `_advisory_repo`'s AMBIGUOUS skip is removed: the sentinel
+        would then be handed to issue_key/derive_issue_key."""
+        calls = []
+        record = lambda *a, **k: calls.append(a) or None  # noqa: E731
+        commands = ("gh -R vitalharmony/hrse issue close 5 --repo vitalharmony/harmonic-forge",
+                    "gh pr merge 5 -r -R vitalharmony/harmonic-forge",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
+                    "--template -Rvitalharmony/harmonic-forge")
+        with mock.patch.object(batch_auth, "issue_key", side_effect=record), \
+             mock.patch.object(batch_auth, "derive_issue_key", side_effect=record), \
+             mock.patch.object(batch_auth, "action_landed", return_value=True), \
+             mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")):
+            for command in commands:
+                with self.subTest(command=command):
+                    self.assertEqual(hook.events(bash(command)), [])
+        self.assertEqual(calls, [])
 
     def test_other_commands_record_nothing(self):
         self.assertEqual(hook.events(bash("git status && gh issue view 12")), [])

@@ -2546,26 +2546,37 @@ class RepoFlagAnywhereTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
 
-    def test_named_repo_reads_every_spelling_for_advisory_consumers(self):
-        """harmonic-forge#1339 ruling 2026-11-12: `_named_repo` is advisory."""
-        cases = (("gh issue close 5 --repo o/r --comment x", "o/r"),
-                 ("gh pr merge 7 --repo o/r --squash --subject s", "o/r"),
-                 ("gh pr merge 7 --body -Rx --repo o/r", "o/r"),
-                 ("gh -Ro/r issue close 5 --repo=o/r", "o/r"),
+    def test_advisory_repo_target_has_no_flag_grammar(self):
+        """harmonic-forge#1339 operator ruling: canonical CLI or bare REST path
+        resolves; any other repo/host flag is AMBIGUOUS; none at all is None."""
+        sha = "a" * 40
+        cases = (("gh pr merge 5 --repo o/r --squash --match-head-commit " + sha, "o/r"),
+                 ("gh api repos/o/r/issues/5 -X PATCH -f state=closed", "o/r"),
+                 ("gh pr merge 5 -r -R other/repo", ba.AMBIGUOUS),
+                 ("gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
+                  "--template -Rvitalharmony/harmonic-forge", ba.AMBIGUOUS),
+                 ("gh api repos/o/r/issues/5 -X PATCH -f state=closed --hostname h",
+                  ba.AMBIGUOUS),
+                 ("gh issue close 5 --repo o/r --comment x", ba.AMBIGUOUS),
+                 ("gh pr merge 7 --body -Rx --repo o/r", ba.AMBIGUOUS),
                  ("gh -R a/b issue close 5 --repo c/d", ba.AMBIGUOUS),
                  ("gh issue close 5 --comment x", None))
         for cmd, want in cases:
             with self.subTest(cmd=cmd):
-                self.assertEqual(ba._named_repo(cmd.split()[1:]), want)
+                self.assertEqual(ba._advisory_repo_target(cmd.split()), want)
 
-    def test_closed_keys_retires_a_close_carrying_comment_or_reason(self):
+    def test_closed_keys_skips_ambiguous_close_without_reading_cwd(self):
         runner = lambda *a, **k: self.fail("cwd must not be read")  # noqa: E731
-        for tail in ("--comment x", "--reason completed"):
-            with self.subTest(tail=tail):
-                self.assertEqual(
-                    ba.closed_keys(f"gh issue close 5 --repo vitalharmony/hrse {tail}",
-                                   cwd="/tmp", runner=runner),
-                    [("H5", "vitalharmony/hrse", 5)])
+        for cmd in ("gh issue close 5 --repo vitalharmony/hrse --comment x",
+                    "gh issue close 5 --repo vitalharmony/hrse --reason completed",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
+                    "--template -Rvitalharmony/harmonic-forge"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
+        self.assertEqual(
+            ba.closed_keys("gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed",
+                           cwd="/tmp", runner=runner),
+            [("H5", "vitalharmony/hrse", 5)])
 
     def test_canonical_merge_still_resolves_repo(self):
         cmd = "gh pr merge 7 --repo o/r --squash --delete-branch --match-head-commit " + "a" * 40

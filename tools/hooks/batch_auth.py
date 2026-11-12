@@ -637,13 +637,13 @@ def closed_keys(command: str, cwd: str | None = None,
         if info is None:
             continue
         repo, number = info
-        # Advisory: retiring a waiver matches no grant, so the repo is the one
-        # the command names (`_named_repo`), not the strict binder's. A repo
-        # flag that disagrees skips; cwd only when no repo flag is present.
-        named = _named_repo(tokens[1:])
+        # Advisory: retiring a waiver matches no grant
+        # (`_advisory_repo_target`). AMBIGUOUS skips; cwd only when no repo
+        # flag is present.
+        named = _advisory_repo_target(tokens)
         if named is AMBIGUOUS:
             continue
-        repo = named or repo  # the REST form names its repo in the path
+        repo = named
         # A `--hostname` close targets another host, which cwd cannot name.
         if repo is None and number and not any(t.startswith("--hostname") for t in tokens):
             if not resolved:
@@ -851,46 +851,36 @@ def _bound_repo(rest: list[str], verb: tuple[str, str]) -> str | None:
     return repo
 
 
-#: `_named_repo`'s answer when the command's repo flags disagree.
+#: `_advisory_repo_target`'s answer when the command's repo is not certain.
 AMBIGUOUS = "<ambiguous repo>"
 
-#: Value flags `_named_repo` skips the value of, so a repo-looking value
-#: (`--body -Rx`) is never read as a repo flag.
-_NAMED_SKIP_FLAGS = frozenset({"--comment", "-c", "--reason", "-r"})
+#: Token prefixes that name (or redirect) a `gh` command's repo or host.
+_REPO_FLAG_PREFIXES = ("-R", "--repo", "--hostname")
 
 
-def _named_repo(rest: list[str]) -> str | None:
-    """The repo a `gh` segment names, for ADVISORY consumers only (phase
-    check, task-list marker, waiver retirement; harmonic-forge#1339 ruling
-    2026-11-12). Never use it to match, consume or prune a grant: that is
-    `_bound_repo`. Reads every `-R X`, `-RX`, `--repo X`, `--repo=X`,
-    skipping any token that is another known value flag's value. Returns the
-    one repo when all agree, `AMBIGUOUS` when they disagree (or one has no
-    valid value), and None when no repo flag is present."""
-    skip = (_PR_MERGE_VALUE_FLAGS | _NAMED_SKIP_FLAGS) - {"--repo", "-R"}
-    found: set[str] = set()
-    i = 0
-    while i < len(rest):
-        token = rest[i]
-        if token in ("--repo", "-R"):
-            found.add(rest[i + 1] if i + 1 < len(rest) else "")
-            i += 2
-        elif token.startswith("--repo="):
-            found.add(token.partition("=")[2])
-            i += 1
-        elif token.startswith("-R") and len(token) > 2:
-            found.add(token[2:])
-            i += 1
-        elif token in skip:
-            i += 2
-        else:
-            i += 1
-    if not found:
+def _advisory_repo_target(tokens: list[str]) -> str | None:
+    """The repo a close/merge segment targets, for ADVISORY consumers only
+    (phase check, task-list marker, waiver retirement; harmonic-forge#1339
+    operator ruling: no flag grammar). Never use it to match, consume or
+    prune a grant: that is `_bound_repo`.
+
+    - `gh api`: the repo comes ONLY from the REST path; any token that is or
+      starts with `-R`/`--repo`/`--hostname` anywhere (glued values included,
+      e.g. `--template -Rx`) makes it `AMBIGUOUS`, so the path is never
+      overridden.
+    - CLI: the repo `_bound_repo` binds; else `AMBIGUOUS` when any such token
+      is present; else None (no repo flag at all -- callers may use cwd)."""
+    tokens = strip_invocation_prefix(tokens)
+    parsed = classify_issue_close(tokens) or classify_pr_merge(tokens)
+    if parsed is None:
         return None
-    if len(found) != 1:
-        return AMBIGUOUS
-    repo = found.pop()
-    return repo if _REPO_RE.match(repo) else AMBIGUOUS
+    rest = tokens[1:]
+    flagged = any(t.startswith(_REPO_FLAG_PREFIXES) for t in rest)
+    if rest[:1] == ["api"]:
+        return AMBIGUOUS if flagged else parsed[0]
+    if parsed[0]:
+        return parsed[0]
+    return AMBIGUOUS if flagged else None
 
 
 #: `gh` flags that take a value and may sit before or inside a subcommand

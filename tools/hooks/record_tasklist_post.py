@@ -52,7 +52,7 @@ def _short_repo(tokens: list[str]) -> str | None:
 
 def _long_repo(tokens: list[str]) -> str | None:
     """`--repo owner/repo` or `--repo=owner/repo` on `gh pr create`, which
-    `batch_auth._named_repo` (merge/close only, harmonic-forge#1339) does not read.
+    `batch_auth._advisory_repo_target` (merge/close only, harmonic-forge#1339) does not read.
     It only names a task-list marker; it authorizes nothing."""
     for index, token in enumerate(tokens):
         if token == "--repo" and index + 1 < len(tokens):
@@ -72,10 +72,10 @@ HOOK_TIMEOUT = 90
 
 def _advisory_repo(segment: list[str], parsed: str | None, payload: dict) -> str | None:
     """A close/merge's marker repo: the one its repo flags name
-    (`batch_auth._named_repo`, harmonic-forge#1339 ruling 2026-11-12); None
+    (`batch_auth._advisory_repo_target`, harmonic-forge#1339 ruling 2026-11-12); None
     (skip) when they disagree; cwd only when no repo flag is present."""
     import batch_auth  # noqa: PLC0415
-    named = batch_auth._named_repo(strip_invocation_prefix(segment)[1:])
+    named = batch_auth._advisory_repo_target(strip_invocation_prefix(segment))
     if named is batch_auth.AMBIGUOUS:
         return None
     return named or parsed or _cwd_repo(payload)
