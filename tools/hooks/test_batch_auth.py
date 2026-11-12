@@ -2572,7 +2572,14 @@ class RepoFlagAnywhereTests(unittest.TestCase):
                     "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
                     "--template -Rvitalharmony/harmonic-forge"):
             with self.subTest(cmd=cmd):
-                self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
+                seen = []
+                real = ba.issue_key
+                with mock.patch.object(ba, "issue_key",
+                                       side_effect=lambda r, n: seen.append(r) or real(r, n)):
+                    self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
+                # Fails if closed_keys' explicit AMBIGUOUS skip is removed: the
+                # sentinel would then reach issue_key.
+                self.assertNotIn(ba.AMBIGUOUS, seen)
         self.assertEqual(
             ba.closed_keys("gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed",
                            cwd="/tmp", runner=runner),

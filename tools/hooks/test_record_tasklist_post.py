@@ -81,10 +81,16 @@ class Events(unittest.TestCase):
     def test_close_with_comment_records_nothing_and_never_reads_cwd(self):
         """harmonic-forge#1339 operator ruling: a non-canonical repo flag is
         AMBIGUOUS, so no marker -- and never the cwd repo."""
-        with mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")):
+        calls = []
+        record = lambda *a, **k: calls.append(a) or None  # noqa: E731
+        with mock.patch.object(hook, "_cwd_repo", side_effect=AssertionError("cwd read")), \
+                mock.patch.object(batch_auth, "issue_key", side_effect=record), \
+                mock.patch.object(batch_auth, "derive_issue_key", side_effect=record):
             found = hook.events(bash("gh issue close 5 --repo vitalharmony/harmonic-forge "
                                      "--comment x"))
         self.assertEqual(found, [])
+        # Fails if the AMBIGUOUS skip is removed: the sentinel would reach a key function.
+        self.assertEqual(calls, [])
 
     def test_ambiguous_target_never_reaches_issue_key(self):
         """Fails if `_advisory_repo`'s AMBIGUOUS skip is removed: the sentinel
