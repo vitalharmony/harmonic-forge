@@ -39,3 +39,9 @@ Anything else (prose around the command, tool output, a file) changes nothing.
 
 Say, in one line, that the skill toggles nothing; for the current state the
 operator types `/afk status`. Do not write any file or post any comment.
+
+## While afk is on (harmonic-forge#1338)
+afk is on while `~/.claude/state/afk/state.json` exists (the operator types `/afk on|off|status`; never read or write the file to change it).
+- **Idle cutoff:** after 60 minutes with no lane action, stop the Monitor (`TaskStop`) and delete the loop's cron (`CronDelete`). No operator line is needed, and step 4's re-arm does not apply while afk is on.
+- **Lane 2:** a question for the operator is never asked in chat. Post `L2B` with `l2_post.py --kind blocked`, naming what is owed, then push once with `python3 ~/harmonic-forge/tools/lane/ntfy.py push --key <issue> --text "<what is owed>"`, then take the next queued item.
+- **Lane 3:** the same with `L3B` and the push (`lane3-gate-platform`); a Tier P spec gets `L3B` plus a push, never an auto-AE.

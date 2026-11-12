@@ -14,7 +14,10 @@ def _afk_section(path: Path) -> str:
 
 class SkillText(unittest.TestCase):
     def test_each_lane_states_its_afk_behavior(self):
-        belt = _afk_section(ROOT / "skills" / "belt-and-suspenders" / "SKILL.md")
+        belt = _afk_section(ROOT / "skills" / "afk" / "SKILL.md")
+        belt_line = (ROOT / "skills" / "belt-and-suspenders" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("skills/afk/SKILL.md", belt_line)
+        self.assertRegex(belt_line, r"60-minute idle cutoff")
         lane3 = _afk_section(ROOT / "skills" / "lane3-gate-platform" / "SKILL.md")
         self.assertTrue(belt, "belt skill has no afk paragraph")
         self.assertTrue(lane3, "lane3-gate-platform has no afk paragraph")

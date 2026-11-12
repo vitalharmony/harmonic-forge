@@ -6,13 +6,8 @@ description: Arm a lane's proactive work-discovery protocol — a persistent Mon
 1. Run `python3 ~/harmonic-forge/tools/lane/belt_plan.py`. If it exits non-zero, report its message and stop. To watch one repo only, so two sessions of one lane can split a workspace, run `belt_plan.py --repo OWNER/REPO` instead (harmonic-forge#1199); a repo-scoped belt and the unscoped belt for the same lane exclude each other.
 2. Make exactly the `Monitor` call (`monitor`) and the `Skill` call (`loop`) it prints, character for character. Do not rewrite, extend or summarize either.
 3. Report the monitor task id and the loop job id, as its `report` says.
-4. The belt never stops and never asks the operator whether to stop. When the Monitor expires, re-arm the same call unchanged. A hook denies any other arming call: no `CronCreate` of your own, no hand-written prompt, no repo-wide sweep.
+4. The belt never stops and never asks the operator whether to stop (except while afk is on: then `skills/afk/SKILL.md` applies, including its 60-minute idle cutoff that stops the Monitor and the loop). When the Monitor expires, re-arm the same call unchanged. A hook denies any other arming call: no `CronCreate` of your own, no hand-written prompt, no repo-wide sweep.
 5. Pacing back-off between ticks uses `ScheduleWakeup`, never a new `/loop` or `CronCreate`.
-## While afk is on (harmonic-forge#1338)
-afk is on while `~/.claude/state/afk/state.json` exists (the operator types `/afk on|off|status`; never read or write the file to change it).
-- **Idle cutoff:** after 60 minutes with no lane action, stop the Monitor (`TaskStop`) and delete the loop's cron (`CronDelete`). No operator line is needed, and step 4's re-arm does not apply while afk is on.
-- **Lane 2:** a question for the operator is never asked in chat. Post `L2B` with `l2_post.py --kind blocked`, naming what is owed, then push once with `python3 ~/harmonic-forge/tools/lane/ntfy.py push --key <issue> --text "<what is owed>"`, then take the next queued item.
-- **Lane 3:** the same with `L3B` and the push (`lane3-gate-platform`); a Tier P spec gets `L3B` plus a push, never an auto-AE.
 ## Tick output — silence is the default
 Every Monitor event and every loop tick ends in exactly one of two ways.
 6. **Nothing is owed to this lane → no text at all.** Do not report, acknowledge, summarize, or say "nothing to do". Call `ScheduleWakeup` with `noop: true` (loop tick) or simply end the turn (Monitor event — re-arming on expiry per step 4 is not text and still happens). The global BLUF rule does not apply: a no-op tick is not a response to the operator, so there are no sections to print, empty or otherwise.
