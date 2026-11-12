@@ -2473,8 +2473,6 @@ class ImcLifecycleTests(unittest.TestCase):
         self.assertIn("F11", state)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RepoFlagAnywhereTests(unittest.TestCase):
@@ -2528,3 +2526,6 @@ class RepoFlagAnywhereTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
         self.assertEqual(calls, [])
+
+if __name__ == "__main__":
+    unittest.main()
