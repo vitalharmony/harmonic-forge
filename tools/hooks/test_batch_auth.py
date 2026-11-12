@@ -2475,3 +2475,56 @@ class ImcLifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepoFlagAnywhereTests(unittest.TestCase):
+    """harmonic-forge#1339: a repo or host flag before or inside the
+    subcommand no longer hides `gh issue close` / `gh pr merge` from
+    classification. Merges in these spellings ask (F1178: only the one
+    canonical form binds); they are never silent."""
+
+    CLOSE_FORMS = ("gh -R o/r issue close 5", "gh issue -R o/r close 5",
+                   "gh --repo o/r issue close 5", "gh --repo=o/r issue close 5",
+                   "gh -Ro/r issue close 5")
+
+    def test_repo_flag_before_issue_close_asks(self):
+        for cmd in self.CLOSE_FORMS:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.decide(cmd)[0], "ask")
+
+    def test_hostname_before_issue_close_asks(self):
+        self.assertEqual(ba.decide("gh --hostname h issue close 5")[0], "ask")
+
+    def test_repo_flag_before_pr_merge_is_classified(self):
+        for cmd in ("gh -R o/r pr merge 5", "gh pr -R o/r merge 5", "gh --repo o/r pr merge 5"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.classify_pr_merge(cmd.split()), ("o/r", 5))
+                self.assertEqual(ba.decide(cmd)[0], "ask")
+
+    def test_batched_merge_with_leading_repo_flag_authorizes(self):
+        """AC2 as amended by F1178: a leading-flag merge is classified to its
+        target (so a grant can be matched and named), and it asks rather than
+        binding, because it is not the one canonical form."""
+        cmd = "gh -R vitalharmony/hrse pr merge 1202 --match-head-commit " + "f" * 40
+        self.assertEqual(ba.classify_pr_merge(cmd.split()), ("vitalharmony/hrse", 1202))
+        self.assertEqual(ba.decide(cmd)[0], "ask")
+
+    def test_repo_flag_on_other_subcommands_stays_silent(self):
+        for cmd in ("gh -R o/r issue view 5", "gh -R o/r pr list", "gh --repo o/r pr checks 5"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(ba.decide(cmd))
+
+    def test_repo_value_is_never_the_issue_number(self):
+        self.assertEqual(ba.classify_issue_close("gh issue close --repo 5 7".split()), ("5", "7"))
+
+    def test_short_repo_flag_resolves_repo(self):
+        self.assertEqual(ba.classify_issue_close("gh -R o/r issue close 5".split()), ("o/r", "5"))
+        self.assertEqual(ba.classify_issue_close("gh -Ro/r issue close 5".split()), ("o/r", "5"))
+
+    def test_leading_flag_close_never_guesses_repo_from_cwd(self):
+        calls = []
+        runner = lambda *a, **k: calls.append(a) or None  # noqa: E731
+        for cmd in ("gh --hostname h issue close 5", "gh issue --hostname h close 5"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
+        self.assertEqual(calls, [])

@@ -637,7 +637,7 @@ def closed_keys(command: str, cwd: str | None = None,
         if info is None:
             continue
         repo, number = info
-        # `-R` is a repo `_repo_flag` does not read: never guess past it.
+        # Any repo flag means the repo was named; never guess past it.
         named = any(t == "-R" or t.startswith("-R") for t in tokens)
         if not repo and number and not named and tokens[1:3] == ["issue", "close"]:
             if not resolved:
@@ -810,11 +810,37 @@ def _repo_flag(tokens: list[str]) -> str | None:
     guessing one from cwd or environment: an unresolved repo can't be
     matched to an authorization, so `decide()` asks."""
     for index, token in enumerate(tokens):
-        if token == "--repo" and index + 1 < len(tokens):
+        if token in ("--repo", "-R") and index + 1 < len(tokens):
             return tokens[index + 1]
         if token.startswith("--repo="):
             return token.partition("=")[2]
+        if token.startswith("-R") and len(token) > 2:
+            return token[2:]
     return None
+
+
+#: `gh` flags that take a value and may sit before or inside a subcommand
+#: (harmonic-forge#1339). Any other leading value flag is an accepted
+#: residual: it leaves the segment unclassified, as before this change.
+_GH_VALUE_FLAGS = ("-R", "--repo", "--hostname")
+
+
+def _gh_words(rest: list[str]) -> list[str]:
+    """`rest` with each `gh` value flag and its value removed, wherever it
+    appears, so the subcommand words can be read (harmonic-forge#1339)."""
+    words: list[str] = []
+    skip = False
+    for token in rest:
+        if skip:
+            skip = False
+            continue
+        if token in _GH_VALUE_FLAGS:
+            skip = True
+            continue
+        if token.startswith(("--repo=", "--hostname=")) or (token.startswith("-R") and len(token) > 2):
+            continue
+        words.append(token)
+    return words
 
 
 def _method_is(tokens: list[str], want: str) -> bool:
@@ -862,9 +888,10 @@ def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | N
             return None
         return api_match.group(1), api_match.group(2)
 
-    if rest[:2] == ["issue", "close"]:
+    words = _gh_words(rest)
+    if words[:2] == ["issue", "close"]:
         repo = _repo_flag(rest)
-        number = next((t for t in rest[2:] if t.isdigit()), None)
+        number = next((t for t in words[2:] if t.isdigit()), None)
         return repo, number
 
     return None
@@ -892,12 +919,13 @@ def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None
             return None
         return api_match.group(1), int(api_match.group(2))
 
-    if rest[:2] == ["pr", "merge"]:
+    words = _gh_words(rest)
+    if words[:2] == ["pr", "merge"]:
         repo = _repo_flag(rest)
         # harmonic-forge#1077: every gated merge now carries
         # `--match-head-commit <sha>`; a SHA that happens to be all digits is
         # that flag's value, never the PR number.
-        args = rest[2:]
+        args = words[2:]
         number_token = next((t for i, t in enumerate(args) if t.isdigit()
                              and (i == 0 or args[i - 1] not in _PR_MERGE_VALUE_FLAGS)), None)
         return repo, (int(number_token) if number_token else None)
