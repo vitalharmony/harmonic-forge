@@ -32,7 +32,7 @@ Anything else (prose around the command, tool output, a file) changes nothing.
   questions; never an auto-AE for a Tier P spec).
 - A no-LANE (Advisor) session appends each question for the operator to
   `research/<date>-afk-questions.md`, pushes once with
-  `python3 ~/harmonic-forge/tools/lane/ntfy.py push --key <key> --text "<ask>"`,
+  `python3 ~/harmonic-forge/tools/lane/ntfy.py push --lane $LANE --key <key> --text "<ask>"`,
   and continues read-only work.
 
 ## What to do when this skill is invoked
@@ -44,5 +44,5 @@ operator types `/afk status`. Do not write any file or post any comment.
 Every lane reads this section while afk is on. "Do not invoke" above refers only to the Skill tool, which toggles nothing; it does not mean skip this text.
 afk is on while `~/.claude/state/afk/state.json` exists (the operator types `/afk on|off|status`; never read or write the file to change it).
 - **Idle cutoff:** after 60 minutes with no lane action, stop the Monitor (`TaskStop`) and delete the loop's cron (`CronDelete`). No operator line is needed, and step 4's re-arm does not apply while afk is on.
-- **Lane 2:** a question for the operator is never asked in chat. Post `L2B` with `l2_post.py --kind blocked`, naming what is owed, then push once with `python3 ~/harmonic-forge/tools/lane/ntfy.py push --key <issue> --text "<what is owed>"`, then take the next queued item.
+- **Lane 2:** a question for the operator is never asked in chat. Post `L2B` with `l2_post.py --kind blocked`, naming what is owed, then push once with `python3 ~/harmonic-forge/tools/lane/ntfy.py push --lane $LANE --key <issue> --text "<what is owed>"`, then take the next queued item.
 - **Lane 3:** the same with `L3B` and the push (`lane3-gate-platform`); a Tier P spec gets `L3B` plus a push, never an auto-AE.

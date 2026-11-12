@@ -58,6 +58,21 @@ class ToggleCase(unittest.TestCase):
         self.typed("/afk off", entrypoint=None)
         self.assertFalse(afk_toggle.state_path().exists())
 
+    def test_headless_off_leaves_queue_for_interactive_off(self):
+        self.typed("/afk on")
+        self.queue(self.ws_a, "gh issue close 7")
+        message = self.typed("/afk off", entrypoint="sdk-py")
+        self.assertIn("OFF", message)
+        self.assertIn("interactive `/afk off`", message)
+        self.assertNotIn("gh issue close 7", message)
+        self.assertFalse(afk_toggle.state_path().exists())
+        self.assertTrue(afk_toggle.queue_path().exists())
+        self.assertEqual(self.archives(), [])
+        later = self.typed("/afk off")
+        self.assertIn(f"1. time: 2026-11-12T00:00:00Z; cwd: {json.dumps(str(self.ws_a))}; "
+                      f"command: {json.dumps('gh issue close 7')}", later)
+        self.assertFalse(afk_toggle.queue_path().exists())
+
     def archives(self):
         return sorted(afk_toggle.state_dir().glob("drained-*.jsonl"))
 

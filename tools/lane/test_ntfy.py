@@ -39,6 +39,27 @@ class PushCase(unittest.TestCase):
         ntfy.afk_push("H1", "next hour", t, now=1000 + 3600)
         self.assertEqual(len(self.posts), 3)
 
+    def cli(self, *argv, env_lane=None):
+        env = {"LANE": env_lane} if env_lane is not None else {}
+        with mock.patch.dict(os.environ, env), mock.patch.object(ntfy, "post",
+                                                                 side_effect=lambda *a, **k: self.posts.append(a) or 200):
+            if env_lane is None:
+                os.environ.pop("LANE", None)
+            return ntfy.main(["push", *argv])
+
+    def test_key_is_lane_plus_issue(self):
+        self.assertEqual(self.cli("--lane", "2", "--key", "H1", "--text", "owed"), 0)
+        self.assertEqual(self.cli("--lane", "3", "--key", "H1", "--text", "owed"), 0)
+        self.assertEqual(len(self.posts), 2)  # Lane 2 and Lane 3 on one issue both send
+        self.cli("--lane", "2", "--key", "H1", "--text", "again")
+        self.assertEqual(len(self.posts), 2)  # same lane within the hour sends once
+        self.assertEqual([p[2] for p in self.posts], ["2:H1", "3:H1"])
+
+    def test_lane_defaults_to_env_then_none(self):
+        self.cli("--key", "H5", "--text", "x", env_lane="2")
+        self.cli("--key", "H5", "--text", "x")
+        self.assertEqual([p[2] for p in self.posts], ["2:H5", "none:H5"])
+
     def test_http_failure_is_nonzero_and_never_names_topic(self):
         code, message = ntfy.afk_push("H1", "owed", self.transport(500), now=1)
         self.assertNotEqual(code, 0)

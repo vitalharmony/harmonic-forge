@@ -11,7 +11,9 @@ inside a longer prompt, from a tool result or from a file changes nothing.
 - `off` is honored from anywhere, first: turning afk off is always safe. It
   unlinks `~/.claude/state/afk/state.json` and, in the same lock every
   queue append takes, renames `queue.jsonl` to `drained-<UTC ts>.jsonl`.
-  It then lists every line from every workspace, exactly once, as data
+  From a non-interactive entrypoint (`_interactive`), `off` only removes the
+  state: the queue is neither archived nor listed and stays for the
+  operator's interactive `/afk off`. Interactively it then lists every line from every workspace, exactly once, as data
   (time, original cwd, JSON-escaped command), never as runnable shell. If the archive cannot be
   read it says afk is off and names the archive path. It says "STILL ON"
   if the unlink fails.
@@ -161,8 +163,9 @@ def _off(payload: dict) -> str:
         if archive is None or not archive.exists():
             return (f"afk is OFF; the queue could not be archived ({type(exc).__name__}). "
                     f"It is still at {queue_path()}.")
-    if is_on():
-        return "afk is STILL ON: the state file could not be removed."
+    # No post-lock is_on() re-check: the unlink above succeeded (or raised),
+    # and a concurrent `/afk on` after the lock must not suppress the listing
+    # of the queue this call already archived.
     head = "afk is OFF."
     if archive is None:
         return head + " Nothing was queued."
@@ -192,6 +195,23 @@ def _off(payload: dict) -> str:
             f"(archived to {archive}):\n{listing}\n{RERUN_SENTENCE}")
 
 
+def _off_headless() -> str:
+    """`off` from a non-interactive entrypoint: remove the state only. The
+    queue is neither archived nor listed; it stays for the operator's
+    interactive `/afk off`."""
+    try:
+        with Locked():
+            state_path().unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        if is_on():
+            return (f"afk is STILL ON: the state file could not be removed ({type(exc).__name__}). "
+                    "Remove ~/.claude/state/afk/state.json by hand.")
+    if is_on():
+        return "afk is STILL ON: the state file could not be removed."
+    return ("afk is OFF. The queue was left in place for an interactive `/afk off` "
+            "(this entrypoint is not one an operator types into).")
+
+
 def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> str | None:
     """The message to show, or None when the prompt is not an `/afk` line."""
     prompt = payload.get("prompt")
@@ -202,6 +222,8 @@ def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> s
                     "`/afk off` or `/afk status`.")
         return None
     if action == "off":
+        if not _interactive(entrypoint):
+            return _off_headless()
         return _off(payload)
     if not _interactive(entrypoint):
         return (f"afk: nothing changed. The session's entrypoint ({entrypoint or 'unset'}) "

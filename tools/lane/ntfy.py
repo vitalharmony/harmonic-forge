@@ -4,9 +4,10 @@
 `notify()` moved here from `orphan_reap.py`, behavior unchanged; `orphan_reap`
 imports it and keeps its own topic file.
 
-`push --key <K> --text <T>` sends one afk push to the operator's reminder
-topic (`~/.local/share/ai-playlist-curator/ntfy-topic`), at most one per key
-per hour, rate-limited through `~/.claude/state/afk/push.json`. The topic is
+`push --key <K> [--lane <L>] --text <T>` sends one afk push to the operator's
+reminder topic (`~/.local/share/ai-playlist-curator/ntfy-topic`), at most one
+per lane-plus-key (`<lane>:<key>`; `--lane` defaults to env LANE, else
+"none") per hour, rate-limited through `~/.claude/state/afk/push.json`. The topic is
 never printed. Exit 0 on a sent push or a rate-limited skip; non-zero on an
 HTTP failure, naming the status (never the topic).
 """
@@ -107,9 +108,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     push = sub.add_parser("push", help="one afk push, at most one per key per hour")
     push.add_argument("--key", required=True)
+    push.add_argument("--lane", default=os.environ.get("LANE") or "none")
     push.add_argument("--text", required=True)
     args = parser.parse_args(argv)
-    code, message = afk_push(args.key, args.text)
+    code, message = afk_push(f"{args.lane}:{args.key}", args.text)
     print(message, file=sys.stderr if code else sys.stdout)
     return code
 
