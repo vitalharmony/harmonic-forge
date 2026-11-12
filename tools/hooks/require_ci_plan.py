@@ -75,6 +75,50 @@ def target_dir(payload: dict) -> Path:
     return Path(payload.get("cwd") or os.getcwd())
 
 
+def _segment_is_gate(segment: list[str]) -> bool:
+    return is_gate_command(" ".join(segment)) if segment else False
+
+
+def _mise_dir(segment: list[str]) -> str | None:
+    """The literal `-C`/`--cd` value on a `mise` gate segment, else None."""
+    tokens = strip_invocation_prefix(segment)
+    for index, token in enumerate(tokens[:-1]):
+        if token in ("-C", "--cd"):
+            return tokens[index + 1]
+        if token.startswith("--cd="):
+            return token.split("=", 1)[1]
+    for token in tokens:
+        if token.startswith("--cd="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def cd_targets(command: str, cwd: Path) -> list[Path]:
+    """harmonic-forge#1343: the directories a leading literal `cd`/`mise -C` moves the
+    gate to, walked exactly as `block_unchecked_push._judged_pushes` walks a push
+    (`block_unchecked_push.py:45-54`): a subshell or group anywhere, a `$` or
+    backtick in a walked segment, or any segment that is neither `cd <literal>` nor
+    the gate stops the walk with no target. These are judged in addition to the
+    session cwd, never instead of it."""
+    if any(char in command for char in "(){}"):
+        return []
+    here = str(cwd)
+    for segment in command_segments(command):
+        if any("$" in token or "`" in token for token in segment):
+            return []
+        if segment[:1] == ["cd"] and len(segment) == 2:
+            here = os.path.normpath(os.path.join(here, os.path.expanduser(segment[1])))
+            continue
+        if _segment_is_gate(segment):
+            targets = [Path(here)]
+            literal = _mise_dir(segment)
+            if literal is not None:
+                targets.append(Path(os.path.normpath(os.path.join(here, os.path.expanduser(literal)))))
+            return targets
+        return []
+    return []
+
+
 def active(lane: str | None, cwd: Path) -> bool:
     if lane == "2":
         return True
@@ -114,15 +158,30 @@ def decide(payload: dict, lane: str | None) -> str | None:
     grant = allow_path(session_id)
     if receipt_path(session_id) is None or grant is None:
         return None
+    if grant.is_file():
+        return None
     directory = target_dir(payload)
-    if not active(lane, directory):
-        return None
-    if grant.is_file() or has_receipt(session_id, directory):
-        return None
-    resolve_project(directory)  # raises when no registered project owns it: fail open
-    if not _writable(receipt_dir()):
-        raise OSError(f"{receipt_dir()} is not writable, so no receipt or grant can exist")
-    return deny_reason(session_id)
+    # harmonic-forge#1343: the session cwd is always judged; a literal `cd`/`mise -C`
+    # target of a Bash gate is judged in addition. Deny if any judged directory is
+    # active with no receipt.
+    judged = [directory]
+    if tool == "Bash":
+        judged += [d for d in cd_targets(payload["tool_input"]["command"], directory)
+                   if d != directory]
+    for index, candidate in enumerate(judged):
+        if not active(lane, candidate) or has_receipt(session_id, candidate):
+            continue
+        if index == 0:
+            resolve_project(candidate)  # raises when no registered project owns it: fail open
+        else:
+            try:
+                resolve_project(candidate)
+            except Exception:  # noqa: BLE001 - an unregistered cd target adds no deny
+                continue
+        if not _writable(receipt_dir()):
+            raise OSError(f"{receipt_dir()} is not writable, so no receipt or grant can exist")
+        return deny_reason(session_id)
+    return None
 
 
 def main() -> int:

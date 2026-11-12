@@ -218,5 +218,64 @@ class OverrideTests(Fixture):
         self.assertFalse(self.receipts.exists())
 
 
+class CdTarget(Fixture):
+    """harmonic-forge#1343: the session cwd is always judged, and a literal
+    `cd`/`mise -C` target is judged in addition, walked as the push hook walks."""
+
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name)
+        self.main = root / "main"
+        self.main.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.main, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "b"], cwd=self.main, check=True)
+        self.manifest.write_text(self.manifest.read_text() + textwrap.dedent(f"""
+            [[project]]
+            name = "main"
+            prefix = "M"
+            path = "{self.main}"
+        """), encoding="utf-8")
+        self.receipt(session="s1", repo=self.main)
+
+    def at(self, cwd, command):
+        return {"tool_name": "Bash", "session_id": "s1", "cwd": str(cwd),
+                "tool_input": {"command": command}}
+
+    def test_cd_into_a_receipted_worktree_from_an_inactive_cwd_is_allowed(self):
+        self.receipt(session="s1", repo=self.repo)
+        result, _ = self.call(self.at(self.main, f"cd {self.repo} && mise run check"), lane="1")
+        self.assertFalse(denied(result))
+
+    def test_cd_into_an_active_unreceipted_worktree_from_an_inactive_cwd_is_denied(self):
+        result, _ = self.call(self.at(self.main, f"cd {self.repo} && mise run check"), lane="1")
+        self.assertTrue(denied(result))
+
+    def test_mise_c_into_an_active_unreceipted_worktree_is_denied(self):
+        result, _ = self.call(self.at(self.main, f"mise -C {self.repo} run check"), lane="1")
+        self.assertTrue(denied(result))
+
+    def test_a_non_cd_segment_stops_the_walk_so_no_target_is_judged(self):
+        # The walk copies block_unchecked_push: any other segment before the gate
+        # stops it with no target, so only the (inactive) session cwd is judged.
+        for command in [f"echo hi && cd {self.repo} && mise run check",
+                        f"pushd {self.main} && cd {self.repo} && mise run check"]:
+            with self.subTest(command=command):
+                self.assertEqual(guard.cd_targets(command, self.main), [])
+                result, _ = self.call(self.at(self.main, command), lane="1")
+                self.assertFalse(denied(result))
+
+    def test_every_bypass_form_from_an_active_cwd_is_denied(self):
+        for command in [f'cd {self.main} && cd "$W" && mise run check',
+                        f"pushd {self.main} && mise run check",
+                        f"cd -P {self.main} && mise run check",
+                        "cd && mise run check",
+                        f"(cd {self.main} && mise run check)",
+                        f"cd {self.main} && mise run check"]:
+            with self.subTest(command=command):
+                result, _ = self.call(self.at(self.repo, command), lane="1")
+                self.assertTrue(denied(result))
+
+
 if __name__ == "__main__":
     unittest.main()
