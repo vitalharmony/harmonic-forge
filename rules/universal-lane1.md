@@ -211,7 +211,8 @@ concrete commands and the specific `l1_post.py` friction this prevents.
 
 <!-- R-0369 -->
 After the **last** merge of a batch (not after each PR), Lane 1 deploys what
-merged, itself, and never lists any of these steps as an operator action. It
+merged, itself, and never lists any of these steps, or any command a hook or
+tool tells the session to run, as an operator action. It
 does so for **every repository the batch merged into**: a mixed batch such as
 `H2141,F834` deploys both checkouts, because rules, skills, hooks and `tools/`
 scripts resolve by absolute path into the platform checkout

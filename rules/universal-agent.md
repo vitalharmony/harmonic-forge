@@ -51,7 +51,19 @@ failures first — never commit broken code to satisfy a deadline.
 <!-- R-0005 -->
 Run gate commands one at a time, as separate tool calls, with absolute paths.
 Never chain with `&&`/`||`/`;`/pipes. Wait for each result before proceeding.
+The write a gate guards (a commit, push or merge) never shares a command with
+that gate either: read the gate's result in its own call first (R-0419).
 <!-- /R-0005 -->
+
+<!-- R-0425 -->
+Pass or fail comes from the tool's own summary or exit code, never from a
+grep, a `tail` or a wrapper's exit status.
+<!-- /R-0425 -->
+
+<!-- R-0426 -->
+Before an L2D, Lane 2 checks the runtime contract, that each test can fail,
+every variant, and the knock-on effects, so Lane 3 finds nothing new.
+<!-- /R-0426 -->
 
 ## MODULARITY (SUB-300 LINES)
 
