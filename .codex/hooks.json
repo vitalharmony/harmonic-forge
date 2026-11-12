@@ -63,14 +63,14 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
-            "timeout": 25,
-            "statusMessage": "Checking the merge route (harmonic-forge#1243)"
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_gate_and_write_same_command.py\"",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_gate_and_write_same_command.py\"",
-            "timeout": 10
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
+            "timeout": 25,
+            "statusMessage": "Checking the merge route (harmonic-forge#1243)"
           }
         ]
       },
