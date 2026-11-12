@@ -30,6 +30,10 @@
 # commit this file is part of.
 
 data = [
+  "tools/gh/fixtures/spec_structure/hrse_spec_6807320243.md",
+  "tools/gh/fixtures/spec_structure/hrse_spec_6807332207.md",
+  "tools/gh/fixtures/spec_structure/hrse_spec_6807591265.md",
+  "tools/gh/fixtures/spec_structure/hrse_spec_6807970485.md",
   "tools/lane/baseline_launch_tuples.json",
   "tools/lane/cli_update.toml",
   "tools/lane/heavy_slot.toml",
