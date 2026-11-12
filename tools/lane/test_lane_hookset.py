@@ -177,8 +177,8 @@ class Build(_Tmp):
             self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
             self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
 
-    def test_the_set_holds_52_entries(self):
-        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 52)
+    def test_the_set_holds_53_entries(self):
+        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 53)
 
 
 class Policy(_Tmp):
