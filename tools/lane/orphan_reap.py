@@ -35,7 +35,6 @@ import os
 import re
 import sys
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -218,18 +217,14 @@ def classify(lifetime_pct: float, sample_pct: float) -> str | None:
 
 
 def notify(summary: str, topic_file: str | None) -> None:
-    """One ntfy POST; the topic is read from its file and never printed."""
+    """One ntfy POST through `tools/lane/ntfy.py` (harmonic-forge#1338); the
+    topic is read from its own file and never printed."""
     if not topic_file:
         print(f"orphan_reap: ntfy not sent: {NTFY_TOPIC_FILE_ENV} is not set", file=sys.stderr)
         return
-    try:
-        topic = Path(topic_file).read_text().strip()
-        if topic:
-            request = urllib.request.Request(f"https://ntfy.sh/{topic}", data=summary.encode(),
-                                             headers={"Title": "orphan-reap"})
-            urllib.request.urlopen(request, timeout=15).close()
-    except Exception as exc:  # noqa: BLE001 - a missed alert never fails the run
-        print(f"orphan_reap: ntfy not sent: {type(exc).__name__}", file=sys.stderr)
+    sys.path.insert(0, str(HERE))
+    from ntfy import notify as _notify  # noqa: PLC0415
+    _notify(summary, topic_file, "orphan-reap", label="orphan_reap: ")
 
 
 def emit_events(orphans: list[dict]) -> None:

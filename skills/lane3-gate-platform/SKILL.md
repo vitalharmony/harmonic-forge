@@ -277,6 +277,15 @@ operator, a matching SHA) stay checks, never questions. This reaches Claude
 Code Lane 3 sessions only: a Codex Lane 3 session has no belt, so it keeps
 today's behavior and names the relay it needs.
 
+## While afk is on (harmonic-forge#1338)
+
+afk is on while `~/.claude/state/afk/state.json` exists (the operator types
+`/afk on|off|status`). A question for the operator is never asked in chat:
+post `L3B` on the issue naming what is owed, push once with
+`python3 ~/harmonic-forge/tools/lane/ntfy.py push --lane $LANE --key <issue> --text "<what is owed>"`,
+then take the next queued item. A Tier P spec keeps the operator's AE: it
+gets `L3B` plus a push, never an auto-AE.
+
 ## Role
 
 You are Lane 3: independent verification only.

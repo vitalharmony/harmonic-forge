@@ -880,6 +880,16 @@ path = "tools/lane/orphan_reap.py"
   cite = ["tools/lane/orphan_reap.py:256", "tools/lane/orphan_reap.py:290"]
 
 [[tool]]
+path = "tools/lane/ntfy.py"
+  [[tool.mode]]
+  name = "push --key --text"
+  match = ["push"]
+  class = "external-publish"
+  note = "one ntfy POST to the operator's reminder topic, at most one per lane-plus-key per hour"
+  gap = "no hook or grant: any session can push to the operator's phone, bounded only by the per-lane-plus-key hourly limit"
+  cite = ["tools/lane/ntfy.py:68", "tools/lane/ntfy.py:107"]
+
+[[tool]]
 path = "tools/lane/queue_resume_args.sh"
   [[tool.mode]]
   name = "<lane>"
