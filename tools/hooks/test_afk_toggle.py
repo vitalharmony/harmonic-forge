@@ -58,65 +58,76 @@ class ToggleCase(unittest.TestCase):
         self.typed("/afk off", entrypoint=None)
         self.assertFalse(afk_toggle.state_path().exists())
 
-    def test_off_drains_only_this_workspace(self):
+    def archives(self):
+        return sorted(afk_toggle.state_dir().glob("drained-*.jsonl"))
+
+    def test_off_drains_every_workspace(self):
         self.typed("/afk on")
         self.queue(self.ws_a, "gh issue close 1")
         self.queue(self.ws_b, "gh issue close 2")
         self.queue(self.ws_a, "gh issue close 3")
         message = self.typed("/afk off", cwd=self.ws_a)
-        self.assertIn(f"cd {self.ws_a} && gh issue close 1", message)
-        self.assertIn(f"cd {self.ws_a} && gh issue close 3", message)
+        for cwd, n in ((self.ws_a, 1), (self.ws_b, 2), (self.ws_a, 3)):
+            self.assertIn(f"cd {cwd} && gh issue close {n}", message)
         self.assertEqual(message.count("```"), 2)
-        self.assertNotIn("gh issue close 2", message)
-        left = [json.loads(l) for l in afk_toggle.queue_path().read_text().splitlines()]
-        self.assertEqual([e["command"] for e in left], ["gh issue close 2"])
-        self.assertNotIn("gh issue close", self.typed("/afk off", cwd=self.ws_a))
+        self.assertFalse(afk_toggle.queue_path().exists())
+
+    def test_second_off_prints_nothing(self):
+        self.typed("/afk on")
+        self.queue(self.ws_a, "gh issue close 1")
+        self.typed("/afk off")
+        again = self.typed("/afk off", cwd=self.ws_b)
+        self.assertNotIn("gh issue close", again)
+        self.assertNotIn("```", again)
+        self.assertIn("OFF", again)
+
+    def test_unreadable_archive_keeps_file_and_reports_path(self):
+        self.typed("/afk on")
+        self.queue(self.ws_a, "gh issue close 1")
+        with mock.patch.object(Path, "read_text", side_effect=OSError("boom")):
+            message = self.typed("/afk off")
+        archives = self.archives()
+        self.assertEqual(len(archives), 1)
+        self.assertIn(str(archives[0]), message)
+        self.assertIn("afk is OFF", message)
+        self.assertNotIn("nothing changed", message)
+        self.assertFalse(afk_toggle.state_path().exists())
+        self.assertIn("gh issue close 1", archives[0].read_text())
 
     def test_append_during_drain_is_kept(self):
         self.typed("/afk on")
         self.queue(self.ws_a, "gh issue close 1")
-        real_read = afk_toggle._read_queue
-        worker = []
+        real_replace = os.replace
+        worker, results = [], []
 
-        def racing_read():
-            lines = real_read()
-            t = threading.Thread(target=self.queue, args=(self.ws_b, "gh issue close 9"))
+        def racing_replace(src, dst):
+            t = threading.Thread(target=lambda: results.append(afk_toggle.append_queue(
+                {"cwd": str(self.ws_b), "command": "gh issue close 9"})))
             t.start()
             worker.append(t)
             time.sleep(0.3)
-            return lines
+            return real_replace(src, dst)
 
-        with mock.patch.object(afk_toggle, "_read_queue", racing_read):
-            drained = afk_toggle.drain(afk_toggle.workspace_of(str(self.ws_a)))
+        with mock.patch.object(afk_toggle.os, "replace", racing_replace):
+            message = self.typed("/afk off")
         worker[0].join(5)
-        self.assertEqual([e["command"] for e in drained], ["gh issue close 1"])
-        left = [json.loads(l)["command"] for l in afk_toggle.queue_path().read_text().splitlines()]
-        self.assertEqual(left, ["gh issue close 9"])
+        self.assertIn("gh issue close 1", message)
+        # The racing append waited on the lock, saw afk off, and wrote nothing:
+        # no line is lost silently, none is printed twice.
+        self.assertEqual(results, [False])
+        self.assertFalse(afk_toggle.queue_path().exists())
 
     def test_append_writes_nothing_once_off(self):
         self.assertFalse(afk_toggle.append_queue({"command": "gh issue close 1"}))
         self.assertFalse(afk_toggle.queue_path().exists())
 
-    def test_off_lists_other_workspaces_without_draining_them(self):
-        self.typed("/afk on")
-        self.queue(self.ws_a, "gh issue close 1")
-        self.queue(self.ws_b, "gh issue close 2")
-        self.queue(self.ws_b, "gh issue close 3")
-        message = self.typed("/afk off", cwd=self.ws_a)
-        ws_b = afk_toggle.workspace_of(str(self.ws_b))
-        self.assertIn(f"- {ws_b}: 2", message)
-        self.assertNotIn("gh issue close 2", message)
-        left = [json.loads(l)["command"] for l in afk_toggle.queue_path().read_text().splitlines()]
-        self.assertEqual(left, ["gh issue close 2", "gh issue close 3"])
-
-    def test_drained_lines_are_kept_in_drained_jsonl(self):
+    def test_drained_lines_are_kept_in_archive(self):
         self.typed("/afk on")
         self.queue(self.ws_a, "gh issue close 1")
         self.queue(self.ws_b, "gh issue close 2")
         self.typed("/afk off", cwd=self.ws_a)
-        kept = [json.loads(l)["command"] for l in afk_toggle.drained_path().read_text().splitlines()]
-        self.assertEqual(kept, ["gh issue close 1"])
-
+        kept = [json.loads(l)["command"] for l in self.archives()[0].read_text().splitlines()]
+        self.assertEqual(kept, ["gh issue close 1", "gh issue close 2"])
 
 if __name__ == "__main__":
     unittest.main()

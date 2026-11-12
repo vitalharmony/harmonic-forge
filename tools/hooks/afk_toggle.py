@@ -9,12 +9,12 @@ Only operator-typed text fires `UserPromptSubmit` (R-0117); the same text
 inside a longer prompt, from a tool result or from a file changes nothing.
 
 - `off` is honored from anywhere, first: turning afk off is always safe. It
-  unlinks `~/.claude/state/afk/state.json`, then, under the same lock every
-  queue append takes, prints and removes only the queue lines whose
-  `workspace` equals this session's (the git toplevel of the prompt's cwd),
-  as one fenced block of `cd <cwd> && <command>` lines, after appending them
-  to `drained.jsonl`. Other workspaces' lines stay; their paths and counts
-  are listed. It says "STILL ON" if the unlink fails.
+  unlinks `~/.claude/state/afk/state.json` and, in the same lock every
+  queue append takes, renames `queue.jsonl` to `drained-<UTC ts>.jsonl`.
+  It then prints every line from every workspace, exactly once, as one
+  fenced block of `cd <cwd> && <command>` lines. If the archive cannot be
+  read it says afk is off and names the archive path. It says "STILL ON"
+  if the unlink fails.
 - `on` and `status` also need an interactive entrypoint (`_interactive`, as
   `auto_ae_toggle.py`). `on` writes `{"on": true, "since": <iso>}` atomically
   under the lock, in any LANE or none. `status` writes nothing.
@@ -76,7 +76,7 @@ def workspace_of(cwd: str | None) -> str:
 
 class Locked:
     """The one critical section for the afk state and queue: every queue
-    append (`afk_defer.py`) and the `off` drain take it."""
+    append (`afk_defer.py`) and `off` take it."""
 
     def __enter__(self):
         d = state_dir()
@@ -102,10 +102,6 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def drained_path() -> Path:
-    return state_dir() / "drained.jsonl"
-
-
 def append_queue(entry: dict) -> bool:
     """Append one line, re-checking under the lock that afk is still on.
     False, writing nothing, when `off` removed the state first."""
@@ -122,45 +118,6 @@ def _read_queue() -> list[str]:
     if not path.exists():
         return []
     return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def drain(workspace: str) -> list[dict]:
-    """Remove and return this workspace's queue lines; keep every other line.
-    The read and the rewrite are one critical section with the appends."""
-    with Locked():
-        lines = _read_queue()
-        mine, kept = [], []
-        for line in lines:
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                entry = None
-            if isinstance(entry, dict) and entry.get("workspace") == workspace:
-                mine.append(entry)
-            else:
-                kept.append(line)
-        if mine:
-            # Durability: the drained lines are kept in drained.jsonl before
-            # they leave the queue, so a lost systemMessage loses nothing.
-            with drained_path().open("a", encoding="utf-8") as handle:
-                handle.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in mine))
-            _atomic_write(queue_path(), "".join(line + "\n" for line in kept))
-        return mine
-
-
-def others_pending(workspace: str) -> dict[str, int]:
-    """Queued-line counts for every OTHER workspace, under the lock."""
-    counts: dict[str, int] = {}
-    with Locked():
-        for line in _read_queue():
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            ws = entry.get("workspace") if isinstance(entry, dict) else None
-            if ws and ws != workspace:
-                counts[ws] = counts.get(ws, 0) + 1
-    return counts
 
 
 def parse(prompt: object) -> str | None:
@@ -180,29 +137,54 @@ def _interactive(entrypoint: str | None) -> bool:
 
 
 def _off(payload: dict) -> str:
+    """One critical section: remove the state, then rename the whole queue
+    (every workspace) to `drained-<UTC ts>.jsonl`. The rename is atomic, so
+    each line is drained exactly once and nothing is truncated in place."""
+    archive: Path | None = None
     try:
         with Locked():
             state_path().unlink(missing_ok=True)
+            if queue_path().exists():
+                ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+                archive = state_dir() / f"drained-{ts}.jsonl"
+                n = 1
+                while archive.exists():
+                    archive = state_dir() / f"drained-{ts}-{n}.jsonl"
+                    n += 1
+                os.replace(queue_path(), archive)
     except Exception as exc:  # noqa: BLE001
         if is_on():
             return (f"afk is STILL ON: the state file could not be removed ({type(exc).__name__}). "
                     "Remove ~/.claude/state/afk/state.json by hand.")
-    head = "afk is OFF."
+        if archive is None or not archive.exists():
+            return (f"afk is OFF; the queue could not be archived ({type(exc).__name__}). "
+                    f"It is still at {queue_path()}.")
     if is_on():
         return "afk is STILL ON: the state file could not be removed."
-    workspace = workspace_of(payload.get("cwd"))
-    entries = drain(workspace)
+    head = "afk is OFF."
+    if archive is None:
+        return head + " Nothing was queued."
+    try:
+        entries = []
+        for line in archive.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                entry = None
+            if isinstance(entry, dict):
+                entries.append(f"cd {entry.get('cwd')} && {entry.get('command')}")
+            else:
+                entries.append(f"# unparseable queue line: {line}")
+    except Exception as exc:  # noqa: BLE001
+        return (f"afk is OFF; queue archived to {archive}, could not be read "
+                f"({type(exc).__name__}: {exc}).")
     if not entries:
-        message = head + " Nothing was queued for this workspace."
-    else:
-        block = "\n".join(f"cd {e.get('cwd')} && {e.get('command')}" for e in entries)
-        message = f"{head} {len(entries)} queued command(s) for this workspace:\n```\n{block}\n```"
-    others = others_pending(workspace)
-    if others:
-        listing = "\n".join(f"- {ws}: {n}" for ws, n in sorted(others.items()))
-        message += ("\nOther workspaces still have queued lines (not drained; they print when "
-                    "`/afk off` runs there, or the next time it runs anywhere):\n" + listing)
-    return message
+        return f"{head} Nothing was queued (empty archive {archive})."
+    block = "\n".join(entries)
+    return (f"{head} {len(entries)} queued command(s), every workspace "
+            f"(archived to {archive}):\n```\n{block}\n```")
 
 
 def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> str | None:
