@@ -199,3 +199,4 @@ provenance) with no modules yet; issues D, E and F supply them. Its gate
 claims are `declared` (operator ruling, harmonic-forge#1289): decision 3 wants
 each registry mode to claim only the classes its dry run validates, and that
 registry is issue C, which replaces the wildcard claims with per-tool ones.
+`layersets/registry-v1.json` is design-v1 with its gate layer replaced, at the same index, by the `registry` layer generated from `tools/registry/effects.toml` (`python3 tools/registry/effects.py layerset`, harmonic-forge#1290): its claims are `validated`, one per cited class, and a test keeps the file equal to a fresh render.

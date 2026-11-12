@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "layers": [
+    {
+      "name": "lint",
+      "claims": [
+        "*|shell"
+      ],
+      "claims_basis": "validated",
+      "module": null,
+      "bar": {
+        "replay": {
+          "classes": [
+            "shell"
+          ],
+          "min_share": 1.0
+        },
+        "sample_max_refusals": 0
+      }
+    },
+    {
+      "name": "registry",
+      "claims": [
+        "gh-pr-merge|receipt",
+        "git-push|receipt",
+        "kill_check|freshness",
+        "kill_check|receipt",
+        "l1_post|freshness",
+        "l1_post|receipt",
+        "lane1-rebase|freshness",
+        "lane1-rebase|receipt",
+        "preclose_check|receipt"
+      ],
+      "claims_basis": "validated",
+      "module": null,
+      "bar": {
+        "replay": {
+          "classes": [
+            "receipt",
+            "freshness"
+          ],
+          "min_share": 1.0
+        },
+        "sample_max_refusals": 0
+      }
+    },
+    {
+      "name": "provenance",
+      "claims": [
+        "*|provenance"
+      ],
+      "claims_basis": "validated",
+      "module": null,
+      "bar": {
+        "replay": {
+          "classes": [
+            "provenance"
+          ],
+          "min_share": 1.0
+        },
+        "sample_max_refusals": null
+      }
+    }
+  ],
+  "existing": {
+    "policy": "existing deny hooks",
+    "owed-work": "existing Stop hooks"
+  },
+  "accepted_uncovered": [
+    "exists",
+    "local-check"
+  ]
+}
