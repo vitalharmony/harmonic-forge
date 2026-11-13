@@ -150,6 +150,11 @@ class AC4TierW(Base):
         self.refused(spec("W", {"cases": [case(1)]}), "needs a `graph` key")
 
 
+class ExplicitNullGraph(Base):
+    def test_an_explicit_null_graph_is_refused_under_r(self) -> None:
+        self.refused(spec("R", {"graph": None, "cases": [case(1)]}), "`graph` is exactly")
+
+
 class LetteredCases(Base):
     def test_a_lettered_case_heading_and_id_post(self) -> None:
         self.ok(spec("R", {"cases": [case(6), {"id": "TC6a", "run": "x"}]}, prose="### TC6 — a\n### TC6a — b\n"))

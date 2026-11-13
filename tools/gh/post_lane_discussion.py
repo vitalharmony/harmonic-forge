@@ -148,12 +148,12 @@ def spec_structure_problems(body: str) -> list[str]:
             problems.append(f"the prose heading `### {head.group(1)}` has no case in the "
                             "```lane3-spec block")
     runs = [c["run"] for c in cases if isinstance(c, dict) and _nonblank(c.get("run"))]
-    graph = spec.get("graph")
-    if graph is None:
+    if "graph" not in spec:
         if tier in ("W", "P"):
             problems.append(f"Write tier {tier} needs a `graph` key: {{\"provision\", \"uri\"}}"
                             + (" or {\"none\": \"<reason>\"}" if tier == "W" else ""))
         return problems
+    graph = spec["graph"]
     if not isinstance(graph, dict) or set(graph) not in ({"provision", "uri"}, {"none"}):
         problems.append("`graph` is exactly {\"provision\", \"uri\"} or {\"none\": \"<reason>\"}")
         return problems
