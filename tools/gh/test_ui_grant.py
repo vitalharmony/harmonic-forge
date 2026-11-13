@@ -71,8 +71,11 @@ class FakeGitHub:
         self.opted, self.fail_refetch, self.contents_error = opted, fail_refetch, contents_error
         self.posts: list[tuple[str, str]] = []
 
-    def __call__(self, argv, **_kw):
+    def __call__(self, argv, **kw):
         path = next((a for a in argv[2:] if a.startswith("repos/")), "")
+        # harmonic-forge#1356: record which calls carry the shim caller marker.
+        self.calls = getattr(self, "calls", [])
+        self.calls.append((path, (kw.get("env") or {}).get("GH_SHIM_CALLER")))
         if "--method" in argv:
             body = Path(argv[argv.index("-F") + 1].split("@", 1)[1]).read_text()
             self.posts.append((path, body))
@@ -200,6 +203,16 @@ class RecordMerge(_Store):
             r"(?m)^<!-- ui-grant key=H2615 mode=merge granted_at=\S* digest=" + DIGEST + r" -->$"))
         self.assertIn("recorded on vitalharmony/hrse#2620 for digest " + DIGEST, lines[0])
         self.assertEqual(G.read_grant(KEY)["recorded"][0]["head_sha"], "c" * 40)
+
+    def test_f1356_only_the_pr_list_read_is_a_sanctioned_shim_caller(self):
+        self.pending()
+        gh = FakeGitHub(prs=[self.PR], statuses={"c" * 40: [actions_status()]})
+        G.record(KEY, now=NOW, runner=gh)
+        marked = [path for path, caller in gh.calls if caller]
+        self.assertEqual(marked, [f"repos/{HRSE}/pulls?state=open&per_page=100"])
+        self.assertTrue(all(caller in (None, "ui_grant") for _, caller in gh.calls))
+        self.assertTrue(any("/statuses?" in p and c is None for p, c in gh.calls))
+        self.assertTrue(any("/contents/" in p and c is None for p, c in gh.calls))
 
     def test_merge_record_refuses_zero_matching_prs(self):
         self.pending(digest="cd" * 8)

@@ -50,7 +50,8 @@ def _resolve_real_gh() -> str:
 #: board reads; `batch_preflight` finds an issue's PR by branch prefix;
 #: `l1_post` reads one branch's open PR (`pulls?head=`). harmonic-forge#1032:
 #: `gh_issue` runs one title search (`search/issues`) before each filing (R-0397).
-SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight", "l1_post", "gh_issue"})
+#: harmonic-forge#1356: `ui_grant` lists open PRs once to find the PR a merge grant names.
+SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight", "l1_post", "gh_issue", "ui_grant"})
 
 
 def main() -> None:
