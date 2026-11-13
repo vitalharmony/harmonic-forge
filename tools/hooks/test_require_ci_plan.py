@@ -263,6 +263,15 @@ class CdTarget(Fixture):
                 result, _ = self.call(self.at(self.repo, command), lane="2")
                 self.assertTrue(denied(result))
 
+    def test_a_walk_that_raises_still_judges_the_session_cwd(self):
+        # preclose pass 2 (sticky-wicket: the try/except is load-bearing): any
+        # future way the cd-target walk raises falls back to judging the cwd.
+        from unittest import mock  # noqa: PLC0415
+        with mock.patch.dict(os.environ, self.env("2"), clear=True), \
+                mock.patch.object(guard, "cd_targets", side_effect=ValueError("boom")):
+            reason = guard.decide(self.at(self.repo, "mise run check"), "2")
+        self.assertIsNotNone(reason)
+
     def test_a_non_cd_segment_stops_the_walk_so_no_target_is_judged(self):
         # The walk copies block_unchecked_push: any other segment before the gate
         # stops it with no target, so only the (inactive) session cwd is judged.
