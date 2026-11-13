@@ -87,7 +87,10 @@ tabulates another issue's footers as evidence, and reading the raw body put a
 
 <!-- R-0337 -->
 **A Lane 1 comment asking Lane 2 for more work on an existing branch is posted
-with `--kind rework` and `--rework-kind correction|rebase`, never as ordinary discussion.** `_Markers.newest()`
+with `--kind rework` and `--rework-kind correction|rebase|relay`, never as ordinary discussion.**
+`relay` (harmonic-forge#1354) is a step the handoff planned that only Lane 1 can
+enable (a push, a CI render), with no change asked of the work; it counts as no
+sticky-wicket round and raises no route floor. `_Markers.newest()`
 excludes `discussion` by design — on its own it is Lane 1 talking, not a lane
 transition — so a rebase request posted that way left the row still naming
 Lane 3 while Lane 2 owed the work and nobody had been told (hrse#1609; observed

@@ -62,7 +62,7 @@ _POSTED_BY = re.compile(r"posted-by=LANE(\d|-unset)\b", re.I)
 #: A comment's own footer stands on a line of its own; the last one is l1_post's.
 _OWN_FOOTER = re.compile(r"^[ \t]*(<!--\s*l1-post\b[^>]*-->)[ \t]*$", re.I | re.M)
 _QUOTED = re.compile(r"^[ \t]*>.*$", re.M)
-_REWORK_KIND = re.compile(r"\brework=(correction|rebase);")
+_REWORK_KIND = re.compile(r"\brework=(correction|rebase|relay);")
 _GATE_KEYS = {lane_state.KEY_GATE_PASS, lane_state.KEY_GATE_FAIL, lane_state.KEY_UNKNOWN}
 _VERDICT_KEY = {"PASS": lane_state.KEY_GATE_PASS, "FAIL": lane_state.KEY_GATE_FAIL,
                 "BLOCKED": lane_state.KEY_BLOCKED_LANE}

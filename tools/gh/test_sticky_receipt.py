@@ -185,7 +185,7 @@ class MainCallSiteTests(ReceiptHome):
         """The world checks inside `_post_kind` are long; a result landing meanwhile
         must be seen, so the check is repeated right before `comment_body`."""
         source = Path(l1_post.__file__).read_text()
-        late = source.index("        validate_sticky_wicket(repo, issue, kind=kind, sha=sha)\n")
+        late = source.index("        validate_sticky_wicket(repo, issue, kind=kind, sha=sha, rework_kind=rework_kind)\n")
         self.assertLess(late, source.index("    url, comment_id = comment_body(repo, issue"))
         self.assertGreater(late, source.index("def _post_kind("))
 
@@ -405,6 +405,50 @@ class RoundTests(ReceiptHome):
                                    "html_url": "u"}):
             sr.record(REPO, ISSUE, "PATCH", 2, "https://x/issues/1#issuecomment-9")
         self.assertEqual(sr.read(REPO, ISSUE)["through"], 2)
+
+
+def relay(cid):
+    return {"id": cid, "body": f"## L1 — rework, O35\n\n**Finding:** f\n**Next:** n\n\n"
+                                f"<!-- l1-post v1; kind=rework; sha=abc1234; rework=relay; body-sha256=0 -->"}
+
+
+def correction(cid):
+    return {"id": cid, "body": f"## L1 — rework, O35\n\n**Finding:** f\n**Next:** n\n\n"
+                                f"<!-- l1-post v1; kind=rework; sha=abc1234; rework=correction; body-sha256=0 -->"}
+
+
+class RelayTests(ReceiptHome):
+    """harmonic-forge#1354: a relay rework is no round and answers no gate."""
+
+    def test_ac2_relays_after_a_pass_owe_nothing(self):
+        thread = [gate(1, "PASS"), relay(2), relay(3)]
+        self.assertIsNone(sr.owed(thread, posting="rework", posting_rework_kind="relay"))
+        self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="relay"))
+
+    def test_ac2_corrections_still_owe(self):
+        thread = [gate(1, "PASS"), correction(2)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="correction"))
+
+    def test_ac2_posting_relay_is_not_counted(self):
+        thread = [gate(1, "PASS"), correction(2)]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="relay"))
+
+    def test_ac3_a_relay_does_not_answer_a_fail(self):
+        thread = [gate(1, "FAIL"), relay(2)]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="correction"))
+
+    def test_ac3_a_relay_is_not_a_round_in_rounds(self):
+        self.assertEqual(sr.rounds([gate(1, "PASS"), relay(2), relay(3)]), [(1, True, "gate")])
+
+    def test_a_quoted_relay_footer_does_not_count(self):
+        body = correction(2)["body"] + "\n> <!-- l1-post v1; kind=rework; rework=relay; -->"
+        self.assertEqual(sr.rework_kind(body), "correction")
+
+    def test_the_belt_owes_no_sticky_wicket_on_relays(self):
+        self.assertFalse(belt._sticky_wicket_owed(REPO, ISSUE, [gate(1, "PASS"), relay(2), relay(3)]))
+
+    def test_ac1_relay_is_an_accepted_rework_kind(self):
+        self.assertIn("relay", l1_post.REWORK_KINDS)
 
 
 class F1060PrecloseTests(ReceiptHome):

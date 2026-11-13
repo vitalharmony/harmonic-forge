@@ -11,6 +11,10 @@ five). `l1_post.py --kind rework` now refuses once the last two gate results on
 the issue are both non-PASS, unless this module holds a receipt recording the
 sticky-wicket verdict through the newer of them.
 
+A `relay` rework (harmonic-forge#1354) is no round and answers no gate result:
+it is a planned step only Lane 1 can enable, with no change asked of the work.
+So `record --through` never names one.
+
 A gate result is read with the same two signals the belt uses
 (`watch_lane_posts._is_gate_report`, `gate_ci.verdict_of`). It counts as
 non-PASS unless its verdict is exactly `PASS`: FAIL, BLOCKED, CONFLICT and an
@@ -46,6 +50,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 VERDICTS = ("PATCH", "REFORGE")
+
+#: harmonic-forge#1354: a `relay` rework is a step the handoff planned that only
+#: Lane 1 can enable (a push, a CI render); it asks for no change to the work, so
+#: it is no round and answers no gate result. Read from the comment's own
+#: `l1-post` footer only: a quoted or fenced copy never counts.
+RELAY = "relay"
+_OWN_FOOTER = re.compile(r"^[ \t]*(<!--\s*l1-post\b[^>]*-->)[ \t]*$", re.I | re.M)
+_REWORK_KIND = re.compile(r"\brework=(correction|rebase|relay);")
+
+
+def rework_kind(body: str) -> str | None:
+    """The `rework=` kind in the comment's own (last) `l1-post` footer, or None."""
+    footers = _OWN_FOOTER.findall(body or "")
+    found = _REWORK_KIND.search(footers[-1]) if footers else None
+    return found.group(1) if found else None
+
+
+def _counted_rework(classified: tuple[str, str] | None, body: str) -> bool:
+    """A Lane 1 rework that counts as a round or an answer: every kind but relay."""
+    return classified == ("l1", "rework") and rework_kind(body) != RELAY
 
 
 def receipt_dir() -> Path:
@@ -153,7 +177,7 @@ def rounds(comments: list[dict]) -> list[tuple[int, bool, str]]:
         if belt._is_gate_report(detail, body):
             found.append((int(comment["id"]), gate_ci.verdict_of(body) == "PASS", "gate"))
             answered = False
-        elif classified == ("l1", "rework"):
+        elif _counted_rework(classified, body):
             if found and found[-1][2] == "gate" and not found[-1][1] and not answered:
                 answered = True
             else:
@@ -176,7 +200,8 @@ def _open_rounds(comments: list[dict], through: int | None) -> tuple[list[int], 
         newest = tail[-1][0]
         later = [c for c in comments if int(c["id"]) > newest]
         import watch_lane_posts as belt  # noqa: PLC0415
-        unanswered = not any(belt._classify(c.get("body") or "") == ("l1", "rework") for c in later)
+        unanswered = not any(_counted_rework(belt._classify(c.get("body") or ""), c.get("body") or "")
+                             for c in later)
     return [entry[0] for entry in tail], unanswered
 
 
@@ -215,14 +240,14 @@ RETRY_EXEMPT_KINDS = ("ae", "sweep", "ae-and-sweep")
 
 
 def owed(comments: list[dict], posting: str | None = None,
-         through: int | None = None) -> tuple[int, int] | None:
+         through: int | None = None, posting_rework_kind: str | None = None) -> tuple[int, int] | None:
     """`(older, newer)` round ids when two consecutive non-PASS rounds stand
     after the later of the last PASS and a receipt's `through` (harmonic-forge#1060).
     `posting="rework"` counts the rework about to post as a round of its own,
     unless it answers an unanswered non-PASS gate result; its pair is then
-    `(newest, newest)`."""
+    `(newest, newest)`. A posting `relay` rework (harmonic-forge#1354) is not counted."""
     ids, unanswered = _open_rounds(comments, through)
-    if posting == "rework" and ids and not unanswered:
+    if posting == "rework" and posting_rework_kind != RELAY and ids and not unanswered:
         return ids[-1], ids[-1]
     if len(ids) < 2:
         return None
@@ -243,12 +268,12 @@ def covered(repo: str, issue: int, newer: int) -> bool:
 
 
 def refusal(repo: str, issue: int, comments: list[dict], *, kind: str | None = None,
-            attested_sha: str | None = None) -> str | None:
+            attested_sha: str | None = None, rework_kind: str | None = None) -> str | None:
     """Why a rework on this issue must not post yet, or None."""
     receipt = read(repo, issue)
     through = (int(receipt.get("through") or 0)
                if receipt and receipt.get("verdict") in VERDICTS else None)
-    pair = owed(comments, posting=kind, through=through)
+    pair = owed(comments, posting=kind, through=through, posting_rework_kind=rework_kind)
     if pair is None or covered(repo, issue, pair[1]):
         return None
     if kind in RETRY_EXEMPT_KINDS and attested_sha and gate_pair(comments, pair):
