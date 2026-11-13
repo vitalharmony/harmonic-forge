@@ -86,7 +86,7 @@ for the UI-only variant.
      `post_lane_discussion.py` refuses a spec without one
      (harmonic-forge#947). Each case also carries a `Run:` fenced command,
      and a W or P spec one header `Graph:` line naming the provisioning
-     command and `bolt://` URI (W only: `Graph: none — <reason>` when no case
+     command and a bolt/neo4j URI (W only: `Graph: none — <reason>` when no case
      touches a graph); the same poster refuses one without (harmonic-forge#1342).
      `check_lane3_ready.py` validates the `l1-post` footer, never the
      heading: confirm the byte-exact heading independently — "ready" from

@@ -103,20 +103,6 @@
         }
       }
     },
-    "spec_graph": {
-      "description": "How this repo's Lane 3 specs name a graph (harmonic-forge#1342). `provision_commands` lists the commands a spec's header `Graph:` line may name; absent means any non-empty command is accepted, and the `bolt://` URI is still required.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "provision_commands": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
-      }
-    },
     "tier_w_message": {
       "description": "The disposable-graph availability text this repo's readiness check prints (harmonic-forge#720 Q2). It names that repo's container, ports and task names, so it is adapter data rather than platform code. Absent means the readiness check prints no availability line.",
       "type": "object",

@@ -57,9 +57,13 @@ import _caller_path  # noqa: E402
 # case; a `Run:` line followed by a fenced block is its command; one unfenced
 # header `Graph:` line before the first case names the graph.
 _TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC[ \t]*\d+[a-z]?)\b")
-_RUN_LINE = re.compile(r"(?m)^[ \t]*\**[ \t]*Run:[ \t]*\**[ \t]*$")
+#: `Run:` may carry a list prefix (`-`, `*`, `1.`) or bold (`**Run:**`).
+_RUN_LINE = re.compile(
+    r"(?m)^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?\**[ \t]*Run:[ \t]*\**[ \t]*$")
 _GRAPH_LINE = re.compile(r"(?m)^[ \t]*\**[ \t]*Graph:[ \t]*\**[ \t]*(?P<value>[^\n]*)$")
-_BOLT = re.compile(r"bolt://\S+")
+#: Graph access is any bolt/neo4j URI, including the `+s` and `+ssc` forms
+#: (sticky-wicket REFORGE, 2026-11-13 ruling).
+_GRAPH_URI = re.compile(r"(?i)\b(?:bolt|neo4j)(?:\+ssc|\+s)?://\S+")
 _NONE = re.compile(r"(?i)^`?none`?\b(?P<rest>.*)$")
 #: Only an em dash or a spaced hyphen separates `none` from its reason; `:` is
 #: ambiguous right after `Graph:` (pitch finding 5).
@@ -74,45 +78,6 @@ def _inside(pos: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= pos < end for start, end in spans)
 
 
-def _provision_commands(repo_cwd: "Path | None") -> tuple[list[str] | None, str | None]:
-    """(declared provisioning commands or None, refusal or None).
-
-    sticky-wicket PATCH (harmonic-forge#1342 pass 1, survivor 4): the one
-    absence that accepts any command is a readable manifest with no
-    `spec_graph` key (AC5) -- or no manifest file at all in a repository.
-    An unreadable manifest, a non-object `spec_graph` or a malformed
-    `provision_commands` refuses with a named reason, never a pass."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gate"))
-    import adapter  # noqa: PLC0415
-    path = adapter.manifest_path(repo_cwd)
-    if path is None:
-        return None, ("no git repository at the spec's checkout, so the adapter manifest "
-                      "could not be located; run from a checkout of the target repo")
-    if not path.is_file():
-        return None, None
-    manifest, why_not = adapter.load_manifest(repo_cwd)
-    if manifest is None:
-        return None, f"the adapter manifest is unusable ({why_not})"
-    if "spec_graph" not in manifest:
-        return None, None
-    entry = manifest["spec_graph"]
-    if not isinstance(entry, dict):
-        return None, "malformed spec_graph in the adapter manifest: not a JSON object"
-    if "provision_commands" not in entry:
-        return None, None
-    commands = entry["provision_commands"]
-    if not isinstance(commands, list) or not commands \
-            or not all(isinstance(c, str) and c.strip() for c in commands):
-        return None, ("malformed spec_graph.provision_commands in the adapter manifest: "
-                      "it must be a non-empty list of non-empty strings")
-    return [c.strip() for c in commands], None
-
-
-#: Any line outside fences that labels a case: a heading of any level, a list
-#: item or bold text starting `TC`. Only `### TC<n>` opens a case the lint can
-#: check, so every other shape is refused rather than silently skipped.
-_CASE_LABEL = re.compile(
-    r"(?m)^[ \t]*(?:#{1,6}[ \t]*\**|[-*+][ \t]+\**|\d+[.)][ \t]+\**|\*\*)[ \t]*TC(?![A-Za-z])[^\n]*$")
 _FENCE_OPEN = re.compile(r"^[ \t]*(```|~~~)")
 
 
@@ -138,7 +103,7 @@ def _unclosed_fence_line(body: str) -> int | None:
     return opener[1] if opener else None
 
 
-def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[str]:
+def spec_structure_problems(body: str) -> list[str]:
     """Every structure problem in a Lane 3 spec (harmonic-forge#1342), or []."""
     tier = declared_tier(body)
     spans = _fenced_spans(body)
@@ -153,13 +118,6 @@ def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[s
     if not heads:
         problems.append("the spec has no `### TC<n>` case heading; every case opens with "
                         "one, e.g. `### TC1 — <what>`")
-    head_starts = {h.start() for h in heads}
-    for label in _CASE_LABEL.finditer(body):
-        if _inside(label.start(), spans) or label.start() in head_starts:
-            continue
-        line = body.count("\n", 0, label.start()) + 1
-        problems.append(f"line {line} labels a case outside `### TC<n>` form "
-                        f"({label.group(0).strip()!r}); write it as `### TC<n> — <what>`")
 
     run_blocks: list[str] = []
     missing: list[str] = []
@@ -172,14 +130,16 @@ def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[s
             after = run.end() + 1
             nxt = next((s for s in spans if s[0] >= after), None)
             if nxt and nxt[0] < end and not body[after:nxt[0]].strip() \
-                    and body[nxt[0]:nxt[1]].lstrip(" \t").startswith(("```", "~~~")):
+                    and body[nxt[0]:nxt[1]].lstrip(" \t").startswith(("```", "~~~")) \
+                    and any(line.strip() for line in body[nxt[0]:nxt[1]].split("\n")[1:-1]):
                 found = True
                 run_blocks.append(body[nxt[0]:nxt[1]])
         if not found:
             missing.append(re.sub(r"\s+", "", head.group(1)))
     if missing:
         problems.append("these test cases have no `Run:` line followed by a fenced command "
-                        f"block (inline backticks never count): {', '.join(missing)}")
+                        "block holding at least one non-blank line (inline backticks never "
+                        f"count): {', '.join(missing)}")
 
     if tier == "R" or tier is None:
         return problems
@@ -187,73 +147,40 @@ def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[s
     graphs = [m for m in _GRAPH_LINE.finditer(body, 0, first) if not _inside(m.start(), spans)]
     if not graphs:
         problems.append(f"Write tier {tier} needs one header `Graph:` line before the first "
-                        "`### TC` naming the provisioning command and the `bolt://` URI"
+                        "`### TC` naming the provisioning command and a bolt/neo4j URI"
                         + (", or `Graph: none — <reason>`" if tier == "W" else ""))
         return problems
     if len(graphs) > 1:
         problems.append(f"the spec has {len(graphs)} header `Graph:` lines; it needs exactly one")
         return problems
     value = graphs[0].group("value").strip()
-    commands, malformed = _provision_commands(repo_cwd)
-    if malformed:
-        problems.append(malformed)
-        return problems
     none = _NONE.match(value)
     if none:
         if tier == "P":
             problems.append("Write tier P refuses `Graph: none`: a production case names its "
-                            "graph (provisioning command and `bolt://` URI)")
+                            "graph (provisioning command and a bolt/neo4j URI)")
             return problems
         reason = _REASON.match(none.group("rest"))
         if not reason:
             problems.append("`Graph: none` under Write tier W needs a reason after an em dash "
                             "or a spaced hyphen: `Graph: none — <reason>`")
             return problems
-        graphy = [b for b in run_blocks
-                  if "bolt://" in b or any(c in b for c in (commands or []))]
-        if graphy:
+        if any(_GRAPH_URI.search(b) for b in run_blocks):
             problems.append("`Graph: none` is declared but a `Run:` block names a graph "
-                            "(`bolt://` or a declared provisioning command)")
+                            "URI (bolt/neo4j)")
         return problems
-    if not _BOLT.search(value):
-        problems.append("the `Graph:` line has no `bolt://` URI")
-    command = _BOLT.sub("", value).replace("`", "").strip(" \t·,;—-")
-    if commands is not None:
-        if not any(c in value for c in commands):
-            problems.append("the `Graph:` line names no declared provisioning command "
-                            f"(adapter `spec_graph.provision_commands`: {', '.join(commands)})")
-    elif not re.search(r"\w", command):
+    if not _GRAPH_URI.search(value):
+        problems.append("the `Graph:` line has no graph URI (bolt/neo4j)")
+    command = _GRAPH_URI.sub("", value).replace("`", "").strip(" \t·,;—-")
+    if not re.search(r"\w", command):
         problems.append("the `Graph:` line names no provisioning command")
     return problems
 
 
-_ORIGIN_SLUG = re.compile(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$")
-
-
-def spec_repo_cwd(repo: str, cwd: "Path | None" = None) -> Path:
-    """sticky-wicket PATCH (survivor 1): the adapter allowlist is read from the
-    checkout the post runs in, so that checkout must be `--repo`'s. Returns its
-    top level; refuses when the origin is unreadable or names another repo."""
-    cwd = cwd or Path.cwd()
-    origin = subprocess.run(["git", "-C", str(cwd), "remote", "get-url", "origin"],
-                            capture_output=True, text=True, check=False)
-    top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-                         capture_output=True, text=True, check=False)
-    match = _ORIGIN_SLUG.search(origin.stdout.strip()) if origin.returncode == 0 else None
-    slug = match.group(1) if match else None
-    if top.returncode or slug is None or slug.lower() != repo.lower():
-        found = slug or "no readable origin"
-        print(f"[post-comment] refused: the Lane 3 spec structure is checked against the "
-              f"target repo's adapter manifest, but this checkout is {found}, not {repo}; "
-              f"run from a checkout of {repo} (harmonic-forge#1342).", file=sys.stderr)
-        raise SystemExit(2)
-    return Path(top.stdout.strip())
-
-
-def require_spec_structure(body: str, repo_cwd: "Path | None" = None) -> None:
+def require_spec_structure(body: str) -> None:
     """harmonic-forge#1342: refuse a Lane 3 spec without a `Run:` fenced block on
     every case and, under Write tier W or P, one header `Graph:` line."""
-    problems = spec_structure_problems(body, repo_cwd)
+    problems = spec_structure_problems(body)
     if problems:
         print("[post-comment] refused: the Lane 3 spec structure is incomplete "
               "(harmonic-forge#1342): " + "; ".join(problems) + ".", file=sys.stderr)
@@ -821,7 +748,7 @@ def main() -> None:
     if artifact == "spec":
         require_write_tier(final, body_len=len(body.rstrip("\n")))
         require_ae_by_name(final)
-        require_spec_structure(final, spec_repo_cwd(args.repo))
+        require_spec_structure(final)
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME

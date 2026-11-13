@@ -50,8 +50,9 @@ Read this list once, up front, instead:
 - Every `### TC<n>` carries a `Run:` line followed by a fenced block with the
   exact command (inline backticks never count). Under Write tier W or P, one
   header `Graph:` line before the first case names the provisioning command
-  and the `bolt://` URI; Tier W may instead read `Graph: none — <reason>` when
-  no `Run:` block touches a graph, and Tier P never may
+  and a bolt/neo4j URI (`bolt://`, `neo4j://`, or a `+s`/`+ssc` form); Tier W
+  may instead read `Graph: none — <reason>` when no `Run:` block holds a graph
+  URI, and Tier P never may
   (`post_lane_discussion.py` refuses otherwise, harmonic-forge#1342):
 
   ```
