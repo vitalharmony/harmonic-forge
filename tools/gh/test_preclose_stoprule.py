@@ -379,6 +379,43 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
         self.assertEqual(emitted.call_count, 1)
         self.assertEqual(emitted.call_args.args[4]["site"], "post-verdict")
 
+    def test_post_verdict_stamps_the_pass_it_accepted_and_force_binds_its_head(self):
+        """harmonic-forge#1346: the only production writer of pass_sha. A rebased
+        twin base (c) accepted against pass b is stamped pass_sha=b, so force_head
+        binds the post-verdict head with no git."""
+        findings = Path(tempfile.mkdtemp()) / "pv.json"
+        findings.write_text("[]")
+        prior = {"pass_history": [{"sha": "b" * 40, "epoch": 0}]}
+        args = mock.Mock(repo="vitalharmony/harmonic-forge", issue=1346, base="c", head="HEAD",
+                         main="origin/main", envelope="e.jsonl", own_model="claude-opus-5-5",
+                         findings=str(findings), cross_family_ms="300", threat_model="good-faith",
+                         reverify=None)
+        written = {}
+        with mock.patch.object(preclose, "require_writable"), \
+                mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
+                mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
+                mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="c" * 40)), \
+                mock.patch.object(preclose, "find_receipt", return_value=prior), \
+                mock.patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
+                mock.patch.object(passes, "current", side_effect=lambda h: h * 2 if len(h) == 1 else h), \
+                mock.patch.object(passes, "accepts_entry", return_value=True), \
+                mock.patch.object(preclose, "local_patch_id", return_value="p"), \
+                mock.patch.object(preclose, "require_recorded_envelope"), \
+                mock.patch.object(preclose, "compute_provenance",
+                                  return_value=preclose.PROVENANCE_TRIGGERED[0] + " (codex)"), \
+                mock.patch.object(preclose, "check_provenance"), \
+                mock.patch.object(preclose, "write_receipt",
+                                  side_effect=lambda *a, **k: written.update(k["extra"]) or Path("r")), \
+                mock.patch.object(preclose, "emit_shadow"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            preclose.post_verdict(args)
+        check = written["post_verdict_check"]
+        self.assertEqual(check["base_sha"], "c" * 40)
+        self.assertEqual(check["pass_sha"], "b" * 40)
+        receipt = {**prior, "post_verdict_check": check}
+        self.assertEqual(passes.force_head(receipt), "a" * 40)
+
     def test_post_verdict_fields_carry_shadow(self):
         fields = passes.post_verdict_fields({}, "b" * 40, "c" * 40, "p", CROSS, 0, 300,
                                             passes.shadow_error("x"))
