@@ -173,6 +173,56 @@ class ForceHeadEpochTests(unittest.TestCase):
         self.assertEqual(preclose_passes.force_head(receipt), "d" * 40)
 
 
+class ForceHeadRebasedTwinTests(unittest.TestCase):
+    """harmonic-forge#1346: a post-verdict check whose base is a rebased twin of
+    the latest pass binds the post-verdict head."""
+
+    def _receipt(self, check: dict) -> dict:
+        return {"reviewed_sha": "a" * 40, "status": "complete",
+                "pass_history": [{"sha": "9" * 40, "surviving": 2, "epoch": 0},
+                                 {"sha": "a" * 40, "surviving": 2, "epoch": 0}],
+                "post_verdict_check": check}
+
+    def test_pass_sha_binds_the_post_verdict_head_with_no_git(self):
+        import preclose_passes  # noqa: PLC0415
+        receipt = self._receipt({"base_sha": "b" * 40, "head_sha": "c" * 40, "pass_sha": "a" * 40})
+        with mock.patch.object(preclose_passes, "accepts_entry",
+                               side_effect=AssertionError("no git with pass_sha")):
+            self.assertEqual(preclose_passes.force_head(receipt), "c" * 40)
+
+    def test_a_pass_sha_naming_another_pass_falls_back_to_the_pass_head(self):
+        import preclose_passes  # noqa: PLC0415
+        receipt = self._receipt({"base_sha": "b" * 40, "head_sha": "c" * 40, "pass_sha": "9" * 40})
+        with mock.patch.object(preclose_passes, "accepts_entry", return_value=True):
+            self.assertEqual(preclose_passes.force_head(receipt), "a" * 40)
+
+    def test_legacy_check_uses_the_change_identity_comparator(self):
+        import preclose_passes  # noqa: PLC0415
+        receipt = self._receipt({"base_sha": "b" * 40, "head_sha": "c" * 40})
+        with mock.patch.object(preclose_passes, "accepts_entry", return_value=True) as acc:
+            self.assertEqual(preclose_passes.force_head(receipt, repo_dir="/r"), "c" * 40)
+        self.assertEqual(acc.call_args.args[1], "b" * 40)
+        with mock.patch.object(preclose_passes, "accepts_entry", return_value=False):
+            self.assertEqual(preclose_passes.force_head(receipt), "a" * 40)
+
+    def test_post_verdict_fields_records_the_pass_sha(self):
+        import preclose_passes  # noqa: PLC0415
+        out = preclose_passes.post_verdict_fields(self._receipt({}), "b" * 40, "c" * 40, None,
+                                                  "prov", 0, pass_sha="a" * 40)
+        self.assertEqual(out["post_verdict_check"]["pass_sha"], "a" * 40)
+
+    def test_a_head_moved_after_the_check_is_still_refused(self):
+        receipt_head = "c" * 40
+        self.assertNotEqual(receipt_head, "d" * 40)
+        # force_grant.require binds the exact grant SHA; a later head never matches it.
+        import force_grant as G2  # noqa: PLC0415
+        with mock.patch.object(G2, "read_grant", return_value={
+                "key": "F1", "repo": "o/r", "issue": 1, "sha": receipt_head, "mode": "plain",
+                "status": "recorded", "expires_at": "2999-01-01T00:00:00Z", "granted_at": "x"}):
+            with self.assertRaises(G2.GrantRefused):
+                G2.require("o/r", 1, "d" * 40)
+
+
 class PrecloseGateTests(Store):
     """AC3/AC4 inside preclose_check: the gate and the event."""
 

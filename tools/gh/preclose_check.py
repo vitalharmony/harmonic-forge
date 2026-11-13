@@ -1607,7 +1607,7 @@ def post_verdict(args: argparse.Namespace) -> int:
                          prior.get("refuters", 0), status=prior.get("status", "complete"),
                          extra=preclose_passes.post_verdict_fields(
                              prior, base_sha, head_sha, patch, provenance, surviving, cross_ms,
-                             shadow))
+                             shadow, pass_sha=passes[-1].get("sha")))
     emit_shadow(repo, args.issue, head_sha, shadow, {"site": "post-verdict", "forced": False},
                 datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     print(f"preclose-check: post-verdict check recorded for {repo}#{args.issue}, "
