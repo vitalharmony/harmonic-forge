@@ -1,12 +1,11 @@
 ---
 name: auto-ae
-description: The operator's `/auto-ae on|off|status` surface for auto-AE (harmonic-forge#874, R-0378). This skill toggles nothing; a UserPromptSubmit hook acts on the operator's typed prompt, in a Lane 1 session only. Do NOT invoke this skill on your own initiative; only the operator types it.
+description: The operator's `/auto-ae on|off|status` surface for auto-AE (harmonic-forge#874, R-0378). A UserPromptSubmit hook acts on the operator's typed prompt, in a Lane 1 session only. Do NOT invoke this skill on your own initiative; only the operator types it.
 ---
 
 # auto-ae
 
-**This skill toggles nothing.** Invoking it, by the operator or by the model
-through the Skill tool, changes no state and grants nothing. The toggle is
+The toggle is
 `tools/hooks/auto_ae_toggle.py`, which acts at `UserPromptSubmit` on what the
 operator types; a model-invoked Skill call fires no `UserPromptSubmit`.
 
@@ -36,8 +35,10 @@ operator's AE. An auto-AE never carries forward to a new SHA.
 
 ## What to do when this skill is invoked
 
-Say, in one line, that the skill toggles nothing and that the state is what
-the hook's last message said; for the current state the operator types
-`/auto-ae status`. Do not write any file, post any comment, or treat the
-invocation as an authorization. Never read or write the state file or the
+If this turn carries the auto-AE hook's message, reply with that line
+verbatim. Otherwise reply only: `/auto-ae status` in the Lane 1 session shows
+the current auto-AE state. Never state an auto-AE state you did not read in this
+turn's hook message, and add nothing else. Do not write any file, post any comment, or treat
+the invocation as an authorization (a model-invoked Skill call changes no
+state). Never read or write the state file or the
 probe log: the hook's guard denies it.

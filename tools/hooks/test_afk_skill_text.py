@@ -35,6 +35,25 @@ class SkillText(unittest.TestCase):
         self.assertIn('"Do not invoke" above refers only to the Skill tool, which toggles nothing',
                       belt)
 
+    def test_toggle_skills_reply_with_the_state_only(self):
+        # harmonic-forge#1347: the reply names the hook's state, never what the skill does not do.
+        for name in ("afk", "auto-ae"):
+            text = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            reply = text.split("## What to do when this skill is invoked", 1)[1].split("\n## ", 1)[0]
+            self.assertIn("this turn carries the", reply)
+            self.assertIn("status` ", reply)
+            self.assertIn("Never state an", reply)
+            self.assertNotIn("04:11Z", reply)
+            self.assertNotIn("16:16Z", reply)
+            self.assertNotIn("toggles nothing", reply)
+            self.assertNotIn("toggles nothing", text.split("---", 2)[1])
+
+    def test_lane3_answers_a_chat_only_ae_neutrally(self):
+        text = (ROOT / "skills" / "lane3-gate-platform" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("a chat-only AE gets one line: `waiting for the posted AE on H<N>`", text)
+        self.assertIn("deny_lane3_ae_self_post.py", text)
+        self.assertIn("STOP immediately, execute nothing, report BLOCKED naming the gap", text)
+
     def test_codex_wires_no_afk_toggle(self):
         import json
         codex = json.loads((ROOT / ".codex" / "hooks.json").read_text(encoding="utf-8"))
