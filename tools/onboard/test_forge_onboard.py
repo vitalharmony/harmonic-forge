@@ -693,7 +693,7 @@ class LaneHookSetCheckTests(unittest.TestCase):
     def test_a_project_hook_counts_as_project_specific(self) -> None:
         check = fo.check_hooks(self._project("own", {"hooks": self.OWN}))
         self.assertEqual(check.status, fo.OK, check.detail)
-        self.assertIn("52 from the Forge set, 1 project-specific, 0 removable", check.detail)
+        self.assertIn("53 from the Forge set, 1 project-specific, 0 removable", check.detail)
 
     def test_a_byte_identical_class_a_entry_is_counted_removable(self) -> None:
         event, block = self._set_entry("require_ci_plan.py")
