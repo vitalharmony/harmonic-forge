@@ -151,6 +151,27 @@ class ReforgePass1Survivors(unittest.TestCase):
         self.assertIsNotNone(hook.decide("gh --repo o/r pr checks 9 && gh -R o/r pr merge 9"))
 
 
+class ReforgePass2Survivors(unittest.TestCase):
+    """Reforge pass 2 (issuecomment-6840993694), sticky-wicket PATCH
+    (issuecomment-6841112555): a write is the subcommand, never a data word."""
+
+    def test_a_write_word_as_data_is_allowed(self):
+        for command in ["gh run view 9 --log-failed; git log --oneline --grep push",
+                        "pytest -q && git stash push",
+                        "gh pr checks 1 && git cat-file commit HEAD",
+                        "mise run check && mise run gh-new-issue --title commit",
+                        "mise run check && mise run gh-new-issue --title check"]:
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_uv_value_flags_do_not_hide_pytest(self):
+        for command in ["uv run --project backend pytest -q && git push",
+                        "uv run --directory backend pytest && git push",
+                        "pytest; git -C /tmp/r -c user.name=x commit -m y"]:
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+
 class AC3Replay(unittest.TestCase):
     """protocol-failures.jsonl 281 and 287 record the shape, not the literal text:
     281 printed a failing verify result and merged in one command (F1244, PR 1322);

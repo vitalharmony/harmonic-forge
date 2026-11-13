@@ -41,6 +41,10 @@ Known residual (operator ruling 2026-11-12, option A): a here-doc body fed to a
 shell (`bash <<X ... X`) is NOT parsed, so a gate and a write inside one are not
 seen.
 
+Known residual (sticky-wicket PATCH, issuecomment-6841112555): wrapper value flags
+are a fixed list (`_VALUE_FLAGS`). An unlisted value-taking wrapper flag makes its
+value read as the program, so that command's gate is not seen (fails open).
+
 The decision goes to stderr (harmonic-forge#1291's decision log is not on main).
 """
 from __future__ import annotations
@@ -74,7 +78,11 @@ _WRAPPERS = frozenset({"env", "exec", "sudo", "command", "nohup", "nice", "time"
 #: Wrapper flags whose next word is their value, never the program
 #: (`python3 -X dev`, `uv run --with x`, `env -C /x`, `mise -C x`).
 _VALUE_FLAGS = frozenset({"-X", "-W", "--with", "--from", "--python", "-C", "--cd",
-                          "-u", "--chdir"})
+                          "-u", "--chdir",
+                          # uv run's value flags (sticky-wicket PATCH, issuecomment-6841112555)
+                          "--project", "--directory", "--package", "--env-file", "--extra",
+                          "--group", "--index", "--default-index", "-p",
+                          "--with-requirements", "--with-editable"})
 
 
 def _words(argv: list[str]) -> list[str]:
@@ -119,11 +127,10 @@ def gate_of(argv: list[str]) -> Optional[str]:
         rest = _after_mise_exec(argv)
         if rest is not None:
             return gate_of(rest)
-        if words & {"run", "r"}:
-            for task in ("check-full", "check"):
-                if task in words:
-                    return f"mise run {task}"
-        if "preclose-check" in words and "--complete" in words:
+        task = _mise_task(argv)
+        if task in ("check-full", "check"):
+            return f"mise run {task}"
+        if task == "preclose-check" and "--complete" in words:
             return "mise run preclose-check --complete"
         return None
     # The gate is the PROGRAM, never a data word (sticky-wicket PATCH,
@@ -135,31 +142,46 @@ def gate_of(argv: list[str]) -> Optional[str]:
     return None
 
 
-#: gh global flags that take a value, skipped when reading the subcommand path.
+#: Global flags that take a value, skipped when reading a program's subcommand path.
 _GH_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
+_GIT_VALUE_FLAGS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                              "--config-env", "--super-prefix"})
 
 
-def _gh_path(argv: list[str]) -> list[str]:
-    """The first two non-flag words after `gh` (its subcommand path), skipping the
-    value of `-R`/`--repo`. `gh pr view 12 --json checks` is `["pr", "view"]`."""
+def _subcommand(argv: list[str], program: str, value_flags: frozenset[str],
+                count: int) -> list[str]:
+    """The first `count` non-flag words after `program`, skipping each value flag's
+    value. A data word later in argv (`git log --grep push`) is never the subcommand
+    (sticky-wicket PATCHes, issuecomment-6840890733 and issuecomment-6841112555)."""
     words = _words(argv)
-    if "gh" not in words:
+    if program not in words:
         return []
     path: list[str] = []
     skip = False
-    for word in words[words.index("gh") + 1:]:
+    for word in words[words.index(program) + 1:]:
         if skip:
             skip = False
             continue
-        if word in _GH_VALUE_FLAGS:
+        if word in value_flags:
             skip = True
             continue
         if word.startswith("-"):
             continue
         path.append(word)
-        if len(path) == 2:
+        if len(path) == count:
             break
     return path
+
+
+def _gh_path(argv: list[str]) -> list[str]:
+    """`gh pr view 12 --json checks` is `["pr", "view"]`."""
+    return _subcommand(argv, "gh", _GH_VALUE_FLAGS, 2)
+
+
+def _mise_task(argv: list[str]) -> Optional[str]:
+    """The task `mise run <task>` / `mise r <task>` runs, or None."""
+    path = _subcommand(argv, "mise", _VALUE_FLAGS, 2)
+    return path[1] if len(path) == 2 and path[0] in ("run", "r") else None
 
 
 def _after_mise_exec(argv: list[str]) -> Optional[list[str]]:
@@ -192,16 +214,15 @@ def write_of(argv: list[str]) -> Optional[str]:
     words = set(_words(argv))
     program = _program(argv)
     if program == "git":
-        for verb in ("commit", "push"):
-            if verb in words:
-                return f"git {verb}"
-        return None
+        verb = _subcommand(argv, "git", _GIT_VALUE_FLAGS, 1)
+        return f"git {verb[0]}" if verb and verb[0] in ("commit", "push") else None
     if program == "gh":
         return "gh pr merge" if _gh_path(argv) == ["pr", "merge"] else None
     if program == "mise":
-        if "commit" in words:
+        task = _mise_task(argv)
+        if task == "commit":
             return "mise run commit"
-        if "restart" in words and "--no-git" not in words:
+        if task == "restart" and "--no-git" not in words:
             return "mise run restart"
     return None
 
