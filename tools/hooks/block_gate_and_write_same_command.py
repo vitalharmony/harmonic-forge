@@ -71,6 +71,12 @@ _WRAPPERS = frozenset({"env", "exec", "sudo", "command", "nohup", "nice", "time"
                        "timeout", "uv", "run", "--", "python", "python3"})
 
 
+#: Wrapper flags whose next word is their value, never the program
+#: (`python3 -X dev`, `uv run --with x`, `env -C /x`, `mise -C x`).
+_VALUE_FLAGS = frozenset({"-X", "-W", "--with", "--from", "--python", "-C", "--cd",
+                          "-u", "--chdir"})
+
+
 def _words(argv: list[str]) -> list[str]:
     return [_base(w) for w in argv]
 
@@ -79,7 +85,14 @@ def _program(argv: list[str]) -> Optional[str]:
     """The program a simple command runs, past wrappers, assignments, flags and numbers.
     Only `git`, `gh` and `mise` change how the words are read, so a wrong guess for
     any other program changes nothing: those are matched by word presence."""
+    skip = False
     for word in _words(argv):
+        if skip:
+            skip = False
+            continue
+        if word in _VALUE_FLAGS:
+            skip = True
+            continue
         if (word in _WRAPPERS or word.startswith("python") or word.startswith("-")
                 or word.isdigit() or ("=" in word and not word.startswith("-"))):
             continue
@@ -96,12 +109,16 @@ def gate_of(argv: list[str]) -> Optional[str]:
     if program == "git":
         return None
     if program == "gh":
-        if {"pr", "checks"} <= words:
+        path = _gh_path(argv)
+        if path == ["pr", "checks"]:
             return "gh pr checks"
-        if "run" in words and words & {"view", "watch"}:
-            return "gh run " + ("watch" if "watch" in words else "view")
+        if path in (["run", "view"], ["run", "watch"]):
+            return "gh run " + path[1]
         return None
     if program == "mise":
+        rest = _after_mise_exec(argv)
+        if rest is not None:
+            return gate_of(rest)
         if words & {"run", "r"}:
             for task in ("check-full", "check"):
                 if task in words:
@@ -109,10 +126,63 @@ def gate_of(argv: list[str]) -> Optional[str]:
         if "preclose-check" in words and "--complete" in words:
             return "mise run preclose-check --complete"
         return None
-    if "pytest" in words:
+    # The gate is the PROGRAM, never a data word (sticky-wicket PATCH,
+    # issuecomment-6840890733): `echo pytest` and `pip show pytest` are not gates.
+    if program in ("pytest", "py.test"):
         return "pytest"
-    if "preclose_check.py" in words and "--complete" in words:
+    if program == "preclose_check.py" and "--complete" in words:
         return "preclose_check.py --complete"
+    return None
+
+
+#: gh global flags that take a value, skipped when reading the subcommand path.
+_GH_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
+
+
+def _gh_path(argv: list[str]) -> list[str]:
+    """The first two non-flag words after `gh` (its subcommand path), skipping the
+    value of `-R`/`--repo`. `gh pr view 12 --json checks` is `["pr", "view"]`."""
+    words = _words(argv)
+    if "gh" not in words:
+        return []
+    path: list[str] = []
+    skip = False
+    for word in words[words.index("gh") + 1:]:
+        if skip:
+            skip = False
+            continue
+        if word in _GH_VALUE_FLAGS:
+            skip = True
+            continue
+        if word.startswith("-"):
+            continue
+        path.append(word)
+        if len(path) == 2:
+            break
+    return path
+
+
+def _after_mise_exec(argv: list[str]) -> Optional[list[str]]:
+    """The command `mise exec`/`mise x` runs (the words after `--`, else after the
+    verb), or None when this is not a mise exec."""
+    words = _words(argv)
+    if "mise" not in words:
+        return None
+    skip = False
+    for index in range(words.index("mise") + 1, len(words)):
+        word = words[index]
+        if skip:
+            skip = False
+            continue
+        if word in _VALUE_FLAGS:
+            skip = True
+            continue
+        if word.startswith("-"):
+            continue
+        if word not in ("exec", "x"):
+            return None
+        rest = argv[index + 1:]
+        return rest[rest.index("--") + 1:] if "--" in rest else rest
     return None
 
 
@@ -127,7 +197,7 @@ def write_of(argv: list[str]) -> Optional[str]:
                 return f"git {verb}"
         return None
     if program == "gh":
-        return "gh pr merge" if {"pr", "merge"} <= words else None
+        return "gh pr merge" if _gh_path(argv) == ["pr", "merge"] else None
     if program == "mise":
         if "commit" in words:
             return "mise run commit"

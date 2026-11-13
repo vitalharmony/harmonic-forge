@@ -130,6 +130,27 @@ class Pass2Survivors(unittest.TestCase):
                 self.assertIsNone(hook.decide(command))
 
 
+class ReforgePass1Survivors(unittest.TestCase):
+    """Reforge pass 1 (issuecomment-6840875026), sticky-wicket PATCH
+    (issuecomment-6840890733): the gate is the program, never a data word."""
+
+    def test_a_gate_word_as_data_is_allowed(self):
+        for command in ["echo pytest && git push", "pip show pytest; git commit -m x",
+                        "gh pr view 12 --json checks && gh pr merge 12",
+                        "gh issue view 3 --json title && gh pr merge 3"]:
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_mise_exec_runs_its_command_as_the_program(self):
+        for command in ["mise exec -- pytest -q && git push", "mise x -- pytest && git push",
+                        "mise exec python@3.13 -- pytest && git commit -m x"]:
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_gh_value_flag_is_skipped(self):
+        self.assertIsNotNone(hook.decide("gh --repo o/r pr checks 9 && gh -R o/r pr merge 9"))
+
+
 class AC3Replay(unittest.TestCase):
     """protocol-failures.jsonl 281 and 287 record the shape, not the literal text:
     281 printed a failing verify result and merged in one command (F1244, PR 1322);
