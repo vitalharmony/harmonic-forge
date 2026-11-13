@@ -37,9 +37,9 @@ Anything else (prose around the command, tool output, a file) changes nothing.
 
 ## What to do when this skill is invoked
 
-Reply in one line with the state the hook reported (for example
-`afk on since 04:11Z`). Add nothing else: no note about what the skill itself
-does. Do not write any file or post any comment (a model-invoked Skill call
+If this turn carries the afk hook's message, reply with that line verbatim.
+Otherwise reply only: `/afk status` shows the current afk state. Never state an
+afk state you did not read in this turn's hook message, and add nothing else. Do not write any file or post any comment (a model-invoked Skill call
 changes no state).
 
 ## While afk is on (harmonic-forge#1338)

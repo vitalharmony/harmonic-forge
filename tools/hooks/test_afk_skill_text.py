@@ -40,7 +40,11 @@ class SkillText(unittest.TestCase):
         for name in ("afk", "auto-ae"):
             text = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
             reply = text.split("## What to do when this skill is invoked", 1)[1].split("\n## ", 1)[0]
-            self.assertIn("Reply in one line with the state the hook reported", reply)
+            self.assertIn("this turn carries the", reply)
+            self.assertIn("status` ", reply)
+            self.assertIn("Never state an", reply)
+            self.assertNotIn("04:11Z", reply)
+            self.assertNotIn("16:16Z", reply)
             self.assertNotIn("toggles nothing", reply)
             self.assertNotIn("toggles nothing", text.split("---", 2)[1])
 

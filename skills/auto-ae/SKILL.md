@@ -35,9 +35,10 @@ operator's AE. An auto-AE never carries forward to a new SHA.
 
 ## What to do when this skill is invoked
 
-Reply in one line with the state the hook reported (for example
-`auto-AE on until 16:16Z for F1347, H2667`). Add nothing else: no note about
-what the skill itself does. Do not write any file, post any comment, or treat
+If this turn carries the auto-AE hook's message, reply with that line
+verbatim. Otherwise reply only: `/auto-ae status` in the Lane 1 session shows
+the current auto-AE state. Never state an auto-AE state you did not read in this
+turn's hook message, and add nothing else. Do not write any file, post any comment, or treat
 the invocation as an authorization (a model-invoked Skill call changes no
 state). Never read or write the state file or the
 probe log: the hook's guard denies it.
