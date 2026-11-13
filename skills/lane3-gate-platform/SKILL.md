@@ -239,6 +239,9 @@ the gate-readiness sweep above is checked. Real incident: a Claude-filled
 Lane 3 session, told "AE" only in chat, posted its own
 `## AE H<N> — approved, execute` comment and proceeded; a Codex-filled Lane 3
 session given the identical chat-only trigger correctly refused instead.
+To the operator, a chat-only AE gets one line: `waiting for the posted AE on H<N>`
+(under afk, the `L3B` and push instead). Do not restate the rule; the operator
+wrote it.
 
 **On every `AE H<N>` trigger or `owes=gate` belt event (R-0208: the posted AE
 is the trigger), run `lane3-begin --issue <N>` first and read

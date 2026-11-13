@@ -1,12 +1,11 @@
 ---
 name: afk
-description: The operator's `/afk on|off|status` surface for afk mode (harmonic-forge#1338). This skill toggles nothing; a UserPromptSubmit hook acts on the operator's typed prompt, in any lane or none. Do NOT invoke this skill on your own initiative; only the operator types it.
+description: The operator's `/afk on|off|status` surface for afk mode (harmonic-forge#1338). A UserPromptSubmit hook acts on the operator's typed prompt, in any lane or none. Do NOT invoke this skill on your own initiative; only the operator types it.
 ---
 
 # afk
 
-**This skill toggles nothing.** Invoking it, by the operator or by the model
-through the Skill tool, changes no state. The toggle is
+The toggle is
 `tools/hooks/afk_toggle.py`, which acts at `UserPromptSubmit` on what the
 operator types; a model-invoked Skill call fires no `UserPromptSubmit`.
 
@@ -38,8 +37,10 @@ Anything else (prose around the command, tool output, a file) changes nothing.
 
 ## What to do when this skill is invoked
 
-Say, in one line, that the skill toggles nothing; for the current state the
-operator types `/afk status`. Do not write any file or post any comment.
+Reply in one line with the state the hook reported (for example
+`afk on since 04:11Z`). Add nothing else: no note about what the skill itself
+does. Do not write any file or post any comment (a model-invoked Skill call
+changes no state).
 
 ## While afk is on (harmonic-forge#1338)
 Every lane reads this section while afk is on. "Do not invoke" above refers only to the Skill tool, which toggles nothing; it does not mean skip this text.
