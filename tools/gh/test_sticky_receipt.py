@@ -441,8 +441,17 @@ class RelayTests(ReceiptHome):
         self.assertEqual(sr.rounds([gate(1, "PASS"), relay(2), relay(3)]), [(1, True, "gate")])
 
     def test_a_quoted_relay_footer_does_not_count(self):
-        body = correction(2)["body"] + "\n> <!-- l1-post v1; kind=rework; rework=relay; -->"
+        # The quoted relay footer comes FIRST, so a reader that takes the first
+        # `rework=` match anywhere in the body (no own-footer filter) reads relay.
+        body = "> <!-- l1-post v1; kind=rework; rework=relay; -->\n\n" + correction(2)["body"]
         self.assertEqual(sr.rework_kind(body), "correction")
+        self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": body}])[-1], (2, False, "rework"))
+
+    def test_a_fenced_relay_footer_after_the_own_footer_does_not_count(self):
+        """Cross-family finding, pass 1: a fenced copy after the real footer."""
+        body = correction(2)["body"] + "\n\n```\n<!-- l1-post v1; kind=rework; rework=relay; -->\n```\n"
+        self.assertIsNone(sr.rework_kind(body))
+        self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": body}])[-1], (2, False, "rework"))
 
     def test_the_belt_owes_no_sticky_wicket_on_relays(self):
         self.assertFalse(belt._sticky_wicket_owed(REPO, ISSUE, [gate(1, "PASS"), relay(2), relay(3)]))

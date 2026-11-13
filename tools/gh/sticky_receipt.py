@@ -54,16 +54,20 @@ VERDICTS = ("PATCH", "REFORGE")
 #: harmonic-forge#1354: a `relay` rework is a step the handoff planned that only
 #: Lane 1 can enable (a push, a CI render); it asks for no change to the work, so
 #: it is no round and answers no gate result. Read from the comment's own
-#: `l1-post` footer only: a quoted or fenced copy never counts.
+#: `l1-post` footer only: `l1_post` writes it as the body's last line, so a
+#: quoted or fenced copy anywhere else never counts.
 RELAY = "relay"
-_OWN_FOOTER = re.compile(r"^[ \t]*(<!--\s*l1-post\b[^>]*-->)[ \t]*$", re.I | re.M)
+_OWN_FOOTER = re.compile(r"^[ \t]*<!--\s*l1-post\b[^>]*-->[ \t]*$", re.I)
 _REWORK_KIND = re.compile(r"\brework=(correction|rebase|relay);")
 
 
 def rework_kind(body: str) -> str | None:
-    """The `rework=` kind in the comment's own (last) `l1-post` footer, or None."""
-    footers = _OWN_FOOTER.findall(body or "")
-    found = _REWORK_KIND.search(footers[-1]) if footers else None
+    """The `rework=` kind in the comment's own `l1-post` footer, or None. The own
+    footer is the body's last non-blank line (where `l1_post` writes it); a
+    footer-shaped line anywhere else, quoted or fenced, is never read."""
+    lines = [line for line in (body or "").splitlines() if line.strip()]
+    last = lines[-1] if lines else ""
+    found = _REWORK_KIND.search(last) if _OWN_FOOTER.match(last) else None
     return found.group(1) if found else None
 
 
