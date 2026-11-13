@@ -65,6 +65,11 @@ Before an L2D, Lane 2 checks the runtime contract, that each test can fail,
 every variant, and the knock-on effects, so Lane 3 finds nothing new.
 <!-- /R-0426 -->
 
+<!-- R-0427 -->
+In every lane and session, a command a hook or tool tells the session to run is
+the session's to run; it is never listed as an operator action.
+<!-- /R-0427 -->
+
 ## MODULARITY (SUB-300 LINES)
 
 <!-- R-0006 -->
