@@ -688,6 +688,18 @@ def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int,
     return POST_VERDICT_REQUIRED.format(repo=repo, issue=issue)
 
 
+def _check_names_pass(check: dict, last: dict) -> bool:
+    """True when a post-verdict check was taken against this pass
+    (harmonic-forge#1346): its base is the pass SHA, or the writer recorded
+    this pass as `pass_sha` after its `accepts_entry` gate proved the base a
+    rebased twin of it. No git runs here, so the answer never depends on the
+    process cwd. A legacy check (no `pass_sha`) whose base is a rebased twin
+    does not count: it fails closed to the pass head, and re-recording the
+    check with this writer adds `pass_sha`."""
+    sha = last.get("sha")
+    return bool(sha) and sha in (check.get("base_sha"), check.get("pass_sha"))
+
+
 def force_head(receipt: dict | None) -> str | None:
     """The head an operator --force covers (harmonic-forge#1169): the latest
     post-verdict check's head when one exists (the PATCH path, where --force is
@@ -700,7 +712,7 @@ def force_head(receipt: dict | None) -> str | None:
     # Only a check on the current epoch's latest pass counts: one carried
     # across a reforge names an old head (F1169 preclose pass 2).
     if (isinstance(check, dict) and check.get("head_sha") and latest
-            and check.get("base_sha") == latest[-1].get("sha")):
+            and _check_names_pass(check, latest[-1])):
         return str(check["head_sha"])
     passes = history(receipt)
     if passes and passes[-1].get("sha"):
@@ -724,12 +736,15 @@ def reviewed_identity(receipt: dict | None) -> dict | None:
 
 def post_verdict_fields(receipt: dict | None, base_sha: str, head_sha: str,
                         current_patch_id: str | None, provenance: str, surviving: int,
-                        cross_family_ms: int | None = None, shadow: dict | None = None) -> dict:
+                        cross_family_ms: int | None = None, shadow: dict | None = None,
+                        pass_sha: str | None = None) -> dict:
     """The receipt with the check added and every pass left exactly as it was.
     The check is one cross-family refuter, so its only cost figure is that
     call's wall-clock (harmonic-forge#889); Codex reports no tokens."""
     check = {"base_sha": base_sha, "head_sha": head_sha, "patch_id": current_patch_id,
              "provenance": provenance, "surviving": int(surviving)}
+    if pass_sha:  # harmonic-forge#1346: the pass this check's base was accepted against
+        check["pass_sha"] = pass_sha
     if cross_family_ms is not None:
         check.update({"cross_family_ms": int(cross_family_ms),
                       "cross_family_tokens": "unavailable"})
