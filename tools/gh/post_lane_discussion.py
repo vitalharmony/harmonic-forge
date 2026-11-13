@@ -85,6 +85,21 @@ def _spec_block(body: str) -> tuple[str | None, str | None]:
     return "\n".join(lines[start:close]), None
 
 
+_MAX_BLOCK = 64 * 1024
+
+
+def _no_dup(pairs: list) -> dict:
+    keys = [k for k, _ in pairs]
+    dup = next((k for k in keys if keys.count(k) > 1), None)
+    if dup is not None:
+        raise ValueError(f"duplicate key {dup!r}")
+    return dict(pairs)
+
+
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not allowed")
+
+
 def _nonblank(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -95,8 +110,12 @@ def spec_structure_problems(body: str) -> list[str]:
     text, why = _spec_block(body)
     if why:
         return [why]
+    if len(text.encode("utf-8")) > _MAX_BLOCK:
+        return [f"the ```lane3-spec block is over {_MAX_BLOCK // 1024} KiB"]
     try:
-        spec = json.loads(text)
+        spec = json.loads(text, object_pairs_hook=_no_dup, parse_constant=_no_constant)
+    except RecursionError:
+        return ["the ```lane3-spec block is nested too deeply"]
     except ValueError as exc:
         return [f"the ```lane3-spec block is not valid JSON ({exc})"]
     if not isinstance(spec, dict):
@@ -139,11 +158,12 @@ def spec_structure_problems(body: str) -> list[str]:
         problems.append("`graph` is exactly {\"provision\", \"uri\"} or {\"none\": \"<reason>\"}")
         return problems
     if "none" in graph:
+        if not _nonblank(graph["none"]):
+            problems.append("`graph: none` needs a non-blank reason string")
+            return problems
         if tier == "P":
             problems.append("Write tier P refuses `graph: none`: a production case names its graph")
         elif tier == "W":
-            if not _nonblank(graph["none"]):
-                problems.append("`graph: none` under Write tier W needs a non-blank reason")
             if any(_GRAPH_URI.search(r) for r in runs):
                 problems.append("`graph: none` is declared but a case's `run` names a graph URI "
                                 "(bolt/neo4j)")

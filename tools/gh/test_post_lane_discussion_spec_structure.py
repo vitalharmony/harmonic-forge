@@ -71,6 +71,32 @@ class AC1Block(Base):
         self.refused(body, "no ```lane3-spec")
 
 
+class StrictJson(Base):
+    """Final epoch pass 1 (sticky-wicket PATCH): the block's JSON is parsed strictly."""
+
+    def test_duplicate_keys_are_refused(self) -> None:
+        self.refused(spec("R", '{"cases": [], "cases": [{"id": "TC1", "run": "x"}]}'), "duplicate key")
+        self.refused(spec("R", '{"cases": [{"id": "TC1", "id": "TC2", "run": "x"}]}'), "duplicate key")
+
+    def test_nan_and_infinity_are_refused(self) -> None:
+        for const in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(const=const):
+                self.refused(spec("R", '{"cases": [{"id": "TC1", "run": "x"}], "graph": ' + const + '}'),
+                             "not allowed")
+
+    def test_deep_nesting_is_refused_not_a_crash(self) -> None:
+        self.refused(spec("R", "[" * 20000 + "]" * 20000), "nested too deeply")
+
+    def test_an_oversized_block_is_refused(self) -> None:
+        big = {"cases": [{"id": "TC1", "run": "x" * (70 * 1024)}]}
+        self.refused(spec("R", big), "KiB")
+
+    def test_r_refuses_a_non_string_none_reason(self) -> None:
+        for value in (False, None, 0, ""):
+            with self.subTest(value=value):
+                self.refused(spec("R", {"graph": {"none": value}, "cases": [case(1)]}), "non-blank reason")
+
+
 class AC2Cases(Base):
     def test_empty_cases_are_refused(self) -> None:
         self.refused(spec("R", {"cases": []}), "non-empty list")
