@@ -62,23 +62,41 @@ class AC2Allowed(unittest.TestCase):
         self.assertIsNone(hook.write_of(["mise", "run", "restart", "--no-bump", "--no-git"]))
 
 
-class PipedGate(unittest.TestCase):
-    """Folded in from protocol-failures 2026-11-12: `mise run check | tail -25` hid the
-    failing step and the pipe's exit 0 stood in for the check's."""
+class Pass1Survivors(unittest.TestCase):
+    """harmonic-forge#1337 preclose pass 1 (issuecomment-6840160842)."""
 
-    def test_piped_gates_are_denied(self):
-        for command in ["mise run check 2>&1 | tail -25", "pytest -q | tail -3",
-                        "gh pr checks 5 | grep fail", "mise run check-full |& tee log"]:
+    def test_shell_c_and_eval_strings_are_parsed(self):
+        for command in ['bash -c "mise run check && git push"',
+                        "sh -c 'pytest -q; git commit -m x'",
+                        'bash -lc "pytest && git push"',
+                        'eval "pytest; git push"']:
             with self.subTest(command=command):
-                reason = hook.decide(command)
-                self.assertIsNotNone(reason)
-                self.assertIn("R-0425", reason)
+                self.assertIsNotNone(hook.decide(command))
 
-    def test_unpiped_and_non_gate_pipes_are_allowed(self):
-        for command in ["mise run check > /tmp/x.log 2>&1", "git log | head",
-                        "gh pr view 5 | jq .", "echo pytest | tail -1"]:
+    def test_uv_run_prefix_and_mise_alias_and_flags_are_seen_through(self):
+        for command in ["uv run pytest && git push", "uv run -- pytest; git push",
+                        "mise r check && git push", "mise -C x run check && git push",
+                        "mise --cd=x run check; mise r commit"]:
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_a_write_before_its_gate_is_allowed(self):
+        for command in ["git push -u origin feat/x && gh pr checks 12 --watch",
+                        "gh pr merge 5 --squash && gh run watch 9",
+                        "git push && gh run view 1"]:
             with self.subTest(command=command):
                 self.assertIsNone(hook.decide(command))
+
+    def test_read_only_piped_gates_are_allowed(self):
+        """The piped-gate fold is removed (outside the AC; R-0381)."""
+        for command in ["python3 -m pytest tools/hooks -q | tail -5",
+                        "gh run view 123 --log | grep -i error"]:
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_here_doc_body_is_a_known_residual(self):
+        """Operator ruling 2026-11-12, option A: a here-doc fed to a shell is not parsed."""
+        self.assertIsNone(hook.decide("bash <<X\npytest\ngit push\nX"))
 
 
 class AC3Replay(unittest.TestCase):

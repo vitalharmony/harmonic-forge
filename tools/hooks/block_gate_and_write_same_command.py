@@ -25,6 +25,16 @@ Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `preclose_check.py --complete && gh pr merge` is denied on purpose: preclose is
 a gate and its result is read before the merge.
 
+Order matters: the deny fires only when a gate runs BEFORE a write in execution
+order. `git push && gh pr checks 12 --watch` (push, then watch CI) is allowed.
+The string argument of `bash -c` / `sh -c` / `zsh -c` and of `eval` is parsed
+again like a `$(...)` body; `uv run <cmd>` and mise's `r` alias and global
+flags (`-C`, `--cd`, `-E`, `--env`, `-q`, `-v`, `-y`) are seen through.
+
+Known residual (operator ruling 2026-11-12, option A): a here-doc body fed to a
+shell (`bash <<X ... X`) is NOT parsed, so a gate and a write inside one are not
+seen.
+
 The decision goes to stderr (harmonic-forge#1291's decision log is not on main).
 """
 from __future__ import annotations
@@ -47,10 +57,35 @@ def _base(word: str) -> str:
     return os.path.basename(word)
 
 
+#: mise global flags that take a value, and that do not.
+_MISE_VALUE_FLAGS = frozenset({"-C", "--cd", "-E", "--env"})
+_MISE_BARE_FLAGS = frozenset({"-q", "--quiet", "-v", "--verbose", "-y", "--yes"})
+
+
 def _mise_task(argv: list[str]) -> Optional[str]:
-    if len(argv) >= 3 and _base(argv[0]) == "mise" and argv[1] == "run":
-        return argv[2]
+    """The task of `mise [global flags] run|r <task>`, or None."""
+    if not argv or _base(argv[0]) != "mise":
+        return None
+    index = 1
+    while index < len(argv):
+        word = argv[index]
+        if word in _MISE_VALUE_FLAGS:
+            index += 2
+        elif word in _MISE_BARE_FLAGS or word.startswith(("--cd=", "--env=")):
+            index += 1
+        else:
+            break
+    if index + 1 < len(argv) and argv[index] in ("run", "r"):
+        return argv[index + 1]
     return None
+
+
+def _unwrap_runner(argv: list[str]) -> list[str]:
+    """`uv run [--] <cmd>` is a prefix: return `<cmd>`."""
+    if len(argv) >= 3 and _base(argv[0]) == "uv" and argv[1] == "run":
+        rest = argv[2:]
+        return rest[1:] if rest and rest[0] == "--" else rest
+    return argv
 
 
 def _gh_sub(argv: list[str]) -> tuple[str, str] | None:
@@ -117,53 +152,59 @@ def write_of(argv: list[str]) -> Optional[str]:
     return None
 
 
+#: Shells whose `-c` string argument is a command line.
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash"})
+
+
+def _script_arg(argv: list[str]) -> Optional[str]:
+    """The command string a shell `-c` (or combined `-lc`, `-ec`…) or `eval` runs."""
+    if not argv:
+        return None
+    head = _base(argv[0])
+    if head == "eval":
+        return " ".join(argv[1:]) or None
+    if head in _SHELLS:
+        for index, word in enumerate(argv[1:], start=1):
+            if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+                return argv[index + 1] if index + 1 < len(argv) else None
+    return None
+
+
 def _argvs(command: str, depth: int = 0) -> Iterator[list[str]]:
+    """Every simple command of `command`, in execution order: a word's `$(...)` bodies
+    run before the command holding them, and a `-c`/`eval` string runs as that command."""
     for item in shell_parse.simple_commands(command):
         if not isinstance(item, shell_parse.SimpleCommand):
             continue
-        argv = shell_parse.strip_invocation_prefix(item.argv)
-        yield argv
-        if depth >= MAX_DEPTH:
-            continue
-        for word in item.argv:
-            for body in shell_parse.substitution_bodies(word):
-                yield from _argvs(body, depth + 1)
+        if depth < MAX_DEPTH:
+            for word in item.argv:
+                for body in shell_parse.substitution_bodies(word):
+                    yield from _argvs(body, depth + 1)
+            script = _script_arg(item.argv)
+            if script is not None:
+                yield from _argvs(script, depth + 1)
+                continue
+        yield _unwrap_runner(shell_parse.strip_invocation_prefix(item.argv))
 
 
 def find(command: str) -> tuple[Optional[str], Optional[str]]:
-    """(gate, write) found in `command`. Raises on a parse failure."""
+    """(gate, write): the first gate, and the first write that runs AFTER a gate, in
+    execution order. A write that runs before every gate is not this slip. Raises on a
+    parse failure."""
     gate = write = None
     for argv in _argvs(command):
+        if gate and not write:
+            write = write_of(argv)
         gate = gate or gate_of(argv)
-        write = write or write_of(argv)
     return gate, write
-
-
-def piped_gate(command: str) -> Optional[str]:
-    """A top-level gate whose stdout is piped into another command (`mise run check |
-    tail`): the pipeline's exit status is the last command's, and the gate's own
-    summary may be cut, so its result cannot be read (R-0425). Raises on a parse
-    failure."""
-    for item in shell_parse.simple_commands(command):
-        if isinstance(item, shell_parse.SimpleCommand) and item.sep_after in ("|", "|&"):
-            gate = gate_of(shell_parse.strip_invocation_prefix(item.argv))
-            if gate:
-                return gate
-    return None
 
 
 def decide(command: str) -> Optional[str]:
     """The deny reason, or None to allow."""
     try:
         gate, write = find(command)
-        piped = piped_gate(command)
     except (ValueError, shell_parse.NotOrdinary):
         return None
-    if piped and not write:
-        return (f"Blocked (R-0425, harmonic-forge#1337): the gate `{piped}` is piped into "
-                f"another command, so the exit status is the pipe's and its summary can be "
-                f"cut. Run it unpiped, with output to a file if it is long "
-                f"(`{piped} > <log> 2>&1`), and read its own exit status and summary.")
     if gate and write:
         return (f"Blocked (R-0419, harmonic-forge#1337): this one command runs the gate "
                 f"`{gate}` and the write `{write}` it gates, so the write would run before "
