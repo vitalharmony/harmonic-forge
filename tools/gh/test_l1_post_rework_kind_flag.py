@@ -83,6 +83,17 @@ class ReworkFooter(unittest.TestCase):
         self._body("rework", rework_kind="rebase")
         self.assertEqual(self.receipt["rework_kind"], "rebase")
 
+    def test_f1354_relay_posts_with_its_kind_in_the_footer(self):
+        body = self._body("rework", rework_kind="relay")
+        self.assertIn("sha=abc; rework=relay;", body)
+
+    def test_f1354_a_relay_records_no_route_floor_and_a_correction_does(self):
+        with mock.patch.object(l1_post.route_store, "record_floor") as floor:
+            self._body("rework", rework_kind="relay")
+            self.assertEqual(floor.call_count, 0)
+            self._body("rework", rework_kind="correction")
+            self.assertEqual(floor.call_count, 1)
+
     def test_no_other_kind_carries_the_field(self):
         for kind in ("ready-for-l3", "sweep"):
             with self.subTest(kind=kind):

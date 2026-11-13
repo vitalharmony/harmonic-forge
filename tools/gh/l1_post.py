@@ -1916,8 +1916,14 @@ def issue_labels(repo: str, issue: int) -> set[str]:
 STICKY_CHECKED_KINDS = ("rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-and-sweep")
 
 
+#: harmonic-forge#1247 and #1354. `relay`: a step the handoff planned that only
+#: Lane 1 can enable (a push, a CI render), with no change asked of the work. It
+#: is no sticky-wicket round (`sticky_receipt.RELAY`) and raises no route floor.
+REWORK_KINDS = ("correction", "rebase", "relay")
+
+
 def validate_sticky_wicket(repo: str, issue: int, *, kind: str | None = None,
-                           sha: str | None = None) -> None:
+                           sha: str | None = None, rework_kind: str | None = None) -> None:
     """harmonic-forge#997: a rework after two consecutive non-PASS gate results
     needs a sticky-wicket receipt through the newer one. The thread is read in
     full (paginated); a thread that cannot be read refuses rather than skips."""
@@ -1928,7 +1934,8 @@ def validate_sticky_wicket(repo: str, issue: int, *, kind: str | None = None,
         comments = sticky_receipt.parse_pages(result.stdout)
     except ValueError:
         fail(f"unreadable comment thread on {repo}#{issue}")
-    reason = sticky_receipt.refusal(repo, issue, comments, kind=kind, attested_sha=sha)
+    reason = sticky_receipt.refusal(repo, issue, comments, kind=kind, attested_sha=sha,
+                                    rework_kind=rework_kind)
     if reason:
         fail(reason)
 
@@ -3245,8 +3252,8 @@ def _post_kind(
         prod_run_field += f" from-sha={carry_forward[0]}; pass={int(carry_forward[1])};"
     # harmonic-forge#1247: directly after `sha=`, ahead of any prod-run field.
     if kind == "rework":
-        if rework_kind not in ("correction", "rebase"):
-            fail("--kind rework requires --rework-kind correction|rebase (harmonic-forge#1247)")
+        if rework_kind not in REWORK_KINDS:
+            fail("--kind rework requires --rework-kind correction|rebase|relay (harmonic-forge#1247, #1354)")
         prod_run_field = f" rework={rework_kind};" + prod_run_field
     footer = (f"\n\n<!-- l1-post v1; kind={kind};{plan_first_field} sha={sha};{prod_run_field} "
               f"body-sha256={digest}; checks={','.join(checks)} -->\n")
@@ -3255,7 +3262,7 @@ def _post_kind(
         # world checks, so a gate result that landed meanwhile is seen. A result
         # landing between this read and the post is the same gap every pre-post
         # gate here has; no lock is taken.
-        validate_sticky_wicket(repo, issue, kind=kind, sha=sha)
+        validate_sticky_wicket(repo, issue, kind=kind, sha=sha, rework_kind=rework_kind)
     if kind == "rework" and rework_kind == "correction":
         # harmonic-forge#1318: a correction rework raises the issue's route
         # floor to deep, so Lane 2 works the fix on the high-tier model.
@@ -3488,7 +3495,7 @@ def main() -> None:
     parser.add_argument("--kind", choices=("handoff", "ready-for-l3", "sweep", "ae", "ae-and-sweep", "rework",
                                            "carry-forward"), required=True)
     # harmonic-forge#1247: a rework says whether it corrects the work or only rebases it.
-    parser.add_argument("--rework-kind", choices=("correction", "rebase"))
+    parser.add_argument("--rework-kind", choices=REWORK_KINDS)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--file", type=Path, help="Body file for every --kind except ae-and-sweep")
@@ -3574,7 +3581,7 @@ def main() -> None:
     if args.ack_overlap is not None and not args.ack_overlap.strip():
         fail("--ack-overlap requires a non-empty reason")
     if args.kind == "rework" and args.rework_kind is None:
-        fail("--kind rework requires --rework-kind correction|rebase (harmonic-forge#1247)")
+        fail("--kind rework requires --rework-kind correction|rebase|relay (harmonic-forge#1247, #1354)")
     if args.rework_kind is not None and args.kind != "rework":
         fail("--rework-kind is valid only for --kind rework (harmonic-forge#1247)")
     if args.milestone_ack is not None:
@@ -3631,7 +3638,8 @@ def main() -> None:
             # Collected, so a reserved marker never hides the other refusals (F1115 AC1).
             lambda: reject_reserved_marker(ae_body),
             lambda: reject_reserved_marker(sweep_body),
-            lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha),  # harmonic-forge#997
+            lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha,
+                                       rework_kind=args.rework_kind),  # harmonic-forge#997
             lambda: validate_ae(ae_body, repo, args.issue),
             lambda: validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required),
             lambda: validate_auto_ae(ae_body, sweep_body, repo, args.issue, sha, args.spec_comment,
@@ -3731,7 +3739,8 @@ def main() -> None:
     if args.kind == "rework":
         steps.append(lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack))
     if args.kind in STICKY_CHECKED_KINDS:
-        steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha))
+        steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha,
+                                       rework_kind=args.rework_kind))
     steps.append(lambda: validate_lead(args.kind, body))
     if args.kind == "sweep":
         spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
