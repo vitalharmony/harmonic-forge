@@ -79,7 +79,14 @@ class AC2Cases(Base):
         self.refused(spec("R", {"cases": [case(1), case(2, "   ")]}), "TC2", "non-blank command")
 
     def test_a_bad_id_is_refused(self) -> None:
-        self.refused(spec("R", {"cases": [{"id": "Case 1", "run": "x"}]}), "TC<n>")
+        for bad in ("Case 1", "TC1a", "TC1\n"):
+            with self.subTest(bad=bad):
+                self.refused(spec("R", {"cases": [{"id": bad, "run": "x"}]}), "TC<n>")
+
+    def test_a_non_string_id_or_run_is_refused_not_a_crash(self) -> None:
+        for case_ in ({"id": 1, "run": "x"}, {"id": None, "run": "x"}, {"id": "TC1", "run": 2}):
+            with self.subTest(case=case_):
+                self.refused(spec("R", {"cases": [case_]}), "both strings")
 
     def test_an_extra_case_key_is_refused(self) -> None:
         self.refused(spec("R", {"cases": [{"id": "TC1", "run": "x", "note": "y"}]}), "TC1")
@@ -154,7 +161,12 @@ class AC9Template(Base):
         for doc in (root / "skills" / "lane3-gate-platform" / "SKILL.md", root / "rules" / "testing-gate.md"):
             with self.subTest(doc=doc.name):
                 text = doc.read_text(encoding="utf-8")
-                self.assertIn("```lane3-spec", text)
+                start = text.index("```lane3-spec")
+                lines = text[start:].split("\n")
+                body = "\n".join(line.strip() for line in lines[: next(
+                    i for i in range(1, len(lines)) if lines[i].strip() == "```") + 1])
+                # The example block itself parses and passes a Tier R lint.
+                self.assertEqual(m.spec_structure_problems("Write tier: R\n" + body + "\n"), [])
 
 
 class Wiring(Base):

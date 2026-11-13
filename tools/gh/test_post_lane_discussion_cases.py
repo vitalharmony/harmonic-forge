@@ -137,6 +137,11 @@ class ASpecDeclaresItsWriteTier(Case):
     def test_a_spec_with_no_declaration_is_refused(self):
         self.assertIn("Write tier: R|W|P", self.refused(SPEC_TC.replace("Write tier: W\n", "")))
 
+    def test_a_spec_with_no_lane3_spec_block_is_refused_at_post(self):
+        # harmonic-forge#1342 final pass 1: the lint runs on main()'s post path.
+        body = SPEC_TC.split("```lane3-spec")[0]
+        self.assertIn("lane3-spec", self.refused(body))
+
     def test_one_declaration_is_accepted(self):
         self.assertIn("kind=spec", last_line(self.post("spec", SPEC_TC)))
 

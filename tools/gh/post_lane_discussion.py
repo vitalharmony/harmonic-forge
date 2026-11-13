@@ -59,7 +59,7 @@ import _caller_path  # noqa: E402
 # contract, and Lane 3 runs what it lists.
 _BLOCK_OPEN = "```lane3-spec"
 _BLOCK_CLOSE = "```"
-_CASE_ID = re.compile(r"^TC\d+[a-z]?$")
+_CASE_ID = re.compile(r"TC\d+")
 _EXACT_TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC\d+[a-z]?)\b")
 #: Graph access is any bolt/neo4j URI, including the `+s` and `+ssc` forms
 #: (2026-11-13 ruling).
@@ -113,10 +113,11 @@ def spec_structure_problems(body: str) -> list[str]:
     for index, case in enumerate(cases, 1):
         label = case.get("id") if isinstance(case, dict) and isinstance(case.get("id"), str) \
             else f"case {index}"
-        if not isinstance(case, dict) or set(case) != _CASE_KEYS:
-            problems.append(f"{label}: a case is exactly {{\"id\", \"run\"}}")
+        if not isinstance(case, dict) or set(case) != _CASE_KEYS \
+                or not isinstance(case["id"], str) or not isinstance(case["run"], str):
+            problems.append(f"{label}: a case is exactly {{\"id\": \"TC<n>\", \"run\": \"<command>\"}}, both strings")
             continue
-        if not _CASE_ID.match(case["id"]):
+        if not _CASE_ID.fullmatch(case["id"]):
             problems.append(f"{label}: the id must read TC<n>")
         if not _nonblank(case["run"]):
             problems.append(f"{label}: `run` must be a non-blank command")
