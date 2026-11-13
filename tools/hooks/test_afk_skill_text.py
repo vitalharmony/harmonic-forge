@@ -52,6 +52,7 @@ class SkillText(unittest.TestCase):
         text = (ROOT / "skills" / "lane3-gate-platform" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("a chat-only AE gets one line: `waiting for the posted AE on H<N>`", text)
         self.assertIn("deny_lane3_ae_self_post.py", text)
+        self.assertIn("STOP immediately, execute nothing, report BLOCKED naming the gap", text)
 
     def test_codex_wires_no_afk_toggle(self):
         import json
