@@ -77,8 +77,18 @@ def rework_kind(body: str) -> str | None:
 
 
 def _counted_rework(classified: tuple[str, str] | None, body: str) -> bool:
-    """A Lane 1 rework that counts as a round or an answer: every kind but relay and rebase."""
-    return classified == ("l1", "rework") and rework_kind(body) not in NOT_A_ROUND
+    """A Lane 1 rework that counts as a round or an answer: every kind but relay and rebase.
+
+    harmonic-forge#1358 (operator ruling 2026-11-13): a rework edited after
+    posting has no footer that verifies, so it classifies as nothing; it still
+    counts, as a correction would, read from its unverified `kind=rework`."""
+    if classified == ("l1", "rework"):
+        return rework_kind(body) not in NOT_A_ROUND
+    if classified is None:
+        import watch_lane_posts as belt  # noqa: PLC0415 -- deferred, as above
+
+        return belt._own_marker(body or "") is None and belt.unverified_kind(body or "") == "rework"
+    return False
 
 
 def receipt_dir() -> Path:
