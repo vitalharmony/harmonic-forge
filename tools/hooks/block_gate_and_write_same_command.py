@@ -27,9 +27,15 @@ a gate and its result is read before the merge.
 
 Order matters: the deny fires only when a gate runs BEFORE a write in execution
 order. `git push && gh pr checks 12 --watch` (push, then watch CI) is allowed.
-The string argument of `bash -c` / `sh -c` / `zsh -c` and of `eval` is parsed
-again like a `$(...)` body; `uv run <cmd>` and mise's `r` alias and global
-flags (`-C`, `--cd`, `-E`, `--env`, `-q`, `-v`, `-y`) are seen through.
+The string argument of `bash -c` / `sh -c` / `zsh -c` and of `eval`, anywhere in
+a command (after `env`, `uv run`, ...), is parsed again like a `$(...)` body.
+
+Classification is by word presence, not position (sticky-wicket pass-2 REFORGE):
+wrappers (`env`, `exec`, `sudo`, `uv run`, interpreters and their flags,
+assignments, leading numbers) are skipped only to tell whether the program is
+`git`, `gh` or `mise`; everything else is matched by which words it holds. A
+quoted argument stays one word, so a commit message or comment body is never a
+gate or write.
 
 Known residual (operator ruling 2026-11-12, option A): a here-doc body fed to a
 shell (`bash <<X ... X`) is NOT parsed, so a gate and a write inside one are not
@@ -57,98 +63,76 @@ def _base(word: str) -> str:
     return os.path.basename(word)
 
 
-#: mise global flags that take a value, and that do not.
-_MISE_VALUE_FLAGS = frozenset({"-C", "--cd", "-E", "--env"})
-_MISE_BARE_FLAGS = frozenset({"-q", "--quiet", "-v", "--verbose", "-y", "--yes"})
+#: Words that wrap the real program (sticky-wicket pass-2 REFORGE): they, any
+#: `NAME=value` assignment, any flag and any bare number before the program are
+#: skipped to find which program runs. Interpreters are wrappers too, so
+#: `python3 -I -m pytest` is seen through.
+_WRAPPERS = frozenset({"env", "exec", "sudo", "command", "nohup", "nice", "time",
+                       "timeout", "uv", "run", "--", "python", "python3"})
 
 
-def _mise_task(argv: list[str]) -> Optional[str]:
-    """The task of `mise [global flags] run|r <task>`, or None."""
-    if not argv or _base(argv[0]) != "mise":
-        return None
-    index = 1
-    while index < len(argv):
-        word = argv[index]
-        if word in _MISE_VALUE_FLAGS:
-            index += 2
-        elif word in _MISE_BARE_FLAGS or word.startswith(("--cd=", "--env=")):
-            index += 1
-        else:
-            break
-    if index + 1 < len(argv) and argv[index] in ("run", "r"):
-        return argv[index + 1]
-    return None
+def _words(argv: list[str]) -> list[str]:
+    return [_base(w) for w in argv]
 
 
-def _unwrap_runner(argv: list[str]) -> list[str]:
-    """`uv run [--] <cmd>` is a prefix: return `<cmd>`."""
-    if len(argv) >= 3 and _base(argv[0]) == "uv" and argv[1] == "run":
-        rest = argv[2:]
-        return rest[1:] if rest and rest[0] == "--" else rest
-    return argv
-
-
-def _gh_sub(argv: list[str]) -> tuple[str, str] | None:
-    """`gh <group> <verb>`, skipping value flags before or between them."""
-    if not argv or _base(argv[0]) != "gh":
-        return None
-    words: list[str] = []
-    skip = False
-    for token in argv[1:]:
-        if skip:
-            skip = False
+def _program(argv: list[str]) -> Optional[str]:
+    """The program a simple command runs, past wrappers, assignments, flags and numbers.
+    Only `git`, `gh` and `mise` change how the words are read, so a wrong guess for
+    any other program changes nothing: those are matched by word presence."""
+    for word in _words(argv):
+        if (word in _WRAPPERS or word.startswith("python") or word.startswith("-")
+                or word.isdigit() or ("=" in word and not word.startswith("-"))):
             continue
-        if token in ("-R", "--repo", "--hostname"):
-            skip = True
-            continue
-        if token.startswith("-"):
-            continue
-        words.append(token)
-        if len(words) == 2:
-            return words[0], words[1]
+        return word
     return None
 
 
 def gate_of(argv: list[str]) -> Optional[str]:
-    """The gate this simple command runs, as display text, or None."""
-    if not argv:
+    """The gate this simple command runs, as display text, or None. Classified by which
+    words the command holds, not where they sit (sticky-wicket pass-2 REFORGE): a quoted
+    argument is one word, so `git commit -m "make pytest pass"` holds no `pytest` word."""
+    words = set(_words(argv))
+    program = _program(argv)
+    if program == "git":
         return None
-    task = _mise_task(argv)
-    if task in ("check", "check-full"):
-        return f"mise run {task}"
-    sub = _gh_sub(argv)
-    if sub == ("pr", "checks"):
-        return "gh pr checks"
-    if sub in (("run", "view"), ("run", "watch")):
-        return f"gh run {sub[1]}"
-    head = _base(argv[0])
-    if head == "pytest" or (head.startswith("python") and argv[1:3] == ["-m", "pytest"]):
+    if program == "gh":
+        if {"pr", "checks"} <= words:
+            return "gh pr checks"
+        if "run" in words and words & {"view", "watch"}:
+            return "gh run " + ("watch" if "watch" in words else "view")
+        return None
+    if program == "mise":
+        if words & {"run", "r"}:
+            for task in ("check-full", "check"):
+                if task in words:
+                    return f"mise run {task}"
+        if "preclose-check" in words and "--complete" in words:
+            return "mise run preclose-check --complete"
+        return None
+    if "pytest" in words:
         return "pytest"
-    if any(_base(w) == "preclose_check.py" for w in argv[:2]) and "--complete" in argv:
+    if "preclose_check.py" in words and "--complete" in words:
         return "preclose_check.py --complete"
     return None
 
 
 def write_of(argv: list[str]) -> Optional[str]:
-    """The gated write this simple command runs, as display text, or None."""
-    if not argv:
+    """The gated write this simple command runs, as display text, or None. Classified
+    by word presence after the program (any git or mise global flag in between)."""
+    words = set(_words(argv))
+    program = _program(argv)
+    if program == "git":
+        for verb in ("commit", "push"):
+            if verb in words:
+                return f"git {verb}"
         return None
-    task = _mise_task(argv)
-    if task == "commit":
-        return "mise run commit"
-    if task == "restart" and "--no-git" not in argv:
-        return "mise run restart"
-    if _base(argv[0]) == "git":
-        # `git -C dir commit`: -C/-c take a value.
-        rest = argv[1:]
-        index = 0
-        while index < len(rest) and rest[index].startswith("-"):
-            index += 2 if rest[index] in ("-C", "-c") else 1
-        verb = rest[index] if index < len(rest) else None
-        if verb in ("commit", "push"):
-            return f"git {verb}"
-    if _gh_sub(argv) == ("pr", "merge"):
-        return "gh pr merge"
+    if program == "gh":
+        return "gh pr merge" if {"pr", "merge"} <= words else None
+    if program == "mise":
+        if "commit" in words:
+            return "mise run commit"
+        if "restart" in words and "--no-git" not in words:
+            return "mise run restart"
     return None
 
 
@@ -158,15 +142,16 @@ _SHELLS = frozenset({"bash", "sh", "zsh", "dash"})
 
 def _script_arg(argv: list[str]) -> Optional[str]:
     """The command string a shell `-c` (or combined `-lc`, `-ec`…) or `eval` runs."""
-    if not argv:
-        return None
-    head = _base(argv[0])
-    if head == "eval":
-        return " ".join(argv[1:]) or None
-    if head in _SHELLS:
-        for index, word in enumerate(argv[1:], start=1):
-            if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
-                return argv[index + 1] if index + 1 < len(argv) else None
+    for start, word in enumerate(argv):
+        head = _base(word)
+        if head == "eval":
+            return " ".join(argv[start + 1:]) or None
+        if head in _SHELLS:
+            for index in range(start + 1, len(argv)):
+                flag = argv[index]
+                if flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]:
+                    return argv[index + 1] if index + 1 < len(argv) else None
+            return None
     return None
 
 
@@ -184,7 +169,7 @@ def _argvs(command: str, depth: int = 0) -> Iterator[list[str]]:
             if script is not None:
                 yield from _argvs(script, depth + 1)
                 continue
-        yield _unwrap_runner(shell_parse.strip_invocation_prefix(item.argv))
+        yield shell_parse.strip_invocation_prefix(item.argv)
 
 
 def find(command: str) -> tuple[Optional[str], Optional[str]]:

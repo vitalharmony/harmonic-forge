@@ -99,6 +99,37 @@ class Pass1Survivors(unittest.TestCase):
         self.assertIsNone(hook.decide("bash <<X\npytest\ngit push\nX"))
 
 
+class Pass2Survivors(unittest.TestCase):
+    """Every pass-2 survivor (issuecomment-6840533545) is denied under word-presence
+    classification (sticky-wicket pass-2 REFORGE)."""
+    DENIED = [
+        "mise run preclose-check -- --repo vitalharmony/harmonic-forge --issue 1337 --complete && gh pr merge 1",
+        "python3 -I -m pytest -q && git push",
+        "python3 -X dev -m pytest && git push",
+        "pytest; git --git-dir .git commit -m x",
+        "pytest; git --work-tree /tmp/w commit -m x",
+        "pytest && exec git push",
+        "sudo pytest; git push",
+        "2>/dev/null pytest && git push",
+        'env X=1 bash -c "pytest && git push"',
+        "uv run --with x pytest && git push",
+        "mise --cd /tmp/x run check && mise run commit",
+    ]
+
+    def test_each_is_denied(self):
+        for command in self.DENIED:
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_ordinary_commands_stay_allowed(self):
+        for command in ["git log --grep pytest", 'git commit -m "make pytest pass"',
+                        "git push && gh pr checks 12 --watch",
+                        "pytest -q | tail -5", "gh run view 123 --log | grep -i error",
+                        "echo git push"]:
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+
 class AC3Replay(unittest.TestCase):
     """protocol-failures.jsonl 281 and 287 record the shape, not the literal text:
     281 printed a failing verify result and merged in one command (F1244, PR 1322);
