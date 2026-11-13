@@ -85,7 +85,7 @@ class SpecPostCallSite(unittest.TestCase):
     """Pass 2 survivor 4: the refusal is wired into `--kind spec`, not only the helper."""
 
     SPEC = ("## Lane 3 Test Spec — H1\n\n**Status:** derived.\n**Cases:** 1.\n"
-            "Write tier: R\n**Next:** Lane 1 reviews.\n\n### TC1 — y\nRun:\n```\ntrue\n```\n")
+            "Write tier: R\n**Next:** Lane 1 reviews.\n\n### TC1 — y\n```lane3-spec\n{\"cases\": [{\"id\": \"TC1\", \"run\": \"true\"}]}\n```\n")
 
     def _post(self, body: str) -> list:
         posted = []

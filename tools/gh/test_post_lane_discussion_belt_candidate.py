@@ -47,7 +47,7 @@ class PostLaneDiscussionBeltCandidateIntegrationTests(unittest.TestCase):
     def test_lane3_posting_a_spec_records_posted_by_l3(self) -> None:
         spec = ("## Lane 3 Test Spec — H618\n\n"
                 "**Cases:** 1.\nWrite tier: R\n**Next:** submit for HITL approval.\n\n"
-                "### TC1 — a thing.\nRun:\n```\ntrue\n```\n")
+                "### TC1 — a thing.\n```lane3-spec\n{\"cases\": [{\"id\": \"TC1\", \"run\": \"true\"}]}\n```\n")
         recorder = self._post("spec", spec, lane="3")
         recorder.record_candidate.assert_called_once_with(
             "vitalharmony/harmonic-forge", 618, "spec", "l3")

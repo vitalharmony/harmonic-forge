@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""harmonic-forge#1342: a Lane 3 spec carries a `Run:` fenced block on every
-`### TC<n>` case and, under Write tier W or P, one header `Graph:` line.
-Narrowed by the sticky-wicket REFORGE (2026-11-13): no adapter allowlist, a
-graph is any bolt/neo4j URI, and only the template's own shape is checked."""
+"""harmonic-forge#1342 (final reforge, operator ruling "2 yes", 2026-11-13): a
+Lane 3 spec carries exactly one fenced `lane3-spec` JSON block, parsed
+strictly. Markdown is never read for case structure."""
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -16,15 +16,22 @@ import post_lane_discussion as m  # noqa: E402
 FIXTURES = HERE / "fixtures" / "spec_structure"
 REAL_SPECS = sorted(FIXTURES.glob("hrse_spec_*.md"))
 
-RUN = "Run:\n```\npython3 -m pytest -q tests/x.py\n```\n"
-GRAPH = "Graph: `python3 scripts/graph_fixture.py up` bolt://localhost:7699\n"
+GRAPH = {"provision": "python3 scripts/graph_fixture.py up", "uri": "bolt://localhost:7699"}
+NONE = {"none": "every case reads the posted artifacts"}
 
 
-def spec(tier: str, graph: str | None, cases: list[str]) -> str:
-    head = f"## Lane 3 Test Spec — H1\n\nWrite tier: {tier}\n**AE by name:** none\n"
-    if graph is not None:
-        head += graph
-    return head + "".join(f"\n### TC{i + 1} — case\n{c}" for i, c in enumerate(cases))
+def case(n: int, run: str = "python3 -m pytest -q tests/x.py") -> dict:
+    return {"id": f"TC{n}", "run": run}
+
+
+def block(obj) -> str:
+    text = obj if isinstance(obj, str) else json.dumps(obj)
+    return f"```lane3-spec\n{text}\n```\n"
+
+
+def spec(tier: str, obj, prose: str = "") -> str:
+    return (f"## Lane 3 Test Spec — H1\n\nWrite tier: {tier}\n**AE by name:** none\n\n"
+            f"{prose}{block(obj)}")
 
 
 class Base(unittest.TestCase):
@@ -40,167 +47,120 @@ class Base(unittest.TestCase):
         return text
 
 
-class AC1RunBlocks(Base):
-    def test_every_missing_case_is_named(self) -> None:
-        text = self.refused(spec("R", None, [RUN, "no command here\n", "nor here\n"]), "TC2", "TC3")
-        self.assertNotIn("TC1", text)
+class AC1Block(Base):
+    def test_zero_blocks_is_refused(self) -> None:
+        self.refused("## Lane 3 Test Spec — H1\n\nWrite tier: R\n\n### TC1 — a\n", "no ```lane3-spec")
 
-    def test_zero_tc_headings_is_refused(self) -> None:
-        body = "## Lane 3 Test Spec — H1\n\nWrite tier: R\n**AE by name:** none\n\nNo cases.\n"
-        self.refused(body, "no `### TC<n>` case heading")
+    def test_two_blocks_are_refused(self) -> None:
+        body = spec("R", {"cases": [case(1)]}) + block({"cases": [case(2)]})
+        self.refused(body, "2 ```lane3-spec blocks")
 
-    def test_unclosed_fence_is_refused_naming_its_line(self) -> None:
-        body = spec("R", None, [RUN + "```\nnever closed\n", "prose only\n"])
-        self.refused(body, "unclosed code fence opened at line")
+    def test_an_unclosed_block_is_refused(self) -> None:
+        body = "Write tier: R\n```lane3-spec\n{\"cases\": []}\n"
+        self.refused(body, "never closed")
 
-    def test_an_empty_run_fence_is_refused(self) -> None:
-        self.refused(spec("R", None, ["Run:\n```\n```\n"]), "TC1")
-        self.refused(spec("R", None, ["Run:\n```bash\n   \n\n```\n"]), "TC1")
+    def test_invalid_json_is_refused(self) -> None:
+        self.refused(spec("R", "{cases: [}"), "not valid JSON")
 
-    def test_run_line_must_be_followed_by_the_fence(self) -> None:
-        self.refused(spec("R", None, ["Run:\nsome prose first\n```\nx\n```\n"]), "TC1")
+    def test_an_unknown_key_is_refused(self) -> None:
+        self.refused(spec("R", {"cases": [case(1)], "extra": 1}), "unknown keys: extra")
 
-    def test_list_and_bold_prefixes_pass(self) -> None:
-        for run in ("- Run:\n```\nx\n```\n", "* Run:\n```\nx\n```\n",
-                    "**Run:**\n```\nx\n```\n", "- **Run:**\n```\nx\n```\n",
-                    "Run:\n~~~\nx\n~~~\n"):
-            with self.subTest(run=run):
-                self.ok(spec("R", None, [run]))
-
-    def test_numbered_run_with_an_indented_fence_passes(self) -> None:
-        self.ok(spec("R", None, ["1. Run:\n   ```\n   python3 -m pytest -q\n   ```\n"]))
+    def test_an_indented_or_commented_opener_is_not_a_block(self) -> None:
+        body = ("Write tier: R\n<!-- ```lane3-spec -->\n  ```lane3-spec\n"
+                "{\"cases\": [{\"id\": \"TC1\", \"run\": \"x\"}]}\n  ```\n")
+        self.refused(body, "no ```lane3-spec")
 
 
-class AC2InlineBackticks(Base):
-    def test_inline_backticks_never_count(self) -> None:
-        self.refused(spec("R", None, ["Run: `match_owner`\n"]), "TC1")
-        self.refused(spec("R", None, ["Calls `match_owner` and checks the result.\n"]), "TC1")
+class AC2Cases(Base):
+    def test_empty_cases_are_refused(self) -> None:
+        self.refused(spec("R", {"cases": []}), "non-empty list")
+
+    def test_a_blank_run_is_refused_naming_the_case(self) -> None:
+        self.refused(spec("R", {"cases": [case(1), case(2, "   ")]}), "TC2", "non-blank command")
+
+    def test_a_bad_id_is_refused(self) -> None:
+        self.refused(spec("R", {"cases": [{"id": "Case 1", "run": "x"}]}), "TC<n>")
+
+    def test_an_extra_case_key_is_refused(self) -> None:
+        self.refused(spec("R", {"cases": [{"id": "TC1", "run": "x", "note": "y"}]}), "TC1")
+
+    def test_duplicate_ids_are_refused(self) -> None:
+        self.refused(spec("R", {"cases": [case(1), case(1)]}), "duplicate")
 
 
 class AC3TierP(Base):
-    def test_missing_none_and_parts(self) -> None:
-        self.refused(spec("P", None, [RUN]), "needs one header `Graph:` line")
-        self.refused(spec("P", "Graph: none\n", [RUN]), "refuses `Graph: none`")
-        self.refused(spec("P", "Graph: none — read only\n", [RUN]), "refuses `Graph: none`")
-        self.refused(spec("P", "Graph: `python3 scripts/graph_fixture.py up`\n", [RUN]),
-                     "no graph URI")
-        self.refused(spec("P", "Graph: bolt://localhost:7699\n", [RUN]), "no provisioning command")
+    def test_p_refuses_none_and_a_missing_graph(self) -> None:
+        self.refused(spec("P", {"graph": NONE, "cases": [case(1)]}), "Write tier P refuses")
+        self.refused(spec("P", {"cases": [case(1)]}), "needs a `graph` key")
 
-    def test_conforming_p_passes(self) -> None:
-        self.ok(spec("P", GRAPH, [RUN]))
+    def test_p_refuses_a_blank_provision_or_a_non_graph_uri(self) -> None:
+        self.refused(spec("P", {"graph": {"provision": " ", "uri": GRAPH["uri"]}, "cases": [case(1)]}),
+                     "graph.provision")
+        self.refused(spec("P", {"graph": {"provision": "x", "uri": "localhost:7687"}, "cases": [case(1)]}),
+                     "graph.uri")
 
-    def test_every_uri_scheme_counts(self) -> None:
-        for scheme in ("bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc"):
-            with self.subTest(scheme=scheme):
-                self.ok(spec("P", f"Graph: `make graph` {scheme}://db:7687\n", [RUN]))
+    def test_p_with_a_graph_passes(self) -> None:
+        self.ok(spec("P", {"graph": GRAPH, "cases": [case(1)]}))
 
 
 class AC4TierW(Base):
-    def test_missing_or_reasonless(self) -> None:
-        self.refused(spec("W", None, [RUN]), "needs one header `Graph:` line")
-        self.refused(spec("W", "Graph: none\n", [RUN]), "reason")
+    def test_w_none_needs_a_reason(self) -> None:
+        self.refused(spec("W", {"graph": {"none": " "}, "cases": [case(1)]}), "non-blank reason")
 
-    def test_missing_command_or_uri(self) -> None:
-        self.refused(spec("W", "Graph: `make graph`\n", [RUN]), "no graph URI")
-        self.refused(spec("W", "Graph: neo4j://db:7687\n", [RUN]), "no provisioning command")
-
-    def test_none_with_reason_and_graph_free_runs_passes(self) -> None:
-        self.ok(spec("W", "Graph: none — every case reads posted artifacts\n", [RUN]))
-
-    def test_none_with_a_graph_uri_in_a_run_block_is_refused(self) -> None:
-        for uri in ("bolt://localhost:7699", "bolt+s://db:7687", "bolt+ssc://db:7687",
-                    "neo4j://localhost:7687", "neo4j+s://db:7687", "neo4j+ssc://db:7687"):
+    def test_w_none_refused_when_a_run_names_a_graph_uri(self) -> None:
+        for uri in ("bolt://h:7687", "bolt+s://h", "bolt+ssc://h", "neo4j://h", "neo4j+s://h", "neo4j+ssc://h"):
             with self.subTest(uri=uri):
-                run = f"Run:\n```\ncypher-shell -a {uri} 'RETURN 1'\n```\n"
-                self.refused(spec("W", "Graph: none — reads only\n", [run]), "names a graph")
+                self.refused(spec("W", {"graph": NONE, "cases": [case(1, f"seed.py --uri {uri}")]}),
+                             "names a graph URI")
 
-    def test_two_header_lines_are_refused(self) -> None:
-        self.refused(spec("W", GRAPH + GRAPH, [RUN]), "exactly one")
-
-
-class ClosedWorldCaseLocator(Base):
-    """Reforge pass 1 (sticky-wicket PATCH): a case the locator cannot place is
-    refused, never folded into the case before it."""
-
-    def test_non_exact_case_headings_are_refused(self) -> None:
-        for stray in ("### TC-2 — b", "### Case 3 — c", " ### TC2 — b", "#### TC3 — c",
-                      "## TC5 — e", "### Test case 4"):
-            with self.subTest(stray=stray):
-                self.refused(spec("R", None, [RUN]) + f"\n{stray}\nprose only\n",
-                             "not an exact `### TC<n>` heading")
-
-    def test_a_case_never_borrows_a_later_sections_run_block(self) -> None:
-        body = spec("R", None, ["prose only\n"]) + "\n### Also run\n" + RUN
-        self.refused(body, "TC1")
-
-    def test_an_unclosed_html_comment_is_refused(self) -> None:
-        body = spec("R", None, [RUN + "Expect a `<!--` l1-post footer.\n", "prose only\n"])
-        self.refused(body, "unclosed HTML comment")
-
-    def test_closed_sections_after_the_cases_still_pass(self) -> None:
-        self.ok(spec("R", None, [RUN, RUN]) + "\n### Also run\n- the suite\n\n### Stated gaps\n- none\n")
+    def test_w_needs_a_graph_key(self) -> None:
+        self.refused(spec("W", {"cases": [case(1)]}), "needs a `graph` key")
 
 
-class AC5OtherCaseLabels(Base):
-    def test_a_cross_reference_bullet_passes(self) -> None:
-        self.ok(spec("R", "- TC1 covers AC1\n- TC2 covers AC2\n", [RUN, RUN]))
-
-    def test_a_tc_summary_heading_passes(self) -> None:
-        self.ok(spec("R", None, [RUN]) + "\n## TC summary\n| TC | AC |\n|---|---|\n| TC1 | AC1 |\n")
+class AC5TierR(Base):
+    def test_r_accepts_no_graph_or_none(self) -> None:
+        self.ok(spec("R", {"cases": [case(1)]}))
+        self.ok(spec("R", {"graph": NONE, "cases": [case(1)]}))
 
 
-class AC6TierR(Base):
-    def test_r_accepts_none_or_no_line(self) -> None:
-        self.ok(spec("R", None, [RUN]))
-        self.ok(spec("R", "Graph: none\n", [RUN]))
+class AC6ProseCrossCheck(Base):
+    def test_a_prose_tc_heading_missing_from_the_block_is_refused(self) -> None:
+        body = spec("R", {"cases": [case(1)]}, prose="### TC1 — a\n\n### TC2 — b\n\n")
+        self.refused(body, "`### TC2` has no case")
+
+    def test_other_prose_labels_are_ignored(self) -> None:
+        prose = "**TC9 — b**\n- TC8 covers AC1\n### Test 7\n<!-- x --> <!-- y\n\n"
+        self.ok(spec("R", {"cases": [case(1)]}, prose=prose))
 
 
-class AC7MinimalW(Base):
-    def test_minimal_conforming_w_passes(self) -> None:
-        self.ok(spec("W", GRAPH, [RUN, RUN]))
+class AC7Conforming(Base):
+    def test_minimal_w_r_and_w_none_pass(self) -> None:
+        self.ok(spec("W", {"graph": GRAPH, "cases": [case(1), case(2)]}, prose="### TC1 — a\n### TC2 — b\n"))
+        self.ok(spec("R", {"cases": [case(1)]}))
+        self.ok(spec("W", {"graph": NONE, "cases": [case(1)]}))
 
 
-class AC8RealSpecs(unittest.TestCase):
-    def test_the_four_real_hrse_specs_are_refused(self) -> None:
+class AC8RealSpecs(Base):
+    def test_four_real_hrse_specs_are_each_refused(self) -> None:
         self.assertEqual(len(REAL_SPECS), 4)
         for path in REAL_SPECS:
-            with self.subTest(spec=path.name), self.assertRaises(SystemExit):
-                m.require_spec_structure(path.read_text(encoding="utf-8"))
+            with self.subTest(spec=path.name):
+                self.refused(path.read_text(encoding="utf-8"), "no ```lane3-spec")
 
 
-class AC10Separator(Base):
-    def test_spaced_hyphen_is_a_separator(self) -> None:
-        self.ok(spec("W", "Graph: none - every case reads posted artifacts\n", [RUN]))
-
-    def test_colon_is_not_a_separator(self) -> None:
-        self.refused(spec("W", "Graph: none: reads only\n", [RUN]), "reason")
-
-
-class AC11FencesAndFooter(Base):
-    def test_a_fenced_example_graph_line_is_ignored(self) -> None:
-        example = "```\nGraph: none\n```\n"
-        self.ok(spec("W", example + GRAPH, [RUN]))
-        self.refused(spec("W", example, [RUN]), "needs one header `Graph:` line")
-
-    def test_a_fenced_example_tc_heading_is_not_a_case(self) -> None:
-        self.ok(spec("R", "```\n### TC9 — example\n```\n", [RUN]))
-
-    def test_footer_neither_satisfies_nor_breaks(self) -> None:
-        footer = "\n\n<!-- l1-post v1; kind=spec; Graph: none — x; Run: -->\n"
-        self.refused(spec("W", None, [RUN]) + footer, "needs one header `Graph:` line")
-        self.refused(spec("R", None, ["no command\n"]) + footer, "TC1")
-        self.ok(spec("W", GRAPH, [RUN]) + footer)
+class AC9Template(Base):
+    def test_the_template_and_rule_show_a_valid_example_block(self) -> None:
+        root = HERE.parent.parent
+        for doc in (root / "skills" / "lane3-gate-platform" / "SKILL.md", root / "rules" / "testing-gate.md"):
+            with self.subTest(doc=doc.name):
+                text = doc.read_text(encoding="utf-8")
+                self.assertIn("```lane3-spec", text)
 
 
-class Wiring(unittest.TestCase):
-    def test_the_spec_branch_calls_the_lint_on_final(self) -> None:
-        source = (HERE / "post_lane_discussion.py").read_text(encoding="utf-8")
-        self.assertIn("        require_ae_by_name(final)\n"
-                      "        require_spec_structure(final)\n", source)
-
-    def test_no_adapter_allowlist_remains(self) -> None:
-        self.assertFalse(hasattr(m, "_provision_commands"))
-        self.assertFalse(hasattr(m, "spec_repo_cwd"))
+class Wiring(Base):
+    def test_require_spec_structure_refuses(self) -> None:
+        with self.assertRaises(SystemExit):
+            m.require_spec_structure("Write tier: R\n")
 
 
 if __name__ == "__main__":

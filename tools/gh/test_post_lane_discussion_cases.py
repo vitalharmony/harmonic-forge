@@ -25,18 +25,18 @@ import post_lane_discussion as P  # noqa: E402
 import verification_report as VR  # noqa: E402
 
 SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n"
-           "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n\n"
-           "### TC1 — a thing.\nRun:\n```\ntrue\n```\n\n### TC2 — another.\nRun:\n```\ntrue\n```\n")
+           "\n### TC1 — a thing.\n\n### TC2 — another.\n"
+           "```lane3-spec\n{\"graph\": {\"none\": \"the fixture reads no graph\"}, \"cases\": [{\"id\": \"TC1\", \"run\": \"true\"}, {\"id\": \"TC2\", \"run\": \"true\"}]}\n```\n")
 SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n"
-           "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n\n"
-                 "### TC1 — a thing.\nRun:\n```\ntrue\n```\n\n### TC2 — another.\nRun:\n```\ntrue\n```\n")
-_P_GRAPH = "Graph: `python3 scripts/graph_fixture.py up` bolt://localhost:7699\n"
+           "\n### TC1 — a thing.\n\n### TC2 — another.\n"
+                 "```lane3-spec\n{\"graph\": {\"none\": \"the fixture reads no graph\"}, \"cases\": [{\"id\": \"TC1\", \"run\": \"true\"}, {\"id\": \"TC2\", \"run\": \"true\"}]}\n```\n")
+_P_GRAPH = '\"graph\": {\"provision\": \"python3 scripts/graph_fixture.py up\", \"uri\": \"bolt://localhost:7699\"}'
 
 
 def _as_p(spec: str) -> str:
     """A Tier P spec names its graph (harmonic-forge#1342)."""
     return spec.replace("tier: W", "tier: P").replace(
-        "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n", _P_GRAPH)
+        '\"graph\": {\"none\": \"the fixture reads no graph\"}', _P_GRAPH)
 
 
 GATE_PASS = ("## Lane 3 Gate Results — H1\n\n**Verdict:** PASS — both ran.\n**Finding:** none.\n"

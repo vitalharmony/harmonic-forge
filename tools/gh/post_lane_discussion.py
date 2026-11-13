@@ -53,166 +53,110 @@ import check_lane3_ready
 from _auto_ae import _FENCE as _SPEC_FENCE, _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
 
-# harmonic-forge#1342: the Lane 3 spec structure. A `### TC<n>` heading opens a
-# case; a `Run:` line followed by a fenced block is its command; one unfenced
-# header `Graph:` line before the first case names the graph.
-_TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC[ \t]*\d+[a-z]?)\b")
-#: Every markdown heading, at any level and up to three spaces of indent (each
-#: one ends the case region before it).
-_ANY_HEAD = re.compile(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+(?P<text>[^\n]*)$")
-#: A heading whose label reads as a test case. Closed world (sticky-wicket
-#: PATCH, reforge pass 1): one that is not an exact `### TC<n>` is refused,
-#: never skipped, so no case escapes the Run: check.
-_CASE_LABEL = re.compile(r"(?i)^\**[ \t]*(?:TC[ \t-]*\d|test[ \t]+case[ \t-]*\d|case[ \t-]*\d)")
-#: `Run:` may carry a list prefix (`-`, `*`, `1.`) or bold (`**Run:**`).
-_RUN_LINE = re.compile(
-    r"(?m)^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?\**[ \t]*Run:[ \t]*\**[ \t]*$")
-_GRAPH_LINE = re.compile(r"(?m)^[ \t]*\**[ \t]*Graph:[ \t]*\**[ \t]*(?P<value>[^\n]*)$")
+# harmonic-forge#1342 (final reforge, operator ruling "2 yes", 2026-11-13): a
+# Lane 3 spec carries exactly one fenced `lane3-spec` JSON block, parsed
+# strictly. Markdown is never parsed for case structure; the block is the
+# contract, and Lane 3 runs what it lists.
+_BLOCK_OPEN = "```lane3-spec"
+_BLOCK_CLOSE = "```"
+_CASE_ID = re.compile(r"^TC\d+[a-z]?$")
+_EXACT_TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC\d+[a-z]?)\b")
 #: Graph access is any bolt/neo4j URI, including the `+s` and `+ssc` forms
-#: (sticky-wicket REFORGE, 2026-11-13 ruling).
+#: (2026-11-13 ruling).
 _GRAPH_URI = re.compile(r"(?i)\b(?:bolt|neo4j)(?:\+ssc|\+s)?://\S+")
-_NONE = re.compile(r"(?i)^`?none`?\b(?P<rest>.*)$")
-#: Only an em dash or a spaced hyphen separates `none` from its reason; `:` is
-#: ambiguous right after `Graph:` (pitch finding 5).
-_REASON = re.compile(r"^(?:[ \t]*—[ \t]*|[ \t]+-[ \t]+)(?P<reason>\S.*)$")
+_TOP_KEYS = {"graph", "cases"}
+_CASE_KEYS = {"id", "run"}
 
 
-def _fenced_spans(body: str) -> list[tuple[int, int]]:
-    return [(m.start(), m.end()) for m in _SPEC_FENCE.finditer(body)]
+def _spec_block(body: str) -> tuple[str | None, str | None]:
+    """The one `lane3-spec` block's text, or (None, why). Raw line scan: an
+    opener is exactly the fence line at column 0, so no comment or other fence
+    can hide or fake it."""
+    lines = body.split("\n")
+    opens = [i for i, line in enumerate(lines) if line.rstrip() == _BLOCK_OPEN]
+    if not opens:
+        return None, "the spec has no ```lane3-spec block"
+    if len(opens) > 1:
+        return None, f"the spec has {len(opens)} ```lane3-spec blocks; it needs exactly one"
+    start = opens[0] + 1
+    close = next((i for i in range(start, len(lines)) if lines[i].rstrip() == _BLOCK_CLOSE), None)
+    if close is None:
+        return None, f"the ```lane3-spec block opened at line {opens[0] + 1} is never closed"
+    return "\n".join(lines[start:close]), None
 
 
-def _inside(pos: int, spans: list[tuple[int, int]]) -> bool:
-    return any(start <= pos < end for start, end in spans)
-
-
-_FENCE_OPEN = re.compile(r"^[ \t]*(```|~~~)")
-
-
-def _unclosed_fence_line(body: str) -> int | None:
-    """The 1-based line of a code fence that is never closed, or None. Uses the
-    same open/close rule as `_auto_ae._FENCE` (same marker, at a line start),
-    which runs an unclosed fence to the end of the body."""
-    return _unclosed(body)[0]
-
-
-def _unclosed_comment_line(body: str) -> int | None:
-    """The 1-based line of an HTML comment `<!--` that is never closed, or None.
-    `_auto_ae._FENCE` runs it to the end of the body, hiding every later case
-    (reforge pass 1, finding 3), so it is refused like an unclosed fence."""
-    return _unclosed(body)[1]
-
-
-def _unclosed(body: str) -> tuple[int | None, int | None]:
-    opener: tuple[str, int] | None = None
-    in_comment = False
-    comment_line: int | None = None
-    for number, line in enumerate(body.split("\n"), 1):
-        if opener is None and not in_comment:
-            match = _FENCE_OPEN.match(line)
-            if match:
-                opener = (match.group(1), number)
-                continue
-            if "<!--" in line and "-->" not in line.split("<!--", 1)[1]:
-                in_comment, comment_line = True, number
-        elif in_comment:
-            if "-->" in line:
-                in_comment = False
-        elif re.match(r"^[ \t]*" + re.escape(opener[0]), line):
-            opener = None
-    return (opener[1] if opener else None, comment_line if in_comment else None)
+def _nonblank(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def spec_structure_problems(body: str) -> list[str]:
     """Every structure problem in a Lane 3 spec (harmonic-forge#1342), or []."""
     tier = declared_tier(body)
-    spans = _fenced_spans(body)
-    heads = [m for m in _TC_HEAD.finditer(body) if not _inside(m.start(), spans)]
+    text, why = _spec_block(body)
+    if why:
+        return [why]
+    try:
+        spec = json.loads(text)
+    except ValueError as exc:
+        return [f"the ```lane3-spec block is not valid JSON ({exc})"]
+    if not isinstance(spec, dict):
+        return ["the ```lane3-spec block must be a JSON object"]
     problems: list[str] = []
-    # sticky-wicket PATCH (survivors 2-3): "found no case" or "lost cases" is a
-    # refusal, never a pass.
-    unclosed = _unclosed_fence_line(body)
-    if unclosed is not None:
-        problems.append(f"unclosed code fence opened at line {unclosed}; every later case "
-                        "is unchecked")
-    open_comment = _unclosed_comment_line(body)
-    if open_comment is not None:
-        problems.append(f"unclosed HTML comment `<!--` at line {open_comment}; every later "
-                        "case is unchecked")
-    if not heads:
-        problems.append("the spec has no `### TC<n>` case heading; every case opens with "
-                        "one, e.g. `### TC1 — <what>`")
-    exact = {h.start() for h in heads}
-    all_heads = [m for m in _ANY_HEAD.finditer(body) if not _inside(m.start(), spans)]
-    stray = [body.count("\n", 0, m.start()) + 1 for m in all_heads
-             if m.start() not in exact and _CASE_LABEL.match(m.group("text").strip())]
-    if stray:
-        problems.append("these lines read as test-case headings but are not an exact "
-                        f"`### TC<n>` heading (line {', '.join(map(str, stray))}); every case "
-                        "opens with `### TC<n> — <what>`")
-
-    run_blocks: list[str] = []
-    missing: list[str] = []
-    for index, head in enumerate(heads):
-        # A case's region ends at the next heading of any kind, so it never
-        # borrows a later section's Run: block.
-        end = next((m.start() for m in all_heads if m.start() > head.start()), len(body))
-        found = False
-        for run in _RUN_LINE.finditer(body, head.end(), end):
-            if _inside(run.start(), spans):
-                continue
-            after = run.end() + 1
-            nxt = next((s for s in spans if s[0] >= after), None)
-            if nxt and nxt[0] < end and not body[after:nxt[0]].strip() \
-                    and body[nxt[0]:nxt[1]].lstrip(" \t").startswith(("```", "~~~")) \
-                    and any(line.strip() for line in body[nxt[0]:nxt[1]].split("\n")[1:-1]):
-                found = True
-                run_blocks.append(body[nxt[0]:nxt[1]])
-        if not found:
-            missing.append(re.sub(r"\s+", "", head.group(1)))
-    if missing:
-        problems.append("these test cases have no `Run:` line followed by a fenced command "
-                        "block holding at least one non-blank line (inline backticks never "
-                        f"count): {', '.join(missing)}")
-
-    if tier == "R" or tier is None:
+    unknown = sorted(set(spec) - _TOP_KEYS)
+    if unknown:
+        problems.append(f"the ```lane3-spec block has unknown keys: {', '.join(unknown)}")
+    cases = spec.get("cases")
+    ids: list[str] = []
+    if not isinstance(cases, list) or not cases:
+        problems.append("`cases` must be a non-empty list of {\"id\": \"TC<n>\", \"run\": \"<command>\"}")
+        cases = []
+    for index, case in enumerate(cases, 1):
+        label = case.get("id") if isinstance(case, dict) and isinstance(case.get("id"), str) \
+            else f"case {index}"
+        if not isinstance(case, dict) or set(case) != _CASE_KEYS:
+            problems.append(f"{label}: a case is exactly {{\"id\", \"run\"}}")
+            continue
+        if not _CASE_ID.match(case["id"]):
+            problems.append(f"{label}: the id must read TC<n>")
+        if not _nonblank(case["run"]):
+            problems.append(f"{label}: `run` must be a non-blank command")
+        if case["id"] in ids:
+            problems.append(f"{label}: duplicate case id")
+        ids.append(case["id"])
+    for head in _EXACT_TC_HEAD.finditer(body):
+        if head.group(1) not in ids:
+            problems.append(f"the prose heading `### {head.group(1)}` has no case in the "
+                            "```lane3-spec block")
+    runs = [c["run"] for c in cases if isinstance(c, dict) and _nonblank(c.get("run"))]
+    graph = spec.get("graph")
+    if graph is None:
+        if tier in ("W", "P"):
+            problems.append(f"Write tier {tier} needs a `graph` key: {{\"provision\", \"uri\"}}"
+                            + (" or {\"none\": \"<reason>\"}" if tier == "W" else ""))
         return problems
-    first = heads[0].start() if heads else len(body)
-    graphs = [m for m in _GRAPH_LINE.finditer(body, 0, first) if not _inside(m.start(), spans)]
-    if not graphs:
-        problems.append(f"Write tier {tier} needs one header `Graph:` line before the first "
-                        "`### TC` naming the provisioning command and a bolt/neo4j URI"
-                        + (", or `Graph: none — <reason>`" if tier == "W" else ""))
+    if not isinstance(graph, dict) or set(graph) not in ({"provision", "uri"}, {"none"}):
+        problems.append("`graph` is exactly {\"provision\", \"uri\"} or {\"none\": \"<reason>\"}")
         return problems
-    if len(graphs) > 1:
-        problems.append(f"the spec has {len(graphs)} header `Graph:` lines; it needs exactly one")
-        return problems
-    value = graphs[0].group("value").strip()
-    none = _NONE.match(value)
-    if none:
+    if "none" in graph:
         if tier == "P":
-            problems.append("Write tier P refuses `Graph: none`: a production case names its "
-                            "graph (provisioning command and a bolt/neo4j URI)")
-            return problems
-        reason = _REASON.match(none.group("rest"))
-        if not reason:
-            problems.append("`Graph: none` under Write tier W needs a reason after an em dash "
-                            "or a spaced hyphen: `Graph: none — <reason>`")
-            return problems
-        if any(_GRAPH_URI.search(b) for b in run_blocks):
-            problems.append("`Graph: none` is declared but a `Run:` block names a graph "
-                            "URI (bolt/neo4j)")
+            problems.append("Write tier P refuses `graph: none`: a production case names its graph")
+        elif tier == "W":
+            if not _nonblank(graph["none"]):
+                problems.append("`graph: none` under Write tier W needs a non-blank reason")
+            if any(_GRAPH_URI.search(r) for r in runs):
+                problems.append("`graph: none` is declared but a case's `run` names a graph URI "
+                                "(bolt/neo4j)")
         return problems
-    if not _GRAPH_URI.search(value):
-        problems.append("the `Graph:` line has no graph URI (bolt/neo4j)")
-    command = _GRAPH_URI.sub("", value).replace("`", "").strip(" \t·,;—-")
-    if not re.search(r"\w", command):
-        problems.append("the `Graph:` line names no provisioning command")
+    if not _nonblank(graph["provision"]):
+        problems.append("`graph.provision` must be a non-blank command")
+    if not (isinstance(graph["uri"], str) and _GRAPH_URI.fullmatch(graph["uri"].strip())):
+        problems.append("`graph.uri` must be a bolt/neo4j URI")
     return problems
 
 
 def require_spec_structure(body: str) -> None:
-    """harmonic-forge#1342: refuse a Lane 3 spec without a `Run:` fenced block on
-    every case and, under Write tier W or P, one header `Graph:` line."""
+    """harmonic-forge#1342: refuse a Lane 3 spec without one well-formed
+    `lane3-spec` JSON block."""
     problems = spec_structure_problems(body)
     if problems:
         print("[post-comment] refused: the Lane 3 spec structure is incomplete "

@@ -47,23 +47,22 @@ Read this list once, up front, instead:
   backend is down" when it's just the other checkout's.
 - The spec heading is exactly `## Lane 3 Test Spec — H<N>` (or the repo's own
   prefix) — the mechanical heading check refuses anything looser.
-- Every `### TC<n>` carries a `Run:` line followed by a fenced block with the
-  exact command (inline backticks never count). Under Write tier W or P, one
-  header `Graph:` line before the first case names the provisioning command
-  and a bolt/neo4j URI (`bolt://`, `neo4j://`, or a `+s`/`+ssc` form); Tier W
-  may instead read `Graph: none — <reason>` when no `Run:` block holds a graph
-  URI, and Tier P never may
-  (`post_lane_discussion.py` refuses otherwise, harmonic-forge#1342):
+- The spec carries exactly one fenced `lane3-spec` JSON block (opener at column
+  0): every case's `id` and exact `run` command, and, under Write tier W or P,
+  a `graph` key naming the provisioning command and a bolt/neo4j URI
+  (`bolt://`, `neo4j://`, or a `+s`/`+ssc` form). Tier W may instead give
+  `{"none": "<reason>"}` when no `run` names a graph URI; Tier P never may.
+  Every `### TC<n>` heading in the prose needs a matching `id`. Lane 3 runs what
+  the block lists (`post_lane_discussion.py` refuses otherwise,
+  harmonic-forge#1342):
 
-  ```
+  ````
   Write tier: W
-  Graph: none — every case reads the posted artifacts, no graph
-  ### TC1 — the summary counts
-  Run:
-  ~~~
-  python3 -m pytest -q tests/test_summary.py
-  ~~~
+  ```lane3-spec
+  {"graph": {"none": "every case reads the posted artifacts, no graph"},
+   "cases": [{"id": "TC1", "run": "python3 -m pytest -q tests/test_summary.py"}]}
   ```
+  ````
 - Anything the AE must name — an install, a free lookup outside the
   `External calls:` grammar, a widened scope — goes on the spec's one
   `**AE by name:** TC1: <what>; TC2: <what>` line (or `none`), never only in
