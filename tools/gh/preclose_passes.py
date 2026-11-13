@@ -688,24 +688,19 @@ def post_verdict_refusal(receipt: dict | None, sha: str, repo: str, issue: int,
     return POST_VERDICT_REQUIRED.format(repo=repo, issue=issue)
 
 
-def _check_names_pass(check: dict, last: dict, repo_dir=None) -> bool:
+def _check_names_pass(check: dict, last: dict) -> bool:
     """True when a post-verdict check was taken against this pass
-    (harmonic-forge#1346). Its base is the pass SHA, or a rebased twin of it:
-    the write already refused any other base (`preclose_check.py`'s
-    `accepts_entry` gate), and records the pass SHA it accepted as `pass_sha`,
-    so no git is needed here. A legacy check with no `pass_sha` falls back to
-    the same comparator in `repo_dir`, failing closed when it cannot run."""
+    (harmonic-forge#1346): its base is the pass SHA, or the writer recorded
+    this pass as `pass_sha` after its `accepts_entry` gate proved the base a
+    rebased twin of it. No git runs here, so the answer never depends on the
+    process cwd. A legacy check (no `pass_sha`) whose base is a rebased twin
+    does not count: it fails closed to the pass head, and re-recording the
+    check with this writer adds `pass_sha`."""
     sha = last.get("sha")
-    if not sha:
-        return False
-    if sha in (check.get("base_sha"), check.get("pass_sha")):
-        return True
-    if "pass_sha" in check:
-        return False
-    return accepts_entry(last, str(check.get("base_sha") or ""), repo_dir)
+    return bool(sha) and sha in (check.get("base_sha"), check.get("pass_sha"))
 
 
-def force_head(receipt: dict | None, repo_dir=None) -> str | None:
+def force_head(receipt: dict | None) -> str | None:
     """The head an operator --force covers (harmonic-forge#1169): the latest
     post-verdict check's head when one exists (the PATCH path, where --force is
     what covers the final head), else the latest pass's head, else the
@@ -717,7 +712,7 @@ def force_head(receipt: dict | None, repo_dir=None) -> str | None:
     # Only a check on the current epoch's latest pass counts: one carried
     # across a reforge names an old head (F1169 preclose pass 2).
     if (isinstance(check, dict) and check.get("head_sha") and latest
-            and _check_names_pass(check, latest[-1], repo_dir)):
+            and _check_names_pass(check, latest[-1])):
         return str(check["head_sha"])
     passes = history(receipt)
     if passes and passes[-1].get("sha"):

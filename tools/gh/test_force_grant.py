@@ -196,13 +196,11 @@ class ForceHeadRebasedTwinTests(unittest.TestCase):
         with mock.patch.object(preclose_passes, "accepts_entry", return_value=True):
             self.assertEqual(preclose_passes.force_head(receipt), "a" * 40)
 
-    def test_legacy_check_uses_the_change_identity_comparator(self):
+    def test_a_legacy_twin_check_fails_closed_without_running_git(self):
         import preclose_passes  # noqa: PLC0415
         receipt = self._receipt({"base_sha": "b" * 40, "head_sha": "c" * 40})
-        with mock.patch.object(preclose_passes, "accepts_entry", return_value=True) as acc:
-            self.assertEqual(preclose_passes.force_head(receipt, repo_dir="/r"), "c" * 40)
-        self.assertEqual(acc.call_args.args[1], "b" * 40)
-        with mock.patch.object(preclose_passes, "accepts_entry", return_value=False):
+        with mock.patch.object(preclose_passes, "accepts_entry",
+                               side_effect=AssertionError("force_head runs no git")):
             self.assertEqual(preclose_passes.force_head(receipt), "a" * 40)
 
     def test_post_verdict_fields_records_the_pass_sha(self):
@@ -211,16 +209,15 @@ class ForceHeadRebasedTwinTests(unittest.TestCase):
                                                   "prov", 0, pass_sha="a" * 40)
         self.assertEqual(out["post_verdict_check"]["pass_sha"], "a" * 40)
 
-    def test_a_head_moved_after_the_check_is_still_refused(self):
-        receipt_head = "c" * 40
-        self.assertNotEqual(receipt_head, "d" * 40)
-        # force_grant.require binds the exact grant SHA; a later head never matches it.
-        import force_grant as G2  # noqa: PLC0415
-        with mock.patch.object(G2, "read_grant", return_value={
-                "key": "F1", "repo": "o/r", "issue": 1, "sha": receipt_head, "mode": "plain",
-                "status": "recorded", "expires_at": "2999-01-01T00:00:00Z", "granted_at": "x"}):
-            with self.assertRaises(G2.GrantRefused):
-                G2.require("o/r", 1, "d" * 40)
+    def test_the_grant_binds_the_post_verdict_head_and_refuses_a_later_one(self):
+        import preclose_passes  # noqa: PLC0415
+        receipt = self._receipt({"base_sha": "b" * 40, "head_sha": "c" * 40, "pass_sha": "a" * 40})
+        with mock.patch("preclose_check.find_receipt", return_value=receipt):
+            covered = G.covered_head("o/r", 1)
+        self.assertEqual(covered, "c" * 40)
+        grant = {"sha": covered, "mode": "plain"}
+        self.assertIsNone(G._binding_refusal(grant, "F1", "c" * 40, "plain"))
+        self.assertIn("head moved", G._binding_refusal(grant, "F1", "d" * 40, "plain"))
 
 
 class PrecloseGateTests(Store):
