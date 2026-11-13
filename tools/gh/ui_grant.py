@@ -121,10 +121,14 @@ def ui_change_line(bodies) -> str | None:
     return None
 
 
-def _gh_lines(args: list[str], runner) -> list[dict]:
+def _gh_lines(args: list[str], runner, caller: str | None = None) -> list[dict]:
     """A paginated `gh api ... --jq '... | tojson'` read as a list of dicts;
-    raises RecordRefused on any failure."""
-    result = runner(["gh", "api", "--paginate", *args], capture_output=True, text=True, check=False)
+    raises RecordRefused on any failure. `caller` marks this one call as a
+    sanctioned gh-shim scan (harmonic-forge#964, #1356); every other call runs
+    with the caller's environment unchanged."""
+    extra = {"env": {**os.environ, "GH_SHIM_CALLER": caller}} if caller else {}
+    result = runner(["gh", "api", "--paginate", *args], capture_output=True, text=True, check=False,
+                    **extra)
     if result.returncode:
         raise RecordRefused(f"`gh api {args[0]}` failed: {(result.stderr or '').strip()[:200]}")
     try:
@@ -297,7 +301,8 @@ def find_merge_pr(key: str, key_repo: str, number: int, prefix: str,
     want = (key_repo.lower(), number)
     for repo in opted_in_repos(key_repo.split("/")[0], runner):
         prs = _gh_lines([f"repos/{repo}/pulls?state=open&per_page=100", "--jq",
-                         ".[] | {number, title, ref: .head.ref, sha: .head.sha} | tojson"], runner)
+                         ".[] | {number, title, ref: .head.ref, sha: .head.sha} | tojson"], runner,
+                        caller="ui_grant")
         for pr in prs:
             title, ref = pr.get("title") or "", pr.get("ref") or ""
             title_match, branch_match = _TITLE_ISSUE.search(title), _BRANCH_ISSUE.match(ref)
