@@ -1918,7 +1918,8 @@ STICKY_CHECKED_KINDS = ("rework", "handoff", "ready-for-l3", "ae", "sweep", "ae-
 
 #: harmonic-forge#1247 and #1354. `relay`: a step the handoff planned that only
 #: Lane 1 can enable (a push, a CI render), with no change asked of the work. It
-#: is no sticky-wicket round (`sticky_receipt.RELAY`) and raises no route floor.
+#: is no sticky-wicket round and raises no route floor. `rebase` (harmonic-forge#1359)
+#: is no sticky-wicket round either (`sticky_receipt.NOT_A_ROUND`).
 REWORK_KINDS = ("correction", "rebase", "relay")
 
 
