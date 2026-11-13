@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import re
 import sys
 from pathlib import Path
@@ -77,9 +76,9 @@ def target_dir(payload: dict) -> Path:
 
 
 def _segment_is_gate(segment: list[str]) -> bool:
-    # preclose pass 2 (cross-family): re-quote the tokens, so a quoted argument
-    # cannot make the re-parse raise.
-    return is_gate_command(shlex.join(segment)) if segment else False
+    # A re-parse that raises is caught in decide(): the walk then adds no target
+    # and only the session cwd is judged (preclose pass 2 / post-verdict).
+    return is_gate_command(" ".join(segment)) if segment else False
 
 
 def _mise_dir(segment: list[str]) -> str | None:
