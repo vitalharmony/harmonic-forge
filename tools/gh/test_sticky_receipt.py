@@ -450,8 +450,33 @@ class RelayTests(ReceiptHome):
     def test_a_fenced_relay_footer_after_the_own_footer_does_not_count(self):
         """Cross-family finding, pass 1: a fenced copy after the real footer."""
         body = correction(2)["body"] + "\n\n```\n<!-- l1-post v1; kind=rework; rework=relay; -->\n```\n"
-        self.assertIsNone(sr.rework_kind(body))
+        self.assertEqual(sr.rework_kind(body), "correction")
         self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": body}])[-1], (2, False, "rework"))
+
+    def test_rework_kind_agrees_with_the_classifier_marker(self):
+        """Sticky-wicket PATCH (pass 2): the rework kind is read from the same
+        marker the classifier reads, so the two can never disagree."""
+        relay_line = "<!-- l1-post v1; kind=rework; rework=relay; -->"
+        real = correction(2)["body"]
+        bodies = {
+            "indented relay after the real footer": real + "\n\n    " + relay_line + "\n",
+            "relay after an unclosed fence": real + "\n\n```\n" + relay_line + "\n",
+            "fenced relay after the real footer": real + "\n\n```\n" + relay_line + "\n```\n",
+            "quoted relay before the real footer": "> " + relay_line + "\n\n" + real,
+        }
+        for name, body in bodies.items():
+            with self.subTest(name=name):
+                marker = belt._own_marker(body) or ""
+                expected = "relay" if "rework=relay" in marker else "correction"
+                # The invariant: the rework kind is the own marker's, never another copy's.
+                self.assertEqual(sr.rework_kind(body), expected)
+                self.assertEqual(belt._classify(body), ("l1", "rework"))
+        # Every case the classifier strips (indented, fenced, quoted) reads correction.
+        for name in ("indented relay after the real footer", "fenced relay after the real footer",
+                     "quoted relay before the real footer"):
+            with self.subTest(stripped=name):
+                self.assertEqual(sr.rework_kind(bodies[name]), "correction")
+        self.assertEqual(sr.rework_kind(relay(3)["body"]), "relay")
 
     def test_the_belt_owes_no_sticky_wicket_on_relays(self):
         self.assertFalse(belt._sticky_wicket_owed(REPO, ISSUE, [gate(1, "PASS"), relay(2), relay(3)]))

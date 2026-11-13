@@ -54,20 +54,22 @@ VERDICTS = ("PATCH", "REFORGE")
 #: harmonic-forge#1354: a `relay` rework is a step the handoff planned that only
 #: Lane 1 can enable (a push, a CI render); it asks for no change to the work, so
 #: it is no round and answers no gate result. Read from the comment's own
-#: `l1-post` footer only: `l1_post` writes it as the body's last line, so a
-#: quoted or fenced copy anywhere else never counts.
+#: `l1-post` footer only, read through the one own-marker reader the classifier
+#: uses (`watch_lane_posts._own_marker`), so the kind and the rework kind always
+#: come from the same marker (sticky-wicket PATCH on harmonic-forge#1354).
 RELAY = "relay"
-_OWN_FOOTER = re.compile(r"^[ \t]*<!--\s*l1-post\b[^>]*-->[ \t]*$", re.I)
-_REWORK_KIND = re.compile(r"\brework=(correction|rebase|relay);")
+_REWORK_KIND = re.compile(r"\brework=(correction|rebase|relay)\b")
 
 
 def rework_kind(body: str) -> str | None:
-    """The `rework=` kind in the comment's own `l1-post` footer, or None. The own
-    footer is the body's last non-blank line (where `l1_post` writes it); a
-    footer-shaped line anywhere else, quoted or fenced, is never read."""
-    lines = [line for line in (body or "").splitlines() if line.strip()]
-    last = lines[-1] if lines else ""
-    found = _REWORK_KIND.search(last) if _OWN_FOOTER.match(last) else None
+    """The `rework=` value of the same marker `_classify` reads
+    (`watch_lane_posts._own_marker`), or None. One reader, so a quoted, fenced
+    or indented copy can never set the rework kind while the classifier reads
+    another footer."""
+    import watch_lane_posts as belt  # noqa: PLC0415 -- imports this module; deferred to break the cycle
+
+    marker = belt._own_marker(body or "")
+    found = _REWORK_KIND.search(marker) if marker else None
     return found.group(1) if found else None
 
 
