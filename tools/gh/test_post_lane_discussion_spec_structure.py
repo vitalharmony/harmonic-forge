@@ -148,6 +148,56 @@ class FencesAndFooter(Base):
         self.ok(spec("W", GRAPH, [RUN]) + footer)
 
 
+class FailClosed(Base):
+    """sticky-wicket PATCH (harmonic-forge#1342 pass 1): every not-found or
+    unparseable branch refuses with a named reason."""
+
+    def test_unclosed_fence_is_refused_naming_its_line(self) -> None:
+        body = spec("R", None, [RUN + "```\nnever closed\n", "prose only\n"])
+        self.refused(body, "unclosed code fence opened at line")
+
+    def test_zero_tc_headings_is_refused(self) -> None:
+        body = "## Lane 3 Test Spec — H1\n\nWrite tier: R\n**AE by name:** none\n\nNo cases.\n"
+        self.refused(body, "no `### TC<n>` case heading")
+
+    def test_case_label_outside_tc_form_is_refused(self) -> None:
+        for label in ("#### TC2 — x", "**TC2** — x", "- TC2 — x", "### TC-2 — x", "1. TC2 — x"):
+            with self.subTest(label=label):
+                self.refused(spec("R", None, [RUN]) + f"\n{label}\n{RUN}", "outside `### TC<n>` form")
+
+    def test_unreadable_manifest_is_refused(self) -> None:
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "gate-adapter.json").write_text("{not json", encoding="utf-8")
+        self.refused(spec("W", GRAPH, [RUN]), "adapter manifest is unusable")
+
+    def test_malformed_spec_graph_is_refused(self) -> None:
+        for value in ([], "x", {"provision_commands": "scripts/graph_fixture.py"},
+                      {"provision_commands": ["ok", ""]}, {"provision_commands": [1]}):
+            with self.subTest(value=value):
+                (self.repo / ".claude").mkdir(exist_ok=True)
+                (self.repo / ".claude" / "gate-adapter.json").write_text(
+                    json.dumps({"spec_graph": value}), encoding="utf-8")
+                self.refused(spec("W", GRAPH, [RUN]), "malformed spec_graph")
+
+    def test_manifest_without_spec_graph_accepts_any_command(self) -> None:
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "gate-adapter.json").write_text("{}", encoding="utf-8")
+        self.ok(spec("W", "Graph: `make graph` bolt://localhost:7699\n", [RUN]))
+        self.refused(spec("W", "Graph: `make graph`\n", [RUN]), "bolt://")
+
+    def test_cwd_repo_other_than_target_is_refused(self) -> None:
+        subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin",
+                        "https://github.com/vitalharmony/harmonic-forge.git"], check=True)
+        self.assertEqual(m.spec_repo_cwd("vitalharmony/harmonic-forge", self.repo).resolve(),
+                         self.repo.resolve())
+        with self.assertRaises(SystemExit):
+            m.spec_repo_cwd("vitalharmony/hrse", self.repo)
+
+    def test_cwd_without_origin_is_refused(self) -> None:
+        with self.assertRaises(SystemExit):
+            m.spec_repo_cwd("vitalharmony/hrse", self.repo)
+
+
 class RealSpecs(Base):
     def test_ac8_the_four_real_hrse_specs_are_refused(self) -> None:
         self.assertEqual(len(REAL_SPECS), 4)
@@ -159,7 +209,8 @@ class RealSpecs(Base):
 class Wiring(unittest.TestCase):
     def test_the_spec_branch_calls_the_lint_on_final(self) -> None:
         source = (HERE / "post_lane_discussion.py").read_text(encoding="utf-8")
-        self.assertIn("        require_ae_by_name(final)\n        require_spec_structure(final)\n", source)
+        self.assertIn("        require_ae_by_name(final)\n"
+                      "        require_spec_structure(final, spec_repo_cwd(args.repo))\n", source)
 
 
 class Schema(unittest.TestCase):

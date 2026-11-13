@@ -26,10 +26,10 @@ import verification_report as VR  # noqa: E402
 
 SPEC_TC = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n"
            "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n\n"
-           "### Test cases\n- TC1 — a thing.\n- TC2 — another.\n")
+           "### TC1 — a thing.\nRun:\n```\ntrue\n```\n\n### TC2 — another.\nRun:\n```\ntrue\n```\n")
 SPEC_NUMBERED = ("## Lane 3 Test Spec — H1\n\n**Cases:** 2.\nWrite tier: W\n**Next:** submit for HITL approval.\n"
            "Graph: none — the fixture reads no graph (harmonic-forge#1342)\n\n"
-                 "### Test cases\n1. A thing.\n2. Another.\n")
+                 "### TC1 — a thing.\nRun:\n```\ntrue\n```\n\n### TC2 — another.\nRun:\n```\ntrue\n```\n")
 _P_GRAPH = "Graph: `python3 scripts/graph_fixture.py up` bolt://localhost:7699\n"
 
 

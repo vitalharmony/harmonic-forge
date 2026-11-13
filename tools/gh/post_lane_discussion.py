@@ -74,14 +74,68 @@ def _inside(pos: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= pos < end for start, end in spans)
 
 
-def _provision_commands(repo_cwd: "Path | None") -> list[str] | None:
-    """The consuming repo's declared provisioning commands, or None when the
-    adapter declares none (then any non-empty command is accepted)."""
+def _provision_commands(repo_cwd: "Path | None") -> tuple[list[str] | None, str | None]:
+    """(declared provisioning commands or None, refusal or None).
+
+    sticky-wicket PATCH (harmonic-forge#1342 pass 1, survivor 4): the one
+    absence that accepts any command is a readable manifest with no
+    `spec_graph` key (AC5) -- or no manifest file at all in a repository.
+    An unreadable manifest, a non-object `spec_graph` or a malformed
+    `provision_commands` refuses with a named reason, never a pass."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gate"))
     import adapter  # noqa: PLC0415
-    entry = adapter.declared("spec_graph", repo_cwd)
-    commands = (entry or {}).get("provision_commands")
-    return [c for c in commands if isinstance(c, str) and c.strip()] if commands else None
+    path = adapter.manifest_path(repo_cwd)
+    if path is None:
+        return None, ("no git repository at the spec's checkout, so the adapter manifest "
+                      "could not be located; run from a checkout of the target repo")
+    if not path.is_file():
+        return None, None
+    manifest, why_not = adapter.load_manifest(repo_cwd)
+    if manifest is None:
+        return None, f"the adapter manifest is unusable ({why_not})"
+    if "spec_graph" not in manifest:
+        return None, None
+    entry = manifest["spec_graph"]
+    if not isinstance(entry, dict):
+        return None, "malformed spec_graph in the adapter manifest: not a JSON object"
+    if "provision_commands" not in entry:
+        return None, None
+    commands = entry["provision_commands"]
+    if not isinstance(commands, list) or not commands \
+            or not all(isinstance(c, str) and c.strip() for c in commands):
+        return None, ("malformed spec_graph.provision_commands in the adapter manifest: "
+                      "it must be a non-empty list of non-empty strings")
+    return [c.strip() for c in commands], None
+
+
+#: Any line outside fences that labels a case: a heading of any level, a list
+#: item or bold text starting `TC`. Only `### TC<n>` opens a case the lint can
+#: check, so every other shape is refused rather than silently skipped.
+_CASE_LABEL = re.compile(
+    r"(?m)^[ \t]*(?:#{1,6}[ \t]*\**|[-*+][ \t]+\**|\d+[.)][ \t]+\**|\*\*)[ \t]*TC(?![A-Za-z])[^\n]*$")
+_FENCE_OPEN = re.compile(r"^[ \t]*(```|~~~)")
+
+
+def _unclosed_fence_line(body: str) -> int | None:
+    """The 1-based line of a code fence that is never closed, or None. Uses the
+    same open/close rule as `_auto_ae._FENCE` (same marker, at a line start),
+    which runs an unclosed fence to the end of the body."""
+    opener: tuple[str, int] | None = None
+    in_comment = False
+    for number, line in enumerate(body.split("\n"), 1):
+        if opener is None and not in_comment:
+            match = _FENCE_OPEN.match(line)
+            if match:
+                opener = (match.group(1), number)
+                continue
+            if "<!--" in line and "-->" not in line.split("<!--", 1)[1]:
+                in_comment = True
+        elif in_comment:
+            if "-->" in line:
+                in_comment = False
+        elif re.match(r"^[ \t]*" + re.escape(opener[0]), line):
+            opener = None
+    return opener[1] if opener else None
 
 
 def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[str]:
@@ -90,6 +144,22 @@ def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[s
     spans = _fenced_spans(body)
     heads = [m for m in _TC_HEAD.finditer(body) if not _inside(m.start(), spans)]
     problems: list[str] = []
+    # sticky-wicket PATCH (survivors 2-3): "found no case" or "lost cases" is a
+    # refusal, never a pass.
+    unclosed = _unclosed_fence_line(body)
+    if unclosed is not None:
+        problems.append(f"unclosed code fence opened at line {unclosed}; every later case "
+                        "is unchecked")
+    if not heads:
+        problems.append("the spec has no `### TC<n>` case heading; every case opens with "
+                        "one, e.g. `### TC1 — <what>`")
+    head_starts = {h.start() for h in heads}
+    for label in _CASE_LABEL.finditer(body):
+        if _inside(label.start(), spans) or label.start() in head_starts:
+            continue
+        line = body.count("\n", 0, label.start()) + 1
+        problems.append(f"line {line} labels a case outside `### TC<n>` form "
+                        f"({label.group(0).strip()!r}); write it as `### TC<n> — <what>`")
 
     run_blocks: list[str] = []
     missing: list[str] = []
@@ -124,7 +194,10 @@ def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[s
         problems.append(f"the spec has {len(graphs)} header `Graph:` lines; it needs exactly one")
         return problems
     value = graphs[0].group("value").strip()
-    commands = _provision_commands(repo_cwd)
+    commands, malformed = _provision_commands(repo_cwd)
+    if malformed:
+        problems.append(malformed)
+        return problems
     none = _NONE.match(value)
     if none:
         if tier == "P":
@@ -152,6 +225,29 @@ def spec_structure_problems(body: str, repo_cwd: "Path | None" = None) -> list[s
     elif not re.search(r"\w", command):
         problems.append("the `Graph:` line names no provisioning command")
     return problems
+
+
+_ORIGIN_SLUG = re.compile(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$")
+
+
+def spec_repo_cwd(repo: str, cwd: "Path | None" = None) -> Path:
+    """sticky-wicket PATCH (survivor 1): the adapter allowlist is read from the
+    checkout the post runs in, so that checkout must be `--repo`'s. Returns its
+    top level; refuses when the origin is unreadable or names another repo."""
+    cwd = cwd or Path.cwd()
+    origin = subprocess.run(["git", "-C", str(cwd), "remote", "get-url", "origin"],
+                            capture_output=True, text=True, check=False)
+    top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, check=False)
+    match = _ORIGIN_SLUG.search(origin.stdout.strip()) if origin.returncode == 0 else None
+    slug = match.group(1) if match else None
+    if top.returncode or slug is None or slug.lower() != repo.lower():
+        found = slug or "no readable origin"
+        print(f"[post-comment] refused: the Lane 3 spec structure is checked against the "
+              f"target repo's adapter manifest, but this checkout is {found}, not {repo}; "
+              f"run from a checkout of {repo} (harmonic-forge#1342).", file=sys.stderr)
+        raise SystemExit(2)
+    return Path(top.stdout.strip())
 
 
 def require_spec_structure(body: str, repo_cwd: "Path | None" = None) -> None:
@@ -725,7 +821,7 @@ def main() -> None:
     if artifact == "spec":
         require_write_tier(final, body_len=len(body.rstrip("\n")))
         require_ae_by_name(final)
-        require_spec_structure(final)
+        require_spec_structure(final, spec_repo_cwd(args.repo))
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
