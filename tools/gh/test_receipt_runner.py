@@ -118,5 +118,40 @@ class TestReceiptRunner(unittest.TestCase):
         directory.relative_to(git_dir)  # raises ValueError if not inside
 
 
+class TestIssueForms(unittest.TestCase):
+    """harmonic-forge#1343: the forms the lanes type, and a key for another repo."""
+
+    def test_every_form_parses_to_the_number(self):
+        self.assertEqual(rr.parse_issue("2667"), (None, 2667))
+        self.assertEqual(rr.parse_issue("#2667"), (None, 2667))
+        self.assertEqual(rr.parse_issue("vitalharmony/hrse#2667"), ("vitalharmony/hrse", 2667))
+        self.assertEqual(rr.parse_issue("H2667"), ("vitalharmony/hrse", 2667))
+
+    def test_an_unknown_form_names_the_accepted_ones(self):
+        import argparse
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "owner/repo#N"):
+            rr.parse_issue("hrse")
+
+    def test_a_key_for_another_repo_is_refused_and_nothing_is_written(self):
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+            subprocess.run(["git", "remote", "add", "origin",
+                            "https://github.com/vitalharmony/harmonic-forge.git"], cwd=d, check=True)
+            for key in ("H2667", "vitalharmony/hrse#2667"):
+                with self.subTest(key=key):
+                    done = subprocess.run([sys.executable, str(Path(rr.__file__).resolve()),
+                                           "--issue", key, "--", "true"],
+                                          cwd=d, capture_output=True, text=True)
+                    self.assertEqual(done.returncode, 2, done.stderr)
+                    self.assertIn("Nothing written", done.stderr)
+                    self.assertFalse(list(Path(d, ".git").rglob("LOCKED.json")))
+                    self.assertFalse(Path(d, ".git", "lane2-receipts").exists())
+            done = subprocess.run([sys.executable, str(Path(rr.__file__).resolve()),
+                                   "--issue", "F1343", "--", "true"],
+                                  cwd=d, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

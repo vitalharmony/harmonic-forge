@@ -148,17 +148,70 @@ def run_command(issue: int, argv: list[str]) -> int:
     return result.returncode
 
 
+ISSUE_FORMS = "--issue takes N, #N, owner/repo#N or a key like H2667"
+_QUALIFIED = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
+_KEY = re.compile(r"^([A-Za-z])(\d+)$")
+_ORIGIN = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", re.IGNORECASE)
+
+
+def _prefixes() -> dict[str, str]:
+    """The house repo -> letter map (batch_auth.REPO_PREFIXES), with the same
+    fallback `l1_post` uses when it cannot be imported."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+    try:
+        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
+        return dict(REPO_PREFIXES)
+    except ImportError:
+        return {"vitalharmony/hrse": "H", "vitalharmony/harmonic-forge": "F",
+                "vitalharmony/cymagraph-infra": "I", "vitalharmony/openclaw-projects": "O"}
+
+
+def parse_issue(text: str) -> tuple[str | None, int]:
+    """harmonic-forge#1343: (repo or None, number) for the forms the lanes type."""
+    value = text.strip()
+    if re.fullmatch(r"#?\d+", value):
+        return None, int(value.lstrip("#"))
+    match = _QUALIFIED.match(value)
+    if match:
+        return match.group(1).lower(), int(match.group(2))
+    match = _KEY.match(value)
+    if match:
+        letter = match.group(1).upper()
+        for repo, prefix in _prefixes().items():
+            if prefix.upper() == letter:
+                return repo.lower(), int(match.group(2))
+    raise argparse.ArgumentTypeError(ISSUE_FORMS)
+
+
+def origin_repo() -> str | None:
+    """`owner/repo` of the current checkout's origin, lowercased, or None."""
+    done = subprocess.run(["git", "remote", "get-url", "origin"],
+                          capture_output=True, text=True)
+    match = _ORIGIN.search(done.stdout.strip()) if done.returncode == 0 else None
+    return f"{match.group(1)}/{match.group(2)}".lower() if match else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run a command under a Lane 2 issue scope and record its receipt (harmonic-forge#371)."
     )
-    parser.add_argument("--issue", type=int, required=True)
+    parser.add_argument("--issue", type=parse_issue, required=True, help=ISSUE_FORMS)
     parser.add_argument("command", nargs=argparse.REMAINDER,
                          help="the command to run, after a literal '--'")
     args = parser.parse_args()
     if not args.command or args.command[0] != "--":
         parser.error("pass the command to run after a literal '--', e.g. --issue 371 -- pytest -q")
-    return run_command(args.issue, args.command[1:])
+    repo, number = args.issue
+    if repo is not None:
+        here = origin_repo()
+        if here != repo:
+            # Receipts and LOCKED.json live under this checkout's git dir, so a key
+            # for another repo would scope the wrong issue (harmonic-forge#1343).
+            print(f"receipt_runner: --issue names {repo}, but this checkout's origin is "
+                  f"{here or 'unreadable'}; run it from a {repo} checkout. Nothing written.",
+                  file=sys.stderr)
+            return 2
+    return run_command(number, args.command[1:])
 
 
 if __name__ == "__main__":

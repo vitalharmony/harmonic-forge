@@ -95,7 +95,14 @@ def lookup(slug: str, sha: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def record(repo_root: str = ".", head: str | None = None) -> int:
+#: harmonic-forge#1343: the machine-local subset of `check`, recorded so pre-push
+#: needs only what CI cannot run. It never replaces another source's receipt; a
+#: full `check` replaces it (the upgrade path).
+LOCAL_CHECK_SOURCE = "local-check"
+SOURCES = ("check", LOCAL_CHECK_SOURCE)
+
+
+def record(repo_root: str = ".", head: str | None = None, source: str = "check") -> int:
     try:
         if _git("status", "--porcelain", cwd=repo_root):
             print("check-receipt: tree is not clean; no receipt recorded", file=sys.stderr)
@@ -110,7 +117,14 @@ def record(repo_root: str = ".", head: str | None = None) -> int:
             return 0
         path = receipt_path(slug, sha)
         path.parent.mkdir(parents=True, exist_ok=True)
-        source = L1_POST_SOURCE if os.environ.get(SOURCE_ENV) == L1_POST_SOURCE else "check"
+        # harmonic-forge#1343 preclose pass 1: the override relabels only a full
+        # check; a local-check run never becomes a source l1_post reuses.
+        if source == "check" and os.environ.get(SOURCE_ENV) == L1_POST_SOURCE:
+            source = L1_POST_SOURCE
+        existing = lookup(slug, sha)
+        if source == LOCAL_CHECK_SOURCE and existing is not None:
+            print(f"check-receipt: kept the existing {existing.get('source')} receipt")
+            return 0
         path.write_text(json.dumps({"repo": slug, "sha": sha, "forge_sha": _recorded_forge_sha(),
                                     "source": source}) + "\n", encoding="utf-8")
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -199,7 +213,11 @@ def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "record":
         root = argv[argv.index("--repo-root") + 1] if "--repo-root" in argv else "."
         head = argv[argv.index("--head") + 1] if "--head" in argv else None
-        return record(root, head)
+        source = argv[argv.index("--source") + 1] if "--source" in argv else "check"
+        if source not in SOURCES:
+            print(f"check-receipt: --source must be one of {', '.join(SOURCES)}", file=sys.stderr)
+            return 2
+        return record(root, head, source)
     if len(argv) >= 2 and argv[1] == "verify":
         remote_url = argv[3] if len(argv) > 3 else ""
         try:
@@ -208,7 +226,8 @@ def main(argv: list[str]) -> int:
             print(f"pre-push: WARNING the gate could not decide ({exc!r}); pushing unchecked",
                   file=sys.stderr)
             return 0
-    print("usage: check_receipt.py record [--repo-root DIR] [--head SHA] | verify <remote> <url>", file=sys.stderr)
+    print("usage: check_receipt.py record [--repo-root DIR] [--head SHA] [--source check|local-check]"
+          " | verify <remote> <url>", file=sys.stderr)
     return 2
 
 

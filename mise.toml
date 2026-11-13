@@ -106,6 +106,19 @@ python3 tools/memory/context_budget_ratchet.py --repo . --gate
 python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"
 """
 
+[tasks.local-check]
+description = "The machine-local steps of `check` only (harmonic-forge#1343), the ones CI cannot run; records a `local-check` receipt that pre-push accepts for a Tooling Exception branch. CI stays the merge gate."
+run = """
+set -e
+head=$(git rev-parse HEAD)
+python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
+! command -v claude > /dev/null || claude plugin test tools/routing/mod
+python3 tools/onboard/platform_link_report.py --project .
+python3 tools/rules/check_cross_registry.py
+python3 tools/memory/context_budget_ratchet.py --repo . --gate
+python3 tools/hooks/check_receipt.py record --repo-root . --head "$head" --source local-check
+"""
+
 [tasks.context-budget-ratchet]
 description = "Asymmetric ratchet over the always-loaded context surface (harmonic-forge#521). A decrease never needs acknowledgement; an increase needs an [[increase]] entry in context-budget.baseline.toml whose files/bytes are re-measured against this tool's own output, so a copied or unread entry fails. Wired into `mise run check` with --gate. Local only — the CI runner cannot see ~/.claude/CLAUDE.md or the shared memory index, so a CI run would measure a smaller surface and pass on a number nothing pays."
 usage = '''

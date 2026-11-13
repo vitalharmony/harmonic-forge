@@ -171,5 +171,73 @@ class Record(Base):
             self.assertFalse(C.receipt_path(SLUG, head).exists())
 
 
+class LocalCheck(Record):
+    """harmonic-forge#1343: the machine-local receipt pre-push accepts, its
+    no-overwrite rule and the upgrade path."""
+
+    def _source(self, head):
+        return C.lookup(SLUG, head)["source"]
+
+    def test_push_with_only_a_local_check_receipt_passes(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), "local-check")
+            with mock.patch.object(C, "labels", return_value=["tooling-exception"]):
+                self.assertEqual(C.verify(SSH, [line("fix/1343-x", sha=head)]), 0)
+
+    def test_push_with_no_receipt_is_refused(self):
+        with mock.patch.object(C, "labels", return_value=["tooling-exception"]):
+            self.assertEqual(C.verify(SSH, [line("fix/1343-x", sha=OTHER)]), 1)
+
+    def test_push_with_an_l1_post_scratch_receipt_still_passes(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d)
+            with mock.patch.object(C, "labels", return_value=["tooling-exception"]):
+                self.assertEqual(C.verify(SSH, [line("fix/1343-x", sha=head)]), 0)
+
+    def test_local_check_after_l1_post_scratch_keeps_l1_post_scratch(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d)
+            C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), C.L1_POST_SOURCE)
+
+    def test_local_check_after_check_keeps_check(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            C.record(d)
+            C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), "check")
+
+    def test_the_source_override_never_relabels_a_local_check(self):
+        # harmonic-forge#1343 preclose pass 1: with the override set, a
+        # local-check run neither becomes l1-post-scratch nor replaces a check.
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), C.LOCAL_CHECK_SOURCE)
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            C.record(d)
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), "check")
+
+    def test_check_after_local_check_upgrades_it(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            C.record(d)
+            self.assertEqual(self._source(head), "check")
+
+    def test_main_parses_source_and_refuses_an_unknown_one(self):
+        self.assertEqual(C.main(["x", "record", "--source", "bogus"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
