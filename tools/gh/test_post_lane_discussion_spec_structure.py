@@ -118,6 +118,29 @@ class AC4TierW(Base):
         self.refused(spec("W", GRAPH + GRAPH, [RUN]), "exactly one")
 
 
+class ClosedWorldCaseLocator(Base):
+    """Reforge pass 1 (sticky-wicket PATCH): a case the locator cannot place is
+    refused, never folded into the case before it."""
+
+    def test_non_exact_case_headings_are_refused(self) -> None:
+        for stray in ("### TC-2 — b", "### Case 3 — c", " ### TC2 — b", "#### TC3 — c",
+                      "## TC5 — e", "### Test case 4"):
+            with self.subTest(stray=stray):
+                self.refused(spec("R", None, [RUN]) + f"\n{stray}\nprose only\n",
+                             "not an exact `### TC<n>` heading")
+
+    def test_a_case_never_borrows_a_later_sections_run_block(self) -> None:
+        body = spec("R", None, ["prose only\n"]) + "\n### Also run\n" + RUN
+        self.refused(body, "TC1")
+
+    def test_an_unclosed_html_comment_is_refused(self) -> None:
+        body = spec("R", None, [RUN + "Expect a `<!--` l1-post footer.\n", "prose only\n"])
+        self.refused(body, "unclosed HTML comment")
+
+    def test_closed_sections_after_the_cases_still_pass(self) -> None:
+        self.ok(spec("R", None, [RUN, RUN]) + "\n### Also run\n- the suite\n\n### Stated gaps\n- none\n")
+
+
 class AC5OtherCaseLabels(Base):
     def test_a_cross_reference_bullet_passes(self) -> None:
         self.ok(spec("R", "- TC1 covers AC1\n- TC2 covers AC2\n", [RUN, RUN]))

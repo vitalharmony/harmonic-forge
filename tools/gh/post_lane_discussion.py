@@ -57,6 +57,13 @@ import _caller_path  # noqa: E402
 # case; a `Run:` line followed by a fenced block is its command; one unfenced
 # header `Graph:` line before the first case names the graph.
 _TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC[ \t]*\d+[a-z]?)\b")
+#: Every markdown heading, at any level and up to three spaces of indent (each
+#: one ends the case region before it).
+_ANY_HEAD = re.compile(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+(?P<text>[^\n]*)$")
+#: A heading whose label reads as a test case. Closed world (sticky-wicket
+#: PATCH, reforge pass 1): one that is not an exact `### TC<n>` is refused,
+#: never skipped, so no case escapes the Run: check.
+_CASE_LABEL = re.compile(r"(?i)^\**[ \t]*(?:TC[ \t-]*\d|test[ \t]+case[ \t-]*\d|case[ \t-]*\d)")
 #: `Run:` may carry a list prefix (`-`, `*`, `1.`) or bold (`**Run:**`).
 _RUN_LINE = re.compile(
     r"(?m)^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?\**[ \t]*Run:[ \t]*\**[ \t]*$")
@@ -85,8 +92,20 @@ def _unclosed_fence_line(body: str) -> int | None:
     """The 1-based line of a code fence that is never closed, or None. Uses the
     same open/close rule as `_auto_ae._FENCE` (same marker, at a line start),
     which runs an unclosed fence to the end of the body."""
+    return _unclosed(body)[0]
+
+
+def _unclosed_comment_line(body: str) -> int | None:
+    """The 1-based line of an HTML comment `<!--` that is never closed, or None.
+    `_auto_ae._FENCE` runs it to the end of the body, hiding every later case
+    (reforge pass 1, finding 3), so it is refused like an unclosed fence."""
+    return _unclosed(body)[1]
+
+
+def _unclosed(body: str) -> tuple[int | None, int | None]:
     opener: tuple[str, int] | None = None
     in_comment = False
+    comment_line: int | None = None
     for number, line in enumerate(body.split("\n"), 1):
         if opener is None and not in_comment:
             match = _FENCE_OPEN.match(line)
@@ -94,13 +113,13 @@ def _unclosed_fence_line(body: str) -> int | None:
                 opener = (match.group(1), number)
                 continue
             if "<!--" in line and "-->" not in line.split("<!--", 1)[1]:
-                in_comment = True
+                in_comment, comment_line = True, number
         elif in_comment:
             if "-->" in line:
                 in_comment = False
         elif re.match(r"^[ \t]*" + re.escape(opener[0]), line):
             opener = None
-    return opener[1] if opener else None
+    return (opener[1] if opener else None, comment_line if in_comment else None)
 
 
 def spec_structure_problems(body: str) -> list[str]:
@@ -115,14 +134,28 @@ def spec_structure_problems(body: str) -> list[str]:
     if unclosed is not None:
         problems.append(f"unclosed code fence opened at line {unclosed}; every later case "
                         "is unchecked")
+    open_comment = _unclosed_comment_line(body)
+    if open_comment is not None:
+        problems.append(f"unclosed HTML comment `<!--` at line {open_comment}; every later "
+                        "case is unchecked")
     if not heads:
         problems.append("the spec has no `### TC<n>` case heading; every case opens with "
                         "one, e.g. `### TC1 — <what>`")
+    exact = {h.start() for h in heads}
+    all_heads = [m for m in _ANY_HEAD.finditer(body) if not _inside(m.start(), spans)]
+    stray = [body.count("\n", 0, m.start()) + 1 for m in all_heads
+             if m.start() not in exact and _CASE_LABEL.match(m.group("text").strip())]
+    if stray:
+        problems.append("these lines read as test-case headings but are not an exact "
+                        f"`### TC<n>` heading (line {', '.join(map(str, stray))}); every case "
+                        "opens with `### TC<n> — <what>`")
 
     run_blocks: list[str] = []
     missing: list[str] = []
     for index, head in enumerate(heads):
-        end = heads[index + 1].start() if index + 1 < len(heads) else len(body)
+        # A case's region ends at the next heading of any kind, so it never
+        # borrows a later section's Run: block.
+        end = next((m.start() for m in all_heads if m.start() > head.start()), len(body))
         found = False
         for run in _RUN_LINE.finditer(body, head.end(), end):
             if _inside(run.start(), spans):
