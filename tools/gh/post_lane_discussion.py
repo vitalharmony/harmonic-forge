@@ -50,8 +50,139 @@ import check_lane3_ready
 
 # harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
 # poster checks with the same one and the two cannot drift.
-from _auto_ae import _P_TOKEN, declared_tier, p_vetoed
+from _auto_ae import _FENCE as _SPEC_FENCE, _P_TOKEN, declared_tier, p_vetoed
 import _caller_path  # noqa: E402
+
+# harmonic-forge#1342 (final reforge, operator ruling "2 yes", 2026-11-13): a
+# Lane 3 spec carries exactly one fenced `lane3-spec` JSON block, parsed
+# strictly. Markdown is never parsed for case structure; the block is the
+# contract, and Lane 3 runs what it lists.
+_BLOCK_OPEN = "```lane3-spec"
+_BLOCK_CLOSE = "```"
+_CASE_ID = re.compile(r"TC\d+[a-z]?")
+_EXACT_TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC\d+[a-z]?)\b")
+#: Graph access is any bolt/neo4j URI, including the `+s` and `+ssc` forms
+#: (2026-11-13 ruling).
+_GRAPH_URI = re.compile(r"(?i)\b(?:bolt|neo4j)(?:\+ssc|\+s)?://\S+")
+_TOP_KEYS = {"graph", "cases"}
+_CASE_KEYS = {"id", "run"}
+
+
+def _spec_block(body: str) -> tuple[str | None, str | None]:
+    """The one `lane3-spec` block's text, or (None, why). Raw line scan: an
+    opener is exactly the fence line at column 0, so no comment or other fence
+    can hide or fake it."""
+    lines = body.split("\n")
+    opens = [i for i, line in enumerate(lines) if line.rstrip() == _BLOCK_OPEN]
+    if not opens:
+        return None, "the spec has no ```lane3-spec block"
+    if len(opens) > 1:
+        return None, f"the spec has {len(opens)} ```lane3-spec blocks; it needs exactly one"
+    start = opens[0] + 1
+    close = next((i for i in range(start, len(lines)) if lines[i].rstrip() == _BLOCK_CLOSE), None)
+    if close is None:
+        return None, f"the ```lane3-spec block opened at line {opens[0] + 1} is never closed"
+    return "\n".join(lines[start:close]), None
+
+
+_MAX_BLOCK = 64 * 1024
+
+
+def _no_dup(pairs: list) -> dict:
+    keys = [k for k, _ in pairs]
+    dup = next((k for k in keys if keys.count(k) > 1), None)
+    if dup is not None:
+        raise ValueError(f"duplicate key {dup!r}")
+    return dict(pairs)
+
+
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not allowed")
+
+
+def _nonblank(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def spec_structure_problems(body: str) -> list[str]:
+    """Every structure problem in a Lane 3 spec (harmonic-forge#1342), or []."""
+    tier = declared_tier(body)
+    text, why = _spec_block(body)
+    if why:
+        return [why]
+    if len(text.encode("utf-8")) > _MAX_BLOCK:
+        return [f"the ```lane3-spec block is over {_MAX_BLOCK // 1024} KiB"]
+    try:
+        spec = json.loads(text, object_pairs_hook=_no_dup, parse_constant=_no_constant)
+    except RecursionError:
+        return ["the ```lane3-spec block is nested too deeply"]
+    except ValueError as exc:
+        return [f"the ```lane3-spec block is not valid JSON ({exc})"]
+    if not isinstance(spec, dict):
+        return ["the ```lane3-spec block must be a JSON object"]
+    problems: list[str] = []
+    unknown = sorted(set(spec) - _TOP_KEYS)
+    if unknown:
+        problems.append(f"the ```lane3-spec block has unknown keys: {', '.join(unknown)}")
+    cases = spec.get("cases")
+    ids: list[str] = []
+    if not isinstance(cases, list) or not cases:
+        problems.append("`cases` must be a non-empty list of {\"id\": \"TC<n>\", \"run\": \"<command>\"}")
+        cases = []
+    for index, case in enumerate(cases, 1):
+        label = case.get("id") if isinstance(case, dict) and isinstance(case.get("id"), str) \
+            else f"case {index}"
+        if not isinstance(case, dict) or set(case) != _CASE_KEYS \
+                or not isinstance(case["id"], str) or not isinstance(case["run"], str):
+            problems.append(f"{label}: a case is exactly {{\"id\": \"TC<n>\", \"run\": \"<command>\"}}, both strings")
+            continue
+        if not _CASE_ID.fullmatch(case["id"]):
+            problems.append(f"{label}: the id must read TC<n>")
+        if not _nonblank(case["run"]):
+            problems.append(f"{label}: `run` must be a non-blank command")
+        if case["id"] in ids:
+            problems.append(f"{label}: duplicate case id")
+        ids.append(case["id"])
+    for head in _EXACT_TC_HEAD.finditer(body):
+        if head.group(1) not in ids:
+            problems.append(f"the prose heading `### {head.group(1)}` has no case in the "
+                            "```lane3-spec block")
+    runs = [c["run"] for c in cases if isinstance(c, dict) and _nonblank(c.get("run"))]
+    if "graph" not in spec:
+        if tier in ("W", "P"):
+            problems.append(f"Write tier {tier} needs a `graph` key: {{\"provision\", \"uri\"}}"
+                            + (" or {\"none\": \"<reason>\"}" if tier == "W" else ""))
+        return problems
+    graph = spec["graph"]
+    if not isinstance(graph, dict) or set(graph) not in ({"provision", "uri"}, {"none"}):
+        problems.append("`graph` is exactly {\"provision\", \"uri\"} or {\"none\": \"<reason>\"}")
+        return problems
+    if "none" in graph:
+        if not _nonblank(graph["none"]):
+            problems.append("`graph: none` needs a non-blank reason string")
+            return problems
+        if tier == "P":
+            problems.append("Write tier P refuses `graph: none`: a production case names its graph")
+        elif tier == "W":
+            if any(_GRAPH_URI.search(r) for r in runs):
+                problems.append("`graph: none` is declared but a case's `run` names a graph URI "
+                                "(bolt/neo4j)")
+        return problems
+    if not _nonblank(graph["provision"]):
+        problems.append("`graph.provision` must be a non-blank command")
+    if not (isinstance(graph["uri"], str) and _GRAPH_URI.fullmatch(graph["uri"].strip())):
+        problems.append("`graph.uri` must be a bolt/neo4j URI")
+    return problems
+
+
+def require_spec_structure(body: str) -> None:
+    """harmonic-forge#1342: refuse a Lane 3 spec without one well-formed
+    `lane3-spec` JSON block."""
+    problems = spec_structure_problems(body)
+    if problems:
+        print("[post-comment] refused: the Lane 3 spec structure is incomplete "
+              "(harmonic-forge#1342): " + "; ".join(problems) + ".", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def require_ae_by_name(body: str) -> None:
@@ -615,6 +746,7 @@ def main() -> None:
     if artifact == "spec":
         require_write_tier(final, body_len=len(body.rstrip("\n")))
         require_ae_by_name(final)
+        require_spec_structure(final)
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
