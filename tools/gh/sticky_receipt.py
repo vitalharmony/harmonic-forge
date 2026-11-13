@@ -58,6 +58,9 @@ VERDICTS = ("PATCH", "REFORGE")
 #: uses (`watch_lane_posts._own_marker`), so the kind and the rework kind always
 #: come from the same marker (sticky-wicket PATCH on harmonic-forge#1354).
 RELAY = "relay"
+#: harmonic-forge#1359: a rebase asks for no change to the work either (main moved
+#: under a reviewed branch), so it is no round and answers no gate result, like relay.
+NOT_A_ROUND = frozenset({RELAY, "rebase"})
 _REWORK_KIND = re.compile(r"\brework=(correction|rebase|relay)\b")
 
 
@@ -74,8 +77,8 @@ def rework_kind(body: str) -> str | None:
 
 
 def _counted_rework(classified: tuple[str, str] | None, body: str) -> bool:
-    """A Lane 1 rework that counts as a round or an answer: every kind but relay."""
-    return classified == ("l1", "rework") and rework_kind(body) != RELAY
+    """A Lane 1 rework that counts as a round or an answer: every kind but relay and rebase."""
+    return classified == ("l1", "rework") and rework_kind(body) not in NOT_A_ROUND
 
 
 def receipt_dir() -> Path:
@@ -251,9 +254,9 @@ def owed(comments: list[dict], posting: str | None = None,
     after the later of the last PASS and a receipt's `through` (harmonic-forge#1060).
     `posting="rework"` counts the rework about to post as a round of its own,
     unless it answers an unanswered non-PASS gate result; its pair is then
-    `(newest, newest)`. A posting `relay` rework (harmonic-forge#1354) is not counted."""
+    `(newest, newest)`. A posting `relay` or `rebase` rework (harmonic-forge#1354, #1359) is not counted."""
     ids, unanswered = _open_rounds(comments, through)
-    if posting == "rework" and posting_rework_kind != RELAY and ids and not unanswered:
+    if posting == "rework" and posting_rework_kind not in NOT_A_ROUND and ids and not unanswered:
         return ids[-1], ids[-1]
     if len(ids) < 2:
         return None

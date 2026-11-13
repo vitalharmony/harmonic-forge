@@ -485,6 +485,31 @@ class RelayTests(ReceiptHome):
         self.assertIn("relay", l1_post.REWORK_KINDS)
 
 
+def rebase(cid):
+    return {"id": cid, "body": f"## L1 — rework, O35\n\n**Finding:** f\n**Next:** n\n\n"
+                                f"<!-- l1-post v1; kind=rework; sha=abc1234; rework=rebase; body-sha256=0 -->"}
+
+
+class RebaseTests(ReceiptHome):
+    """harmonic-forge#1359: a rebase rework is no round and answers no gate, like relay."""
+
+    def test_posting_rebase_after_one_correction_owes_nothing(self):
+        thread = [gate(1, "PASS"), correction(2)]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="rebase"))
+
+    def test_a_posted_rebase_is_not_a_round(self):
+        thread = [gate(1, "PASS"), correction(2), rebase(3)]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="relay"))
+
+    def test_two_corrections_still_owe(self):
+        thread = [gate(1, "PASS"), correction(2)]
+        self.assertIsNotNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="correction"))
+
+    def test_a_rebase_does_not_answer_a_fail(self):
+        thread = [gate(1, "FAIL"), rebase(2)]
+        self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="correction"))
+
+
 class F1060PrecloseTests(ReceiptHome):
     """F1060 preclose pass 1: record() names the newest round; the belt agrees."""
 

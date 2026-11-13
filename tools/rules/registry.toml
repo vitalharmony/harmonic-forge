@@ -2197,8 +2197,8 @@ hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind sweep", "l1-
 id = "R-0337"
 file = "rules/lane-tooling-reference.md"
 anchor = "kind-rework"
-statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework and --rework-kind correction|rebase|relay, never as ordinary discussion (relay: a planned step only Lane 1 can enable, no sticky-wicket round, no route floor); it renders the Fix H<N> trigger under a distinct l1.rework key; a gate FAIL renders no trigger, since Lane 2 takes work only from Lane 1 (R-0207)."
-text_sha = "d45d8d98bd547a67"
+statement = "A Lane 1 comment asking Lane 2 for more work on an existing branch is posted with --kind rework and --rework-kind correction|rebase|relay, never as ordinary discussion (relay: a planned step only Lane 1 can enable, no sticky-wicket round, no route floor; rebase: no sticky-wicket round either); it renders the Fix H<N> trigger under a distinct l1.rework key; a gate FAIL renders no trigger, since Lane 2 takes work only from Lane 1 (R-0207)."
+text_sha = "2adc113d45a17939"
 hooks = [{ script = "scripts/l1_post.py", events = ["l1-post --kind rework"], wired_in = "hrse" }]
 
 [[rule]]
