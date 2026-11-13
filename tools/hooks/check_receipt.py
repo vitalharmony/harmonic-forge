@@ -117,7 +117,9 @@ def record(repo_root: str = ".", head: str | None = None, source: str = "check")
             return 0
         path = receipt_path(slug, sha)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if os.environ.get(SOURCE_ENV) == L1_POST_SOURCE:
+        # harmonic-forge#1343 preclose pass 1: the override relabels only a full
+        # check; a local-check run never becomes a source l1_post reuses.
+        if source == "check" and os.environ.get(SOURCE_ENV) == L1_POST_SOURCE:
             source = L1_POST_SOURCE
         existing = lookup(slug, sha)
         if source == LOCAL_CHECK_SOURCE and existing is not None:

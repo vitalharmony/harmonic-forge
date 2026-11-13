@@ -213,6 +213,21 @@ class LocalCheck(Record):
             C.record(d, source=C.LOCAL_CHECK_SOURCE)
             self.assertEqual(self._source(head), "check")
 
+    def test_the_source_override_never_relabels_a_local_check(self):
+        # harmonic-forge#1343 preclose pass 1: with the override set, a
+        # local-check run neither becomes l1-post-scratch nor replaces a check.
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), C.LOCAL_CHECK_SOURCE)
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            C.record(d)
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), "check")
+
     def test_check_after_local_check_upgrades_it(self):
         with TemporaryDirectory() as d:
             head = self._repo(Path(d))
