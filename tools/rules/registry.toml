@@ -90,8 +90,8 @@ hooks = []
 id = "R-0005"
 file = "rules/universal-agent.md"
 anchor = "verification-gate"
-statement = "Run gate commands one at a time as separate tool calls with absolute paths; never chain them, and wait for each result."
-text_sha = "08dc2b7f669cc505"
+statement = "Run gate commands one at a time as separate tool calls with absolute paths; never chain them, and wait for each result. The commit, push or merge a gate guards never shares a command with it."
+text_sha = "99e3ed1600743fb9"
 hooks = []
 
 [[rule]]
@@ -821,8 +821,8 @@ restates = "R-0080"
 id = "R-0369"
 file = "rules/universal-lane1.md"
 anchor = "post-merge-deploy"
-statement = "After the last merge of a batch, Lane 1 deploys every repository the batch merged into: confirm a clean refs/heads/main, fast-forward to origin/main (never a merge commit or reset), restart through the lifecycle path where a stack exists, spot-check a changed behavior where there is one, and never report a newly registered hook as deployed until the affected sessions restart; it never lists these as operator actions."
-text_sha = "0fd0bc336bd565e7"
+statement = "After the last merge of a batch, Lane 1 deploys every repository the batch merged into: confirm a clean refs/heads/main, fast-forward to origin/main (never a merge commit or reset), restart through the lifecycle path where a stack exists, spot-check a changed behavior where there is one, and never report a newly registered hook as deployed until the affected sessions restart; it never lists these as operator actions, and in any lane neither is a command a hook or tool tells the session to run, unless the hook addresses it to the operator."
+text_sha = "5bb519868f3d9714"
 hooks = []
 
 [[rule]]
@@ -2876,3 +2876,20 @@ hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json", "tools/lane/lane_hooks.json"] },
   { script = "tasklist_hold.py", events = ["PreToolUse"], wired_in = ["harmonic-forge/.claude/settings.json", "tools/lane/lane_hooks.json"] },
 ]
+
+[[rule]]
+id = "R-0425"
+file = "rules/universal-agent.md"
+anchor = "verification-gate"
+statement = "Pass or fail comes from the tool's own summary or exit code, never from a grep, a tail or a wrapper's exit status."
+text_sha = "d9794a7c802a8a77"
+hooks = []
+
+[[rule]]
+id = "R-0426"
+file = "rules/universal-agent.md"
+anchor = "verification-gate"
+statement = "Before an L2D, Lane 2 checks the runtime contract, that each test can fail, every variant and the knock-on effects, so Lane 3 finds nothing new."
+text_sha = "e02b0f2f47e966d1"
+hooks = []
+

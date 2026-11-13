@@ -216,7 +216,8 @@ does so for **every repository the batch merged into**: a mixed batch such as
 `H2141,F834` deploys both checkouts, because rules, skills, hooks and `tools/`
 scripts resolve by absolute path into the platform checkout
 (`~/harmonic-forge`), and a stale checkout serves the pre-merge copy of all of
-them.
+them. The same holds in every lane and at any time for a command a hook or tool
+tells the session to run; one a hook addresses to the operator stays the operator's.
 
 1. Confirm the repo's main checkout is on a clean `refs/heads/main`: HEAD is
    that branch (not detached, not another branch), no merge or rebase is in
