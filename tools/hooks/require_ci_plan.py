@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import re
 import sys
 from pathlib import Path
@@ -76,7 +77,9 @@ def target_dir(payload: dict) -> Path:
 
 
 def _segment_is_gate(segment: list[str]) -> bool:
-    return is_gate_command(" ".join(segment)) if segment else False
+    # preclose pass 2 (cross-family): re-quote the tokens, so a quoted argument
+    # cannot make the re-parse raise.
+    return is_gate_command(shlex.join(segment)) if segment else False
 
 
 def _mise_dir(segment: list[str]) -> str | None:
@@ -166,8 +169,11 @@ def decide(payload: dict, lane: str | None) -> str | None:
     # active with no receipt.
     judged = [directory]
     if tool == "Bash":
-        judged += [d for d in cd_targets(payload["tool_input"]["command"], directory)
-                   if d != directory]
+        try:
+            extra = cd_targets(payload["tool_input"]["command"], directory)
+        except Exception:  # noqa: BLE001 - a walk that cannot parse adds no target; the cwd is still judged
+            extra = []
+        judged += [d for d in extra if d != directory]
     for index, candidate in enumerate(judged):
         if not active(lane, candidate) or has_receipt(session_id, candidate):
             continue

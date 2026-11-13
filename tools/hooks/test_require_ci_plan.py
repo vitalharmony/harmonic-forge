@@ -255,6 +255,14 @@ class CdTarget(Fixture):
         result, _ = self.call(self.at(self.main, f"mise -C {self.repo} run check"), lane="1")
         self.assertTrue(denied(result))
 
+    def test_a_quoted_argument_never_skips_the_session_cwd(self):
+        # preclose pass 2 (cross-family): a quoted token used to make the walk's
+        # re-parse raise before the cwd was judged, failing the hook open.
+        for command in ["mise run check > 'a\"'", "cd . && mise run check > 'a\"'"]:
+            with self.subTest(command=command):
+                result, _ = self.call(self.at(self.repo, command), lane="2")
+                self.assertTrue(denied(result))
+
     def test_a_non_cd_segment_stops_the_walk_so_no_target_is_judged(self):
         # The walk copies block_unchecked_push: any other segment before the gate
         # stops it with no target, so only the (inactive) session cwd is judged.
