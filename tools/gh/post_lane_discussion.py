@@ -59,7 +59,7 @@ import _caller_path  # noqa: E402
 # contract, and Lane 3 runs what it lists.
 _BLOCK_OPEN = "```lane3-spec"
 _BLOCK_CLOSE = "```"
-_CASE_ID = re.compile(r"TC\d+")
+_CASE_ID = re.compile(r"TC\d+[a-z]?")
 _EXACT_TC_HEAD = re.compile(r"(?m)^###[ \t]+(TC\d+[a-z]?)\b")
 #: Graph access is any bolt/neo4j URI, including the `+s` and `+ssc` forms
 #: (2026-11-13 ruling).

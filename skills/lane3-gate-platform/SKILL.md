@@ -56,13 +56,16 @@ Read this list once, up front, instead:
   the block lists (`post_lane_discussion.py` refuses otherwise,
   harmonic-forge#1342):
 
-  ````
-  Write tier: W
-  ```lane3-spec
-  {"graph": {"none": "every case reads the posted artifacts, no graph"},
-   "cases": [{"id": "TC1", "run": "python3 -m pytest -q tests/test_summary.py"}]}
-  ```
-  ````
+  (copy as is; the opener must sit at column 0):
+
+````
+Write tier: W
+```lane3-spec
+{"graph": {"none": "every case reads the posted artifacts, no graph"},
+ "cases": [{"id": "TC1", "run": "python3 -m pytest -q tests/test_summary.py"}]}
+```
+````
+
 - Anything the AE must name — an install, a free lookup outside the
   `External calls:` grammar, a widened scope — goes on the spec's one
   `**AE by name:** TC1: <what>; TC2: <what>` line (or `none`), never only in

@@ -88,10 +88,13 @@ for the UI-only variant.
      block listing each case's `id` and `run` command, and for a W or P spec a
      `graph` key with the provisioning command and a bolt/neo4j URI (W only:
      `{"none": "<reason>"}` when no case touches a graph); the same poster
-     refuses one without (harmonic-forge#1342), for example
-     ```lane3-spec
-     {"cases": [{"id": "TC1", "run": "python3 -m pytest -q tests/x.py"}]}
-     ```
+     refuses one without (harmonic-forge#1342), for example (copy as is; the
+     opener must sit at column 0):
+
+```lane3-spec
+{"cases": [{"id": "TC1", "run": "python3 -m pytest -q tests/x.py"}]}
+```
+
      `check_lane3_ready.py` validates the `l1-post` footer, never the
      heading: confirm the byte-exact heading independently — "ready" from
      that tool is necessary, not sufficient.

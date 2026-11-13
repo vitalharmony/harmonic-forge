@@ -105,7 +105,7 @@ class AC2Cases(Base):
         self.refused(spec("R", {"cases": [case(1), case(2, "   ")]}), "TC2", "non-blank command")
 
     def test_a_bad_id_is_refused(self) -> None:
-        for bad in ("Case 1", "TC1a", "TC1\n"):
+        for bad in ("Case 1", "TC1ab", "TC1\n"):
             with self.subTest(bad=bad):
                 self.refused(spec("R", {"cases": [{"id": bad, "run": "x"}]}), "TC<n>")
 
@@ -150,6 +150,11 @@ class AC4TierW(Base):
         self.refused(spec("W", {"cases": [case(1)]}), "needs a `graph` key")
 
 
+class LetteredCases(Base):
+    def test_a_lettered_case_heading_and_id_post(self) -> None:
+        self.ok(spec("R", {"cases": [case(6), {"id": "TC6a", "run": "x"}]}, prose="### TC6 — a\n### TC6a — b\n"))
+
+
 class AC5TierR(Base):
     def test_r_accepts_no_graph_or_none(self) -> None:
         self.ok(spec("R", {"cases": [case(1)]}))
@@ -187,12 +192,10 @@ class AC9Template(Base):
         for doc in (root / "skills" / "lane3-gate-platform" / "SKILL.md", root / "rules" / "testing-gate.md"):
             with self.subTest(doc=doc.name):
                 text = doc.read_text(encoding="utf-8")
-                start = text.index("```lane3-spec")
-                lines = text[start:].split("\n")
-                body = "\n".join(line.strip() for line in lines[: next(
-                    i for i in range(1, len(lines)) if lines[i].strip() == "```") + 1])
-                # The example block itself parses and passes a Tier R lint.
-                self.assertEqual(m.spec_structure_problems("Write tier: R\n" + body + "\n"), [])
+                start = text.index("\n```lane3-spec") + 1
+                end = text.index("\n```\n", start) + 5
+                # The example block, raw (no indentation stripped), posts as is.
+                self.assertEqual(m.spec_structure_problems("Write tier: R\n" + text[start:end]), [])
 
 
 class Wiring(Base):
