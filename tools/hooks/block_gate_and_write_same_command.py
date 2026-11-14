@@ -17,9 +17,12 @@ seen. A command that does not parse is allowed: this hook adds a deny and
 never fails closed (good-faith threat model; it mints, relaxes or bypasses no
 R-0371 authorization).
 
-Gate: `mise run check` / `check-full`, `gh pr checks`, `gh run view` /
-`gh run watch`, `preclose_check.py --complete`, `pytest`, and an `l1-post` /
-`l1_post.py` dry run (harmonic-forge#1362).
+Gate: `mise run check` / `check-full` / `test-backend` / `test-backend-unit` /
+`test-backend-integration`, `gh pr checks`, `gh run view` / `gh run watch`,
+`preclose_check.py --complete`, `pytest`, `ruff check` (and bare `ruff`, never
+`ruff format`), `mypy`, `tsc`, `eslint`, `vitest` (directly or through `npx`),
+`npm test` and `npm run lint|typecheck|test|build` (harmonic-forge#1366), and an
+`l1-post` / `l1_post.py` dry run (harmonic-forge#1362).
 Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
 
@@ -79,7 +82,7 @@ def _base(word: str) -> str:
 #: skipped to find which program runs. Interpreters are wrappers too, so
 #: `python3 -I -m pytest` is seen through.
 _WRAPPERS = frozenset({"env", "exec", "sudo", "command", "nohup", "nice", "time",
-                       "timeout", "uv", "run", "--", "python", "python3"})
+                       "timeout", "uv", "run", "--", "python", "python3", "npx"})
 
 
 #: Wrapper flags whose next word is their value, never the program
@@ -154,7 +157,9 @@ def gate_of(argv: list[str]) -> Optional[str]:
         if rest is not None:
             return gate_of(rest)
         task = _mise_task(argv)
-        if task in ("check-full", "check"):
+        # harmonic-forge#1366: HRSE2's backend test tasks are gates too.
+        if task in ("check-full", "check", "test-backend", "test-backend-unit",
+                    "test-backend-integration"):
             return f"mise run {task}"
         if task == "l1-post" and _has_dry_run(argv):
             return "mise run l1-post --dry-run"
@@ -165,10 +170,44 @@ def gate_of(argv: list[str]) -> Optional[str]:
     # issuecomment-6840890733): `echo pytest` and `pip show pytest` are not gates.
     if program in ("pytest", "py.test"):
         return "pytest"
+    # harmonic-forge#1366: the standalone linters, type checkers and test runners.
+    if program in ("mypy", "tsc", "eslint", "vitest"):
+        return program
+    if program == "ruff":
+        return "ruff check" if _first_operand(argv, "ruff") in (None, "check") else None
+    if program == "npm":
+        return _npm_gate(argv)
     if program == "preclose_check.py" and "--complete" in words:
         return "preclose_check.py --complete"
     if program == "l1_post.py" and _has_dry_run(argv):
         return "l1_post.py --dry-run"
+    return None
+
+
+def _first_operand(argv: list[str], program: str) -> Optional[str]:
+    """The first non-flag word after `program`, or None (harmonic-forge#1366):
+    `ruff check` and bare `ruff` are gates, `ruff format` is not."""
+    words = _words(argv)
+    if program not in words:
+        return None
+    return next((w for w in words[words.index(program) + 1:] if not w.startswith("-")), None)
+
+
+#: `npm run <script>` scripts that are gates (harmonic-forge#1366).
+_NPM_GATE_SCRIPTS = ("lint", "typecheck", "test", "build")
+
+
+def _npm_gate(argv: list[str]) -> Optional[str]:
+    """`npm test`, or `npm run|run-script <lint|typecheck|test|build>`. The script is the
+    word after `run`/`run-script`/`test`, never `_subcommand`'s first non-flag word,
+    which would read `--prefix frontend`'s value (pitch-inspection, harmonic-forge#1366)."""
+    words = _words(argv)
+    for index, word in enumerate(words):
+        if word == "test":
+            return "npm test"
+        if word in ("run", "run-script"):
+            script = words[index + 1] if index + 1 < len(words) else None
+            return f"npm run {script}" if script in _NPM_GATE_SCRIPTS else None
     return None
 
 

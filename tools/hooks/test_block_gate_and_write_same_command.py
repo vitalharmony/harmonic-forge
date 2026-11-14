@@ -251,5 +251,47 @@ class L1PostDryRunGate(unittest.TestCase):
         self.assertIsNotNone(hook.decide("mise run l1-post --issue 1 --dry-run && git push origin x"))
 
 
+
+class Linters1366(unittest.TestCase):
+    """harmonic-forge#1366: linters, type checkers, test runners and the backend test tasks."""
+
+    def test_ac1_ruff_piped_into_a_commit_is_denied_naming_ruff(self):
+        reason = hook.decide("ruff check x.py | tail -3 && mise run commit --message m")
+        self.assertIsNotNone(reason)
+        self.assertIn("`ruff check`", reason)
+
+    def test_ac2_each_is_denied(self):
+        for command in ("mypy app | tail -1 && git push origin HEAD",
+                        "uv run ruff check x && git push",
+                        "npm --prefix frontend run lint && git commit -m x",
+                        "npx tsc -b && git commit -m x",
+                        "npx eslint . | tail && git push",
+                        "npx vitest run && gh pr merge 1",
+                        "npm run lint && git commit -m x",
+                        "npm run-script typecheck && git push",
+                        "npm test && git push",
+                        "ruff && git commit -m x"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_ac3_each_is_allowed(self):
+        for command in ("ruff format x.py && git commit -m x",
+                        "echo ruff && git commit -m x",
+                        "pip show mypy && git push",
+                        'git commit -m "run eslint"',
+                        "npm run dev && git commit -m x",
+                        "npm install && git push"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_ac4_write_then_gate_is_allowed(self):
+        self.assertIsNone(hook.decide("git push && npx tsc -b"))
+
+    def test_ac5_backend_test_tasks_are_gates(self):
+        for task in ("test-backend", "test-backend-unit", "test-backend-integration"):
+            with self.subTest(task=task):
+                self.assertIsNotNone(hook.decide(f"mise run {task} | tail -1 && git push origin HEAD"))
+
+
 if __name__ == "__main__":
     unittest.main()
