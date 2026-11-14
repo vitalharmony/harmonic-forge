@@ -422,5 +422,36 @@ class MaskedGate1368(unittest.TestCase):
         self.assertIsNotNone(hook.decide("x=$(pytest | tail -1); echo $x"))
 
 
+class MaskedGate1368Pass1(unittest.TestCase):
+    """harmonic-forge#1368 preclose pass 1 survivors (issuecomment-6882649150) and the
+    sticky-wicket PATCH (issuecomment-6882662014)."""
+
+    def test_s1_pipefail_turned_off_does_not_exempt(self):
+        for command in ("set +o pipefail; pytest | tail -1",
+                        "set -o pipefail; set +o pipefail; pytest | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s2_outer_pipefail_is_not_inherited_by_a_child_shell(self):
+        self.assertIsNotNone(hook.decide('set -o pipefail; bash -c "pytest | tail -1"'))
+
+    def test_s3_subshell_or_conditional_pipefail_does_not_exempt(self):
+        for command in ("(set -o pipefail); pytest | tail -1",
+                        "false && set -o pipefail; pytest | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s4_a_grouped_gate_is_denied(self):
+        for command in ("{ pytest; } | tail -1", "(pytest) | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s5_a_grouped_truncator_is_denied(self):
+        self.assertIsNotNone(hook.decide("pytest | (tail -1)"))
+
+    def test_s6_a_tail_after_a_non_pipe_separator_is_not_piped(self):
+        self.assertIsNone(hook.decide("mise run check | tee log; tail -1 log"))
+
+
 if __name__ == "__main__":
     unittest.main()

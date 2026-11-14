@@ -429,42 +429,74 @@ _PIPES = frozenset({"|", "|&"})
 _TRUNCATORS = frozenset({"tail", "head"})
 
 
-def _sets_pipefail(argv: list[str]) -> bool:
-    """`set -o pipefail`, `set -euo pipefail` and the like."""
-    return bool(argv) and _base(argv[0]) == "set" and "pipefail" in argv[1:]
+#: Separators after which a command runs whatever came before it did: only these
+#: make a top-level `set -o pipefail` unconditional.
+_UNCONDITIONAL = frozenset({None, ";", "\n"})
 
 
-def masked_gate(command: str, depth: int = 0, pipefail: bool = False) -> Optional[str]:
-    """The first gate whose pipeline later runs `tail` or `head` while `pipefail` is
-    off, or None (harmonic-forge#1368). Read from `shell_parse`'s separators, which
-    `_argvs` drops, so this pass recurses into `-c`/`eval` strings and `$(...)` bodies
-    itself. Only a `set … pipefail` that runs BEFORE the gate, at this level or an
-    enclosing one, exempts it."""
+def _pipefail_switch(argv: list[str]) -> Optional[bool]:
+    """True for `set -o pipefail` / `set -euo pipefail`, False for `set +o pipefail`,
+    None for anything else."""
+    if not argv or _base(argv[0]) != "set" or "pipefail" not in argv[1:]:
+        return None
+    flag = argv[argv.index("pipefail") - 1] if argv.index("pipefail") > 1 else ""
+    if flag.startswith("+") and "o" in flag:
+        return False
+    if flag.startswith("-") and "o" in flag:
+        return True
+    return None
+
+
+def masked_gate(command: str, depth: int = 0) -> Optional[str]:
+    """A gate that ran earlier in this command when a `tail`/`head` reads a pipe, with
+    pipefail not on, or None (harmonic-forge#1368; sticky-wicket PATCH
+    issuecomment-6882662014). Detected from the truncator's side: a `tail`/`head`
+    whose separator before is `|`/`|&`, or that opens a group a pipe leads into. A
+    gate inside a group therefore counts too. The only exemption is a top-level,
+    unconditional `set -o pipefail` that ran before the gate and was not cancelled by
+    `set +o pipefail`; it is never carried into a `-c`/`eval` string or `$(...)` body,
+    which are read here with pipefail off. Accepted over-denies (they fail closed): a
+    gate that never runs (`false && pytest | tail`), and a gate followed later by an
+    unrelated pipe into `tail`."""
     gate: Optional[str] = None
+    pipefail = False
+    group_depth = 0
+    piped_group = False
+    previous_sep_after: Optional[str] = None
     for item in shell_parse.simple_commands(command):
-        if not isinstance(item, shell_parse.SimpleCommand):
+        if isinstance(item, shell_parse.GroupMarker):
+            if item.kind == "open":
+                group_depth += 1
+                piped_group = previous_sep_after in _PIPES
+            else:
+                group_depth = max(0, group_depth - 1)
             continue
         if depth < MAX_DEPTH:
             for word in item.argv:
                 for body in shell_parse.substitution_bodies(word):
-                    found = masked_gate(body, depth + 1, pipefail)
+                    found = masked_gate(body, depth + 1)
                     if found:
                         return found
             script = _script_arg(item.argv)
             if script is not None:
-                found = masked_gate(script, depth + 1, pipefail)
+                found = masked_gate(script, depth + 1)
                 if found:
                     return found
+                previous_sep_after = item.sep_after
                 continue
         argv = shell_parse.strip_invocation_prefix(item.argv)
-        if item.sep_before not in _PIPES:
-            gate = None
-        elif gate and _program(argv) in _TRUNCATORS:
+        reads_pipe = item.sep_before in _PIPES or (item.sep_before == "(" and piped_group)
+        piped_group = False
+        if gate and reads_pipe and _program(argv) in _TRUNCATORS:
             return gate
-        if _sets_pipefail(argv):
+        switch = _pipefail_switch(argv)
+        if switch is False:
+            pipefail = False
+        elif switch and group_depth == 0 and item.sep_before in _UNCONDITIONAL:
             pipefail = True
-        if gate is None and item.sep_after in _PIPES and not pipefail:
+        if gate is None and not pipefail:
             gate = gate_of(argv)
+        previous_sep_after = item.sep_after
     return None
 
 
