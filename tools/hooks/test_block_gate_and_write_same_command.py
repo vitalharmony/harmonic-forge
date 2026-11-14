@@ -540,9 +540,14 @@ class MaskedGate1368SecondReforge(unittest.TestCase):
 
     def test_order_matters(self):
         for command in ("tail -3 log | grep x; pytest", "pytest > log; tail -3 log",
-                        "git log | head -5; pytest"):
+                        "git log | head -5; pytest",
+                        # a pipe BEFORE the gate never counts, even with a tail after it
+                        "git log | cat; pytest; tail -3 log"):
             with self.subTest(command=command):
                 self.assertIsNone(hook.decide(command))
+
+    def test_an_unparseable_script_is_read_as_raw_text(self):
+        self.assertIsNotNone(hook.decide('bash -c "pytest | tail -1 # don\'t"'))
 
 
 if __name__ == "__main__":
