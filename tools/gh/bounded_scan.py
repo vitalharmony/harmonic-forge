@@ -64,8 +64,16 @@ def receipts_path() -> Path:
                 or Path.home() / ".claude" / "state" / "scan" / "receipts.jsonl")
 
 
-def snapshot_path(repo: str, scope: str) -> Path:
-    digest = hashlib.sha256(scope.encode()).hexdigest()[:16]
+def parse_fields(raw: str | None) -> list[str] | None:
+    return sorted({f for f in (raw or "").split(",") if f}) or None
+
+
+def snapshot_path(repo: str, scope: str, fields: list[str] | None = None) -> Path:
+    """Keyed on the scope AND the fields (preclose pass 1, survivor 3): items are
+    projected before they are cached, so a run with other fields must never be
+    served this projection, from a fresh snapshot or from a 304 page."""
+    key = scope + "|" + (",".join(fields) if fields else "*")
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
     return snapshot_root() / repo.replace("/", "_") / f"{digest}.json"
 
 
@@ -157,7 +165,8 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
     rest, graphql = gh_scan_patterns.budget(), gh_scan_patterns.graphql_budget()
     record["rest_before"] = rest[0] if rest else None
     record["graphql_before"] = graphql[0] if graphql else None
-    snap_path = snapshot_path(repo, scope)
+    fields = parse_fields(args.fields)
+    snap_path = snapshot_path(repo, scope, fields)
     try:
         snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -184,7 +193,6 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
         record.update(outcome="dry-run")
         _receipt(record)
         return 0
-    fields = [f for f in (args.fields or "").split(",") if f] or None
     new_pages, page = [], 1
     while True:
         if page > args.max_pages:
@@ -214,7 +222,10 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
     snap = {"repo": repo, "scope": scope, "fetched_at": moment, "truncated": record["truncated"],
             "pages": new_pages}
     snap_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = snap_path.with_suffix(".json.tmp")
+    # A temporary name unique to this process (preclose pass 1, survivor 4): two
+    # concurrent runs each install a complete snapshot, last rename wins, and
+    # neither can consume the other's temporary file.
+    tmp = snap_path.with_name(f"{snap_path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     tmp.write_text(json.dumps(snap), encoding="utf-8")
     tmp.replace(snap_path)
     after = gh_scan_patterns.budget()

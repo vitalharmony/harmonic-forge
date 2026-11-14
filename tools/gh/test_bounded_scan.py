@@ -197,6 +197,30 @@ class Scan(Base):
         self.assertTrue(json.loads(Path(out.strip()).read_text())["truncated"])
         self.assertTrue(self.receipts()[-1]["truncated"])
 
+    def test_3b_other_fields_never_get_a_cached_projection(self):
+        """Preclose pass 1, survivor 3: a snapshot made with --fields number is not
+        served to a run asking for number,title."""
+        self.grant()
+        self.run_scan(Runner({1: (200, [{"number": 1, "title": "a"}], "")}), fields="number")
+        runner = Runner({1: (200, [{"number": 1, "title": "a"}], "")})
+        code, out, _ = self.run_scan(runner, fields="number,title")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(runner.calls), 1)
+        items = json.loads(Path(out.strip()).read_text())["pages"][0]["items"]
+        self.assertEqual(items, [{"number": 1, "title": "a"}])
+
+    def test_4b_a_leftover_temporary_file_never_breaks_a_run(self):
+        """Preclose pass 1, survivor 4: the temporary name is per run, so another
+        run's temporary file (or its absence) cannot crash this one."""
+        self.grant()
+        path = bs.snapshot_path(REPO, "open-issues")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        (path.parent / (path.name + ".tmp")).write_text("half-written")
+        code, _, _ = self.run_scan(Runner({1: (200, [{"number": 1}], "")}))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(path.read_text())["pages"][0]["items"], [{"number": 1}])
+        self.assertEqual([p.name for p in path.parent.glob("*.tmp") if p.name != path.name + ".tmp"], [])
+
     def test_7_every_run_writes_a_receipt(self):
         self.run_scan(Runner({}))
         self.grant()
@@ -242,9 +266,72 @@ class Shim(Base):
             self.assertFalse(self.shim._bounded_scan_admitted(["api", "-i", self.PATH]))
 
     def test_13_the_touch_file_is_honored_before_the_marker_check(self):
-        source = (HERE / "gh_shim").read_text()
-        self.assertLess(source.index("consume_override()"), source.index("_bounded_scan_admitted(argv)\n"))
+        """Preclose pass 1, survivor 6: run the shim. With a fresh touch file and the
+        bounded_scan marker but no grant, the real gh is exec'd, not refused."""
+        execs = []
+        with mock.patch.object(self.shim.os, "execv", side_effect=lambda p, a: execs.append(a)), \
+                mock.patch.object(sys, "argv", ["gh", "api", "-i",
+                                                "repos/vitalharmony/hrse/issues?state=all"]), \
+                mock.patch.dict(os.environ, {"GH_SHIM_CALLER": "bounded_scan"}), \
+                mock.patch("gh_scan_patterns.consume_override", return_value=True):
+            self.shim.main()
+        self.assertEqual(len(execs), 1)
+
+    def test_1b_a_grant_admits_only_its_own_scope_path(self):
+        """Preclose pass 1, survivor 1: a label=foo grant never admits state=all,
+        an unlabelled list or pulls of the same repo."""
+        self.grant(scope="label=foo")
+        granted = bs.list_path(REPO, "label=foo", 3)
+        self.assertTrue(self.shim._bounded_scan_admitted(["api", "-i", granted]))
+        for path in ("repos/vitalharmony/hrse/issues?state=all&per_page=100&page=1",
+                     bs.list_path(REPO, "open-issues", 1), bs.list_path(REPO, "open-prs", 1),
+                     granted + "&state=closed"):
+            self.assertFalse(self.shim._bounded_scan_admitted(["api", "-i", path]), path)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthorizeScan(unittest.TestCase):
+    """Preclose pass 1, survivor 5: the hook's SCAN line handling, driven through
+    expand_lane_shorthand.authorize_scan itself, not the grant store."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        scan_grant.SCAN_STATE_DIR = self.tmp / "grants"
+        import expand_lane_shorthand  # noqa: PLC0415
+        self.hook = expand_lane_shorthand
+
+    def tearDown(self):
+        scan_grant.SCAN_STATE_DIR = None
+
+    def granted(self, session=SESSION):
+        return scan_grant.live(REPO, "open-issues", session) is not None
+
+    def test_a_first_line_scan_writes_one_grant_for_this_session(self):
+        receipt = self.hook.authorize_scan("SCAN H open-issues: tune-up", SESSION)
+        self.assertIn("may be scanned", receipt)
+        self.assertTrue(self.granted())
+        self.assertFalse(self.granted("sess-other"))
+
+    def test_quoted_fenced_second_line_and_lowercase_write_nothing(self):
+        for prompt in ("> SCAN H open-issues: quoted", "```\nSCAN H open-issues: fenced\n```",
+                       "hello\nSCAN H open-issues: second", "scan H open-issues: lower",
+                       "  SCAN H open-issues: indented"):
+            receipt = self.hook.authorize_scan(prompt, SESSION)
+            self.assertIn("REFUSED", receipt, prompt)
+            self.assertFalse(self.granted(), prompt)
+
+    def test_a_provenance_refusal_writes_nothing(self):
+        with mock.patch.object(self.hook, "_provenance_refusal", return_value="not operator-typed"):
+            receipt = self.hook.authorize_scan("SCAN H open-issues: x", SESSION)
+        self.assertIn("not operator-typed", receipt)
+        self.assertFalse(self.granted())
+
+    def test_no_session_writes_nothing(self):
+        self.assertIn("no session id", self.hook.authorize_scan("SCAN H open-issues: x", None))
+        self.assertFalse(self.granted())
+
+    def test_a_prompt_without_scan_returns_nothing(self):
+        self.assertEqual(self.hook.authorize_scan("BATCH H1 please", SESSION), "")

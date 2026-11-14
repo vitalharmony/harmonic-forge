@@ -180,6 +180,29 @@ def live_for_repo(repo: str, session: str, now: datetime | None = None) -> bool:
         return False
 
 
+def live_scopes(repo: str, session: str, now: datetime | None = None) -> list[str]:
+    """Every scope with a live grant for `repo` in this session. The shim binds a
+    call to one of these exact scopes (preclose pass 1, survivor 1): a grant for
+    `label=foo` must never admit `state=all`. Never raises; [] on any doubt."""
+    try:
+        letter = _letter_for(repo)
+        if letter is None or not session or not _SESSION_RE.match(session) \
+                or _refuses_real_store():
+            return []
+        moment = now or imc_waiver._now()
+        scopes = []
+        for path in (state_dir() / session).glob(f"{letter}-*.json"):
+            grant = imc_waiver.read_json(path)
+            if grant and grant.get("repo", "").lower() == repo.lower() \
+                    and _live_grant(grant, session, moment) \
+                    and _SCOPE_RE.match(grant.get("scope", "")) \
+                    and path == grant_path(session, letter, grant["scope"]):
+                scopes.append(grant["scope"])
+        return scopes
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def prune(now: datetime | None = None) -> None:
     """Drop grant and lock files untouched for `PRUNE_AFTER_DAYS` (by mtime), then
     any session directory left empty. Never raises."""

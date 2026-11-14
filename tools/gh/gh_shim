@@ -79,9 +79,20 @@ def _bounded_scan_admitted(argv: list[str]) -> bool:
     if match is None or not session:
         return False
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+        here = os.path.dirname(os.path.abspath(__file__))
+        sys.path.insert(0, os.path.join(here, "..", "hooks"))
+        sys.path.insert(0, here)
         import scan_grant  # noqa: PLC0415
-        return scan_grant.live_for_repo(f"{match.group(1)}/{match.group(2)}", session)
+        import bounded_scan  # noqa: PLC0415
+        repo = f"{match.group(1)}/{match.group(2)}"
+        page = re.search(r"[?&]page=([1-9]\d{0,4})(?:&|$)", rest[0])
+        if page is None:
+            return False
+        # Preclose pass 1, survivor 1: the path must be exactly the one
+        # bounded_scan.list_path builds for a live granted scope, page aside, so a
+        # grant for one scope never admits another list of the same repo.
+        return any(rest[0] == bounded_scan.list_path(repo, scope, int(page.group(1)))
+                   for scope in scan_grant.live_scopes(repo, session))
     except Exception:  # noqa: BLE001 - an unreadable grant admits nothing
         return False
 
