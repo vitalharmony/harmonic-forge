@@ -332,10 +332,6 @@ class Preclose1366Pass1(unittest.TestCase):
         self.assertIn("`npm run build`", reason)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Preclose1366Pass2(unittest.TestCase):
     """harmonic-forge#1366 preclose pass 2 survivors (issuecomment-6881496159) and the
     sticky-wicket PATCH (issuecomment-6881508159)."""
@@ -358,6 +354,9 @@ class Preclose1366Pass2(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(hook.decide(command))
 
+    def test_s3_a_path_named_like_a_help_flag_is_still_a_gate(self):
+        self.assertIsNotNone(hook.decide("eslint src/--help && git push"))
+
     def test_s4_every_ruff_value_flag(self):
         for flag in sorted(hook._RUFF_VALUE_FLAGS):
             with self.subTest(flag=flag):
@@ -379,3 +378,7 @@ class Preclose1366Pass2(unittest.TestCase):
         for alias in hook._NPM_EXEC:
             with self.subTest(alias=alias):
                 self.assertIsNotNone(hook.decide(f"npm {alias} eslint && git push"))
+
+
+if __name__ == "__main__":
+    unittest.main()

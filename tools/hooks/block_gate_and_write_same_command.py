@@ -248,7 +248,9 @@ _INFO_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
 
 def _asks_for_info(argv: list[str]) -> bool:
     index = _program_index(argv)
-    return index is not None and any(w in _INFO_FLAGS for w in _words(argv)[index + 1:])
+    # Raw words, never basenames: `eslint src/--help` names a path, not the flag
+    # (harmonic-forge#1366 post-verdict check).
+    return index is not None and any(w in _INFO_FLAGS for w in argv[index + 1:])
 
 
 def _past_flags(argv: list[str], value_flags: frozenset[str]) -> list[str]:
