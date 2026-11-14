@@ -451,7 +451,11 @@ class MaskedGate1368Pass1(unittest.TestCase):
         self.assertIsNotNone(hook.decide("pytest | (tail -1)"))
 
     def test_s6_a_tail_after_a_non_pipe_separator_is_not_piped(self):
-        self.assertIsNone(hook.decide("mise run check | tee log; tail -1 log"))
+        """Second REFORGE (issuecomment-6884035774, operator "1 yes"): the rule is
+        order-only, so a gate, a later pipe and a later tail deny even when that tail
+        reads a file. An accepted, fail-closed over-deny."""
+        self.assertIsNotNone(hook.decide("mise run check | tee log; tail -1 log"))
+        self.assertIsNone(hook.decide("mise run check > log 2>&1; tail -3 log"))
 
 
 class MaskedGate1368Reforge(unittest.TestCase):
@@ -510,6 +514,35 @@ class MaskedGate1368ReforgePass1(unittest.TestCase):
 
     def test_a_comment_alone_does_not_deny(self):
         self.assertIsNone(hook.decide("echo don't # fine"))
+
+
+class MaskedGate1368SecondReforge(unittest.TestCase):
+    """harmonic-forge#1368 reforge pass-2 survivors (issuecomment-6884023933) under the
+    order-only rule of the second REFORGE (issuecomment-6884035774)."""
+
+    def test_a_line_break_after_the_pipe(self):
+        for command in ("pytest |\n tail -1", "mise run check |\ntail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_if_while_case_bodies(self):
+        for command in ("pytest | if true; then tail -1; fi",
+                        "pytest | while true; do tail -1; break; done",
+                        "pytest | case x in x) tail -1;; esac"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_an_earlier_comment_that_does_not_parse(self):
+        self.assertIsNotNone(hook.decide("# don't lose output\npytest | tail -1"))
+
+    def test_a_pipe_recorded_only_on_the_reader(self):
+        self.assertIsNotNone(hook.decide("{ pytest; } | tail -1"))
+
+    def test_order_matters(self):
+        for command in ("tail -3 log | grep x; pytest", "pytest > log; tail -3 log",
+                        "git log | head -5; pytest"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
 
 
 if __name__ == "__main__":

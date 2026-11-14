@@ -431,75 +431,83 @@ _PIPES = frozenset({"|", "|&"})
 _TRUNCATORS = frozenset({"tail", "head"})
 
 
-def _first_gate(command: str) -> Optional[str]:
-    """The first gate a `-c`/`eval` script runs, or None (a parse failure is None)."""
-    try:
-        return next((g for g in (gate_of(a) for a in _argvs(command)) if g), None)
-    except (ValueError, shell_parse.NotOrdinary):
-        return None
-
-
-def _masked_or_none(command: str, depth: int, piped_in: Optional[str] = None) -> Optional[str]:
-    """`masked_gate` on a nested body; a body that does not parse holds no gate, so the
-    outer scan keeps any deny it already found (reforge pass 1, survivor 3)."""
-    try:
-        return masked_gate(command, depth, piped_in)
-    except (ValueError, shell_parse.NotOrdinary):
-        return None
-
-
-def masked_gate(command: str, depth: int = 0,
-                piped_in: Optional[str] = None) -> Optional[str]:
-    """A gate that ran earlier in this command when a `tail`/`head` reads a pipe, or
-    None (harmonic-forge#1368, REFORGE issuecomment-6882876419; PATCH
-    issuecomment-6883830423). Detected from the truncator's side: a `tail`/`head` whose
-    separator before is `|`/`|&`, or anywhere inside a group a pipe leads into, at any
-    level. Substitution bodies (`$(...)`, quoted or not, and backticks) are read from
-    the raw text; `-c`/`eval` scripts are re-read here, and when a gate's pipe feeds
-    one (`piped_in`), any `tail`/`head` anywhere in it counts. A `-c`/`eval` command
-    whose script runs a gate counts as that gate; `bash -c "tail …"` is already
-    unwrapped to `tail` by `strip_invocation_prefix`. There is no `pipefail`
-    exemption: a parse cannot tell whether pipefail is on where the gate runs.
-    Accepted over-denies (they fail closed): a gate that never runs (`false && pytest
-    | tail`), a gate followed later by an unrelated pipe into `tail`, and any
-    `tail`/`head` inside a group or script that a gate's pipe feeds."""
+def _events(command: str, depth: int = 0) -> list[tuple[str, str]]:
+    """The command flattened into one ordered stream of ("gate", name), ("pipe", "") and
+    ("trunc", "") events, `$(...)`/backtick bodies (read from the raw text) and
+    `-c`/`eval` scripts inserted where they run, down to MAX_DEPTH. Raises on a parse
+    failure of `command` itself; a nested body that does not parse is read as a raw-text
+    match instead (harmonic-forge#1368 second REFORGE, issuecomment-6884035774)."""
+    stream: list[tuple[str, str]] = []
     if depth < MAX_DEPTH:
         for body in shell_parse.substitution_bodies(command):
-            found = _masked_or_none(body, depth + 1)
-            if found:
-                return found
-    gate: Optional[str] = None
-    piped_groups: list[bool] = []
-    previous_sep_after: Optional[str] = None
+            stream += _events_or_raw(body, depth + 1)
     for item in shell_parse.simple_commands(command):
-        if isinstance(item, shell_parse.GroupMarker):
-            if item.kind == "open":
-                piped_groups.append(previous_sep_after in _PIPES)
-            elif piped_groups:
-                piped_groups.pop()
+        if not isinstance(item, shell_parse.SimpleCommand):
             continue
-        reads_pipe = item.sep_before in _PIPES or any(piped_groups)
-        argv = shell_parse.strip_invocation_prefix(item.argv)
-        if piped_in and _program(argv) in _TRUNCATORS:
-            return piped_in
         script = _script_arg(item.argv) if depth < MAX_DEPTH else None
         if script is not None:
-            found = _masked_or_none(script, depth + 1, gate if reads_pipe else None)
-            if found:
-                return found
-        # `strip_invocation_prefix` already unwraps `bash -c "tail -1"` to `tail -1`.
-        if gate and reads_pipe and _program(argv) in _TRUNCATORS:
-            return gate
-        if gate is None:
-            gate = gate_of(argv) or (_first_gate(script) if script is not None else None)
-        previous_sep_after = item.sep_after
+            stream += _events_or_raw(script, depth + 1)
+        argv = shell_parse.strip_invocation_prefix(item.argv)
+        # A pipe may be recorded only on the reader's side (`{ pytest; } | tail`:
+        # the braces are dropped, so the gate's own sep_after is `;`).
+        if item.sep_before in _PIPES:
+            stream.append(("pipe", ""))
+        gate = gate_of(argv)
+        if gate:
+            stream.append(("gate", gate))
+        if _program(argv) in _TRUNCATORS:
+            stream.append(("trunc", ""))
+        if item.sep_after in _PIPES:
+            stream.append(("pipe", ""))
+    return stream
+
+
+def _events_or_raw(command: str, depth: int) -> list[tuple[str, str]]:
+    try:
+        return _events(command, depth)
+    except (ValueError, shell_parse.NotOrdinary):
+        gate = _raw_masked(command)
+        return [("gate", gate), ("pipe", ""), ("trunc", "")] if gate else []
+
+
+#: Raw-text fallback for text that does not parse: a gate word, later a `|`, later a
+#: word-bounded `tail`/`head`. It fails closed: it may deny what a parse would allow.
+_RAW_GATE = re.compile(
+    r"\b(mise\s+(?:run\s+)?(?:check(?:-full)?|test-backend\S*)|py\.?test|pytest|ruff|mypy|"
+    r"tsc|eslint|vitest|npm\s+(?:test|run)|gh\s+(?:pr\s+checks|run\s+(?:view|watch))|"
+    r"preclose_check\.py|l1[-_]post)\b")
+_RAW_TAIL = re.compile(r"\|&?[\s\S]*\b(?:tail|head)\b")
+
+
+def _raw_masked(command: str) -> Optional[str]:
+    match = _RAW_GATE.search(command)
+    if match and _RAW_TAIL.search(command, match.end()):
+        return match.group(1)
     return None
 
 
-def _before_comment(command: str) -> str:
-    """The text before the first word starting with `#`: a comment that does not parse
-    (`# don't …`) must not discard a masked gate before it."""
-    return re.split(r"(?:^|\s)#", command, maxsplit=1)[0]
+def masked_gate(command: str) -> Optional[str]:
+    """The first gate in this command when a `|`/`|&` and then a `tail`/`head` follow it
+    anywhere later, or None (harmonic-forge#1368, second REFORGE
+    issuecomment-6884035774). Order only: the hook does not prove that this `tail` reads
+    this gate's output, so a line break, a group, an if/while/case body or a `-c` script
+    between them changes nothing. There is no `pipefail` exemption. A command that does
+    not parse is decided by `_raw_masked`, failing closed. Accepted over-denies: a gate
+    that never runs, and a gate followed later by an unrelated pipe into `tail`."""
+    try:
+        stream = _events(command)
+    except (ValueError, shell_parse.NotOrdinary):
+        return _raw_masked(command)
+    gate: Optional[str] = None
+    piped = False
+    for kind, name in stream:
+        if kind == "gate" and gate is None:
+            gate = name
+        elif kind == "pipe" and gate:
+            piped = True
+        elif kind == "trunc" and piped:
+            return gate
+    return None
 
 
 def decide(command: str) -> Optional[str]:
@@ -508,12 +516,9 @@ def decide(command: str) -> Optional[str]:
         gate, write = find(command)
     except (ValueError, shell_parse.NotOrdinary):
         gate = write = None
-    # Its own try: a parse error in find (or later in the text) never discards a
-    # masked gate (reforge pass 1, survivor 3); a comment that does not parse is
-    # retried without it.
-    masked = _masked_or_none(command, 0)
-    if masked is None and _before_comment(command) != command:
-        masked = _masked_or_none(_before_comment(command), 0)
+    # Never inside find's try: a parse error there must not discard a masked gate;
+    # masked_gate decides unparseable text by its raw-text fallback.
+    masked = masked_gate(command)
     if gate and write:
         return (f"Blocked (R-0419, harmonic-forge#1337): this one command runs the gate "
                 f"`{gate}` and the write `{write}` it gates, so the write would run before "
