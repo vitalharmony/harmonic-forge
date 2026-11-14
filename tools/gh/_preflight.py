@@ -53,6 +53,7 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 | `receipt_runner.py` | --issue N -- <command> | shared-state | gap: writes the command receipt and, on failure, the issue lock l2_post reads |
 | `repo_hygiene.py` | --prune-worktrees | irreversible | precheck: `--prune-worktrees --dry-run` |
 | `sticky_receipt.py` | record | shared-state | gap: writes the sticky-wicket receipt |
+| `bounded_scan.py` | scan | shared-state | guard (operator grant): SCAN line: refuses with no live grant for this session, repo and scope (tools/gh/bounded_scan.py:152) |
 | `ui_grant.py` | record | external-publish | guard (operator grant): UI line: record refuses with no hook-written pending grant (tools/gh/ui_grant.py:356) |
 | `watch_lane_posts.py` | belt run | shared-state | gap: writes the belt's seen, offer and tick state under ~/.claude/state/belt |
 | `baseline_capture.py` | --out | shared-state | gap: writes the committed comparison fixture |

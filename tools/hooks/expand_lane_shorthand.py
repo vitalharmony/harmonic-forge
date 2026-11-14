@@ -966,6 +966,42 @@ def _authorize_park(prompt, session_id, lane, now) -> str:
             f"session (until {grant['expires_at']}).")
 
 
+def authorize_scan(prompt: str, session_id: str | None, now=None) -> str:
+    """Write a SCAN grant (harmonic-forge#1363 AC1). Returns a receipt for
+    `additionalContext`, or "" when no line looks like SCAN. Every refusal says
+    why and writes nothing. Never raises. PARK's checks in PARK's order, but no
+    LANE requirement: a wayfinder run is a no-lane session."""
+    try:
+        return _authorize_scan(prompt, session_id, now)
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
+        return f"SCAN REFUSED: the SCAN check failed ({type(exc).__name__}: {exc}). No grant written."
+
+
+def _authorize_scan(prompt, session_id, now) -> str:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import scan_grant  # noqa: PLC0415
+    lines = prompt.splitlines()
+    if not any(scan_grant.ANY_RE.match(line) for line in lines):
+        return ""
+    first = next((i for i, text in enumerate(lines) if text.strip()), None)
+    parsed = scan_grant.parse(lines[first]) if first is not None else "no first line"
+    if isinstance(parsed, str):
+        return f"SCAN REFUSED: {parsed}. No grant written."
+    letter, scope, reason = parsed
+    if first not in dict(directive_lines(prompt)):
+        return (f"SCAN REFUSED for {letter} {scope}: a SCAN line inside a fenced block or "
+                "blockquote is quotation. No grant written.")
+    provenance = _provenance_refusal(prompt, first)
+    if provenance is not None:
+        return f"SCAN REFUSED for {letter} {scope}: {provenance}. No grant written."
+    if not session_id:
+        return (f"SCAN REFUSED for {letter} {scope}: the prompt carries no session id to bind "
+                "the grant to. No grant written.")
+    grant = scan_grant.write(letter, scope, session_id, lines[first], reason, now)
+    return (f"SCAN: {grant['repo']} {scope} may be scanned with tools/gh/bounded_scan.py in "
+            f"this session until {grant['expires_at']}.")
+
+
 #: `UI <KEY>[ <digest>]: <reason>` (harmonic-forge#1274): FORCE's shape and
 #: placement. No token is a plan grant; one 12-64 hex token is a merge grant
 #: bound to that digest prefix. Anything else gets its own refusal.
@@ -1216,6 +1252,14 @@ def main() -> None:
         ui_receipt = ""
     if ui_receipt:
         batch_receipt = " ".join(p for p in (batch_receipt, ui_receipt) if p)
+    # harmonic-forge#1363: the SCAN grant, beside PARK; it mints nothing the
+    # other first-line grants own, and needs no LANE.
+    try:
+        scan_receipt = authorize_scan(prompt, payload.get("session_id"))
+    except Exception:
+        scan_receipt = ""
+    if scan_receipt:
+        batch_receipt = " ".join(p for p in (batch_receipt, scan_receipt) if p)
     # harmonic-forge#1188 AC8: attribution and attention ride on this hook and
     # never fail it; each sits in its own try.
     try:

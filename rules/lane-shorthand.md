@@ -383,6 +383,31 @@ is an audit trail, not proof against a session that can write the grant
 store.
 <!-- /R-0421 -->
 
+## `SCAN` — the operator allows one bounded gh scan
+
+Grammar: **`SCAN` + repo letter + scope + `:` + reason**, e.g.
+`SCAN H open-issues: product tune-up compares every open issue`, as the
+prompt's first line, typed unindented and uppercase (FORCE's placement). The
+scopes are `open-issues`, `open-prs`, `milestone=<number>` and
+`label=<name>`. The letter is one of the vitalharmony prefixes below; a
+cross-account letter is refused.
+
+Direction: operator → any session, LANE set or not.
+
+<!-- R-0427 -->
+The hook writes one grant (`tools/hooks/scan_grant.py`, 2h TTL) only for an
+operator-typed first line passing R-0117, bound to that session, repo and
+scope. `tools/gh/bounded_scan.py` is the only sanctioned scan route: it needs
+that grant, reads the REST core and GraphQL budgets, refuses a scan that would
+cross the REST floor or whose REST budget is unknown, reuses a snapshot under
+15 minutes old, refreshes an older one with ETag conditional requests, and
+writes a receipt for every run. The gh shim admits a `bounded_scan` call only
+in that tool's own GET shape, under a live grant for that repo. The
+`gh_scan_override` touch file stays as the emergency fallback. The grant file
+is an audit trail, not proof against a session that can write the grant
+store.
+<!-- /R-0427 -->
+
 ## `UI` — the operator's approval of a rendered-UI change
 
 Grammar: **`UI` + issue key + optional digest + `:` + reason**, FORCE's
