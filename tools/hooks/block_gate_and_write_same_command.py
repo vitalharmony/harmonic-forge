@@ -102,8 +102,10 @@ _DRY_RUN = "--dry-run"
 _DRY_RUN_MIN = len("--dr")
 
 
-def _has_dry_run(words: set[str]) -> bool:
-    return any(len(w) >= _DRY_RUN_MIN and _DRY_RUN.startswith(w) for w in words)
+def _has_dry_run(argv: list[str]) -> bool:
+    """Over the RAW argv words, never their basenames: `--file /tmp/--dry-run`
+    is a path, not the flag (preclose pass 1, survivor 3)."""
+    return any(len(w) >= _DRY_RUN_MIN and _DRY_RUN.startswith(w) for w in argv)
 
 
 def _is_l1_post(argv: list[str], program: Optional[str]) -> bool:
@@ -154,7 +156,7 @@ def gate_of(argv: list[str]) -> Optional[str]:
         task = _mise_task(argv)
         if task in ("check-full", "check"):
             return f"mise run {task}"
-        if task == "l1-post" and _has_dry_run(words):
+        if task == "l1-post" and _has_dry_run(argv):
             return "mise run l1-post --dry-run"
         if task == "preclose-check" and "--complete" in words:
             return "mise run preclose-check --complete"
@@ -165,7 +167,7 @@ def gate_of(argv: list[str]) -> Optional[str]:
         return "pytest"
     if program == "preclose_check.py" and "--complete" in words:
         return "preclose_check.py --complete"
-    if program == "l1_post.py" and _has_dry_run(words):
+    if program == "l1_post.py" and _has_dry_run(argv):
         return "l1_post.py --dry-run"
     return None
 
@@ -252,7 +254,7 @@ def write_of(argv: list[str]) -> Optional[str]:
             return "mise run commit"
         if task == "restart" and "--no-git" not in words:
             return "mise run restart"
-    if _is_l1_post(argv, program) and not _has_dry_run(words):
+    if _is_l1_post(argv, program) and not _has_dry_run(argv):
         return "mise run l1-post" if program == "mise" else "l1_post.py"
     return None
 

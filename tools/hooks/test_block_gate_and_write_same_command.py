@@ -237,6 +237,11 @@ class L1PostDryRunGate(unittest.TestCase):
         self.assertIsNotNone(hook.decide(
             "mise run l1-post --issue 1 --dry | tail -2 && mise run l1-post --issue 1"))
 
+    def test_a_path_named_like_the_flag_is_not_a_dry_run(self):
+        """Preclose pass 1, survivor 3: `/tmp/--dry-run` is a file path, not the flag."""
+        self.assertIsNotNone(hook.decide(
+            "mise run l1-post --issue 1 --dry-run && mise run l1-post --issue 1 --file /tmp/--dry-run"))
+
     def test_a_dry_run_gates_every_listed_write(self):
         self.assertIsNotNone(hook.decide("mise run l1-post --issue 1 --dry-run && git push origin x"))
 

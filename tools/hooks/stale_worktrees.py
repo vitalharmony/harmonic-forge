@@ -71,7 +71,31 @@ def _gh(args: list[str], repo: str, deadline: float, runner=subprocess.run):
         return None
 
 
-def merged_repos(command: str, cwd: str | None, runner=subprocess.run) -> list[str]:
+def origin_repo(path: str | None, deadline: float, runner=subprocess.run) -> str | None:
+    """`owner/repo` of the checkout at `path`, read under this scan's deadline.
+
+    Not `batch_auth.cwd_repo`: that draws on the 7 s PreToolUse budget, which
+    `consume()` may already have spent (preclose pass 1, survivor 4)."""
+    if not path:
+        return None
+    url = _git(path, ["remote", "get-url", "origin"], deadline, runner)
+    if url is None or url.returncode != 0:
+        return None
+    match = batch_auth._ORIGIN_SLUG.search((url.stdout or "").strip())
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def landed(repo: str, number: int, deadline: float, runner=subprocess.run) -> bool:
+    """Did PR `number` merge? The same REST read as `batch_auth.action_landed`,
+    but bounded by this scan's deadline, not that function's fixed 30 s timeout
+    (preclose pass 1, survivor 2)."""
+    done = _gh(["api", f"repos/{repo}/pulls/{number}", "--jq", ".merged"], repo, deadline,
+               runner)
+    return done is not None and done.returncode == 0 and (done.stdout or "").strip() == "true"
+
+
+def merged_repos(command: str, cwd: str | None, deadline: float,
+                 runner=subprocess.run) -> list[str]:
     """Repos a landed merge in `command` moved, de-duplicated, in order."""
     try:
         segments = batch_auth.command_segments(command)
@@ -84,10 +108,10 @@ def merged_repos(command: str, cwd: str | None, runner=subprocess.run) -> list[s
             continue
         repo, number = info
         if repo is None and number:
-            repo = batch_auth.cwd_repo(cwd, runner)
+            repo = origin_repo(cwd, deadline, runner)
         if not repo or not number or repo in repos:
             continue
-        if batch_auth.action_landed("merge", repo, number) is True:
+        if landed(repo, number, deadline, runner):
             repos.append(repo)
     return repos
 
@@ -137,45 +161,56 @@ def in_flight(repo: str, head: str, deadline: float, runner=subprocess.run) -> s
 
 
 def stale_worktrees(repo: str, main_sha: str, root: Path, deadline: float,
-                    runner=subprocess.run) -> tuple[list[dict], int]:
-    """`(found, unchecked)`: the behind, in-flight worktrees on `repo`, and how
-    many worktrees could not be checked before the deadline."""
+                    runner=subprocess.run) -> tuple[list[dict], int, int]:
+    """`(found, timed_out, errors)`: the behind, in-flight worktrees on `repo`;
+    how many were not reached before the deadline; and how many could not be
+    read for any other reason (a git error, no or an unknown origin).
+
+    The two counts are kept apart (preclose pass 1, survivor 1): only
+    `timed_out` is a fact about this merge. An unreadable or origin-less
+    directory is not evidence that anything on `repo` is behind, so it never
+    makes the message speak; `warn` reports it on stderr."""
     found: list[dict] = []
-    unchecked = 0
+    timed_out = errors = 0
+
+    def failed() -> None:
+        nonlocal timed_out, errors
+        if _left(deadline) <= 0:
+            timed_out += 1
+        else:
+            errors += 1
+
     try:
         candidates = sorted(p for p in root.iterdir() if (p / ".git").exists())
     except OSError:
-        return [], 0
+        return [], 0, 1
     origins: dict[str, str | None] = {}
     for path in candidates:
         if _left(deadline) <= 0:
-            unchecked += 1
+            timed_out += 1
             continue
         common = _git(str(path), ["rev-parse", "--git-common-dir"], deadline, runner)
         if common is None or common.returncode != 0:
-            unchecked += 1
+            failed()
             continue
         key = str((path / common.stdout.strip()).resolve())
         if key not in origins:
-            url = _git(str(path), ["remote", "get-url", "origin"], deadline, runner)
-            match = (batch_auth._ORIGIN_SLUG.search((url.stdout or "").strip())
-                     if url is not None and url.returncode == 0 else None)
-            origins[key] = f"{match.group(1)}/{match.group(2)}" if match else None
+            origins[key] = origin_repo(str(path), deadline, runner)
         if origins[key] is None:
-            unchecked += 1
+            failed()
             continue
         if origins[key].lower() != repo.lower():
             continue
         state = behind(str(path), main_sha, deadline, runner)
         if state is None:
-            unchecked += 1
+            failed()
             continue
         if not state:
             continue
         head = _git(str(path), ["rev-parse", "HEAD"], deadline, runner)
         branch = _git(str(path), ["rev-parse", "--abbrev-ref", "HEAD"], deadline, runner)
         if head is None or head.returncode != 0:
-            unchecked += 1
+            failed()
             continue
         sha = head.stdout.strip()
         label = in_flight(repo, sha, deadline, runner)
@@ -183,16 +218,16 @@ def stale_worktrees(repo: str, main_sha: str, root: Path, deadline: float,
             continue
         found.append({"dir": path.name, "branch": (branch.stdout.strip() if branch else "?"),
                       "head": sha[:9], "label": label})
-    return found, unchecked
+    return found, timed_out, errors
 
 
-def message(repo: str, main_sha: str, found: list[dict], unchecked: int) -> str | None:
-    if not found and unchecked == 0:
+def message(repo: str, main_sha: str, found: list[dict], timed_out: int) -> str | None:
+    if not found and timed_out == 0:
         return None
     lines = [f"`main` of {repo} moved to {main_sha[:9]}. Lane worktrees now behind it:"]
     lines += [f"- {f['dir']} ({f['branch']} @ {f['head']}): {f['label']}" for f in found]
-    if unchecked:
-        lines.append(f"{unchecked} worktree(s) were not checked before the time limit.")
+    if timed_out:
+        lines.append(f"{timed_out} worktree(s) were not checked before the time limit.")
     lines.append("Any queued post that cites one of these SHAs will be refused. Dry-run every "
                  "queued post before posting any of them, and post a rebase rework where one "
                  "is owed.")
@@ -207,12 +242,15 @@ def warn(command: str, cwd: str | None, root: Path | None = None,
     deadline = time.monotonic() + STALE_SCAN_BUDGET_S
     root = root or Path(os.environ.get(ROOT_ENV) or DEFAULT_ROOT)
     parts = []
-    for repo in merged_repos(command, cwd, runner):
+    for repo in merged_repos(command, cwd, deadline, runner):
         sha = main_head(repo, deadline, runner)
         if sha is None:
             continue
-        found, unchecked = stale_worktrees(repo, sha, root, deadline, runner)
-        text = message(repo, sha, found, unchecked)
+        found, timed_out, errors = stale_worktrees(repo, sha, root, deadline, runner)
+        if errors:
+            print(f"[stale-worktrees] {errors} worktree(s) under {root} could not be read "
+                  "(git error or no known origin); not reported", file=sys.stderr)
+        text = message(repo, sha, found, timed_out)
         if text:
             parts.append(text)
     return "\n\n".join(parts) or None
