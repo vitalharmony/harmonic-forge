@@ -54,7 +54,7 @@ CROSS_ACCOUNT = frozenset({"K", "Y", "D", "P"})
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$")
 _SCOPE_RE = re.compile(r"^(open-issues|open-prs|milestone=[1-9]\d{0,5}|label=[A-Za-z0-9._-]{1,50})$")
 #: `SCAN <letter> <scope>: <reason>`; the first line of the prompt, uppercase.
-LINE_RE = re.compile(r"^SCAN[ \t]+([A-Za-z])[ \t]+(\S+)[ \t]*:[ \t]*(.*)$")
+LINE_RE = re.compile(r"^SCAN[ \t]+([A-Z])[ \t]+(\S+)[ \t]*:[ \t]*(.*)$")
 ANY_RE = re.compile(r"^[ \t>]*scan[ \t]+[A-Za-z][ \t]", re.IGNORECASE)
 
 
@@ -77,7 +77,7 @@ def parse(line: str) -> tuple[str, str, str] | str:
     if match is None:
         return ("SCAN is honored only as the prompt's first line, typed unindented and "
                 "uppercase, as `SCAN <letter> <scope>: <reason>`")
-    letter, scope, reason = match.group(1).upper(), match.group(2), match.group(3).strip()
+    letter, scope, reason = match.group(1), match.group(2), match.group(3).strip()
     if letter in CROSS_ACCOUNT:
         return (f"{letter} is another account with separate credentials; a scan from this "
                 "session would return empty, not an error")

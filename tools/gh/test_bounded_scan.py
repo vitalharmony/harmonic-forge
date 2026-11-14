@@ -36,8 +36,10 @@ def _load_shim():
     return module
 
 
-def page_output(status: int, items=None, etag='W/"e1"', link=""):
+def page_output(status: int, items=None, etag='W/"e1"', link="", remaining=None):
     head = f"HTTP/2.0 {status} {'OK' if status == 200 else 'Not Modified'}\nEtag: {etag}\n"
+    if remaining is not None:
+        head += f"X-Ratelimit-Remaining: {remaining}\n"
     if link:
         head += f"Link: {link}\n"
     body = json.dumps(items) if items is not None else ""
@@ -51,6 +53,7 @@ class Runner:
         self.pages = pages
         self.calls: list[list[str]] = []
         self.envs: list[dict] = []
+        self.remaining: int | None = None
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
@@ -58,7 +61,11 @@ class Runner:
         page = int(argv[-1].split("&page=")[1].split("&")[0])
         status, items, link = self.pages[page]
         exit_code = 0 if status == 200 else 1
-        return subprocess.CompletedProcess(argv, exit_code, page_output(status, items, link=link),
+        if self.remaining is not None:
+            self.remaining -= 1
+        return subprocess.CompletedProcess(argv, exit_code,
+                                           page_output(status, items, link=link,
+                                                       remaining=self.remaining),
                                            "gh: HTTP 304" if status == 304 else "")
 
 
@@ -112,6 +119,10 @@ class Grammar(unittest.TestCase):
         for line in ("scan H open-issues: x", "SCAN H open-issues:", "  SCAN H open-issues: x",
                      "SCAN H open-issues x"):
             self.assertIsInstance(scan_grant.parse(line), str, line)
+
+    def test_11b_a_lowercase_repo_letter_is_refused(self):
+        """Preclose pass 2, survivor 1: AC1's lowercase rule covers the letter too."""
+        self.assertIsInstance(scan_grant.parse("SCAN f open-issues: x"), str)
 
     def test_a_valid_line_parses(self):
         self.assertEqual(scan_grant.parse("SCAN H milestone=8: release"),
@@ -190,12 +201,22 @@ class Scan(Base):
         self.assertEqual(self.receipts()[-1]["outcome"], "ok")
 
     def test_18_max_pages_truncates_and_a_shrunk_list_drops_its_tail(self):
+        """Preclose pass 2, survivor 4: a stale 3-page snapshot refreshed when the
+        list has shrunk to one page keeps one page, never the cached tail."""
         self.grant()
         code, out, _ = self.run_scan(Runner({1: (200, [{"number": 1}], '<x>; rel="next"'),
                                              2: (200, [{"number": 2}], "")}), max_pages=1)
         self.assertEqual(code, 0)
         self.assertTrue(json.loads(Path(out.strip()).read_text())["truncated"])
         self.assertTrue(self.receipts()[-1]["truncated"])
+        path = bs.snapshot_path(REPO, "open-issues")
+        path.write_text(json.dumps({"fetched_at": 0, "truncated": False, "pages": [
+            {"etag": f'W/"p{n}"', "link": '<x>; rel="next"' if n < 3 else "",
+             "items": [{"number": n}]} for n in (1, 2, 3)]}))
+        code, _, _ = self.run_scan(Runner({1: (200, [{"number": 1}], "")}))
+        self.assertEqual(code, 0)
+        self.assertEqual([p["items"] for p in json.loads(path.read_text())["pages"]],
+                         [[{"number": 1}]])
 
     def test_3b_other_fields_never_get_a_cached_projection(self):
         """Preclose pass 1, survivor 3: a snapshot made with --fields number is not
@@ -209,17 +230,60 @@ class Scan(Base):
         items = json.loads(Path(out.strip()).read_text())["pages"][0]["items"]
         self.assertEqual(items, [{"number": 1, "title": "a"}])
 
-    def test_4b_a_leftover_temporary_file_never_breaks_a_run(self):
-        """Preclose pass 1, survivor 4: the temporary name is per run, so another
-        run's temporary file (or its absence) cannot crash this one."""
+    def test_4b_the_temporary_name_is_unique_to_the_run(self):
+        """Preclose pass 2, survivor 3: with the shared `<snapshot>.tmp` name taken
+        (here by a directory, as another run's leftover), a run still installs
+        its snapshot, because it never writes that shared name."""
         self.grant()
         path = bs.snapshot_path(REPO, "open-issues")
         path.parent.mkdir(parents=True, exist_ok=True)
-        (path.parent / (path.name + ".tmp")).write_text("half-written")
+        (path.parent / (path.name + ".tmp")).mkdir()
         code, _, _ = self.run_scan(Runner({1: (200, [{"number": 1}], "")}))
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(path.read_text())["pages"][0]["items"], [{"number": 1}])
-        self.assertEqual([p.name for p in path.parent.glob("*.tmp") if p.name != path.name + ".tmp"], [])
+
+    def test_4c_a_truncated_snapshot_is_not_served_to_a_larger_run(self):
+        """Preclose pass 2, survivor 2: a fresh snapshot cut at --max-pages 1 is not
+        served to a default run, which fetches again and records truncated false."""
+        self.grant()
+        pages = {1: (200, [{"number": 1}], '<x>; rel="next"'), 2: (200, [{"number": 2}], "")}
+        self.run_scan(Runner(pages), max_pages=1)
+        runner = Runner(pages)
+        code, out, _ = self.run_scan(runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(runner.calls), 2)
+        self.assertFalse(json.loads(Path(out.strip()).read_text())["truncated"])
+        runner = Runner(pages)
+        self.run_scan(runner, max_pages=1)
+        self.assertEqual(len(runner.calls), 0)  # a complete snapshot serves any run
+        self.assertFalse(self.receipts()[-1]["truncated"])
+
+    def test_4d_star_is_never_a_field_name(self):
+        """Preclose pass 2, survivor 6: --fields '*' is the all-fields run, so a later
+        all-fields run is never served a {'*': None} projection."""
+        self.grant()
+        self.run_scan(Runner({1: (200, [{"number": 1, "title": "a"}], "")}), fields="*")
+        code, out, _ = self.run_scan(Runner({1: (200, [], "")}))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(Path(out.strip()).read_text())["pages"][0]["items"],
+                         [{"number": 1, "title": "a"}])
+
+    def test_4e_rest_after_is_the_last_response_header_not_the_cache(self):
+        """Preclose pass 2, survivor 5: the cached budget() still says 4000; the
+        receipt's rest_after is the last page's X-Ratelimit-Remaining."""
+        self.grant()
+        runner = Runner({1: (200, [{"number": 1}], '<x>; rel="next"'),
+                         2: (200, [{"number": 2}], "")})
+        runner.remaining = 3990
+        self.run_scan(runner)
+        receipt = self.receipts()[-1]
+        self.assertEqual((receipt["rest_before"], receipt["rest_after"]), (4000, 3988))
+
+    def test_4f_a_refusal_receipt_carries_after_budgets(self):
+        self.run_scan(Runner({}))
+        receipt = self.receipts()[-1]
+        self.assertEqual(receipt["outcome"], "refused")
+        self.assertIn("rest_after", receipt)
 
     def test_7_every_run_writes_a_receipt(self):
         self.run_scan(Runner({}))

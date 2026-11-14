@@ -52,6 +52,7 @@ RECEIPTS_ENV = "BOUNDED_SCAN_RECEIPTS"
 _STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})", re.M)
 _ETAG = re.compile(r"(?im)^etag:\s*(.+?)\s*$")
 _LINK = re.compile(r"(?im)^link:\s*(.+?)\s*$")
+_REMAINING = re.compile(r"(?im)^x-ratelimit-remaining:\s*(\d+)\s*$")
 
 
 def snapshot_root() -> Path:
@@ -65,7 +66,8 @@ def receipts_path() -> Path:
 
 
 def parse_fields(raw: str | None) -> list[str] | None:
-    return sorted({f for f in (raw or "").split(",") if f}) or None
+    """`*` is the no-fields key, so it is never a field name (preclose pass 2)."""
+    return sorted({f for f in (raw or "").split(",") if f and f != "*"}) or None
 
 
 def snapshot_path(repo: str, scope: str, fields: list[str] | None = None) -> Path:
@@ -107,7 +109,8 @@ def fetch(path: str, etag: str | None, runner=subprocess.run) -> tuple[int, dict
         return 0, {}, None
     head, _, body = out.partition("\r\n\r\n") if "\r\n\r\n" in out else out.partition("\n\n")
     headers = {"etag": (m.group(1) if (m := _ETAG.search(head)) else None),
-               "link": (m.group(1) if (m := _LINK.search(head)) else "")}
+               "link": (m.group(1) if (m := _LINK.search(head)) else ""),
+               "remaining": (int(m.group(1)) if (m := _REMAINING.search(head)) else None)}
     code = int(status.group(1))
     if code != 200:
         return code, headers, None
@@ -150,7 +153,8 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
     line = f"SCAN {letter} {scope}: <reason>"
 
     def refuse(reason: str) -> int:
-        record.update(outcome="refused", detail=reason)
+        record.update(outcome="refused", detail=reason, rest_after=record.get("rest_before"),
+                      graphql_after=record.get("graphql_before"))
         _receipt(record)
         print(f"bounded-scan: refused: {reason}", file=sys.stderr)
         return 2
@@ -172,7 +176,12 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
     except (OSError, ValueError):
         snapshot = None
     moment = time.time() if now is None else now
-    if snapshot and moment - snapshot.get("fetched_at", 0) < STALE_SECONDS and not args.dry_run:
+    # Preclose pass 2: a fresh snapshot is served only when this request would
+    # have produced it: complete, or truncated at exactly this run's max-pages.
+    fresh = (snapshot and moment - snapshot.get("fetched_at", 0) < STALE_SECONDS
+             and (not snapshot.get("truncated") or snapshot.get("max_pages") == args.max_pages))
+    if fresh and not args.dry_run:
+        record["truncated"] = bool(snapshot.get("truncated"))
         record.update(outcome="served-from-snapshot", rest_after=record["rest_before"],
                       graphql_after=record["graphql_before"])
         _receipt(record)
@@ -190,10 +199,11 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
         print(f"bounded-scan plan: {repo} {scope}: up to {estimate} page(s); REST core "
               f"{rest[0]}, GraphQL {graphql[0] if graphql else 'unknown'}; snapshot "
               f"{'present' if snapshot else 'none'} at {snap_path}")
-        record.update(outcome="dry-run")
+        record.update(outcome="dry-run", rest_after=record["rest_before"],
+                      graphql_after=record["graphql_before"])
         _receipt(record)
         return 0
-    new_pages, page = [], 1
+    new_pages, page, remaining = [], 1, None
     while True:
         if page > args.max_pages:
             record["truncated"] = True
@@ -201,6 +211,8 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
         cached = pages[page - 1] if page - 1 < len(pages) else None
         code, headers, items = fetch(list_path(repo, scope, page),
                                      cached.get("etag") if cached else None, runner)
+        if headers.get("remaining") is not None:
+            remaining = headers["remaining"]
         if code == 304 and cached:
             record["pages_304"] += 1
             new_pages.append(cached)
@@ -211,7 +223,8 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
             new_pages.append({"etag": headers.get("etag"), "link": link,
                               "items": _project(items, fields, scope)})
         else:
-            record.update(outcome="error", detail=f"page {page}: HTTP {code or 'unreadable'}")
+            record.update(outcome="error", detail=f"page {page}: HTTP {code or 'unreadable'}",
+                          rest_after=remaining, graphql_after=None)
             _receipt(record)
             print(f"bounded-scan: page {page} failed (HTTP {code or 'unreadable'}); "
                   "snapshot left as it was", file=sys.stderr)
@@ -220,6 +233,7 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
             break
         page += 1
     snap = {"repo": repo, "scope": scope, "fetched_at": moment, "truncated": record["truncated"],
+            "max_pages": args.max_pages,
             "pages": new_pages}
     snap_path.parent.mkdir(parents=True, exist_ok=True)
     # A temporary name unique to this process (preclose pass 1, survivor 4): two
@@ -228,8 +242,9 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
     tmp = snap_path.with_name(f"{snap_path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     tmp.write_text(json.dumps(snap), encoding="utf-8")
     tmp.replace(snap_path)
-    after = gh_scan_patterns.budget()
-    record.update(outcome="ok", rest_after=after[0] if after else None,
+    # Preclose pass 2: the after-reading is the last response's own
+    # x-ratelimit-remaining, never the 60 s budget cache.
+    record.update(outcome="ok", rest_after=remaining,
                   graphql_after=(gql_after[0] if (gql_after := gh_scan_patterns.graphql_budget())
                                  else None),
                   items=sum(len(p["items"]) for p in new_pages))
