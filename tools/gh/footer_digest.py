@@ -17,6 +17,11 @@ import _prod_run
 _BODY_SHA = re.compile(r"\bbody-sha256=([0-9a-f]{64})\b", re.I)
 
 
+def has_digest(marker: str) -> bool:
+    """Does `marker` carry a `body-sha256` at all?"""
+    return _BODY_SHA.search(marker) is not None
+
+
 def marker_verifies(body: str, start: int, marker: str) -> bool:
     """Does `marker`, found at `start` in `body`, carry a digest of the text
     before it? True when the marker carries no `body-sha256`: absence is not a

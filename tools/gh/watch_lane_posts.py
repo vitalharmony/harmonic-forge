@@ -813,7 +813,14 @@ def _own_marker(body: str) -> str | None:
     against the text above it (or that carries none) is the comment's own. A
     footer copied after an unclosed fence no longer verifies, so the real
     footer before it wins; None only when no visible marker verifies."""
-    for match in reversed(_visible_markers(body)):
+    markers = _visible_markers(body)
+    for i in range(len(markers) - 1, -1, -1):
+        match = markers[i]
+        # Sticky-wicket PATCH: only the last marker may verify by carrying no
+        # digest; an earlier one the walk-back reaches must carry one that
+        # verifies, so a digestless example marker is never read as own.
+        if i < len(markers) - 1 and not footer_digest.has_digest(match.group(0)):
+            continue
         if footer_digest.marker_verifies(body, match.start(), match.group(0)):
             return match.group(0)
     return None

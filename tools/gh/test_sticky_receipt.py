@@ -574,6 +574,14 @@ class ProvenanceTests(ReceiptHome):
         plain = "## Note\n\ntext\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
         self.assertTrue(clr.verify_body_sha256({"body": plain}))
 
+    def test_walk_back_never_takes_a_digestless_example_marker(self):
+        body = signed("## L1 — rework, O35\n\nSee `<!-- l1-post v1; kind=discussion -->`.\n\n**Finding:** f",
+                      "kind=rework; sha=abc1234; rework=correction")
+        edited = body.replace("**Finding:** f", "**Finding:** f2")
+        self.assertIsNone(belt._own_marker(edited))
+        self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": edited}]),
+                         [(1, True, "gate"), (2, False, "rework")])
+
     def test_f_an_edited_l1_rework_still_counts_as_a_round(self):
         edited = REAL.replace("**Finding:** f", "**Finding:** f, edited")
         thread = [gate(1, "PASS"), {"id": 2, "body": edited}]
