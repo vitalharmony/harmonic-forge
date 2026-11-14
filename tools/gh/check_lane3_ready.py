@@ -162,6 +162,11 @@ def verify_body_sha256(comment: dict) -> bool:
         pass
     if last is None or body[last.end():].strip():
         return False
+    # harmonic-forge#1358 preclose pass 1: the body carries a digest, so its last
+    # footer must carry one too; a digestless footer appended after the real one
+    # would otherwise pass an edited body.
+    if FOOTER_BODY_SHA.search(last.group(0)) is None:
+        return False
     return footer_digest.marker_verifies(body, last.start(), last.group(0))
 
 

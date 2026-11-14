@@ -833,14 +833,12 @@ def _visible_markers(body: str) -> list[re.Match]:
             if any(a <= m.start() and m.end() <= b for a, b in merged)]
 
 
-def unverified_kind(body: str) -> str | None:
-    """The `kind=` of the last visible marker, verified or not
-    (harmonic-forge#1358). Only `sticky_receipt` reads it, to keep counting
-    an edited Lane 1 rework as a round (operator ruling 2026-11-13); every
-    other reader uses `_own_marker`."""
+def unverified_marker(body: str) -> str | None:
+    """The last visible marker, verified or not (harmonic-forge#1358). Only
+    `sticky_receipt` reads it, to keep counting an edited Lane 1 rework as a
+    round (operator ruling 2026-11-13); every other reader uses `_own_marker`."""
     markers = _visible_markers(body)
-    found = _KIND_RE.search(markers[-1].group(0)) if markers else None
-    return found.group(1) if found else None
+    return markers[-1].group(0) if markers else None
 
 
 def _classify(body: str) -> tuple[str, str] | None:

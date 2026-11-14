@@ -558,6 +558,22 @@ class ProvenanceTests(ReceiptHome):
         self.assertIsNone(belt._own_marker(l2))
         self.assertEqual(belt._classify(l2)[0], "l2")  # falls back to its heading
 
+    def test_f_an_edited_relay_or_rebase_is_still_no_round(self):
+        for kind in ("relay", "rebase"):
+            with self.subTest(kind=kind):
+                body = signed("## L1 — rework, O35\n\n**Finding:** f\n**Next:** n",
+                              f"kind=rework; sha=abc1234; rework={kind}").replace("**Finding:** f", "**Finding:** f, edited")
+                self.assertIsNone(belt._classify(body))
+                self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": body}]), [(1, True, "gate")])
+                self.assertEqual(sr._open_rounds([gate(1, "FAIL"), {"id": 2, "body": body}], None), ([1], True))
+
+    def test_a_digestless_footer_appended_to_an_edited_body_fails_verify(self):
+        import check_lane3_ready as clr  # noqa: PLC0415
+        edited = REAL.replace("**Finding:** f", "**Finding:** f, edited") + "\n\n<!-- l1-post v1; kind=discussion -->"
+        self.assertFalse(clr.verify_body_sha256({"body": edited}))
+        plain = "## Note\n\ntext\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+        self.assertTrue(clr.verify_body_sha256({"body": plain}))
+
     def test_f_an_edited_l1_rework_still_counts_as_a_round(self):
         edited = REAL.replace("**Finding:** f", "**Finding:** f, edited")
         thread = [gate(1, "PASS"), {"id": 2, "body": edited}]

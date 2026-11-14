@@ -81,13 +81,19 @@ def _counted_rework(classified: tuple[str, str] | None, body: str) -> bool:
 
     harmonic-forge#1358 (operator ruling 2026-11-13): a rework edited after
     posting has no footer that verifies, so it classifies as nothing; it still
-    counts, as a correction would, read from its unverified `kind=rework`."""
+    counts, as a correction would, read from its unverified `kind=rework` (an edited relay or rebase still is not)."""
     if classified == ("l1", "rework"):
         return rework_kind(body) not in NOT_A_ROUND
     if classified is None:
         import watch_lane_posts as belt  # noqa: PLC0415 -- deferred, as above
 
-        return belt._own_marker(body or "") is None and belt.unverified_kind(body or "") == "rework"
+        if belt._own_marker(body or "") is not None:
+            return False
+        marker = belt.unverified_marker(body or "") or ""
+        kind = belt._KIND_RE.search(marker)
+        found = _REWORK_KIND.search(marker)
+        # harmonic-forge#1358 preclose pass 1: an edited relay or rebase stays no round.
+        return bool(kind and kind.group(1) == "rework") and not (found and found.group(1) in NOT_A_ROUND)
     return False
 
 
