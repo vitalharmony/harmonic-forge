@@ -88,11 +88,10 @@ class Pass1Survivors(unittest.TestCase):
                 self.assertIsNone(hook.decide(command))
 
     def test_read_only_piped_gates_are_allowed(self):
-        """The piped-gate fold is removed (outside the AC; R-0381)."""
-        for command in ["python3 -m pytest tools/hooks -q | tail -5",
-                        "gh run view 123 --log | grep -i error"]:
-            with self.subTest(command=command):
-                self.assertIsNone(hook.decide(command))
+        """The piped-gate fold is removed (outside the AC; R-0381). A gate piped into
+        `tail`/`head` is denied since harmonic-forge#1368 (operator-agreed AC4 amendment)."""
+        self.assertIsNone(hook.decide("gh run view 123 --log | grep -i error"))
+        self.assertIsNotNone(hook.decide("python3 -m pytest tools/hooks -q | tail -5"))
 
     def test_here_doc_body_is_a_known_residual(self):
         """Operator ruling 2026-11-12, option A: a here-doc fed to a shell is not parsed."""
@@ -124,10 +123,12 @@ class Pass2Survivors(unittest.TestCase):
     def test_ordinary_commands_stay_allowed(self):
         for command in ["git log --grep pytest", 'git commit -m "make pytest pass"',
                         "git push && gh pr checks 12 --watch",
-                        "pytest -q | tail -5", "gh run view 123 --log | grep -i error",
+                        "gh run view 123 --log | grep -i error",
                         "echo git push"]:
             with self.subTest(command=command):
                 self.assertIsNone(hook.decide(command))
+        # harmonic-forge#1368 (operator-agreed AC4 amendment): no longer allowed.
+        self.assertIsNotNone(hook.decide("pytest -q | tail -5"))
 
 
 class ReforgePass1Survivors(unittest.TestCase):
@@ -378,6 +379,256 @@ class Preclose1366Pass2(unittest.TestCase):
         for alias in hook._NPM_EXEC:
             with self.subTest(alias=alias):
                 self.assertIsNotNone(hook.decide(f"npm {alias} eslint && git push"))
+
+
+class MaskedGate1368(unittest.TestCase):
+    """harmonic-forge#1368: a gate piped into tail/head without pipefail."""
+
+    def test_ac1_each_masked_gate_is_denied(self):
+        for command, gate in (("mise run check 2>&1 | tail -3", "mise run check"),
+                              ("pytest -q | tail -1", "pytest"),
+                              ("mise run check | head -20", "mise run check"),
+                              ("ruff check x |& tail -5", "ruff check")):
+            with self.subTest(command=command):
+                reason = hook.decide(command)
+                self.assertIsNotNone(reason)
+                self.assertIn(f"`{gate}`", reason)
+                self.assertIn("harmonic-forge#1368", reason)
+
+    def test_ac2_pipefail_does_not_exempt(self):
+        """REFORGE (issuecomment-6882876419): there is no pipefail exemption."""
+        for command in ("set -o pipefail; mise run check | tail -3",
+                        "set -euo pipefail && pytest | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_ac3_each_is_allowed(self):
+        for command in ("mise run check > log 2>&1; tail -3 log",
+                        "echo check | tail -1",
+                        "git log | head -5",
+                        "mise run check | tee log"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_a_later_truncator_anywhere_in_the_pipeline(self):
+        self.assertIsNotNone(hook.decide("mise run check | tail -3 | cat"))
+
+    def test_a_shell_c_string_is_read(self):
+        self.assertIsNotNone(hook.decide('bash -c "pytest | tail -1"'))
+
+    def test_pipefail_after_the_gate_does_not_exempt(self):
+        self.assertIsNotNone(hook.decide("mise run check | tail -3; set -o pipefail"))
+
+    def test_a_substitution_body_is_read(self):
+        self.assertIsNotNone(hook.decide("x=$(pytest | tail -1); echo $x"))
+
+
+class MaskedGate1368Pass1(unittest.TestCase):
+    """harmonic-forge#1368 preclose pass 1 survivors (issuecomment-6882649150) and the
+    sticky-wicket PATCH (issuecomment-6882662014)."""
+
+    def test_s1_pipefail_turned_off_does_not_exempt(self):
+        for command in ("set +o pipefail; pytest | tail -1",
+                        "set -o pipefail; set +o pipefail; pytest | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s2_outer_pipefail_is_not_inherited_by_a_child_shell(self):
+        self.assertIsNotNone(hook.decide('set -o pipefail; bash -c "pytest | tail -1"'))
+
+    def test_s3_subshell_or_conditional_pipefail_does_not_exempt(self):
+        for command in ("(set -o pipefail); pytest | tail -1",
+                        "false && set -o pipefail; pytest | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s4_a_grouped_gate_is_denied(self):
+        for command in ("{ pytest; } | tail -1", "(pytest) | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s5_a_grouped_truncator_is_denied(self):
+        self.assertIsNotNone(hook.decide("pytest | (tail -1)"))
+
+    def test_s6_a_tail_after_a_non_pipe_separator_is_not_piped(self):
+        """Second REFORGE (issuecomment-6884035774, operator "1 yes"): the rule is
+        order-only, so a gate, a later pipe and a later tail deny even when that tail
+        reads a file. An accepted, fail-closed over-deny."""
+        self.assertIsNotNone(hook.decide("mise run check | tee log; tail -1 log"))
+        self.assertIsNone(hook.decide("mise run check > log 2>&1; tail -3 log"))
+
+
+class MaskedGate1368Reforge(unittest.TestCase):
+    """harmonic-forge#1368 REFORGE (issuecomment-6882876419): pass-2 survivors
+    (issuecomment-6882868464) and the extended AC1."""
+
+    def test_a_wrapped_gate_piped_into_tail_is_denied(self):
+        for command, gate in (('bash -c "pytest" | tail -1', "pytest"),
+                              ("eval pytest | tail -1", "pytest"),
+                              ('sh -c "mise run check" | tail -3', "mise run check")):
+            with self.subTest(command=command):
+                reason = hook.decide(command)
+                self.assertIsNotNone(reason)
+                self.assertIn(f"`{gate}`", reason)
+
+    def test_a_wrapped_truncator_is_denied(self):
+        self.assertIsNotNone(hook.decide('pytest | bash -c "tail -1"'))
+
+    def test_a_piped_set_never_exempts(self):
+        self.assertIsNotNone(hook.decide("set -o pipefail | cat; pytest -q | tail -1"))
+
+    def test_a_substitution_is_read_whatever_the_outer_shell_set(self):
+        self.assertIsNotNone(hook.decide("set -o pipefail; x=$(pytest | tail -1)"))
+
+    def test_a_wrapped_non_gate_is_allowed(self):
+        self.assertIsNone(hook.decide('bash -c "echo hi" | tail -1'))
+
+    def test_the_message_offers_no_pipefail_remedy(self):
+        self.assertNotIn("pipefail", hook.decide("pytest | tail -1"))
+
+
+class MaskedGate1368ReforgePass1(unittest.TestCase):
+    """harmonic-forge#1368 reforge pass-1 survivors (issuecomment-6883817713) and the
+    sticky-wicket PATCH (issuecomment-6883830423)."""
+
+    def test_s1_a_truncator_anywhere_in_a_piped_group_or_script(self):
+        for command in ("pytest | { head -5; tail -3; }", "pytest | (cat; tail -1)",
+                        "pytest | (sed 1d; tail -1)", 'pytest | bash -c "sed 1d; tail -1"',
+                        "pytest | bash -c 'cat | tail -1'"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s2_backtick_and_quoted_substitutions_are_read(self):
+        for command in ("x=`pytest | tail -1`", 'echo "$(pytest | tail -1)"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s3_a_parse_error_elsewhere_keeps_the_deny(self):
+        for command in ("mise run check 2>&1 | tail -3  # don't lose the summary",
+                        "pytest | tail -1; bash -c \"'\""):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s4_the_first_gate_stays_the_gate(self):
+        self.assertIsNotNone(hook.decide("pytest | grep -v x | tail -1"))
+
+    def test_a_comment_alone_does_not_deny(self):
+        self.assertIsNone(hook.decide("echo don't # fine"))
+
+
+class MaskedGate1368SecondReforge(unittest.TestCase):
+    """harmonic-forge#1368 reforge pass-2 survivors (issuecomment-6884023933) under the
+    order-only rule of the second REFORGE (issuecomment-6884035774)."""
+
+    def test_a_line_break_after_the_pipe(self):
+        for command in ("pytest |\n tail -1", "mise run check |\ntail -1"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_if_while_case_bodies(self):
+        for command in ("pytest | if true; then tail -1; fi",
+                        "pytest | while true; do tail -1; break; done",
+                        "pytest | case x in x) tail -1;; esac"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_an_earlier_comment_that_does_not_parse(self):
+        self.assertIsNotNone(hook.decide("# don't lose output\npytest | tail -1"))
+
+    def test_a_pipe_recorded_only_on_the_reader(self):
+        self.assertIsNotNone(hook.decide("{ pytest; } | tail -1"))
+
+    def test_order_matters(self):
+        for command in ("tail -3 log | grep x; pytest", "pytest > log; tail -3 log",
+                        "git log | head -5; pytest",
+                        # a pipe BEFORE the gate never counts, even with a tail after it
+                        "git log | cat; pytest; tail -3 log"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_an_unparseable_script_is_read_as_raw_text(self):
+        self.assertIsNotNone(hook.decide('bash -c "pytest | tail -1 # don\'t"'))
+
+
+class MaskedGate1368FinalPass1(unittest.TestCase):
+    """harmonic-forge#1368 final-reforge pass-1 survivors (issuecomment-6885144464),
+    sticky-wicket PATCH (issuecomment-6885150729, correction 6885155066)."""
+
+    def test_f1_a_gate_word_as_an_argument_is_not_a_gate(self):
+        for command in ("git log --grep pytest | head -5 # don't",
+                        "grep -rn ruff . | head  # it's"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+        self.assertIsNotNone(hook.decide("pytest | tail -1 # don't"))
+
+    def test_f2_every_raw_gate_is_recognised(self):
+        for gate, script in (("pytest", "pytest"), ("ruff", "ruff check x"),
+                             ("mise run check", "mise run check"), ("mypy", "mypy ."),
+                             ("tsc", "tsc -b"), ("eslint", "eslint ."), ("vitest", "vitest run"),
+                             ("npm test", "npm test"), ("npm run", "npm run lint"),
+                             ("gh pr checks", "gh pr checks 1"),
+                             ("preclose_check.py", "python3 tools/gh/preclose_check.py --complete"),
+                             # The parser gates only an l1-post dry run (final pass 2:
+                             # the raw path now agrees with it, not with a regex copy).
+                             ("l1-post --dry-run", "mise run l1-post x --dry-run")):
+            with self.subTest(gate=gate):
+                reason = hook.decide(f'bash -c "{script} | tail -1 # don\'t"')
+                self.assertIsNotNone(reason)
+                self.assertIn(gate, reason)
+
+    def test_f3_nested_wrappers_are_read(self):
+        for command in ("bash -c \"bash -c 'pytest | tail -1'\"",
+                        'bash -c "bash -c \'bash -c \\"pytest | tail -1\\"\'"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_f4_the_raw_fallback_needs_a_pipe(self):
+        self.assertIsNone(hook.decide('bash -c "mise run check > log; tail -3 log # don\'t"'))
+        self.assertIsNotNone(hook.decide('bash -c "mise run check | tail -3 # don\'t"'))
+
+
+class MaskedGate1368FinalPass2(unittest.TestCase):
+    """harmonic-forge#1368 final-reforge pass-2 survivor (issuecomment-6885329896),
+    sticky-wicket PATCH (issuecomment-6885466922): the raw fallback runs the parser's
+    own classifier, so parsed and unparseable text agree."""
+
+    WRAPPED = (("timeout 600 pytest | tail -1", "pytest"),
+               ("FOO=1 pytest | tail -1", "pytest"),
+               ("./backend/.venv/bin/pytest | tail -1", "pytest"),
+               ("env FOO=1 pytest | tail -1", "pytest"),
+               ("nice -n 10 pytest | head -20", "pytest"),
+               ("mise -C . run check | tail -1", "mise run check"))
+
+    def test_wrapped_gates_deny_with_and_without_an_unparseable_comment(self):
+        for command, gate in self.WRAPPED:
+            for suffix in ("", "  # don't"):
+                with self.subTest(command=command + suffix):
+                    reason = hook.decide(command + suffix)
+                    self.assertIsNotNone(reason)
+                    self.assertIn(f"`{gate}`", reason)
+
+    def test_an_unparseable_comment_never_changes_the_decision(self):
+        commands = [c for c, _ in self.WRAPPED] + [
+            "mise run check 2>&1 | tail -3", "pytest -q | tail -1",
+            "mise run check | head -20", "ruff check x |& tail -5",
+            "{ pytest; } | tail -1", "x=$(pytest | tail -1)",
+            "mise run check > log 2>&1; tail -3 log", "echo check | tail -1",
+            "git log | head -5", "mise run check | tee log",
+            "git log --grep pytest | head -5", "grep -rn ruff . | head"]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(hook.decide(command) is None,
+                                 hook.decide(command + "  # don't") is None)
+
+    def test_the_fallback_uses_gate_of(self):
+        """Mutation guard: the fallback has no gate list of its own."""
+        original = hook.gate_of
+        hook.gate_of = lambda argv: None
+        try:
+            self.assertIsNone(hook._raw_masked("timeout 600 pytest | tail -1 # don't"))
+        finally:
+            hook.gate_of = original
+        self.assertEqual(hook._raw_masked("timeout 600 pytest | tail -1 # don't"), "pytest")
 
 
 if __name__ == "__main__":

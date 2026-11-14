@@ -27,6 +27,11 @@ Gate: `mise run check` / `check-full` / `test-backend` / `test-backend-unit` /
 Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
 
+Also denied, with no write at all (harmonic-forge#1368): a gate piped (`|`/`|&`)
+into a pipeline that later runs `tail` or `head`, at any level, including through
+`bash -c`/`eval`. The pipeline then reports `tail`'s exit code, not the gate's. There
+is no `pipefail` exemption (REFORGE): a parse cannot tell whether it is on.
+
 An `l1-post` dry run gates every listed write, not only its own post:
 `l1-post … --dry-run | tail -2 && l1-post …` let a failed dry run through,
 because the pipe returns `tail`'s exit status (harmonic-forge#1362). "Dry run"
@@ -62,6 +67,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Iterator, Optional
@@ -418,17 +424,140 @@ def find(command: str) -> tuple[Optional[str], Optional[str]]:
     return gate, write
 
 
+#: Pipe separators: a `|`/`|&` run of simple commands is one pipeline.
+_PIPES = frozenset({"|", "|&"})
+#: Programs that keep only part of a gate's output, and whose exit status the
+#: pipeline reports in place of the gate's (harmonic-forge#1368).
+_TRUNCATORS = frozenset({"tail", "head"})
+
+
+def _events(command: str, depth: int = 0) -> list[tuple[str, str]]:
+    """The command flattened into one ordered stream of ("gate", name), ("pipe", "") and
+    ("trunc", "") events, `$(...)`/backtick bodies (read from the raw text) and
+    `-c`/`eval` scripts inserted where they run, down to MAX_DEPTH. Raises on a parse
+    failure of `command` itself; a nested body that does not parse is read as a raw-text
+    match instead (harmonic-forge#1368 second REFORGE, issuecomment-6884035774)."""
+    stream: list[tuple[str, str]] = []
+    if depth < MAX_DEPTH:
+        for body in shell_parse.substitution_bodies(command):
+            stream += _events_or_raw(body, depth + 1)
+    for item in shell_parse.simple_commands(command):
+        if not isinstance(item, shell_parse.SimpleCommand):
+            continue
+        script = _script_arg(item.argv) if depth < MAX_DEPTH else None
+        if script is not None:
+            stream += _events_or_raw(script, depth + 1)
+        argv = shell_parse.strip_invocation_prefix(item.argv)
+        # A pipe may be recorded only on the reader's side (`{ pytest; } | tail`:
+        # the braces are dropped, so the gate's own sep_after is `;`).
+        if item.sep_before in _PIPES:
+            stream.append(("pipe", ""))
+        gate = gate_of(argv)
+        if gate:
+            stream.append(("gate", gate))
+        if _program(argv) in _TRUNCATORS:
+            stream.append(("trunc", ""))
+        if item.sep_after in _PIPES:
+            stream.append(("pipe", ""))
+    return stream
+
+
+def _events_or_raw(command: str, depth: int) -> list[tuple[str, str]]:
+    try:
+        return _events(command, depth)
+    except (ValueError, shell_parse.NotOrdinary):
+        gate = _raw_masked(command)
+        return [("gate", gate), ("pipe", ""), ("trunc", "")] if gate else []
+
+
+#: Raw-text fallback for text that does not parse. It has no gate list of its own: the
+#: text is split crudely into segments and words, and each segment goes through the
+#: parser's own `strip_invocation_prefix` and `gate_of`, so the two paths agree by
+#: construction (final-reforge pass 2, sticky-wicket PATCH issuecomment-6885466922).
+#: A gate, then a `|`, then a word-bounded `tail`/`head` later denies. It fails closed.
+_RAW_SEP = re.compile(r"\$\(|[;&|()\n`]")
+_RAW_TAIL = re.compile(r"\|&?[\s\S]*\b(?:tail|head)\b")
+#: Grouping and compound-command words the parser drops before argv[0].
+_RAW_LEADERS = frozenset({"{", "}", "!", "if", "then", "else", "elif", "while", "until",
+                          "do", "time"})
+
+
+def _raw_segments(command: str) -> Iterator[tuple[list[str], int]]:
+    """(words, end offset) per separator-delimited segment; never raises."""
+    start = 0
+    for sep in [*_RAW_SEP.finditer(command), None]:
+        end = sep.start() if sep else len(command)
+        words = [w for w in (w.strip("'\"") for w in command[start:end].split()) if w]
+        while words and words[0] in _RAW_LEADERS:
+            words = words[1:]
+        yield words, end
+        start = sep.end() if sep else end
+
+
+def _raw_gate_of(words: list[str]) -> Optional[str]:
+    gate = gate_of(shell_parse.strip_invocation_prefix(words))
+    if gate:
+        return gate
+    # The script of `bash -c '...'`/`eval ...` runs where it sits.
+    for i, word in enumerate(words[:-1]):
+        if word in ("-c", "eval"):
+            gate = gate_of(shell_parse.strip_invocation_prefix(words[i + 1:]))
+            if gate:
+                return gate
+    return None
+
+
+def _raw_masked(command: str) -> Optional[str]:
+    for words, end in _raw_segments(command):
+        gate = _raw_gate_of(words) if words else None
+        if gate:
+            return gate if _RAW_TAIL.search(command, end) else None
+    return None
+
+
+def masked_gate(command: str) -> Optional[str]:
+    """The first gate in this command when a `|`/`|&` and then a `tail`/`head` follow it
+    anywhere later, or None (harmonic-forge#1368, second REFORGE
+    issuecomment-6884035774). Order only: the hook does not prove that this `tail` reads
+    this gate's output, so a line break, a group, an if/while/case body or a `-c` script
+    between them changes nothing. There is no `pipefail` exemption. A command that does
+    not parse is decided by `_raw_masked`, failing closed. Accepted over-denies: a gate
+    that never runs, and a gate followed later by an unrelated pipe into `tail`."""
+    try:
+        stream = _events(command)
+    except (ValueError, shell_parse.NotOrdinary):
+        return _raw_masked(command)
+    gate: Optional[str] = None
+    piped = False
+    for kind, name in stream:
+        if kind == "gate" and gate is None:
+            gate = name
+        elif kind == "pipe" and gate:
+            piped = True
+        elif kind == "trunc" and piped:
+            return gate
+    return None
+
+
 def decide(command: str) -> Optional[str]:
     """The deny reason, or None to allow."""
     try:
         gate, write = find(command)
     except (ValueError, shell_parse.NotOrdinary):
-        return None
+        gate = write = None
+    # Never inside find's try: a parse error there must not discard a masked gate;
+    # masked_gate decides unparseable text by its raw-text fallback.
+    masked = masked_gate(command)
     if gate and write:
         return (f"Blocked (R-0419, harmonic-forge#1337): this one command runs the gate "
                 f"`{gate}` and the write `{write}` it gates, so the write would run before "
                 f"anyone reads the gate's result. Run `{gate}` alone, read its result, "
                 f"then run `{write}` in a separate call.")
+    if masked:
+        return (f"Blocked (R-0419, harmonic-forge#1368): `{masked}` is piped into "
+                f"`tail`/`head`, so the command reports `tail`'s exit code, not the "
+                f"gate's, and the cut output can hide the failing step. Write the full "
+                f"log to a file and keep the gate's own exit code.")
     return None
 
 
