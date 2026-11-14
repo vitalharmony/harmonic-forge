@@ -334,3 +334,48 @@ class Preclose1366Pass1(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Preclose1366Pass2(unittest.TestCase):
+    """harmonic-forge#1366 preclose pass 2 survivors (issuecomment-6881496159) and the
+    sticky-wicket PATCH (issuecomment-6881508159)."""
+
+    def test_s1_npm_exec_past_npm_value_flags(self):
+        for command in ("npm exec --workspace w eslint && git push",
+                        "npm --prefix x x eslint . && git push",
+                        "npm --prefix exec exec tsc && git push"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s2_wrapper_value_equal_to_the_program(self):
+        self.assertIsNotNone(hook.decide("uvx --from ruff ruff check x && git push"))
+        self.assertIsNone(hook.decide("uvx --from ruff ruff format x && git push"))
+
+    def test_s3_help_and_version_are_not_gates(self):
+        for command in ("ruff --version && git push", "ruff -h && git push",
+                        "npx tsc --version && git push", "mypy --help && git push",
+                        "eslint -V && git push"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_s4_every_ruff_value_flag(self):
+        for flag in sorted(hook._RUFF_VALUE_FLAGS):
+            with self.subTest(flag=flag):
+                self.assertIsNotNone(hook.decide(f"ruff {flag} v check x && git push"))
+
+    def test_s4_every_npm_value_flag(self):
+        for flag in sorted(hook._NPM_VALUE_FLAGS):
+            with self.subTest(flag=flag):
+                self.assertIsNone(hook.decide(f"npm {flag} test run dev && git push"))
+                self.assertIsNotNone(hook.decide(f"npm {flag} v run lint && git push"))
+
+    def test_s4_every_npm_alias(self):
+        for alias in hook._NPM_TEST:
+            with self.subTest(alias=alias):
+                self.assertIsNotNone(hook.decide(f"npm {alias} && git push"))
+        for alias in hook._NPM_RUN:
+            with self.subTest(alias=alias):
+                self.assertIsNotNone(hook.decide(f"npm {alias} lint && git push"))
+        for alias in hook._NPM_EXEC:
+            with self.subTest(alias=alias):
+                self.assertIsNotNone(hook.decide(f"npm {alias} eslint && git push"))
