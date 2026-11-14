@@ -472,10 +472,16 @@ def _events_or_raw(command: str, depth: int) -> list[tuple[str, str]]:
 
 #: Raw-text fallback for text that does not parse: a gate word, later a `|`, later a
 #: word-bounded `tail`/`head`. It fails closed: it may deny what a parse would allow.
+#: The gate word must sit at a command position (text start, after a separator, a `$(`
+#: or backtick, after `-c`/`eval` and an optional quote, or after a bare quote, past the
+#: usual wrapper words), so `git log --grep pytest` is not a gate (final-reforge pass 1,
+#: sticky-wicket PATCH issuecomment-6885150729 / correction 6885155066).
 _RAW_GATE = re.compile(
-    r"\b(mise\s+(?:run\s+)?(?:check(?:-full)?|test-backend\S*)|py\.?test|pytest|ruff|mypy|"
+    r"(?:^|[;&|(\n`]|\$\(|\b(?:-c|eval)\s+['\"]?|['\"])\s*"
+    r"(?:(?:sudo|env|command|exec|time|nice|uv\s+run|npx|python3?(?:\s+-m)?)\s+)*"
+    r"(mise\s+(?:run\s+)?(?:check(?:-full)?|test-backend\S*)|py\.?test|pytest|ruff|mypy|"
     r"tsc|eslint|vitest|npm\s+(?:test|run)|gh\s+(?:pr\s+checks|run\s+(?:view|watch))|"
-    r"preclose_check\.py|l1[-_]post)\b")
+    r"(?:\S*/)?preclose_check\.py|l1[-_]post)\b")
 _RAW_TAIL = re.compile(r"\|&?[\s\S]*\b(?:tail|head)\b")
 
 

@@ -550,5 +550,40 @@ class MaskedGate1368SecondReforge(unittest.TestCase):
         self.assertIsNotNone(hook.decide('bash -c "pytest | tail -1 # don\'t"'))
 
 
+class MaskedGate1368FinalPass1(unittest.TestCase):
+    """harmonic-forge#1368 final-reforge pass-1 survivors (issuecomment-6885144464),
+    sticky-wicket PATCH (issuecomment-6885150729, correction 6885155066)."""
+
+    def test_f1_a_gate_word_as_an_argument_is_not_a_gate(self):
+        for command in ("git log --grep pytest | head -5 # don't",
+                        "grep -rn ruff . | head  # it's"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+        self.assertIsNotNone(hook.decide("pytest | tail -1 # don't"))
+
+    def test_f2_every_raw_gate_is_recognised(self):
+        for gate, script in (("pytest", "pytest"), ("ruff", "ruff check x"),
+                             ("mise run check", "mise run check"), ("mypy", "mypy ."),
+                             ("tsc", "tsc -b"), ("eslint", "eslint ."), ("vitest", "vitest run"),
+                             ("npm test", "npm test"), ("npm run", "npm run lint"),
+                             ("gh pr checks", "gh pr checks 1"),
+                             ("preclose_check.py", "python3 tools/gh/preclose_check.py --complete"),
+                             ("l1-post", "l1-post x")):
+            with self.subTest(gate=gate):
+                reason = hook.decide(f'bash -c "{script} | tail -1 # don\'t"')
+                self.assertIsNotNone(reason)
+                self.assertIn(gate, reason)
+
+    def test_f3_nested_wrappers_are_read(self):
+        for command in ("bash -c \"bash -c 'pytest | tail -1'\"",
+                        'bash -c "bash -c \'bash -c \\"pytest | tail -1\\"\'"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_f4_the_raw_fallback_needs_a_pipe(self):
+        self.assertIsNone(hook.decide('bash -c "mise run check > log; tail -3 log # don\'t"'))
+        self.assertIsNotNone(hook.decide('bash -c "mise run check | tail -3 # don\'t"'))
+
+
 if __name__ == "__main__":
     unittest.main()
