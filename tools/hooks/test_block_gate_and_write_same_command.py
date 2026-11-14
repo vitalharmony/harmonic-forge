@@ -293,5 +293,44 @@ class Linters1366(unittest.TestCase):
                 self.assertIsNotNone(hook.decide(f"mise run {task} | tail -1 && git push origin HEAD"))
 
 
+class Preclose1366Pass1(unittest.TestCase):
+    """harmonic-forge#1366 preclose pass 1 survivors (issuecomment-6881346638)."""
+
+    def test_s1_npm_option_after_run_keeps_the_gate(self):
+        for command, gate in (("npm run --silent lint && git push", "npm run lint"),
+                              ("npm run -s test && git push", "npm run test"),
+                              ("npm run-script --if-present typecheck && git push",
+                               "npm run typecheck")):
+            with self.subTest(command=command):
+                reason = hook.decide(command)
+                self.assertIsNotNone(reason)
+                self.assertIn(f"`{gate}`", reason)
+
+    def test_s2_ruff_value_flag_before_the_subcommand(self):
+        self.assertIsNotNone(hook.decide("ruff --config r.toml check . && git push"))
+        self.assertIsNone(hook.decide("ruff --config check format . && git push"))
+
+    def test_s3_test_as_a_value_or_package_is_not_npm_test(self):
+        for command in ("npm --prefix test run dev && git push",
+                        "npm --prefix test install && git push",
+                        "npm install test && git push"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_s4_uvx_and_npm_exec_are_unwrapped(self):
+        for command in ("uvx ruff check x && git push",
+                        "npm exec eslint . && git push",
+                        "npm exec -- tsc --noEmit && git push",
+                        "npm x vitest run && git push"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+        self.assertIsNone(hook.decide("npm exec cowsay hi && git push"))
+
+    def test_s5_npm_run_build_is_a_gate(self):
+        reason = hook.decide("npm run build && git commit -m x")
+        self.assertIsNotNone(reason)
+        self.assertIn("`npm run build`", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
