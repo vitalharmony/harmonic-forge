@@ -395,11 +395,12 @@ class MaskedGate1368(unittest.TestCase):
                 self.assertIn(f"`{gate}`", reason)
                 self.assertIn("harmonic-forge#1368", reason)
 
-    def test_ac2_pipefail_allows(self):
+    def test_ac2_pipefail_does_not_exempt(self):
+        """REFORGE (issuecomment-6882876419): there is no pipefail exemption."""
         for command in ("set -o pipefail; mise run check | tail -3",
                         "set -euo pipefail && pytest | tail -1"):
             with self.subTest(command=command):
-                self.assertIsNone(hook.decide(command))
+                self.assertIsNotNone(hook.decide(command))
 
     def test_ac3_each_is_allowed(self):
         for command in ("mise run check > log 2>&1; tail -3 log",
@@ -451,6 +452,35 @@ class MaskedGate1368Pass1(unittest.TestCase):
 
     def test_s6_a_tail_after_a_non_pipe_separator_is_not_piped(self):
         self.assertIsNone(hook.decide("mise run check | tee log; tail -1 log"))
+
+
+class MaskedGate1368Reforge(unittest.TestCase):
+    """harmonic-forge#1368 REFORGE (issuecomment-6882876419): pass-2 survivors
+    (issuecomment-6882868464) and the extended AC1."""
+
+    def test_a_wrapped_gate_piped_into_tail_is_denied(self):
+        for command, gate in (('bash -c "pytest" | tail -1', "pytest"),
+                              ("eval pytest | tail -1", "pytest"),
+                              ('sh -c "mise run check" | tail -3', "mise run check")):
+            with self.subTest(command=command):
+                reason = hook.decide(command)
+                self.assertIsNotNone(reason)
+                self.assertIn(f"`{gate}`", reason)
+
+    def test_a_wrapped_truncator_is_denied(self):
+        self.assertIsNotNone(hook.decide('pytest | bash -c "tail -1"'))
+
+    def test_a_piped_set_never_exempts(self):
+        self.assertIsNotNone(hook.decide("set -o pipefail | cat; pytest -q | tail -1"))
+
+    def test_a_substitution_is_read_whatever_the_outer_shell_set(self):
+        self.assertIsNotNone(hook.decide("set -o pipefail; x=$(pytest | tail -1)"))
+
+    def test_a_wrapped_non_gate_is_allowed(self):
+        self.assertIsNone(hook.decide('bash -c "echo hi" | tail -1'))
+
+    def test_the_message_offers_no_pipefail_remedy(self):
+        self.assertNotIn("pipefail", hook.decide("pytest | tail -1"))
 
 
 if __name__ == "__main__":

@@ -28,8 +28,9 @@ Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
 
 Also denied, with no write at all (harmonic-forge#1368): a gate piped (`|`/`|&`)
-into a pipeline that later runs `tail` or `head`, unless `set … pipefail` ran before
-the gate. The pipeline then reports `tail`'s exit code, not the gate's.
+into a pipeline that later runs `tail` or `head`, at any level, including through
+`bash -c`/`eval`. The pipeline then reports `tail`'s exit code, not the gate's. There
+is no `pipefail` exemption (REFORGE): a parse cannot tell whether it is on.
 
 An `l1-post` dry run gates every listed write, not only its own post:
 `l1-post … --dry-run | tail -2 && l1-post …` let a failed dry run through,
@@ -429,73 +430,62 @@ _PIPES = frozenset({"|", "|&"})
 _TRUNCATORS = frozenset({"tail", "head"})
 
 
-#: Separators after which a command runs whatever came before it did: only these
-#: make a top-level `set -o pipefail` unconditional.
-_UNCONDITIONAL = frozenset({None, ";", "\n"})
-
-
-def _pipefail_switch(argv: list[str]) -> Optional[bool]:
-    """True for `set -o pipefail` / `set -euo pipefail`, False for `set +o pipefail`,
-    None for anything else."""
-    if not argv or _base(argv[0]) != "set" or "pipefail" not in argv[1:]:
+def _first_gate(command: str) -> Optional[str]:
+    """The first gate a `-c`/`eval` script runs, or None (a parse failure is None)."""
+    try:
+        return next((g for g in (gate_of(a) for a in _argvs(command)) if g), None)
+    except (ValueError, shell_parse.NotOrdinary):
         return None
-    flag = argv[argv.index("pipefail") - 1] if argv.index("pipefail") > 1 else ""
-    if flag.startswith("+") and "o" in flag:
+
+
+def _runs_truncator(command: str) -> bool:
+    """A `-c`/`eval` script whose first command is `tail`/`head`."""
+    try:
+        first = next(iter(_argvs(command)), None)
+    except (ValueError, shell_parse.NotOrdinary):
         return False
-    if flag.startswith("-") and "o" in flag:
-        return True
-    return None
+    return first is not None and _program(first) in _TRUNCATORS
 
 
 def masked_gate(command: str, depth: int = 0) -> Optional[str]:
-    """A gate that ran earlier in this command when a `tail`/`head` reads a pipe, with
-    pipefail not on, or None (harmonic-forge#1368; sticky-wicket PATCH
-    issuecomment-6882662014). Detected from the truncator's side: a `tail`/`head`
-    whose separator before is `|`/`|&`, or that opens a group a pipe leads into. A
-    gate inside a group therefore counts too. The only exemption is a top-level,
-    unconditional `set -o pipefail` that ran before the gate and was not cancelled by
-    `set +o pipefail`; it is never carried into a `-c`/`eval` string or `$(...)` body,
-    which are read here with pipefail off. Accepted over-denies (they fail closed): a
-    gate that never runs (`false && pytest | tail`), and a gate followed later by an
-    unrelated pipe into `tail`."""
+    """A gate that ran earlier in this command when a `tail`/`head` reads a pipe, or
+    None (harmonic-forge#1368, REFORGE issuecomment-6882876419). Detected from the
+    truncator's side: a `tail`/`head` whose separator before is `|`/`|&`, or that opens
+    a group a pipe leads into, at any level (groups and `$(...)` bodies arrive inline
+    from `shell_parse`; `-c`/`eval` scripts are re-read here). A `-c`/`eval` command
+    whose script runs a gate counts as that gate, and one whose script starts with
+    `tail`/`head` counts as a truncator. There is no `pipefail` exemption: a parse
+    cannot tell whether pipefail is on where the gate runs. Accepted over-denies (they
+    fail closed): a gate that never runs (`false && pytest | tail`), and a gate
+    followed later by an unrelated pipe into `tail`."""
     gate: Optional[str] = None
-    pipefail = False
-    group_depth = 0
     piped_group = False
     previous_sep_after: Optional[str] = None
     for item in shell_parse.simple_commands(command):
         if isinstance(item, shell_parse.GroupMarker):
             if item.kind == "open":
-                group_depth += 1
                 piped_group = previous_sep_after in _PIPES
-            else:
-                group_depth = max(0, group_depth - 1)
             continue
+        reads_pipe = item.sep_before in _PIPES or (item.sep_before == "(" and piped_group)
+        piped_group = False
+        argv = shell_parse.strip_invocation_prefix(item.argv)
+        script = _script_arg(item.argv) if depth < MAX_DEPTH else None
         if depth < MAX_DEPTH:
             for word in item.argv:
                 for body in shell_parse.substitution_bodies(word):
                     found = masked_gate(body, depth + 1)
                     if found:
                         return found
-            script = _script_arg(item.argv)
             if script is not None:
                 found = masked_gate(script, depth + 1)
                 if found:
                     return found
-                previous_sep_after = item.sep_after
-                continue
-        argv = shell_parse.strip_invocation_prefix(item.argv)
-        reads_pipe = item.sep_before in _PIPES or (item.sep_before == "(" and piped_group)
-        piped_group = False
-        if gate and reads_pipe and _program(argv) in _TRUNCATORS:
+        truncator = _program(argv) in _TRUNCATORS or (script is not None
+                                                      and _runs_truncator(script))
+        if gate and reads_pipe and truncator:
             return gate
-        switch = _pipefail_switch(argv)
-        if switch is False:
-            pipefail = False
-        elif switch and group_depth == 0 and item.sep_before in _UNCONDITIONAL:
-            pipefail = True
-        if gate is None and not pipefail:
-            gate = gate_of(argv)
+        if gate is None:
+            gate = gate_of(argv) or (_first_gate(script) if script is not None else None)
         previous_sep_after = item.sep_after
     return None
 
@@ -516,8 +506,7 @@ def decide(command: str) -> Optional[str]:
         return (f"Blocked (R-0419, harmonic-forge#1368): `{masked}` is piped into "
                 f"`tail`/`head`, so the command reports `tail`'s exit code, not the "
                 f"gate's, and the cut output can hide the failing step. Write the full "
-                f"log to a file and keep the gate's own exit code, or `set -o pipefail` "
-                f"first.")
+                f"log to a file and keep the gate's own exit code.")
     return None
 
 
