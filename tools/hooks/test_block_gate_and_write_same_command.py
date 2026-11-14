@@ -88,11 +88,10 @@ class Pass1Survivors(unittest.TestCase):
                 self.assertIsNone(hook.decide(command))
 
     def test_read_only_piped_gates_are_allowed(self):
-        """The piped-gate fold is removed (outside the AC; R-0381)."""
-        for command in ["python3 -m pytest tools/hooks -q | tail -5",
-                        "gh run view 123 --log | grep -i error"]:
-            with self.subTest(command=command):
-                self.assertIsNone(hook.decide(command))
+        """The piped-gate fold is removed (outside the AC; R-0381). A gate piped into
+        `tail`/`head` is denied since harmonic-forge#1368 (operator-agreed AC4 amendment)."""
+        self.assertIsNone(hook.decide("gh run view 123 --log | grep -i error"))
+        self.assertIsNotNone(hook.decide("python3 -m pytest tools/hooks -q | tail -5"))
 
     def test_here_doc_body_is_a_known_residual(self):
         """Operator ruling 2026-11-12, option A: a here-doc fed to a shell is not parsed."""
@@ -124,10 +123,12 @@ class Pass2Survivors(unittest.TestCase):
     def test_ordinary_commands_stay_allowed(self):
         for command in ["git log --grep pytest", 'git commit -m "make pytest pass"',
                         "git push && gh pr checks 12 --watch",
-                        "pytest -q | tail -5", "gh run view 123 --log | grep -i error",
+                        "gh run view 123 --log | grep -i error",
                         "echo git push"]:
             with self.subTest(command=command):
                 self.assertIsNone(hook.decide(command))
+        # harmonic-forge#1368 (operator-agreed AC4 amendment): no longer allowed.
+        self.assertIsNotNone(hook.decide("pytest -q | tail -5"))
 
 
 class ReforgePass1Survivors(unittest.TestCase):
@@ -378,6 +379,47 @@ class Preclose1366Pass2(unittest.TestCase):
         for alias in hook._NPM_EXEC:
             with self.subTest(alias=alias):
                 self.assertIsNotNone(hook.decide(f"npm {alias} eslint && git push"))
+
+
+class MaskedGate1368(unittest.TestCase):
+    """harmonic-forge#1368: a gate piped into tail/head without pipefail."""
+
+    def test_ac1_each_masked_gate_is_denied(self):
+        for command, gate in (("mise run check 2>&1 | tail -3", "mise run check"),
+                              ("pytest -q | tail -1", "pytest"),
+                              ("mise run check | head -20", "mise run check"),
+                              ("ruff check x |& tail -5", "ruff check")):
+            with self.subTest(command=command):
+                reason = hook.decide(command)
+                self.assertIsNotNone(reason)
+                self.assertIn(f"`{gate}`", reason)
+                self.assertIn("harmonic-forge#1368", reason)
+
+    def test_ac2_pipefail_allows(self):
+        for command in ("set -o pipefail; mise run check | tail -3",
+                        "set -euo pipefail && pytest | tail -1"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_ac3_each_is_allowed(self):
+        for command in ("mise run check > log 2>&1; tail -3 log",
+                        "echo check | tail -1",
+                        "git log | head -5",
+                        "mise run check | tee log"):
+            with self.subTest(command=command):
+                self.assertIsNone(hook.decide(command))
+
+    def test_a_later_truncator_anywhere_in_the_pipeline(self):
+        self.assertIsNotNone(hook.decide("mise run check | tail -3 | cat"))
+
+    def test_a_shell_c_string_is_read(self):
+        self.assertIsNotNone(hook.decide('bash -c "pytest | tail -1"'))
+
+    def test_pipefail_after_the_gate_does_not_exempt(self):
+        self.assertIsNotNone(hook.decide("mise run check | tail -3; set -o pipefail"))
+
+    def test_a_substitution_body_is_read(self):
+        self.assertIsNotNone(hook.decide("x=$(pytest | tail -1); echo $x"))
 
 
 if __name__ == "__main__":

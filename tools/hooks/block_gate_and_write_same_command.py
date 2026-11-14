@@ -27,6 +27,10 @@ Gate: `mise run check` / `check-full` / `test-backend` / `test-backend-unit` /
 Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
 
+Also denied, with no write at all (harmonic-forge#1368): a gate piped (`|`/`|&`)
+into a pipeline that later runs `tail` or `head`, unless `set … pipefail` ran before
+the gate. The pipeline then reports `tail`'s exit code, not the gate's.
+
 An `l1-post` dry run gates every listed write, not only its own post:
 `l1-post … --dry-run | tail -2 && l1-post …` let a failed dry run through,
 because the pipe returns `tail`'s exit status (harmonic-forge#1362). "Dry run"
@@ -418,10 +422,57 @@ def find(command: str) -> tuple[Optional[str], Optional[str]]:
     return gate, write
 
 
+#: Pipe separators: a `|`/`|&` run of simple commands is one pipeline.
+_PIPES = frozenset({"|", "|&"})
+#: Programs that keep only part of a gate's output, and whose exit status the
+#: pipeline reports in place of the gate's (harmonic-forge#1368).
+_TRUNCATORS = frozenset({"tail", "head"})
+
+
+def _sets_pipefail(argv: list[str]) -> bool:
+    """`set -o pipefail`, `set -euo pipefail` and the like."""
+    return bool(argv) and _base(argv[0]) == "set" and "pipefail" in argv[1:]
+
+
+def masked_gate(command: str, depth: int = 0, pipefail: bool = False) -> Optional[str]:
+    """The first gate whose pipeline later runs `tail` or `head` while `pipefail` is
+    off, or None (harmonic-forge#1368). Read from `shell_parse`'s separators, which
+    `_argvs` drops, so this pass recurses into `-c`/`eval` strings and `$(...)` bodies
+    itself. Only a `set … pipefail` that runs BEFORE the gate, at this level or an
+    enclosing one, exempts it."""
+    gate: Optional[str] = None
+    for item in shell_parse.simple_commands(command):
+        if not isinstance(item, shell_parse.SimpleCommand):
+            continue
+        if depth < MAX_DEPTH:
+            for word in item.argv:
+                for body in shell_parse.substitution_bodies(word):
+                    found = masked_gate(body, depth + 1, pipefail)
+                    if found:
+                        return found
+            script = _script_arg(item.argv)
+            if script is not None:
+                found = masked_gate(script, depth + 1, pipefail)
+                if found:
+                    return found
+                continue
+        argv = shell_parse.strip_invocation_prefix(item.argv)
+        if item.sep_before not in _PIPES:
+            gate = None
+        elif gate and _program(argv) in _TRUNCATORS:
+            return gate
+        if _sets_pipefail(argv):
+            pipefail = True
+        if gate is None and item.sep_after in _PIPES and not pipefail:
+            gate = gate_of(argv)
+    return None
+
+
 def decide(command: str) -> Optional[str]:
     """The deny reason, or None to allow."""
     try:
         gate, write = find(command)
+        masked = masked_gate(command)
     except (ValueError, shell_parse.NotOrdinary):
         return None
     if gate and write:
@@ -429,6 +480,12 @@ def decide(command: str) -> Optional[str]:
                 f"`{gate}` and the write `{write}` it gates, so the write would run before "
                 f"anyone reads the gate's result. Run `{gate}` alone, read its result, "
                 f"then run `{write}` in a separate call.")
+    if masked:
+        return (f"Blocked (R-0419, harmonic-forge#1368): `{masked}` is piped into "
+                f"`tail`/`head`, so the command reports `tail`'s exit code, not the "
+                f"gate's, and the cut output can hide the failing step. Write the full "
+                f"log to a file and keep the gate's own exit code, or `set -o pipefail` "
+                f"first.")
     return None
 
 
