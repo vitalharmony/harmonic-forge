@@ -17,9 +17,13 @@ seen. A command that does not parse is allowed: this hook adds a deny and
 never fails closed (good-faith threat model; it mints, relaxes or bypasses no
 R-0371 authorization).
 
-Gate: `mise run check` / `check-full`, `gh pr checks`, `gh run view` /
-`gh run watch`, `preclose_check.py --complete`, `pytest`, and an `l1-post` /
-`l1_post.py` dry run (harmonic-forge#1362).
+Gate: `mise run check` / `check-full` / `test-backend` / `test-backend-unit` /
+`test-backend-integration`, `gh pr checks`, `gh run view` / `gh run watch`,
+`preclose_check.py --complete`, `pytest`, `ruff check` (and bare `ruff`, never
+`ruff format`), `mypy`, `tsc`, `eslint`, `vitest` (directly or through `npx`,
+`uvx` or `npm exec`),
+`npm test` and `npm run lint|typecheck|test|build` (harmonic-forge#1366), and an
+`l1-post` / `l1_post.py` dry run (harmonic-forge#1362).
 Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
 
@@ -79,7 +83,9 @@ def _base(word: str) -> str:
 #: skipped to find which program runs. Interpreters are wrappers too, so
 #: `python3 -I -m pytest` is seen through.
 _WRAPPERS = frozenset({"env", "exec", "sudo", "command", "nohup", "nice", "time",
-                       "timeout", "uv", "run", "--", "python", "python3"})
+                       "timeout", "uv", "run", "--", "python", "python3", "npx",
+                       # harmonic-forge#1366 preclose pass 1, survivor 4
+                       "uvx"})
 
 
 #: Wrapper flags whose next word is their value, never the program
@@ -154,7 +160,9 @@ def gate_of(argv: list[str]) -> Optional[str]:
         if rest is not None:
             return gate_of(rest)
         task = _mise_task(argv)
-        if task in ("check-full", "check"):
+        # harmonic-forge#1366: HRSE2's backend test tasks are gates too.
+        if task in ("check-full", "check", "test-backend", "test-backend-unit",
+                    "test-backend-integration"):
             return f"mise run {task}"
         if task == "l1-post" and _has_dry_run(argv):
             return "mise run l1-post --dry-run"
@@ -165,10 +173,58 @@ def gate_of(argv: list[str]) -> Optional[str]:
     # issuecomment-6840890733): `echo pytest` and `pip show pytest` are not gates.
     if program in ("pytest", "py.test"):
         return "pytest"
+    # harmonic-forge#1366: the standalone linters, type checkers and test runners.
+    if program in ("mypy", "tsc", "eslint", "vitest"):
+        return program
+    if program == "ruff":
+        path = _subcommand(argv, "ruff", _RUFF_VALUE_FLAGS, 1)
+        return "ruff check" if path in ([], ["check"]) else None
+    if program == "npm":
+        return _npm_gate(argv)
     if program == "preclose_check.py" and "--complete" in words:
         return "preclose_check.py --complete"
     if program == "l1_post.py" and _has_dry_run(argv):
         return "l1_post.py --dry-run"
+    return None
+
+
+#: ruff's global flags that take a value, so `ruff --config r.toml check` reads
+#: `check` as the subcommand (harmonic-forge#1366 preclose pass 1, survivor 2).
+_RUFF_VALUE_FLAGS = frozenset({"--config", "--cache-dir", "--target-version", "--extend",
+                               "--line-length", "--output-format", "--stdin-filename"})
+
+#: npm's flags that take a value, so `npm --prefix test run dev` never reads `test`
+#: as the subcommand (harmonic-forge#1366 preclose pass 1, survivors 1 and 3).
+_NPM_VALUE_FLAGS = frozenset({"--prefix", "-C", "--workspace", "-w", "--userconfig",
+                              "--cache", "--loglevel", "--registry", "--package"})
+
+#: `npm run <script>` scripts that are gates (harmonic-forge#1366).
+_NPM_GATE_SCRIPTS = ("lint", "typecheck", "test", "build")
+_NPM_TEST = ("test", "t", "tst")
+_NPM_RUN = ("run", "run-script", "rum", "urn")
+_NPM_EXEC = ("exec", "x")
+
+
+def _npm_gate(argv: list[str]) -> Optional[str]:
+    """`npm test`, `npm run|run-script <lint|typecheck|test|build>`, or a gate run
+    through `npm exec`/`npm x`. The subcommand and the script are read by position past
+    npm's value flags (`_subcommand`), never as any word in argv: `npm run --silent lint`
+    is the lint gate and `npm --prefix test run dev` is not `npm test`
+    (harmonic-forge#1366 preclose pass 1, sticky-wicket PATCH issuecomment-6881340964)."""
+    path = _subcommand(argv, "npm", _NPM_VALUE_FLAGS, 2)
+    if not path:
+        return None
+    if path[0] in _NPM_TEST:
+        return "npm test"
+    if path[0] in _NPM_RUN:
+        script = path[1] if len(path) == 2 else None
+        return f"npm run {script}" if script in _NPM_GATE_SCRIPTS else None
+    if path[0] in _NPM_EXEC:
+        words = _words(argv)
+        start = words.index("npm") + 1
+        rest = argv[start + words[start:].index(path[0]) + 1:]
+        return gate_of(rest) if _program(rest) in ("mypy", "tsc", "eslint", "vitest",
+                                                   "ruff", "pytest") else None
     return None
 
 
