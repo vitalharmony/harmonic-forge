@@ -17,9 +17,13 @@ seen. A command that does not parse is allowed: this hook adds a deny and
 never fails closed (good-faith threat model; it mints, relaxes or bypasses no
 R-0371 authorization).
 
-Gate: `mise run check` / `check-full`, `gh pr checks`, `gh run view` /
-`gh run watch`, `preclose_check.py --complete`, `pytest`, and an `l1-post` /
-`l1_post.py` dry run (harmonic-forge#1362).
+Gate: `mise run check` / `check-full` / `test-backend` / `test-backend-unit` /
+`test-backend-integration`, `gh pr checks`, `gh run view` / `gh run watch`,
+`preclose_check.py --complete`, `pytest`, `ruff check` (and bare `ruff`, never
+`ruff format`), `mypy`, `tsc`, `eslint`, `vitest` (directly or through `npx`,
+`uvx` or `npm exec`),
+`npm test` and `npm run lint|typecheck|test|build` (harmonic-forge#1366), and an
+`l1-post` / `l1_post.py` dry run (harmonic-forge#1362).
 Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
 `mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
 
@@ -79,7 +83,9 @@ def _base(word: str) -> str:
 #: skipped to find which program runs. Interpreters are wrappers too, so
 #: `python3 -I -m pytest` is seen through.
 _WRAPPERS = frozenset({"env", "exec", "sudo", "command", "nohup", "nice", "time",
-                       "timeout", "uv", "run", "--", "python", "python3"})
+                       "timeout", "uv", "run", "--", "python", "python3", "npx",
+                       # harmonic-forge#1366 preclose pass 1, survivor 4
+                       "uvx"})
 
 
 #: Wrapper flags whose next word is their value, never the program
@@ -115,12 +121,14 @@ def _is_l1_post(argv: list[str], program: Optional[str]) -> bool:
     return program == "l1_post.py"
 
 
-def _program(argv: list[str]) -> Optional[str]:
-    """The program a simple command runs, past wrappers, assignments, flags and numbers.
-    Only `git`, `gh` and `mise` change how the words are read, so a wrong guess for
-    any other program changes nothing: those are matched by word presence."""
+def _program_index(argv: list[str]) -> Optional[int]:
+    """The position of the program a simple command runs, past wrappers, assignments,
+    flags and numbers. Every later reader starts from this position, never from a
+    word search, so a wrapper flag's value equal to the program name
+    (`uvx --from ruff ruff check`) is never taken for it (harmonic-forge#1366 preclose
+    pass 2, sticky-wicket PATCH issuecomment-6881508159)."""
     skip = False
-    for word in _words(argv):
+    for index, word in enumerate(_words(argv)):
         if skip:
             skip = False
             continue
@@ -130,8 +138,16 @@ def _program(argv: list[str]) -> Optional[str]:
         if (word in _WRAPPERS or word.startswith("python") or word.startswith("-")
                 or word.isdigit() or ("=" in word and not word.startswith("-"))):
             continue
-        return word
+        return index
     return None
+
+
+def _program(argv: list[str]) -> Optional[str]:
+    """The program a simple command runs (`_program_index`'s word).
+    Only `git`, `gh` and `mise` change how the words are read, so a wrong guess for
+    any other program changes nothing: those are matched by word presence."""
+    index = _program_index(argv)
+    return None if index is None else _words(argv)[index]
 
 
 def gate_of(argv: list[str]) -> Optional[str]:
@@ -154,7 +170,9 @@ def gate_of(argv: list[str]) -> Optional[str]:
         if rest is not None:
             return gate_of(rest)
         task = _mise_task(argv)
-        if task in ("check-full", "check"):
+        # harmonic-forge#1366: HRSE2's backend test tasks are gates too.
+        if task in ("check-full", "check", "test-backend", "test-backend-unit",
+                    "test-backend-integration"):
             return f"mise run {task}"
         if task == "l1-post" and _has_dry_run(argv):
             return "mise run l1-post --dry-run"
@@ -165,11 +183,90 @@ def gate_of(argv: list[str]) -> Optional[str]:
     # issuecomment-6840890733): `echo pytest` and `pip show pytest` are not gates.
     if program in ("pytest", "py.test"):
         return "pytest"
+    # harmonic-forge#1366: the standalone linters, type checkers and test runners.
+    if program in ("mypy", "tsc", "eslint", "vitest"):
+        return None if _asks_for_info(argv) else program
+    if program == "ruff":
+        path = _subcommand(argv, "ruff", _RUFF_VALUE_FLAGS, 1)
+        if path == [] and _asks_for_info(argv):
+            return None
+        return "ruff check" if path in ([], ["check"]) else None
+    if program == "npm":
+        return _npm_gate(argv)
     if program == "preclose_check.py" and "--complete" in words:
         return "preclose_check.py --complete"
     if program == "l1_post.py" and _has_dry_run(argv):
         return "l1_post.py --dry-run"
     return None
+
+
+#: ruff's global flags that take a value, so `ruff --config r.toml check` reads
+#: `check` as the subcommand (harmonic-forge#1366 preclose pass 1, survivor 2).
+_RUFF_VALUE_FLAGS = frozenset({"--config", "--cache-dir", "--target-version", "--extend",
+                               "--line-length", "--output-format", "--stdin-filename"})
+
+#: npm's flags that take a value, so `npm --prefix test run dev` never reads `test`
+#: as the subcommand (harmonic-forge#1366 preclose pass 1, survivors 1 and 3).
+_NPM_VALUE_FLAGS = frozenset({"--prefix", "-C", "--workspace", "-w", "--userconfig",
+                              "--cache", "--loglevel", "--registry", "--package"})
+
+#: `npm run <script>` scripts that are gates (harmonic-forge#1366).
+_NPM_GATE_SCRIPTS = ("lint", "typecheck", "test", "build")
+_NPM_TEST = ("test", "t", "tst")
+_NPM_RUN = ("run", "run-script", "rum", "urn")
+_NPM_EXEC = ("exec", "x")
+
+
+def _npm_gate(argv: list[str]) -> Optional[str]:
+    """`npm test`, `npm run|run-script <lint|typecheck|test|build>`, or a gate run
+    through `npm exec`/`npm x`. The subcommand and the script are read by position past
+    npm's value flags (`_subcommand`), never as any word in argv: `npm run --silent lint`
+    is the lint gate and `npm --prefix test run dev` is not `npm test`
+    (harmonic-forge#1366 preclose pass 1, sticky-wicket PATCH issuecomment-6881340964)."""
+    found = _subcommand_at(argv, "npm", _NPM_VALUE_FLAGS, 2)
+    if not found:
+        return None
+    path = [word for _, word in found]
+    if path[0] in _NPM_TEST:
+        return "npm test"
+    if path[0] in _NPM_RUN:
+        script = path[1] if len(path) == 2 else None
+        return f"npm run {script}" if script in _NPM_GATE_SCRIPTS else None
+    if path[0] in _NPM_EXEC:
+        # The wrapped command starts after the exec word's own position, past npm's
+        # value flags (`npm exec --workspace w eslint`), never at a word search.
+        rest = _past_flags(argv[found[0][0] + 1:], _NPM_VALUE_FLAGS)
+        return gate_of(rest) if _program(rest) in ("mypy", "tsc", "eslint", "vitest",
+                                                   "ruff", "pytest") else None
+    return None
+
+
+#: Flags that print help or a version and run nothing: a call made only of flags
+#: that includes one is not a gate (harmonic-forge#1366 preclose pass 2, survivor 3).
+_INFO_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
+
+
+def _asks_for_info(argv: list[str]) -> bool:
+    index = _program_index(argv)
+    # Raw words, never basenames: `eslint src/--help` names a path, not the flag
+    # (harmonic-forge#1366 post-verdict check).
+    return index is not None and any(w in _INFO_FLAGS for w in argv[index + 1:])
+
+
+def _past_flags(argv: list[str], value_flags: frozenset[str]) -> list[str]:
+    """`argv` from its first word that is not a flag, a flag's value or `--`."""
+    skip = False
+    for index, word in enumerate(_words(argv)):
+        if skip:
+            skip = False
+            continue
+        if word in value_flags:
+            skip = True
+            continue
+        if word.startswith("-"):
+            continue
+        return argv[index:]
+    return []
 
 
 #: Global flags that take a value, skipped when reading a program's subcommand path.
@@ -183,12 +280,21 @@ def _subcommand(argv: list[str], program: str, value_flags: frozenset[str],
     """The first `count` non-flag words after `program`, skipping each value flag's
     value. A data word later in argv (`git log --grep push`) is never the subcommand
     (sticky-wicket PATCHes, issuecomment-6840890733 and issuecomment-6841112555)."""
+    return [word for _, word in _subcommand_at(argv, program, value_flags, count)]
+
+
+def _subcommand_at(argv: list[str], program: str, value_flags: frozenset[str],
+                   count: int) -> list[tuple[int, str]]:
+    """`_subcommand` with each word's position. Reading starts at `_program_index`,
+    and returns nothing unless the program there is `program`."""
+    start = _program_index(argv)
     words = _words(argv)
-    if program not in words:
+    if start is None or words[start] != program:
         return []
-    path: list[str] = []
+    found: list[tuple[int, str]] = []
     skip = False
-    for word in words[words.index(program) + 1:]:
+    for index in range(start + 1, len(words)):
+        word = words[index]
         if skip:
             skip = False
             continue
@@ -197,10 +303,10 @@ def _subcommand(argv: list[str], program: str, value_flags: frozenset[str],
             continue
         if word.startswith("-"):
             continue
-        path.append(word)
-        if len(path) == count:
+        found.append((index, word))
+        if len(found) == count:
             break
-    return path
+    return found
 
 
 def _gh_path(argv: list[str]) -> list[str]:
@@ -218,10 +324,11 @@ def _after_mise_exec(argv: list[str]) -> Optional[list[str]]:
     """The command `mise exec`/`mise x` runs (the words after `--`, else after the
     verb), or None when this is not a mise exec."""
     words = _words(argv)
-    if "mise" not in words:
+    start = _program_index(argv)
+    if start is None or words[start] != "mise":
         return None
     skip = False
-    for index in range(words.index("mise") + 1, len(words)):
+    for index in range(start + 1, len(words)):
         word = words[index]
         if skip:
             skip = False
