@@ -208,5 +208,38 @@ class Wire(unittest.TestCase):
         self.assertEqual(json.loads(out.stdout), {})
 
 
+class L1PostDryRunGate(unittest.TestCase):
+    """harmonic-forge#1362: an `l1-post` dry run is a gate and a real post a write."""
+
+    SESSION_CMD = ("mise run l1-post --issue 2674 --kind ready-for-l3 --sha a --branch b --file f "
+                   "--dry-run 2>&1 | tail -2 && mise run l1-post --issue 2674 --kind ready-for-l3 "
+                   "--sha a --branch b --file f 2>&1 | tail -2")
+
+    def test_the_sessions_dry_run_then_post_is_denied_naming_both(self):
+        reason = hook.decide(self.SESSION_CMD)
+        self.assertIsNotNone(reason)
+        self.assertIn("mise run l1-post --dry-run", reason)
+        self.assertIn("`mise run l1-post`", reason)
+
+    def test_a_dry_run_alone_and_a_post_alone_are_allowed(self):
+        self.assertIsNone(hook.decide("mise run l1-post --issue 1 --dry-run"))
+        self.assertIsNone(hook.decide("mise run l1-post --issue 1"))
+
+    def test_the_script_form_is_denied(self):
+        self.assertIsNotNone(hook.decide(
+            "python3 tools/gh/l1_post.py --issue 1 --dry-run && python3 tools/gh/l1_post.py --issue 1"))
+
+    def test_a_post_before_a_dry_run_is_allowed(self):
+        self.assertIsNone(hook.decide(
+            "mise run l1-post --issue 1 && mise run l1-post --issue 2 --dry-run"))
+
+    def test_an_abbreviated_dry_run_flag_is_a_gate(self):
+        self.assertIsNotNone(hook.decide(
+            "mise run l1-post --issue 1 --dry | tail -2 && mise run l1-post --issue 1"))
+
+    def test_a_dry_run_gates_every_listed_write(self):
+        self.assertIsNotNone(hook.decide("mise run l1-post --issue 1 --dry-run && git push origin x"))
+
+
 if __name__ == "__main__":
     unittest.main()

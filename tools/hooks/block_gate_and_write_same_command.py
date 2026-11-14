@@ -18,9 +18,16 @@ never fails closed (good-faith threat model; it mints, relaxes or bypasses no
 R-0371 authorization).
 
 Gate: `mise run check` / `check-full`, `gh pr checks`, `gh run view` /
-`gh run watch`, `preclose_check.py --complete`, `pytest`.
+`gh run watch`, `preclose_check.py --complete`, `pytest`, and an `l1-post` /
+`l1_post.py` dry run (harmonic-forge#1362).
 Write: `mise run commit`, `git commit`, `git push`, `gh pr merge`,
-`mise run restart` without `--no-git`.
+`mise run restart` without `--no-git`, and a real `l1-post` / `l1_post.py` post.
+
+An `l1-post` dry run gates every listed write, not only its own post:
+`l1-post … --dry-run | tail -2 && l1-post …` let a failed dry run through,
+because the pipe returns `tail`'s exit status (harmonic-forge#1362). "Dry run"
+is any word that `l1_post.py`'s parser accepts as `--dry-run`, abbreviations
+included (`--dr`, `--dry`, `--dry-r`).
 
 `preclose_check.py --complete && gh pr merge` is denied on purpose: preclose is
 a gate and its result is read before the merge.
@@ -89,6 +96,23 @@ def _words(argv: list[str]) -> list[str]:
     return [_base(w) for w in argv]
 
 
+#: `l1_post.py` builds its parser with argparse's default `allow_abbrev`, so any
+#: prefix of `--dry-run` at least this long is the dry-run flag (harmonic-forge#1362).
+_DRY_RUN = "--dry-run"
+_DRY_RUN_MIN = len("--dr")
+
+
+def _has_dry_run(words: set[str]) -> bool:
+    return any(len(w) >= _DRY_RUN_MIN and _DRY_RUN.startswith(w) for w in words)
+
+
+def _is_l1_post(argv: list[str], program: Optional[str]) -> bool:
+    """`mise run l1-post …` or `[python3] …/l1_post.py …`."""
+    if program == "mise":
+        return _mise_task(argv) == "l1-post"
+    return program == "l1_post.py"
+
+
 def _program(argv: list[str]) -> Optional[str]:
     """The program a simple command runs, past wrappers, assignments, flags and numbers.
     Only `git`, `gh` and `mise` change how the words are read, so a wrong guess for
@@ -130,6 +154,8 @@ def gate_of(argv: list[str]) -> Optional[str]:
         task = _mise_task(argv)
         if task in ("check-full", "check"):
             return f"mise run {task}"
+        if task == "l1-post" and _has_dry_run(words):
+            return "mise run l1-post --dry-run"
         if task == "preclose-check" and "--complete" in words:
             return "mise run preclose-check --complete"
         return None
@@ -139,6 +165,8 @@ def gate_of(argv: list[str]) -> Optional[str]:
         return "pytest"
     if program == "preclose_check.py" and "--complete" in words:
         return "preclose_check.py --complete"
+    if program == "l1_post.py" and _has_dry_run(words):
+        return "l1_post.py --dry-run"
     return None
 
 
@@ -224,6 +252,8 @@ def write_of(argv: list[str]) -> Optional[str]:
             return "mise run commit"
         if task == "restart" and "--no-git" not in words:
             return "mise run restart"
+    if _is_l1_post(argv, program) and not _has_dry_run(words):
+        return "mise run l1-post" if program == "mise" else "l1_post.py"
     return None
 
 

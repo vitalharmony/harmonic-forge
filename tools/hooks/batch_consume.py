@@ -38,8 +38,9 @@ consumed costs a stuck batch and an operator diagnosing hook state by hand —
 which is exactly the failure this issue exists to end.
 
 This hook therefore never blocks, never denies, and never raises into the
-session. It emits nothing on success; `PostToolUse` output would be noise on
-every merge.
+session. It emits nothing on success, with one exception (harmonic-forge#1362):
+after a landed merge that left in-flight lane worktrees behind the new `main`,
+it emits one `additionalContext` naming them (`stale_worktrees.py`).
 """
 from __future__ import annotations
 
@@ -76,6 +77,23 @@ def main() -> None:
             batch_auth.prune_now()  # harmonic-forge#1124 AC5
     except Exception:
         pass
+
+    # harmonic-forge#1362: last, so a slow scan can never cost the bookkeeping above.
+    _warn_stale_worktrees(command, payload.get("cwd"))
+
+
+def _warn_stale_worktrees(command: str, cwd: str | None) -> None:
+    """Name the lane worktrees a landed merge left behind `main`, as one
+    `additionalContext` object. Any failure is one stderr line and no stdout."""
+    try:
+        import stale_worktrees  # noqa: PLC0415
+        text = stale_worktrees.warn(command, cwd)
+    except BaseException as exc:  # SystemExit too: the hook never fails
+        print(f"[batch-consume] stale-worktree scan failed (non-fatal): {exc}", file=sys.stderr)
+        return
+    if text:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                 "additionalContext": text}}))
 
 
 def _retire_closed_imc(command: str, cwd: str | None = None) -> None:
