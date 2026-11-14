@@ -277,6 +277,8 @@ class LaunchNotice(unittest.TestCase):
             with self.subTest(status=status):
                 text = notice.build_notice({"LANE": "1", "LANE_REFRESH_STATUS": status})
                 self.assertIn("Run `mise run restart --no-bump --no-git`", text)
+                self.assertIn("yourself in your first turn", text)
+                self.assertNotIn("Open your first reply with", text)
 
     def _repo_with_change(self, path: str) -> tuple[str, str, str]:
         import tempfile

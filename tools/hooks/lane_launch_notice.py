@@ -83,7 +83,7 @@ def build_notice(env: dict) -> str | None:
         lines.append("backend/.env is a real file but this project declares no Lane 3 env task -- the launch refused and left it untouched; do not run a gate until `lane3-provision` succeeds.")
 
     if lane == "1":
-        lines.append("Open your first reply with: Run `mise run restart --no-bump --no-git`.")
+        lines.append("Run `mise run restart --no-bump --no-git` yourself in your first turn and report its result in one line (R-0428); the operator never runs it.")
         changed = _changed_paths(from_sha, to_sha)
         if any(p.startswith("backend/") or p.startswith("frontend/") for p in changed):
             lines.append("backend/frontend code changed in this update.")
