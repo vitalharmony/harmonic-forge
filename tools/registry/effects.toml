@@ -539,6 +539,22 @@ path = "tools/gh/sticky_receipt.py"
   cite = ["tools/gh/sticky_receipt.py:321"]
 
 [[tool]]
+path = "tools/gh/bounded_scan.py"
+  [[tool.mode]]
+  name = "--dry-run"
+  match = ["--dry-run"]
+  class = "local-write"
+  note = "checks the grant and both budgets, prints the plan and appends a receipt; fetches nothing"
+  cite = ["tools/gh/bounded_scan.py:180", "tools/gh/bounded_scan.py:117"]
+  [[tool.mode]]
+  name = "scan"
+  match = []
+  class = "shared-state"
+  guard_kind = "operator-grant"
+  guard = "SCAN line: refuses with no live grant for this session, repo and scope (tools/gh/bounded_scan.py:152)"
+  cite = ["tools/gh/bounded_scan.py:152", "tools/gh/bounded_scan.py:117"]
+
+[[tool]]
 path = "tools/gh/ui_grant.py"
   [[tool.mode]]
   name = "status"

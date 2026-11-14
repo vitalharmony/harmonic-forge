@@ -242,3 +242,15 @@ harmonic-forge#1244's entry above (7154) was measured against a main that did no
 carry harmonic-forge#1304's R-0408 sentence (+116, PR #1309); both are now on main, so the
 surface is 7270. No new text: this entry records the sum the two merges produced.
 """
+
+[[increase]]
+date = "2026-11-14"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 8558
+why = """
+Cumulative since the last baseline: 7270 (entry above) plus harmonic-forge#1363 (1288): the
+SCAN section and R-0427, the operator's bounded-scan grant. Like FORCE, PARK and UI, the line
+is typed as the prompt's first line, so the session must recognize it before any file is
+consulted, and the grammar stays always-loaded. The tool's behavior is in its docstring and
+in skills/bounded-scan, not here.
+"""

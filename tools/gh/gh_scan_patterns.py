@@ -357,6 +357,28 @@ def budget() -> tuple[int, float] | None:
         os.close(lock_fd)
 
 
+def graphql_budget() -> tuple[int, float] | None:
+    """`(remaining, reset_epoch)` for the GraphQL budget (harmonic-forge#1363):
+    one `rateLimit` read, cost 1, whose `X-Ratelimit-Resource` is `graphql`
+    (probed live). Uncached: only `bounded_scan.py` asks, once per run, for its
+    receipt and its refusal message. None when it cannot be read; callers treat
+    that as unknown, never as zero."""
+    try:
+        result = subprocess.run(
+            [_real_gh_path(), "api", "-i", "graphql", "-f",
+             "query={rateLimit{remaining resetAt}}"],
+            capture_output=True, text=True, timeout=_REAL_GH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    output = result.stdout or ""
+    remaining_match = _RATELIMIT_REMAINING.search(output)
+    reset_match = _RATELIMIT_RESET.search(output)
+    if not remaining_match or not reset_match:
+        return None
+    return int(remaining_match.group(1)), float(reset_match.group(1))
+
+
 def _override_is_fresh_file() -> bool:
     """True iff the override path exists, is a REGULAR file (never a
     directory -- `mkdir -p` on the path must not count, harmonic-forge#650

@@ -22,6 +22,7 @@ degrades to "run the real gh", never to a hang or a crash.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -52,6 +53,48 @@ def _resolve_real_gh() -> str:
 #: `gh_issue` runs one title search (`search/issues`) before each filing (R-0397).
 #: harmonic-forge#1356: `ui_grant` lists open PRs once to find the PR a merge grant names.
 SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight", "l1_post", "gh_issue", "ui_grant"})
+
+#: harmonic-forge#1363: the only argv `bounded_scan` may scan with:
+#: `api [-i] [-H "If-None-Match: <etag>"] repos/<owner>/<repo>/(issues|pulls)?<query>`.
+_BOUNDED_SCAN_PATH = re.compile(r"^repos/([^/\s]+)/([^/\s]+)/(issues|pulls)\?[^\s]*$")
+
+
+def _bounded_scan_admitted(argv: list[str]) -> bool:
+    """True only for bounded_scan.py's own GET shape, under a live SCAN grant for
+    the path's repo in this session (CLAUDE_CODE_SESSION_ID, which bounded_scan
+    passes through). Any other argv, a missing session, or an unreadable grant
+    store is not admitted: the scan refusal then applies as for any caller."""
+    rest = list(argv)
+    if rest[:1] != ["api"]:
+        return False
+    rest = rest[1:]
+    if rest[:1] == ["-i"]:
+        rest = rest[1:]
+    if rest[:1] == ["-H"] and len(rest) >= 2 and rest[1].lower().startswith("if-none-match:"):
+        rest = rest[2:]
+    if len(rest) != 1:
+        return False
+    match = _BOUNDED_SCAN_PATH.match(rest[0])
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if match is None or not session:
+        return False
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        sys.path.insert(0, os.path.join(here, "..", "hooks"))
+        sys.path.insert(0, here)
+        import scan_grant  # noqa: PLC0415
+        import bounded_scan  # noqa: PLC0415
+        repo = f"{match.group(1)}/{match.group(2)}"
+        page = re.search(r"[?&]page=([1-9]\d{0,4})(?:&|$)", rest[0])
+        if page is None:
+            return False
+        # Preclose pass 1, survivor 1: the path must be exactly the one
+        # bounded_scan.list_path builds for a live granted scope, page aside, so a
+        # grant for one scope never admits another list of the same repo.
+        return any(rest[0] == bounded_scan.list_path(repo, scope, int(page.group(1)))
+                   for scope in scan_grant.live_scopes(repo, session))
+    except Exception:  # noqa: BLE001 - an unreadable grant admits nothing
+        return False
 
 
 def main() -> None:
@@ -93,12 +136,20 @@ def main() -> None:
         # sets, never by its argv. It skips only the scan refusal; the budget
         # floor below still applies. A convention, not a boundary: the
         # PreToolUse hook still refuses a scan typed directly.
-        sanctioned = os.environ.get("GH_SHIM_CALLER", "") in SANCTIONED_CALLERS
+        caller = os.environ.get("GH_SHIM_CALLER", "")
+        sanctioned = caller in SANCTIONED_CALLERS
+        if caller == "bounded_scan":
+            # harmonic-forge#1363: the marker alone is not enough for this caller. It
+            # admits only the one shape bounded_scan.py sends, and only under a live
+            # SCAN grant for that repo in this session.
+            sanctioned = _bounded_scan_admitted(argv)
         reason = None if sanctioned else gh_scan_patterns.scan_reason(argv)
         if reason is not None:
             print(
                 f"gh-shim: refused ({reason}). Read named issues only; for a "
-                "real full scan the operator runs: "
+                "bounded scan the operator types, as the prompt's first line, "
+                "`SCAN <letter> <scope>: <reason>` and the session runs "
+                "tools/gh/bounded_scan.py. Emergency fallback only: "
                 "touch ~/.cache/harmonic-forge/gh_scan_override",
                 file=sys.stderr,
             )

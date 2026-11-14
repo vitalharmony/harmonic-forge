@@ -2893,3 +2893,12 @@ statement = "Before an L2D, Lane 2 checks the runtime contract, that each test c
 text_sha = "e02b0f2f47e966d1"
 hooks = []
 
+[[rule]]
+id = "R-0427"
+file = "rules/lane-shorthand.md"
+anchor = "scan"
+statement = "An operator-typed first-line SCAN <letter> <scope>: <reason> in any session writes one 2h grant bound to that session, repo and scope; tools/gh/bounded_scan.py is the only sanctioned scan route and needs that grant, refuses a scan crossing the REST floor or with an unknown REST budget, reuses ETag snapshots and writes a receipt per run; the gh shim admits a bounded_scan call only in that tool's GET shape under a live grant for that repo (harmonic-forge#1363)."
+text_sha = "92bdfc1555613bdd"
+hooks = [
+  { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json", "tools/lane/lane_hooks.json"] },
+]
