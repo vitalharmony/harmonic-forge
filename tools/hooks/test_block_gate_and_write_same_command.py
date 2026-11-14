@@ -568,7 +568,9 @@ class MaskedGate1368FinalPass1(unittest.TestCase):
                              ("npm test", "npm test"), ("npm run", "npm run lint"),
                              ("gh pr checks", "gh pr checks 1"),
                              ("preclose_check.py", "python3 tools/gh/preclose_check.py --complete"),
-                             ("l1-post", "l1-post x")):
+                             # The parser gates only an l1-post dry run (final pass 2:
+                             # the raw path now agrees with it, not with a regex copy).
+                             ("l1-post --dry-run", "mise run l1-post x --dry-run")):
             with self.subTest(gate=gate):
                 reason = hook.decide(f'bash -c "{script} | tail -1 # don\'t"')
                 self.assertIsNotNone(reason)
@@ -583,6 +585,50 @@ class MaskedGate1368FinalPass1(unittest.TestCase):
     def test_f4_the_raw_fallback_needs_a_pipe(self):
         self.assertIsNone(hook.decide('bash -c "mise run check > log; tail -3 log # don\'t"'))
         self.assertIsNotNone(hook.decide('bash -c "mise run check | tail -3 # don\'t"'))
+
+
+class MaskedGate1368FinalPass2(unittest.TestCase):
+    """harmonic-forge#1368 final-reforge pass-2 survivor (issuecomment-6885329896),
+    sticky-wicket PATCH (issuecomment-6885466922): the raw fallback runs the parser's
+    own classifier, so parsed and unparseable text agree."""
+
+    WRAPPED = (("timeout 600 pytest | tail -1", "pytest"),
+               ("FOO=1 pytest | tail -1", "pytest"),
+               ("./backend/.venv/bin/pytest | tail -1", "pytest"),
+               ("env FOO=1 pytest | tail -1", "pytest"),
+               ("nice -n 10 pytest | head -20", "pytest"),
+               ("mise -C . run check | tail -1", "mise run check"))
+
+    def test_wrapped_gates_deny_with_and_without_an_unparseable_comment(self):
+        for command, gate in self.WRAPPED:
+            for suffix in ("", "  # don't"):
+                with self.subTest(command=command + suffix):
+                    reason = hook.decide(command + suffix)
+                    self.assertIsNotNone(reason)
+                    self.assertIn(f"`{gate}`", reason)
+
+    def test_an_unparseable_comment_never_changes_the_decision(self):
+        commands = [c for c, _ in self.WRAPPED] + [
+            "mise run check 2>&1 | tail -3", "pytest -q | tail -1",
+            "mise run check | head -20", "ruff check x |& tail -5",
+            "{ pytest; } | tail -1", "x=$(pytest | tail -1)",
+            "mise run check > log 2>&1; tail -3 log", "echo check | tail -1",
+            "git log | head -5", "mise run check | tee log",
+            "git log --grep pytest | head -5", "grep -rn ruff . | head"]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(hook.decide(command) is None,
+                                 hook.decide(command + "  # don't") is None)
+
+    def test_the_fallback_uses_gate_of(self):
+        """Mutation guard: the fallback has no gate list of its own."""
+        original = hook.gate_of
+        hook.gate_of = lambda argv: None
+        try:
+            self.assertIsNone(hook._raw_masked("timeout 600 pytest | tail -1 # don't"))
+        finally:
+            hook.gate_of = original
+        self.assertEqual(hook._raw_masked("timeout 600 pytest | tail -1 # don't"), "pytest")
 
 
 if __name__ == "__main__":

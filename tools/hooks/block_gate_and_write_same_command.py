@@ -470,25 +470,48 @@ def _events_or_raw(command: str, depth: int) -> list[tuple[str, str]]:
         return [("gate", gate), ("pipe", ""), ("trunc", "")] if gate else []
 
 
-#: Raw-text fallback for text that does not parse: a gate word, later a `|`, later a
-#: word-bounded `tail`/`head`. It fails closed: it may deny what a parse would allow.
-#: The gate word must sit at a command position (text start, after a separator, a `$(`
-#: or backtick, after `-c`/`eval` and an optional quote, or after a bare quote, past the
-#: usual wrapper words), so `git log --grep pytest` is not a gate (final-reforge pass 1,
-#: sticky-wicket PATCH issuecomment-6885150729 / correction 6885155066).
-_RAW_GATE = re.compile(
-    r"(?:^|[;&|(\n`]|\$\(|\b(?:-c|eval)\s+['\"]?|['\"])\s*"
-    r"(?:(?:sudo|env|command|exec|time|nice|uv\s+run|npx|python3?(?:\s+-m)?)\s+)*"
-    r"(mise\s+(?:run\s+)?(?:check(?:-full)?|test-backend\S*)|py\.?test|pytest|ruff|mypy|"
-    r"tsc|eslint|vitest|npm\s+(?:test|run)|gh\s+(?:pr\s+checks|run\s+(?:view|watch))|"
-    r"(?:\S*/)?preclose_check\.py|l1[-_]post)\b")
+#: Raw-text fallback for text that does not parse. It has no gate list of its own: the
+#: text is split crudely into segments and words, and each segment goes through the
+#: parser's own `strip_invocation_prefix` and `gate_of`, so the two paths agree by
+#: construction (final-reforge pass 2, sticky-wicket PATCH issuecomment-6885466922).
+#: A gate, then a `|`, then a word-bounded `tail`/`head` later denies. It fails closed.
+_RAW_SEP = re.compile(r"\$\(|[;&|()\n`]")
 _RAW_TAIL = re.compile(r"\|&?[\s\S]*\b(?:tail|head)\b")
+#: Grouping and compound-command words the parser drops before argv[0].
+_RAW_LEADERS = frozenset({"{", "}", "!", "if", "then", "else", "elif", "while", "until",
+                          "do", "time"})
+
+
+def _raw_segments(command: str) -> Iterator[tuple[list[str], int]]:
+    """(words, end offset) per separator-delimited segment; never raises."""
+    start = 0
+    for sep in [*_RAW_SEP.finditer(command), None]:
+        end = sep.start() if sep else len(command)
+        words = [w for w in (w.strip("'\"") for w in command[start:end].split()) if w]
+        while words and words[0] in _RAW_LEADERS:
+            words = words[1:]
+        yield words, end
+        start = sep.end() if sep else end
+
+
+def _raw_gate_of(words: list[str]) -> Optional[str]:
+    gate = gate_of(shell_parse.strip_invocation_prefix(words))
+    if gate:
+        return gate
+    # The script of `bash -c '...'`/`eval ...` runs where it sits.
+    for i, word in enumerate(words[:-1]):
+        if word in ("-c", "eval"):
+            gate = gate_of(shell_parse.strip_invocation_prefix(words[i + 1:]))
+            if gate:
+                return gate
+    return None
 
 
 def _raw_masked(command: str) -> Optional[str]:
-    match = _RAW_GATE.search(command)
-    if match and _RAW_TAIL.search(command, match.end()):
-        return match.group(1)
+    for words, end in _raw_segments(command):
+        gate = _raw_gate_of(words) if words else None
+        if gate:
+            return gate if _RAW_TAIL.search(command, end) else None
     return None
 
 
