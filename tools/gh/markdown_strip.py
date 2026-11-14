@@ -43,12 +43,21 @@ def _closes(opener: str, rest: list[str]) -> bool:
 
 def visible_text(body: str) -> str:
     """`body` with blockquotes, fenced and indented code blocks removed."""
-    kept: list[str] = []
+    return "".join(body[a:b] for a, b in kept_spans(body))
+
+
+def kept_spans(body: str) -> list[tuple[int, int]]:
+    """The `(start, end)` character spans of `body` that `visible_text` keeps,
+    one per kept line, in order (harmonic-forge#1358). `visible_text` is their
+    join, so the two can never disagree about what is visible."""
+    kept: list[tuple[int, int]] = []
+    pos = 0
     fence: str | None = None
     prev_blank = True  # start of body counts as a blank line before it
     in_indented = False
     lines = body.splitlines(keepends=True)
     for i, line in enumerate(lines):
+        start, pos = pos, pos + len(line)
         text = line.rstrip("\r\n")
         if fence is not None:
             m = _FENCE_CLOSE.match(text)
@@ -62,7 +71,7 @@ def visible_text(body: str) -> str:
             # ends at the first non-blank line indented less than 4.
             prev_blank = blank
             if blank:
-                kept.append(line)
+                kept.append((start, pos))
             continue
         in_indented = False
         if not blank and prev_blank and _INDENTED.match(text):
@@ -77,6 +86,6 @@ def visible_text(body: str) -> str:
         if _QUOTE.match(text):
             prev_blank = True  # a quote interrupts a paragraph
             continue
-        kept.append(line)
+        kept.append((start, pos))
         prev_blank = blank
-    return "".join(kept)
+    return kept

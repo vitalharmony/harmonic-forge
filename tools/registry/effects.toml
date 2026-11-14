@@ -935,6 +935,8 @@ path = "tools/gh/belt_candidates.py"
 [[library]]
 path = "tools/gh/belt_mechanics.py"
 [[library]]
+path = "tools/gh/footer_digest.py"
+[[library]]
 path = "tools/gh/gh_scan_patterns.py"
 [[library]]
 path = "tools/gh/item_list_cache.py"

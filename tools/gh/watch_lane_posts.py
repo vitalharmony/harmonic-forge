@@ -228,6 +228,7 @@ from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: two readers of one heading drift apart.
 import gate_ci  # noqa: E402
 import markdown_strip  # noqa: E402
+import footer_digest  # noqa: E402
 import staleness_ff  # noqa: E402
 # harmonic-forge#1221: another lane's post on a held issue owes this session's
 # task-list entry an update. Never raises; an import failure leaves the watch as
@@ -805,9 +806,46 @@ def _own_marker(body: str) -> str | None:
     """The comment's own footer: the LAST `l1-post` marker once fenced
     blocks and `>` quote lines are removed. The one reader `_classify` (the
     kind) and `_queue_owes` (`plan-first`) share, so a quoted older footer can
-    never set either (sticky-wicket PATCH, epoch 2)."""
-    markers = _MARKER_RE.findall(_strip_quoted(body))
-    return markers[-1] if markers else None
+    never set either (sticky-wicket PATCH, epoch 2).
+
+    harmonic-forge#1358 (operator rulings C, then A): the visible markers are
+    walked last to first, and the first whose own `body-sha256` verifies
+    against the text above it (or that carries none) is the comment's own. A
+    footer copied after an unclosed fence no longer verifies, so the real
+    footer before it wins; None only when no visible marker verifies."""
+    markers = _visible_markers(body)
+    for i in range(len(markers) - 1, -1, -1):
+        match = markers[i]
+        # Sticky-wicket PATCH: only the last marker may verify by carrying no
+        # digest; an earlier one the walk-back reaches must carry one that
+        # verifies, so a digestless example marker is never read as own.
+        if i < len(markers) - 1 and not footer_digest.has_digest(match.group(0)):
+            continue
+        if footer_digest.marker_verifies(body, match.start(), match.group(0)):
+            return match.group(0)
+    return None
+
+
+def _visible_markers(body: str) -> list[re.Match]:
+    """Every `l1-post` marker in `body` lying wholly inside text
+    `markdown_strip.visible_text` keeps (not fenced, indented or quoted), as
+    matches on the original body so their positions are real."""
+    merged: list[list[int]] = []
+    for start, end in markdown_strip.kept_spans(body):
+        if merged and merged[-1][1] == start:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return [m for m in _MARKER_RE.finditer(body)
+            if any(a <= m.start() and m.end() <= b for a, b in merged)]
+
+
+def unverified_marker(body: str) -> str | None:
+    """The last visible marker, verified or not (harmonic-forge#1358). Only
+    `sticky_receipt` reads it, to keep counting an edited Lane 1 rework as a
+    round (operator ruling 2026-11-13); every other reader uses `_own_marker`."""
+    markers = _visible_markers(body)
+    return markers[-1].group(0) if markers else None
 
 
 def _classify(body: str) -> tuple[str, str] | None:

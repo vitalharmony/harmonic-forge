@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier  # noqa: E402
 import _prod_run  # noqa: E402
+import footer_digest  # noqa: E402
 
 FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(\w[\w-]*)", re.I)
 #: harmonic-forge#791: a spec/handoff is recognized by its OWN heading too,
@@ -51,6 +52,8 @@ ROUND_HEADING = re.compile(r"(?im)^#{1,4}[ \t]*(?:Lane 3 Test Spec|Handoff)\b")
 FOOTER_SHA = re.compile(r"<!--\s*l1-post\s+v1;.*?\bsha=([0-9a-f]{7,40})\b", re.I)
 FOOTER_BODY_SHA = re.compile(r"<!--\s*l1-post\s+v1;.*?\bbody-sha256=([0-9a-f]{64})\b", re.I)
 FOOTER_MARKER = re.compile(r"\n\n<!--\s*l1-post\s+v1;.*?-->\s*\Z", re.I | re.DOTALL)
+#: harmonic-forge#1358: every footer, so the last one can be found and checked.
+_ANY_FOOTER = re.compile(r"<!--\s*l1-post\s+v\d+;.*?-->", re.I | re.DOTALL)
 RECEIPT_ROOT = Path.home() / ".local" / "state" / "harmonic-forge" / "l1-post"
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -147,15 +150,24 @@ def verify_body_sha256(comment: dict) -> bool:
     there is nothing to verify against (no body-sha256 marker) -- absence
     is a missing-marker problem the caller already checks for separately,
     not a mismatch."""
-    recorded = FOOTER_BODY_SHA.search(comment.get("body", ""))
-    if recorded is None:
+    body = comment.get("body", "") or ""
+    if FOOTER_BODY_SHA.search(body) is None:
         return True
-    body = comment.get("body", "")
-    prefix = FOOTER_MARKER.sub("", body)
-    # harmonic-forge#878 (C1c): a `prod-run` footer token is inside the digest.
-    covered = _prod_run.covered_text(prefix, _prod_run.raw_field(body))
-    digest = hashlib.sha256(covered.encode()).hexdigest()
-    return digest == recorded.group(1)
+    # harmonic-forge#1358: the LAST footer must end the body and verify against
+    # the text before it, through the one shared check. `FOOTER_MARKER.sub`
+    # would strip from the FIRST footer whose span reaches the end, so a copy
+    # appended after the real footer was never examined.
+    last = None
+    for last in _ANY_FOOTER.finditer(body):
+        pass
+    if last is None or body[last.end():].strip():
+        return False
+    # harmonic-forge#1358 preclose pass 1: the body carries a digest, so its last
+    # footer must carry one too; a digestless footer appended after the real one
+    # would otherwise pass an edited body.
+    if FOOTER_BODY_SHA.search(last.group(0)) is None:
+        return False
+    return footer_digest.marker_verifies(body, last.start(), last.group(0))
 
 
 def current_head_sha() -> str:

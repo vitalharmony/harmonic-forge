@@ -508,6 +508,84 @@ class RebaseTests(ReceiptHome):
     def test_a_rebase_does_not_answer_a_fail(self):
         thread = [gate(1, "FAIL"), rebase(2)]
         self.assertIsNone(sr.refusal(REPO, ISSUE, thread, kind="rework", rework_kind="correction"))
+def signed(text, fields):
+    """An l1_post-shaped body: `text`, then a footer whose body-sha256 covers it."""
+    import hashlib  # noqa: PLC0415
+    digest = hashlib.sha256(text.rstrip("\n").encode()).hexdigest()
+    return text.rstrip("\n") + f"\n\n<!-- l1-post v1; {fields}; body-sha256={digest} -->"
+
+
+REAL = signed("## L1 — rework, O35\n\n**Finding:** f\n**Next:** n", "kind=rework; sha=abc1234; rework=correction")
+COPY = "<!-- l1-post v1; kind=rework; sha=abc1234; rework=relay; body-sha256=" + "0" * 64 + " -->"
+ISSUE_EXAMPLE = REAL + "\n\n```\n" + COPY
+
+
+class ProvenanceTests(ReceiptHome):
+    """harmonic-forge#1358 (operator rulings C, then A): the own footer is the last
+    visible one whose body-sha256 verifies against the text above it."""
+
+    def test_a_ac1_issue_example_reads_its_real_footer_everywhere(self):
+        self.assertIn("rework=correction", belt._own_marker(ISSUE_EXAMPLE))
+        self.assertEqual(belt._classify(ISSUE_EXAMPLE), ("l1", "rework"))
+        self.assertEqual(sr.rework_kind(ISSUE_EXAMPLE), "correction")
+        thread = [gate(1, "PASS"), {"id": 2, "body": ISSUE_EXAMPLE}]
+        self.assertEqual([r[0] for r in sr.rounds(thread)], [1, 2])
+
+    def test_a_ac1_verify_body_sha256_rejects_the_issue_example(self):
+        import check_lane3_ready as clr  # noqa: PLC0415
+        self.assertFalse(clr.verify_body_sha256({"body": ISSUE_EXAMPLE}))
+        self.assertTrue(clr.verify_body_sha256({"body": REAL}))
+
+    def test_b_an_unedited_post_verifies_and_reads_its_kind(self):
+        self.assertEqual(belt._classify(REAL), ("l1", "rework"))
+        self.assertEqual(sr.rework_kind(REAL), "correction")
+
+    def test_c_a_footer_with_no_digest_reads_as_today(self):
+        body = "## Note\n\ntext\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+        self.assertEqual(belt._classify(body), ("l1", "discussion"))
+
+    def test_d_ac2_real_footer_after_a_stray_unclosed_fence_still_reads(self):
+        body = signed("## L1 — rework, O35\n\n```\nstray, never closed\n\n**Next:** n",
+                      "kind=rework; sha=abc1234; rework=relay")
+        self.assertEqual(belt._classify(body), ("l1", "rework"))
+        self.assertEqual(sr.rework_kind(body), "relay")
+
+    def test_f_an_edited_single_footer_post_reads_no_footer(self):
+        edited = REAL.replace("**Finding:** f", "**Finding:** f, edited")
+        self.assertIsNone(belt._own_marker(edited))
+        self.assertIsNone(belt._classify(edited))
+        l2 = signed("## L2D — x\n\nwork done", "kind=completion; posted-by=LANE2").replace("work done", "edited")
+        self.assertIsNone(belt._own_marker(l2))
+        self.assertEqual(belt._classify(l2)[0], "l2")  # falls back to its heading
+
+    def test_f_an_edited_relay_or_rebase_is_still_no_round(self):
+        for kind in ("relay", "rebase"):
+            with self.subTest(kind=kind):
+                body = signed("## L1 — rework, O35\n\n**Finding:** f\n**Next:** n",
+                              f"kind=rework; sha=abc1234; rework={kind}").replace("**Finding:** f", "**Finding:** f, edited")
+                self.assertIsNone(belt._classify(body))
+                self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": body}]), [(1, True, "gate")])
+                self.assertEqual(sr._open_rounds([gate(1, "FAIL"), {"id": 2, "body": body}], None), ([1], True))
+
+    def test_a_digestless_footer_appended_to_an_edited_body_fails_verify(self):
+        import check_lane3_ready as clr  # noqa: PLC0415
+        edited = REAL.replace("**Finding:** f", "**Finding:** f, edited") + "\n\n<!-- l1-post v1; kind=discussion -->"
+        self.assertFalse(clr.verify_body_sha256({"body": edited}))
+        plain = "## Note\n\ntext\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->"
+        self.assertTrue(clr.verify_body_sha256({"body": plain}))
+
+    def test_walk_back_never_takes_a_digestless_example_marker(self):
+        body = signed("## L1 — rework, O35\n\nSee `<!-- l1-post v1; kind=discussion -->`.\n\n**Finding:** f",
+                      "kind=rework; sha=abc1234; rework=correction")
+        edited = body.replace("**Finding:** f", "**Finding:** f2")
+        self.assertIsNone(belt._own_marker(edited))
+        self.assertEqual(sr.rounds([gate(1, "PASS"), {"id": 2, "body": edited}]),
+                         [(1, True, "gate"), (2, False, "rework")])
+
+    def test_f_an_edited_l1_rework_still_counts_as_a_round(self):
+        edited = REAL.replace("**Finding:** f", "**Finding:** f, edited")
+        thread = [gate(1, "PASS"), {"id": 2, "body": edited}]
+        self.assertEqual(sr.rounds(thread), [(1, True, "gate"), (2, False, "rework")])
 
 
 class F1060PrecloseTests(ReceiptHome):
