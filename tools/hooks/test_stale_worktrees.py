@@ -85,6 +85,20 @@ class StaleScan(Fixture):
         self.assertEqual(found[0]["label"], "no PR")
         self.assertEqual(unchecked, 0)
 
+    def test_1b_a_fetched_head_that_is_not_an_ancestor_is_behind(self):
+        """AC2's second clause: the new head's object is present (fetched) but HEAD
+        is a diverged local commit, so the cat-file check alone cannot decide."""
+        path = self.clone("hrse2-1b-impl")
+        git(path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+            "--allow-empty", "-m", "local work")
+        new = self.advance_main()
+        git(path, "remote", "set-url", "origin", str(self.origin))
+        git(path, "fetch", "-q", "origin")
+        git(path, "remote", "set-url", "origin", f"https://github.com/{REPO}.git")
+        git(path, "cat-file", "-e", f"{new}^{{commit}}")  # present, so the ancestor path decides
+        found, _ = sw.stale_worktrees(REPO, new, self.root, self.deadline(), FakeRunner(new))
+        self.assertEqual([f["dir"] for f in found], ["hrse2-1b-impl"])
+
     def test_2_a_head_in_a_closed_pr_is_skipped(self):
         path = self.clone("hrse2-2-impl")
         new = self.advance_main()
