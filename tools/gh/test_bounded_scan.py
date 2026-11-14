@@ -289,8 +289,6 @@ class Shim(Base):
             self.assertFalse(self.shim._bounded_scan_admitted(["api", "-i", path]), path)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class AuthorizeScan(unittest.TestCase):
@@ -335,3 +333,7 @@ class AuthorizeScan(unittest.TestCase):
 
     def test_a_prompt_without_scan_returns_nothing(self):
         self.assertEqual(self.hook.authorize_scan("BATCH H1 please", SESSION), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
