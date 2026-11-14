@@ -483,5 +483,34 @@ class MaskedGate1368Reforge(unittest.TestCase):
         self.assertNotIn("pipefail", hook.decide("pytest | tail -1"))
 
 
+class MaskedGate1368ReforgePass1(unittest.TestCase):
+    """harmonic-forge#1368 reforge pass-1 survivors (issuecomment-6883817713) and the
+    sticky-wicket PATCH (issuecomment-6883830423)."""
+
+    def test_s1_a_truncator_anywhere_in_a_piped_group_or_script(self):
+        for command in ("pytest | { head -5; tail -3; }", "pytest | (cat; tail -1)",
+                        "pytest | (sed 1d; tail -1)", 'pytest | bash -c "sed 1d; tail -1"',
+                        "pytest | bash -c 'cat | tail -1'"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s2_backtick_and_quoted_substitutions_are_read(self):
+        for command in ("x=`pytest | tail -1`", 'echo "$(pytest | tail -1)"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s3_a_parse_error_elsewhere_keeps_the_deny(self):
+        for command in ("mise run check 2>&1 | tail -3  # don't lose the summary",
+                        "pytest | tail -1; bash -c \"'\""):
+            with self.subTest(command=command):
+                self.assertIsNotNone(hook.decide(command))
+
+    def test_s4_the_first_gate_stays_the_gate(self):
+        self.assertIsNotNone(hook.decide("pytest | grep -v x | tail -1"))
+
+    def test_a_comment_alone_does_not_deny(self):
+        self.assertIsNone(hook.decide("echo don't # fine"))
+
+
 if __name__ == "__main__":
     unittest.main()
