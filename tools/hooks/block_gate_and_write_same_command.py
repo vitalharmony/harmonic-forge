@@ -438,23 +438,14 @@ def _first_gate(command: str) -> Optional[str]:
         return None
 
 
-def _runs_truncator(command: str) -> bool:
-    """A `-c`/`eval` script whose first command is `tail`/`head`."""
-    try:
-        first = next(iter(_argvs(command)), None)
-    except (ValueError, shell_parse.NotOrdinary):
-        return False
-    return first is not None and _program(first) in _TRUNCATORS
-
-
 def masked_gate(command: str, depth: int = 0) -> Optional[str]:
     """A gate that ran earlier in this command when a `tail`/`head` reads a pipe, or
     None (harmonic-forge#1368, REFORGE issuecomment-6882876419). Detected from the
     truncator's side: a `tail`/`head` whose separator before is `|`/`|&`, or that opens
     a group a pipe leads into, at any level (groups and `$(...)` bodies arrive inline
     from `shell_parse`; `-c`/`eval` scripts are re-read here). A `-c`/`eval` command
-    whose script runs a gate counts as that gate, and one whose script starts with
-    `tail`/`head` counts as a truncator. There is no `pipefail` exemption: a parse
+    whose script runs a gate counts as that gate; a `bash -c "tail …"` is already
+    unwrapped to `tail` by `strip_invocation_prefix`. There is no `pipefail` exemption: a parse
     cannot tell whether pipefail is on where the gate runs. Accepted over-denies (they
     fail closed): a gate that never runs (`false && pytest | tail`), and a gate
     followed later by an unrelated pipe into `tail`."""
@@ -480,9 +471,8 @@ def masked_gate(command: str, depth: int = 0) -> Optional[str]:
                 found = masked_gate(script, depth + 1)
                 if found:
                     return found
-        truncator = _program(argv) in _TRUNCATORS or (script is not None
-                                                      and _runs_truncator(script))
-        if gate and reads_pipe and truncator:
+        # `strip_invocation_prefix` already unwraps `bash -c "tail -1"` to `tail -1`.
+        if gate and reads_pipe and _program(argv) in _TRUNCATORS:
             return gate
         if gate is None:
             gate = gate_of(argv) or (_first_gate(script) if script is not None else None)
