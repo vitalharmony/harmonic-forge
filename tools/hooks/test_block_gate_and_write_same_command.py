@@ -242,6 +242,11 @@ class L1PostDryRunGate(unittest.TestCase):
         self.assertIsNotNone(hook.decide(
             "mise run l1-post --issue 1 --dry-run && mise run l1-post --issue 1 --file /tmp/--dry-run"))
 
+    def test_a_post_through_mise_exec_is_a_write(self):
+        """Pass 2, survivor 5: write_of unwraps `mise exec --` as gate_of does."""
+        self.assertIsNotNone(hook.decide(
+            "mise run l1-post --issue 1 --dry-run && mise exec -- python3 tools/gh/l1_post.py --issue 1"))
+
     def test_a_dry_run_gates_every_listed_write(self):
         self.assertIsNotNone(hook.decide("mise run l1-post --issue 1 --dry-run && git push origin x"))
 

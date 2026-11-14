@@ -103,17 +103,31 @@ def merged_repos(command: str, cwd: str | None, deadline: float,
         return []
     repos: list[str] = []
     for raw in segments:
-        info = batch_auth.classify_pr_merge(batch_auth.strip_invocation_prefix(raw))
+        tokens = batch_auth.strip_invocation_prefix(raw)
+        info = batch_auth.classify_pr_merge(tokens)
         if info is None:
             continue
         repo, number = info
-        if repo is None and number:
+        # Scope (sticky-wicket PATCH, issuecomment-6874956429): an unparsed merge form is
+        # reported on stderr, never resolved. The cwd fallback stands only when the segment
+        # names no repo flag at all, so a flag the parser missed never becomes the cwd's repo.
+        if repo is None and number and not _names_repo_flag(tokens):
             repo = origin_repo(cwd, deadline, runner)
-        if not repo or not number or repo in repos:
+        if not repo or not number:
+            print("[stale-worktrees] merge target not resolved; worktrees not checked: "
+                  f"{' '.join(tokens)}", file=sys.stderr)
+            continue
+        if repo in repos:
             continue
         if landed(repo, number, deadline, runner):
             repos.append(repo)
     return repos
+
+
+def _names_repo_flag(tokens: list[str]) -> bool:
+    """`-R`/`--repo` in any form: separate value, `--repo=x` or attached `-Rx`."""
+    return any(t in ("-R", "--repo") or t.startswith("--repo=")
+               or (t.startswith("-R") and len(t) > 2) for t in tokens)
 
 
 def main_head(repo: str, deadline: float, runner=subprocess.run) -> str | None:
@@ -126,16 +140,26 @@ def main_head(repo: str, deadline: float, runner=subprocess.run) -> str | None:
 
 
 def behind(path: str, main_sha: str, deadline: float, runner=subprocess.run) -> bool | None:
-    """True when HEAD lacks `main_sha`; None when it cannot be told in time."""
-    present = _git(path, ["cat-file", "-e", f"{main_sha}^{{commit}}"], deadline, runner)
+    """True when HEAD lacks `main_sha`; None when it cannot be told.
+
+    Exit codes decide, never "nonzero" (preclose pass 2, survivor 4): `rev-parse -q
+    --verify` exits 1 for a missing commit and 128 for a broken repo (probed live), and
+    `merge-base --is-ancestor` exits 1 for "not an ancestor" and 128 for an error. Only
+    the 1s mean behind; anything else is an error, which the caller counts, not reports."""
+    present = _git(path, ["rev-parse", "-q", "--verify", f"{main_sha}^{{commit}}"], deadline,
+                   runner)
     if present is None:
         return None
-    if present.returncode != 0:
+    if present.returncode == 1:
         return True
+    if present.returncode != 0:
+        return None
     ancestor = _git(path, ["merge-base", "--is-ancestor", main_sha, "HEAD"], deadline, runner)
     if ancestor is None:
         return None
-    return ancestor.returncode != 0
+    if ancestor.returncode == 0:
+        return False
+    return True if ancestor.returncode == 1 else None
 
 
 def in_flight(repo: str, head: str, deadline: float, runner=subprocess.run) -> str | None:

@@ -249,6 +249,10 @@ def write_of(argv: list[str]) -> Optional[str]:
     if program == "gh":
         return "gh pr merge" if _gh_path(argv) == ["pr", "merge"] else None
     if program == "mise":
+        # As gate_of does (preclose pass 2, survivor 5): `mise exec -- <cmd>` runs <cmd>.
+        rest = _after_mise_exec(argv)
+        if rest is not None:
+            return write_of(rest)
         task = _mise_task(argv)
         if task == "commit":
             return "mise run commit"

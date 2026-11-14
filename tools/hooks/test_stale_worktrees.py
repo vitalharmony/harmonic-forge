@@ -86,9 +86,14 @@ class StaleScan(Fixture):
     def test_1_a_behind_worktree_with_no_pr_is_named(self):
         self.clone("hrse2-1-impl")
         new = self.advance_main()
+        path = self.root / "hrse2-1-impl"
         found, timed_out, errors = sw.stale_worktrees(REPO, new, self.root, self.deadline(), FakeRunner(new))
         self.assertEqual([f["dir"] for f in found], ["hrse2-1-impl"])
         self.assertEqual(found[0]["label"], "no PR")
+        # AC1 names each worktree by directory, branch and short HEAD (pass 2, survivor 2).
+        self.assertEqual(found[0]["branch"], git(path, "rev-parse", "--abbrev-ref", "HEAD"))
+        self.assertEqual(found[0]["head"], git(path, "rev-parse", "HEAD")[:9])
+        self.assertNotEqual(found[0]["head"], new[:9])
         self.assertEqual((timed_out, errors), (0, 0))
 
     def test_1b_a_fetched_head_that_is_not_an_ancestor_is_behind(self):
@@ -104,6 +109,28 @@ class StaleScan(Fixture):
         git(path, "cat-file", "-e", f"{new}^{{commit}}")  # present, so the ancestor path decides
         found, _, _ = sw.stale_worktrees(REPO, new, self.root, self.deadline(), FakeRunner(new))
         self.assertEqual([f["dir"] for f in found], ["hrse2-1b-impl"])
+        self.assertEqual(found[0]["head"], git(path, "rev-parse", "HEAD")[:9])
+        self.assertEqual(found[0]["branch"], git(path, "rev-parse", "--abbrev-ref", "HEAD"))
+
+    def test_1c_the_message_names_directory_branch_and_short_head(self):
+        found = [{"dir": "hrse2-x-impl", "branch": "feat/x", "head": "abcdef123", "label": "no PR"}]
+        text = sw.message(REPO, "f" * 40, found, 0)
+        self.assertIn("hrse2-x-impl (feat/x @ abcdef123): no PR", text)
+        self.assertIn(f"`main` of {REPO} moved to fffffffff", text)
+
+    def test_1d_a_git_error_on_the_head_check_is_an_error_not_behind(self):
+        """Pass 2, survivor 4: rev-parse exits 128 for a broken repo, 1 for a missing
+        commit; only 1 means behind."""
+        self.clone("hrse2-1d-impl")
+        new = self.advance_main()
+
+        def broken(cmd, **kwargs):
+            if cmd[0] == "git" and "rev-parse" in cmd and "--verify" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, "", "fatal: broken")
+            return FakeRunner(new)(cmd, **kwargs)
+
+        found, timed_out, errors = sw.stale_worktrees(REPO, new, self.root, self.deadline(), broken)
+        self.assertEqual((found, timed_out, errors), ([], 0, 1))
 
     def test_2_a_head_in_a_closed_pr_is_skipped(self):
         path = self.clone("hrse2-2-impl")
@@ -210,6 +237,31 @@ class Warn(Fixture):
         with mock.patch.object(sw.batch_auth, "_hook_seconds_left", return_value=0.0):
             text = sw.warn("gh pr merge 7 --squash", str(checkout), self.root, FakeRunner(new))
         self.assertIn("hrse2-7b-impl", text)
+
+    def test_7c_an_unparsed_merge_form_is_reported_on_stderr_not_resolved(self):
+        """Pass 2, survivor 1 (scope cut): a PR URL or a branch name is not resolved."""
+        checkout = self.clone("hrse2-7c-impl")
+        new = self.advance_main()
+        for command in ("gh pr merge https://github.com/vitalharmony/hrse/pull/5 --squash",
+                        "gh pr merge feat/x --squash"):
+            runner, err = FakeRunner(new), io.StringIO()
+            with redirect_stderr(err):
+                self.assertIsNone(sw.warn(command, str(checkout), self.root, runner))
+            self.assertIn("merge target not resolved", err.getvalue())
+            self.assertEqual(runner.gh_calls, [])
+
+    def test_7d_a_repo_flag_the_parser_missed_never_becomes_the_cwd_repo(self):
+        """Pass 2, survivor 3: `--repo=` and attached `-R` forms do not fall back to cwd."""
+        checkout = self.clone("hrse2-7d-impl")
+        new = self.advance_main()
+        for command in ("gh pr merge 123 --repo=other/repo --squash",
+                        "gh pr merge 123 -Rother/repo --squash"):
+            runner, err = FakeRunner(new), io.StringIO()
+            with redirect_stderr(err):
+                text = sw.warn(command, str(checkout), self.root, runner)
+            self.assertNotIn(f"repos/{REPO}/pulls/123", [c[2] for c in runner.gh_calls])
+            if text is not None:
+                self.assertNotIn(REPO, text)
 
     def test_13_a_failed_main_read_says_nothing(self):
         self.clone("hrse2-13-impl")
