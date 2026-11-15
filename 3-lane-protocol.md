@@ -1197,6 +1197,12 @@ before #878, which is the residual that file states. A gate worktree without
 the runner installed is reported BLOCKED with that reason, and Lane 3 never
 improvises a production read in its place.
 <!-- /R-0377 -->
+<!-- R-0430 -->
+A test case that says to relaunch or log in to a lane is reproduced by Lane 1
+with the launcher's own flags (e.g. `codex exec` with `_agent_registry.sh`'s
+flags, in a disposable worktree). Only an interactive TUI or an OAuth consent
+stays the operator's.
+<!-- /R-0430 -->
 
 <!-- R-0385 -->
 While an R-0377 production AE names `main` at a SHA, Lane 1 merges nothing

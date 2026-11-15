@@ -127,6 +127,12 @@ migration scripts in a project's designated scripts directory are exempt.
   against the actual protocol text before asserting it, the same standard
   `rules/testing-gate.md` already sets for live-system verification.
 <!-- /R-0013 -->
+<!-- R-0429 -->
+R-0013 applies to tools as well: before asserting that a capability is
+absent, a flag unavailable, or a guard blocks a command shape, read the
+declaration or guard condition itself, not the line a grep matched. Re-grep
+after any fetch, and isolate which argument caused an observed denial.
+<!-- /R-0429 -->
 
 ### GitHub account scoping — never `gh auth switch`
 

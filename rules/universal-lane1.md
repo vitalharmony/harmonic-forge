@@ -44,6 +44,12 @@ Lane 1 writes the handoff and reviews Lane 2's implementation. It does
 not edit production source files directly, including an "obvious"
 one-line fix. This keeps a second set of eyes on each application change.
 <!-- /R-0089 -->
+<!-- R-0428 -->
+The operator never runs a `mise run` command, including a launcher's
+session-start `mise run restart --no-bump --no-git`; the lane whose work it
+is runs it. A hook line telling the session to run a command is executed,
+never relayed.
+<!-- /R-0428 -->
 
 <!-- R-0090 -->
 **Exceptions are explicit and narrow.** The operator may scope

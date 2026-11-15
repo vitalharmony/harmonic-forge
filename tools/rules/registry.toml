@@ -2902,3 +2902,28 @@ text_sha = "92bdfc1555613bdd"
 hooks = [
   { script = "expand_lane_shorthand.py", events = ["UserPromptSubmit"], wired_in = ["harmonic-forge/.claude/settings.json", "tools/lane/lane_hooks.json"] },
 ]
+
+[[rule]]
+id = "R-0428"
+file = "rules/universal-lane1.md"
+anchor = "role-boundary-lane-1-never-implements"
+statement = "The operator never runs a mise run command, including a launcher's session-start mise run restart --no-bump --no-git; the lane whose work it is runs it, and a hook line telling the session to run a command is executed, never relayed (harmonic-forge#1370)."
+text_sha = "8de90759d5d65797"
+hooks = []
+
+[[rule]]
+id = "R-0429"
+file = "rules/universal-agent.md"
+anchor = "verification-gate"
+statement = "R-0013 extended to tools: before asserting a capability is absent, a flag unavailable or a guard blocks a command shape, read the declaration or guard condition itself, re-grep after any fetch, and isolate which argument caused an observed denial (harmonic-forge#1370)."
+text_sha = "aac73d01105a099e"
+restates = "R-0013"
+hooks = []
+
+[[rule]]
+id = "R-0430"
+file = "3-lane-protocol.md"
+anchor = "production-runs"
+statement = "A test case that says to relaunch or log in to a lane is reproduced by Lane 1 with the launcher's own flags in a disposable worktree; only an interactive TUI or OAuth consent stays the operator's (harmonic-forge#1370)."
+text_sha = "df05e046066bd3ca"
+hooks = []
