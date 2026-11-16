@@ -38,21 +38,25 @@ Boundaries:
 | Boundary | Starts at | Used by |
 |---|---|---|
 | `recent:<N>` | the last N first-parent commits on HEAD | harmonic-forge (no version to bump) |
-| `version-minor:<relpath>` | the commit that introduced `"version": "X.Y.0"` in `<relpath>`, where X.Y is read from **HEAD's committed copy** | HRSE2 (`frontend/package.json`) |
+| `version-minor:<relpath>` | the newest `vX.Y.0` tag reachable from HEAD (`git describe --tags --match 'v[0-9]*.[0-9]*.0' --abbrev=0 HEAD`), range `<tag>..HEAD` | HRSE2 (`frontend/package.json`) |
 
 `version-minor` details, each one found by review rather than chosen for
 taste:
-- It reads the version from `HEAD:<relpath>`, never the working tree. A
-  bump pass writes the next version before any commit exists, and a
-  working-tree read would ask for an X.Y.0 that no commit has introduced.
-- `git log -S` also matches the commit that later *removed* the string. The
-  renderer takes the oldest hit and asserts that the commit's version is
-  X.Y.0, raising `ValueError` otherwise.
-- Patch bumps never move the boundary. HRSE2's earlier `find_boundary`
-  anchored on the *current* patch version, so its view showed only the 0–2
-  commits since the last patch bump.
-- An unknown or unresolvable boundary raises. It never falls back to the
-  full history.
+- The tag marks the release, not a version file's history. The renderer
+  used to take the oldest `git log -S'"version": "X.Y.0"'` hit, which in
+  HRSE2 was a brief 3.0.0 in July, months before the real 3.0.0 release: the
+  3.1 view rendered 1,453 entries where the release held 118
+  (harmonic-forge#1372).
+- `<relpath>` is still required and still accepted, so no caller edits, but
+  it is no longer read.
+- Patch bumps never move the boundary: only an exact `vX.Y.0` tag does.
+  A pre-release tag such as `v3.1.0-rc.0` matches the describe glob and is
+  refused with a `ValueError`, not taken.
+- Between `bump b` and the new tag, the boundary is still the previous
+  minor's tag, so the view then spans the whole release. Once the tag exists
+  the window is empty.
+- No reachable `vX.Y.0` tag, or an unresolvable boundary, raises. It never
+  falls back to the full history.
 
 The summary stays deterministic, with no LLM call. That was evaluated and
 rejected earlier: a local 2B model failed about 25% of the time, and each

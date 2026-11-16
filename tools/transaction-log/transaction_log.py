@@ -10,10 +10,15 @@ branches that write it collide (README.md has the full history of why).
 
 `boundary` picks where the view starts:
   - `recent:<N>`                 the last N first-parent commits on HEAD.
-  - `version-minor:<relpath>`    every first-parent commit since the one that
-                                 introduced `"version": "X.Y.0"` in <relpath>,
-                                 where X.Y comes from HEAD's committed copy.
-                                 Patch bumps never move the boundary.
+  - `version-minor:<relpath>`    every first-parent commit since the newest
+                                 `vX.Y.0` tag reachable from HEAD (the current
+                                 release), as `git describe --tags --match
+                                 'v[0-9]*.[0-9]*.0' --abbrev=0 HEAD` finds it.
+                                 <relpath> is accepted for compatibility and
+                                 not read: the tag, not a file's history,
+                                 marks the release (harmonic-forge#1372).
+                                 Patch bumps never move the boundary; no such
+                                 tag raises `ValueError`.
 
 Usable as a library (a SessionStart hook imports it by path) and as a CLI
 (a project's `mise run transaction-log` task shells out to it).
@@ -22,7 +27,6 @@ Usable as a library (a SessionStart hook imports it by path) and as a CLI
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -33,7 +37,7 @@ DEFAULT_MAX_CHARS = 6000
 
 _RECORD_SEP = "\x1e"
 _FIELD_SEP = "\x1f"
-_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.\d+")
+_MINOR_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.0$")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -45,42 +49,27 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout
 
 
-def _committed_version(repo: Path, sha: str, relpath: str) -> str:
-    """`version` from <relpath> as committed at <sha> — never the working tree.
+def _minor_release_tag(repo: Path) -> tuple[str, str]:
+    """(sha, tag) of the newest `vX.Y.0` tag reachable from HEAD.
 
-    A `bump b` pass writes the next version into the working tree before any
-    commit exists, so reading the working tree would ask for an X.Y.0 that no
-    commit has introduced yet.
+    The tag, not the history of a version file, marks a release: `git log -S`
+    on a version string takes the oldest commit that ever carried it, which in
+    HRSE2 was a brief 3.0.0 months before the real 3.0.0 release, and rendered
+    1,453 entries for a 118-commit release (harmonic-forge#1372).
     """
     try:
-        version = json.loads(_git(repo, "show", f"{sha}:{relpath}"))["version"]
-    except (RuntimeError, ValueError, KeyError, TypeError) as exc:
-        raise ValueError(f"cannot read version from {sha}:{relpath}: {exc}") from exc
-    if not isinstance(version, str):
-        raise ValueError(f"{sha}:{relpath} version is not a string: {version!r}")
-    return version
-
-
-def _minor_bump_commit(repo: Path, relpath: str) -> tuple[str, str]:
-    """(sha, "X.Y.0") of the commit that introduced HEAD's minor version."""
-    match = _VERSION_RE.match(_committed_version(repo, "HEAD", relpath))
-    if not match:
-        raise ValueError(f"HEAD:{relpath} version is not X.Y.Z")
-    minor = f"{match.group(1)}.{match.group(2)}.0"
-    hits = _git(
-        repo, "log", "--format=%H", f'-S"version": "{minor}"', "--", relpath
-    ).split()
-    if not hits:
-        raise ValueError(f'no commit introduced "version": "{minor}" in {relpath}')
-    # -S also matches the commit that later REMOVED the string, so take the
-    # oldest hit and confirm it actually carries X.Y.0.
-    sha = hits[-1]
-    found = _committed_version(repo, sha, relpath)
-    if found != minor:
-        raise ValueError(
-            f"oldest pickaxe hit {sha[:8]} has version {found}, not {minor}"
-        )
-    return sha, minor
+        tag = _git(repo, "describe", "--tags", "--match", "v[0-9]*.[0-9]*.0",
+                   "--abbrev=0", "HEAD").strip()
+    except RuntimeError as exc:
+        raise ValueError(f"no reachable vX.Y.0 tag: {exc}") from exc
+    if not _MINOR_TAG_RE.match(tag):
+        # The glob also matches e.g. `v3.1.0-rc.0`; a pre-release is no boundary.
+        raise ValueError(f"newest reachable tag {tag!r} is not exactly vX.Y.0")
+    try:
+        sha = _git(repo, "rev-parse", f"{tag}^{{commit}}").strip()
+    except RuntimeError as exc:
+        raise ValueError(f"cannot resolve tag {tag}: {exc}") from exc
+    return sha, tag
 
 
 def resolve_boundary(repo: Path, boundary: str) -> tuple[list[str], str]:
@@ -97,8 +86,8 @@ def resolve_boundary(repo: Path, boundary: str) -> tuple[list[str], str]:
     if kind == "version-minor":
         if not value:
             raise ValueError("version-minor:<relpath> needs a path")
-        sha, minor = _minor_bump_commit(repo, value)
-        return [f"{sha}..HEAD"], f"Commits on HEAD since the {minor} bump ({sha[:8]})"
+        sha, tag = _minor_release_tag(repo)
+        return [f"{sha}..HEAD"], f"Commits on HEAD since the {tag} release ({sha[:8]})"
     raise ValueError(f"unknown boundary {boundary!r} (expected recent:<N> or version-minor:<relpath>)")
 
 
