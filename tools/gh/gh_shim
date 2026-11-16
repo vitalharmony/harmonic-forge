@@ -59,42 +59,65 @@ SANCTIONED_CALLERS = frozenset({"item_list_cache", "batch_preflight", "l1_post",
 _BOUNDED_SCAN_PATH = re.compile(r"^repos/([^/\s]+)/([^/\s]+)/(issues|pulls)\?[^\s]*$")
 
 
-def _bounded_scan_admitted(argv: list[str]) -> bool:
-    """True only for bounded_scan.py's own GET shape, under a live SCAN grant for
-    the path's repo in this session (CLAUDE_CODE_SESSION_ID, which bounded_scan
-    passes through). Any other argv, a missing session, or an unreadable grant
-    store is not admitted: the scan refusal then applies as for any caller."""
+def _bounded_scan_refusal(argv: list[str]) -> str | None:
+    """None when `argv` is bounded_scan.py's own GET shape under a live SCAN grant
+    for the path's repo and scope in this session (CLAUDE_CODE_SESSION_ID, which
+    bounded_scan passes through); otherwise the check that refused, named.
+
+    Fails closed: an argv of another shape, a missing session, an import or grant
+    store that cannot be read, or no live grant is never admitted. Since
+    harmonic-forge#1378 the refusal is named, because a silent `False` hid that
+    every live scan was refused (the import below used to resolve through the
+    `~/.local/bin/gh` symlink and could never find `scan_grant`)."""
     rest = list(argv)
     if rest[:1] != ["api"]:
-        return False
+        return "not an `api` call"
     rest = rest[1:]
     if rest[:1] == ["-i"]:
         rest = rest[1:]
     if rest[:1] == ["-H"] and len(rest) >= 2 and rest[1].lower().startswith("if-none-match:"):
         rest = rest[2:]
     if len(rest) != 1:
-        return False
+        return "argv is not bounded_scan's `api [-i] [-H If-None-Match] <path>` shape"
     match = _BOUNDED_SCAN_PATH.match(rest[0])
+    if match is None:
+        return "path is not a repos/<owner>/<repo>/(issues|pulls)?<query> list path"
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if match is None or not session:
-        return False
+    if not session:
+        return "no CLAUDE_CODE_SESSION_ID"
+    page = re.search(r"[?&]page=([1-9]\d{0,4})(?:&|$)", rest[0])
+    if page is None:
+        return "path has no page=<n>"
     try:
-        here = os.path.dirname(os.path.abspath(__file__))
+        # harmonic-forge#1378: the REAL directory of this file. `gh` is the
+        # symlink ~/.local/bin/gh, and abspath(__file__) keeps the link, so
+        # `../hooks` resolved to ~/.local/hooks and `scan_grant` never imported.
+        here = os.path.dirname(_self_realpath())
         sys.path.insert(0, os.path.join(here, "..", "hooks"))
         sys.path.insert(0, here)
         import scan_grant  # noqa: PLC0415
         import bounded_scan  # noqa: PLC0415
-        repo = f"{match.group(1)}/{match.group(2)}"
-        page = re.search(r"[?&]page=([1-9]\d{0,4})(?:&|$)", rest[0])
-        if page is None:
-            return False
-        # Preclose pass 1, survivor 1: the path must be exactly the one
+    except Exception as exc:  # noqa: BLE001 - refused, and named
+        return f"admission could not import its checks ({type(exc).__name__}: {exc})"
+    repo = f"{match.group(1)}/{match.group(2)}"
+    try:
+        scopes = scan_grant.live_scopes(repo, session)
+        # Preclose pass 1 (#1363), survivor 1: the path must be exactly the one
         # bounded_scan.list_path builds for a live granted scope, page aside, so a
         # grant for one scope never admits another list of the same repo.
-        return any(rest[0] == bounded_scan.list_path(repo, scope, int(page.group(1)))
-                   for scope in scan_grant.live_scopes(repo, session))
-    except Exception:  # noqa: BLE001 - an unreadable grant admits nothing
-        return False
+        if any(rest[0] == bounded_scan.list_path(repo, scope, int(page.group(1)))
+               for scope in scopes):
+            return None
+    except Exception as exc:  # noqa: BLE001 - an unreadable grant admits nothing
+        return f"grant check failed ({type(exc).__name__}: {exc})"
+    # live_scopes swallows its own store errors, so an unreadable grant store
+    # also lands here (#1378 pitch-inspection change 2).
+    return f"no live SCAN grant for {repo} in this session covers this path"
+
+
+def _bounded_scan_admitted(argv: list[str]) -> bool:
+    """harmonic-forge#1363's predicate, kept for its callers and tests."""
+    return _bounded_scan_refusal(argv) is None
 
 
 def main() -> None:
@@ -102,7 +125,8 @@ def main() -> None:
     real_gh = _resolve_real_gh()
 
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        # harmonic-forge#1378: the real directory, not the ~/.local/bin symlink's.
+        sys.path.insert(0, os.path.dirname(_self_realpath()))
         import gh_scan_patterns  # noqa: PLC0415 -- imported lazily so an import
         # failure alone can never prevent falling through to the real `gh`.
 
@@ -142,7 +166,10 @@ def main() -> None:
             # harmonic-forge#1363: the marker alone is not enough for this caller. It
             # admits only the one shape bounded_scan.py sends, and only under a live
             # SCAN grant for that repo in this session.
-            sanctioned = _bounded_scan_admitted(argv)
+            refusal = _bounded_scan_refusal(argv)
+            sanctioned = refusal is None
+            if refusal is not None:
+                print(f"gh-shim: bounded_scan not admitted: {refusal}", file=sys.stderr)
         reason = None if sanctioned else gh_scan_patterns.scan_reason(argv)
         if reason is not None:
             print(

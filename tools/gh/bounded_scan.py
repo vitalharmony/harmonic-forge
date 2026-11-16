@@ -49,6 +49,7 @@ CALLER = "bounded_scan"
 SNAPSHOT_ROOT_ENV = "BOUNDED_SCAN_SNAPSHOT_ROOT"
 RECEIPTS_ENV = "BOUNDED_SCAN_RECEIPTS"
 
+STDERR_CHARS = 400
 _STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})", re.M)
 _ETAG = re.compile(r"(?im)^etag:\s*(.+?)\s*$")
 _LINK = re.compile(r"(?im)^link:\s*(.+?)\s*$")
@@ -101,16 +102,21 @@ def fetch(path: str, etag: str | None, runner=subprocess.run) -> tuple[int, dict
     env = {**os.environ, "GH_SHIM_CALLER": CALLER}
     try:
         done = runner(argv, capture_output=True, text=True, timeout=60, env=env)
-    except (OSError, subprocess.SubprocessError):
-        return 0, {}, None
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 0, {"stderr": f"{type(exc).__name__}: {exc}"[:STDERR_CHARS]}, None
     out = done.stdout or ""
+    # harmonic-forge#1378: the shim refuses on stderr with an empty stdout, so a
+    # missing status line must carry stderr's cause into the receipt.
+    stderr = " | ".join(line.strip() for line in (done.stderr or "").splitlines()
+                        if line.strip())[:STDERR_CHARS]
     status = _STATUS.search(out)
     if status is None:
-        return 0, {}, None
+        return 0, {"stderr": stderr}, None
     head, _, body = out.partition("\r\n\r\n") if "\r\n\r\n" in out else out.partition("\n\n")
     headers = {"etag": (m.group(1) if (m := _ETAG.search(head)) else None),
                "link": (m.group(1) if (m := _LINK.search(head)) else ""),
-               "remaining": (int(m.group(1)) if (m := _REMAINING.search(head)) else None)}
+               "remaining": (int(m.group(1)) if (m := _REMAINING.search(head)) else None),
+               "stderr": stderr}
     code = int(status.group(1))
     if code != 200:
         return code, headers, None
@@ -223,10 +229,12 @@ def run(args: argparse.Namespace, runner=subprocess.run, now: float | None = Non
             new_pages.append({"etag": headers.get("etag"), "link": link,
                               "items": _project(items, fields, scope)})
         else:
-            record.update(outcome="error", detail=f"page {page}: HTTP {code or 'unreadable'}",
+            cause = f" ({headers['stderr']})" if headers.get("stderr") else ""
+            record.update(outcome="error",
+                          detail=f"page {page}: HTTP {code or 'unreadable'}{cause}",
                           rest_after=remaining, graphql_after=None)
             _receipt(record)
-            print(f"bounded-scan: page {page} failed (HTTP {code or 'unreadable'}); "
+            print(f"bounded-scan: page {page} failed (HTTP {code or 'unreadable'}){cause}; "
                   "snapshot left as it was", file=sys.stderr)
             return 1
         if not _has_next(link):
