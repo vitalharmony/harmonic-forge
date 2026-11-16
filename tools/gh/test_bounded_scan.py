@@ -400,9 +400,6 @@ class AuthorizeScan(unittest.TestCase):
         self.assertEqual(self.hook.authorize_scan("BATCH H1 please", SESSION), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ReceiptNamesTheCause(Base):
     """harmonic-forge#1378 AC2: a refused page's receipt says why."""
@@ -522,3 +519,7 @@ class ShimThroughASymlink(unittest.TestCase):
         done = self.call(bs.list_path(REPO, "open-issues", 1))
         self.assertNotIn("SHADOWED", done.stderr)
         self.assertEqual(done.returncode, 0, done.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
