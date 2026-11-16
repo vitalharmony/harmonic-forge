@@ -289,9 +289,38 @@ class PreflightTest(Lane3EnvCase):
         self.check({}, run)
         self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
 
+    def test_target_sha_reaches_the_preflight_only(self):
+        """harmonic-forge#1380 AC1/AC5: the target SHA is in the preflight's
+        environment and in no other probe's."""
+        sha = "a2428d6262de10c617927b346f3cc30d66774efb"
+        run = Recorder(tasks=["lane3-preflight"])
+        _lane3_env.check("vitalharmony/hrse", {}, lane3=self.lane3, run=run, which=_present,
+                         platform=lambda: self.platform, target_sha=sha)
+        pre = [c for c in run.calls if c[0] == ["mise", "run", "lane3-preflight"]]
+        self.assertEqual(len(pre), 1)
+        self.assertEqual(pre[0][2]["env"][_lane3_env.TARGET_SHA_ENV], sha)
+        for cmd, _cwd, kw in run.calls:
+            if cmd != ["mise", "run", "lane3-preflight"]:
+                self.assertNotIn(_lane3_env.TARGET_SHA_ENV, kw.get("env") or {}, cmd)
+
+    def test_no_target_sha_passes_no_env(self):
+        """AC3 for the platform side: without a target the call is unchanged."""
+        run = Recorder(tasks=["lane3-preflight"])
+        self.check({}, run)
+        pre = [c for c in run.calls if c[0] == ["mise", "run", "lane3-preflight"]][0]
+        self.assertNotIn("env", pre[2])
+
 
 class WiringTest(unittest.TestCase):
     """l1_post wiring; AC4 (the dry run takes the same collected steps)."""
+
+    def test_validate_lane3_env_forwards_the_full_sha(self):
+        """harmonic-forge#1380: l1_post hands check the resolved 40-hex SHA."""
+        sha = "a2428d6262de10c617927b346f3cc30d66774efb"
+        with patch.object(_lane3_env, "check", return_value=[]) as chk:
+            l1_post.validate_lane3_env("## Gate-readiness sweep — H1\n", "", "vitalharmony/hrse", sha)
+        self.assertEqual(chk.call_args.kwargs["target_sha"], sha)
+        self.assertRegex(chk.call_args.kwargs["target_sha"], r"^[0-9a-f]{40}$")
 
     def test_validate_lane3_env_refuses_through_fail(self):
         with patch.object(_lane3_env, "check", return_value=["Lane 3 not ready"]), \
