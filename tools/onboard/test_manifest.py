@@ -92,8 +92,8 @@ class ActiveMilestonesTests(unittest.TestCase):
     def test_the_live_manifest_scopes_only_the_cymagraph_repos(self) -> None:
         scoped = {p.name: p.active_milestones for p in mf.load(LIVE) if p.active_milestones}
         # cymagraph-infra has no release milestone (preclose pass 2), so no
-        # list. 3.0 shipped and closed; 3.1 is current (harmonic-forge#1222).
-        self.assertEqual(scoped, {"hrse": ("3.1", "Platform")})
+        # list. 3.1 shipped and closed; 3.2 is current (harmonic-forge#1222).
+        self.assertEqual(scoped, {"hrse": ("3.2", "Platform")})
 
 
 class FailLoudlyTests(unittest.TestCase):
