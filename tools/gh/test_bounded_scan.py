@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -397,6 +398,127 @@ class AuthorizeScan(unittest.TestCase):
 
     def test_a_prompt_without_scan_returns_nothing(self):
         self.assertEqual(self.hook.authorize_scan("BATCH H1 please", SESSION), "")
+
+
+
+class ReceiptNamesTheCause(Base):
+    """harmonic-forge#1378 AC2: a refused page's receipt says why."""
+
+    def test_a_shim_refusal_reaches_the_receipt_detail(self):
+        self.grant()
+
+        def refusing(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 3, "", "gh-shim: bounded_scan not admitted: no CLAUDE_CODE_SESSION_ID\n"
+                "gh-shim: refused (scan)\n")
+        code, _, err = self.run_scan(refusing)
+        self.assertEqual(code, 1)
+        detail = self.receipts()[-1]["detail"]
+        self.assertIn("HTTP unreadable", detail)
+        self.assertIn("bounded_scan not admitted: no CLAUDE_CODE_SESSION_ID", detail)
+        self.assertIn("bounded_scan not admitted", err)
+
+
+_FAKE_GH = """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
+printf 'HTTP/2.0 200 OK\\nX-Ratelimit-Remaining: 4000\\nX-Ratelimit-Reset: 4102444800\\nEtag: W/"t"\\n\\n[]'
+"""
+
+
+class ShimThroughASymlink(unittest.TestCase):
+    """harmonic-forge#1378 AC1/AC3: the real shim, run as a subprocess through a
+    symlink, the way `~/.local/bin/gh` invokes it. The symlink's directory has no
+    `../hooks`, so resolving imports from the link (the defect) cannot pass."""
+
+    SCOPES = ("open-issues", "open-prs", "milestone=9", "label=bug")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.bindir = self.tmp / "linkbin"
+        self.bindir.mkdir()
+        (self.bindir / "gh").symlink_to(HERE / "gh_shim")
+        fakebin = self.tmp / "fakebin"
+        fakebin.mkdir()
+        fake = fakebin / "gh"
+        fake.write_text(_FAKE_GH)
+        fake.chmod(0o755)
+        self.log = self.tmp / "fake_gh.log"
+        # The link, then the fake gh, ahead of every directory holding a real gh.
+        path = os.pathsep.join([str(self.bindir), str(fakebin),
+                                str(Path(sys.executable).parent), "/usr/bin", "/bin"])
+        # Pitch change 1: HARMONIC_FORGE_TESTING is deliberately absent. Under a temp
+        # HOME it makes scan_grant refuse every grant, which would hide the defect.
+        self.env = {"HOME": str(self.home), "PATH": path, "GH_SHIM_CALLER": "bounded_scan",
+                    "CLAUDE_CODE_SESSION_ID": SESSION, "FAKE_GH_LOG": str(self.log)}
+        self._saved_dir = scan_grant.SCAN_STATE_DIR
+        scan_grant.SCAN_STATE_DIR = self.home / ".claude" / "state" / "scan"
+
+    def tearDown(self):
+        scan_grant.SCAN_STATE_DIR = self._saved_dir
+
+    def grant(self, letter="H", scope="open-issues"):
+        scan_grant.write(letter, scope, SESSION, f"SCAN {letter} {scope}: test", "test")
+
+    def call(self, path, gh=None):
+        return subprocess.run([str(gh or self.bindir / "gh"), "api", "-i", path],
+                              env=self.env, capture_output=True, text=True, timeout=60)
+
+    def reached_real_gh(self, path):
+        return self.log.exists() and any(path in line for line in self.log.read_text().splitlines())
+
+    def test_each_granted_scope_is_admitted_through_the_symlink(self):
+        for scope in self.SCOPES:
+            self.grant(scope=scope)
+            path = bs.list_path(REPO, scope, 1)
+            done = self.call(path)
+            self.assertEqual(done.returncode, 0, (scope, done.stderr))
+            self.assertIn("HTTP/2.0 200", done.stdout, scope)
+            self.assertTrue(self.reached_real_gh(path), scope)
+
+    def test_no_grant_is_refused_and_the_failing_check_is_named(self):
+        path = bs.list_path(REPO, "open-issues", 1)
+        done = self.call(path)
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("bounded_scan not admitted: no live SCAN grant", done.stderr)
+        self.assertFalse(self.reached_real_gh(path))
+
+    def test_another_scopes_grant_is_refused(self):
+        self.grant(scope="open-issues")
+        path = bs.list_path(REPO, "milestone=9", 1)
+        done = self.call(path)
+        self.assertEqual(done.returncode, 3)
+        self.assertFalse(self.reached_real_gh(path))
+
+    def test_another_repos_grant_is_refused(self):
+        self.grant(letter="F", scope="open-issues")
+        path = bs.list_path(REPO, "open-issues", 1)
+        done = self.call(path)
+        self.assertEqual(done.returncode, 3)
+        self.assertFalse(self.reached_real_gh(path))
+
+    def test_an_import_failure_is_refused_and_named(self):
+        # A copy (not a link) with no ../hooks beside it: scan_grant cannot import.
+        lone = self.tmp / "lone"
+        lone.mkdir()
+        shutil.copy2(HERE / "gh_shim", lone / "gh_shim")
+        shutil.copy2(HERE / "gh_scan_patterns.py", lone / "gh_scan_patterns.py")
+        self.grant()
+        path = bs.list_path(REPO, "open-issues", 1)
+        done = self.call(path, gh=lone / "gh_shim")
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("could not import its checks", done.stderr)
+        self.assertFalse(self.reached_real_gh(path))
+
+    def test_a_module_beside_the_symlink_never_shadows_the_shims_own(self):
+        # Pitch change 3: main() must import from the real directory, not the link's.
+        (self.bindir / "gh_scan_patterns.py").write_text(
+            "import sys\nprint('SHADOWED', file=sys.stderr)\n")
+        self.grant()
+        done = self.call(bs.list_path(REPO, "open-issues", 1))
+        self.assertNotIn("SHADOWED", done.stderr)
+        self.assertEqual(done.returncode, 0, done.stderr)
 
 
 if __name__ == "__main__":
