@@ -186,9 +186,16 @@ class ValidatorOrderTests(unittest.TestCase):
                    # F1179: spec 9 is the issue's newest spec; never a real gh call.
                    mock.patch("check_lane3_ready.fetch_comments",
                               return_value=[{"id": 9, "body": "## Lane 3 Test Spec\n"}])]
+        self.seen = {}  # harmonic-forge#1380: the positional args each validator got
+
+        def record(name, args):
+            calls.append(name)
+            self.seen.setdefault(name, []).append(args)
+            return "spec"
+
         for name in {n for names in ORDER.values() for n in names}:
             patches.append(mock.patch.object(
-                l1_post, name, side_effect=lambda *a, _n=name, **k: calls.append(_n) or "spec"))
+                l1_post, name, side_effect=lambda *a, _n=name, **k: record(_n, a)))
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -199,6 +206,17 @@ class ValidatorOrderTests(unittest.TestCase):
         for kind, expected in ORDER.items():
             with self.subTest(kind=kind):
                 self.assertEqual(self._calls(kind), expected)
+
+    def test_both_sweep_paths_hand_the_resolved_sha_to_the_lane3_env_check(self):
+        """harmonic-forge#1380 (preclose pass 1, test-honesty): undo either call
+        site back to `validate_lane3_env(body, spec, repo)` and this fails. The
+        SHA is the one `resolve_sha` returned, never the typed argument."""
+        for kind in ("sweep", "ae-and-sweep"):
+            with self.subTest(kind=kind):
+                self._calls(kind)
+                (args,) = self.seen["validate_lane3_env"]
+                self.assertEqual(args[-1], "deadbeef", args)
+                self.assertEqual(len(args), 4, args)
 
 
 
