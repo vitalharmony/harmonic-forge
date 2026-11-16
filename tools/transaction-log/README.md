@@ -38,7 +38,7 @@ Boundaries:
 | Boundary | Starts at | Used by |
 |---|---|---|
 | `recent:<N>` | the last N first-parent commits on HEAD | harmonic-forge (no version to bump) |
-| `version-minor:<relpath>` | the newest `vX.Y.0` tag reachable from HEAD (`git describe --tags --match 'v[0-9]*.[0-9]*.0' --abbrev=0 HEAD`), range `<tag>..HEAD` | HRSE2 (`frontend/package.json`) |
+| `version-minor:<relpath>` | the newest `vX.Y.0` tag reachable from HEAD (the nearest exact `vX.Y.0` tag to HEAD, as `git describe --tags --match 'v[0-9]*.[0-9]*.0' --abbrev=0 HEAD` would pick it minus pre-release matches), range `<tag>..HEAD` | HRSE2 (`frontend/package.json`) |
 
 `version-minor` details, each one found by review rather than chosen for
 taste:
@@ -50,8 +50,9 @@ taste:
 - `<relpath>` is still required and still accepted, so no caller edits, but
   it is no longer read.
 - Patch bumps never move the boundary: only an exact `vX.Y.0` tag does.
-  A pre-release tag such as `v3.1.0-rc.0` matches the describe glob and is
-  refused with a `ValueError`, not taken.
+  Pre-release and suffixed tags (`v3.2.0-rc.0`, `v3x.2y.0`,
+  `v3.2.0+build.0`) are skipped when choosing, so a nearer one never hides
+  the release tag behind it; with no exact tag at all, it raises.
 - Between `bump b` and the new tag, the boundary is still the previous
   minor's tag, so the view then spans the whole release. Once the tag exists
   the window is empty.

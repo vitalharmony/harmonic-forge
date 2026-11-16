@@ -12,8 +12,10 @@ branches that write it collide (README.md has the full history of why).
   - `recent:<N>`                 the last N first-parent commits on HEAD.
   - `version-minor:<relpath>`    every first-parent commit since the newest
                                  `vX.Y.0` tag reachable from HEAD (the current
-                                 release), as `git describe --tags --match
-                                 'v[0-9]*.[0-9]*.0' --abbrev=0 HEAD` finds it.
+                                 release): the exact-`vX.Y.0` tag nearest to
+                                 HEAD, as `git describe --tags --match
+                                 'v[0-9]*.[0-9]*.0' --abbrev=0 HEAD` would find
+                                 it, minus its pre-release/suffixed matches.
                                  <relpath> is accepted for compatibility and
                                  not read: the tag, not a file's history,
                                  marks the release (harmonic-forge#1372).
@@ -56,20 +58,30 @@ def _minor_release_tag(repo: Path) -> tuple[str, str]:
     on a version string takes the oldest commit that ever carried it, which in
     HRSE2 was a brief 3.0.0 months before the real 3.0.0 release, and rendered
     1,453 entries for a 118-commit release (harmonic-forge#1372).
+
+    "Newest" is the nearest to HEAD, as `git describe --tags --match
+    'v[0-9]*.[0-9]*.0' --abbrev=0` would pick, but chosen among EXACT release
+    tags only. `describe` takes the nearest glob match, and the glob also
+    matches `v3.2.0-rc.0`, `v3x.2y.0` and `v3.2.0+build.0`: one of those nearer
+    than v3.1.0 hid it, and the view raised instead of resolving to v3.1.0.
     """
     try:
-        # --exclude drops pre-release and suffixed tags (`v3.2.0-rc.0`,
-        # `v3.1.4-pre-v3.2.0`) before describe picks, so a nearer one cannot
-        # hide the release tag behind it.
-        tag = _git(repo, "describe", "--tags", "--match", "v[0-9]*.[0-9]*.0",
-                   "--exclude", "v*-*", "--abbrev=0", "HEAD").strip()
+        listed = _git(repo, "tag", "--merged", "HEAD", "--list", "v*.*.0").split()
     except RuntimeError as exc:
-        raise ValueError(f"no reachable vX.Y.0 tag: {exc}") from exc
-    if not _MINOR_TAG_RE.match(tag):
-        # Defense in depth behind --exclude: never take a non-release tag.
-        raise ValueError(f"newest reachable tag {tag!r} is not exactly vX.Y.0")
+        raise ValueError(f"cannot list tags: {exc}") from exc
+    tags = [t for t in listed if _MINOR_TAG_RE.match(t)]
+    if not tags:
+        raise ValueError("no reachable vX.Y.0 tag")
+
+    def distance(tag: str) -> tuple[int, int, int]:
+        match = _MINOR_TAG_RE.match(tag)
+        since = int(_git(repo, "rev-list", "--count", f"refs/tags/{tag}..HEAD").strip())
+        # Equal distance (two tags on one commit): the higher version wins.
+        return since, -int(match.group(1)), -int(match.group(2))
+
+    tag = min(tags, key=distance)
     try:
-        sha = _git(repo, "rev-parse", f"{tag}^{{commit}}").strip()
+        sha = _git(repo, "rev-parse", f"refs/tags/{tag}^{{commit}}").strip()
     except RuntimeError as exc:
         raise ValueError(f"cannot resolve tag {tag}: {exc}") from exc
     return sha, tag

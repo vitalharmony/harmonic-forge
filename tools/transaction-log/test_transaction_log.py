@@ -188,9 +188,12 @@ class VersionMinorTests(_RepoCase):
         git(self.repo.root, "tag", "v3.1.4-pre-v3.2.0")
         self.repo.commit("rc work")
         git(self.repo.root, "tag", "v3.2.0-rc.0")
+        self.repo.commit("more rc")
+        git(self.repo.root, "tag", "v3x.2y.0")
+        git(self.repo.root, "tag", "v3.2.0+build.0")
         self.repo.commit("latest")
         got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
-        self.assertEqual(got, ["latest", "rc work", "after release"])
+        self.assertEqual(got, ["latest", "more rc", "rc work", "after release"])
 
     def test_the_description_keeps_its_since_the_x_y_z_bump_wording(self):
         # HRSE2's directive_provenance tests and the session-start block read it.
