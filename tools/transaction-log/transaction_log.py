@@ -58,12 +58,15 @@ def _minor_release_tag(repo: Path) -> tuple[str, str]:
     1,453 entries for a 118-commit release (harmonic-forge#1372).
     """
     try:
+        # --exclude drops pre-release and suffixed tags (`v3.2.0-rc.0`,
+        # `v3.1.4-pre-v3.2.0`) before describe picks, so a nearer one cannot
+        # hide the release tag behind it.
         tag = _git(repo, "describe", "--tags", "--match", "v[0-9]*.[0-9]*.0",
-                   "--abbrev=0", "HEAD").strip()
+                   "--exclude", "v*-*", "--abbrev=0", "HEAD").strip()
     except RuntimeError as exc:
         raise ValueError(f"no reachable vX.Y.0 tag: {exc}") from exc
     if not _MINOR_TAG_RE.match(tag):
-        # The glob also matches e.g. `v3.1.0-rc.0`; a pre-release is no boundary.
+        # Defense in depth behind --exclude: never take a non-release tag.
         raise ValueError(f"newest reachable tag {tag!r} is not exactly vX.Y.0")
     try:
         sha = _git(repo, "rev-parse", f"{tag}^{{commit}}").strip()
@@ -87,7 +90,7 @@ def resolve_boundary(repo: Path, boundary: str) -> tuple[list[str], str]:
         if not value:
             raise ValueError("version-minor:<relpath> needs a path")
         sha, tag = _minor_release_tag(repo)
-        return [f"{sha}..HEAD"], f"Commits on HEAD since the {tag} release ({sha[:8]})"
+        return [f"{sha}..HEAD"], f"Commits on HEAD since the {tag[1:]} bump ({sha[:8]})"
     raise ValueError(f"unknown boundary {boundary!r} (expected recent:<N> or version-minor:<relpath>)")
 
 

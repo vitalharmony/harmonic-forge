@@ -179,6 +179,27 @@ class VersionMinorTests(_RepoCase):
         with self.assertRaises(ValueError):
             tl.render(self.repo.root, f"version-minor:{PKG}")
 
+    def test_a_nearer_prerelease_or_suffixed_tag_does_not_hide_the_release_tag(self):
+        # Both refuters' finding: describe picks the NEAREST match, so an rc
+        # tag after v3.1.0 used to raise instead of resolving to v3.1.0.
+        self.repo.commit("release", version="3.1.0")
+        git(self.repo.root, "tag", "v3.1.0")
+        self.repo.commit("after release")
+        git(self.repo.root, "tag", "v3.1.4-pre-v3.2.0")
+        self.repo.commit("rc work")
+        git(self.repo.root, "tag", "v3.2.0-rc.0")
+        self.repo.commit("latest")
+        got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
+        self.assertEqual(got, ["latest", "rc work", "after release"])
+
+    def test_the_description_keeps_its_since_the_x_y_z_bump_wording(self):
+        # HRSE2's directive_provenance tests and the session-start block read it.
+        self.repo.commit("one", version="2.9.0")
+        git(self.repo.root, "tag", "v2.9.0")
+        self.repo.commit("two")
+        _, description = tl.resolve_boundary(self.repo.root, f"version-minor:{PKG}")
+        self.assertTrue(description.startswith("Commits on HEAD since the 2.9.0 bump ("), description)
+
     def test_a_tag_not_reachable_from_head_is_ignored(self):
         self.repo.commit("base")
         git(self.repo.root, "checkout", "-q", "-b", "side")
