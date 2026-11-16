@@ -92,25 +92,60 @@ class RecentTests(_RepoCase):
 
 
 class VersionMinorTests(_RepoCase):
+    """The boundary is the newest reachable `vX.Y.0` tag (harmonic-forge#1372)."""
+
     def _history(self):
         self.repo.commit("pre", version="2.7.9")
         self.minor = self.repo.commit("bump 2.8.0", version="2.8.0")
+        git(self.repo.root, "tag", "v2.8.0")
         self.repo.commit("work a")
         self.repo.commit("bump 2.8.1", version="2.8.1")
         self.repo.commit("work b")
         self.repo.commit("bump 2.8.2", version="2.8.2")
 
-    def test_boundary_is_the_minor_bump_not_the_patch_bump(self):
+    def test_boundary_is_the_minor_tag_not_the_patch_bump(self):
         self._history()
         got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
         self.assertEqual(got, ["bump 2.8.2", "work b", "bump 2.8.1", "work a"])
-
-    def test_removal_commit_is_not_taken_as_the_boundary(self):
-        # -S matches both the commit that added "2.8.0" and the one that
-        # removed it (the 2.8.1 bump); the oldest is the introduction.
-        self._history()
         _, description = tl.resolve_boundary(self.repo.root, f"version-minor:{PKG}")
         self.assertIn(self.minor[:8], description)
+
+    def test_a_version_string_that_returns_later_does_not_move_the_boundary(self):
+        # AC1: "2.8.0" appears early (an untagged stray), is removed, and
+        # returns at the commit tagged v2.8.0. The tag wins, not the first hit.
+        self.repo.commit("stray early", version="2.8.0")
+        self.repo.commit("moved on", version="2.7.9")
+        self.repo.commit("work before")
+        tagged = self.repo.commit("real 2.8.0", version="2.8.0")
+        git(self.repo.root, "tag", "v2.8.0")
+        self.repo.commit("work after")
+        got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
+        self.assertEqual(got, ["work after"])
+        _, description = tl.resolve_boundary(self.repo.root, f"version-minor:{PKG}")
+        self.assertIn(tagged[:8], description)
+
+    def test_a_patch_bump_after_the_tag_does_not_move_the_boundary(self):
+        # AC3.
+        self._history()
+        git(self.repo.root, "tag", "v2.8.2")  # a patch tag is not a minor tag
+        got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
+        self.assertEqual(got, ["bump 2.8.2", "work b", "bump 2.8.1", "work a"])
+
+    def test_the_newest_reachable_minor_tag_is_taken(self):
+        self.repo.commit("one", version="2.8.0")
+        git(self.repo.root, "tag", "v2.8.0")
+        self.repo.commit("two")
+        self.repo.commit("three", version="2.9.0")
+        git(self.repo.root, "tag", "v2.9.0")
+        self.repo.commit("four")
+        self.assertEqual(self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}")), ["four"])
+
+    def test_the_relpath_is_not_read(self):
+        # No caller edits: any path is accepted, and the file need not exist.
+        self.repo.commit("one")
+        git(self.repo.root, "tag", "v1.0.0")
+        self.repo.commit("two")
+        self.assertEqual(self.subjects(tl.render(self.repo.root, "version-minor:no/such/file.json")), ["two"])
 
     def test_uncommitted_working_tree_bump_is_ignored(self):
         self._history()
@@ -118,29 +153,70 @@ class VersionMinorTests(_RepoCase):
         got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
         self.assertEqual(got, ["bump 2.8.2", "work b", "bump 2.8.1", "work a"])
 
-    def test_head_is_the_minor_bump_gives_an_empty_view(self):
+    def test_head_is_the_tagged_release_gives_an_empty_view(self):
         self.repo.commit("pre", version="2.8.5")
         self.repo.commit("bump 2.9.0", version="2.9.0")
+        git(self.repo.root, "tag", "v2.9.0")
         self.assertEqual(tl.render(self.repo.root, f"version-minor:{PKG}"), "")
 
-    def test_no_minor_commit_raises(self):
-        # Started life at a patch version; X.Y.0 was never introduced.
-        self.repo.commit("start", version="3.1.4")
+    def test_no_minor_tag_raises(self):
+        # AC2: a version string alone is no boundary, and nothing falls back.
+        self.repo.commit("start", version="3.1.0")
         with self.assertRaises(ValueError):
             tl.render(self.repo.root, f"version-minor:{PKG}")
 
-    def test_pickaxe_hit_with_wrong_version_raises(self):
-        # The string appears first in an unrelated field, so the oldest -S hit
-        # does not carry version X.Y.0 and must be refused, not trusted.
-        path = self.repo.root / PKG
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"version": "1.0.0", "note": {"version": "2.8.0"}},
-                                   indent=2) + "\n")
-        git(self.repo.root, "add", "-A")
-        git(self.repo.root, "commit", "-q", "-m", "decoy")
-        self.repo.commit("bump", version="2.8.3")
+    def test_only_a_patch_tag_raises(self):
+        self.repo.commit("start", version="3.1.4")
+        git(self.repo.root, "tag", "v3.1.4")
         with self.assertRaises(ValueError):
             tl.render(self.repo.root, f"version-minor:{PKG}")
+
+    def test_a_prerelease_tag_is_not_a_boundary(self):
+        # The describe glob also matches `v3.1.0-rc.0`; it must not be taken.
+        self.repo.commit("start")
+        git(self.repo.root, "tag", "v3.1.0-rc.0")
+        self.repo.commit("next")
+        with self.assertRaises(ValueError):
+            tl.render(self.repo.root, f"version-minor:{PKG}")
+
+    def test_a_nearer_prerelease_or_suffixed_tag_does_not_hide_the_release_tag(self):
+        # Both refuters' finding: describe picks the NEAREST match, so an rc
+        # tag after v3.1.0 used to raise instead of resolving to v3.1.0.
+        self.repo.commit("release", version="3.1.0")
+        git(self.repo.root, "tag", "v3.1.0")
+        self.repo.commit("after release")
+        git(self.repo.root, "tag", "v3.1.4-pre-v3.2.0")
+        self.repo.commit("rc work")
+        git(self.repo.root, "tag", "v3.2.0-rc.0")
+        self.repo.commit("more rc")
+        git(self.repo.root, "tag", "v3x.2y.0")
+        git(self.repo.root, "tag", "v3.2.0+build.0")
+        self.repo.commit("latest")
+        got = self.subjects(tl.render(self.repo.root, f"version-minor:{PKG}"))
+        self.assertEqual(got, ["latest", "more rc", "rc work", "after release"])
+
+    def test_the_description_keeps_its_since_the_x_y_z_bump_wording(self):
+        # HRSE2's directive_provenance tests and the session-start block read it.
+        self.repo.commit("one", version="2.9.0")
+        git(self.repo.root, "tag", "v2.9.0")
+        self.repo.commit("two")
+        _, description = tl.resolve_boundary(self.repo.root, f"version-minor:{PKG}")
+        self.assertTrue(description.startswith("Commits on HEAD since the 2.9.0 bump ("), description)
+
+    def test_a_tag_not_reachable_from_head_is_ignored(self):
+        self.repo.commit("base")
+        git(self.repo.root, "checkout", "-q", "-b", "side")
+        self.repo.commit("side work")
+        git(self.repo.root, "tag", "v9.9.0")
+        git(self.repo.root, "checkout", "-q", "main")
+        self.repo.commit("main work")
+        with self.assertRaises(ValueError):
+            tl.render(self.repo.root, f"version-minor:{PKG}")
+
+    def test_version_minor_needs_a_path(self):
+        self.repo.commit("x")
+        with self.assertRaises(ValueError):
+            tl.render(self.repo.root, "version-minor:")
 
     def test_unknown_boundary_raises(self):
         self.repo.commit("x")
