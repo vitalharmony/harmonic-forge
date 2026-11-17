@@ -900,7 +900,7 @@ marker is a PASS or Lane 1's own post is never re-announced. There the task
 entry is the only record. This rule adds no shared state.
 <!-- /R-0376 -->
 <!-- R-0431 -->
-On a belt or suspenders tick, a Lane 1 or Lane 2 session whose post waits on another lane or the operator takes the next queued item its own lane owns that does not need the machine (Lane 1: a review, a rebase, a Tooling Exception implementation; Lane 2: a queued handoff or rework); a Lane 3 session takes only its own owed spec or gate, and never edits, fixes or commits; while a lane's own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on `ScheduleWakeup` only when every item waits on someone else.
+On a belt or suspenders tick, a Lane 1 or Lane 2 session whose post waits on another lane or the operator takes the next queued item its own lane owns that does not need the machine (Lane 1: a review, a rebase, a Tooling Exception implementation; Lane 2: a queued handoff or rework); a Lane 3 session takes only its own owed spec or gate, and never fixes application code (R-0173); while a lane's own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on `ScheduleWakeup` only when every item waits on someone else.
 <!-- /R-0431 -->
 <!-- R-0413 -->
 A lane's task list holds one entry per issue it holds until that issue closes. The entry's shape and rules are `tools/hooks/tasklist_hold.py`'s docstring, which the hooks enforce.
