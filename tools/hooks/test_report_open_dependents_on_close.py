@@ -225,6 +225,12 @@ class ReportsOpenDependents(unittest.TestCase):
                              'echo 6 | xargs gh issue close -R o/r')
         self.assertIn(hook.CATCH_ALL, result)
 
+    def test_a_wrapper_named_gh_issue_is_still_a_close_mention(self):
+        """Post-verdict finding: a leading word boundary before `issue` stopped
+        `gh_issue close 5` matching, which the original pattern caught."""
+        self.assertTrue(hook._CLOSE_MENTION.search("gh_issue close 5"))
+        self.assertTrue(hook._CLOSE_MENTION.search("gh issue close 5"))
+
     def test_the_close_mention_gap_is_bounded(self):
         """Post-verdict finding: an unbounded gap is quadratic on a long command.
         Flags between `issue` and `close` still match; a gap past the bound does not."""

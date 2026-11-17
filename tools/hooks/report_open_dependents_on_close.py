@@ -56,7 +56,7 @@ BUDGET_SECONDS = HOOK_TIMEOUT - 10
 #: rescans the rest of the segment after every unmatched `issue` word, which is
 #: quadratic on a long command, and a hook timeout is silence
 #: (harmonic-forge#1381 post-verdict check).
-_CLOSE_MENTION = re.compile(r"\bissue\b[^;&|\n]{0,200}?\bclose\b|state\W{0,3}closed|closeIssue")
+_CLOSE_MENTION = re.compile(r"issue\b[^;&|\n]{0,200}?\bclose\b|state\W{0,3}closed|closeIssue")
 CATCH_ALL = ("a close may have run that this hook could not parse; dependents "
              "UNKNOWN; run repo_hygiene (its unblocked-dependents report)")
 
