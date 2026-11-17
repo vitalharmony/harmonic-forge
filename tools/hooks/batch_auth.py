@@ -809,6 +809,36 @@ def _entry_live(entry: dict, now: datetime) -> bool:
         return False
 
 
+#: harmonic-forge#1381 (folded close-guard fix): the only flags an `issue close`
+#: may carry besides the number and its one `--repo`, each at most once, each
+#: with a value in its closed set. `gh` accepts these reasons; anything else
+#: still makes the repo unbound, so `decide()` asks.
+_CLOSE_REASONS = frozenset({"completed", "not planned", "duplicate"})
+
+
+def _close_tail_ok(tail: list[str]) -> bool:
+    """Whether the tokens after `issue close <N>` (with `--repo` removed) are a
+    closed, unambiguous shape: nothing, or `--reason <reason>` and/or
+    `--duplicate-of <N>`, each once. The denial's own advice (`--repo
+    OWNER/REPO` in canonical form) must be followable with a reason."""
+    seen: set[str] = set()
+    i = 0
+    while i < len(tail):
+        flag = tail[i]
+        if flag in seen or i + 1 >= len(tail):
+            return False
+        value = tail[i + 1]
+        if flag == "--reason" and value in _CLOSE_REASONS:
+            pass
+        elif flag == "--duplicate-of" and value.isascii() and value.isdigit():
+            pass
+        else:
+            return False
+        seen.add(flag)
+        i += 2
+    return True
+
+
 def _bound_repo(rest: list[str], verb: tuple[str, str]) -> str | None:
     """The repo a `gh <sub> <verb>` segment names, only when its argv has one
     closed shape (harmonic-forge#1339 reforge, the F1178 precedent): exactly
@@ -832,7 +862,7 @@ def _bound_repo(rest: list[str], verb: tuple[str, str]) -> str | None:
         return None
     tail = others[3:]
     if verb == ("issue", "close"):
-        return repo if not tail else None
+        return repo if _close_tail_ok(tail) else None
     seen: set[str] = set()
     i = 0
     while i < len(tail):
@@ -937,6 +967,10 @@ def _protected_graphql(tokens: list[str]) -> bool:
     return query is None or query.startswith("@") or "$" in query or bool(PROTECTED_GRAPHQL_MUTATIONS.search(query))
 
 
+#: `gh issue close` flags whose next token is a value, not the issue number.
+_ISSUE_CLOSE_VALUE_FLAGS = frozenset({"--duplicate-of", "--reason", "-r", "--comment", "-c"})
+
+
 def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | None:
     """Is this segment ANY form of `gh issue close`? Returns (repo, number)
     -- either may be None if unresolvable from this command alone -- or
@@ -955,7 +989,19 @@ def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | N
     words = _gh_words(rest)
     if words[:2] == ["issue", "close"]:
         repo = _bound_repo(rest, ("issue", "close"))
-        number = next((t for t in words[2:] if t.isdigit()), None)
+        number = None
+        skip = False
+        for token in words[2:]:
+            if skip:
+                skip = False
+                continue
+            if token in _ISSUE_CLOSE_VALUE_FLAGS:
+                # harmonic-forge#1381 pass 1: `--duplicate-of 1290 1291` closes 1291
+                skip = True
+                continue
+            if token.isdigit():
+                number = token
+                break
         return repo, number
 
     return None

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shlex
 import subprocess
 import sys
 import json
@@ -488,6 +489,26 @@ class ClassifyTests(unittest.TestCase):
     def test_issue_close_cli_form_with_repo(self):
         tokens = "gh issue close 395 --repo vitalharmony/hrse".split()
         self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"))
+
+    def test_issue_close_with_a_reason_keeps_its_repo(self):
+        """harmonic-forge#1381 (folded close-guard fix): the denial's own
+        canonical `--repo` advice must be followable with `--reason`."""
+        for tail in ("--reason completed", "--reason 'not planned'", "--reason duplicate --duplicate-of 12"):
+            tokens = ["gh", "issue", "close", "395", "--repo", "vitalharmony/hrse", *shlex.split(tail)]
+            self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"), tail)
+
+    def test_a_numeric_flag_value_before_the_number_is_not_the_number(self):
+        """harmonic-forge#1381 pass 1 (silent-bypass): `--duplicate-of 1290 1291`
+        closes 1291, never 1290."""
+        for head in ("--duplicate-of 1290", "-c 12", "--comment 7", "-r completed"):
+            tokens = ["gh", "issue", "close", *shlex.split(head), "1291"]
+            self.assertEqual(ba.classify_issue_close(tokens)[1], "1291", head)
+
+    def test_issue_close_with_an_unknown_or_repeated_flag_stays_unbound(self):
+        for tail in ("--reason bogus", "--reason completed --reason completed", "--comment hi",
+                     "--reason", "--duplicate-of abc", "--duplicate-of ²"):
+            tokens = ["gh", "issue", "close", "395", "--repo", "vitalharmony/hrse", *shlex.split(tail)]
+            self.assertEqual(ba.classify_issue_close(tokens), (None, "395"), tail)
 
     def test_issue_close_cli_form_without_repo_still_classified(self):
         """Recognized as issue-close even though repo is unresolvable --
@@ -2567,8 +2588,13 @@ class RepoFlagAnywhereTests(unittest.TestCase):
 
     def test_closed_keys_skips_ambiguous_close_without_reading_cwd(self):
         runner = lambda *a, **k: self.fail("cwd must not be read")  # noqa: E731
+        # harmonic-forge#1381: `--reason completed` is a closed shape now, so it
+        # resolves (asserted below) instead of being skipped as ambiguous.
+        self.assertEqual(ba.closed_keys("gh issue close 5 --repo vitalharmony/hrse --reason completed",
+                                        cwd="/tmp", runner=runner),
+                         [("H5", "vitalharmony/hrse", 5)])
         for cmd in ("gh issue close 5 --repo vitalharmony/hrse --comment x",
-                    "gh issue close 5 --repo vitalharmony/hrse --reason completed",
+                    "gh issue close 5 --repo vitalharmony/hrse --reason bogus",
                     "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
                     "--template -Rvitalharmony/harmonic-forge"):
             with self.subTest(cmd=cmd):

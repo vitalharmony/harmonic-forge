@@ -307,6 +307,25 @@ class AC3ExceptionRequiresAReason(unittest.TestCase):
                            "--handoff-exception-reason", "r")
         self.assertEqual(result.returncode, 2)
 
+    def test_blocked_on_prerequisite_without_blocked_by_is_refused(self):
+        """harmonic-forge#1381 AC1: refused at the parser, naming the flag."""
+        result = self._run("--handoff-exception", "blocked-on-prerequisite",
+                           "--handoff-exception-reason", "waits on F1")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires --blocked-by", result.stderr)
+
+    def test_blocked_by_with_another_exception_is_refused(self):
+        result = self._run("--handoff-exception", "parent-epic",
+                           "--handoff-exception-reason", "r",
+                           "--blocked-by", "vitalharmony/harmonic-forge#1")
+        self.assertEqual(result.returncode, 2)
+
+    def test_a_malformed_blocker_is_refused(self):
+        result = self._run("--handoff-exception", "blocked-on-prerequisite",
+                           "--handoff-exception-reason", "r", "--blocked-by", "F1290")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("is not OWNER/REPO#N", result.stderr)
+
 
 class AC3ExceptionPostsItsReason(_TempStore):
     def setUp(self) -> None:
@@ -314,8 +333,65 @@ class AC3ExceptionPostsItsReason(_TempStore):
         import gh_issue
         self.gh_issue = gh_issue
         self.args = mock.Mock(repo=REPO, handoff_exception="parent-epic",
-                              handoff_exception_reason="children carry the work")
+                              handoff_exception_reason="children carry the work",
+                              blocked_by=None)
         handoff_owed.record(REPO, 700, key="s1")
+
+    def _blocked(self, listed_ids: str, lookup_rc: int = 0):
+        """A `_run` stand-in for the blocked-on-prerequisite path: the blocker
+        lookup returns id 42, the POST answers whatever, the re-read lists
+        `listed_ids`, the comment posts."""
+        self.args.handoff_exception = "blocked-on-prerequisite"
+        self.args.blocked_by = "vitalharmony/harmonic-forge#1290"
+        calls: list[list[str]] = []
+
+        def run(cmd, check=False):
+            calls.append(cmd)
+            joined = " ".join(cmd)
+            if joined.endswith("issues/1290 --jq .id"):
+                return mock.Mock(returncode=lookup_rc, stdout="42\n", stderr="")
+            if "-X POST" in joined and "blocked_by" in joined:
+                return mock.Mock(returncode=1, stdout="", stderr="422 already been taken")
+            if "blocked_by" in joined:
+                return mock.Mock(returncode=0, stdout=listed_ids, stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        return run, calls
+
+    def test_blocked_on_prerequisite_links_then_posts_then_clears(self):
+        """AC2: the link is confirmed by re-read (a 422 duplicate still counts
+        when the blocker is listed), and only then the comment and discharge."""
+        run, calls = self._blocked("42\n")
+        with mock.patch.object(self.gh_issue, "_run", side_effect=run):
+            self.assertTrue(self.gh_issue._discharge_exception(self.args, 700, "https://x/700"))
+        posts = [i for i, c in enumerate(calls) if "-X" in c and "POST" in c]
+        link = next(i for i in posts if "blocked_by" in " ".join(calls[i]))
+        comment = next(i for i in posts if "comments" in " ".join(calls[i]))
+        self.assertLess(link, comment)
+        self.assertIn("issue_id=42", calls[link])
+        self.assertEqual(handoff_owed.outstanding("s1"), [])
+
+    def test_an_unlisted_link_leaves_the_obligation_standing(self):
+        """AC2: a write the re-read does not show posts no discharge."""
+        run, calls = self._blocked("7\n")
+        with mock.patch.object(self.gh_issue, "_run", side_effect=run):
+            self.assertFalse(self.gh_issue._discharge_exception(self.args, 700, "https://x/700"))
+        self.assertFalse(any("comments" in " ".join(c) for c in calls))
+        self.assertEqual(len(handoff_owed.outstanding("s1")), 1)
+
+    def test_an_unreadable_blocker_leaves_the_obligation_standing(self):
+        run, calls = self._blocked("42\n", lookup_rc=1)
+        with mock.patch.object(self.gh_issue, "_run", side_effect=run):
+            self.assertFalse(self.gh_issue._discharge_exception(self.args, 700, "https://x/700"))
+        self.assertEqual(len(handoff_owed.outstanding("s1")), 1)
+
+    def test_parent_epic_writes_no_link(self):
+        """AC6: the other exceptions behave exactly as before."""
+        for exception in ("parent-epic", "deferred-design-record"):
+            self.args.handoff_exception = exception
+            with mock.patch.object(self.gh_issue, "_run",
+                                   return_value=mock.Mock(returncode=0, stderr="")) as run:
+                self.assertTrue(self.gh_issue._discharge_exception(self.args, 700, "https://x/700"))
+            self.assertFalse(any("blocked_by" in " ".join(c[0][0]) for c in run.call_args_list))
 
     def test_the_reason_is_posted_to_the_issue_then_the_record_clears(self):
         with mock.patch.object(self.gh_issue, "_run",

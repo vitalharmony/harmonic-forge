@@ -294,6 +294,43 @@ def _issue_number(issue_url: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+BLOCKED_ON_PREREQUISITE = "blocked-on-prerequisite"
+_BLOCKER = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
+
+
+def _parse_blocker(text: str) -> tuple[str, int] | None:
+    """`OWNER/REPO#N` as (repo, number), or None (harmonic-forge#1381)."""
+    match = _BLOCKER.match((text or "").strip())
+    return (match.group(1), int(match.group(2))) if match else None
+
+
+def _link_blocker(repo: str, issue: int, blocker: str) -> bool:
+    """Write `issue` blocked_by `blocker` and confirm it by re-reading. True on OK.
+
+    harmonic-forge#1381 AC2. The write takes the blocker's numeric REST `id`
+    (sent with `-F`, so it is an integer). A duplicate returns 422 ("already
+    been taken"), so the status code is never the verdict: the link counts
+    only when a re-read of `blocked_by` lists the blocker."""
+    blocker_repo, blocker_number = _parse_blocker(blocker)
+    looked_up = _run(["gh", "api", f"repos/{blocker_repo}/issues/{blocker_number}",
+                      "--jq", ".id"], check=False)
+    blocker_id = (looked_up.stdout or "").strip()
+    if looked_up.returncode != 0 or not blocker_id.isdigit():
+        print(f"[GH] ERROR: --blocked-by {blocker} could not be read:\n"
+              f"{looked_up.stderr}", file=sys.stderr)
+        return False
+    _run(["gh", "api", "-X", "POST",
+          f"repos/{repo}/issues/{issue}/dependencies/blocked_by",
+          "-F", f"issue_id={blocker_id}"], check=False)
+    listed = _run(["gh", "api", f"repos/{repo}/issues/{issue}/dependencies/blocked_by",
+                   "--jq", ".[].id"], check=False)
+    if listed.returncode != 0 or blocker_id not in (listed.stdout or "").split():
+        print(f"[GH] ERROR: the blocked_by link to {blocker} is not listed on "
+              f"{repo}#{issue} after the write.", file=sys.stderr)
+        return False
+    return True
+
+
 def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     """Apply an R-0039 filing-bar exception, if one was claimed. True on OK.
 
@@ -307,6 +344,14 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     """
     if not getattr(args, "handoff_exception", None):
         return True
+    # harmonic-forge#1381 AC2: the link before the reason comment; a failed
+    # link leaves the obligation standing and posts no discharge.
+    blocker = getattr(args, "blocked_by", None)
+    if args.handoff_exception == BLOCKED_ON_PREREQUISITE:
+        if not blocker or not _link_blocker(args.repo, issue, blocker):
+            print(f"[GH] The handoff obligation on {issue_url} therefore STANDS.",
+                  file=sys.stderr)
+            return False
     reason = args.handoff_exception_reason
     comment = (
         f"## R-0039 filing-bar exception: `{args.handoff_exception}`\n\n"
@@ -812,6 +857,13 @@ def main() -> int:
              "--handoff-exception is given, and written to the issue.",
     )
     parser.add_argument(
+        "--blocked-by", default=None, metavar="OWNER/REPO#N",
+        help="harmonic-forge#1381: the blocker a `blocked-on-prerequisite` "
+             "exception names. REQUIRED with that exception, refused with any "
+             "other; written as the native `blocked_by` link before the reason "
+             "comment, so closing the blocker can report this issue as owed.",
+    )
+    parser.add_argument(
         "--milestone", default=None, metavar="TITLE",
         help="Milestone title, e.g. '2.7' — release membership (harmonic-forge#283). "
              "REQUIRED for a repo that uses milestones; ignored where none exist. "
@@ -855,6 +907,18 @@ def main() -> int:
         parser.error(
             "--handoff-exception-reason without --handoff-exception names no "
             "rule. Pass one of: " + ", ".join(handoff_owed.EXCEPTIONS))
+    # harmonic-forge#1381 AC1: a deferral that names a blocker must link it,
+    # refused here, before anything is created.
+    if args.handoff_exception == BLOCKED_ON_PREREQUISITE and not args.blocked_by:
+        parser.error(
+            "--handoff-exception blocked-on-prerequisite requires --blocked-by "
+            "OWNER/REPO#N: the blocker is written as a native blocked_by link, "
+            "so closing it reports this issue as owed.")
+    if args.blocked_by and args.handoff_exception != BLOCKED_ON_PREREQUISITE:
+        parser.error("--blocked-by applies only to --handoff-exception "
+                     f"{BLOCKED_ON_PREREQUISITE}.")
+    if args.blocked_by and _parse_blocker(args.blocked_by) is None:
+        parser.error(f"--blocked-by {args.blocked_by!r} is not OWNER/REPO#N.")
 
     # harmonic-forge#266: --body-file is the safe path for prose. --body still
     # works for short bodies, but anything with backticks, apostrophes or
