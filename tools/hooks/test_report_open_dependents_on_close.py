@@ -1,0 +1,86 @@
+"""harmonic-forge#1381 AC3: closing a blocker reports its open dependents."""
+from __future__ import annotations
+
+import io
+import json
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import batch_auth  # noqa: E402
+import report_open_dependents_on_close as hook  # noqa: E402
+
+CLOSE = {"tool_name": "Bash",
+         "tool_input": {"command": "gh issue close 1290 --repo vitalharmony/harmonic-forge"}}
+
+
+def _runner(stdout: str = "", returncode: int = 0):
+    def run(cmd, **_kw):
+        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+    return run
+
+
+def _envelope(payload: dict, landed=True, runner=None) -> dict | None:
+    """Run main() and return the JSON it printed, or None when it printed nothing."""
+    buffer = io.StringIO()
+    with mock.patch.object(batch_auth, "action_landed", return_value=landed), \
+         mock.patch.object(hook.subprocess, "run", side_effect=runner or _runner()), \
+         mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+         mock.patch("sys.stdout", buffer):
+        hook.main()
+    text = buffer.getvalue().strip()
+    return json.loads(text) if text else None
+
+
+class ReportsOpenDependents(unittest.TestCase):
+    def test_each_open_dependent_is_one_owed_line_in_additional_context(self):
+        out = _envelope(CLOSE, runner=_runner("vitalharmony/harmonic-forge#1291\n"
+                                              "vitalharmony/harmonic-forge#1292\n"))
+        context = out["hookSpecificOutput"]["additionalContext"].splitlines()
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertEqual(len(context), 2)
+        self.assertTrue(all(line.startswith("handoff now owed: ") for line in context))
+        self.assertIn("vitalharmony/harmonic-forge#1292", context[1])
+
+    def test_the_read_asks_only_for_open_dependents(self):
+        seen = []
+
+        def run(cmd, **_kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        _envelope(CLOSE, runner=run)
+        jq = seen[0][seen[0].index("--jq") + 1]
+        self.assertIn('select(.state == "open")', jq)
+        self.assertTrue(seen[0][2].endswith("issues/1290/dependencies/blocking"))
+
+    def test_a_blocker_with_no_dependents_prints_nothing(self):
+        self.assertIsNone(_envelope(CLOSE, runner=_runner("")))
+
+    def test_an_unreadable_read_prints_unknown_never_silence(self):
+        out = _envelope(CLOSE, runner=_runner("", returncode=1))
+        self.assertIn("dependents UNKNOWN", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_close_that_did_not_land_prints_nothing(self):
+        for landed in (False, None):
+            with self.subTest(landed=landed):
+                self.assertIsNone(_envelope(CLOSE, landed=landed,
+                                            runner=_runner("vitalharmony/harmonic-forge#1291\n")))
+
+    def test_the_rest_close_form_is_covered(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1290 "
+                   "-f state=closed -f state_reason=completed"}}
+        out = _envelope(payload, runner=_runner("vitalharmony/harmonic-forge#1291\n"))
+        self.assertIn("1291", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_non_close_command_prints_nothing_and_reads_nothing(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command": "git status"}}
+        self.assertIsNone(_envelope(payload, runner=lambda *a, **k: self.fail("no read")))
+
+
+if __name__ == "__main__":
+    unittest.main()

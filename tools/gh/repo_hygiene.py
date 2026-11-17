@@ -164,6 +164,7 @@ class Report:
     #: legitimate open state that can last months, and failing weekly on
     #: it trains people to ignore the sweep.
     inert_phase_dependents: list[Finding] = field(default_factory=list)
+    unblocked_dependents: list[Finding] = field(default_factory=list)
 
     @property
     def actionable(self) -> bool:
@@ -709,6 +710,27 @@ def _issue_ref(item: dict, fallback_repo: str) -> str:
     parts = [p for p in url.split("/") if p]
     where = "/".join(parts[-2:]) if len(parts) >= 2 else fallback_repo
     return f"{where}#{item.get('number')}"
+
+
+def audit_unblocked_dependents(repo: str, report: Report) -> None:
+    """harmonic-forge#1381: open issues with a native blocker that has closed.
+
+    The after-the-fact pair of `report_open_dependents_on_close.py`, which is
+    fail-open (killed, timed out, or a close made outside Claude Code). Each
+    issue object's `issue_dependencies_summary` counts open blockers
+    (`blocked_by`) and all blockers (`total_blocked_by`), so a closed blocker
+    shows as a difference: one list call, no per-issue read."""
+    for issue in _rest(f"repos/{repo}/issues?state=open&per_page=100"):
+        if "pull_request" in issue:
+            continue
+        summary = issue.get("issue_dependencies_summary") or {}
+        closed = (summary.get("total_blocked_by") or 0) - (summary.get("blocked_by") or 0)
+        if closed > 0:
+            report.unblocked_dependents.append(Finding(
+                repo=repo, name=f"#{issue['number']}",
+                detail=(f"{closed} closed blocker(s), {summary.get('blocked_by') or 0} "
+                        f"still open; {issue['title'][:60]}"),
+            ))
 
 
 def audit_inert_phase_dependents(repo: str, report: Report) -> None:
@@ -1434,6 +1456,7 @@ def main() -> int:
             audit_unlabelled_migrations(repo, report)
             audit_phase_closures(repo, report)
             audit_inert_phase_dependents(repo, report)
+            audit_unblocked_dependents(repo, report)
             audit_unboarded(repo, report, board_cache)
             audit_board_status_drift(repo, report, board_cache)
             audit_open_prs(repo, report)
@@ -1523,6 +1546,14 @@ def main() -> int:
         print("  Report-only (harmonic-forge#647) — native dependency links "
               "only, never prose. Depending on an inert phase is a legitimate "
               "open state; re-plan it or accept it.")
+        print()
+    if report.unblocked_dependents:
+        print(f"UNBLOCKED DEPENDENTS — {len(report.unblocked_dependents)} open "
+              f"issue(s) with a native blocker that has closed:")
+        for f in report.unblocked_dependents:
+            print(f"  {f.repo} [{f.name}] — {f.detail}")
+        print("  A deferred handoff (R-0039 exception 3) is owed once every "
+              "blocker has closed (harmonic-forge#1381). Reported, not failed.")
         print()
     if report.phase_candidates:
         print(f"PHASE CANDIDATES — {len(report.phase_candidates)} issue(s) that "

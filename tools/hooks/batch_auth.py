@@ -809,6 +809,36 @@ def _entry_live(entry: dict, now: datetime) -> bool:
         return False
 
 
+#: harmonic-forge#1381 (folded close-guard fix): the only flags an `issue close`
+#: may carry besides the number and its one `--repo`, each at most once, each
+#: with a value in its closed set. `gh` accepts these reasons; anything else
+#: still makes the repo unbound, so `decide()` asks.
+_CLOSE_REASONS = frozenset({"completed", "not planned", "duplicate"})
+
+
+def _close_tail_ok(tail: list[str]) -> bool:
+    """Whether the tokens after `issue close <N>` (with `--repo` removed) are a
+    closed, unambiguous shape: nothing, or `--reason <reason>` and/or
+    `--duplicate-of <N>`, each once. The denial's own advice (`--repo
+    OWNER/REPO` in canonical form) must be followable with a reason."""
+    seen: set[str] = set()
+    i = 0
+    while i < len(tail):
+        flag = tail[i]
+        if flag in seen or i + 1 >= len(tail):
+            return False
+        value = tail[i + 1]
+        if flag == "--reason" and value in _CLOSE_REASONS:
+            pass
+        elif flag == "--duplicate-of" and value.isdigit():
+            pass
+        else:
+            return False
+        seen.add(flag)
+        i += 2
+    return True
+
+
 def _bound_repo(rest: list[str], verb: tuple[str, str]) -> str | None:
     """The repo a `gh <sub> <verb>` segment names, only when its argv has one
     closed shape (harmonic-forge#1339 reforge, the F1178 precedent): exactly
@@ -832,7 +862,7 @@ def _bound_repo(rest: list[str], verb: tuple[str, str]) -> str | None:
         return None
     tail = others[3:]
     if verb == ("issue", "close"):
-        return repo if not tail else None
+        return repo if _close_tail_ok(tail) else None
     seen: set[str] = set()
     i = 0
     while i < len(tail):

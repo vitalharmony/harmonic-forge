@@ -931,6 +931,7 @@ class MainCleanGuardTests(unittest.TestCase):
              patch.object(rh, "audit_unlabelled_migrations", noop), \
              patch.object(rh, "audit_phase_closures", noop), \
              patch.object(rh, "audit_inert_phase_dependents", noop), \
+             patch.object(rh, "audit_unblocked_dependents", noop), \
              patch.object(rh, "audit_unboarded", noop), \
              patch.object(rh, "audit_board_status_drift", noop), \
              patch.object(rh, "audit_open_prs", fake_audit_open_prs), \
@@ -1016,6 +1017,7 @@ class MainSwitchesSlotPerRepoTests(unittest.TestCase):
              patch.object(rh, "audit_unlabelled_migrations", noop), \
              patch.object(rh, "audit_phase_closures", noop), \
              patch.object(rh, "audit_inert_phase_dependents", noop), \
+             patch.object(rh, "audit_unblocked_dependents", noop), \
              patch.object(rh, "audit_unboarded", noop), \
              patch.object(rh, "audit_board_status_drift", noop), \
              patch.object(rh, "audit_open_prs", noop), \
@@ -1441,6 +1443,32 @@ class PhaseClosureSweepTests(unittest.TestCase):
         report = self._sweep({"phase": [pr]}, all_issues=[pr])
         self.assertEqual(report.undetermined_phase_closures, [])
         self.assertEqual(report.phase_candidates, [])
+
+
+class UnblockedDependentsTests(unittest.TestCase):
+    """harmonic-forge#1381: the after-the-fact pair of the close hook."""
+
+    def _sweep(self, issues):
+        report = rh.Report()
+        with patch.object(rh, "_rest", return_value=issues):
+            rh.audit_unblocked_dependents("vitalharmony/harmonic-forge", report)
+        return report.unblocked_dependents
+
+    @staticmethod
+    def _issue(number, open_blockers, all_blockers, **extra):
+        return {"number": number, "title": "t", "issue_dependencies_summary":
+                {"blocked_by": open_blockers, "total_blocked_by": all_blockers}, **extra}
+
+    def test_an_issue_with_a_closed_blocker_is_reported(self):
+        found = self._sweep([self._issue(1291, 0, 1)])
+        self.assertEqual([f.name for f in found], ["#1291"])
+
+    def test_open_only_blockers_or_none_are_not_reported(self):
+        self.assertEqual(self._sweep([self._issue(1, 2, 2), self._issue(2, 0, 0),
+                                      {"number": 3, "title": "no summary"}]), [])
+
+    def test_pull_requests_are_skipped(self):
+        self.assertEqual(self._sweep([self._issue(4, 0, 1, pull_request={})]), [])
 
 
 class InertPhaseDependentsTests(unittest.TestCase):

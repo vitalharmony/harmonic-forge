@@ -526,7 +526,10 @@ around to:
    file and line citations would be written against code that is about to
    change. This one is a **deferral, not a waiver**: the handoff is owed as
    soon as the prerequisite lands, and the deferral is declared per R-0352
-   below — trigger, owner, record.
+   below — trigger, owner, record. The prerequisite is written as a native
+   `blocked_by` link (`gh_issue.py --blocked-by OWNER/REPO#N`, required with
+   this exception), so closing the blocker reports this issue as owed
+   (harmonic-forge#1381).
 
 No other exception exists. In particular, "I am not the lane that writes
 handoffs" is not one — see below.
