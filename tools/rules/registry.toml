@@ -2932,8 +2932,8 @@ hooks = []
 id = "R-0431"
 file = "rules/lane-shorthand.md"
 anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
-statement = "On a belt or suspenders tick, a lane whose post waits on another lane or the operator takes the next queued item that does not need the machine; while its own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on ScheduleWakeup only when every item waits on someone else (harmonic-forge#1390)."
-text_sha = "66397a9ffaa1fbd6"
+statement = "On a belt or suspenders tick, a Lane 1 or Lane 2 session whose post waits on another lane or the operator takes the next queued item its own lane owns that does not need the machine (Lane 1: a review, a rebase, a Tooling Exception implementation; Lane 2: a queued handoff or rework); a Lane 3 session takes only its own owed spec or gate, and never edits, fixes or commits; while a lane's own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on ScheduleWakeup only when every item waits on someone else (harmonic-forge#1390)."
+text_sha = "d79a4c9ea6e4c2f8"
 hooks = []
 
 [[rule]]
@@ -2948,6 +2948,6 @@ hooks = []
 id = "R-0433"
 file = "rules/testing-gate.md"
 anchor = "live-ui-test-cases-read-the-flow-source-before-scripting"
-statement = "At the gate, after the posted AE and readiness sweep authorize execution (R-0128) and before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
-text_sha = "4ef602b1aaae6ae6"
+statement = "At the gate, once a live UI test case is authorized to execute (R-0128, or the variant's own authorization) and before scripting it, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph when the spec names one (otherwise only the steps that have no side effects, against the target the authorization names), and runs any bounded-spend action (an LLM call, a paid API, a delete) last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
+text_sha = "fd300486ca3318e7"
 hooks = []
