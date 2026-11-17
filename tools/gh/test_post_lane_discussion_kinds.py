@@ -618,6 +618,15 @@ class Lane3NextAsDiscussionTests(unittest.TestCase):
     """harmonic-forge#1388: a discussion whose `**Next:**` hands the step to
     Lane 3 queues no owed work for Lane 3, so the poster is refused."""
 
+    def assertNotRefused(self, kind, body, lane):
+        """Fail explicitly on a refusal. A SystemExit raised inside `subTest` is
+        not reported as a failure under pytest (the strip-removed kill check
+        stayed green on a bare call), so a `posts as today` case never relies on it."""
+        try:
+            P.reject_lane3_next_as_discussion(kind, body, lane)
+        except SystemExit as exc:
+            self.fail(f"refused a post that must go through: {exc}")
+
     def test_lane1_posting_a_lane3_next_as_discussion_is_refused(self):
         """AC1."""
         with self.assertRaises(SystemExit) as caught:
@@ -653,26 +662,25 @@ class Lane3NextAsDiscussionTests(unittest.TestCase):
                   "**Next:** Operator decides.\n")
         for body in (fenced, quoted):
             with self.subTest(body=body[:40]):
-                P.reject_lane3_next_as_discussion("discussion", body, "1")
+                self.assertNotRefused("discussion", body, "1")
 
     def test_lane3_posting_its_own_next_is_not_refused(self):
         """AC2."""
-        P.reject_lane3_next_as_discussion("discussion", LANE3_NEXT, "3")
+        self.assertNotRefused("discussion", LANE3_NEXT, "3")
 
     def test_a_next_naming_lane1_lane2_or_the_operator_posts_as_today(self):
         """AC3, including Lane 2: a Plan-First ratification must stay postable."""
         for nxt in ("Lane 1 reviews.", "Lane 2 implements from the ratified plan.",
                     "Operator decides."):
             with self.subTest(next=nxt):
-                P.reject_lane3_next_as_discussion(
-                    "discussion", f"## Note\n\n**Next:** {nxt}\n", "1")
-        P.reject_lane3_next_as_discussion("discussion", "## Note\n\nno next line here\n", "1")
+                self.assertNotRefused("discussion", f"## Note\n\n**Next:** {nxt}\n", "1")
+        self.assertNotRefused("discussion", "## Note\n\nno next line here\n", "1")
 
     def test_other_kinds_are_untouched(self):
         """AC4: a spec, gate report or plan whose Next names Lane 3 posts through its own kind."""
         for kind in ("plan", "spec", "gate-result"):
             with self.subTest(kind=kind):
-                P.reject_lane3_next_as_discussion(kind, LANE3_NEXT, "1")
+                self.assertNotRefused(kind, LANE3_NEXT, "1")
 
     def _post(self, lane):
         env = {k: v for k, v in os.environ.items() if k != "LANE"}
