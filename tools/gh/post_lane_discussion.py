@@ -393,10 +393,14 @@ def reject_quoted_markers(kind: str, body: str) -> None:
 #: of them only moves the bypass rather than closing it.
 _PLAN_HEADING_RE = re.compile(r"\A\s*#{1,4}\s*(?:Plan\b|L2S\b)", re.I)
 
-#: A `**Next:**` line that hands the next step to Lane 3 (harmonic-forge#1388).
-#: Only how the line BEGINS is read, so a phrasing like `**Next:** back to
-#: Lane 3.` is not caught, which the issue accepts.
-_NEXT_LANE3_RE = re.compile(r"^\*\*Next:\*\*\s*Lane 3\b", re.M)
+#: A `Next` line that hands the next step to Lane 3 (harmonic-forge#1388).
+#: Modelled on `l1_post.LEAD_LABEL` (the repo's own definition of a labelled
+#: lead line): case-insensitive, any bold or colon spelling (`**Next:**`,
+#: `**Next**:`, `Next:`), an optional bullet, optional indentation and bold
+#: around `Lane 3`. Only how the line BEGINS is read, so a phrasing like
+#: `**Next:** back to Lane 3.` is not caught, which the issue accepts.
+_NEXT_LANE3_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*+][ \t]+)?\**[ \t]*Next[ \t]*\**[ \t]*:[ \t*]*Lane[ \t]+3\b")
 
 
 def reject_plan_as_discussion(kind: str, body: str) -> None:
@@ -459,7 +463,11 @@ def reject_lane3_next_as_discussion(kind: str, body: str, poster_lane: str | Non
     **Refuse rather than rewrite**, for the reason `reject_plan_as_discussion`
     gives: restamping the kind would change what the thread records.
     """
-    if kind != "discussion" or poster_lane == "3" or not _NEXT_LANE3_RE.search(body):
+    # Visible text only, as `candidate_kind` does: a `**Next:** Lane 3` quoted
+    # inside a fenced block or a `>` line is evidence, not the post's own Next,
+    # and a refusal would tell the poster to change a line that is not theirs.
+    if (kind != "discussion" or poster_lane == "3"
+            or not _NEXT_LANE3_RE.search(watch_lane_posts._strip_quoted(body))):
         return
     fail(
         "This hands the next step to Lane 3 (its `**Next:**` line begins `Lane 3`) "

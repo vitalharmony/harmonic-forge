@@ -633,6 +633,28 @@ class Lane3NextAsDiscussionTests(unittest.TestCase):
             with self.subTest(lane=lane), self.assertRaises(SystemExit):
                 P.reject_lane3_next_as_discussion("discussion", LANE3_NEXT, lane)
 
+    def test_every_spelling_of_the_next_label_is_refused(self):
+        """Pass 1 silent-bypass: the label, case, bullet and bold forms all hand
+        the step to Lane 3, so all are refused (modelled on l1_post.LEAD_LABEL)."""
+        for line in ("**Next**: Lane 3 corrects it.", "Next: Lane 3 corrects it.",
+                     "**Next:** **Lane 3** corrects it.", "**next:** lane 3 corrects it.",
+                     "   **Next:** Lane 3 corrects it.", "- **Next:** Lane 3 corrects it."):
+            with self.subTest(line=line), self.assertRaises(SystemExit):
+                P.reject_lane3_next_as_discussion(
+                    "discussion", f"## Review\n\n{line}\n", "1")
+
+    def test_a_quoted_or_fenced_lane3_next_is_not_the_posts_own(self):
+        """Pass 1 fail-direction: a Lane 1 post that QUOTES the hrse#2753 body in a
+        fence or a `>` block, and whose own Next names the operator, must post."""
+        fenced = ("## Preclose note\n\nThe refuter quoted:\n\n```\n"
+                  "**Next:** Lane 3 corrects the two paths.\n```\n\n"
+                  "**Next:** Operator decides.\n")
+        quoted = ("## Preclose note\n\n> **Next:** Lane 3 corrects the two paths.\n\n"
+                  "**Next:** Operator decides.\n")
+        for body in (fenced, quoted):
+            with self.subTest(body=body[:40]):
+                P.reject_lane3_next_as_discussion("discussion", body, "1")
+
     def test_lane3_posting_its_own_next_is_not_refused(self):
         """AC2."""
         P.reject_lane3_next_as_discussion("discussion", LANE3_NEXT, "3")
