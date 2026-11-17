@@ -377,7 +377,7 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
 ## Live UI test cases: read the flow source before scripting (harmonic-forge#1390)
 
 <!-- R-0433 -->
-Before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action (an LLM call, a paid API, a delete) last; a check asserts the specific element, never a word matched anywhere in `body`.
+At the gate, after the posted AE and readiness sweep authorize execution (R-0128) and before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action (an LLM call, a paid API, a delete) last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in `body`.
 <!-- /R-0433 -->
 
 ## A green local gate is necessary and NOT sufficient — CI is the second required signal (harmonic-forge#504)

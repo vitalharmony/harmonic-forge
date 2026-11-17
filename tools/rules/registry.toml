@@ -2940,14 +2940,14 @@ hooks = []
 id = "R-0432"
 file = "rules/universal-agent.md"
 anchor = "protocol-failures-are-captured-at-once"
-statement = "The moment a protocol failure is noticed, or the operator names one (a hook denial counts), the session invokes the protocol-failure skill in the same turn without asking first; the skill is the only path, never capture_failure.py from Bash (harmonic-forge#1390)."
-text_sha = "3389cb0092a6bd26"
+statement = "The moment a protocol failure is noticed, or the operator names one (a hook denial counts), the session invokes the protocol-failure skill in the same turn without asking first, and records only through that skill's own command, never a capture_failure.py call composed outside it (harmonic-forge#1390)."
+text_sha = "142e8b50566be5ba"
 hooks = []
 
 [[rule]]
 id = "R-0433"
 file = "rules/testing-gate.md"
 anchor = "live-ui-test-cases-read-the-flow-source-before-scripting"
-statement = "Before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action last; a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
-text_sha = "df6bd7a9dac35f30"
+statement = "At the gate, after the posted AE and readiness sweep authorize execution (R-0128) and before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
+text_sha = "4ef602b1aaae6ae6"
 hooks = []
