@@ -39,6 +39,7 @@ class Fixture(unittest.TestCase):
         (self.main / "app.py").write_text("x = 1\n")
         git(self.main, "add", ".")
         git(self.main, "commit", "-q", "-m", "init")
+        git(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
         self.state = "closed"
         self.patches = [
             mock.patch.object(gc, "issue_state", side_effect=lambda repo, issue: self._state()),
@@ -218,6 +219,116 @@ class RegisteredTests(Fixture):
         path = self.worktree(name="widgets-5-impl", branch="docs/5-baseline")
         self.assertIn("removed (acme/widgets#5 closed)", self.run_sweep())
         self.assertFalse(path.exists())
+
+
+class LandedTests(Fixture):
+    """harmonic-forge#1384: a closed issue is not enough; the branch must have landed."""
+
+    def commit_in(self, path: Path, name: str, text: str) -> str:
+        (path / name).write_text(text)
+        git(path, "add", name)
+        git(path, "commit", "-q", "-m", name)
+        return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_closed_issue_with_unmerged_branch_is_kept(self):
+        """AC1 / kill check 1: `_landed` always True would remove it."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        self.assertIn("kept: unmerged branch fix/12-thing", self.run_sweep(execute=True))
+        self.assertTrue(path.exists())
+
+    def test_fast_forward_merged_branch_is_removed(self):
+        """AC2: origin/main moved to the branch head."""
+        path = self.worktree()
+        head = self.commit_in(path, "new.py", "y = 2\n")
+        git(self.main, "update-ref", "refs/remotes/origin/main", head)
+        self.assertIn("removed (acme/widgets#12 closed)", self.run_sweep())
+        self.assertFalse(path.exists())
+
+    def test_squash_merged_branch_is_removed(self):
+        """AC2 / kill check 2: not an ancestor of origin/main, same tree change."""
+        path = self.worktree()
+        branch_head = self.commit_in(path, "new.py", "y = 2\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "c"
+            git(self.main, "worktree", "add", "-q", "--detach", str(clone), "main")
+            (clone / "new.py").write_text("y = 2\n")
+            git(clone, "add", "new.py")
+            git(clone, "commit", "-q", "-m", "squash of fix/12-thing")
+            squash = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True, check=True).stdout.strip()
+            git(self.main, "worktree", "remove", "--force", str(clone))
+        git(self.main, "update-ref", "refs/remotes/origin/main", squash)
+        ancestor = subprocess.run(["git", "-C", str(self.main), "merge-base", "--is-ancestor",
+                                   branch_head, "origin/main"])
+        self.assertNotEqual(ancestor.returncode, 0)
+        self.assertIn("removed (acme/widgets#12 closed)", self.run_sweep())
+        self.assertFalse(path.exists())
+
+    def test_conflicting_branch_is_kept(self):
+        """AC3 / kill check 4: a conflict exit (1) is not landed."""
+        path = self.worktree()
+        self.commit_in(path, "app.py", "x = 2\n")
+        (self.main / "app.py").write_text("x = 3\n")
+        git(self.main, "commit", "-q", "-am", "main edit")
+        git(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertIn("kept: unmerged branch fix/12-thing", self.run_sweep())
+        self.assertTrue(path.exists())
+
+    def test_merge_tree_failure_is_skipped(self):
+        """AC3 / kill check 3: any other failure skips, never removes."""
+        path = self.worktree()
+        git(self.main, "update-ref", "-d", "refs/remotes/origin/main")
+        self.assertIn("skipped: acme/widgets#12: landed check failed", self.run_sweep())
+        self.assertTrue(path.exists())
+
+    def test_unmerged_branch_is_kept_in_a_report_only_run(self):
+        """AC1 without --execute (cross-family pass 1)."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        self.assertIn("kept: unmerged branch fix/12-thing", self.run_sweep(execute=False))
+        self.assertTrue(path.exists())
+
+    def test_merge_commit_merged_branch_is_removed(self):
+        """AC2: an ordinary merge commit on origin/main (cross-family pass 1)."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        (self.main / "other.py").write_text("z = 3\n")
+        git(self.main, "add", "other.py")
+        git(self.main, "commit", "-q", "-m", "main moves")
+        git(self.main, "merge", "-q", "--no-ff", "-m", "merge fix/12-thing", "fix/12-thing")
+        git(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertIn("removed (acme/widgets#12 closed)", self.run_sweep())
+        self.assertFalse(path.exists())
+
+    def test_a_merge_tree_error_is_skipped(self):
+        """AC3: merge-tree itself failing (not a rev-parse) skips (cross-family pass 1)."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        real = gc._git
+
+        def failing(where, *args):
+            if args[:1] == ("merge-tree",):
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: boom")
+            return real(where, *args)
+        with mock.patch.object(gc, "_git", side_effect=failing):
+            self.assertIn("skipped: acme/widgets#12: landed check failed", self.run_sweep())
+        self.assertTrue(path.exists())
+
+    def test_a_local_branch_named_origin_main_does_not_shadow_the_remote_ref(self):
+        """Pass 2 finding: `git branch origin/main <unmerged>` made the short name
+        ambiguous and read the unmerged branch as landed."""
+        path = self.worktree()
+        head = self.commit_in(path, "new.py", "y = 2\n")
+        git(self.main, "branch", "origin/main", head)
+        self.assertIn("kept: unmerged branch fix/12-thing", self.run_sweep())
+        self.assertTrue(path.exists())
+
+    def test_branch_with_no_commits_reads_as_landed(self):
+        """Named limit: an empty branch reads landed, as it effectively did before."""
+        path = self.worktree()
+        self.assertIs(gc._landed(path, self.main), True)
 
 
 class LeftoverTests(Fixture):

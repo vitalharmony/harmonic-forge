@@ -14,7 +14,10 @@ A registered worktree is removed only when, in this order:
   2. `git status --porcelain` is empty;
   3. every ignored file is regenerable (`regenerable()`);
   4. the issue reads `closed` under the repo's own gh slot;
-  5. no live process has its cwd inside it (checked last, right before the
+  5. the branch's work has landed: `git merge-tree --write-tree origin/main
+     HEAD` equals `origin/main^{tree}` (harmonic-forge#1384), else `kept:
+     unmerged branch` (a conflict included), or `skipped:` when git fails;
+  6. no live process has its cwd inside it (checked last, right before the
      removal, so a session opened during the gh call is still seen).
 Removal is `git worktree remove` WITHOUT `--force`, then `git worktree prune`.
 The local branch is never touched.
@@ -122,6 +125,36 @@ def issue_state(repo: str, issue: int) -> str:
     return state
 
 
+_MAIN_REF = "refs/remotes/origin/main"
+
+
+def _landed(path: Path, main: Path) -> bool | None:
+    """Whether the worktree's branch work is already on `origin/main`
+    (harmonic-forge#1384): merging HEAD into `origin/main` would change nothing.
+
+    Covers a merge, a fast-forward and a squash merge alike, with git objects
+    only. `False` for a different tree or a conflict (exit 1), `None` for any
+    other failure. Known limit: a branch with no commits of its own reads as
+    landed."""
+    head = _git(path, "rev-parse", "HEAD")
+    if head.returncode != 0 or not head.stdout.strip():
+        return None
+    # Resolved first: merge-tree exits 1 for an unknown ref too, which would
+    # otherwise read as a conflict.
+    # Fully qualified: a local branch or tag named `origin/main` would shadow
+    # the short name and read an unmerged branch as landed (pass 2 finding).
+    base = _git(main, "rev-parse", "--verify", "-q", f"{_MAIN_REF}^{{tree}}")
+    if base.returncode != 0 or not base.stdout.strip():
+        return None
+    merged = _git(main, "merge-tree", "--write-tree", _MAIN_REF, head.stdout.strip())
+    tree = (merged.stdout.splitlines() or [""])[0].strip()
+    if merged.returncode == 1 and tree:
+        return False  # a conflict still prints the tree it wrote
+    if merged.returncode != 0 or not tree:
+        return None
+    return tree == base.stdout.strip()
+
+
 def _summary(paths: list[str]) -> str:
     return ", ".join(paths[:5]) + (f" (+{len(paths) - 5})" if len(paths) > 5 else "")
 
@@ -169,6 +202,12 @@ def sweep_registered(path: Path, execute: bool) -> str:
         return f"skipped: {repo}#{issue}: {exc}"
     if state != "closed":
         return f"kept: {repo}#{issue} open"
+    landed = _landed(path, main)
+    if landed is None:
+        return f"skipped: {repo}#{issue}: landed check failed"
+    if not landed:
+        branch = (_git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout or "").strip()
+        return f"kept: unmerged branch {branch}"
     busy = _busy(path)
     if busy:
         return f"kept: busy pid {busy[0][0]} ({busy[0][1][:60]})"
