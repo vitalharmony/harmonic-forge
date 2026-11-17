@@ -172,6 +172,67 @@ class ReportsOpenDependents(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
 
+    def test_a_parsed_close_does_not_silence_an_unparsed_one_in_control_flow(self):
+        """Pass 1 cluster (correctness): one parsed close must not hide the other."""
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 1290 --repo vitalharmony/harmonic-forge && "
+                   "if true; then gh issue close 1291 --repo vitalharmony/harmonic-forge; fi"}}
+        out = _envelope(payload, runner=_runner(""))
+        self.assertIsNotNone(out)
+        self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_parsed_close_does_not_silence_xargs_closes(self):
+        """Pass 1 cluster (fail-direction): closes fed through xargs still report."""
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 5 --repo vitalharmony/hrse && "
+                   "echo 6 7 | xargs -n1 gh issue close --repo vitalharmony/hrse"}}
+        out = _envelope(payload, runner=_runner(""))
+        self.assertIsNotNone(out)
+        self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_fully_parsed_command_prints_no_catch_all(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 10 --repo vitalharmony/harmonic-forge && "
+                   "gh issue close 11 --repo vitalharmony/harmonic-forge"}}
+        self.assertIsNone(_envelope(payload, runner=_runner("")))
+
+    def test_the_budget_is_checked_before_repo_resolution(self):
+        """Pass 1 cross-family finding 6: a slow repo lookup counts against the budget."""
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 10 && gh issue close 11"}}
+        now = [0.0]
+        resolves = []
+
+        def resolve(*args):
+            resolves.append(args)
+            now[0] += hook.BUDGET_SECONDS - hook.LANDING_TIMEOUT + 1
+            return "vitalharmony/harmonic-forge"
+
+        import record_tasklist_post
+        with mock.patch.object(record_tasklist_post, "_advisory_repo", side_effect=resolve), \
+             mock.patch.object(batch_auth, "action_landed", return_value=True):
+            result = hook._closed(payload, deadline=hook.BUDGET_SECONDS, clock=lambda: now[0])
+        self.assertEqual(len(resolves), 1, resolves)
+        self.assertIn(("?", "11", "time budget spent"), result)
+
+    def test_the_dependents_read_timeout_shrinks_with_the_budget(self):
+        """Pass 1 cross-family finding 7: the read never gets more than what is left."""
+        now = [0.0]
+        timeouts = []
+
+        def landed(*_a):
+            now[0] += hook.BUDGET_SECONDS - 5
+            return True
+
+        def run(cmd, **kw):
+            timeouts.append(kw.get("timeout"))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        with mock.patch.object(batch_auth, "action_landed", side_effect=landed), \
+             mock.patch.object(hook, "LANDING_TIMEOUT", 0):
+            hook.lines(CLOSE, runner=run, clock=lambda: now[0])
+        self.assertEqual(len(timeouts), 1, timeouts)
+        self.assertLessEqual(timeouts[0], 5)
+
     def test_an_internal_error_prints_the_catch_all(self):
         buffer = io.StringIO()
         with mock.patch.object(hook, "lines", side_effect=RuntimeError("boom")), \

@@ -1470,6 +1470,10 @@ class UnblockedDependentsTests(unittest.TestCase):
     def test_pull_requests_are_skipped(self):
         self.assertEqual(self._sweep([self._issue(4, 0, 1, pull_request={})]), [])
 
+    def test_an_issue_with_a_blocker_still_open_is_not_reported(self):
+        """Pass 1 cross-family finding 5: owed only once every blocker has closed."""
+        self.assertEqual(self._sweep([self._issue(5, 1, 2)]), [])
+
 
 class InertPhaseDependentsTests(unittest.TestCase):
     """harmonic-forge#647 (#642 AC4) — report-only, native-links-only reader

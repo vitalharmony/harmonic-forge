@@ -725,7 +725,11 @@ def audit_unblocked_dependents(repo: str, report: Report) -> None:
             continue
         summary = issue.get("issue_dependencies_summary") or {}
         closed = (summary.get("total_blocked_by") or 0) - (summary.get("blocked_by") or 0)
-        if closed > 0:
+        # Owed only once every blocker has closed, the close hook's own filter
+        # (harmonic-forge#1381 pass 1, cross-family finding 5). An issue whose
+        # handoff is already posted still lists until it closes: noise, not
+        # silence, accepted per the pass-1 sticky-wicket verdict (finding 4).
+        if closed > 0 and not (summary.get("blocked_by") or 0):
             report.unblocked_dependents.append(Finding(
                 repo=repo, name=f"#{issue['number']}",
                 detail=(f"{closed} closed blocker(s), {summary.get('blocked_by') or 0} "

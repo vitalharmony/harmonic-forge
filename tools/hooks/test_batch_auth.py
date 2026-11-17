@@ -497,6 +497,13 @@ class ClassifyTests(unittest.TestCase):
             tokens = ["gh", "issue", "close", "395", "--repo", "vitalharmony/hrse", *shlex.split(tail)]
             self.assertEqual(ba.classify_issue_close(tokens), ("vitalharmony/hrse", "395"), tail)
 
+    def test_a_numeric_flag_value_before_the_number_is_not_the_number(self):
+        """harmonic-forge#1381 pass 1 (silent-bypass): `--duplicate-of 1290 1291`
+        closes 1291, never 1290."""
+        for head in ("--duplicate-of 1290", "-c 12", "--comment 7", "-r completed"):
+            tokens = ["gh", "issue", "close", *shlex.split(head), "1291"]
+            self.assertEqual(ba.classify_issue_close(tokens)[1], "1291", head)
+
     def test_issue_close_with_an_unknown_or_repeated_flag_stays_unbound(self):
         for tail in ("--reason bogus", "--reason completed --reason completed", "--comment hi",
                      "--reason", "--duplicate-of abc", "--duplicate-of ²"):

@@ -967,6 +967,10 @@ def _protected_graphql(tokens: list[str]) -> bool:
     return query is None or query.startswith("@") or "$" in query or bool(PROTECTED_GRAPHQL_MUTATIONS.search(query))
 
 
+#: `gh issue close` flags whose next token is a value, not the issue number.
+_ISSUE_CLOSE_VALUE_FLAGS = frozenset({"--duplicate-of", "--reason", "-r", "--comment", "-c"})
+
+
 def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | None:
     """Is this segment ANY form of `gh issue close`? Returns (repo, number)
     -- either may be None if unresolvable from this command alone -- or
@@ -985,7 +989,19 @@ def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | N
     words = _gh_words(rest)
     if words[:2] == ["issue", "close"]:
         repo = _bound_repo(rest, ("issue", "close"))
-        number = next((t for t in words[2:] if t.isdigit()), None)
+        number = None
+        skip = False
+        for token in words[2:]:
+            if skip:
+                skip = False
+                continue
+            if token in _ISSUE_CLOSE_VALUE_FLAGS:
+                # harmonic-forge#1381 pass 1: `--duplicate-of 1290 1291` closes 1291
+                skip = True
+                continue
+            if token.isdigit():
+                number = token
+                break
         return repo, number
 
     return None

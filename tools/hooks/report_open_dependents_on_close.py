@@ -77,6 +77,11 @@ def _closed(payload: dict, deadline: float | None = None,
         if not close:
             continue
         number = close[1] or "?"
+        if deadline is not None and deadline - clock() <= LANDING_TIMEOUT:
+            # checked before repo resolution too, which may itself read gh
+            # (harmonic-forge#1381 pass 1, cross-family finding 6)
+            found.append((close[0] or "?", number, "time budget spent"))
+            continue
         try:
             repo = record_tasklist_post._advisory_repo(segment, close[0], payload)
             if not repo or not close[1]:
@@ -115,12 +120,12 @@ def _open_dependents(repo: str, number: str, runner=None,
     return [line.strip() for line in done.stdout.splitlines() if line.strip()]
 
 
-def _recognized(command: str) -> bool:
-    """Whether any segment of the command is a close the classifier parses. A
+def _recognized(command: str) -> int:
+    """How many segments of the command are closes the classifier parses. A
     recognized close that did not land owes nothing; only an unparsed mention
     gets the catch-all."""
     import batch_auth  # noqa: PLC0415
-    return any(batch_auth.classify_issue_close(segment) for segment in command_segments(command))
+    return sum(1 for segment in command_segments(command) if batch_auth.classify_issue_close(segment))
 
 
 def lines(payload: dict, runner=None, clock=time.monotonic) -> list[str]:
@@ -128,8 +133,6 @@ def lines(payload: dict, runner=None, clock=time.monotonic) -> list[str]:
     command = (payload.get("tool_input") or {}).get("command") or ""
     deadline = clock() + BUDGET_SECONDS
     closes = _closed(payload, deadline, clock)
-    if not closes:
-        return [CATCH_ALL] if _CLOSE_MENTION.search(command) and not _recognized(command) else []
     for repo, number, unknown in closes:
         left = deadline - clock()
         if unknown:
@@ -145,6 +148,10 @@ def lines(payload: dict, runner=None, clock=time.monotonic) -> list[str]:
             continue
         out.extend(f"handoff now owed: {dependent} (its blocker {repo}#{number} closed)"
                    for dependent in dependents)
+    # Per mention, not per command (harmonic-forge#1381 pass 1 cluster,
+    # sticky-wicket PATCH): one parsed close must not silence an unparsed one.
+    if len(_CLOSE_MENTION.findall(command)) > _recognized(command):
+        out.append(CATCH_ALL)
     return out
 
 
