@@ -1191,7 +1191,7 @@ def sweep_case_external_calls(sweep_body: str, tier_p: bool = False) -> dict[str
             for case, block in sweep_case_blocks(sweep_body, tier_p).items()}
 
 
-def validate_lane3_env(sweep_body: str, spec_body: str, repo: str) -> None:
+def validate_lane3_env(sweep_body: str, spec_body: str, repo: str, sha: str | None = None) -> None:
     """harmonic-forge#1218: refuse a sweep until Lane 3's own environment is
     ready, judged from Lane 3's worktree (AC1 links, AC2 `Requires:`, AC5 the
     repo's `lane3-preflight`). Read-only (AC3); runs on `--dry-run` too (AC4).
@@ -1202,7 +1202,8 @@ def validate_lane3_env(sweep_body: str, spec_body: str, repo: str) -> None:
         loose = _lane3_env.REQUIRES_LOOSE
         if len(loose.findall(sweep_body or "")) != sum(len(loose.findall(b)) for b in blocks.values()):
             raise _lane3_env.Lane3EnvError("`Requires:` outside any case block")
-        reasons = _lane3_env.check(repo, blocks)
+        # harmonic-forge#1380: the preflight judges the target, not Lane 3's HEAD.
+        reasons = _lane3_env.check(repo, blocks, target_sha=sha)
     except _lane3_env.Lane3EnvError as exc:
         fail(f"sweep refused (harmonic-forge#1218): {exc}")
     if reasons:
@@ -3648,7 +3649,7 @@ def main() -> None:
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
-            lambda: validate_lane3_env(sweep_body, spec_once(), repo),  # harmonic-forge#1218
+            lambda: validate_lane3_env(sweep_body, spec_once(), repo, sha),  # harmonic-forge#1218/#1380
             lambda: validate_ae_by_name(spec_once(), ae_body, sweep_body),  # harmonic-forge#1179
             lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
                 ae_body, sweep_external_calls(sweep_body, spec_live_ids(spec_once()),
@@ -3746,7 +3747,7 @@ def main() -> None:
     if args.kind == "sweep":
         spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue))
         steps.append(lambda: validate_sweep(body, spec_once(), repo, args.issue))
-        steps.append(lambda: validate_lane3_env(body, spec_once(), repo))  # harmonic-forge#1218
+        steps.append(lambda: validate_lane3_env(body, spec_once(), repo, sha))  # harmonic-forge#1218/#1380
         # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(
             repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))

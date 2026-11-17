@@ -194,11 +194,23 @@ def declares_preflight(lane3: Path, run: Runner = subprocess.run) -> bool:
                for t in tasks)
 
 
-def preflight_ok(lane3: Path, run: Runner = subprocess.run) -> tuple[bool, str]:
-    """AC5: `mise run lane3-preflight` in Lane 3's worktree. Exit 0 is the only ok."""
+TARGET_SHA_ENV = "LANE3_TARGET_SHA"
+
+
+def preflight_ok(lane3: Path, run: Runner = subprocess.run,
+                 target_sha: str | None = None) -> tuple[bool, str]:
+    """AC5: `mise run lane3-preflight` in Lane 3's worktree. Exit 0 is the only ok.
+
+    harmonic-forge#1380: the sweep's target SHA reaches the preflight as
+    `LANE3_TARGET_SHA`, so a repo can judge the target rather than whatever
+    Lane 3 has checked out. Set on this subprocess only; a preflight that does
+    not read it behaves exactly as before."""
+    extra = {}
+    if target_sha:
+        extra["env"] = {**os.environ, TARGET_SHA_ENV: target_sha}
     try:
         result = run(["mise", "run", PREFLIGHT_TASK], cwd=str(lane3),
-                     capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT)
+                     capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT, **extra)
     except subprocess.TimeoutExpired:
         return False, f"{PREFLIGHT_TASK} timed out after {PREFLIGHT_TIMEOUT}s"
     except OSError as exc:
@@ -238,8 +250,12 @@ def fence_refusals(needs: dict[str, list[tuple[str, str]]]) -> list[str]:
 def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
           run: Runner = subprocess.run,
           which: Callable[[str], str | None] = shutil.which,
-          platform: Callable[[], Path] = _platform_source) -> list[str]:
+          platform: Callable[[], Path] = _platform_source,
+          target_sha: str | None = None) -> list[str]:
     """Every refusal for this sweep, as messages; empty means ready.
+
+    `target_sha` (harmonic-forge#1380) is the sweep's resolved target, passed
+    to the repo preflight only.
 
     A repo whose manifest declares no Lane 3 worktree is not checked (AC1).
     The `Requires:` grammar is checked even then, since a malformed line is the
@@ -260,7 +276,8 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
                        f"`{REPAIR}` there:\n{detail}")
     reasons += [f"Lane 3 ({lane3}) lacks {miss}" for miss in probe_requires(needs, lane3, run, which)]
     if declares_preflight(lane3, run=run):
-        ok, detail = preflight_ok(lane3, run=run)
+        ok, detail = preflight_ok(lane3, run=run, target_sha=target_sha)
         if not ok:
-            reasons.append(f"Lane 3's `mise run {PREFLIGHT_TASK}` failed in {lane3}:\n{detail}")
+            judged = f" for target {target_sha[:12]}" if target_sha else " on Lane 3's checkout"
+            reasons.append(f"Lane 3's `mise run {PREFLIGHT_TASK}` failed in {lane3}{judged}:\n{detail}")
     return reasons
