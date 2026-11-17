@@ -6,6 +6,7 @@ Test Spec and Gate Results carry *no* footer. Measured precisely, they carry
 one that says `kind=discussion` — the emitter existed, the argument did not.
 """
 import hashlib
+import os
 import sys
 import tempfile
 import unittest
@@ -606,6 +607,108 @@ class RoundApprovalTests(unittest.TestCase):
                  mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
                 P.main()
         self.assertEqual(seen, [("vitalharmony/hrse", 2101)])
+
+
+LANE3_NEXT = ("## Lane 1 spec review — H1: amend TC5's paths\n\n"
+              "**Finding:** two paths are wrong.\n"
+              "**Next:** Lane 3 corrects the paths and reposts the spec.\n")
+
+
+class Lane3NextAsDiscussionTests(unittest.TestCase):
+    """harmonic-forge#1388: a discussion whose `**Next:**` hands the step to
+    Lane 3 queues no owed work for Lane 3, so the poster is refused."""
+
+    def assertNotRefused(self, kind, body, lane):
+        """Fail explicitly on a refusal. A SystemExit raised inside `subTest` is
+        not reported as a failure under pytest (the strip-removed kill check
+        stayed green on a bare call), so a `posts as today` case never relies on it."""
+        try:
+            P.reject_lane3_next_as_discussion(kind, body, lane)
+        except SystemExit as exc:
+            self.fail(f"refused a post that must go through: {exc}")
+
+    def test_lane1_posting_a_lane3_next_as_discussion_is_refused(self):
+        """AC1."""
+        with self.assertRaises(SystemExit) as caught:
+            P.reject_lane3_next_as_discussion("discussion", LANE3_NEXT, "1")
+        text = str(caught.exception)
+        self.assertIn("Spec H<N>", text)
+        self.assertIn("ready-for-l3", text)
+        self.assertIn("ae-and-sweep", text)
+
+    def test_an_unlaned_empty_or_other_poster_is_refused_too(self):
+        """AC1: only Lane 3 may hand a step to Lane 3."""
+        for lane in (None, "", "2", "x"):
+            with self.subTest(lane=lane), self.assertRaises(SystemExit):
+                P.reject_lane3_next_as_discussion("discussion", LANE3_NEXT, lane)
+
+    def test_every_spelling_of_the_next_label_is_refused(self):
+        """Pass 1 silent-bypass: the label, case, bullet and bold forms all hand
+        the step to Lane 3, so all are refused (modelled on l1_post.LEAD_LABEL)."""
+        for line in ("**Next**: Lane 3 corrects it.", "Next: Lane 3 corrects it.",
+                     "**Next:** **Lane 3** corrects it.", "**next:** lane 3 corrects it.",
+                     "   **Next:** Lane 3 corrects it.", "- **Next:** Lane 3 corrects it."):
+            with self.subTest(line=line), self.assertRaises(SystemExit):
+                P.reject_lane3_next_as_discussion(
+                    "discussion", f"## Review\n\n{line}\n", "1")
+
+    def test_a_quoted_or_fenced_lane3_next_is_not_the_posts_own(self):
+        """Pass 1 fail-direction: a Lane 1 post that QUOTES the hrse#2753 body in a
+        fence or a `>` block, and whose own Next names the operator, must post."""
+        fenced = ("## Preclose note\n\nThe refuter quoted:\n\n```\n"
+                  "**Next:** Lane 3 corrects the two paths.\n```\n\n"
+                  "**Next:** Operator decides.\n")
+        quoted = ("## Preclose note\n\n> **Next:** Lane 3 corrects the two paths.\n\n"
+                  "**Next:** Operator decides.\n")
+        for body in (fenced, quoted):
+            with self.subTest(body=body[:40]):
+                self.assertNotRefused("discussion", body, "1")
+
+    def test_lane3_posting_its_own_next_is_not_refused(self):
+        """AC2."""
+        self.assertNotRefused("discussion", LANE3_NEXT, "3")
+
+    def test_a_next_naming_lane1_lane2_or_the_operator_posts_as_today(self):
+        """AC3, including Lane 2: a Plan-First ratification must stay postable."""
+        for nxt in ("Lane 1 reviews.", "Lane 2 implements from the ratified plan.",
+                    "Operator decides."):
+            with self.subTest(next=nxt):
+                self.assertNotRefused("discussion", f"## Note\n\n**Next:** {nxt}\n", "1")
+        self.assertNotRefused("discussion", "## Note\n\nno next line here\n", "1")
+
+    def test_other_kinds_are_untouched(self):
+        """AC4: a spec, gate report or plan whose Next names Lane 3 posts through its own kind."""
+        for kind in ("plan", "spec", "gate-result"):
+            with self.subTest(kind=kind):
+                self.assertNotRefused(kind, LANE3_NEXT, "1")
+
+    def _post(self, lane):
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        if lane is not None:
+            env["LANE"] = lane
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "note.md"
+            path.write_text(LANE3_NEXT, encoding="utf-8")
+            argv = ["post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge",
+                    "--issue", "1", "--file", str(path), "--kind", "discussion"]
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
+                P.main()
+
+    def test_main_is_wired_to_the_refusal(self):
+        """The refusal is called from `main`, not from `validate_kind`: deleting
+        that call must fail a test (same shape as GateCheckIsActuallyWiredTests)."""
+        with self.assertRaises(SystemExit) as caught:
+            self._post("1")
+        self.assertIn("Spec H<N>", str(caught.exception))
+
+    def test_main_refuses_an_unlaned_session_and_lets_lane3_through(self):
+        """An unlaned test must really have no LANE: a Lane 1 session runs this
+        suite with LANE=1 already set, and mock.patch.dict adds to the environment."""
+        with self.assertRaises(SystemExit):
+            self._post(None)
+        self._post("3")
 
 
 if __name__ == "__main__":

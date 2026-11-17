@@ -393,6 +393,15 @@ def reject_quoted_markers(kind: str, body: str) -> None:
 #: of them only moves the bypass rather than closing it.
 _PLAN_HEADING_RE = re.compile(r"\A\s*#{1,4}\s*(?:Plan\b|L2S\b)", re.I)
 
+#: A `Next` line that hands the next step to Lane 3 (harmonic-forge#1388).
+#: Modelled on `l1_post.LEAD_LABEL` (the repo's own definition of a labelled
+#: lead line): case-insensitive, any bold or colon spelling (`**Next:**`,
+#: `**Next**:`, `Next:`), an optional bullet, optional indentation and bold
+#: around `Lane 3`. Only how the line BEGINS is read, so a phrasing like
+#: `**Next:** back to Lane 3.` is not caught, which the issue accepts.
+_NEXT_LANE3_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*+][ \t]+)?\**[ \t]*Next[ \t]*\**[ \t]*:[ \t*]*Lane[ \t]+3\b")
+
 
 def reject_plan_as_discussion(kind: str, body: str) -> None:
     """Refuse a Lane 2 plan posted as `kind=discussion` (harmonic-forge#618).
@@ -433,6 +442,46 @@ def reject_plan_as_discussion(kind: str, body: str) -> None:
         "    mise run lane-comment --issue <N> --kind plan --file <path>\n\n"
         "  If this genuinely is discussion ABOUT a plan rather than the plan "
         "itself, change the heading -- the check anchors on the first line."
+    )
+
+
+def reject_lane3_next_as_discussion(kind: str, body: str, poster_lane: str | None) -> None:
+    """Refuse a `kind=discussion` whose `**Next:**` hands the step to Lane 3
+    (harmonic-forge#1388), unless Lane 3 itself is the poster.
+
+    Measured live on hrse#2753: a Lane 1 spec review ended `**Next:** Lane 3
+    corrects the two paths ... and reposts the spec` and was posted as a
+    discussion. A discussion queues no owed work for Lane 3 (`OWES["l3"]` in
+    `watch_lane_posts.py` has no `discussion`, and `discussion` is unowned so
+    every belt hears it as noise), so Lane 3 stayed blocked until the operator
+    relayed it. The same script already refuses a plan posted this way
+    (`reject_plan_as_discussion`, harmonic-forge#618).
+
+    Lane 2 is deliberately not refused: a Plan-First ratification is a Lane 1
+    discussion that Lane 2 must hear and act on (hrse#1584).
+
+    **Refuse rather than rewrite**, for the reason `reject_plan_as_discussion`
+    gives: restamping the kind would change what the thread records.
+    """
+    # Visible text only, as `candidate_kind` does: a `**Next:** Lane 3` quoted
+    # inside a fenced block or a `>` line is evidence, not the post's own Next,
+    # and a refusal would tell the poster to change a line that is not theirs.
+    if (kind != "discussion" or poster_lane == "3"
+            or not _NEXT_LANE3_RE.search(watch_lane_posts._strip_quoted(body))):
+        return
+    fail(
+        "This hands the next step to Lane 3 (its `**Next:**` line begins `Lane 3`) "
+        "but it is being posted as `kind=discussion`.\n\n"
+        "  A discussion queues no owed work for Lane 3: `discussion` is unowned, "
+        "so Lane 3's belt hears it as noise and the step it names is never picked "
+        "up (harmonic-forge#1388, hrse#2753).\n\n"
+        "  Post a queue-visible artifact instead:\n"
+        "    mise run l1-post -- --kind ready-for-l3 ...   to (re)write a spec\n"
+        "    mise run l1-post -- --kind ae-and-sweep ...   to run a gate on an approved spec\n"
+        "  If no belt is armed, give the operator the trigger `Spec H<N>` "
+        "(rules/lane-shorthand.md).\n\n"
+        "  If this genuinely is discussion, change the `**Next:**` line to name "
+        "Lane 1 or the operator."
     )
 
 
@@ -709,6 +758,9 @@ def main() -> None:
     # refuses the post: a missing or unusable map is stamped `absent`.
     case_fields = ""
     lane = os.environ.get("LANE")
+    # harmonic-forge#1388: ahead of every gh call below; an unset, empty or
+    # other LANE is refused, only Lane 3 may hand a step to Lane 3.
+    reject_lane3_next_as_discussion(args.kind, body, lane)
     # The same poster identity the footer stamps, LANE-unset included (#893 e1
     # sticky-wicket #6): only Lane 3 posts an artifact.
     artifact = lane3_artifact(body, args.kind if args.kind in ("gate-result", "spec") else None,
