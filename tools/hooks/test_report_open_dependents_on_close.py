@@ -54,7 +54,7 @@ class ReportsOpenDependents(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         _envelope(CLOSE, runner=run)
         jq = seen[0][seen[0].index("--jq") + 1]
-        self.assertIn('select(.state == "open")', jq)
+        self.assertIn('select(.state == "open"', jq)
         self.assertTrue(any(a.endswith("issues/1290/dependencies/blocking") for a in seen[0]))
 
     def test_a_blocker_with_no_dependents_prints_nothing(self):
@@ -105,6 +105,61 @@ class ReportsOpenDependents(unittest.TestCase):
                 self.assertIsNotNone(out, command)
                 context = out["hookSpecificOutput"]["additionalContext"]
                 self.assertTrue("dependents UNKNOWN" in context or "handoff now owed" in context)
+
+    def test_a_dependent_still_blocked_by_another_open_issue_is_not_owed(self):
+        """Sticky-wicket reforge: the filter keeps only dependents whose blockers
+        have all closed. Run the registered jq filter over two dependents."""
+        seen = []
+
+        def run(cmd, **_kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        _envelope(CLOSE, runner=run)
+        jq = seen[0][seen[0].index("--jq") + 1]
+        sample = json.dumps([
+            {"number": 1291, "state": "open", "repository_url": "https://api.github.com/repos/o/r",
+             "issue_dependencies_summary": {"blocked_by": 0}},
+            {"number": 1292, "state": "open", "repository_url": "https://api.github.com/repos/o/r",
+             "issue_dependencies_summary": {"blocked_by": 1}},
+            {"number": 1293, "state": "closed", "repository_url": "https://api.github.com/repos/o/r",
+             "issue_dependencies_summary": {"blocked_by": 0}}])
+        out = subprocess.run(["jq", "-r", jq], input=sample, capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.split(), ["o/r#1291"])
+
+    def test_a_spent_budget_reports_unknown_for_the_remaining_closes(self):
+        """Sticky-wicket reforge: several closes never overrun the hook timeout;
+        once the budget is gone each remaining close says so."""
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 10 --repo vitalharmony/harmonic-forge && "
+                   "gh issue close 11 --repo vitalharmony/harmonic-forge"}}
+        now = [0.0]
+
+        def landed(*_a):
+            now[0] += 25.0  # a slow landing read
+            return True
+
+        def run(cmd, **kw):
+            now[0] += kw.get("timeout", 0)
+            return subprocess.CompletedProcess(cmd, 0, stdout="vitalharmony/harmonic-forge#9\n", stderr="")
+        with mock.patch.object(batch_auth, "action_landed", side_effect=landed):
+            result = hook.lines(payload, runner=run, clock=lambda: now[0])
+        self.assertTrue(any("time budget spent" in line for line in result), result)
+        self.assertLessEqual(now[0], hook.HOOK_TIMEOUT)
+
+    def test_a_close_inside_shell_control_flow_prints_the_catch_all(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "if true; then gh issue close 1290 --repo vitalharmony/harmonic-forge; fi"}}
+        out = _envelope(payload, runner=_runner("vitalharmony/harmonic-forge#1291\n"))
+        self.assertIsNotNone(out)
+        self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_an_internal_error_prints_the_catch_all(self):
+        buffer = io.StringIO()
+        with mock.patch.object(hook, "lines", side_effect=RuntimeError("boom")), \
+             mock.patch("sys.stdin", io.StringIO(json.dumps(CLOSE))), \
+             mock.patch("sys.stdout", buffer):
+            hook.main()
+        self.assertIn("run repo_hygiene", buffer.getvalue())
 
     def test_the_read_paginates(self):
         seen = []
