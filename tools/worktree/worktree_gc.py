@@ -125,6 +125,9 @@ def issue_state(repo: str, issue: int) -> str:
     return state
 
 
+_MAIN_REF = "refs/remotes/origin/main"
+
+
 def _landed(path: Path, main: Path) -> bool | None:
     """Whether the worktree's branch work is already on `origin/main`
     (harmonic-forge#1384): merging HEAD into `origin/main` would change nothing.
@@ -138,10 +141,12 @@ def _landed(path: Path, main: Path) -> bool | None:
         return None
     # Resolved first: merge-tree exits 1 for an unknown ref too, which would
     # otherwise read as a conflict.
-    base = _git(main, "rev-parse", "--verify", "-q", "origin/main^{tree}")
+    # Fully qualified: a local branch or tag named `origin/main` would shadow
+    # the short name and read an unmerged branch as landed (pass 2 finding).
+    base = _git(main, "rev-parse", "--verify", "-q", f"{_MAIN_REF}^{{tree}}")
     if base.returncode != 0 or not base.stdout.strip():
         return None
-    merged = _git(main, "merge-tree", "--write-tree", "origin/main", head.stdout.strip())
+    merged = _git(main, "merge-tree", "--write-tree", _MAIN_REF, head.stdout.strip())
     tree = (merged.stdout.splitlines() or [""])[0].strip()
     if merged.returncode == 1 and tree:
         return False  # a conflict still prints the tree it wrote

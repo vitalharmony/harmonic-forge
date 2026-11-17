@@ -316,6 +316,15 @@ class LandedTests(Fixture):
             self.assertIn("skipped: acme/widgets#12: landed check failed", self.run_sweep())
         self.assertTrue(path.exists())
 
+    def test_a_local_branch_named_origin_main_does_not_shadow_the_remote_ref(self):
+        """Pass 2 finding: `git branch origin/main <unmerged>` made the short name
+        ambiguous and read the unmerged branch as landed."""
+        path = self.worktree()
+        head = self.commit_in(path, "new.py", "y = 2\n")
+        git(self.main, "branch", "origin/main", head)
+        self.assertIn("kept: unmerged branch fix/12-thing", self.run_sweep())
+        self.assertTrue(path.exists())
+
     def test_branch_with_no_commits_reads_as_landed(self):
         """Named limit: an empty branch reads landed, as it effectively did before."""
         path = self.worktree()
