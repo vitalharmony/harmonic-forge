@@ -184,6 +184,9 @@ Plan-First ratification `discussion`.
 <!-- R-0409 -->
 A belt or suspenders tick with nothing owed to this lane produces no text. An owed relay is named once, never on every tick.
 <!-- /R-0409 -->
+<!-- R-0431 -->
+On a belt or suspenders tick, a lane whose post waits on another lane or the operator takes the next queued item that does not need the machine (a rebase, a review, a Tooling Exception implementation); while its own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on `ScheduleWakeup` only when every item waits on someone else.
+<!-- /R-0431 -->
 
 ## `NOW` — interrupt
 

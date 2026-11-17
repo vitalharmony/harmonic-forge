@@ -374,6 +374,12 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      (Still live in HRSE2 as of 2026-08-12: `frontend/.env.example` pins
      port 8002.)
 
+## Live UI test cases: read the flow source before scripting (harmonic-forge#1390)
+
+<!-- R-0433 -->
+Before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action (an LLM call, a paid API, a delete) last; a check asserts the specific element, never a word matched anywhere in `body`.
+<!-- /R-0433 -->
+
 ## A green local gate is necessary and NOT sufficient — CI is the second required signal (harmonic-forge#504)
 
 <!-- R-0354 -->

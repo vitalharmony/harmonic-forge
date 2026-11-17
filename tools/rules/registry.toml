@@ -2927,3 +2927,27 @@ anchor = "production-runs"
 statement = "A test case that says to relaunch or log in to a lane is reproduced by Lane 1 with the launcher's own flags in a disposable worktree; only an interactive TUI or OAuth consent stays the operator's (harmonic-forge#1370)."
 text_sha = "df05e046066bd3ca"
 hooks = []
+
+[[rule]]
+id = "R-0431"
+file = "rules/lane-shorthand.md"
+anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
+statement = "On a belt or suspenders tick, a lane whose post waits on another lane or the operator takes the next queued item that does not need the machine; while its own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on ScheduleWakeup only when every item waits on someone else (harmonic-forge#1390)."
+text_sha = "66397a9ffaa1fbd6"
+hooks = []
+
+[[rule]]
+id = "R-0432"
+file = "rules/universal-agent.md"
+anchor = "protocol-failures-are-captured-at-once"
+statement = "The moment a protocol failure is noticed, or the operator names one (a hook denial counts), the session invokes the protocol-failure skill in the same turn without asking first; the skill is the only path, never capture_failure.py from Bash (harmonic-forge#1390)."
+text_sha = "3389cb0092a6bd26"
+hooks = []
+
+[[rule]]
+id = "R-0433"
+file = "rules/testing-gate.md"
+anchor = "live-ui-test-cases-read-the-flow-source-before-scripting"
+statement = "Before scripting a live UI test case, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph, and runs any bounded-spend action last; a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
+text_sha = "df6bd7a9dac35f30"
+hooks = []
