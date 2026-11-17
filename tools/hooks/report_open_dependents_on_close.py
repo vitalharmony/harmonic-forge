@@ -49,7 +49,10 @@ HOOK_TIMEOUT = 60
 #: Work stops this long before the hook's timeout, so the final print always runs.
 BUDGET_SECONDS = HOOK_TIMEOUT - 10
 #: Any mention of a close in the command text, recognized or not.
-_CLOSE_MENTION = re.compile(r"issue\s+close|state=closed|state\s*=\s*closed")
+#: Any text that may close an issue. Broad on purpose (harmonic-forge#1381
+#: pass 2, sticky-wicket PATCH): flags between `issue` and `close`, a quoted
+#: `state="closed"`, and the GraphQL `closeIssue` mutation all count.
+_CLOSE_MENTION = re.compile(r"\bissue\b[^;&|\n]*?\bclose\b|state\W{0,3}closed|closeIssue")
 CATCH_ALL = ("a close may have run that this hook could not parse; dependents "
              "UNKNOWN; run repo_hygiene (its unblocked-dependents report)")
 
@@ -120,14 +123,6 @@ def _open_dependents(repo: str, number: str, runner=None,
     return [line.strip() for line in done.stdout.splitlines() if line.strip()]
 
 
-def _recognized(command: str) -> int:
-    """How many segments of the command are closes the classifier parses. A
-    recognized close that did not land owes nothing; only an unparsed mention
-    gets the catch-all."""
-    import batch_auth  # noqa: PLC0415
-    return sum(1 for segment in command_segments(command) if batch_auth.classify_issue_close(segment))
-
-
 def lines(payload: dict, runner=None, clock=time.monotonic) -> list[str]:
     out: list[str] = []
     command = (payload.get("tool_input") or {}).get("command") or ""
@@ -148,11 +143,28 @@ def lines(payload: dict, runner=None, clock=time.monotonic) -> list[str]:
             continue
         out.extend(f"handoff now owed: {dependent} (its blocker {repo}#{number} closed)"
                    for dependent in dependents)
-    # Per mention, not per command (harmonic-forge#1381 pass 1 cluster,
-    # sticky-wicket PATCH): one parsed close must not silence an unparsed one.
-    if len(_CLOSE_MENTION.findall(command)) > _recognized(command):
+    if _unparsed(command):
         out.append(CATCH_ALL)
     return out
+
+
+def _unparsed(command: str) -> bool:
+    """Whether the command mentions a close this hook did not fully parse
+    (harmonic-forge#1381 pass 2, sticky-wicket PATCH). Judged per segment, so
+    the classifier can only switch the catch-all off for a segment it parsed
+    whole; it never offsets a count from another segment. Plus one guard that
+    compares the regex with itself: mentions in the raw command beyond those
+    in the segments mean the segmenter dropped text."""
+    import batch_auth  # noqa: PLC0415
+    seen = 0
+    for segment in command_segments(command):
+        mentions = len(_CLOSE_MENTION.findall(" ".join(segment)))
+        seen += mentions
+        if not mentions:
+            continue
+        if mentions > 1 or not batch_auth.classify_issue_close(segment):
+            return True
+    return len(_CLOSE_MENTION.findall(command)) > seen
 
 
 def main() -> int:

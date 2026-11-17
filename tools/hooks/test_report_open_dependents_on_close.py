@@ -190,6 +190,38 @@ class ReportsOpenDependents(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
 
+    def _lines(self, command, dependents=""):
+        payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+        with mock.patch.object(batch_auth, "action_landed", return_value=True):
+            return hook.lines(payload, runner=_runner(dependents))
+
+    def test_pass2_a_flag_between_issue_and_close_does_not_cancel_an_eval_close(self):
+        """Pass 2 finding 1, verbatim."""
+        result = self._lines('gh issue -R vitalharmony/harmonic-forge close 1290 && '
+                             'eval "gh issue close 1291 -R vitalharmony/harmonic-forge"',
+                             "vitalharmony/harmonic-forge#1292\n")
+        self.assertIn(hook.CATCH_ALL, result)
+        self.assertIn("handoff now owed: vitalharmony/harmonic-forge#1292 "
+                      "(its blocker vitalharmony/harmonic-forge#1290 closed)", result)
+
+    def test_pass2_a_quoted_state_closed_does_not_cancel_an_xargs_close(self):
+        """Pass 2 finding 2, verbatim."""
+        result = self._lines('gh api -X PATCH repos/o/r/issues/5 -f state="closed"; '
+                             'echo 6 | xargs gh issue close -R o/r', "o/r#7\n")
+        self.assertIn(hook.CATCH_ALL, result)
+        self.assertIn("handoff now owed: o/r#7 (its blocker o/r#5 closed)", result)
+
+    def test_pass2_a_graphql_close_issue_prints_the_catch_all(self):
+        """Pass 2 finding 3, verbatim."""
+        result = self._lines("gh api graphql -f query='mutation{closeIssue(input:{issueId:\"X\"}){issue{id}}}'")
+        self.assertEqual(result, [hook.CATCH_ALL])
+
+    def test_a_close_the_segmenter_drops_still_prints_the_catch_all(self):
+        """The coverage guard compares the regex with itself."""
+        with mock.patch.object(hook, "command_segments", return_value=[]):
+            result = self._lines("gh issue close 1291 --repo vitalharmony/harmonic-forge")
+        self.assertIn(hook.CATCH_ALL, result)
+
     def test_a_fully_parsed_command_prints_no_catch_all(self):
         payload = {"tool_name": "Bash", "tool_input": {"command":
                    "gh issue close 10 --repo vitalharmony/harmonic-forge && "
