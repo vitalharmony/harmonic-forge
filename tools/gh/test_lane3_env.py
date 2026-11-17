@@ -303,6 +303,17 @@ class PreflightTest(Lane3EnvCase):
             if cmd != ["mise", "run", "lane3-preflight"]:
                 self.assertNotIn(_lane3_env.TARGET_SHA_ENV, kw.get("env") or {}, cmd)
 
+    def test_refusal_names_the_target_it_judged(self):
+        """harmonic-forge#1380 follow-up: a failing preflight's reason says which
+        target it judged, so a sweep refusal is not read as Lane 3's checkout."""
+        sha = "a2428d6262de10c617927b346f3cc30d66774efb"
+        run = Recorder({"run lane3-preflight": 1}, tasks=["lane3-preflight"])
+        reasons = _lane3_env.check("vitalharmony/hrse", {}, lane3=self.lane3, run=run, which=_present,
+                                   platform=lambda: self.platform, target_sha=sha)
+        self.assertIn("for target a2428d6262de", reasons[-1])
+        plain = self.check({}, Recorder({"run lane3-preflight": 1}, tasks=["lane3-preflight"]))
+        self.assertIn("on Lane 3's checkout", plain[-1])
+
     def test_no_target_sha_passes_no_env(self):
         """AC3 for the platform side: without a target the call is unchanged."""
         run = Recorder(tasks=["lane3-preflight"])

@@ -278,5 +278,6 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
     if declares_preflight(lane3, run=run):
         ok, detail = preflight_ok(lane3, run=run, target_sha=target_sha)
         if not ok:
-            reasons.append(f"Lane 3's `mise run {PREFLIGHT_TASK}` failed in {lane3}:\n{detail}")
+            judged = f" for target {target_sha[:12]}" if target_sha else " on Lane 3's checkout"
+            reasons.append(f"Lane 3's `mise run {PREFLIGHT_TASK}` failed in {lane3}{judged}:\n{detail}")
     return reasons
