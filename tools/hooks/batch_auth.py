@@ -830,7 +830,7 @@ def _close_tail_ok(tail: list[str]) -> bool:
         value = tail[i + 1]
         if flag == "--reason" and value in _CLOSE_REASONS:
             pass
-        elif flag == "--duplicate-of" and value.isdigit():
+        elif flag == "--duplicate-of" and value.isascii() and value.isdigit():
             pass
         else:
             return False

@@ -36,19 +36,36 @@ READ_TIMEOUT = 20
 HOOK_TIMEOUT = 60
 
 
-def _closed(payload: dict) -> list[tuple[str, str]]:
-    """`[(repo, number), ...]` for each issue close in this Bash call that landed."""
+def _closed(payload: dict) -> list[tuple[str, str, str | None]]:
+    """`[(repo, number, unknown), ...]` for each issue close in this Bash call.
+
+    `unknown` is None for a close confirmed landed, else why it could not be
+    judged. Only a close the landing read says did NOT happen is dropped
+    (preclose pass 1, harmonic-forge#1381): an unresolved repo or number, an
+    unreadable landing check, or an error all come back as unknown, because
+    silence reads as "nothing owed"."""
     import batch_auth  # noqa: PLC0415
     import record_tasklist_post  # noqa: PLC0415
     command = (payload.get("tool_input") or {}).get("command") or ""
-    found: list[tuple[str, str]] = []
+    found: list[tuple[str, str, str | None]] = []
     for segment in command_segments(command):
         close = batch_auth.classify_issue_close(segment)
-        if not close or not close[1]:
+        if not close:
             continue
-        repo = record_tasklist_post._advisory_repo(segment, close[0], payload)
-        if repo and batch_auth.action_landed("close", repo, close[1]) is True:
-            found.append((repo, close[1]))
+        number = close[1] or "?"
+        try:
+            repo = record_tasklist_post._advisory_repo(segment, close[0], payload)
+            if not repo or not close[1]:
+                found.append((repo or "?", number, "the closed issue could not be resolved"))
+                continue
+            landed = batch_auth.action_landed("close", repo, close[1])
+        except Exception as exc:  # noqa: BLE001 - reported, never silent
+            found.append(("?", number, f"the close could not be checked ({type(exc).__name__})"))
+            continue
+        if landed is True:
+            found.append((repo, close[1], None))
+        elif landed is None:
+            found.append((repo, close[1], "whether the close landed could not be read"))
     return found
 
 
@@ -56,7 +73,8 @@ def _open_dependents(repo: str, number: str, runner=None) -> list[str] | None:
     """Each open dependent as `owner/repo#n`, or None when the read failed."""
     runner = runner or subprocess.run
     try:
-        done = runner(["gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocking",
+        done = runner(["gh", "api", "--paginate",
+                       f"repos/{repo}/issues/{number}/dependencies/blocking",
                        "--jq", '.[] | select(.state == "open") | '
                                '"\\(.repository_url | split("/") | .[-2:] | join("/"))#\\(.number)"'],
                       capture_output=True, text=True, timeout=READ_TIMEOUT)
@@ -69,7 +87,10 @@ def _open_dependents(repo: str, number: str, runner=None) -> list[str] | None:
 
 def lines(payload: dict, runner=None) -> list[str]:
     out: list[str] = []
-    for repo, number in _closed(payload):
+    for repo, number, unknown in _closed(payload):
+        if unknown:
+            out.append(f"{repo}#{number} close; dependents UNKNOWN ({unknown})")
+            continue
         dependents = _open_dependents(repo, number, runner)
         if dependents is None:
             out.append(f"{repo}#{number} closed; dependents UNKNOWN "

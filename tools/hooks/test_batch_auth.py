@@ -499,7 +499,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_issue_close_with_an_unknown_or_repeated_flag_stays_unbound(self):
         for tail in ("--reason bogus", "--reason completed --reason completed", "--comment hi",
-                     "--reason", "--duplicate-of abc"):
+                     "--reason", "--duplicate-of abc", "--duplicate-of ²"):
             tokens = ["gh", "issue", "close", "395", "--repo", "vitalharmony/hrse", *shlex.split(tail)]
             self.assertEqual(ba.classify_issue_close(tokens), (None, "395"), tail)
 

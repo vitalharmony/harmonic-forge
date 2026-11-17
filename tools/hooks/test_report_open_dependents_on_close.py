@@ -55,7 +55,7 @@ class ReportsOpenDependents(unittest.TestCase):
         _envelope(CLOSE, runner=run)
         jq = seen[0][seen[0].index("--jq") + 1]
         self.assertIn('select(.state == "open")', jq)
-        self.assertTrue(seen[0][2].endswith("issues/1290/dependencies/blocking"))
+        self.assertTrue(any(a.endswith("issues/1290/dependencies/blocking") for a in seen[0]))
 
     def test_a_blocker_with_no_dependents_prints_nothing(self):
         self.assertIsNone(_envelope(CLOSE, runner=_runner("")))
@@ -65,10 +65,55 @@ class ReportsOpenDependents(unittest.TestCase):
         self.assertIn("dependents UNKNOWN", out["hookSpecificOutput"]["additionalContext"])
 
     def test_a_close_that_did_not_land_prints_nothing(self):
-        for landed in (False, None):
-            with self.subTest(landed=landed):
-                self.assertIsNone(_envelope(CLOSE, landed=landed,
-                                            runner=_runner("vitalharmony/harmonic-forge#1291\n")))
+        self.assertIsNone(_envelope(CLOSE, landed=False,
+                                    runner=_runner("vitalharmony/harmonic-forge#1291\n")))
+
+    def test_an_unreadable_landing_check_prints_unknown(self):
+        """Preclose pass 1: None means 'could not tell', never 'did not land'."""
+        out = _envelope(CLOSE, landed=None, runner=_runner("vitalharmony/harmonic-forge#1291\n"))
+        self.assertIn("dependents UNKNOWN", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_landing_check_that_raises_prints_unknown_and_keeps_other_closes(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 1290 --repo vitalharmony/harmonic-forge && "
+                   "gh issue close 1291 --repo vitalharmony/harmonic-forge"}}
+        calls = iter([True, subprocess.TimeoutExpired("gh", 30)])
+
+        def landed(*_a):
+            value = next(calls)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        buffer = io.StringIO()
+        with mock.patch.object(batch_auth, "action_landed", side_effect=landed), \
+             mock.patch.object(hook.subprocess, "run", side_effect=_runner("vitalharmony/harmonic-forge#9\n")), \
+             mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+             mock.patch("sys.stdout", buffer):
+            hook.main()
+        context = json.loads(buffer.getvalue())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("handoff now owed: vitalharmony/harmonic-forge#9", context)
+        self.assertIn("dependents UNKNOWN", context)
+
+    def test_close_forms_with_no_bound_repo_print_unknown(self):
+        """Preclose pass 1 (cross-family): --comment, --repo= and a URL target."""
+        for command in ("gh issue close 1290 --repo vitalharmony/harmonic-forge --comment done",
+                        "gh issue close 1290 --repo=vitalharmony/harmonic-forge",
+                        "gh issue close https://github.com/vitalharmony/harmonic-forge/issues/1290"):
+            with self.subTest(command=command):
+                payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+                out = _envelope(payload, runner=_runner("vitalharmony/harmonic-forge#1291\n"))
+                self.assertIsNotNone(out, command)
+                context = out["hookSpecificOutput"]["additionalContext"]
+                self.assertTrue("dependents UNKNOWN" in context or "handoff now owed" in context)
+
+    def test_the_read_paginates(self):
+        seen = []
+
+        def run(cmd, **_kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        _envelope(CLOSE, runner=run)
+        self.assertIn("--paginate", seen[0])
 
     def test_the_rest_close_form_is_covered(self):
         payload = {"tool_name": "Bash", "tool_input": {"command":
