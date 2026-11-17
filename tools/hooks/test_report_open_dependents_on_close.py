@@ -216,6 +216,15 @@ class ReportsOpenDependents(unittest.TestCase):
         result = self._lines("gh api graphql -f query='mutation{closeIssue(input:{issueId:\"X\"}){issue{id}}}'")
         self.assertEqual(result, [hook.CATCH_ALL])
 
+    def test_a_parsed_close_the_regex_cannot_see_does_not_cancel_an_unparsed_one(self):
+        """Pins per-segment judgment over count subtraction: shell unquoting turns
+        `st"ate=closed"` into `state=closed`, so the classifier parses the PATCH
+        while the raw-text regex misses it; counts alone (1 mention, 1 parsed)
+        would call the xargs close covered."""
+        result = self._lines('gh api -X PATCH repos/o/r/issues/5 -f st"ate=closed"; '
+                             'echo 6 | xargs gh issue close -R o/r')
+        self.assertIn(hook.CATCH_ALL, result)
+
     def test_a_close_the_segmenter_drops_still_prints_the_catch_all(self):
         """The coverage guard compares the regex with itself."""
         with mock.patch.object(hook, "command_segments", return_value=[]):
