@@ -225,6 +225,12 @@ class ReportsOpenDependents(unittest.TestCase):
                              'echo 6 | xargs gh issue close -R o/r')
         self.assertIn(hook.CATCH_ALL, result)
 
+    def test_the_close_mention_gap_is_bounded(self):
+        """Post-verdict finding: an unbounded gap is quadratic on a long command.
+        Flags between `issue` and `close` still match; a gap past the bound does not."""
+        self.assertTrue(hook._CLOSE_MENTION.search("gh issue -R vitalharmony/harmonic-forge close 5"))
+        self.assertIsNone(hook._CLOSE_MENTION.search("gh issue " + "x " * 150 + "close"))
+
     def test_a_close_the_segmenter_drops_still_prints_the_catch_all(self):
         """The coverage guard compares the regex with itself."""
         with mock.patch.object(hook, "command_segments", return_value=[]):

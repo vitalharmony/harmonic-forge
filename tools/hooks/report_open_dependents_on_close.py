@@ -52,7 +52,11 @@ BUDGET_SECONDS = HOOK_TIMEOUT - 10
 #: Any text that may close an issue. Broad on purpose (harmonic-forge#1381
 #: pass 2, sticky-wicket PATCH): flags between `issue` and `close`, a quoted
 #: `state="closed"`, and the GraphQL `closeIssue` mutation all count.
-_CLOSE_MENTION = re.compile(r"\bissue\b[^;&|\n]*?\bclose\b|state\W{0,3}closed|closeIssue")
+#: The gap between `issue` and `close` is bounded: an unbounded lazy gap
+#: rescans the rest of the segment after every unmatched `issue` word, which is
+#: quadratic on a long command, and a hook timeout is silence
+#: (harmonic-forge#1381 post-verdict check).
+_CLOSE_MENTION = re.compile(r"\bissue\b[^;&|\n]{0,200}?\bclose\b|state\W{0,3}closed|closeIssue")
 CATCH_ALL = ("a close may have run that this hook could not parse; dependents "
              "UNKNOWN; run repo_hygiene (its unblocked-dependents report)")
 
