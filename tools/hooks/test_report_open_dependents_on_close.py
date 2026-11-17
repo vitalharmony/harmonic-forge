@@ -215,6 +215,23 @@ class ReportsOpenDependents(unittest.TestCase):
         self.assertEqual(len(resolves), 1, resolves)
         self.assertIn(("?", "11", "time budget spent"), result)
 
+    def test_a_slow_repo_lookup_skips_its_own_landing_read(self):
+        """The budget is checked again after repo resolution: a lookup that spent
+        it never starts a landing read it has no room to finish."""
+        payload = {"tool_name": "Bash", "tool_input": {"command": "gh issue close 10"}}
+        now = [0.0]
+
+        def resolve(*_a):
+            now[0] += hook.BUDGET_SECONDS - hook.LANDING_TIMEOUT + 1
+            return "vitalharmony/harmonic-forge"
+
+        import record_tasklist_post
+        with mock.patch.object(record_tasklist_post, "_advisory_repo", side_effect=resolve), \
+             mock.patch.object(batch_auth, "action_landed", return_value=True) as landed:
+            result = hook._closed(payload, deadline=hook.BUDGET_SECONDS, clock=lambda: now[0])
+        landed.assert_not_called()
+        self.assertEqual(result, [("vitalharmony/harmonic-forge", "10", "time budget spent")])
+
     def test_the_dependents_read_timeout_shrinks_with_the_budget(self):
         """Pass 1 cross-family finding 7: the read never gets more than what is left."""
         now = [0.0]
