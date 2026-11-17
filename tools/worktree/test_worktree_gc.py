@@ -283,6 +283,39 @@ class LandedTests(Fixture):
         self.assertIn("skipped: acme/widgets#12: landed check failed", self.run_sweep())
         self.assertTrue(path.exists())
 
+    def test_unmerged_branch_is_kept_in_a_report_only_run(self):
+        """AC1 without --execute (cross-family pass 1)."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        self.assertIn("kept: unmerged branch fix/12-thing", self.run_sweep(execute=False))
+        self.assertTrue(path.exists())
+
+    def test_merge_commit_merged_branch_is_removed(self):
+        """AC2: an ordinary merge commit on origin/main (cross-family pass 1)."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        (self.main / "other.py").write_text("z = 3\n")
+        git(self.main, "add", "other.py")
+        git(self.main, "commit", "-q", "-m", "main moves")
+        git(self.main, "merge", "-q", "--no-ff", "-m", "merge fix/12-thing", "fix/12-thing")
+        git(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertIn("removed (acme/widgets#12 closed)", self.run_sweep())
+        self.assertFalse(path.exists())
+
+    def test_a_merge_tree_error_is_skipped(self):
+        """AC3: merge-tree itself failing (not a rev-parse) skips (cross-family pass 1)."""
+        path = self.worktree()
+        self.commit_in(path, "new.py", "y = 2\n")
+        real = gc._git
+
+        def failing(where, *args):
+            if args[:1] == ("merge-tree",):
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: boom")
+            return real(where, *args)
+        with mock.patch.object(gc, "_git", side_effect=failing):
+            self.assertIn("skipped: acme/widgets#12: landed check failed", self.run_sweep())
+        self.assertTrue(path.exists())
+
     def test_branch_with_no_commits_reads_as_landed(self):
         """Named limit: an empty branch reads landed, as it effectively did before."""
         path = self.worktree()
