@@ -146,6 +146,25 @@ class ReportsOpenDependents(unittest.TestCase):
         self.assertTrue(any("time budget spent" in line for line in result), result)
         self.assertLessEqual(now[0], hook.HOOK_TIMEOUT)
 
+    def test_no_landing_read_starts_without_room_for_its_timeout(self):
+        """A landing read starts only when LANDING_TIMEOUT of budget is left;
+        the close it skips reports the spent budget instead of reading."""
+        payload = {"tool_name": "Bash", "tool_input": {"command":
+                   "gh issue close 10 --repo vitalharmony/harmonic-forge && "
+                   "gh issue close 11 --repo vitalharmony/harmonic-forge"}}
+        now = [0.0]
+        calls = []
+
+        def landed(*args):
+            calls.append(args)
+            now[0] += hook.BUDGET_SECONDS - hook.LANDING_TIMEOUT + 1
+            return True
+
+        with mock.patch.object(batch_auth, "action_landed", side_effect=landed):
+            result = hook._closed(payload, deadline=hook.BUDGET_SECONDS, clock=lambda: now[0])
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn(("vitalharmony/harmonic-forge", "11", "time budget spent"), result)
+
     def test_a_close_inside_shell_control_flow_prints_the_catch_all(self):
         payload = {"tool_name": "Bash", "tool_input": {"command":
                    "if true; then gh issue close 1290 --repo vitalharmony/harmonic-forge; fi"}}
