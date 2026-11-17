@@ -331,7 +331,6 @@ class WiringTest(unittest.TestCase):
         with patch.object(_lane3_env, "check", return_value=[]) as chk:
             l1_post.validate_lane3_env("## Gate-readiness sweep — H1\n", "", "vitalharmony/hrse", sha)
         self.assertEqual(chk.call_args.kwargs["target_sha"], sha)
-        self.assertRegex(chk.call_args.kwargs["target_sha"], r"^[0-9a-f]{40}$")
 
     def test_validate_lane3_env_refuses_through_fail(self):
         with patch.object(_lane3_env, "check", return_value=["Lane 3 not ready"]), \

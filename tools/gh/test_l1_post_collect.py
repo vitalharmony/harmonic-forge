@@ -156,10 +156,16 @@ ORDER = {
 class ValidatorOrderTests(unittest.TestCase):
     """AC2: every kind runs the same validators, in the same order, as before."""
 
+    #: harmonic-forge#1380 preclose pass 2: the typed `--sha` and what
+    #: `resolve_sha` returns differ, so a call site handing on the typed value is
+    #: distinguishable from one handing on the resolved value.
+    TYPED_SHA = "deadbee"
+    RESOLVED_SHA = "deadbeef" + "0" * 32
+
     def _calls(self, kind):
         calls = []
         argv = ["l1_post.py", "--repo", REPO, "--issue", str(ISSUE), "--kind", kind,
-                "--sha", "deadbeef", "--branch", "feat/35-x", "--spec-comment", "9"]
+                "--sha", self.TYPED_SHA, "--branch", "feat/35-x", "--spec-comment", "9"]
         argv += (["--ae-file", "/dev/null", "--sweep-file", "/dev/null"] if kind == "ae-and-sweep"
                  else ["--file", "/dev/null"])
         if kind == "handoff":
@@ -169,7 +175,7 @@ class ValidatorOrderTests(unittest.TestCase):
         if kind not in ("sweep", "ae-and-sweep"):
             argv.remove("--spec-comment"), argv.remove("9")
         patches = [mock.patch.object(sys, "argv", argv),
-                   mock.patch.object(l1_post, "resolve_sha", return_value="deadbeef"),
+                   mock.patch.object(l1_post, "resolve_sha", return_value=self.RESOLVED_SHA),
                    mock.patch.object(l1_post, "regular_body", return_value="body"),
                    mock.patch.object(l1_post, "reject_reserved_marker"),
                    mock.patch.object(l1_post, "apply_project_identity"),
@@ -215,7 +221,8 @@ class ValidatorOrderTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self._calls(kind)
                 (args,) = self.seen["validate_lane3_env"]
-                self.assertEqual(args[-1], "deadbeef", args)
+                self.assertEqual(args[-1], self.RESOLVED_SHA, args)
+                self.assertNotEqual(args[-1], self.TYPED_SHA, args)
                 self.assertEqual(len(args), 4, args)
 
 
