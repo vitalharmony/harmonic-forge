@@ -2930,8 +2930,8 @@ hooks = []
 
 [[rule]]
 id = "R-0431"
-file = "rules/lane-shorthand.md"
-anchor = "mid-turn-messages-queue-is-the-default-now-interrupts"
+file = "3-lane-protocol.md"
+anchor = "Long waits run in the background"
 statement = "On a belt or suspenders tick, a Lane 1 or Lane 2 session whose post waits on another lane or the operator takes the next queued item its own lane owns that does not need the machine (Lane 1: a review, a rebase, a Tooling Exception implementation; Lane 2: a queued handoff or rework); a Lane 3 session takes only its own owed spec or gate, and never edits, fixes or commits; while a lane's own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on ScheduleWakeup only when every item waits on someone else (harmonic-forge#1390)."
 text_sha = "d79a4c9ea6e4c2f8"
 hooks = []
