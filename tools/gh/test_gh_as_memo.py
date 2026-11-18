@@ -134,5 +134,61 @@ class GhAsMemoTests(unittest.TestCase):
         self.assertLess(exempt, text.index("consume_override()"))
 
 
+class GhAsLaneSlotTests(unittest.TestCase):
+    """harmonic-forge#1396: in a lane, `gh-as vitalharmony` runs on the lane
+    slot's file token as GH_TOKEN, and refuses when that slot has none."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.bin = root / "bin"
+        self.bin.mkdir()
+        self.home = root / "accounts"
+        (self.home / "vitalharmony").mkdir(parents=True)
+        self.lane_slot = self.home / "vitalharmony-lane2"
+        self.lane_slot.mkdir()
+        fake = self.bin / "gh"
+        # Answers the identity probe and echoes the token it ran under, so the
+        # test sees which credential the command actually carried.
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            '  "auth token") printf "%s" "${GH_TOKEN:-keyring-admin}" ;;\n'
+            '  "api user --jq .login") echo vitalharmony ;;\n'
+            '  "whoami") printf "token=%s dir=%s\\n" "${GH_TOKEN:-keyring-admin}" "$GH_CONFIG_DIR" ;;\n'
+            "esac\n")
+        fake.chmod(0o755)
+
+    def run_gh_as(self, lane: str | None) -> subprocess.CompletedProcess:
+        env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "GH_ACCT_HOME": str(self.home),
+               "GH_AS_IDENTITY_TTL": "0", "GH_TOKEN": "inherited-should-be-cleared"}
+        env.pop("LANE", None)
+        if lane is not None:
+            env["LANE"] = lane
+        return subprocess.run(["bash", str(GH_AS), "vitalharmony", "gh", "whoami"],
+                              capture_output=True, text=True, env=env)
+
+    def test_a_lane_runs_on_its_slot_file_token(self):
+        (self.lane_slot / "hosts.yml").write_text(
+            "github.com:\n    users:\n        vitalharmony:\n            oauth_token: lane2-tok\n")
+        result = self.run_gh_as("2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("token=lane2-tok", result.stdout)
+        self.assertIn(f"dir={self.lane_slot}", result.stdout)
+
+    def test_a_lane_slot_without_a_file_token_refuses(self):
+        result = self.run_gh_as("2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing rather than using the keyring", result.stderr)
+        self.assertNotIn("token=", result.stdout)
+
+    def test_no_lane_keeps_the_shared_slot(self):
+        result = self.run_gh_as(None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"dir={self.home / 'vitalharmony'}", result.stdout)
+        self.assertNotIn("inherited-should-be-cleared", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
