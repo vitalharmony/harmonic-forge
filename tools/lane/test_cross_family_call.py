@@ -804,6 +804,10 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         self.assertEqual(env["status"], "envelope-error")
         self.assertIsNone(env["report"])
         self.assertIn("native_preserved_at", env)
+        # harmonic-forge#1422 AC3: the printf failure record is measured too, so a
+        # formatting failure never sends the caller back to a typed number.
+        self.assertIsInstance(env["duration_ms"], int)
+        self.assertGreaterEqual(env["duration_ms"], 1)
 
     def test_a_successful_run_is_unchanged(self):
         """TC5. Exit 0, no diagnostic, and the same envelope as today —
@@ -815,8 +819,11 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         env = parse_envelopes(result.stdout)[-1]
         self.assertEqual(env["status"], "ok")
         self.assertEqual(sorted(env),
-                         ["caller_family", "exit_code", "family", "native", "posture", "report",
-                          "status", "target_family"])
+                         ["caller_family", "duration_ms", "exit_code", "family", "native", "posture",
+                          "report", "status", "target_family"])
+        # harmonic-forge#1422 AC3: the call's own measured wall-clock.
+        self.assertIsInstance(env["duration_ms"], int)
+        self.assertGreaterEqual(env["duration_ms"], 1)
 
 
 class TestCodexGitRepoCheck(unittest.TestCase):

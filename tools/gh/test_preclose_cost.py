@@ -30,7 +30,7 @@ class CostCase(base.ScratchRepo):
         self.addCleanup(patcher.stop)
         self.commit("tools/x.py")
 
-    def envelope(self, fallback: bool = False) -> str:
+    def envelope(self, fallback: bool = False, duration_ms: int | None = None) -> str:
         path = Path(self.findings_file([])).with_name("envelope.json")
         if fallback:
             path.write_text(json.dumps({"status": "process-error", "exit_code": 1, "label": base.FALLBACK}))
@@ -39,7 +39,8 @@ class CostCase(base.ScratchRepo):
             "status": "ok", "label": base.CROSS, "report": {"assumptions": [{"verdict": "confirmed"}]},
             "family": "codex", "posture": "verify", "exit_code": 0, "caller_family": "claude",
             "target_family": "codex",
-            "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}]}))
+            "native": [{"type": "thread.started"}, {"type": "item.completed", "item": {"type": "agent_message"}}],
+            **({"duration_ms": duration_ms} if duration_ms is not None else {})}))
         return str(path)
 
     def run_complete(self, findings: list | None = None, cross: bool = False, fallback: bool = False,
@@ -48,7 +49,8 @@ class CostCase(base.ScratchRepo):
         findings = [base.ANCHORED] if findings is None and not cross else (findings or [])
         args = base._Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
                           findings=self.findings_file(findings),
-                          envelope=self.envelope(fallback) if cross else None, not_triggered=not cross,
+                          envelope=(self.envelope(fallback, cost.pop("_duration", None)) if cross else None),
+                          not_triggered=not cross,
                           cross_family=False, force=False, own_model="claude-opus-5-5", tier="standard")
         args.__dict__.update(cost)
         if args.force and not getattr(args, "reforge", False):
@@ -229,6 +231,26 @@ class TC6CrossFamilyTime(CostCase):
                          (True, 300, "unavailable"))
         attrs = self.events()[0]["attrs"]
         self.assertEqual((attrs["cross_family_ran"], attrs["cross_family_ms"]), (True, 300))
+
+
+class EnvelopeMeasuredTime(CostCase):
+    """harmonic-forge#1422 AC4/AC5: the envelope's own measurement is recorded;
+    a typed flag never overrides it; a legacy envelope still takes the flag."""
+
+    def test_the_envelope_measurement_is_recorded_without_a_flag(self) -> None:
+        self.run_complete(cross=True, cross_family_ms=None, _duration=4321)
+        self.assertEqual(self.last_pass()["cross_family_ms"], 4321)
+
+    def test_a_typed_flag_with_a_measured_envelope_is_refused(self) -> None:
+        with self.assertRaises(SystemExit) as refused:
+            self.run_complete(cross=True, cross_family_ms="300000", _duration=95856)
+        self.assertIn("measured its own call (95856 ms)", str(refused.exception))
+        receipt = preclose.find_receipt("vitalharmony/hrse", 1208) or {}
+        self.assertFalse(receipt.get("pass_history"), "nothing may be recorded")
+
+    def test_a_legacy_envelope_still_takes_the_flag(self) -> None:
+        self.run_complete(cross=True, cross_family_ms="300")
+        self.assertEqual(self.last_pass()["cross_family_ms"], 300)
 
 
 class StickyWicketPatch(CostCase):

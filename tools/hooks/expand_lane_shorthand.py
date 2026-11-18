@@ -890,6 +890,15 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
                 "there. No grant written.")
     grants = _force_module()
     head = None
+    if mode == "reforge":
+        # harmonic-forge#1422: a reforge binds the new head the reforged code
+        # lands on, never one a pass or post-verdict check already reviewed
+        # (F1419: a line bound to the reviewed 96f53c1 left the new head ungranted).
+        reviewed = grants.reviewed_match(repo, number, sha_prefix or "")
+        if reviewed:
+            return (f"FORCE REFUSED for {key}: {sha_prefix} is {reviewed[:12]}, a head a preclose "
+                    "pass or post-verdict check already reviewed; a reforge binds the new head the "
+                    "reforged code lands on. No grant written.")
     if mode not in ("reforge", "route"):
         # A reforge or route grant binds the head the operator typed; that
         # head may have no receipt (harmonic-forge#1174, #1244).

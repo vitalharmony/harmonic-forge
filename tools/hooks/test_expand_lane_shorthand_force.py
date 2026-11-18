@@ -34,6 +34,12 @@ class ForceTrigger(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        # harmonic-forge#1422: a reforge line reads the receipt archive; never the operator's.
+        archive_root = Path(tempfile.mkdtemp())
+        (archive_root / ".hf-telemetry-test-root").write_text("")
+        env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(archive_root)})
+        env.start()
+        self.addCleanup(env.stop)
 
     def force(self, prompt: str, lane: str | None = "1") -> str:
         return m.authorize_force(prompt, "sess-7", lane)
@@ -114,6 +120,56 @@ class ForceModes(ForceTrigger):
         grant = self.grant()
         self.assertEqual((grant["mode"], grant["sha_prefix"], grant["sha"]),
                          ("reforge", "abcdef123456", None))
+
+    def _isolated_archive(self) -> Path:
+        """A test archive root (the sentinel archive_root demands) so no test
+        reads the operator's real receipt archive."""
+        root = Path(tempfile.mkdtemp())
+        (root / ".hf-telemetry-test-root").write_text("")
+        patcher = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(root)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return root
+
+    def test_a_reforge_on_a_head_the_current_receipt_reviewed_writes_nothing(self) -> None:
+        """harmonic-forge#1422 AC1: a pass head and the post-verdict head both refuse."""
+        import preclose_check  # noqa: PLC0415
+        self._isolated_archive()
+        receipt = {"pass_history": [{"sha": "a" * 40}],
+                   "post_verdict_check": {"head_sha": "b" * 40}}
+        for sha in ("a" * 12, "B" * 12):
+            with self.subTest(sha), mock.patch.object(preclose_check, "find_receipt", return_value=receipt):
+                out = self.force(f"FORCE F1166 reforge {sha}: new approach")
+            self.assertIn("already reviewed", out)
+            self.assertIsNone(self.grant())
+
+    def test_a_reforge_on_an_archived_post_verdict_head_writes_nothing(self) -> None:
+        """AC1 hard case (pitch-inspection): post_verdict_check is one slot the
+        next check overwrites, so an earlier post-verdict head lives only in the
+        archive -- F1419's 96f53c1."""
+        import preclose_check  # noqa: PLC0415
+        root = self._isolated_archive()
+        sys.path.insert(0, str(Path(force_grant.__file__).resolve().parent.parent / "telemetry"))
+        import archive  # noqa: PLC0415
+        archived = {"repo": "vitalharmony/harmonic-forge", "issue": 1166, "pass_history": [],
+                    "post_verdict_check": {"head_sha": "c" * 40}}
+        archive.archive("preclose-receipts", [archived],
+                        origin=archive.origin_for_repo("vitalharmony/harmonic-forge"))
+        self.assertTrue(list(root.rglob("*.jsonl.gz")))
+        with mock.patch.object(preclose_check, "find_receipt", return_value={"pass_history": []}):
+            out = self.force("FORCE F1166 reforge cccccccccccc: new approach")
+        self.assertIn("already reviewed", out)
+        self.assertIsNone(self.grant())
+
+    def test_a_reforge_with_no_receipt_and_no_archive_writes_the_grant(self) -> None:
+        """AC2, and the receipt-absent case: reviewed_heads is empty, never a refusal."""
+        import preclose_check  # noqa: PLC0415
+        self._isolated_archive()
+        with mock.patch.object(preclose_check, "find_receipt", return_value=None):
+            self.assertEqual(force_grant.reviewed_heads("vitalharmony/harmonic-forge", 1166), set())
+            out = self.force("FORCE F1166 reforge dddddddddddd: new approach")
+        self.assertIn("pending reforge grant", out)
+        self.assertEqual(self.grant()["sha_prefix"], "dddddddddddd")
 
     def test_reforge_without_sha_refuses(self) -> None:
         self.assertIn("names the head it approves", self.force("FORCE F1166 reforge: new approach"))

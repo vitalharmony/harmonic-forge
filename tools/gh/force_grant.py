@@ -98,6 +98,57 @@ def covered_head(repo: str, issue: int) -> str | None:
     return preclose_passes.force_head(preclose_check.find_receipt(repo, issue))
 
 
+def _receipt_heads(receipt: dict | None) -> set[str]:
+    """Every head one receipt records as reviewed: each `pass_history` head and
+    the post-verdict check's head."""
+    if not isinstance(receipt, dict):
+        return set()
+    heads = {entry.get("sha") for entry in receipt.get("pass_history") or []
+             if isinstance(entry, dict)}
+    check = receipt.get("post_verdict_check")
+    if isinstance(check, dict):
+        heads.add(check.get("head_sha"))
+    return {head for head in heads if isinstance(head, str) and head}
+
+
+def reviewed_heads(repo: str, issue: int) -> set[str]:
+    """Every head a preclose pass or post-verdict check reviewed for the issue
+    (harmonic-forge#1422): the current receipt plus every archived one, because
+    `post_verdict_check` is a single slot the next check overwrites and
+    `write_receipt` archives the previous receipt (#826). Read-only. A missing
+    or unreadable receipt or archive contributes nothing: a reforge line never
+    required a receipt."""
+    import preclose_check  # noqa: PLC0415  (imports this module; never at top level)
+    heads = set()
+    try:
+        heads |= _receipt_heads(preclose_check.find_receipt(repo, issue))
+    except Exception:  # noqa: BLE001 - an unreadable receipt adds no head
+        pass
+    try:
+        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+        if telemetry not in sys.path:
+            sys.path.insert(0, telemetry)
+        import archive  # noqa: PLC0415
+        origin = archive.origin_for_repo(repo)
+        folder = archive.partition(origin, "preclose-receipts", imc_waiver._now()).parent
+        for path in sorted(folder.glob("*.jsonl.gz")):
+            for envelope in archive.read(path):
+                record = envelope.get("record") if isinstance(envelope, dict) else None
+                if (isinstance(record, dict) and record.get("issue") == issue
+                        and str(record.get("repo", "")).lower() == repo.lower()):
+                    heads |= _receipt_heads(record)
+    except Exception:  # noqa: BLE001 - an unreadable archive adds no head
+        pass
+    return heads
+
+
+def reviewed_match(repo: str, issue: int, prefix: str) -> str | None:
+    """The reviewed head `prefix` names, or None."""
+    prefix = prefix.lower()
+    return next((head for head in sorted(reviewed_heads(repo, issue))
+                 if head.lower().startswith(prefix)), None)
+
+
 def read_grant(key: str) -> dict | None:
     """The current grant file for the key, or None."""
     return imc_waiver.read_json(grant_path(key))
