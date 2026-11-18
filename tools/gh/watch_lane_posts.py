@@ -1475,25 +1475,68 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
     count = int(count_text)
     if count == 0:
         return None
+    # harmonic-forge#1393 (token-sinks T2): a Tooling Exception branch never receives a
+    # Lane 2 completion, so the notice would be permanent noise for whichever lane gets
+    # it. An unreadable label set suppresses it for this tick: unknown is not owed work.
+    _state, labels, *_ = _issue_meta(repo, issue)
+    if labels is None or "tooling-exception" in labels:
+        return None
     comments = _fetch_all_comments(repo, issue)
     if comments is None:
         return None
     last_l2: tuple[str, str] | None = None
+    last_l2_at: str | None = None
     for comment in comments:
         classified = _classify(comment.get("body", ""))
         if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
             last_l2 = classified
+            last_l2_at = comment.get("created_at")
+    since_completion = False
     if last_l2 is not None and _is_l2_completion(*last_l2):
-        return None
+        # harmonic-forge#1393: new work after the newest completion is owed another one
+        # and surfaces once; a completion with no commit after it is the steady state.
+        if not last_l2_at:
+            return None
+        after_text = _run_git(worktree, "rev-list", "--count", f"--after={last_l2_at}",
+                              f"{base}..HEAD")
+        if not after_text or not after_text.isdigit() or int(after_text) == 0:
+            return None
+        count = int(after_text)
+        since_completion = True
     branch = _worktree_branch(worktree) or "?"
     plural = "" if count == 1 else "s"
+    tail = ("since its last completion" if since_completion
+            else "with no completion posted")
     return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
-            f"origin/main with no completion posted")
+            f"origin/main {tail}")
+
+
+#: harmonic-forge#1393 (token-sinks T2): the branch-ahead notices already announced, one
+#: key per (repo, issue, branch, HEAD sha), beside the belt's watermarks. The old dedupe
+#: compared the whole report string, which changes with the commit count, so one branch
+#: woke Lane 2 sixty-one times; a restarted watcher (every 1800 s) also forgot it.
+_BRANCH_NOTICES = _BELT_STATE / "branch-ahead-notified.json"
+
+
+def _load_notices(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _save_notices(path: Path, notices: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(notices, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def branch_ahead_lines(
     resolutions: list[tuple[str, tuple[str, int] | None, str]],
     last_ahead: dict[str, str | None],
+    notices_path: Path | None = None,
 ) -> list[str]:
     """One poll cycle's worth of AC4 output lines, factored out of `main()`
     (harmonic-forge#583 preclose finding) so this is directly unit-testable
@@ -1506,18 +1549,45 @@ def branch_ahead_lines(
     owns a worktree (Lane 2) is, by definition, watching OTHER lanes'
     posts (`--watch l1`), never its own. `last_ahead` is mutated in place
     (`main()`'s own state dict) so a worktree that stops resolving forgets
-    its prior report rather than repeating it forever."""
+    its prior report rather than repeating it forever.
+
+    harmonic-forge#1393: a notice is keyed by `(repo, issue, branch, HEAD sha)` and
+    emitted once per key, not once per report string. With `notices_path` the
+    announced keys persist across watcher restarts and are pruned when their
+    worktree is no longer resolved (branch gone or issue closed)."""
     lines: list[str] = []
+    notified = _load_notices(notices_path) if notices_path is not None else {}
+    changed = False
+    current_paths: set[str] = set()
     for path, pair, _reason in resolutions:
+        current_paths.add(path)
         if pair is None:
             last_ahead.pop(path, None)
             continue
         repo, issue = pair
         report = branch_ahead_without_completion(path, repo, issue)
-        if report != last_ahead.get(path):
-            if report:
-                lines.append(report)
-            last_ahead[path] = report
+        if report is None:
+            last_ahead[path] = None
+            continue
+        head = _run_git(path, "rev-parse", "HEAD")
+        key = f"{repo}#{issue}|{_worktree_branch(path) or '?'}|{head}" if head else report
+        if last_ahead.get(path) == key or key in notified:
+            last_ahead[path] = key
+            continue
+        lines.append(report)
+        last_ahead[path] = key
+        if notices_path is not None:
+            notified[key] = path
+            changed = True
+    if notices_path is not None:
+        for key in [k for k, p in notified.items() if p not in current_paths]:
+            del notified[key]
+            changed = True
+        if changed:
+            try:
+                _save_notices(notices_path, notified)
+            except OSError as exc:
+                print(f"[watch_lane_posts] branch notice state not saved: {exc}", file=sys.stderr)
     return lines
 
 
@@ -2337,7 +2407,18 @@ def queue_cycle(
             if recorded_only or key in checked_pairs:
                 retract.add(key)
     for repo, issue in retract:
-        lines.append(f"{repo}#{issue} left-queue-for-{lane}")
+        retraction = f"{repo}#{issue} left-queue-for-{lane}"
+        if lane == "l1":
+            # harmonic-forge#1393 (token-sinks T2): Lane 1 woken to be told its own queue
+            # shrank is pure noise. stderr and the tick record carry it instead. Only
+            # Lane 1's own: a `left-queue-for-l2` or `-l3` can withdraw authority a lane
+            # may act on (`OWES`: spec, gate, sweep-missing, plan, implement, fix), so
+            # those stay on stdout.
+            print(retraction, file=sys.stderr)
+            if tick is not None:
+                tick.actions_taken.append(f"retraction-to-stderr {repo}#{issue}")
+        else:
+            lines.append(retraction)
         if offers is not None:
             offers.remove((repo, issue))
 
@@ -3276,7 +3357,7 @@ def _main() -> int:
         #: permanently "ahead" (main squash-merged their work). That is why
         #: `resolutions` is filtered through `drop_closed_targets` above --
         #: the filter, not an empty list, is what keeps this honest now.
-        ahead_lines = branch_ahead_lines(resolutions, last_ahead)
+        ahead_lines = branch_ahead_lines(resolutions, last_ahead, _BRANCH_NOTICES)
         for line in ahead_lines:
             print(line)
             sys.stdout.flush()

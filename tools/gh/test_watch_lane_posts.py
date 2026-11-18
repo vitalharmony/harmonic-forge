@@ -733,7 +733,8 @@ class BranchAheadLinesTests(unittest.TestCase):
             lines = branch_ahead_lines(resolutions, last_ahead)
             self.assertEqual(len(lines), 1)
             self.assertIn("no completion posted", lines[0])
-            self.assertEqual(last_ahead["/wt"], lines[0])
+            # harmonic-forge#1393: the state holds the (repo, issue, branch, HEAD) key
+            self.assertEqual(last_ahead["/wt"], "o/r#1|fix/1-x|fix/1-x")
 
     def test_unresolved_worktree_is_dropped_from_state_and_silent(self):
         last_ahead = {"/wt": "a stale prior report"}
@@ -4516,6 +4517,111 @@ class ImcBeltLifecycleTests(unittest.TestCase):
         state = self.ba._load(state_path)
         self.assertNotIn("F10", state)
         self.assertIn("F11", state)
+
+
+class TokenSinksT2Tests(unittest.TestCase):
+    """harmonic-forge#1393 (token-sinks T2): the watcher's emit filter. Retractions of
+    Lane 1's own queue go to stderr; branch-ahead notices are keyed by commit, persisted,
+    counted after the newest completion, and never sent for a tooling-exception issue."""
+
+    COMPLETION = ("## L2D — receipt-backed status (harmonic-forge#371)\n\ntext")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.notices = Path(self.tmp.name) / "branch-ahead-notified.json"
+        self.head = "aaa111"
+        self.count = "3"
+        self.after = "0"
+
+    def git(self, wt, *a):
+        if a[0] == "merge-base":
+            return "base"
+        if a[0] == "rev-list":
+            return self.after if any(x.startswith("--after=") for x in a) else self.count
+        if a[0] == "rev-parse":
+            return self.head
+        return "fix/1-x"
+
+    def lines(self, comments=(), last_ahead=None, labels=frozenset(), resolutions=None):
+        res = resolutions if resolutions is not None else [("/wt", ("o/r", 1), "resolved")]
+        with patch("watch_lane_posts._run_git", side_effect=self.git), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=list(comments)), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", labels, None)):
+            return branch_ahead_lines(res, {} if last_ahead is None else last_ahead, self.notices)
+
+    # one notice per commit key, not per report string
+    def test_many_polls_at_one_head_print_one_notice(self):
+        last: dict = {}
+        first = self.lines(last_ahead=last)
+        self.count = "4"                       # the report string changes, the HEAD does not
+        again = self.lines(last_ahead=last)
+        self.assertEqual((len(first), again), (1, []))
+
+    def test_a_restarted_watcher_does_not_re_announce_the_same_head(self):
+        self.assertEqual(len(self.lines()), 1)
+        self.assertEqual(self.lines(last_ahead={}), [])   # a new process: empty in-memory state
+
+    def test_a_new_head_prints_one_more(self):
+        self.assertEqual(len(self.lines()), 1)
+        self.head = "bbb222"
+        self.assertEqual(len(self.lines()), 1)
+
+    def test_keys_are_pruned_when_the_worktree_is_gone(self):
+        self.lines()
+        self.assertEqual(len(json.loads(self.notices.read_text())), 1)
+        self.lines(resolutions=[])
+        self.assertEqual(json.loads(self.notices.read_text()), {})
+
+    # counted after the newest completion
+    def test_new_commits_after_the_newest_completion_surface_once(self):
+        done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]
+        self.after = "2"
+        out = self.lines(comments=done)
+        self.assertEqual(len(out), 1)
+        self.assertIn("2 commits ahead of origin/main since its last completion", out[0])
+        self.assertEqual(self.lines(comments=done, last_ahead={}), [])
+
+    def test_a_completion_with_nothing_after_it_is_silent(self):
+        done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]
+        self.after = "0"
+        self.assertEqual(self.lines(comments=done), [])
+
+    # tooling-exception issues
+    def test_a_tooling_exception_issue_prints_nothing_in_any_lane(self):
+        self.assertEqual(self.lines(labels=frozenset({"tooling-exception"})), [])
+
+    def test_an_unreadable_label_set_prints_nothing(self):
+        with patch("watch_lane_posts._run_git", side_effect=self.git), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]), \
+             patch("watch_lane_posts._issue_meta", return_value=(None, None, None)):
+            self.assertIsNone(branch_ahead_without_completion("/wt", "o/r", 1))
+
+    # retractions
+    def retraction_output(self, lane):
+        offers = watch_lane_posts.OfferState(Path(self.tmp.name) / "offers.json", now=1_800_000_000.0)
+        out, err = io.StringIO(), io.StringIO()
+        with patch("watch_lane_posts._fetch_all_comments", return_value=[]), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
+             contextlib.redirect_stderr(err):
+            queue, lines, _ok = watch_lane_posts.queue_cycle(
+                ["vitalharmony/hrse"], lane, {("vitalharmony/hrse", 1530): "ready-for-l3 owes=spec"},
+                "t", candidate_pairs={("vitalharmony/hrse", 1530)}, recorded_only=False,
+                offers=offers, session=(1, 2), tick=None, now_ts=1_800_000_000.0)
+        return lines, err.getvalue()
+
+    def test_lane_1s_own_retraction_goes_to_stderr_not_stdout(self):
+        lines, err = self.retraction_output("l1")
+        self.assertFalse([l for l in lines if "left-queue-for" in l], lines)
+        self.assertIn("vitalharmony/hrse#1530 left-queue-for-l1", err)
+
+    def test_a_lane_2_retraction_stays_on_stdout(self):
+        lines, _ = self.retraction_output("l2")
+        self.assertIn("vitalharmony/hrse#1530 left-queue-for-l2", lines)
+
+    def test_a_lane_3_retraction_stays_on_stdout(self):
+        lines, _ = self.retraction_output("l3")
+        self.assertIn("vitalharmony/hrse#1530 left-queue-for-l3", lines)
 
 
 if __name__ == "__main__":
