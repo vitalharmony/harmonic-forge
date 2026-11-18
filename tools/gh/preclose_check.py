@@ -1317,6 +1317,43 @@ def _count(flag: str, value: object, minimum: int = 0) -> int | None:
     return number
 
 
+def envelope_duration_ms(path: str | None) -> int | None:
+    """The cross-family call's wall-clock as cross_family_call.sh measured it
+    (harmonic-forge#1422): the `duration_ms` of the envelope's last record that
+    carries one. None for a legacy envelope with none, or an unreadable file."""
+    if not path:
+        return None
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    found = None
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        value = record.get("duration_ms") if isinstance(record, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            found = value
+    return found
+
+
+def cross_family_ms(args: argparse.Namespace) -> int | None:
+    """The wall-clock a pass or post-verdict check records (harmonic-forge#1422):
+    the envelope's measured `duration_ms`; `--cross-family-ms` only for a legacy
+    envelope that carries none. Both at once refuses: a typed number never
+    overrides the measured one (F1393 recorded a placeholder of 300000 for a
+    95856 ms call)."""
+    typed = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    measured = envelope_duration_ms(getattr(args, "envelope", None))
+    if measured is not None and typed is not None:
+        raise SystemExit(f"preclose-check: --cross-family-ms {typed} with an envelope that measured "
+                         f"its own call ({measured} ms): the envelope's value is recorded, so drop "
+                         "the flag (harmonic-forge#1422). Nothing recorded.")
+    return measured if measured is not None else typed
+
+
 def pass_cost(args: argparse.Namespace) -> dict:
     """harmonic-forge#889: what this pass cost. Never silent and never zero:
     the panel's tokens and wall-clock are required, unless the runtime reported
@@ -1325,7 +1362,7 @@ def pass_cost(args: argparse.Namespace) -> dict:
     envelope is recorded; Codex reports no tokens, so they are "unavailable"."""
     tokens = _count("--panel-tokens", getattr(args, "panel_tokens", None), minimum=1)
     ms = _count("--panel-ms", getattr(args, "panel_ms", None), minimum=1)
-    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    cross_ms = cross_family_ms(args)
     reason = str(getattr(args, "cost_unavailable", None) or "").strip()
     if getattr(args, "cost_unavailable", None) is not None and not reason:
         raise SystemExit("preclose-check: --cost-unavailable needs the reason the runtime "
@@ -1345,9 +1382,10 @@ def pass_cost(args: argparse.Namespace) -> dict:
                 "runtime reported no usage, pass --cost-unavailable \"<reason>\" instead. A pass's "
                 "cost is never silent and never zero (harmonic-forge#889).")
     if getattr(args, "envelope", None) and cross_ms is None:
-        raise SystemExit("preclose-check: --envelope needs --cross-family-ms <ms>: the wall-clock "
-                         "of the cross_family_call.sh run, measured around the call "
-                         "(harmonic-forge#889).")
+        raise SystemExit("preclose-check: --envelope carries no measured duration_ms (a legacy "
+                         "envelope), so it needs --cross-family-ms <ms>: the wall-clock of the "
+                         "cross_family_call.sh run, measured around the call (harmonic-forge#889, "
+                         "#1422).")
     if cross_ms is not None and not getattr(args, "envelope", None):
         raise SystemExit("preclose-check: --cross-family-ms without --envelope: no cross-family "
                          "call is recorded for this pass.")
@@ -1544,9 +1582,10 @@ def main() -> None:
     if args.post_verdict:
         if not (args.findings and args.envelope):
             parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
-        if args.cross_family_ms is None:
-            parser.error("--post-verdict needs --cross-family-ms <ms>: the cross-family call's "
-                         "wall-clock (harmonic-forge#889)")
+        if args.cross_family_ms is None and envelope_duration_ms(args.envelope) is None:
+            parser.error("--post-verdict's envelope carries no measured duration_ms (a legacy "
+                         "envelope), so it needs --cross-family-ms <ms>: the cross-family call's "
+                         "wall-clock (harmonic-forge#889, #1422)")
         if args.panel_tokens is not None or args.panel_ms is not None or args.cost_unavailable:
             parser.error("--post-verdict is one cross-family refuter, not a panel: it takes "
                          "--cross-family-ms only")
@@ -1674,7 +1713,7 @@ def post_verdict(args: argparse.Namespace) -> int:
     if loaded is None:
         loaded = load_findings(args.findings)
     surviving = len(surviving_findings(loaded))
-    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    cross_ms = cross_family_ms(args)
     shadow = stop_rule_shadow(args, loaded, prior, head_sha)
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
