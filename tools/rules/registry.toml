@@ -2951,3 +2951,11 @@ anchor = "live-ui-test-cases-read-the-flow-source-before-scripting"
 statement = "At the gate, once a live UI test case is authorized to execute (R-0128, or the variant's own authorization) and before scripting it, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph when the spec names one (otherwise only the steps that have no side effects, against the target the authorization names), and runs any bounded-spend action (an LLM call, a paid API, a delete) last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
 text_sha = "fd300486ca3318e7"
 hooks = []
+
+[[rule]]
+id = "R-0434"
+file = "rules/testing-gate.md"
+anchor = "opted-in-lane3-preflight-checks-each-checkable-lane3-begin-refusal"
+statement = "A repo whose projects.toml protocol table sets lane3_preflight_task owes a task by that name that checks every lane3-begin refusal checkable without side effects before the gate starts, as readiness only and never requiring the sweep or its paired AE to exist; the task run is the one in Lane 3's checkout at sweep time, with the target commit passed only as LANE3_TARGET_SHA; a refusal the task's definition does not check is a repo gap whatever the timing, and only a checked refusal that passed at the sweep counts as a later change; refusing a declared-but-missing task is harmonic-forge#1409's (harmonic-forge#1391)."
+text_sha = "88872046df213bb2"
+hooks = []

@@ -214,6 +214,25 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      months, never declared anywhere, so the first fresh gate venv to
      need it failed cold).
 <!-- /R-0129 -->
+<!-- R-0434 -->
+   - **A repo whose `projects.toml` protocol table sets
+     `lane3_preflight_task` owes a task by that name that checks every
+     `lane3-begin` refusal checkable without side effects before the gate
+     starts** (pins, the gate graph's lease status, port ownership). A
+     repo without the key owes nothing under this rule; refusing a sweep
+     when the key names a task that does not exist is harmonic-forge#1409's.
+     The task checks readiness only: it never requires the sweep it gates,
+     or the AE posted with that sweep, to exist yet (R-0128 checks both at
+     Lane 3 entry). The task that runs is the one defined in Lane 3's
+     checkout at sweep time, with the target commit passed to it only as
+     `LANE3_TARGET_SHA`; a task or check that the target commit itself adds
+     takes effect only once Lane 3's checkout carries it. A gate stopped by
+     a refusal the task's definition does not check is a gap in the task,
+     filed against the repo, whatever the timing (hrse#2786's gate stopped
+     at the lease after its sweep passed; hrse#2788 closed that gap). Only
+     a refusal the task does check, and that passed at the sweep, counts
+     as a later change rather than a gap.
+<!-- /R-0434 -->
 <!-- R-0130 -->
 4. After approval, Lane 3 executes tests against Lane 2's implementation.
    Live execution only — an "Evidence type: Source" citation (Lane 3 read
