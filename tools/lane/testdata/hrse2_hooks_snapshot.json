@@ -2,9 +2,9 @@
   "schema": 1,
   "source": {
     "repo": "vitalharmony/hrse",
-    "commit": "a60f9969cc9db363ee4edcafbc864d43f96973d2",
+    "commit": "82f28bf949c21de5bd4633c4c1d05a9c9387a95c",
     "path": ".claude/settings.json",
-    "blob": "bc0c239889876dce129b5136bec9356fe7fbe2eb"
+    "blob": "aaad559c5bc55725c3dc25a86f6bda683c00a321"
   },
   "entries": [
     {
@@ -153,6 +153,12 @@
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_defer.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
       "matcher": "SendMessage",
       "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\"",
       "timeout": null
@@ -184,12 +190,6 @@
     {
       "event": "PostToolUse",
       "matcher": "Bash",
-      "command": "jq -r '.tool_input.command // empty' | grep -qE \"(^|[;&|])[[:space:]]*(gh[[:space:]]+issue[[:space:]]+(create|close)([[:space:]]|$)|([^[:space:];&|]*python[0-9.]*|uv[[:space:]]+run)[[:space:]]+[^;&|]*gh_issue\\.py|mise[[:space:]]+run[[:space:]]+gh-new-issue([[:space:]]|$))\" && [ \"${LANE:-}\" = \"1\" ] && echo '{\"systemMessage\":\"GitHub issue set just changed (create/close) on vitalharmony/hrse or vitalharmony/harmonic-forge. docs/PRIORITIES.md reconciliation may be owed -- run /sprint-plan when convenient (hrse#1141).\"}' || true",
-      "timeout": 10
-    },
-    {
-      "event": "PostToolUse",
-      "matcher": "Bash",
       "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/remind_gate_readiness_sweep.py\"",
       "timeout": 10
     },
@@ -201,6 +201,12 @@
     },
     {
       "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/report_open_dependents_on_close.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 60
+    },
+    {
+      "event": "PostToolUse",
       "matcher": "TaskCreate|TaskUpdate",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
@@ -208,7 +214,7 @@
     {
       "event": "UserPromptSubmit",
       "matcher": null,
-      "command": "grep -qiE 'display|show me|\\bsummar' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"REMINDER (repeat-offense guard): this prompt asks to display/show/summarize something. If your response involves output from any tool call (a script, a file, a generated report), you must paste that output VERBATIM as literal text in your response -- never write your own condensed paraphrase or bullet recap in its place, and never let a tool-result pane substitute for pasted text. This specific failure has recurred multiple times in this project; treat it as a hard requirement, not a style preference. Exception: output that is published rather than delivered in chat -- sprint-plan generator output (milestone_summary.py, drift_check.py; publish via mise run sprint-summary-publish and report only the delta) and any lane/issue/subagent/gate output (link it) -- is never pasted (hrse#2192).\"}}' || true",
+      "command": "in=$(cat); p=$(printf '%s' \"$in\" | jq -er '.prompt' 2>/dev/null) || p=$in; p=$(printf '%s' \"$p\" | perl -0pe 's/<task-notification>.*?<\\/task-notification>//gs; s/<agent-message\\b[^>]*>.*?<\\/agent-message>//gs'); printf '%s' \"$p\" | grep -qiE 'display|show me|\\bsummar' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"REMINDER (repeat-offense guard): this prompt asks to display/show/summarize something. If your response involves output from any tool call (a script, a file, a generated report), you must paste that output VERBATIM as literal text in your response -- never write your own condensed paraphrase or bullet recap in its place, and never let a tool-result pane substitute for pasted text. This specific failure has recurred multiple times in this project; treat it as a hard requirement, not a style preference. Exception: output that is published rather than delivered in chat -- sprint-plan generator output (milestone_summary.py, drift_check.py; publish via mise run sprint-summary-publish and report only the delta) and any lane/issue/subagent/gate output (link it) -- is never pasted (hrse#2192).\"}}' || true",
       "timeout": 10
     },
     {
@@ -227,6 +233,12 @@
       "event": "UserPromptSubmit",
       "matcher": null,
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
     },
     {
@@ -263,12 +275,6 @@
       "event": "Stop",
       "matcher": null,
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_downshift_reminder.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-      "timeout": 25
-    },
-    {
-      "event": "Stop",
-      "matcher": null,
-      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/claim_selfref_shadow.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 25
     },
     {
@@ -376,15 +382,9 @@
       "reason": "HRSE2's own script under scripts/, not a Forge hook"
     },
     {
-      "event": "PostToolUse",
-      "matcher": "Bash",
-      "command": "jq -r '.tool_input.command // empty' | grep -qE \"(^|[;&|])[[:space:]]*(gh[[:space:]]+issue[[:space:]]+(create|close)([[:space:]]|$)|([^[:space:];&|]*python[0-9.]*|uv[[:space:]]+run)[[:space:]]+[^;&|]*gh_issue\\.py|mise[[:space:]]+run[[:space:]]+gh-new-issue([[:space:]]|$))\" && [ \"${LANE:-}\" = \"1\" ] && echo '{\"systemMessage\":\"GitHub issue set just changed (create/close) on vitalharmony/hrse or vitalharmony/harmonic-forge. docs/PRIORITIES.md reconciliation may be owed -- run /sprint-plan when convenient (hrse#1141).\"}' || true",
-      "reason": "inline shell nudge that names HRSE2's docs/PRIORITIES.md"
-    },
-    {
       "event": "UserPromptSubmit",
       "matcher": null,
-      "command": "grep -qiE 'display|show me|\\bsummar' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"REMINDER (repeat-offense guard): this prompt asks to display/show/summarize something. If your response involves output from any tool call (a script, a file, a generated report), you must paste that output VERBATIM as literal text in your response -- never write your own condensed paraphrase or bullet recap in its place, and never let a tool-result pane substitute for pasted text. This specific failure has recurred multiple times in this project; treat it as a hard requirement, not a style preference. Exception: output that is published rather than delivered in chat -- sprint-plan generator output (milestone_summary.py, drift_check.py; publish via mise run sprint-summary-publish and report only the delta) and any lane/issue/subagent/gate output (link it) -- is never pasted (hrse#2192).\"}}' || true",
+      "command": "in=$(cat); p=$(printf '%s' \"$in\" | jq -er '.prompt' 2>/dev/null) || p=$in; p=$(printf '%s' \"$p\" | perl -0pe 's/<task-notification>.*?<\\/task-notification>//gs; s/<agent-message\\b[^>]*>.*?<\\/agent-message>//gs'); printf '%s' \"$p\" | grep -qiE 'display|show me|\\bsummar' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"REMINDER (repeat-offense guard): this prompt asks to display/show/summarize something. If your response involves output from any tool call (a script, a file, a generated report), you must paste that output VERBATIM as literal text in your response -- never write your own condensed paraphrase or bullet recap in its place, and never let a tool-result pane substitute for pasted text. This specific failure has recurred multiple times in this project; treat it as a hard requirement, not a style preference. Exception: output that is published rather than delivered in chat -- sprint-plan generator output (milestone_summary.py, drift_check.py; publish via mise run sprint-summary-publish and report only the delta) and any lane/issue/subagent/gate output (link it) -- is never pasted (hrse#2192).\"}}' || true",
       "reason": "inline shell reminder carrying HRSE2's own repeat-offense text"
     },
     {
@@ -416,6 +416,24 @@
       "matcher": "startup|resume|clear|fork",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/transaction_log_context.py\"; [ -f \"$f\" ] && python3 \"$f\" --boundary version-minor:frontend/package.json || true",
       "reason": "Forge script with a per-project argument (HRSE2 passes --boundary version-minor:frontend/package.json, harmonic-forge passes recent:30); the script's docstring makes it opt-in per repo"
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_defer.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "reason": "registered in HRSE2 settings by 2ed886528 (harmonic-forge#1338, afk mode) after the previous freeze; not in the Forge lane set (harmonic-forge#902 handoff, design alternative 3)"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "reason": "registered in HRSE2 settings by 2ed886528 (harmonic-forge#1338, afk mode) after the previous freeze; not in the Forge lane set (harmonic-forge#902 handoff, design alternative 3)"
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/report_open_dependents_on_close.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "reason": "HRSE2's wiring of the harmonic-forge#1381 close hook; not in the Forge lane set"
     }
   ]
 }

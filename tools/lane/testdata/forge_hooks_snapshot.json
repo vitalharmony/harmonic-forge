@@ -2,9 +2,9 @@
   "schema": 1,
   "source": {
     "repo": "vitalharmony/harmonic-forge",
-    "commit": "007333b80a7897ebd9c78a970977366d80c57e6a",
+    "commit": "e237ab0a1e18207f66baaf48fedf6f4c8d984d5e",
     "path": ".claude/settings.json",
-    "blob": "fd35cbe33141f959942974c7197016f31be0c1a5"
+    "blob": "7def25aac77ba07e2350fbb7155736df94c91c3b"
   },
   "entries": [
     {
@@ -82,6 +82,12 @@
     {
       "event": "PreToolUse",
       "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_gate_and_write_same_command.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
       "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_undetermined_phase_close.py\"",
       "timeout": 25
     },
@@ -125,6 +131,12 @@
       "event": "PreToolUse",
       "matcher": "Bash|Monitor|Write|Edit|MultiEdit|NotebookEdit|CronCreate|ScheduleWakeup|RemoteTrigger",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_defer.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
     },
     {
@@ -179,6 +191,12 @@
       "event": "UserPromptSubmit",
       "matcher": null,
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
     },
     {
@@ -272,12 +290,6 @@
       "timeout": 25
     },
     {
-      "event": "Stop",
-      "matcher": null,
-      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/claim_selfref_shadow.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-      "timeout": 25
-    },
-    {
       "event": "PostToolUse",
       "matcher": "CronCreate|CronDelete",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
@@ -288,6 +300,12 @@
       "matcher": "Bash",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 90
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/report_open_dependents_on_close.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 60
     },
     {
       "event": "PostToolUse",

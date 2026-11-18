@@ -288,11 +288,6 @@
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/claim_selfref_shadow.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 25
-          },
-          {
-            "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_handoff_owed.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           },
