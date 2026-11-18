@@ -103,6 +103,47 @@ class ThreadShapeTests(unittest.TestCase):
         self.assertEqual(ids, list(range(2, 102)))
         self.assertEqual(len(self.pages_read()), 1)
 
+    def test_a_deletion_between_page_reads_re_reads_the_shifted_pages(self):
+        """The count said 101 (two pages); a page-1 comment is deleted after page 1 is read, so
+        comment 101 moves onto the already-read page 1 and page 2 comes back empty."""
+        Response = _etag_cache.Response
+        state = {"deleted": False, "issue_reads": 0}
+
+        def cond(account, path, counter=None):
+            if "/comments" in path:
+                n = int(path.rsplit("page=", 1)[1])
+                if not state["deleted"]:
+                    state["deleted"] = n == 1          # the deletion lands right after page 1
+                    return Response(200, json.dumps([comment(i) for i in range(1, 101)]) if n == 1
+                                    else json.dumps([comment(101)]), False)
+                page = {1: [comment(i) for i in range(2, 102)], 2: []}[n]
+                return Response(200, json.dumps(page), False)
+            state["issue_reads"] += 1
+            count = 100 if state["deleted"] else 101
+            return Response(200, json.dumps({"state": "open", "labels": [], "milestone": None,
+                                             "comments": count}), False)
+        watch_lane_posts._reset_tick_reads()
+        with mock.patch.object(_etag_cache, "conditional_get", side_effect=cond):
+            got = watch_lane_posts._fetch_all_comments(REPO, 1)
+        ids = [c["id"] for c in got]
+        self.assertIn(101, ids, "the comment that shifted across the page boundary must not be lost")
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(state["issue_reads"], 2, "the count is refreshed once after the mismatch")
+
+    def test_a_thread_that_stays_inconsistent_is_returned_but_not_memoized(self):
+        Response = _etag_cache.Response
+
+        def cond(account, path, counter=None):
+            if "/comments" in path:
+                return Response(200, json.dumps([comment(1)]), False)
+            return Response(200, json.dumps({"state": "open", "labels": [], "milestone": None,
+                                             "comments": 5}), False)
+        watch_lane_posts._reset_tick_reads()
+        with mock.patch.object(_etag_cache, "conditional_get", side_effect=cond):
+            got = watch_lane_posts._fetch_all_comments(REPO, 1)
+        self.assertEqual(len(got), 1)
+        self.assertNotIn((REPO, 1), watch_lane_posts._TICK_THREADS)
+
     def test_a_failed_page_fails_the_whole_read_never_a_short_thread(self):
         Response = _etag_cache.Response
 

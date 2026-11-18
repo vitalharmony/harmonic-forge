@@ -4532,13 +4532,15 @@ class TokenSinksT2Tests(unittest.TestCase):
         self.notices = Path(self.tmp.name) / "branch-ahead-notified.json"
         self.head = "aaa111"
         self.count = "3"
-        self.after = "0"
+        self.author_dates = ""     # `git log --format=%at base..HEAD`: one epoch per commit
 
     def git(self, wt, *a):
         if a[0] == "merge-base":
             return "base"
+        if a[0] == "log":
+            return self.author_dates
         if a[0] == "rev-list":
-            return self.after if any(x.startswith("--after=") for x in a) else self.count
+            return self.count
         if a[0] == "rev-parse":
             return self.head
         return "fix/1-x"
@@ -4576,7 +4578,8 @@ class TokenSinksT2Tests(unittest.TestCase):
     # counted after the newest completion
     def test_new_commits_after_the_newest_completion_surface_once(self):
         done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]
-        self.after = "2"
+        t = watch_lane_posts._parse_iso("2026-11-18T01:00:00Z").timestamp()
+        self.author_dates = f"{int(t) - 500}\n{int(t) + 10}\n{int(t) + 20}"  # one older, two newer
         out = self.lines(comments=done)
         self.assertEqual(len(out), 1)
         self.assertIn("2 commits ahead of origin/main since its last completion", out[0])
@@ -4584,8 +4587,60 @@ class TokenSinksT2Tests(unittest.TestCase):
 
     def test_a_completion_with_nothing_after_it_is_silent(self):
         done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]
-        self.after = "0"
+        t = watch_lane_posts._parse_iso("2026-11-18T01:00:00Z").timestamp()
+        self.author_dates = f"{int(t) - 500}\n{int(t) - 1}"
         self.assertEqual(self.lines(comments=done), [])
+
+    def test_a_rebase_after_the_completion_does_not_count_as_new_work(self):
+        """A real repository: a rebase gives every commit a new COMMITTER date and keeps its
+        AUTHOR date. `rev-list --after` read the committer date and re-announced reported work."""
+        import subprocess as sp
+        root = Path(self.tmp.name) / "repo"
+        root.mkdir()
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+        def git(*a, when=None):
+            e = dict(env)
+            if when:
+                e["GIT_AUTHOR_DATE"] = e["GIT_COMMITTER_DATE"] = when
+            sp.run(["git", "-C", str(root), *a], check=True, capture_output=True, env=e)
+        sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True, env=env)
+        git("commit", "--allow-empty", "-m", "base", when="2026-11-17T00:00:00Z")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("checkout", "-q", "-b", "fix/1-x")
+        git("commit", "--allow-empty", "-m", "work", when="2026-11-18T00:30:00Z")   # before the L2D
+        git("checkout", "-q", "main")
+        git("commit", "--allow-empty", "-m", "main moves", when="2026-11-18T02:00:00Z")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("checkout", "-q", "fix/1-x")
+        git("rebase", "-q", "main", when="2026-11-18T03:00:00Z")   # new committer dates, same author dates
+        done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]
+        with patch("watch_lane_posts._fetch_all_comments", return_value=done), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)):
+            self.assertIsNone(branch_ahead_without_completion(str(root), "o/r", 1))
+
+    def test_each_lane_has_its_own_notice_store(self):
+        l1 = watch_lane_posts._branch_notices_path("l1")
+        l2 = watch_lane_posts._branch_notices_path("l2")
+        self.assertNotEqual(l1, l2)
+        # one lane announcing a HEAD never silences another lane's watcher
+        other = Path(self.tmp.name) / "other.json"
+        with patch("watch_lane_posts._run_git", side_effect=self.git), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)):
+            first = branch_ahead_lines([("/wt", ("o/r", 1), "resolved")], {}, self.notices)
+            second = branch_ahead_lines([("/wt", ("o/r", 1), "resolved")], {}, other)
+        self.assertEqual((len(first), len(second)), (1, 1))
+
+    def test_the_poll_loop_uses_a_per_lane_notice_store(self):
+        import ast
+        tree = ast.parse(Path(watch_lane_posts.__file__).read_text(encoding="utf-8"))
+        main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_main")
+        calls = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "branch_ahead_lines"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(ast.unparse(calls[0].args[2]).split("(")[0], "_branch_notices_path")
 
     # tooling-exception issues
     def test_a_tooling_exception_issue_prints_nothing_in_any_lane(self):

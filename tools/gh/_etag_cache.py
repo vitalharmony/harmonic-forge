@@ -91,9 +91,18 @@ def _load(entry: Path, path: str, login: str) -> Optional[dict]:
     except (OSError, ValueError):
         return None
     if (not isinstance(data, dict) or data.get("path") != path or data.get("login") != login
-            or not isinstance(data.get("etag"), str) or not isinstance(data.get("body"), str)):
-        return None
+            or not isinstance(data.get("etag"), str) or not isinstance(data.get("body"), str)
+            or not _is_json(data["body"])):
+        return None  # a miss: the next unconditional read rewrites it
     return data
+
+
+def _is_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _store(entry: Path, path: str, login: str, etag: str, body: str) -> None:
@@ -131,7 +140,7 @@ def conditional_get(account: str, path: str, counter: Optional[CallCounter] = No
         return Response(304, cached["body"], True)
     if resp.status == 200:
         etag = _ETAG.search(resp.headers or "")
-        if entry is not None and etag:
+        if entry is not None and etag and _is_json(resp.body):
             try:
                 _store(entry, path, login, etag.group(1), resp.body)
             except OSError as exc:

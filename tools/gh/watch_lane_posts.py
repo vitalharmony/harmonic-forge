@@ -1167,7 +1167,26 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     state, *_ = _issue_meta(repo, issue)
     if state is None or state == "missing":
         return None  # no readable issue, so no readable thread (never `[]`: that reads as no work)
-    count = _ISSUE_COMMENTS.get((repo, issue))
+    comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
+    if comments is not None:
+        count = _ISSUE_COMMENTS.get((repo, issue))
+        if count is not None and len(comments) != count:
+            # The thread moved while its pages were read (a comment deleted or added
+            # between two page reads shifts every boundary): refresh the count once and
+            # read the pages again (harmonic-forge#1393 AC3). A thread still off after
+            # that is returned for this tick but not memoized; the next tick re-reads it.
+            _read_issue_meta(repo, issue)
+            comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
+            if comments is not None and len(comments) != _ISSUE_COMMENTS.get((repo, issue)):
+                return comments
+    if comments is not None and _TICK_READS_ON:
+        _TICK_THREADS[(repo, issue)] = comments
+    return comments
+
+
+def _read_thread_pages(repo: str, issue: int, count: int | None) -> list[dict] | None:
+    """The thread's pages, read conditionally, deduplicated by comment id, or `None` if
+    any page fails. `count` is the issue's `comments` field, or None when unknown."""
     pages = -(-count // _PAGE_SIZE) if count is not None else _MAX_PAGES  # 0 comments: no page to read
     comments: list[dict] = []
     seen: set = set()
@@ -1204,8 +1223,6 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
             comments.append(item)
         if count is None and len(items) < _PAGE_SIZE:
             break  # no count to bound the loop: stop at the first short page
-    if _TICK_READS_ON:
-        _TICK_THREADS[(repo, issue)] = comments
     return comments
 
 
@@ -1497,11 +1514,17 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
         # and surfaces once; a completion with no commit after it is the steady state.
         if not last_l2_at:
             return None
-        after_text = _run_git(worktree, "rev-list", "--count", f"--after={last_l2_at}",
-                              f"{base}..HEAD")
-        if not after_text or not after_text.isdigit() or int(after_text) == 0:
+        # AUTHOR dates, not `rev-list --after` (a committer date): a rebase or an amend
+        # gives every commit a new committer date but keeps its author date, so a rebased
+        # branch whose work was already reported is not announced again.
+        dates = _run_git(worktree, "log", "--format=%at", f"{base}..HEAD")
+        try:
+            completed_at = _parse_iso(last_l2_at).timestamp()
+            count = sum(1 for d in (dates or "").split() if int(d) > completed_at)
+        except (ValueError, TypeError):
             return None
-        count = int(after_text)
+        if count == 0:
+            return None
         since_completion = True
     branch = _worktree_branch(worktree) or "?"
     plural = "" if count == 1 else "s"
@@ -1515,7 +1538,17 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
 #: key per (repo, issue, branch, HEAD sha), beside the belt's watermarks. The old dedupe
 #: compared the whole report string, which changes with the commit count, so one branch
 #: woke Lane 2 sixty-one times; a restarted watcher (every 1800 s) also forgot it.
-_BRANCH_NOTICES = _BELT_STATE / "branch-ahead-notified.json"
+def _notice_lane(queue_for: str | None) -> str:
+    """The lane this belt serves: the session's own `LANE` (the Monitor inherits it),
+    else `--queue-for`. Not the `--watch` label: a Lane 3 belt only watches `l1`."""
+    digit = re.fullmatch(r"[lL]?([123])", (os.environ.get("LANE") or "").strip())
+    return f"l{digit.group(1)}" if digit else (queue_for or "none")
+
+
+def _branch_notices_path(lane: str) -> Path:
+    """One notice store per lane: every lane's watcher reads and writes its own, so
+    Lane 1's belt announcing a HEAD never silences Lane 2's."""
+    return _BELT_STATE / f"branch-ahead-notified-{re.sub(r'[^A-Za-z0-9_-]', '_', lane) or 'none'}.json"
 
 
 def _load_notices(path: Path) -> dict[str, str]:
@@ -3357,7 +3390,7 @@ def _main() -> int:
         #: permanently "ahead" (main squash-merged their work). That is why
         #: `resolutions` is filtered through `drop_closed_targets` above --
         #: the filter, not an empty list, is what keeps this honest now.
-        ahead_lines = branch_ahead_lines(resolutions, last_ahead, _BRANCH_NOTICES)
+        ahead_lines = branch_ahead_lines(resolutions, last_ahead, _branch_notices_path(_notice_lane(args.queue_for)))
         for line in ahead_lines:
             print(line)
             sys.stdout.flush()

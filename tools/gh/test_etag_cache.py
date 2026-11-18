@@ -129,6 +129,23 @@ class CacheCase(unittest.TestCase):
         self.assertIsNone(self.reads()[-1][2])
         self.assertEqual(self.get().status, 304)
 
+    def test_a_valid_wrapper_with_a_non_json_body_is_a_miss_not_served_forever(self):
+        self.get()
+        entry = next(_etag_cache.cache_root().rglob("*.json"))
+        data = json.loads(entry.read_text())
+        data["body"] = "this is not json"
+        entry.write_text(json.dumps(data))
+        resp = self.get()
+        self.assertEqual((resp.status, resp.body, resp.cached), (200, '{"n": 1}', False))
+        self.assertIsNone(self.reads()[-1][2], "the bad entry must not be sent as If-None-Match")
+        self.assertEqual(self.get().status, 304)       # and the rewrite is good again
+
+    def test_a_200_with_a_non_json_body_is_never_stored(self):
+        self.gh.resources["repos/o/r/issues/9"] = ('W/"bad"', "<html>not json</html>")
+        self.assertEqual(self.get("repos/o/r/issues/9").status, 200)
+        self.assertEqual(self.get("repos/o/r/issues/9").status, 200)   # still unconditional
+        self.assertEqual([r[2] for r in self.reads("repos/o/r/issues/9")], [None, None])
+
     def test_an_entry_with_the_wrong_shape_is_a_miss(self):
         self.get()
         entry = next(_etag_cache.cache_root().rglob("*.json"))
