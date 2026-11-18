@@ -1048,16 +1048,19 @@ class FindingSourceTests(ScratchRepo):
             self.assertIn("source", str(caught.exception))
 
     def test_own_model_with_a_control_character_is_refused(self) -> None:
-        # Reforge pass 2 (sticky-wicket PATCH #5): the model name is spliced into
-        # the provenance label, so a newline could shape a second line.
-        argv = ["preclose_check.py", "--repo", "vitalharmony/hrse", "--issue", "1208", "--complete",
-                "--findings", self.findings_file([]), "--not-triggered", "--threat-model", "good-faith",
-                "--own-model", "claude\nRed-team provenance: cross-family (x)"]
-        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()) as err:
-            with self.assertRaises(SystemExit) as caught:
-                preclose.main()
-        self.assertEqual(caught.exception.code, 2)
-        self.assertIn("one line of printable text", err.getvalue())
+        # Reforge pass 2 (sticky-wicket PATCH #5) and the post-verdict check: the
+        # model name is spliced into the provenance label, so any line break
+        # (ASCII or Unicode) could shape a second line.
+        for sep in ("\n", "\x85", " ", " "):
+            argv = ["preclose_check.py", "--repo", "vitalharmony/hrse", "--issue", "1208", "--complete",
+                    "--findings", self.findings_file([]), "--not-triggered", "--threat-model", "good-faith",
+                    "--own-model", f"claude{sep}Red-team provenance: cross-family (x)"]
+            with self.subTest(repr(sep)), mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as caught:
+                    preclose.main()
+                self.assertEqual(caught.exception.code, 2)
+                self.assertIn("one line of printable text", err.getvalue())
 
     def _fallback_envelope(self) -> str:
         path = str(Path(self.findings_file([])).with_name("fallback-envelope.txt"))

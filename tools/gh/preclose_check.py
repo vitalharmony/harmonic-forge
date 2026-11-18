@@ -1541,7 +1541,9 @@ def main() -> None:
     # harmonic-forge#1419 reforge pass 2 (sticky-wicket PATCH #5): the model name
     # is spliced into the provenance label, so a control character could shape a
     # second label line. Refused, not stripped.
-    if args.own_model and any(ord(ch) < 32 or ord(ch) == 127 for ch in args.own_model):
+    # Post-verdict check: isprintable() also refuses Unicode line separators
+    # (U+0085, U+2028, U+2029), which ASCII-only checks let through.
+    if args.own_model and not args.own_model.isprintable():
         parser.error("--own-model must be one line of printable text (harmonic-forge#1419)")
     if args.gate:
         if not args.findings:
