@@ -3296,7 +3296,7 @@ def _post_kind(
     if _tasklist_owed is not None:
         _tasklist_owed.record_post(repo, issue, kind)
     if _afk_toggle is not None:
-        _afk_toggle.record_lane_action()
+        _afk_toggle.record_lane_action("1")  # l1_post is Lane 1's, whatever LANE says
     if snapshot_route is not None:
         # harmonic-forge#1231: after the post, so a refused or failed post
         # records nothing; a store error is printed and never raised.

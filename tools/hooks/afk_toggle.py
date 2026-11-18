@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -163,20 +164,39 @@ IDLE_CUTOFF_SECONDS = 3600
 
 
 def _afk_since() -> tuple[str, float] | None:
-    """The current afk episode: the `since` string `/afk on` wrote and its epoch."""
+    """The current afk episode: its id (the `episode` `/afk on` minted, else the `since` string
+    of an older state file) and the start epoch. The id is random, not a timestamp: an
+    `/afk off` and `/afk on` in one UTC second still make a new episode."""
     try:
-        since = json.loads(state_path().read_text(encoding="utf-8"))["since"]
-        return since, datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        since = state["since"]
+        return (str(state.get("episode") or since),
+                datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp())
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
-def cutoff_marker_path(lane: str) -> Path:
-    return state_dir() / f"cutoff-{lane}.json"
+def _belt_key(lane: str, scope: object = "all") -> str | None:
+    """The belt's identity from the ONE key builder (`tools/lane/belt_heartbeat.key`), shared
+    with the heartbeat file; None when it cannot be imported, so the cutoff stays quiet
+    rather than keying on a second spelling."""
+    try:
+        sys.path.insert(0, str(HERE.parent / "lane"))
+        import belt_heartbeat  # noqa: PLC0415
+        return belt_heartbeat.key(lane, scope)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cutoff_marker_path(lane: str, scope: object = "all") -> Path | None:
+    """One marker per (lane, scope): two sessions of one lane split by --repo or --scope-repo
+    each get their own cutoff line."""
+    belt = _belt_key(lane, scope)
+    return state_dir() / f"cutoff-{belt}.json" if belt else None
 
 
 def idle_cutoff_due(lane: str, now: float | None = None,
-                    threshold: float = IDLE_CUTOFF_SECONDS) -> str | None:
+                    threshold: float = IDLE_CUTOFF_SECONDS, scope: object = "all") -> str | None:
     """The episode key (the afk `since` string) when this lane has been idle for
     `threshold` seconds while afk is on and its cutoff has not been announced
     for this episode, else None (harmonic-forge#1398).
@@ -191,8 +211,11 @@ def idle_cutoff_due(lane: str, now: float | None = None,
         return None
     since, since_at = episode
     current = time.time() if now is None else now
+    marker = cutoff_marker_path(lane, scope)
+    if marker is None:
+        return None
     try:
-        marked = json.loads(cutoff_marker_path(digit).read_text(encoding="utf-8")).get("since")
+        marked = json.loads(marker.read_text(encoding="utf-8")).get("since")
     except (OSError, ValueError, AttributeError):
         marked = None
     if marked == since:
@@ -202,14 +225,15 @@ def idle_cutoff_due(lane: str, now: float | None = None,
     return since if idle >= threshold else None
 
 
-def mark_cutoff_announced(lane: str, since: str) -> bool:
-    """Record that this episode's cutoff was announced. Never raises."""
+def mark_cutoff_announced(lane: str, since: str, scope: object = "all") -> bool:
+    """Record that this episode's cutoff was announced for this (lane, scope). Never raises."""
     digit = _lane_digit(lane)
-    if digit is None:
+    marker = cutoff_marker_path(lane, scope)
+    if digit is None or marker is None:
         return False
     try:
         with Locked():
-            _atomic_write(cutoff_marker_path(digit), json.dumps({"since": since}))
+            _atomic_write(marker, json.dumps({"since": since}))
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -337,7 +361,8 @@ def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> s
     now = time.time() if now is None else now
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
     with Locked():
-        _atomic_write(state_path(), json.dumps({"on": True, "since": since}, sort_keys=True) + "\n")
+        _atomic_write(state_path(), json.dumps({"on": True, "since": since,
+                                                "episode": uuid.uuid4().hex}, sort_keys=True) + "\n")
     return (f"afk is ON since {since}: commands batch_auth would ask about are denied and queued; "
             "`/afk off` lists the queue.")
 

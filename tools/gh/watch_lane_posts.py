@@ -2927,27 +2927,30 @@ def belt_lane(queue_for: str | None) -> str:
     The session's own `LANE` (the Monitor inherits it), else `--queue-for`. Not
     `lane_label`: a Lane 3 belt has no `--queue-for` and watches `l1`, so its
     label names the wrong lane."""
-    digit = re.fullmatch(r"[lL]?([123])", (os.environ.get("LANE") or "").strip())
-    if digit:
-        return f"l{digit.group(1)}"
+    env = (os.environ.get("LANE") or "").strip()
+    if re.fullmatch(r"[lL]?[123]", env):
+        return _belt_heartbeat.normalize_lane(env) if _belt_heartbeat else f"l{env[-1]}"
     return queue_for or "none"
 
 
-def heartbeat_scope(repos: list[str] | None) -> str:
-    """The heartbeat's scope key: the `--repo` values (harmonic-forge#1199 splits
-    one workspace between two sessions of a lane), else `all`."""
-    return "+".join(sorted(repos)) if repos else "all"
+def heartbeat_scope(repos: list[str] | None, scope_repo: str | None = None) -> str:
+    """The belt's scope key, built by `belt_heartbeat.normalize_scope`, the one key builder
+    the heartbeat and the afk cutoff marker share: `--scope-repo` (the canonical belt's
+    narrowing, harmonic-forge#1199) and `--repo` both count, else `all`."""
+    if _belt_heartbeat is None:
+        return "all"
+    return _belt_heartbeat.normalize_scope(([scope_repo] if scope_repo else []) + list(repos or []))
 
 
 def write_poll_heartbeat(lane: str, workspace: str | None, repos: list[str] | None,
-                         deadline_seconds: float | None) -> bool:
+                         deadline_seconds: float | None, scope_repo: str | None = None) -> bool:
     """Record one finished poll (harmonic-forge#1398). The one writer of the belt
     heartbeat; it never raises, so a heartbeat that cannot be written costs the
     belt nothing but reads as stale to the next tick."""
     if _belt_heartbeat is None:
         return False
     try:
-        _belt_heartbeat.write(lane, workspace or "none", heartbeat_scope(repos),
+        _belt_heartbeat.write(lane, workspace or "none", heartbeat_scope(repos, scope_repo),
                               deadline=deadline_seconds)
         return True
     except OSError as exc:
@@ -2955,7 +2958,7 @@ def write_poll_heartbeat(lane: str, workspace: str | None, repos: list[str] | No
         return False
 
 
-def announce_afk_idle_cutoff(lane: str) -> bool:
+def announce_afk_idle_cutoff(lane: str, scope: str = "all") -> bool:
     """Print the afk idle-cutoff line, once per afk episode (harmonic-forge#1398).
 
     Wall time, judged here by the watcher, not on a loop tick by the model: afk is
@@ -2967,14 +2970,14 @@ def announce_afk_idle_cutoff(lane: str) -> bool:
     if _afk_toggle is None:
         return False
     try:
-        since = _afk_toggle.idle_cutoff_due(lane)
+        since = _afk_toggle.idle_cutoff_due(lane, scope=scope)
         if since is None:
             return False
         print(f"afk-idle-cutoff {lane}: no lane action for "
               f"{_afk_toggle.IDLE_CUTOFF_SECONDS // 60} minutes while afk is on "
               f"(since {since}); stop this Monitor and the loop (skills/afk/SKILL.md)",
               flush=True)
-        _afk_toggle.mark_cutoff_announced(lane, since)
+        _afk_toggle.mark_cutoff_announced(lane, since, scope=scope)
         return True
     except Exception as exc:  # noqa: BLE001 - the belt must outlive a bad state file
         print(f"[watch_lane_posts] afk cutoff check failed: {exc}", file=sys.stderr)
@@ -3391,8 +3394,9 @@ def _main() -> int:
             print(f"[watch_lane_posts] tick log write failed: {exc}",
                   file=sys.stderr)
         serving_lane = belt_lane(args.queue_for)
-        write_poll_heartbeat(serving_lane, args.workspace, args.repo, args.deadline_seconds)
-        announce_afk_idle_cutoff(serving_lane)
+        write_poll_heartbeat(serving_lane, args.workspace, args.repo, args.deadline_seconds,
+                             args.scope_repo)
+        announce_afk_idle_cutoff(serving_lane, heartbeat_scope(args.repo, args.scope_repo))
         _end_tick_reads()  # harmonic-forge#958: nothing cached outlives its tick
         quiet_streak = 0 if not quiet else quiet_streak + 1
         polls_this_window += 1

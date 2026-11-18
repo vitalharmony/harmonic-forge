@@ -577,7 +577,7 @@ def main() -> int:
     if args.kind != "finding":
         belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
     tasklist_owed.record_post(args.repo, args.issue, args.kind)
-    afk_toggle.record_lane_action()  # harmonic-forge#1398: a verified post is a real lane action
+    afk_toggle.record_lane_action("2")  # l2_post is Lane 2's unconditionally; harmonic-forge#1398: a verified post is a real lane action
     print(json.dumps(result))
     return 0
 

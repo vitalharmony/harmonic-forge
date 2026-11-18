@@ -39,11 +39,36 @@ def _slug(value: str) -> str:
     return _UNSAFE.sub("_", value).strip("_") or "x"
 
 
-def path_for(lane: str, workspace: str, scope: str = "all") -> Path:
-    return state_dir() / f"heartbeat-{_slug(lane)}-{_slug(workspace)}-{_slug(scope)}.json"
+def normalize_lane(lane: object) -> str:
+    """`l1` from `1`, `l1` or `L1` (the session's `LANE` and the watcher's `--queue-for`
+    spell it differently); anything else is slugged and lowercased."""
+    text = str(lane or "").strip()
+    match = re.fullmatch(r"[lL]?([123])", text)
+    return f"l{match.group(1)}" if match else _slug(text.lower())
 
 
-def write(lane: str, workspace: str, scope: str = "all", deadline: float | None = None,
+def normalize_scope(scope: object = None) -> str:
+    """`all` for no scope, else the repos, lowercased, sorted, `+`-joined and slugged. Takes a
+    list or a string split on `+` or `,`, so `--repo`, `--scope-repo` and the tick's own
+    `--scope` all name the same belt the same way."""
+    if scope is None or scope == "":
+        return "all"
+    parts = [scope] if isinstance(scope, str) else list(scope)
+    repos = sorted({p.strip().lower() for part in parts for p in re.split(r"[+,]", str(part)) if p.strip()})
+    return _slug("+".join(repos)) if repos else "all"
+
+
+def key(lane: object, scope: object = None) -> str:
+    """The one place a belt's identity is built (harmonic-forge#1398): the heartbeat file and
+    the afk cutoff marker both use it, so a writer and a reader can never spell it differently."""
+    return f"{normalize_lane(lane)}-{normalize_scope(scope)}"
+
+
+def path_for(lane: str, workspace: str, scope: object = "all") -> Path:
+    return state_dir() / f"heartbeat-{normalize_lane(lane)}-{_slug(workspace)}-{normalize_scope(scope)}.json"
+
+
+def write(lane: str, workspace: str, scope: object = "all", deadline: float | None = None,
           now: float | None = None) -> Path:
     """Record one poll. Atomic: a unique temp file renamed into place, so a
     reader never sees a half-written file."""
@@ -62,7 +87,7 @@ def write(lane: str, workspace: str, scope: str = "all", deadline: float | None 
     return path
 
 
-def read(lane: str, workspace: str, scope: str = "all", now: float | None = None) -> float | None:
+def read(lane: str, workspace: str, scope: object = "all", now: float | None = None) -> float | None:
     """The heartbeat's age in seconds, or None when there is no readable one.
 
     None is never "fresh": a missing, unparseable or future-dated file reads
@@ -75,7 +100,7 @@ def read(lane: str, workspace: str, scope: str = "all", now: float | None = None
     return age if age >= 0 else None
 
 
-def is_stale(lane: str, workspace: str, scope: str = "all", max_age: float = 600.0,
+def is_stale(lane: str, workspace: str, scope: object = "all", max_age: float = 600.0,
              now: float | None = None) -> bool:
     """True when there is no heartbeat or it is older than `max_age` (two poll
     intervals of 300 s by default)."""

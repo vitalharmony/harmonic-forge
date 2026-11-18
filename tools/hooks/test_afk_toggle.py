@@ -216,6 +216,15 @@ class LastActionCase(unittest.TestCase):
         self.assertEqual(afk_toggle.last_action_age("1", now=5000.0), 4000.0)
         self.assertEqual(afk_toggle.last_action_age("2", now=5000.0), 0.0)
 
+    def test_an_explicit_lane_does_not_depend_on_the_environment(self):
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(afk_toggle.record_lane_action("2", now=10.0))
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            afk_toggle.record_lane_action("2", now=20.0)
+        self.assertEqual(afk_toggle.last_action_age("2", now=21.0), 1.0)
+        self.assertIsNone(afk_toggle.last_action_age("1", now=21.0))
+
     def test_the_lane_comes_from_the_environment_by_default(self):
         with mock.patch.dict(os.environ, {"LANE": "1"}):
             self.assertTrue(afk_toggle.record_lane_action(now=10.0))
@@ -294,19 +303,54 @@ class LastActionCase(unittest.TestCase):
         self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 20000 + 100))
         self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 20000 + 3600))
 
+    def test_off_then_on_in_the_same_second_is_a_new_episode(self):
+        self.afk_on()
+        afk_toggle.mark_cutoff_announced("l1", afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
+        afk_toggle.toggle({"prompt": "/afk off", "session_id": "s", "cwd": os.getcwd()}, "cli")
+        self.afk_on()                      # the same UTC second, so the same `since` string
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
+
+    def test_the_marker_is_per_scope_so_split_sessions_each_get_the_line(self):
+        self.afk_on()
+        due = afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="o/a")
+        self.assertTrue(afk_toggle.mark_cutoff_announced("l1", due, scope="o/a"))
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="O/A"))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="o/b"))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))   # the `all` belt
+
+    def test_the_marker_name_comes_from_the_shared_key(self):
+        sys_path = str(Path(__file__).resolve().parent.parent / "lane")
+        import sys  # noqa: PLC0415
+        sys.path.insert(0, sys_path)
+        import belt_heartbeat  # noqa: PLC0415
+        self.assertEqual(afk_toggle.cutoff_marker_path("1", "O/r").name,
+                         f"cutoff-{belt_heartbeat.key('l1', 'o/r')}.json")
+
     def test_the_marker_is_per_lane(self):
         self.afk_on()
         afk_toggle.mark_cutoff_announced("l1", afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
         self.assertIsNotNone(afk_toggle.idle_cutoff_due("l2", now=self.T0 + 4000))
 
-    def test_each_posting_tool_records_a_lane_action_on_its_success_path(self):
+    def test_each_posting_tool_records_its_own_lane_unguarded_on_its_success_path(self):
+        """Not 'a call by that name': the call must be reachable (no `if False:` around it, the
+        import guard excepted) and name its lane explicitly, never take it from `LANE`."""
         import ast  # noqa: PLC0415
         gh = Path(__file__).resolve().parent.parent / "gh"
-        for name in ("l1_post.py", "l2_post.py", "post_lane_discussion.py"):
+        expected = {"l1_post.py": "'1'", "l2_post.py": "'2'", "post_lane_discussion.py": "lane"}
+        for name, lane_arg in expected.items():
             tree = ast.parse((gh / name).read_text(encoding="utf-8"))
+            parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
             calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                      and getattr(n.func, "attr", None) == "record_lane_action"]
             self.assertEqual(len(calls), 1, f"{name} must record one lane action per verified post")
+            call = calls[0]
+            self.assertEqual([ast.unparse(a) for a in call.args], [lane_arg], name)
+            node = call
+            while node in parents:
+                node = parents[node]
+                if isinstance(node, (ast.If, ast.While, ast.For, ast.Try)):
+                    self.assertIsInstance(node, ast.If, name)
+                    self.assertEqual(ast.unparse(node.test), "_afk_toggle is not None", name)
 
 
 if __name__ == "__main__":

@@ -802,7 +802,7 @@ def main() -> None:
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
     if _afk_toggle is not None:
-        _afk_toggle.record_lane_action()  # harmonic-forge#1398: a verified post is a real lane action
+        _afk_toggle.record_lane_action(lane)  # the lane the footer above names; harmonic-forge#1398
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
     #: `LANE` env var the footer above already used -- `"l1"`/`"l2"`/`"l3"`
     #: is `belt_candidates`'s own convention (matching `QUEUE_POSTERS`'

@@ -80,6 +80,43 @@ class HeartbeatTests(unittest.TestCase):
         self.assertFalse((Path(self._tmp.name) / ".claude" / "state" / "afk").exists())
 
 
+class OneKeyTests(unittest.TestCase):
+    """harmonic-forge#1398 preclose pass 1: the writer and every reader build a belt's identity
+    with `belt_heartbeat.key`, so no spelling can miss the file."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HOME": self._tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_every_lane_spelling_names_the_same_file(self):
+        belt_heartbeat.write("l1", "vh", now=1000.0)
+        for spelling in ("1", "l1", "L1", " l1 "):
+            self.assertEqual(belt_heartbeat.read(spelling, "vh", now=1010.0), 10.0, spelling)
+
+    def test_scope_spellings_agree_and_differ_from_all(self):
+        belt_heartbeat.write("l1", "vh", ["B/y", "a/x"], now=1000.0)
+        for scope in ("a/x+b/y", "A/X,B/Y", ["b/y", "a/x"]):
+            self.assertEqual(belt_heartbeat.read("l1", "vh", scope, now=1005.0), 5.0, scope)
+        self.assertIsNone(belt_heartbeat.read("l1", "vh", "all", now=1005.0))
+
+    def test_key_is_lane_and_scope(self):
+        self.assertEqual(belt_heartbeat.key("1"), "l1-all")
+        self.assertEqual(belt_heartbeat.key("L2", "o/r"), "l2-o_r")
+        self.assertNotEqual(belt_heartbeat.key("l1", "o/a"), belt_heartbeat.key("l1", "o/b"))
+
+    def test_the_cli_accepts_the_session_lane_and_a_scope(self):
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        belt_heartbeat.write("l1", "vh", "o/r")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(belt_heartbeat.main(["read", "--lane", "1", "--workspace", "vh",
+                                                  "--scope", "O/R"]), 0)
+            self.assertEqual(belt_heartbeat.main(["read", "--lane", "1", "--workspace", "vh"]), 1)
+
+
 class WatcherWritesItTests(unittest.TestCase):
     """The watcher is the one writer. Its `while True:` loop has no seam a test
     can call (the module's own docstring says so), so the loop's call is checked
@@ -98,7 +135,9 @@ class WatcherWritesItTests(unittest.TestCase):
     def test_scope_is_the_sorted_repos_or_all(self):
         self.assertEqual(self.watcher.heartbeat_scope(None), "all")
         self.assertEqual(self.watcher.heartbeat_scope([]), "all")
-        self.assertEqual(self.watcher.heartbeat_scope(["b/y", "a/x"]), "a/x+b/y")
+        self.assertEqual(self.watcher.heartbeat_scope(["b/y", "A/x"]), "a_x_b_y")
+        # the canonical belt narrows with --scope-repo, a single repo; --repo is a list
+        self.assertEqual(self.watcher.heartbeat_scope(None, "a/x"), self.watcher.heartbeat_scope(["a/x"]))
 
     def test_the_writer_records_a_heartbeat_the_reader_sees(self):
         self.assertTrue(self.watcher.write_poll_heartbeat("l1", "vh", ["a/x"], 1800))
@@ -151,25 +190,44 @@ class WatcherWritesItTests(unittest.TestCase):
                 self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1"))
         self.assertEqual(out.getvalue(), "")
 
-    def test_the_poll_loop_calls_the_cutoff_check_once_per_poll(self):
+    def _loop_statements(self):
         import ast  # noqa: PLC0415
         tree = ast.parse(Path(self.watcher.__file__).read_text(encoding="utf-8"))
         main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_main")
         loop = next(n for n in ast.walk(main) if isinstance(n, ast.While)
                     and isinstance(n.test, ast.Constant) and n.test.value is True)
-        calls = [n for n in ast.walk(loop) if isinstance(n, ast.Call)
-                 and getattr(n.func, "id", None) == "announce_afk_idle_cutoff"]
-        self.assertEqual(len(calls), 1)
+        return loop.body
 
-    def test_the_poll_loop_calls_the_writer_after_the_tick_write(self):
+    def _direct_calls(self, name):
         import ast  # noqa: PLC0415
-        tree = ast.parse(Path(self.watcher.__file__).read_text(encoding="utf-8"))
-        main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_main")
-        loop = next(n for n in ast.walk(main) if isinstance(n, ast.While)
-                    and isinstance(n.test, ast.Constant) and n.test.value is True)
-        calls = [n for n in ast.walk(loop) if isinstance(n, ast.Call)
-                 and getattr(n.func, "id", None) == "write_poll_heartbeat"]
-        self.assertEqual(len(calls), 1, "the poll loop must write the heartbeat exactly once per poll")
+        return [i for i, st in enumerate(self._loop_statements())
+                if isinstance(st, ast.Expr) and isinstance(st.value, ast.Call)
+                and getattr(st.value.func, "id", None) == name]
+
+    def test_the_cutoff_check_is_an_unguarded_statement_of_the_poll_loop(self):
+        """A call wrapped in `if False:` still counts as 'a call by that name' to a tree walk;
+        it must be a direct statement of the loop body to run on every poll."""
+        self.assertEqual(len(self._direct_calls("announce_afk_idle_cutoff")), 1)
+
+    def test_the_heartbeat_write_is_an_unguarded_statement_after_the_tick_write(self):
+        import ast  # noqa: PLC0415
+        body = self._loop_statements()
+        tick_write = [i for i, st in enumerate(body) if isinstance(st, ast.Try)
+                      and any(isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "write"
+                              and getattr(getattr(n.func, "value", None), "id", None) == "tick"
+                              for n in ast.walk(st))]
+        writes = self._direct_calls("write_poll_heartbeat")
+        self.assertEqual((len(tick_write), len(writes)), (1, 1))
+        self.assertGreater(writes[0], tick_write[0])
+        self.assertGreater(self._direct_calls("announce_afk_idle_cutoff")[0], writes[0])
+
+    def test_the_poll_loop_passes_the_scope_repo_to_both_the_writer_and_the_cutoff(self):
+        import ast  # noqa: PLC0415
+        body = self._loop_statements()
+        write = body[self._direct_calls("write_poll_heartbeat")[0]].value
+        cutoff = body[self._direct_calls("announce_afk_idle_cutoff")[0]].value
+        self.assertIn("scope_repo", ast.unparse(write))
+        self.assertIn("scope_repo", ast.unparse(cutoff))
 
 
 if __name__ == "__main__":
