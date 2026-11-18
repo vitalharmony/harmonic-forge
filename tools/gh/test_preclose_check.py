@@ -962,6 +962,27 @@ class FindingSourceTests(ScratchRepo):
     def _stored(self) -> dict:
         return json.loads(next(preclose.receipt_dir().glob("*.json")).read_text())
 
+    def test_forced_complete_with_bad_source_refuses_before_reserving_the_grant(self) -> None:
+        # Pass 1 survivor: a refusal on the findings must never spend the single-use grant.
+        self.commit("scripts/tool.py")
+        self.plan()
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                self.complete([dict(self.XF, source="Cross-Family")], force=True)
+        self.assertIn("source", str(caught.exception))
+        reserve.assert_not_called()
+
+    def test_post_verdict_loads_the_findings_once(self) -> None:
+        # Pass 1 survivor: the validated load is the one every later count reads.
+        self.commit("scripts/tool.py")
+        real = preclose.load_findings
+        with mock.patch.object(preclose, "load_findings", side_effect=real) as load:
+            with self.assertRaises(SystemExit):
+                preclose.post_verdict(_Args(repo="vitalharmony/hrse", issue=1208, base="HEAD",
+                                            head="HEAD", findings=self.findings_file([self.XF]),
+                                            envelope=None, own_model="m", main="origin/main"))
+        self.assertEqual(load.call_count, 1)
+
     def test_clean_panel_plus_cross_family_survivor_records_with_cross_family_label(self) -> None:
         self.commit("scripts/tool.py")
         self.plan()

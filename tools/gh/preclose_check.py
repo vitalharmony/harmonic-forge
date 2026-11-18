@@ -1155,24 +1155,26 @@ def complete(args: argparse.Namespace) -> int:
     identity = local_change_identity(args.base, head_sha)
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force, reforge)
+    # harmonic-forge#1419 pass 1: validate the findings before a FORCE grant is
+    # reserved, so malformed input never spends the operator's single-use grant.
+    findings = load_findings(args.findings)
+    require_wellformed_anchors(findings)
+    require_sources(findings)
+    require_mechanisms(findings)
+    if not args.envelope and any(isinstance(finding, dict)
+                                 and finding.get("source") == "cross-family"
+                                 for finding in findings):
+        raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
+                         "(the recorded cross-family call they came from); nothing recorded.")
     grant = (reserve_force_grant(repo, args.issue, head_sha, "reforge" if reforge else "plain")
              if args.force else None)
     try:
-        findings = load_findings(args.findings)
-        require_wellformed_anchors(findings)
-        require_sources(findings)
-        require_mechanisms(findings)
         mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
                       for finding in surviving_findings(findings)]
         required, why, _panel, reasons = gate_decision(args)
         # harmonic-forge#1419: the gate read panel survivors; the pass outcome
         # (count, mechanisms, shadow, hostile block, cluster) reads every source.
         surviving = len(surviving_findings(findings))
-        if not args.envelope and any(isinstance(finding, dict)
-                                     and finding.get("source") == "cross-family"
-                                     for finding in findings):
-            raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
-                             "(the recorded cross-family call they came from); nothing recorded.")
         if required and args.envelope:
             require_recorded_envelope(args.envelope)
         provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
@@ -1602,9 +1604,11 @@ def post_verdict(args: argparse.Namespace) -> int:
     pass-2 head, so the diff is just the patch. Never appended to the pass
     history, so it never counts toward the cap."""
     require_writable(receipt_dir())
-    if getattr(args, "findings", None):
-        require_wellformed_anchors(load_findings(args.findings))
-        require_sources(load_findings(args.findings), post_verdict=True)
+    # harmonic-forge#1419 pass 1: one load, validated once, used for every count below.
+    loaded = load_findings(args.findings) if getattr(args, "findings", None) else None
+    if loaded is not None:
+        require_wellformed_anchors(loaded)
+        require_sources(loaded, post_verdict=True)
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()
@@ -1641,9 +1645,11 @@ def post_verdict(args: argparse.Namespace) -> int:
     if not provenance.startswith(PROVENANCE_TRIGGERED[0]):
         raise SystemExit("preclose-check: the post-verdict check needs a cross-family call that ran; "
                          f"got {provenance!r}. Retry the call; a fallback is not a check.")
-    surviving = len(surviving_findings(load_findings(args.findings)))
+    if loaded is None:
+        loaded = load_findings(args.findings)
+    surviving = len(surviving_findings(loaded))
     cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
-    shadow = stop_rule_shadow(args, load_findings(args.findings), prior, head_sha)
+    shadow = stop_rule_shadow(args, loaded, prior, head_sha)
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
     # head (harmonic-forge#838 plan review).
