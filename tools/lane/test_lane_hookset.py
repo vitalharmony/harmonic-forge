@@ -177,8 +177,8 @@ class Build(_Tmp):
             self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
             self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
 
-    def test_the_set_holds_53_entries(self):
-        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 53)
+    def test_the_set_holds_52_entries(self):
+        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 52)
 
 
 class Policy(_Tmp):
@@ -237,11 +237,11 @@ class Snapshot(unittest.TestCase):
     def test_the_snapshot_names_its_source(self):
         self.assertEqual(self.snapshot["source"], {
             "repo": "vitalharmony/hrse",
-            "commit": "a60f9969cc9db363ee4edcafbc864d43f96973d2",
+            "commit": "82f28bf949c21de5bd4633c4c1d05a9c9387a95c",
             "path": ".claude/settings.json",
-            "blob": "bc0c239889876dce129b5136bec9356fe7fbe2eb"})
-        self.assertEqual(len(self.snapshot["entries"]), 60)
-        self.assertEqual(len(self.snapshot["project_specific"]), 8)
+            "blob": "aaad559c5bc55725c3dc25a86f6bda683c00a321"})
+        self.assertEqual(len(self.snapshot["entries"]), 61)
+        self.assertEqual(len(self.snapshot["project_specific"]), 10)
 
     def test_every_snapshot_entry_is_in_the_set_or_named_project_specific(self):
         self.assertEqual(hs.snapshot_gaps(_set(), self.snapshot), [])
