@@ -36,6 +36,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -115,6 +117,139 @@ def append_queue(entry: dict) -> bool:
         with queue_path().open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
         return True
+
+
+def _lane_digit(lane: str | None) -> str | None:
+    """`1`, `2` or `3` from `LANE`'s value (`1`, `l1`, `L1`), else None."""
+    match = re.fullmatch(r"[lL]?([123])", (lane or "").strip())
+    return match.group(1) if match else None
+
+
+def last_action_path(lane: str) -> Path:
+    return state_dir() / f"last_action-{lane}.json"
+
+
+def record_lane_action(lane: str | None = None, now: float | None = None) -> bool:
+    """Mark a real lane action (harmonic-forge#1398): called by a posting tool
+    after a verified post, never by the belt's heartbeat. One file per lane, so a
+    Lane 2 post never resets Lane 1's afk idle clock. Never raises; a session with
+    no `LANE` records nothing. Returns whether a record was written."""
+    digit = _lane_digit(os.environ.get("LANE") if lane is None else lane)
+    if digit is None:
+        return False
+    try:
+        with Locked():
+            _atomic_write(last_action_path(digit),
+                          json.dumps({"lane": digit, "at": time.time() if now is None else now}))
+        return True
+    except Exception as exc:  # noqa: BLE001 - a liveness note must never fail a post
+        try:
+            print(f"[afk] lane action not recorded: {type(exc).__name__}: {exc}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 - a closed stderr must not fail a confirmed post
+            pass
+        return False
+
+
+def last_action_age(lane: str, now: float | None = None) -> float | None:
+    """Seconds since this lane's last recorded action, or None when there is none
+    (or it is unreadable or future-dated)."""
+    digit = _lane_digit(lane)
+    if digit is None:
+        return None
+    try:
+        at = float(json.loads(last_action_path(digit).read_text(encoding="utf-8"))["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    age = (time.time() if now is None else now) - at
+    return age if age >= 0 else None
+
+
+IDLE_CUTOFF_SECONDS = 3600
+
+
+def _afk_since() -> tuple[str, float] | None:
+    """The current afk episode: its id (the `episode` `/afk on` minted, else the `since` string
+    of an older state file) and the start epoch. The id is random, not a timestamp: an
+    `/afk off` and `/afk on` in one UTC second still make a new episode."""
+    try:
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        since = state["since"]
+        return (str(state.get("episode") or since),
+                datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _belt_key(lane: str, workspace: object = None, scope: object = "all") -> str | None:
+    """The belt's identity from the ONE key builder (`tools/lane/belt_heartbeat.key`), shared
+    with the heartbeat file; None when it cannot be imported, so the cutoff stays quiet
+    rather than keying on a second spelling."""
+    try:
+        sys.path.insert(0, str(HERE.parent / "lane"))
+        import belt_heartbeat  # noqa: PLC0415
+        return belt_heartbeat.key(lane, workspace, scope)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cutoff_marker_path(lane: str, workspace: object = None, scope: object = "all") -> Path | None:
+    """One marker per belt (lane, workspace, scope): a lane's belts in different workspaces, or
+    split by --repo or --scope-repo, each get their own cutoff line."""
+    belt = _belt_key(lane, workspace, scope)
+    return state_dir() / f"cutoff-{belt}.json" if belt else None
+
+
+def idle_cutoff_due(lane: str, now: float | None = None, threshold: float = IDLE_CUTOFF_SECONDS,
+                    workspace: object = None, scope: object = "all") -> str | None:
+    """The episode id when this belt's lane has been idle for `threshold` seconds while afk is
+    on and its cutoff has not been announced for this episode, else None (harmonic-forge#1398).
+
+    Idle time runs from the later of the lane's last recorded action and the
+    moment afk went on, so a lane that never acted since `/afk on` counts from
+    `/afk on`. The marker is a file, not a flag: the watcher exits every 1800 s
+    and is re-armed, and a flag in its memory would announce the cutoff again."""
+    digit = _lane_digit(lane)
+    episode = _afk_since() if is_on() else None
+    if digit is None or episode is None:
+        return None
+    since, since_at = episode
+    current = time.time() if now is None else now
+    marker = cutoff_marker_path(lane, workspace, scope)
+    if marker is None:
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("since"), str):
+            return None  # a marker without a readable episode id counts as announced
+        marked = data["since"]
+    except FileNotFoundError:
+        marked = None
+    except (OSError, ValueError, AttributeError):
+        # A marker that exists but cannot be read or parsed counts as announced: announcing
+        # twice in one episode is the failure the marker exists to prevent, and a corrupt
+        # marker would otherwise be rewritten and announced again on every re-arm.
+        return None
+    if marked == since:
+        return None
+    age = last_action_age(digit, current)
+    idle = min(current - since_at, age) if age is not None else current - since_at
+    return since if idle >= threshold else None
+
+
+def mark_cutoff_announced(lane: str, since: str, workspace: object = None,
+                          scope: object = "all") -> bool:
+    """Record that this episode's cutoff is announced for this belt. True only when the marker is
+    on disk; the caller announces only then, so a failed write can never announce twice. Never raises."""
+    digit = _lane_digit(lane)
+    marker = cutoff_marker_path(lane, workspace, scope)
+    if digit is None or marker is None:
+        return False
+    try:
+        with Locked():
+            _atomic_write(marker, json.dumps({"since": since}))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _read_queue() -> list[str]:
@@ -239,7 +374,8 @@ def toggle(payload: dict, entrypoint: str | None, now: float | None = None) -> s
     now = time.time() if now is None else now
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
     with Locked():
-        _atomic_write(state_path(), json.dumps({"on": True, "since": since}, sort_keys=True) + "\n")
+        _atomic_write(state_path(), json.dumps({"on": True, "since": since,
+                                                "episode": uuid.uuid4().hex}, sort_keys=True) + "\n")
     return (f"afk is ON since {since}: commands batch_auth would ask about are denied and queued; "
             "`/afk off` lists the queue.")
 

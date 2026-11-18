@@ -202,10 +202,10 @@ class AllowsTheCanonicalCalls(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {})
 
     def test_the_cron_the_loop_skill_itself_creates_is_allowed(self):
-        """`/loop 10m proactively find work to do` is implemented by the loop
+        """`/loop 30m proactively find work to do` is implemented by the loop
         skill as this exact CronCreate (seen in real transcripts). Denying it
         would deny the canonical arm."""
-        cron = {"cron": "*/10 * * * *", "prompt": "proactively find work to do",
+        cron = {"cron": "*/30 * * * *", "prompt": "proactively find work to do",
                 "recurring": True}
         self.assertIsNone(_decision(_run("CronCreate", cron)))
 
@@ -227,7 +227,7 @@ class LeavesEverythingElseAlone(unittest.TestCase):
                     "CronCreate", {"cron": "* * * * *", "prompt": "anything"}, lane=lane)))
 
 
-CANONICAL_CRON = {"cron": "*/10 * * * *", "prompt": "proactively find work to do",
+CANONICAL_CRON = {"cron": "*/30 * * * *", "prompt": "proactively find work to do",
                   "recurring": True}
 
 
@@ -251,7 +251,7 @@ class PrecloseA_RewordedLoopPromptsAreDenied(unittest.TestCase):
         for args in self.REWORDED:
             prompt = args.split(" ", 1)[1]
             with self.subTest(prompt=prompt):
-                cron = {"cron": "*/10 * * * *", "prompt": prompt, "recurring": True}
+                cron = {"cron": "*/30 * * * *", "prompt": prompt, "recurring": True}
                 self.assertEqual(_decision(_run("CronCreate", cron)), "deny")
 
 
@@ -267,7 +267,7 @@ class PrecloseB_CanonicalPromptOnAnotherScheduleIsDenied(unittest.TestCase):
         self.assertEqual(_decision(_run("CronCreate", cron)), "deny")
 
     def test_missing_recurring_is_the_tool_default_true(self):
-        cron = {"cron": "*/10 * * * *", "prompt": "proactively find work to do"}
+        cron = {"cron": "*/30 * * * *", "prompt": "proactively find work to do"}
         self.assertIsNone(_decision(_run("CronCreate", cron)))
 
 

@@ -20,8 +20,8 @@ tool calls. This does.
 WHAT IS DENIED (in a LANE=1/2/3 session)
 ----------------------------------------
 - `Skill` `loop` (or `<plugin>:loop`) whose args, stripped, are not exactly
-  `10m proactively find work to do`.
-- `CronCreate` that is not exactly `{"cron": "*/10 * * * *", "prompt":
+  `30m proactively find work to do`.
+- `CronCreate` that is not exactly `{"cron": "*/30 * * * *", "prompt":
   "proactively find work to do", "recurring": true}` (`recurring` absent counts
   as true, the tool's default). That is the call the `/loop` skill makes for the
   canonical loop, observed in real transcripts right after the `Skill` call.
@@ -103,9 +103,9 @@ from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 LANES = ("1", "2", "3")
 
-#: The `CronCreate` the `/loop` skill makes for `/loop 10m proactively find work
+#: The `CronCreate` the `/loop` skill makes for `/loop 30m proactively find work
 #: to do` (observed in real transcripts). `recurring` absent means true.
-LOOP_CRON = {"cron": "*/10 * * * *", "prompt": "proactively find work to do",
+LOOP_CRON = {"cron": "*/30 * * * *", "prompt": "proactively find work to do",
              "recurring": True}
 
 WATCHER_NAME = "watch_lane_posts.py"

@@ -190,5 +190,174 @@ class ToggleCase(unittest.TestCase):
         kept = [json.loads(l)["command"] for l in self.archives()[0].read_text().splitlines()]
         self.assertEqual(kept, ["gh issue close 1", "gh issue close 2"])
 
+
+class LastActionCase(unittest.TestCase):
+    """harmonic-forge#1398: one record per lane, written only by a posting tool."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HOME": tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_record_reads_back_as_its_age(self):
+        self.assertTrue(afk_toggle.record_lane_action("1", now=1000.0))
+        self.assertEqual(afk_toggle.last_action_age("1", now=1090.0), 90.0)
+
+    def test_lane_spellings_agree(self):
+        for spelling in ("1", "l1", "L1"):
+            afk_toggle.record_lane_action(spelling, now=2000.0)
+            self.assertEqual(afk_toggle.last_action_age("l1", now=2001.0), 1.0)
+
+    def test_a_lane_2_post_never_resets_lane_1(self):
+        afk_toggle.record_lane_action("1", now=1000.0)
+        afk_toggle.record_lane_action("2", now=5000.0)
+        self.assertEqual(afk_toggle.last_action_age("1", now=5000.0), 4000.0)
+        self.assertEqual(afk_toggle.last_action_age("2", now=5000.0), 0.0)
+
+    def test_an_explicit_lane_does_not_depend_on_the_environment(self):
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(afk_toggle.record_lane_action("2", now=10.0))
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            afk_toggle.record_lane_action("2", now=20.0)
+        self.assertEqual(afk_toggle.last_action_age("2", now=21.0), 1.0)
+        self.assertIsNone(afk_toggle.last_action_age("1", now=21.0))
+
+    def test_the_lane_comes_from_the_environment_by_default(self):
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            self.assertTrue(afk_toggle.record_lane_action(now=10.0))
+        self.assertIsNotNone(afk_toggle.last_action_age("1", now=11.0))
+
+    def test_a_session_with_no_lane_records_nothing(self):
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(afk_toggle.record_lane_action())
+        self.assertFalse(list(afk_toggle.state_dir().glob("last_action-*")) if afk_toggle.state_dir().exists() else [])
+
+    def test_an_unknown_lane_records_nothing(self):
+        self.assertFalse(afk_toggle.record_lane_action("4"))
+        self.assertFalse(afk_toggle.record_lane_action("x"))
+
+    def test_no_record_future_or_garbled_reads_as_none(self):
+        self.assertIsNone(afk_toggle.last_action_age("1"))
+        afk_toggle.record_lane_action("1", now=9000.0)
+        self.assertIsNone(afk_toggle.last_action_age("1", now=100.0))
+        afk_toggle.last_action_path("1").write_text("garbled")
+        self.assertIsNone(afk_toggle.last_action_age("1", now=9500.0))
+
+    def test_a_failed_write_never_raises(self):
+        with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(afk_toggle.record_lane_action("1"))
+
+    def test_the_belt_heartbeat_never_writes_a_lane_action(self):
+        import sys  # noqa: PLC0415
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
+        import belt_heartbeat  # noqa: PLC0415
+        belt_heartbeat.write("l1", "vh")
+        self.assertIsNone(afk_toggle.last_action_age("1"))
+
+    # -- the idle cutoff: wall time from the later of the last action and `/afk on`
+    T0 = 1_800_000_000.0  # the afk episode starts here
+
+    def afk_on(self, at=None):
+        afk_toggle.toggle({"prompt": "/afk on", "session_id": "s", "cwd": os.getcwd()}, "cli",
+                          now=self.T0 if at is None else at)
+
+    def test_nothing_is_due_while_afk_is_off(self):
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 99999))
+
+    def test_not_due_before_an_hour_and_due_at_an_hour(self):
+        self.afk_on()
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 3599))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 3600))
+
+    def test_a_recent_action_pushes_the_cutoff_out(self):
+        self.afk_on()
+        afk_toggle.record_lane_action("1", now=self.T0 + 3000)
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 3000 + 3599))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 3000 + 3600))
+
+    def test_an_action_before_afk_went_on_does_not_count(self):
+        afk_toggle.record_lane_action("1", now=self.T0 - 100000)
+        self.afk_on()
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 3599))
+
+    def test_another_lanes_action_does_not_push_it_out(self):
+        self.afk_on()
+        afk_toggle.record_lane_action("2", now=self.T0 + 3500)
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 3600))
+
+    def test_announced_once_per_episode_even_across_a_watcher_restart(self):
+        self.afk_on()
+        since = afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000)
+        self.assertTrue(afk_toggle.mark_cutoff_announced("l1", since))
+        # a new watcher process has no memory; only the marker file remains
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 9000))
+
+    def test_a_new_afk_episode_announces_again(self):
+        self.afk_on()
+        afk_toggle.mark_cutoff_announced("l1", afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
+        self.afk_on(at=self.T0 + 20000)
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 20000 + 100))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 20000 + 3600))
+
+    def test_off_then_on_in_the_same_second_is_a_new_episode(self):
+        self.afk_on()
+        afk_toggle.mark_cutoff_announced("l1", afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
+        afk_toggle.toggle({"prompt": "/afk off", "session_id": "s", "cwd": os.getcwd()}, "cli")
+        self.afk_on()                      # the same UTC second, so the same `since` string
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
+
+    def test_the_marker_is_per_scope_so_split_sessions_each_get_the_line(self):
+        self.afk_on()
+        due = afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="o/a")
+        self.assertTrue(afk_toggle.mark_cutoff_announced("l1", due, scope="o/a"))
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="O/A"))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="o/b"))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))   # the `all` belt
+
+    def test_the_marker_is_per_workspace_so_each_workspaces_belt_gets_the_line(self):
+        self.afk_on()
+        for workspace in ("vh", "kenekted", "leasepal"):
+            due = afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace=workspace)
+            self.assertIsNotNone(due, workspace)
+            self.assertTrue(afk_toggle.mark_cutoff_announced("l1", due, workspace=workspace))
+        for workspace in ("vh", "kenekted", "leasepal"):
+            self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace=workspace))
+
+    def test_a_marker_that_exists_but_is_unreadable_counts_as_announced(self):
+        self.afk_on()
+        marker = afk_toggle.cutoff_marker_path("l1", "vh", "all")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
+        marker.unlink()
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
+
+    def test_a_marker_without_since_counts_as_announced(self):
+        self.afk_on()
+        marker = afk_toggle.cutoff_marker_path("l1", "vh", "all")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{}", encoding="utf-8")
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
+
+    def test_a_closed_stderr_never_makes_the_record_raise(self):
+        with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")), \
+                mock.patch("builtins.print", side_effect=ValueError("I/O operation on closed file")):
+            self.assertFalse(afk_toggle.record_lane_action("1"))
+
+    def test_a_failed_marker_write_reports_false_so_the_caller_does_not_announce(self):
+        self.afk_on()
+        with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(afk_toggle.mark_cutoff_announced("l1", "x", workspace="vh"))
+
+    def test_the_marker_is_per_lane(self):
+        self.afk_on()
+        afk_toggle.mark_cutoff_announced("l1", afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l2", now=self.T0 + 4000))
+
+
 if __name__ == "__main__":
     unittest.main()

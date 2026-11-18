@@ -96,6 +96,11 @@ try:
     import tasklist_owed as _tasklist_owed
 except ImportError:
     _tasklist_owed = None
+# harmonic-forge#1398: a verified post is a real lane action, the afk idle clock's input.
+try:
+    import afk_toggle as _afk_toggle
+except ImportError:
+    _afk_toggle = None
 
 # harmonic-forge#838: a sibling module, imported by path so the check works
 # however this file is loaded (tests load it by file location).
@@ -3282,6 +3287,10 @@ def _post_kind(
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
+    if _afk_toggle is not None:
+        # harmonic-forge#1398: right after the confirmed post, before the receipt, task-list and
+        # route steps, so a failure in any of them cannot leave the idle clock unchanged.
+        _afk_toggle.record_lane_action("1")  # l1_post is Lane 1's, whatever LANE says
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
                    **({"rework_kind": rework_kind} if kind == "rework" else {}),  # harmonic-forge#1247

@@ -241,6 +241,24 @@ except Exception as _exc:  # noqa: BLE001 -- AC6: a broken module must not stop 
           file=sys.stderr)
     _tasklist_owed = None
 
+# harmonic-forge#1398: the watcher writes the belt heartbeat once per poll; a
+# suspenders tick reads its age. Never raises: a broken module must not stop the
+# belt, and a belt that cannot write its heartbeat reads as stale, which is the
+# direction that lets a tick re-arm it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
+try:
+    import belt_heartbeat as _belt_heartbeat  # noqa: E402
+except Exception as _exc:  # noqa: BLE001
+    print(f"[watch_lane_posts] heartbeat off: belt_heartbeat did not import: {_exc}",
+          file=sys.stderr)
+    _belt_heartbeat = None
+try:
+    import afk_toggle as _afk_toggle  # noqa: E402  (harmonic-forge#1398: the afk cutoff)
+except Exception as _exc:  # noqa: BLE001
+    print(f"[watch_lane_posts] afk cutoff off: afk_toggle did not import: {_exc}",
+          file=sys.stderr)
+    _afk_toggle = None
+
 from belt_mechanics import (  # noqa: E402
     CallCounter,
     GhAsError,
@@ -2903,6 +2921,74 @@ def _verified_accounts(account_repos: str, primary: str) -> tuple[list[str], lis
     return verified, skipped
 
 
+def belt_lane(queue_for: str | None) -> str:
+    """The lane this belt serves, for the heartbeat and the afk cutoff (harmonic-forge#1398).
+
+    The session's own `LANE` (the Monitor inherits it), else `--queue-for`. Not
+    `lane_label`: a Lane 3 belt has no `--queue-for` and watches `l1`, so its
+    label names the wrong lane."""
+    env = (os.environ.get("LANE") or "").strip()
+    if re.fullmatch(r"[lL]?[123]", env):
+        return _belt_heartbeat.normalize_lane(env) if _belt_heartbeat else f"l{env[-1]}"
+    return queue_for or "none"
+
+
+def heartbeat_scope(repos: list[str] | None, scope_repo: str | None = None) -> str:
+    """The belt's scope, parsed by `belt_heartbeat.scope_repos` (escaping happens once, in
+    `belt_heartbeat.key`, the one key builder the heartbeat and the afk cutoff marker share): `--scope-repo` (the canonical belt's
+    narrowing, harmonic-forge#1199) and `--repo` both count, else `all`."""
+    if _belt_heartbeat is None:
+        return "all"
+    return "+".join(_belt_heartbeat.scope_repos(([scope_repo] if scope_repo else []) + list(repos or []))) or "all"
+
+
+def write_poll_heartbeat(lane: str, workspace: str | None, repos: list[str] | None,
+                         deadline_seconds: float | None, scope_repo: str | None = None) -> bool:
+    """Record one finished poll (harmonic-forge#1398). The one writer of the belt
+    heartbeat; it never raises, so a heartbeat that cannot be written costs the
+    belt nothing but reads as stale to the next tick."""
+    if _belt_heartbeat is None:
+        return False
+    try:
+        _belt_heartbeat.write(lane, workspace or "none", heartbeat_scope(repos, scope_repo),
+                              deadline=deadline_seconds)
+        return True
+    except OSError as exc:
+        print(f"[watch_lane_posts] heartbeat write failed: {exc}", file=sys.stderr)
+        return False
+
+
+def announce_afk_idle_cutoff(lane: str, scope: str = "all", workspace: str | None = None) -> bool:
+    """Print the afk idle-cutoff line, once per afk episode per belt (harmonic-forge#1398).
+
+    Wall time, judged here by the watcher, not on a loop tick by the model: afk is
+    on, this lane has recorded no action (`afk_toggle.record_lane_action`, called
+    by the posting tools, never by the heartbeat) for `IDLE_CUTOFF_SECONDS`, and
+    the cutoff was not already announced for this episode. The belt is the same
+    (lane, workspace, scope) the heartbeat names. The marker is written BEFORE the
+    line prints and the line prints only when the write succeeded: a failed write
+    announces nothing, so no run can announce an episode twice (it may skip one on
+    a crash between the two, which the next afk episode recovers). Never raises."""
+    if _afk_toggle is None:
+        return False
+    try:
+        workspace = workspace or "none"
+        since = _afk_toggle.idle_cutoff_due(lane, workspace=workspace, scope=scope)
+        if since is None:
+            return False
+        if not _afk_toggle.mark_cutoff_announced(lane, since, workspace=workspace, scope=scope):
+            print("[watch_lane_posts] afk cutoff marker not written; not announcing", file=sys.stderr)
+            return False
+        print(f"afk-idle-cutoff {lane}: no lane action for "
+              f"{_afk_toggle.IDLE_CUTOFF_SECONDS // 60} minutes while afk is on "
+              f"(since {since}); stop this Monitor and the loop (skills/afk/SKILL.md)",
+              flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001 - the belt must outlive a bad state file
+        print(f"[watch_lane_posts] afk cutoff check failed: {exc}", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     """The belt's entry point. harmonic-forge#958: the per-tick read cache is
     switched off however `_main` exits, so no caller inherits a tick's reads."""
@@ -3312,6 +3398,11 @@ def _main() -> int:
             #: one failure this protocol cannot tolerate (DESIGN.md).
             print(f"[watch_lane_posts] tick log write failed: {exc}",
                   file=sys.stderr)
+        serving_lane = belt_lane(args.queue_for)
+        write_poll_heartbeat(serving_lane, args.workspace, args.repo, args.deadline_seconds,
+                             args.scope_repo)
+        announce_afk_idle_cutoff(serving_lane, heartbeat_scope(args.repo, args.scope_repo),
+                                 args.workspace)
         _end_tick_reads()  # harmonic-forge#958: nothing cached outlives its tick
         quiet_streak = 0 if not quiet else quiet_streak + 1
         polls_this_window += 1

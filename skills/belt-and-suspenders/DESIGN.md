@@ -410,19 +410,32 @@ schedule the process never completes.
 
 ## The suspenders — a pull loop
 
-`/loop 10m proactively find work to do`. The wakeup delay must match the cadence
-set here literally — not a generic idle-tick default.
+`/loop 30m proactively find work to do`. The wakeup delay must match the cadence
+set here literally — not a generic idle-tick default. (It was 10m until
+harmonic-forge#1398: a tick that finds nothing is a full model turn, and the
+watcher already polls every 300 s, so the loop is a backstop and not the poller.)
 
 **The suspenders are where the token cost actually is** (harmonic-forge#638,
 correcting the belt-side idea above): `/loop` wakes the model on every tick
 regardless of whether anything happened — a full turn, context and all —
-unlike the belt's stderr-only quiet cost. **Arming is fixed at 10m**: the
+unlike the belt's stderr-only quiet cost. **Arming is fixed at 30m**: the
 `/loop` call and the one `CronCreate` it makes are exactly the canonical ones,
 and `tools/hooks/enforce_belt_arming.py` denies any other cadence, any other
 prompt, and a second arm in the same session (harmonic-forge#659). Back-off is
 therefore never a re-arm: on quiet ticks, back off with `ScheduleWakeup` (which
-the hook does not govern) toward its 3600s maximum, and reset to the 10m
-cadence on any activity. **Never call `stop`** — no re-arming is ever
+the hook does not govern) toward its 3600s maximum, and reset to the 30m
+cadence on any activity. **What a tick reads** (harmonic-forge#1398): the watcher writes one heartbeat
+file at the end of every poll (`tools/lane/belt_heartbeat.py`, under
+`~/.claude/state/belt/`, one per lane, workspace and `--repo` scope), and a tick
+runs `python3 ~/harmonic-forge/tools/lane/belt_heartbeat.py read --lane <lane>
+--workspace <workspace>`. Exit 0 means the Monitor is alive and the tick does
+nothing about it. Exit 1 (older than two poll intervals, or none) means it may be
+dead or expired, and the tick re-arms the Monitor only if `TaskList` shows no live
+Monitor task for the belt too, so a tick that lands in the normal expiry-to-re-arm
+gap never arms a second one. The heartbeat is liveness only: it is never a lane
+action and never resets the afk idle clock.
+
+**Never call `stop`** — no re-arming is ever
 required, and no operator action is needed to resume, the identical
 guarantee the belt makes for itself above. The two halves therefore share
 one shape (back off, cap, reset on activity, never stop), differing only in

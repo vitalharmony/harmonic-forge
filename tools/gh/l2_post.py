@@ -37,6 +37,7 @@ import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a pos
 import _caller_path  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import tasklist_owed  # noqa: E402  (harmonic-forge#1126: never raises)
+import afk_toggle  # noqa: E402  (harmonic-forge#1398: record_lane_action never raises)
 
 
 def _sha(text: str) -> str:
@@ -552,6 +553,9 @@ def main() -> int:
         # only: it prints, and cannot change what is posted.
         orphan_report.report()
     result = post(args.repo, args.issue, body)
+    # harmonic-forge#1398: right after the confirmed post, before attribution, candidate and
+    # task-list records, so a failure in any of them cannot leave the idle clock unchanged.
+    afk_toggle.record_lane_action("2")  # l2_post is Lane 2's unconditionally
     _record_attrib(args.repo, args.issue, args.kind, "2", (result or {}).get("url"))
     #: harmonic-forge#691 (AC1'). `belt_candidates` is the one module all
     #: three marker-posting tools call on every successful post --

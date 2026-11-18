@@ -128,7 +128,7 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
                     self.assertEqual(argv[0], vh["argv"])
                     self.assertEqual(plan["loop"],
                                      {"skill": "loop",
-                                      "args": "10m proactively find work to do"})
+                                      "args": "30m proactively find work to do"})
 
     def test_skill_md_carries_no_command(self):
         """harmonic-forge#659 AC4: a command retyped in the skill is a second
