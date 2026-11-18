@@ -142,7 +142,8 @@ def record_lane_action(lane: str | None = None, now: float | None = None) -> boo
             _atomic_write(last_action_path(digit),
                           json.dumps({"lane": digit, "at": time.time() if now is None else now}))
         return True
-    except Exception:  # noqa: BLE001 - a liveness note must never fail a post
+    except Exception as exc:  # noqa: BLE001 - a liveness note must never fail a post
+        print(f"[afk] lane action not recorded: {type(exc).__name__}: {exc}", file=sys.stderr)
         return False
 
 
@@ -176,30 +177,29 @@ def _afk_since() -> tuple[str, float] | None:
         return None
 
 
-def _belt_key(lane: str, scope: object = "all") -> str | None:
+def _belt_key(lane: str, workspace: object = None, scope: object = "all") -> str | None:
     """The belt's identity from the ONE key builder (`tools/lane/belt_heartbeat.key`), shared
     with the heartbeat file; None when it cannot be imported, so the cutoff stays quiet
     rather than keying on a second spelling."""
     try:
         sys.path.insert(0, str(HERE.parent / "lane"))
         import belt_heartbeat  # noqa: PLC0415
-        return belt_heartbeat.key(lane, scope)
+        return belt_heartbeat.key(lane, workspace, scope)
     except Exception:  # noqa: BLE001
         return None
 
 
-def cutoff_marker_path(lane: str, scope: object = "all") -> Path | None:
-    """One marker per (lane, scope): two sessions of one lane split by --repo or --scope-repo
-    each get their own cutoff line."""
-    belt = _belt_key(lane, scope)
+def cutoff_marker_path(lane: str, workspace: object = None, scope: object = "all") -> Path | None:
+    """One marker per belt (lane, workspace, scope): a lane's belts in different workspaces, or
+    split by --repo or --scope-repo, each get their own cutoff line."""
+    belt = _belt_key(lane, workspace, scope)
     return state_dir() / f"cutoff-{belt}.json" if belt else None
 
 
-def idle_cutoff_due(lane: str, now: float | None = None,
-                    threshold: float = IDLE_CUTOFF_SECONDS, scope: object = "all") -> str | None:
-    """The episode key (the afk `since` string) when this lane has been idle for
-    `threshold` seconds while afk is on and its cutoff has not been announced
-    for this episode, else None (harmonic-forge#1398).
+def idle_cutoff_due(lane: str, now: float | None = None, threshold: float = IDLE_CUTOFF_SECONDS,
+                    workspace: object = None, scope: object = "all") -> str | None:
+    """The episode id when this belt's lane has been idle for `threshold` seconds while afk is
+    on and its cutoff has not been announced for this episode, else None (harmonic-forge#1398).
 
     Idle time runs from the later of the lane's last recorded action and the
     moment afk went on, so a lane that never acted since `/afk on` counts from
@@ -211,7 +211,7 @@ def idle_cutoff_due(lane: str, now: float | None = None,
         return None
     since, since_at = episode
     current = time.time() if now is None else now
-    marker = cutoff_marker_path(lane, scope)
+    marker = cutoff_marker_path(lane, workspace, scope)
     if marker is None:
         return None
     try:
@@ -225,10 +225,12 @@ def idle_cutoff_due(lane: str, now: float | None = None,
     return since if idle >= threshold else None
 
 
-def mark_cutoff_announced(lane: str, since: str, scope: object = "all") -> bool:
-    """Record that this episode's cutoff was announced for this (lane, scope). Never raises."""
+def mark_cutoff_announced(lane: str, since: str, workspace: object = None,
+                          scope: object = "all") -> bool:
+    """Record that this episode's cutoff is announced for this belt. True only when the marker is
+    on disk; the caller announces only then, so a failed write can never announce twice. Never raises."""
     digit = _lane_digit(lane)
-    marker = cutoff_marker_path(lane, scope)
+    marker = cutoff_marker_path(lane, workspace, scope)
     if digit is None or marker is None:
         return False
     try:

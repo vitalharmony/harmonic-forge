@@ -102,10 +102,39 @@ class OneKeyTests(unittest.TestCase):
             self.assertEqual(belt_heartbeat.read("l1", "vh", scope, now=1005.0), 5.0, scope)
         self.assertIsNone(belt_heartbeat.read("l1", "vh", "all", now=1005.0))
 
-    def test_key_is_lane_and_scope(self):
-        self.assertEqual(belt_heartbeat.key("1"), "l1-all")
-        self.assertEqual(belt_heartbeat.key("L2", "o/r"), "l2-o_r")
-        self.assertNotEqual(belt_heartbeat.key("l1", "o/a"), belt_heartbeat.key("l1", "o/b"))
+    def test_key_is_lane_workspace_and_scope(self):
+        self.assertEqual(belt_heartbeat.key("1", "vh"), "l1-vh-all")
+        self.assertEqual(belt_heartbeat.key("L2", "vh", "o/r"), "l2-vh-o%2Fr")
+        self.assertNotEqual(belt_heartbeat.key("l1", "vh", "o/a"), belt_heartbeat.key("l1", "vh", "o/b"))
+        self.assertNotEqual(belt_heartbeat.key("l1", "vh"), belt_heartbeat.key("l1", "kenekted"))
+
+    def test_distinct_belts_never_share_a_name(self):
+        """The escaping is reversible, so these distinct identities cannot collide (the old slug
+        mapped `o/repo` and `o/repo_` to one name, and `a-b`/`c` onto `a`/`b-c`)."""
+        self.assertNotEqual(belt_heartbeat.key("l1", "vh", "o/repo"), belt_heartbeat.key("l1", "vh", "o/repo_"))
+        self.assertNotEqual(belt_heartbeat.key("l1", "a-b", "c/d"), belt_heartbeat.key("l1", "a", "b-c/d"))
+        self.assertNotEqual(belt_heartbeat.key("l1", "a b"), belt_heartbeat.key("l1", "a_b"))
+        self.assertNotEqual(belt_heartbeat.key("l1", "vh", "a/x"), belt_heartbeat.key("l1", "vh", "a_x"))
+
+    def test_spellings_of_one_belt_share_a_name(self):
+        base = belt_heartbeat.key("l1", "vh", ["a/b", "c/d"])
+        for lane in ("1", "L1", " l1 "):
+            self.assertEqual(belt_heartbeat.key(lane, "vh", ["c/d", "A/B"]), base)
+        for scope in ("a/b+c/d", "c/d,a/b", ["C/D", "a/b", "a/b"]):
+            self.assertEqual(belt_heartbeat.key("l1", "vh", scope), base)
+
+    def test_only_key_builds_heartbeat_and_cutoff_names(self):
+        """The one-builder claim, by grep over the shipped sources, not by call counts."""
+        root = HERE.parent
+        offenders = []
+        for path in list(root.rglob("*.py")):
+            if path.name.startswith("test_") or path.name == "belt_heartbeat.py" or "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for token in ('f"heartbeat-', "f'heartbeat-", 'f"cutoff-', "f'cutoff-"):
+                if token in text and path.name != "afk_toggle.py":
+                    offenders.append((path.name, token))
+        self.assertEqual(offenders, [])
 
     def test_the_cli_accepts_the_session_lane_and_a_scope(self):
         import io  # noqa: PLC0415
@@ -135,7 +164,7 @@ class WatcherWritesItTests(unittest.TestCase):
     def test_scope_is_the_sorted_repos_or_all(self):
         self.assertEqual(self.watcher.heartbeat_scope(None), "all")
         self.assertEqual(self.watcher.heartbeat_scope([]), "all")
-        self.assertEqual(self.watcher.heartbeat_scope(["b/y", "A/x"]), "a_x_b_y")
+        self.assertEqual(self.watcher.heartbeat_scope(["b/y", "A/x"]), "a/x+b/y")
         # the canonical belt narrows with --scope-repo, a single repo; --repo is a list
         self.assertEqual(self.watcher.heartbeat_scope(None, "a/x"), self.watcher.heartbeat_scope(["a/x"]))
 
@@ -177,6 +206,31 @@ class WatcherWritesItTests(unittest.TestCase):
             # a restarted watcher has no memory, only the marker file
             self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1"))
         self.assertEqual(out.getvalue().count("afk-idle-cutoff l1"), 1)
+
+    def test_three_workspace_belts_of_one_lane_each_announce_once(self):
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        afk = self.watcher._afk_toggle
+        afk.toggle({"prompt": "/afk on", "session_id": "s", "cwd": os.getcwd()}, "cli", now=1.0)
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(afk.time, "time", return_value=1.0 + 3700):
+            for workspace in ("vh", "kenekted", "leasepal"):
+                self.assertTrue(self.watcher.announce_afk_idle_cutoff("l1", "all", workspace), workspace)
+            for workspace in ("vh", "kenekted", "leasepal"):   # a second poll of each stays quiet
+                self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1", "all", workspace), workspace)
+        self.assertEqual(out.getvalue().count("afk-idle-cutoff l1"), 3)
+
+    def test_a_failing_marker_write_announces_nothing_and_never_twice(self):
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        afk = self.watcher._afk_toggle
+        afk.toggle({"prompt": "/afk on", "session_id": "s", "cwd": os.getcwd()}, "cli", now=1.0)
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(afk.time, "time", return_value=1.0 + 3700), \
+                mock.patch.object(afk, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1", "all", "vh"))
+            self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1", "all", "vh"))
+        self.assertEqual(out.getvalue(), "")
 
     def test_no_cutoff_line_before_the_hour_or_with_afk_off(self):
         import io  # noqa: PLC0415

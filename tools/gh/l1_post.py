@@ -3287,6 +3287,10 @@ def _post_kind(
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
+    if _afk_toggle is not None:
+        # harmonic-forge#1398: right after the confirmed post, before the receipt, task-list and
+        # route steps, so a failure in any of them cannot leave the idle clock unchanged.
+        _afk_toggle.record_lane_action("1")  # l1_post is Lane 1's, whatever LANE says
     write_receipt({"version": 1, "repo": repo, "issue": issue, "kind": kind,
                    **({"plan_first": bool(plan_first)} if kind == "handoff" else {}),
                    **({"rework_kind": rework_kind} if kind == "rework" else {}),  # harmonic-forge#1247
@@ -3295,8 +3299,6 @@ def _post_kind(
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
     if _tasklist_owed is not None:
         _tasklist_owed.record_post(repo, issue, kind)
-    if _afk_toggle is not None:
-        _afk_toggle.record_lane_action("1")  # l1_post is Lane 1's, whatever LANE says
     if snapshot_route is not None:
         # harmonic-forge#1231: after the post, so a refused or failed post
         # records nothing; a store error is printed and never raised.

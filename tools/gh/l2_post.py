@@ -553,6 +553,9 @@ def main() -> int:
         # only: it prints, and cannot change what is posted.
         orphan_report.report()
     result = post(args.repo, args.issue, body)
+    # harmonic-forge#1398: right after the confirmed post, before attribution, candidate and
+    # task-list records, so a failure in any of them cannot leave the idle clock unchanged.
+    afk_toggle.record_lane_action("2")  # l2_post is Lane 2's unconditionally
     _record_attrib(args.repo, args.issue, args.kind, "2", (result or {}).get("url"))
     #: harmonic-forge#691 (AC1'). `belt_candidates` is the one module all
     #: three marker-posting tools call on every successful post --
@@ -577,7 +580,6 @@ def main() -> int:
     if args.kind != "finding":
         belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
     tasklist_owed.record_post(args.repo, args.issue, args.kind)
-    afk_toggle.record_lane_action("2")  # l2_post is Lane 2's unconditionally; harmonic-forge#1398: a verified post is a real lane action
     print(json.dumps(result))
     return 0
 

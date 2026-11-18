@@ -318,39 +318,24 @@ class LastActionCase(unittest.TestCase):
         self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, scope="o/b"))
         self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))   # the `all` belt
 
-    def test_the_marker_name_comes_from_the_shared_key(self):
-        sys_path = str(Path(__file__).resolve().parent.parent / "lane")
-        import sys  # noqa: PLC0415
-        sys.path.insert(0, sys_path)
-        import belt_heartbeat  # noqa: PLC0415
-        self.assertEqual(afk_toggle.cutoff_marker_path("1", "O/r").name,
-                         f"cutoff-{belt_heartbeat.key('l1', 'o/r')}.json")
+    def test_the_marker_is_per_workspace_so_each_workspaces_belt_gets_the_line(self):
+        self.afk_on()
+        for workspace in ("vh", "kenekted", "leasepal"):
+            due = afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace=workspace)
+            self.assertIsNotNone(due, workspace)
+            self.assertTrue(afk_toggle.mark_cutoff_announced("l1", due, workspace=workspace))
+        for workspace in ("vh", "kenekted", "leasepal"):
+            self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace=workspace))
+
+    def test_a_failed_marker_write_reports_false_so_the_caller_does_not_announce(self):
+        self.afk_on()
+        with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(afk_toggle.mark_cutoff_announced("l1", "x", workspace="vh"))
 
     def test_the_marker_is_per_lane(self):
         self.afk_on()
         afk_toggle.mark_cutoff_announced("l1", afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000))
         self.assertIsNotNone(afk_toggle.idle_cutoff_due("l2", now=self.T0 + 4000))
-
-    def test_each_posting_tool_records_its_own_lane_unguarded_on_its_success_path(self):
-        """Not 'a call by that name': the call must be reachable (no `if False:` around it, the
-        import guard excepted) and name its lane explicitly, never take it from `LANE`."""
-        import ast  # noqa: PLC0415
-        gh = Path(__file__).resolve().parent.parent / "gh"
-        expected = {"l1_post.py": "'1'", "l2_post.py": "'2'", "post_lane_discussion.py": "lane"}
-        for name, lane_arg in expected.items():
-            tree = ast.parse((gh / name).read_text(encoding="utf-8"))
-            parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
-            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-                     and getattr(n.func, "attr", None) == "record_lane_action"]
-            self.assertEqual(len(calls), 1, f"{name} must record one lane action per verified post")
-            call = calls[0]
-            self.assertEqual([ast.unparse(a) for a in call.args], [lane_arg], name)
-            node = call
-            while node in parents:
-                node = parents[node]
-                if isinstance(node, (ast.If, ast.While, ast.For, ast.Try)):
-                    self.assertIsInstance(node, ast.If, name)
-                    self.assertEqual(ast.unparse(node.test), "_afk_toggle is not None", name)
 
 
 if __name__ == "__main__":

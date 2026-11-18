@@ -26,46 +26,57 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 STATE_RELDIR = Path(".claude") / "state" / "belt"
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def state_dir() -> Path:
     return Path.home() / STATE_RELDIR
 
 
-def _slug(value: str) -> str:
-    return _UNSAFE.sub("_", value).strip("_") or "x"
+def _enc(value: str) -> str:
+    """Reversible escaping, so two different values never share a name: percent-encode
+    everything but letters, digits, `.` and `_`, and `-` too, because `-` joins the id's fields
+    and `+` joins a scope's repos (a lossy slug let `o/repo` and `o/repo_` collide)."""
+    return quote(value, safe="").replace("-", "%2D") or "%00"
 
 
 def normalize_lane(lane: object) -> str:
     """`l1` from `1`, `l1` or `L1` (the session's `LANE` and the watcher's `--queue-for`
-    spell it differently); anything else is slugged and lowercased."""
+    spell it differently); anything else is escaped and lowercased."""
     text = str(lane or "").strip()
     match = re.fullmatch(r"[lL]?([123])", text)
-    return f"l{match.group(1)}" if match else _slug(text.lower())
+    return f"l{match.group(1)}" if match else _enc(text.lower())
+
+
+def scope_repos(scope: object = None) -> list[str]:
+    """The repos a scope names: lowercased, sorted, deduplicated, `all` and blanks dropped.
+    Takes a list or a string split on `+` or `,`, so `--repo`, `--scope-repo` and the tick's own
+    `--scope` all name the same belt the same way. Idempotent on its own `+`-joined output."""
+    if scope is None or scope == "":
+        return []
+    parts = [scope] if isinstance(scope, str) else list(scope)
+    repos = {p.strip().lower() for part in parts for p in re.split(r"[+,]", str(part)) if p.strip()}
+    return sorted(repos - {"all"})
 
 
 def normalize_scope(scope: object = None) -> str:
-    """`all` for no scope, else the repos, lowercased, sorted, `+`-joined and slugged. Takes a
-    list or a string split on `+` or `,`, so `--repo`, `--scope-repo` and the tick's own
-    `--scope` all name the same belt the same way."""
-    if scope is None or scope == "":
-        return "all"
-    parts = [scope] if isinstance(scope, str) else list(scope)
-    repos = sorted({p.strip().lower() for part in parts for p in re.split(r"[+,]", str(part)) if p.strip()})
-    return _slug("+".join(repos)) if repos else "all"
+    """`all` for no scope (or the CLI default `all`), else the repos each escaped and `+`-joined."""
+    repos = scope_repos(scope)
+    return "+".join(_enc(r) for r in repos) if repos else "all"
 
 
-def key(lane: object, scope: object = None) -> str:
-    """The one place a belt's identity is built (harmonic-forge#1398): the heartbeat file and
-    the afk cutoff marker both use it, so a writer and a reader can never spell it differently."""
-    return f"{normalize_lane(lane)}-{normalize_scope(scope)}"
+def key(lane: object, workspace: object = None, scope: object = None) -> str:
+    """The one place a belt's identity is built (harmonic-forge#1398): `l<N>-<workspace>-<scope>`.
+    The heartbeat file and the afk cutoff marker both name themselves from it and nothing else
+    builds a `heartbeat-` or `cutoff-` name, so a writer and a reader can never spell a belt
+    differently, and two belts of one lane in different workspaces never share a name."""
+    return f"{normalize_lane(lane)}-{_enc(str(workspace or 'none'))}-{normalize_scope(scope)}"
 
 
 def path_for(lane: str, workspace: str, scope: object = "all") -> Path:
-    return state_dir() / f"heartbeat-{normalize_lane(lane)}-{_slug(workspace)}-{normalize_scope(scope)}.json"
+    return state_dir() / f"heartbeat-{key(lane, workspace, scope)}.json"
 
 
 def write(lane: str, workspace: str, scope: object = "all", deadline: float | None = None,
