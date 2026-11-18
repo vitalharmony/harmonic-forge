@@ -116,6 +116,15 @@ class OneKeyTests(unittest.TestCase):
         self.assertNotEqual(belt_heartbeat.key("l1", "a b"), belt_heartbeat.key("l1", "a_b"))
         self.assertNotEqual(belt_heartbeat.key("l1", "vh", "a/x"), belt_heartbeat.key("l1", "vh", "a_x"))
 
+    def test_a_long_scope_stays_under_the_name_limit_and_distinct(self):
+        owner = "o" * 39
+        a = belt_heartbeat.key("l1", "vh", f"{owner}/{'a' * 100}")
+        b = belt_heartbeat.key("l1", "vh", f"{owner}/{'a' * 99}b")
+        self.assertLessEqual(len(belt_heartbeat.path_for("l1", "vh", f"{owner}/{'a' * 100}").name), 255)
+        self.assertNotEqual(a, b)
+        belt_heartbeat.write("l1", "vh", f"{owner}/{'a' * 100}", now=1000.0)
+        self.assertEqual(belt_heartbeat.read("l1", "vh", f"{owner}/{'a' * 100}", now=1001.0), 1.0)
+
     def test_spellings_of_one_belt_share_a_name(self):
         base = belt_heartbeat.key("l1", "vh", ["a/b", "c/d"])
         for lane in ("1", "L1", " l1 "):

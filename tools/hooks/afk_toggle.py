@@ -143,7 +143,10 @@ def record_lane_action(lane: str | None = None, now: float | None = None) -> boo
                           json.dumps({"lane": digit, "at": time.time() if now is None else now}))
         return True
     except Exception as exc:  # noqa: BLE001 - a liveness note must never fail a post
-        print(f"[afk] lane action not recorded: {type(exc).__name__}: {exc}", file=sys.stderr)
+        try:
+            print(f"[afk] lane action not recorded: {type(exc).__name__}: {exc}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 - a closed stderr must not fail a confirmed post
+            pass
         return False
 
 
@@ -215,7 +218,10 @@ def idle_cutoff_due(lane: str, now: float | None = None, threshold: float = IDLE
     if marker is None:
         return None
     try:
-        marked = json.loads(marker.read_text(encoding="utf-8")).get("since")
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("since"), str):
+            return None  # a marker without a readable episode id counts as announced
+        marked = data["since"]
     except FileNotFoundError:
         marked = None
     except (OSError, ValueError, AttributeError):

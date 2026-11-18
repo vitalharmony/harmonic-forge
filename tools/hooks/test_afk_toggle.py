@@ -336,6 +336,18 @@ class LastActionCase(unittest.TestCase):
         marker.unlink()
         self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
 
+    def test_a_marker_without_since_counts_as_announced(self):
+        self.afk_on()
+        marker = afk_toggle.cutoff_marker_path("l1", "vh", "all")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{}", encoding="utf-8")
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
+
+    def test_a_closed_stderr_never_makes_the_record_raise(self):
+        with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")), \
+                mock.patch("builtins.print", side_effect=ValueError("I/O operation on closed file")):
+            self.assertFalse(afk_toggle.record_lane_action("1"))
+
     def test_a_failed_marker_write_reports_false_so_the_caller_does_not_announce(self):
         self.afk_on()
         with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")):

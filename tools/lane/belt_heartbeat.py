@@ -20,6 +20,7 @@ or `all` (harmonic-forge#1199 lets two sessions of one lane split a workspace).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 STATE_RELDIR = Path(".claude") / "state" / "belt"
+_MAX_KEY = 200  # leaves room for "heartbeat-" / "cutoff-" and ".json" under NAME_MAX 255
 
 
 def state_dir() -> Path:
@@ -72,7 +74,13 @@ def key(lane: object, workspace: object = None, scope: object = None) -> str:
     The heartbeat file and the afk cutoff marker both name themselves from it and nothing else
     builds a `heartbeat-` or `cutoff-` name, so a writer and a reader can never spell a belt
     differently, and two belts of one lane in different workspaces never share a name."""
-    return f"{normalize_lane(lane)}-{_enc(str(workspace or 'none'))}-{normalize_scope(scope)}"
+    name = f"{normalize_lane(lane)}-{_enc(str(workspace or 'none'))}-{normalize_scope(scope)}"
+    if len(name) > _MAX_KEY:
+        # A long escaped scope would pass the filesystem's 255-byte name limit; a digest of the
+        # full identity keeps the name distinct and short (the prefix stays readable).
+        digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:32]
+        name = f"{normalize_lane(lane)}-{_enc(str(workspace or 'none'))[:40]}-h{digest}"
+    return name
 
 
 def path_for(lane: str, workspace: str, scope: object = "all") -> Path:
