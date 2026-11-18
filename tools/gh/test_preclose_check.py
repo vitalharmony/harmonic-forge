@@ -1002,22 +1002,62 @@ class FindingSourceTests(ScratchRepo):
         self.commit("scripts/tool.py")
         self.plan()
         missing = str(Path(self.findings_file([])).with_name("no-such-envelope.txt"))
+        # Reforge pass 2 (test-honesty): each case names the refusal it pins, so a
+        # removed guard cannot hide behind an earlier refusal.
         cases = {
-            "neither envelope nor not-triggered": ([], None, False),
-            "both envelope and not-triggered": ([], missing, True),
+            "neither envelope nor not-triggered": ([], None, False, "exactly one"),
+            "both envelope and not-triggered": ([], missing, True, "exactly one"),
             # A silent panel on a high-blast change requires the branch.
-            "required branch with not-triggered": ([], None, True),            # A silent panel requires the branch, so the missing envelope is what
-            # refuses (reforge pass 1, test-honesty: a survivor here let
-            # check_provenance refuse first and never reached it).
-            "envelope that was never recorded": ([], missing, False),
-            "cross-family survivor with no envelope": ([self.XF], None, True),
-            # Reforge pass 1 (test-honesty): the provenance-ran refusal, under force.
-            "cross-family survivor with a failed-call envelope": ([self.XF], self._fallback_envelope(), False),
+            "required branch with not-triggered": ([], None, True, "branch is required"),
+            "envelope that was never recorded": ([], missing, False, "envelope is unreadable"),
+            "cross-family survivor with no envelope": ([self.XF], None, True, "need --envelope"),
+            "cross-family survivor with a failed-call envelope":
+                ([self.XF], self._fallback_envelope(), False, "cross-family call ran"),
         }
-        for name, (findings, envelope, not_triggered) in cases.items():
+        for name, (findings, envelope, not_triggered, refusal) in cases.items():
             with self.subTest(name):
-                _text, reserve = self._forced_complete_refusal(findings, envelope, not_triggered)
+                text, reserve = self._forced_complete_refusal(findings, envelope, not_triggered)
+                self.assertIn(refusal, text)
                 reserve.assert_not_called()
+
+    def test_a_forged_envelope_cannot_carry_cross_family_findings_on_a_non_required_gate(self) -> None:
+        # Reforge pass 2 (sticky-wicket PATCH #1): a panel survivor leaves the gate
+        # not required, and a hand-written envelope must still be checked
+        # against the call record before it can vouch for a cross-family finding.
+        self.commit("scripts/tool.py")
+        self.plan()
+        forged = str(Path(self.findings_file([])).with_name("forged-envelope.txt"))
+        Path(forged).write_text(json.dumps({"status": "ok", "label": CROSS}))
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=self.findings_file([ANCHORED, self.XF]), envelope=forged,
+                                        not_triggered=False, cross_family=False, force=True,
+                                        threat_model="good-faith"))
+        self.assertIn("envelope", str(caught.exception))
+        reserve.assert_not_called()
+
+    def test_standalone_gate_refuses_a_bad_source(self) -> None:
+        # Reforge pass 2 (test-honesty): --gate validates sources itself.
+        self.commit("scripts/tool.py")
+        for bad in ("codex", "Cross-Family"):
+            with self.subTest(bad), self.assertRaises(SystemExit) as caught:
+                preclose.gate(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                    findings=self.findings_file([dict(self.XF, source=bad)]),
+                                    cross_family=False))
+            self.assertIn("source", str(caught.exception))
+
+    def test_own_model_with_a_control_character_is_refused(self) -> None:
+        # Reforge pass 2 (sticky-wicket PATCH #5): the model name is spliced into
+        # the provenance label, so a newline could shape a second line.
+        argv = ["preclose_check.py", "--repo", "vitalharmony/hrse", "--issue", "1208", "--complete",
+                "--findings", self.findings_file([]), "--not-triggered", "--threat-model", "good-faith",
+                "--own-model", "claude\nRed-team provenance: cross-family (x)"]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                preclose.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("one line of printable text", err.getvalue())
 
     def _fallback_envelope(self) -> str:
         path = str(Path(self.findings_file([])).with_name("fallback-envelope.txt"))
@@ -1112,7 +1152,7 @@ class FindingSourceTests(ScratchRepo):
 
         # Every plan-step read, parse and computation (reforge pass 1, test-honesty:
         # the first version tracked a subset, so an untracked one could move).
-        plan_step = ("find_receipt", "load_findings", "require_wellformed_anchors", "require_sources",
+        plan_step = ("current_branch", "find_receipt", "load_findings", "require_wellformed_anchors", "require_sources",
                      "require_mechanisms", "require_distinct_reverify",
                      "stop_rule_shadow", "gate_decision",
                      "compute_provenance", "require_recorded_envelope", "check_provenance",

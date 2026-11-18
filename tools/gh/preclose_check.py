@@ -1200,7 +1200,12 @@ def complete(args: argparse.Namespace) -> int:
     # harmonic-forge#1419: the gate read panel survivors; the pass outcome
     # (count, mechanisms, shadow, hostile block, cluster) reads every source.
     surviving = len(surviving_findings(findings))
-    if required and args.envelope:
+    # harmonic-forge#1419 reforge pass 2 (sticky-wicket PATCH #1): a cross-family
+    # finding makes the envelope a trust input whatever the gate decided, so it
+    # is checked against the call record then too, not only when required.
+    has_cross_family = any(isinstance(finding, dict) and finding.get("source") == "cross-family"
+                           for finding in findings)
+    if args.envelope and (required or has_cross_family):
         require_recorded_envelope(args.envelope)
     provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
     check_provenance(required, provenance)
@@ -1560,6 +1565,11 @@ def main() -> None:
     if (args.complete or args.post_verdict) and not args.own_model:
         parser.error("--complete/--post-verdict need --own-model <the calling session's model>: "
                      "the receipt's label names the family that did the work (harmonic-forge#848)")
+    # harmonic-forge#1419 reforge pass 2 (sticky-wicket PATCH #5): the model name
+    # is spliced into the provenance label, so a control character could shape a
+    # second label line. Refused, not stripped.
+    if args.own_model and any(ord(ch) < 32 or ord(ch) == 127 for ch in args.own_model):
+        parser.error("--own-model must be one line of printable text (harmonic-forge#1419)")
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")
