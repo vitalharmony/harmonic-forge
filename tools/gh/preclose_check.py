@@ -1170,6 +1170,12 @@ def complete(args: argparse.Namespace) -> int:
                                  for finding in findings):
         raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
                          "(the recorded cross-family call they came from); nothing recorded.")
+    # harmonic-forge#1419 reforge (post-verdict survivor 2): --reverify is a
+    # different contract from --findings; one path for both reads one file twice.
+    reverify_path = getattr(args, "reverify", None)
+    if reverify_path and Path(reverify_path).resolve() == Path(args.findings).resolve():
+        raise SystemExit("preclose-check: --reverify and --findings name the same file; "
+                         "they are separate inputs. Nothing recorded.")
     # harmonic-forge#1419 sticky-wicket PATCH: every step that can refuse runs
     # before the grant is reserved, on the one load above; none of them writes.
     if args.not_triggered == bool(args.envelope):
@@ -1187,57 +1193,67 @@ def complete(args: argparse.Namespace) -> int:
     if provenance.startswith(PROVENANCE_TRIGGERED[1]):
         imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
                     "could not run is an IMC stop, never a pass")
+    # harmonic-forge#1419 reforge: the plan step. Every read, parse and
+    # computation the receipt needs runs here, before the grant is reserved,
+    # so nothing after the reservation can refuse on input.
+    # The call ran whenever an envelope is recorded, a fallback included: a
+    # call that timed out still spent its wall-clock (#889 preclose pass 1).
+    ran = bool(args.envelope)
+    cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
+                 "cross_family_ran": ran,
+                 "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    if ran:
+        cost["cross_family_tokens"] = "unavailable"
+        cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
+    prior = find_receipt(repo, args.issue)
+    size = prior.get("refuters", 0) if prior else 0
+    # The tier rides on the pass entry, the single carrier every reader uses
+    # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
+    # last pass's.
+    # The planned receipt's tier is the one that sized this panel, so it
+    # wins over a --tier given only at --complete (#889 post-verdict check).
+    # Whenever a plan sized this panel, its recorded tier is the label, "unset"
+    # included: --tier given at --complete can never relabel a planned pass.
+    if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
+        cost["tier"] = prior["tier"]
+    else:
+        cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
+    # harmonic-forge#890: the arm rides on the pass entry, read from the
+    # issue's newest enrollment event and nowhere else. No enrollment -> no
+    # arm key, never a synthesized value a report would trust.
+    try:
+        enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+    except preclose_enrollment.EnrollmentUnreadable as exc:
+        # The panel has already run: record the pass, without an arm, and say
+        # why. Never crash here (#890 reforged pass 2, fail-crashed).
+        print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
+              file=sys.stderr)
+        enrolled = None
+    if enrolled:
+        cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
+                     "arm_assigned": enrolled.get("assigned"),
+                     "arm_overridden": preclose_enrollment.overridden(enrolled)})
+        if enrolled.get("reason"):
+            cost["arm_reason"] = enrolled["reason"]
+    shadow = stop_rule_shadow(args, findings, prior, head_sha, reforge)
+    blocking = preclose_passes.hostile_block(surviving_findings(findings), args.threat_model)
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        raise SystemExit(f"preclose-check: the prior receipt's refuter count {size!r} is not a "
+                         "whole number; nothing recorded.") from None
+    payload = {
+        **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
+                                 current_branch(), reforge, cost, shadow, blocking),
+        "cross_family_required": required,
+        "cross_family_reason": why,
+        "provenance": provenance,
+    }
+    # The commit step: reserve the grant, then write. Only I/O follows.
     grant = (reserve_force_grant(repo, args.issue, head_sha, "reforge" if reforge else "plain")
              if args.force else None)
     try:
-        # The call ran whenever an envelope is recorded, a fallback included: a
-        # call that timed out still spent its wall-clock (#889 preclose pass 1).
-        ran = bool(args.envelope)
-        cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
-                     "cross_family_ran": ran,
-                     "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-        if ran:
-            cost["cross_family_tokens"] = "unavailable"
-            cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
-        prior = find_receipt(repo, args.issue)
-        size = prior.get("refuters", 0) if prior else 0
-        # The tier rides on the pass entry, the single carrier every reader uses
-        # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
-        # last pass's.
-        # The planned receipt's tier is the one that sized this panel, so it
-        # wins over a --tier given only at --complete (#889 post-verdict check).
-        # Whenever a plan sized this panel, its recorded tier is the label, "unset"
-        # included: --tier given at --complete can never relabel a planned pass.
-        if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
-            cost["tier"] = prior["tier"]
-        else:
-            cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
-        # harmonic-forge#890: the arm rides on the pass entry, read from the
-        # issue's newest enrollment event and nowhere else. No enrollment -> no
-        # arm key, never a synthesized value a report would trust.
-        try:
-            enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
-        except preclose_enrollment.EnrollmentUnreadable as exc:
-            # The panel has already run: record the pass, without an arm, and say
-            # why. Never crash here (#890 reforged pass 2, fail-crashed).
-            print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
-                  file=sys.stderr)
-            enrolled = None
-        if enrolled:
-            cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
-                         "arm_assigned": enrolled.get("assigned"),
-                         "arm_overridden": preclose_enrollment.overridden(enrolled)})
-            if enrolled.get("reason"):
-                cost["arm_reason"] = enrolled["reason"]
-        shadow = stop_rule_shadow(args, findings, prior, head_sha, reforge)
-        blocking = preclose_passes.hostile_block(surviving_findings(findings), args.threat_model)
-        path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-            **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
-                                     current_branch(), reforge, cost, shadow, blocking),
-            "cross_family_required": required,
-            "cross_family_reason": why,
-            "provenance": provenance,
-        })
+        path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra=payload)
     except BaseException:
         if grant is not None:
             emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", 0, grant,

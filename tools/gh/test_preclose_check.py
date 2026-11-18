@@ -1014,6 +1014,65 @@ class FindingSourceTests(ScratchRepo):
                 _text, reserve = self._forced_complete_refusal(findings, envelope, not_triggered)
                 reserve.assert_not_called()
 
+    def test_forced_complete_with_a_malformed_prior_receipt_leaves_the_grant_unspent(self) -> None:
+        # Reforge (post-verdict survivor 1): the prior receipt is read and parsed
+        # in the plan step, before the reservation.
+        self.commit("scripts/tool.py")
+        self.plan()
+        receipt = next(preclose.receipt_dir().glob("*.json"))
+        stored = json.loads(receipt.read_text())
+        stored["refuters"] = "unknown"
+        receipt.write_text(json.dumps(stored))
+        _text, reserve = self._forced_complete_refusal([ANCHORED], None, True)
+        reserve.assert_not_called()
+
+    def test_reverify_naming_the_findings_file_refuses_before_the_grant(self) -> None:
+        # Reforge (post-verdict survivor 2): one path for both inputs is two reads.
+        self.commit("scripts/tool.py")
+        self.plan()
+        findings = self.findings_file([ANCHORED])
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=findings, envelope=None, not_triggered=True,
+                                        cross_family=False, force=True, threat_model="good-faith",
+                                        reverify=findings))
+        self.assertIn("same file", str(caught.exception))
+        reserve.assert_not_called()
+
+    def test_only_the_receipt_write_follows_the_reservation(self) -> None:
+        # Reforge: the commit step is the reservation and the write; a failing
+        # write is the one way a reserved grant goes unrecorded.
+        self.commit("scripts/tool.py")
+        self.plan()
+        order: list[str] = []
+
+        def track(name, real):
+            def call(*a, **k):
+                order.append(name)
+                return real(*a, **k)
+            return call
+
+        patches = {name: track(name, getattr(preclose, name))
+                   for name in ("find_receipt", "load_findings", "stop_rule_shadow", "gate_decision",
+                                "compute_provenance", "write_receipt")}
+        patches["reserve_force_grant"] = lambda *a, **k: order.append("reserve_force_grant") or {"id": "g"}
+        with contextlib.ExitStack() as stack:
+            for name, fake in patches.items():
+                stack.enter_context(mock.patch.object(preclose, name, side_effect=fake))
+            stack.enter_context(mock.patch.object(preclose, "emit_force"))
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=self.findings_file([ANCHORED]), envelope=None,
+                                        not_triggered=True, cross_family=False, force=True,
+                                        threat_model="good-faith"))
+        after = order[order.index("reserve_force_grant") + 1:]
+        self.assertEqual(after[0], "write_receipt")
+        self.assertNotIn("load_findings", after)
+        self.assertNotIn("stop_rule_shadow", after)
+        self.assertNotIn("gate_decision", after)
+
     def test_post_verdict_loads_the_findings_once(self) -> None:
         # Pass 1 survivor: the validated load is the one every later count reads.
         self.commit("scripts/tool.py")
