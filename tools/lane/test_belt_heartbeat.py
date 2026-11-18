@@ -104,6 +104,12 @@ class WatcherWritesItTests(unittest.TestCase):
         self.assertTrue(self.watcher.write_poll_heartbeat("l1", "vh", ["a/x"], 1800))
         self.assertIsNotNone(belt_heartbeat.read("l1", "vh", "a/x"))
 
+    def test_the_watchers_heartbeat_never_resets_the_lanes_action_clock(self):
+        afk = self.watcher._afk_toggle
+        afk.record_lane_action("1", now=1000.0)
+        self.watcher.write_poll_heartbeat("l1", "vh", None, None)
+        self.assertEqual(afk.last_action_age("1", now=9000.0), 8000.0)
+
     def test_a_workspaceless_belt_still_writes(self):
         self.assertTrue(self.watcher.write_poll_heartbeat("l1", None, None, None))
         self.assertIsNotNone(belt_heartbeat.read("l1", "none", "all"))
