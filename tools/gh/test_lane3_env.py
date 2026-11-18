@@ -28,14 +28,30 @@ class Recorder:
     """A subprocess stand-in: records each call, answers by the first match.
 
     `mise tasks ls --json` answers with `tasks` (no tasks by default), the way
-    mise lists what it resolves in the worktree."""
+    mise lists what it resolves in the worktree. Each entry's `source` is the
+    worktree's own `mise.toml` unless `source` names another path; `NO_SOURCE`
+    omits the field (harmonic-forge#1409 survivor 6971721115)."""
+
+    NO_SOURCE = object()
 
     def __init__(self, answers: dict[str, int] | None = None, tasks: list[str] | None = None,
-                 tasks_out: str | None = None):
+                 tasks_out: str | None = None, source: object = None):
         self.calls: list[tuple[list[str], str, dict]] = []
         self.answers = answers or {}
-        self.tasks_out = tasks_out if tasks_out is not None else json.dumps(
-            [{"name": n} for n in (tasks or [])])
+        self.tasks = tasks or []
+        self.source = source
+        self.tasks_out = tasks_out
+
+    def _listing(self, cwd) -> str:
+        if self.tasks_out is not None:
+            return self.tasks_out
+        out = []
+        for n in self.tasks:
+            entry = {"name": n}
+            if self.source is not Recorder.NO_SOURCE:
+                entry["source"] = self.source or f"{cwd}/mise.toml"
+            out.append(entry)
+        return json.dumps(out)
 
     def __call__(self, cmd, cwd=None, **kw):
         self.calls.append((list(cmd), cwd, kw))
@@ -44,7 +60,7 @@ class Recorder:
             if needle in joined:
                 return _done(rc, f"{needle} -> {rc}")
         if "tasks ls" in joined:
-            return _done(0, self.tasks_out)
+            return _done(0, self._listing(cwd))
         return _done(0)
 
 
@@ -333,6 +349,32 @@ def _declaring(task: str | None, repo: str = "vitalharmony/hrse") -> dict:
 
 class DeclaredPreflightTest(Lane3EnvCase):
     """harmonic-forge#1409: a repo that declares `lane3_preflight_task` owes it."""
+
+    def test_global_config_task_of_declared_name_refuses(self):
+        """Survivor 6971721115: a same-named global/parent task is not the checkout's."""
+        for source in (str(self.root / "global" / "config.toml"), str(self.root / "mise.toml")):
+            with self.subTest(source=source):
+                run = Recorder(source=source, tasks=["lane3-preflight"])
+                reasons = self.check({}, run, projects=_declaring("lane3-preflight"))
+                self.assertEqual(len(reasons), 1, reasons)
+                self.assertIn("outside the checkout", reasons[0])
+                self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
+
+    def test_checkout_own_task_passes(self):
+        """The checkout's own definition (any config file inside it) passes."""
+        for source in (str(self.lane3 / "mise.toml"), str(self.lane3 / ".config" / "mise.toml")):
+            with self.subTest(source=source):
+                run = Recorder(source=source, tasks=["lane3-preflight"])
+                self.assertEqual(self.check({}, run, projects=_declaring("lane3-preflight")), [])
+                self.assertIn(["mise", "run", "lane3-preflight"], [c[0] for c in run.calls])
+
+    def test_missing_source_field_refuses(self):
+        """No `source` on the entry: fail closed, with a reason."""
+        run = Recorder(source=Recorder.NO_SOURCE, tasks=["lane3-preflight"])
+        reasons = self.check({}, run, projects=_declaring("lane3-preflight"))
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn("no `source` field", reasons[0])
+        self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
 
     def test_declared_but_missing_task_refuses(self):
         """AC1 (kill check 1): the declared task is absent from Lane 3's worktree."""

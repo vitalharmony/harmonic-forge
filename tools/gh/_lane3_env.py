@@ -189,6 +189,47 @@ def declares_preflight(lane3: Path, run: Runner = subprocess.run,
     `mise.local.toml`, `.config/mise.toml` and file tasks all count (preclose
     pass 1 #6). A config mise cannot read raises rather than reading as "not
     declared" (#3)."""
+    return any(_names(t, task) for t in _list_tasks(lane3, run))
+
+
+def _names(t: object, task: str) -> bool:
+    return isinstance(t, dict) and (t.get("name") == task or task in (t.get("aliases") or []))
+
+
+def own_task_refusal(lane3: Path, run: Runner = subprocess.run,
+                     task: str = PREFLIGHT_TASK) -> str | None:
+    """harmonic-forge#1409 survivor 6971721115: a declared task counts only when
+    its definition comes from Lane 3's own checkout.
+
+    `mise tasks ls --json --hidden` also lists tasks inherited from parent
+    directories and the global config, so a same-named task there would
+    satisfy the declaration by name. Each entry's `source` (the defining
+    config file's path, verified live) must resolve inside Lane 3's resolved
+    checkout. A missing or unusable `source` refuses (fail closed). Returns the
+    refusal reason, or None when the checkout's own task exists."""
+    root = lane3.resolve()
+    found = [t for t in _list_tasks(lane3, run) if _names(t, task)]
+    if not found:
+        return (f"Lane 3's worktree ({lane3}) has no such task")
+    seen = []
+    for t in found:
+        source = t.get("source")
+        if not isinstance(source, str) or not source:
+            seen.append("an entry with no `source` field")
+            continue
+        try:
+            resolved = Path(source).resolve()
+        except (OSError, RuntimeError, ValueError):
+            seen.append(f"unreadable source {source!r}")
+            continue
+        if resolved.is_relative_to(root):
+            return None
+        seen.append(f"{resolved}")
+    return (f"`mise tasks ls` in {lane3} resolves `{task}` only from outside the "
+            f"checkout ({'; '.join(seen)}), not from Lane 3's own config")
+
+
+def _list_tasks(lane3: Path, run: Runner) -> list:
     try:
         result = run(["mise", "tasks", "ls", "--json", "--hidden"], cwd=str(lane3),
                      capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT)
@@ -200,9 +241,9 @@ def declares_preflight(lane3: Path, run: Runner = subprocess.run,
         tasks = json.loads(result.stdout)
     except ValueError as exc:
         raise Lane3EnvError(f"`mise tasks ls --json` in {lane3} printed no JSON: {exc}") from exc
-    return any(isinstance(t, dict) and (t.get("name") == task
-                                        or task in (t.get("aliases") or []))
-               for t in tasks)
+    if not isinstance(tasks, list):
+        raise Lane3EnvError(f"`mise tasks ls --json` in {lane3} printed no task list")
+    return tasks
 
 
 TARGET_SHA_ENV = "LANE3_TARGET_SHA"
@@ -292,13 +333,16 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
     # it (R-0434); one that does not keeps the run-if-present behavior.
     declared = declared_preflight(repo, projects)
     task = declared or PREFLIGHT_TASK
-    if declares_preflight(lane3, run=run, task=task):
+    if declared:
+        refusal = own_task_refusal(lane3, run=run, task=task)
+        if refusal:
+            reasons.append(f"the manifest declares `lane3_preflight_task = {declared}` for "
+                           f"{repo} but {refusal} (R-0434); add it to the checkout's own "
+                           f"config or remove the key")
+            return reasons
+    if declared or declares_preflight(lane3, run=run, task=task):
         ok, detail = preflight_ok(lane3, run=run, target_sha=target_sha, task=task)
         if not ok:
             judged = f" for target {target_sha[:12]}" if target_sha else " on Lane 3's checkout"
             reasons.append(f"Lane 3's `mise run {task}` failed in {lane3}{judged}:\n{detail}")
-    elif declared:
-        reasons.append(f"the manifest declares `lane3_preflight_task = {declared}` for {repo} "
-                       f"but Lane 3's worktree ({lane3}) has no such task (R-0434); add it "
-                       f"or remove the key")
     return reasons
