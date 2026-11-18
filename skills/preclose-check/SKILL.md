@@ -114,6 +114,17 @@ not proof against a session that can write files.
    re-verifying the previous pass's blocking findings). The shadow never
    changes an exit code, a refusal or a printed verdict.
 
+   Each finding may carry `source`: `panel` (the default when omitted) or
+   `cross-family`, exactly and case-sensitive; any other value, empty
+   included, refuses and records nothing (harmonic-forge#1419). The gate
+   counts **panel** survivors only, so run `--gate` on the panel's findings.
+   When the branch runs, add the cross-family read's findings to the same file
+   with `"source": "cross-family"` before `--complete`: they count toward the
+   recorded survivors, mechanisms, shadow, hostile-author block and cluster
+   check, never toward the gate, and `--complete` refuses them without
+   `--envelope`. At `--post-verdict`, `source` is optional and, if present,
+   must be `cross-family`.
+
    **`--threat-model` is required at `--complete`** (harmonic-forge#1330), and
    its source is the handoff's `**Threat model:**` line; absent or unknown,
    `--complete` refuses and records nothing. On a pass declared

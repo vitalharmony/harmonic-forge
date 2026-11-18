@@ -397,8 +397,12 @@ def panel_size(reasons: list[str], tier: str | None, lines: int | None = None,
     return TIER_PANEL["standard"], "Tier unset — defaulting to standard"
 
 
-def surviving_findings(findings: list) -> list[dict]:
+def surviving_findings(findings: list, source: str | None = None) -> list[dict]:
     """The findings that survive the filter the plan output states (AC4).
+
+    harmonic-forge#1419: with `source`, only findings from that source
+    (`panel` | `cross-family`; a missing key is `panel`). The cross-family
+    gate reads panel survivors only; every other consumer reads all sources.
 
     A survivor carries a `file:line` anchor AND a concrete failure scenario.
     Counted here, in code, because criterion 1 turns on this number: a panel
@@ -415,6 +419,8 @@ def surviving_findings(findings: list) -> list[dict]:
             continue
         anchor = str(finding.get("anchor") or "").strip()
         scenario = str(finding.get("scenario") or "").strip()
+        if source is not None and finding.get("source", "panel") != source:
+            continue
         if _ANCHOR.fullmatch(anchor) and scenario:
             kept.append(finding)
     return kept
@@ -623,11 +629,43 @@ def require_wellformed_anchors(findings: list) -> None:
               "into the scenario. Nothing recorded.")
 
 
-def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
-    findings = load_findings(args.findings)
-    surviving = len(surviving_findings(findings))
+FINDING_SOURCES = ("panel", "cross-family")
+
+
+def require_sources(findings: list, post_verdict: bool = False) -> None:
+    """harmonic-forge#1419: a finding's `source` is exactly `panel` or
+    `cross-family` (case-sensitive); a missing key is `panel`. A post-verdict
+    finding is the cross-family refuter's by definition, so there `source` is
+    optional and, if present, must be `cross-family`. Anything else would move
+    a survivor into or out of the gate's count unseen, so it refuses."""
+    allowed = ("cross-family",) if post_verdict else FINDING_SOURCES
+    bad = [f"{str(finding.get('anchor') or '<missing anchor>')} (source={finding['source']!r})"
+           for finding in findings if isinstance(finding, dict) and "source" in finding
+           and not (isinstance(finding["source"], str) and finding["source"] in allowed)]
+    if bad:
+        raise SystemExit(
+            "preclose-check: finding `source` must be exactly "
+            + " or ".join(repr(a) for a in allowed)
+            + (" (or omitted)" if post_verdict else " (omitted means 'panel')")
+            + ": " + "; ".join(bad) + ". Nothing recorded.")
+
+
+def gate_decision(args: argparse.Namespace,
+                  findings: list | None = None) -> tuple[bool, str, int, list[str]]:
+    # harmonic-forge#1419 sticky-wicket PATCH: --complete passes its one validated
+    # load; only the standalone --gate reads the file here.
+    if findings is None:
+        findings = load_findings(args.findings)
+    require_sources(findings)
+    # harmonic-forge#1419: silence of the PANEL is the trigger; a cross-family
+    # survivor recorded in the same file must not flip it after the branch ran.
+    surviving = len(surviving_findings(findings, "panel"))
     reasons = blast_radius(changed_files(args.base, args.head))
     required, why = cross_family_gate(surviving, reasons, args.cross_family)
+    cross = sum(1 for finding in findings
+                if isinstance(finding, dict) and finding.get("source") == "cross-family")
+    if cross:
+        why += f" ({cross} cross-family finding(s) present; they do not affect the gate)"
     if imc_forced(registered_repo(args.repo), args.issue):
         # harmonic-forge#895: forced whenever the receipt exists, not while it
         # is live -- keyed on liveness, it would invert at expiry.
@@ -642,7 +680,7 @@ def gate(args: argparse.Namespace) -> int:
     repo = registered_repo(args.repo)
     required, why, surviving, _ = gate_decision(args)
     print(f"preclose-check cross-family gate: {'REQUIRED' if required else 'not triggered'}")
-    print(f"  surviving findings: {surviving}")
+    print(f"  surviving panel findings: {surviving}")
     print(f"  reason: {why}")
     print()
     if required:
@@ -1121,70 +1159,108 @@ def complete(args: argparse.Namespace) -> int:
     identity = local_change_identity(args.base, head_sha)
     reforge = getattr(args, "reforge", False)
     check_pass_cap(repo, args.issue, head_sha, args.base, args.force, reforge)
+    # harmonic-forge#1419 pass 1: validate the findings before a FORCE grant is
+    # reserved, so malformed input never spends the operator's single-use grant.
+    findings = load_findings(args.findings)
+    require_wellformed_anchors(findings)
+    require_sources(findings)
+    require_mechanisms(findings)
+    if not args.envelope and any(isinstance(finding, dict)
+                                 and finding.get("source") == "cross-family"
+                                 for finding in findings):
+        raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
+                         "(the recorded cross-family call they came from); nothing recorded.")
+    # harmonic-forge#1419 sticky-wicket PATCH: every step that can refuse runs
+    # before the grant is reserved, on the one load above; none of them writes.
+    if args.not_triggered == bool(args.envelope):
+        raise SystemExit("preclose-check: pass exactly one of --envelope <path> or --not-triggered.")
+    mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
+                  for finding in surviving_findings(findings)]
+    required, why, _panel, reasons = gate_decision(args, findings)
+    # harmonic-forge#1419: the gate read panel survivors; the pass outcome
+    # (count, mechanisms, shadow, hostile block, cluster) reads every source.
+    surviving = len(surviving_findings(findings))
+    # harmonic-forge#1419 reforge pass 2 (sticky-wicket PATCH #1): a cross-family
+    # finding makes the envelope a trust input whatever the gate decided, so it
+    # is checked against the call record then too, not only when required.
+    has_cross_family = any(isinstance(finding, dict) and finding.get("source") == "cross-family"
+                           for finding in findings)
+    if args.envelope and (required or has_cross_family):
+        require_recorded_envelope(args.envelope)
+    provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
+    check_provenance(required, provenance)
+    if provenance.startswith(PROVENANCE_TRIGGERED[1]):
+        imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
+                    "could not run is an IMC stop, never a pass")
+    # harmonic-forge#1419 reforge pass 1 (cross-family): a finding marked
+    # source=cross-family needs a call that ran; a failed-call envelope's
+    # in-family fallback label cannot carry one.
+    if (any(isinstance(finding, dict) and finding.get("source") == "cross-family" for finding in findings)
+            and not provenance.startswith(PROVENANCE_TRIGGERED[0])):
+        raise SystemExit("preclose-check: findings marked source=cross-family need an envelope whose "
+                         "cross-family call ran; this one's provenance is not a cross-family label. "
+                         "Nothing recorded.")
+    # harmonic-forge#1419 reforge: the plan step. Every read, parse and
+    # computation the receipt needs runs here, before the grant is reserved,
+    # so nothing after the reservation can refuse on input.
+    # The call ran whenever an envelope is recorded, a fallback included: a
+    # call that timed out still spent its wall-clock (#889 preclose pass 1).
+    ran = bool(args.envelope)
+    cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
+                 "cross_family_ran": ran,
+                 "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    if ran:
+        cost["cross_family_tokens"] = "unavailable"
+        cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
+    prior = find_receipt(repo, args.issue)
+    size = prior.get("refuters", 0) if prior else 0
+    # The tier rides on the pass entry, the single carrier every reader uses
+    # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
+    # last pass's.
+    # The planned receipt's tier is the one that sized this panel, so it
+    # wins over a --tier given only at --complete (#889 post-verdict check).
+    # Whenever a plan sized this panel, its recorded tier is the label, "unset"
+    # included: --tier given at --complete can never relabel a planned pass.
+    if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
+        cost["tier"] = prior["tier"]
+    else:
+        cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
+    # harmonic-forge#890: the arm rides on the pass entry, read from the
+    # issue's newest enrollment event and nowhere else. No enrollment -> no
+    # arm key, never a synthesized value a report would trust.
+    try:
+        enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
+    except preclose_enrollment.EnrollmentUnreadable as exc:
+        # The panel has already run: record the pass, without an arm, and say
+        # why. Never crash here (#890 reforged pass 2, fail-crashed).
+        print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
+              file=sys.stderr)
+        enrolled = None
+    if enrolled:
+        cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
+                     "arm_assigned": enrolled.get("assigned"),
+                     "arm_overridden": preclose_enrollment.overridden(enrolled)})
+        if enrolled.get("reason"):
+            cost["arm_reason"] = enrolled["reason"]
+    shadow = stop_rule_shadow(args, findings, prior, head_sha, reforge)
+    blocking = preclose_passes.hostile_block(surviving_findings(findings), args.threat_model)
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        raise SystemExit(f"preclose-check: the prior receipt's refuter count {size!r} is not a "
+                         "whole number; nothing recorded.") from None
+    payload = {
+        **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
+                                 current_branch(), reforge, cost, shadow, blocking),
+        "cross_family_required": required,
+        "cross_family_reason": why,
+        "provenance": provenance,
+    }
+    # The commit step: reserve the grant, then write. Only I/O follows.
     grant = (reserve_force_grant(repo, args.issue, head_sha, "reforge" if reforge else "plain")
              if args.force else None)
     try:
-        findings = load_findings(args.findings)
-        require_wellformed_anchors(findings)
-        require_mechanisms(findings)
-        mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
-                      for finding in surviving_findings(findings)]
-        required, why, surviving, reasons = gate_decision(args)
-        if required and args.envelope:
-            require_recorded_envelope(args.envelope)
-        provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
-        check_provenance(required, provenance)
-        if provenance.startswith(PROVENANCE_TRIGGERED[1]):
-            imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
-                        "could not run is an IMC stop, never a pass")
-        # The call ran whenever an envelope is recorded, a fallback included: a
-        # call that timed out still spent its wall-clock (#889 preclose pass 1).
-        ran = bool(args.envelope)
-        cost.update({"raised": len(findings), "dismissed": len(findings) - surviving,
-                     "cross_family_ran": ran,
-                     "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-        if ran:
-            cost["cross_family_tokens"] = "unavailable"
-            cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
-        prior = find_receipt(repo, args.issue)
-        size = prior.get("refuters", 0) if prior else 0
-        # The tier rides on the pass entry, the single carrier every reader uses
-        # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
-        # last pass's.
-        # The planned receipt's tier is the one that sized this panel, so it
-        # wins over a --tier given only at --complete (#889 post-verdict check).
-        # Whenever a plan sized this panel, its recorded tier is the label, "unset"
-        # included: --tier given at --complete can never relabel a planned pass.
-        if (prior or {}).get("status") == "planned" and (prior or {}).get("tier"):
-            cost["tier"] = prior["tier"]
-        else:
-            cost["tier"] = getattr(args, "tier", None) or preclose_passes.last_tier(prior) or "unset"
-        # harmonic-forge#890: the arm rides on the pass entry, read from the
-        # issue's newest enrollment event and nowhere else. No enrollment -> no
-        # arm key, never a synthesized value a report would trust.
-        try:
-            enrolled = preclose_enrollment.current(enrollment_path(repo, args.issue))
-        except preclose_enrollment.EnrollmentUnreadable as exc:
-            # The panel has already run: record the pass, without an arm, and say
-            # why. Never crash here (#890 reforged pass 2, fail-crashed).
-            print(f"preclose-check: enrollment record unreadable, pass recorded with no arm: {exc}",
-                  file=sys.stderr)
-            enrolled = None
-        if enrolled:
-            cost.update({"arm": enrolled["arm"], "arm_enrolled": bool(enrolled.get("enrolled", True)),
-                         "arm_assigned": enrolled.get("assigned"),
-                         "arm_overridden": preclose_enrollment.overridden(enrolled)})
-            if enrolled.get("reason"):
-                cost["arm_reason"] = enrolled["reason"]
-        shadow = stop_rule_shadow(args, findings, prior, head_sha, reforge)
-        blocking = preclose_passes.hostile_block(surviving_findings(findings), args.threat_model)
-        path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra={
-            **preclose_passes.record(prior, head_sha, identity, surviving, mechanisms,
-                                     current_branch(), reforge, cost, shadow, blocking),
-            "cross_family_required": required,
-            "cross_family_reason": why,
-            "provenance": provenance,
-        })
+        path = write_receipt(repo, args.issue, head_sha, size, status="complete", extra=payload)
     except BaseException:
         if grant is not None:
             emit_force(repo, args.issue, head_sha, "reforge" if reforge else "force", 0, grant,
@@ -1462,6 +1538,13 @@ def main() -> None:
     if (args.complete or args.post_verdict) and not args.own_model:
         parser.error("--complete/--post-verdict need --own-model <the calling session's model>: "
                      "the receipt's label names the family that did the work (harmonic-forge#848)")
+    # harmonic-forge#1419 reforge pass 2 (sticky-wicket PATCH #5): the model name
+    # is spliced into the provenance label, so a control character could shape a
+    # second label line. Refused, not stripped.
+    # Post-verdict check: isprintable() also refuses Unicode line separators
+    # (U+0085, U+2028, U+2029), which ASCII-only checks let through.
+    if args.own_model and not args.own_model.isprintable():
+        parser.error("--own-model must be one line of printable text (harmonic-forge#1419)")
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")
@@ -1559,8 +1642,11 @@ def post_verdict(args: argparse.Namespace) -> int:
     pass-2 head, so the diff is just the patch. Never appended to the pass
     history, so it never counts toward the cap."""
     require_writable(receipt_dir())
-    if getattr(args, "findings", None):
-        require_wellformed_anchors(load_findings(args.findings))
+    # harmonic-forge#1419 pass 1: one load, validated once, used for every count below.
+    loaded = load_findings(args.findings) if getattr(args, "findings", None) else None
+    if loaded is not None:
+        require_wellformed_anchors(loaded)
+        require_sources(loaded, post_verdict=True)
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()
@@ -1597,9 +1683,11 @@ def post_verdict(args: argparse.Namespace) -> int:
     if not provenance.startswith(PROVENANCE_TRIGGERED[0]):
         raise SystemExit("preclose-check: the post-verdict check needs a cross-family call that ran; "
                          f"got {provenance!r}. Retry the call; a fallback is not a check.")
-    surviving = len(surviving_findings(load_findings(args.findings)))
+    if loaded is None:
+        loaded = load_findings(args.findings)
+    surviving = len(surviving_findings(loaded))
     cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
-    shadow = stop_rule_shadow(args, load_findings(args.findings), prior, head_sha)
+    shadow = stop_rule_shadow(args, loaded, prior, head_sha)
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final
     # head (harmonic-forge#838 plan review).

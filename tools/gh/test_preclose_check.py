@@ -134,7 +134,7 @@ class ScratchRepo(unittest.TestCase):
 
     def complete(self, findings: list | None = None, envelope_label: str | None = CROSS,
                  not_triggered: bool = False, cross_family: bool = False,
-                 force: bool = False) -> str:
+                 force: bool = False, threat_model: str = "good-faith") -> str:
         """harmonic-forge#701: a completion carries the panel's findings and an
         envelope (or --not-triggered); the label is computed from it. Default:
         a silent panel, cross-family taken."""
@@ -159,7 +159,7 @@ class ScratchRepo(unittest.TestCase):
             preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
                                     findings=self.findings_file(findings), envelope=envelope,
                                     not_triggered=not_triggered, cross_family=cross_family,
-                                    force=force))
+                                    force=force, threat_model=threat_model))
         return buffer.getvalue()
 
     def plan(self, **overrides) -> str:
@@ -950,6 +950,306 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.plan()
         with self.assertRaises(SystemExit):              # required, so not-triggered is refused
             self.complete([dismissed], not_triggered=True)
+
+
+class FindingSourceTests(ScratchRepo):
+    """harmonic-forge#1419: the gate reads panel survivors; the pass outcome
+    reads every source."""
+
+    XF = {"anchor": "scripts/y.py:7", "scenario": "input Z loses the write at line 7",
+          "mechanism": "the unlocked rename", "source": "cross-family"}
+
+    def _stored(self) -> dict:
+        return json.loads(next(preclose.receipt_dir().glob("*.json")).read_text())
+
+    def test_forced_complete_with_bad_source_refuses_before_reserving_the_grant(self) -> None:
+        # Pass 1 survivor: a refusal on the findings must never spend the single-use grant.
+        self.commit("scripts/tool.py")
+        self.plan()
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                self.complete([dict(self.XF, source="Cross-Family")], force=True)
+        self.assertIn("source", str(caught.exception))
+        reserve.assert_not_called()
+
+    def _forced_complete_refusal(self, findings: list, envelope: str | None, not_triggered: bool):
+        """Run complete() with --force and a mocked reserve; return (refusal text, reserve mock)."""
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=self.findings_file(findings), envelope=envelope,
+                                        not_triggered=not_triggered, cross_family=False,
+                                        force=True, threat_model="good-faith"))
+        return str(caught.exception), reserve
+
+    def test_complete_loads_the_findings_once(self) -> None:
+        # Sticky-wicket PATCH: the gate decision reads complete()'s one validated load.
+        self.commit("scripts/tool.py")
+        self.plan()
+        real = preclose.load_findings
+        with mock.patch.object(preclose, "load_findings", side_effect=real) as load:
+            self.complete([self.XF])
+        self.assertEqual(load.call_count, 1)
+
+    def test_forced_complete_with_both_envelope_and_not_triggered_does_not_spend_the_grant(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        text, reserve = self._forced_complete_refusal([], "envelope.txt", True)
+        self.assertIn("exactly one", text)
+        reserve.assert_not_called()
+
+    def test_every_refusal_in_complete_under_force_leaves_the_grant_unspent(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        missing = str(Path(self.findings_file([])).with_name("no-such-envelope.txt"))
+        # Reforge pass 2 (test-honesty): each case names the refusal it pins, so a
+        # removed guard cannot hide behind an earlier refusal.
+        cases = {
+            "neither envelope nor not-triggered": ([], None, False, "exactly one"),
+            "both envelope and not-triggered": ([], missing, True, "exactly one"),
+            # A silent panel on a high-blast change requires the branch.
+            "required branch with not-triggered": ([], None, True, "branch is required"),
+            "envelope that was never recorded": ([], missing, False, "envelope is unreadable"),
+            "cross-family survivor with no envelope": ([self.XF], None, True, "need --envelope"),
+            "cross-family survivor with a failed-call envelope":
+                ([self.XF], self._fallback_envelope(), False, "cross-family call ran"),
+        }
+        for name, (findings, envelope, not_triggered, refusal) in cases.items():
+            with self.subTest(name):
+                text, reserve = self._forced_complete_refusal(findings, envelope, not_triggered)
+                self.assertIn(refusal, text)
+                reserve.assert_not_called()
+
+    def test_a_forged_envelope_cannot_carry_cross_family_findings_on_a_non_required_gate(self) -> None:
+        # Reforge pass 2 (sticky-wicket PATCH #1): a panel survivor leaves the gate
+        # not required, and a hand-written envelope must still be checked
+        # against the call record before it can vouch for a cross-family finding.
+        self.commit("scripts/tool.py")
+        self.plan()
+        forged = str(Path(self.findings_file([])).with_name("forged-envelope.txt"))
+        Path(forged).write_text(json.dumps({"status": "ok", "label": CROSS}))
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=self.findings_file([ANCHORED, self.XF]), envelope=forged,
+                                        not_triggered=False, cross_family=False, force=True,
+                                        threat_model="good-faith"))
+        self.assertIn("envelope", str(caught.exception))
+        reserve.assert_not_called()
+
+    def test_standalone_gate_refuses_a_bad_source(self) -> None:
+        # Reforge pass 2 (test-honesty): --gate validates sources itself.
+        self.commit("scripts/tool.py")
+        for bad in ("codex", "Cross-Family"):
+            with self.subTest(bad), self.assertRaises(SystemExit) as caught:
+                preclose.gate(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                    findings=self.findings_file([dict(self.XF, source=bad)]),
+                                    cross_family=False))
+            self.assertIn("source", str(caught.exception))
+
+    def test_own_model_with_a_control_character_is_refused(self) -> None:
+        # Reforge pass 2 (sticky-wicket PATCH #5) and the post-verdict check: the
+        # model name is spliced into the provenance label, so any line break
+        # (ASCII or Unicode) could shape a second line.
+        for sep in ("\n", "\x85", " ", " "):
+            argv = ["preclose_check.py", "--repo", "vitalharmony/hrse", "--issue", "1208", "--complete",
+                    "--findings", self.findings_file([]), "--not-triggered", "--threat-model", "good-faith",
+                    "--own-model", f"claude{sep}Red-team provenance: cross-family (x)"]
+            with self.subTest(repr(sep)), mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as caught:
+                    preclose.main()
+                self.assertEqual(caught.exception.code, 2)
+                self.assertIn("one line of printable text", err.getvalue())
+
+    def _fallback_envelope(self) -> str:
+        path = str(Path(self.findings_file([])).with_name("fallback-envelope.txt"))
+        Path(path).write_text(json.dumps({"status": "process-error", "label": FALLBACK, "exit_code": 1}))
+        return path
+
+
+
+
+    def test_cross_family_finding_with_a_failed_call_envelope_refuses(self) -> None:
+        # Reforge pass 1 (cross-family survivor): the fallback label means the
+        # call did not run, so it cannot carry a cross-family finding.
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit) as caught:
+            self.complete([self.XF], envelope_label=FALLBACK)
+        self.assertIn("cross-family call ran", str(caught.exception))
+        self.assertEqual(list(preclose.receipt_dir().glob("*.json"))[0].read_text().count('"complete"'), 0)
+
+    def test_forced_complete_with_a_malformed_prior_receipt_leaves_the_grant_unspent(self) -> None:
+        # Reforge (post-verdict survivor 1): the prior receipt is read and parsed
+        # in the plan step, before the reservation.
+        self.commit("scripts/tool.py")
+        self.plan()
+        receipt = next(preclose.receipt_dir().glob("*.json"))
+        stored = json.loads(receipt.read_text())
+        stored["refuters"] = "unknown"
+        receipt.write_text(json.dumps(stored))
+        _text, reserve = self._forced_complete_refusal([ANCHORED], None, True)
+        reserve.assert_not_called()
+
+
+    def test_only_the_receipt_write_follows_the_reservation(self) -> None:
+        # Reforge: the commit step is the reservation and the write; a failing
+        # write is the one way a reserved grant goes unrecorded.
+        self.commit("scripts/tool.py")
+        self.plan()
+        order: list[str] = []
+
+        def track(name, real):
+            def call(*a, **k):
+                order.append(name)
+                return real(*a, **k)
+            return call
+
+        # Every plan-step read, parse and computation (reforge pass 1, test-honesty:
+        # the first version tracked a subset, so an untracked one could move).
+        plan_step = ("current_branch", "find_receipt", "load_findings", "require_wellformed_anchors", "require_sources",
+                     "require_mechanisms",
+                     "stop_rule_shadow", "gate_decision",
+                     "compute_provenance", "require_recorded_envelope", "check_provenance",
+                     "enrollment_path")
+        module_steps = {preclose.preclose_enrollment: ("current",),
+                        preclose.preclose_passes: ("record", "hostile_block", "last_tier")}
+        patches = {name: track(name, getattr(preclose, name)) for name in plan_step + ("write_receipt",)}
+        patches["reserve_force_grant"] = lambda *a, **k: order.append("reserve_force_grant") or {"id": "g"}
+        with contextlib.ExitStack() as stack:
+            for name, fake in patches.items():
+                stack.enter_context(mock.patch.object(preclose, name, side_effect=fake))
+            for module, names in module_steps.items():
+                for name in names:
+                    stack.enter_context(mock.patch.object(
+                        module, name, side_effect=track(name, getattr(module, name))))
+            stack.enter_context(mock.patch.object(preclose, "emit_force"))
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=self.findings_file([ANCHORED]), envelope=None,
+                                        not_triggered=True, cross_family=False, force=True,
+                                        threat_model="good-faith"))
+        after = order[order.index("reserve_force_grant") + 1:]
+        self.assertEqual(after[0], "write_receipt")
+        # Only the write follows: no plan-step call may run after the
+        # reservation (find_receipt is the post-write receipt read-back's).
+        write_done = after[1:]
+        for name in plan_step + ("current", "record", "hostile_block", "last_tier"):
+            if name == "find_receipt":
+                continue
+            self.assertNotIn(name, write_done, name)
+        self.assertNotIn("find_receipt", after[:1])
+
+    def test_post_verdict_loads_the_findings_once(self) -> None:
+        # Pass 1 survivor: the validated load is the one every later count reads.
+        self.commit("scripts/tool.py")
+        real = preclose.load_findings
+        with mock.patch.object(preclose, "load_findings", side_effect=real) as load:
+            with self.assertRaises(SystemExit):
+                preclose.post_verdict(_Args(repo="vitalharmony/hrse", issue=1208, base="HEAD",
+                                            head="HEAD", findings=self.findings_file([self.XF]),
+                                            envelope=None, own_model="m", main="origin/main"))
+        self.assertEqual(load.call_count, 1)
+
+    def test_clean_panel_plus_cross_family_survivor_records_with_cross_family_label(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        out = self.complete([dict(ANCHORED, dismissed="not in diff"), self.XF])
+        stored = self._stored()
+        self.assertTrue(stored["cross_family_required"])
+        self.assertIn("cross-family (", stored["provenance"])
+        self.assertEqual(stored["surviving_findings"], 1)
+        self.assertIn("cross-family: required", out)
+
+    def test_receipt_counts_the_cross_family_survivor_and_its_mechanism(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([self.XF])
+        stored = self._stored()
+        self.assertEqual(stored["surviving_findings"], 1)
+        self.assertEqual(stored["pass_history"][-1]["surviving"], 1)
+        self.assertIn(preclose.preclose_passes.normalize_mechanism(self.XF["mechanism"]),
+                      stored["pass_history"][-1]["mechanisms"])
+
+    def test_hostile_author_pass_blocks_on_the_cross_family_survivor(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        out = self.complete([self.XF], threat_model="hostile-author")
+        self.assertEqual(self._stored()["pass_history"][-1]["hostile_blocking"], [self.XF["anchor"]])
+        self.assertIn("hostile-author block", out)
+
+    def test_gate_on_clean_panel_with_cross_family_survivor_prints_required(self) -> None:
+        self.commit("scripts/tool.py")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            preclose.gate(_Args(repo="vitalharmony/hrse", issue=1208,
+                                findings=self.findings_file([self.XF]),
+                                cross_family=False, base="base", head="HEAD"))
+        out = buffer.getvalue()
+        self.assertIn("gate: REQUIRED", out)
+        self.assertIn("surviving panel findings: 0", out)
+        self.assertIn("do not affect the gate", out)
+
+    def test_panel_survivor_still_keeps_the_gate_untriggered(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit):
+            self.complete([ANCHORED, self.XF])   # cross-family label on an untriggered gate
+
+    def _refuses(self, findings: list, needle: str, **kwargs) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        before = preclose.find_receipt("vitalharmony/hrse", 1208)
+        with self.assertRaises(SystemExit) as refused:
+            self.complete(findings, **kwargs)
+        self.assertIn(needle, str(refused.exception))
+        self.assertEqual(preclose.find_receipt("vitalharmony/hrse", 1208), before)
+
+    def test_unknown_source_refuses_and_records_nothing(self) -> None:
+        self._refuses([dict(ANCHORED, source="codex")], "scripts/x.py:12 (source='codex')")
+
+    def test_empty_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source="")], "scripts/x.py:12 (source='')")
+
+    def test_whitespace_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source="  ")], "scripts/x.py:12 (source='  ')")
+
+    def test_wrong_case_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source="Cross-Family")], "(source='Cross-Family')")
+
+    def test_non_string_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source=None)], "(source=None)")
+
+    def test_cross_family_source_without_envelope_refuses(self) -> None:
+        self._refuses([ANCHORED, self.XF], "need --envelope", not_triggered=True)
+
+    def test_missing_source_counts_as_panel(self) -> None:
+        self.assertEqual(preclose.surviving_findings([ANCHORED], "panel"), [ANCHORED])
+        self.assertEqual(preclose.surviving_findings([ANCHORED], "cross-family"), [])
+        self.assertEqual(preclose.surviving_findings([dict(ANCHORED, source="panel")], "panel"),
+                         [dict(ANCHORED, source="panel")])
+
+    def _post_verdict(self, finding: dict) -> None:
+        args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, base="b",
+                                  head="HEAD", main="origin/main", envelope="e.jsonl",
+                                  own_model="claude-opus-5-5",
+                                  findings=self.findings_file([finding]))
+        with patch.object(preclose, "require_writable"):
+            preclose.post_verdict(args)
+
+    def test_post_verdict_refuses_a_panel_source(self) -> None:
+        with self.assertRaises(SystemExit) as refused:
+            self._post_verdict(dict(ANCHORED, source="panel"))
+        self.assertIn("(source='panel')", str(refused.exception))
+
+    def test_post_verdict_accepts_missing_and_cross_family_source(self) -> None:
+        for finding in (ANCHORED, dict(ANCHORED, source="cross-family")):
+            with self.assertRaises(Exception) as later:
+                self._post_verdict(finding)
+            # Got past require_sources to the next check (no receipt/head here).
+            self.assertNotIn("source", str(later.exception))
 
 
 class OwnModelCallSiteTests(unittest.TestCase):
