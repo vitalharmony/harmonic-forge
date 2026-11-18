@@ -64,7 +64,7 @@ write_process_error() {
   mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
   local tmp
   tmp="$(mktemp "${out}.tmp.XXXXXX")" || return 0
-  printf '{"status":"process-error","exit_code":2}\n' >"$tmp"
+  printf '{"status":"process-error","exit_code":2,"duration_ms":%s}\n' "${duration_ms:-null}" >"$tmp"
   mv -f "$tmp" "$out"
 }
 
@@ -600,7 +600,9 @@ for family in "${targets[@]}"; do
   wait "$reviewer_pid" || exit_code=$?
   reviewer_pid=""
   duration_ms=$(( $(date +%s%3N) - call_started_ms ))
-  [ "$duration_ms" -ge 1 ] || duration_ms=1
+  # A wall-clock step backward leaves no honest value: record none (null),
+  # never a synthetic one; preclose then treats it as a legacy envelope.
+  [ "$duration_ms" -ge 1 ] || duration_ms=null
   rm -f "$prompt_file"
   # harmonic-forge#1188 AC8: after a successful Codex call, map its thread id
   # (the first `thread.started` event, live probe 1) to the caller's issue in

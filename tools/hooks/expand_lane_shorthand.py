@@ -925,7 +925,12 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
         # harmonic-forge#1422: a reforge binds the new head the reforged code
         # lands on, never one a pass or post-verdict check already reviewed
         # (F1419: a line bound to the reviewed 96f53c1 left the new head ungranted).
-        reviewed = grants.reviewed_match(repo, number, sha_prefix or "")
+        try:
+            reviewed = grants.reviewed_match(repo, number, sha_prefix or "")
+        except Exception as exc:  # noqa: BLE001 - an unread receipt may hold the head
+            return (f"FORCE REFUSED for {key}: the preclose receipt or its archive cannot be read "
+                    f"({type(exc).__name__}), so {sha_prefix} cannot be shown unreviewed. "
+                    "No grant written.")
         if reviewed:
             return (f"FORCE REFUSED for {key}: {sha_prefix} is {reviewed[:12]}, a head a preclose "
                     "pass or post-verdict check already reviewed; a reforge binds the new head the "

@@ -105,30 +105,24 @@ def reviewed_heads(repo: str, issue: int) -> set[str]:
     (harmonic-forge#1422): the current receipt plus every archived one, because
     `post_verdict_check` is a single slot the next check overwrites and
     `write_receipt` archives the previous receipt (#826). Read-only. A missing
-    or unreadable receipt or archive contributes nothing: a reforge line never
-    required a receipt."""
+    receipt or archive contributes nothing (a reforge line never required a
+    receipt), but one that exists and cannot be read raises: an unread record
+    could hold the reviewed head, so the caller refuses rather than grants."""
     import preclose_check  # noqa: PLC0415  (imports this module; never at top level)
     import preclose_passes  # noqa: PLC0415
-    heads = set()
-    try:
-        heads |= preclose_passes.reviewed_heads_of(preclose_check.find_receipt(repo, issue))
-    except Exception:  # noqa: BLE001 - an unreadable receipt adds no head
-        pass
-    try:
-        telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
-        if telemetry not in sys.path:
-            sys.path.insert(0, telemetry)
-        import archive  # noqa: PLC0415
-        origin = archive.origin_for_repo(repo)
-        folder = archive.partition(origin, "preclose-receipts", imc_waiver._now()).parent
-        for path in sorted(folder.glob("*.jsonl.gz")):
-            for envelope in archive.read(path):
-                record = envelope.get("record") if isinstance(envelope, dict) else None
-                if (isinstance(record, dict) and record.get("issue") == issue
-                        and str(record.get("repo", "")).lower() == repo.lower()):
-                    heads |= preclose_passes.reviewed_heads_of(record)
-    except Exception:  # noqa: BLE001 - an unreadable archive adds no head
-        pass
+    heads = set(preclose_passes.reviewed_heads_of(preclose_check.find_receipt(repo, issue)))
+    telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
+    if telemetry not in sys.path:
+        sys.path.insert(0, telemetry)
+    import archive  # noqa: PLC0415
+    origin = archive.origin_for_repo(repo)
+    folder = archive.partition(origin, "preclose-receipts", imc_waiver._now()).parent
+    for path in sorted(folder.glob("*.jsonl.gz")):
+        for envelope in archive.read(path):
+            record = envelope.get("record") if isinstance(envelope, dict) else None
+            if (isinstance(record, dict) and record.get("issue") == issue
+                    and str(record.get("repo", "")).lower() == repo.lower()):
+                heads |= preclose_passes.reviewed_heads_of(record)
     return heads
 
 

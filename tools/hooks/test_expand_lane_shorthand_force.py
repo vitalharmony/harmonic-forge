@@ -161,6 +161,35 @@ class ForceModes(ForceTrigger):
         self.assertIn("already reviewed", out)
         self.assertIsNone(self.grant())
 
+    def test_an_unreadable_archive_partition_refuses_rather_than_grants(self) -> None:
+        """harmonic-forge#1422 preclose: one corrupt partition beside the one
+        holding the reviewed head must not read as "no reviewed head"."""
+        import gzip  # noqa: PLC0415
+        import preclose_check  # noqa: PLC0415
+        root = self._isolated_archive()
+        sys.path.insert(0, str(Path(force_grant.__file__).resolve().parent.parent / "telemetry"))
+        import archive  # noqa: PLC0415
+        archive.archive("preclose-receipts", [{"repo": "vitalharmony/harmonic-forge", "issue": 1166,
+                                               "pass_history": [{"sha": "c" * 40}]}],
+                        origin=archive.origin_for_repo("vitalharmony/harmonic-forge"))
+        current = next(root.rglob("*.jsonl.gz"))
+        with gzip.open(current.with_name("2000-01.jsonl.gz"), "wt") as bad:
+            bad.write("not json\n")
+        with mock.patch.object(preclose_check, "find_receipt", return_value=None):
+            out = self.force("FORCE F1166 reforge cccccccccccc: new approach")
+        self.assertIn("cannot be read", out)
+        self.assertIsNone(self.grant())
+
+    def test_a_legacy_receipt_reviewed_sha_refuses(self) -> None:
+        """A pre-#834 receipt records its one pass as reviewed_sha only."""
+        import preclose_check  # noqa: PLC0415
+        self._isolated_archive()
+        with mock.patch.object(preclose_check, "find_receipt",
+                               return_value={"reviewed_sha": "e" * 40}):
+            out = self.force("FORCE F1166 reforge eeeeeeeeeeee: new approach")
+        self.assertIn("already reviewed", out)
+        self.assertIsNone(self.grant())
+
     def test_a_reforge_with_no_receipt_and_no_archive_writes_the_grant(self) -> None:
         """AC2, and the receipt-absent case: reviewed_heads is empty, never a refusal."""
         import preclose_check  # noqa: PLC0415

@@ -248,6 +248,14 @@ class EnvelopeMeasuredTime(CostCase):
         receipt = preclose.find_receipt("vitalharmony/hrse", 1208) or {}
         self.assertFalse(receipt.get("pass_history"), "nothing may be recorded")
 
+    def test_a_multi_line_envelope_is_read_like_require_recorded_envelope(self) -> None:
+        """harmonic-forge#1422 preclose: an envelope saved with `jq .` spans lines;
+        its duration is still the measurement, never a typed fallback."""
+        path = Path(self.envelope(duration_ms=95856))
+        path.write_text(json.dumps(json.loads(path.read_text()), indent=2))
+        self.assertGreater(len(path.read_text().splitlines()), 1)
+        self.assertEqual(preclose.envelope_duration_ms(str(path)), 95856)
+
     def test_a_legacy_envelope_still_takes_the_flag(self) -> None:
         self.run_complete(cross=True, cross_family_ms="300")
         self.assertEqual(self.last_pass()["cross_family_ms"], 300)
