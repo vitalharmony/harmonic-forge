@@ -2927,3 +2927,27 @@ anchor = "production-runs"
 statement = "A test case that says to relaunch or log in to a lane is reproduced by Lane 1 with the launcher's own flags in a disposable worktree; only an interactive TUI or OAuth consent stays the operator's (harmonic-forge#1370)."
 text_sha = "df05e046066bd3ca"
 hooks = []
+
+[[rule]]
+id = "R-0431"
+file = "3-lane-protocol.md"
+anchor = "Long waits run in the background"
+statement = "On a belt or suspenders tick, a Lane 1 or Lane 2 session whose post waits on another lane or the operator takes the next queued item its own lane owns that does not need the machine (Lane 1: a review, a rebase, a Tooling Exception implementation; Lane 2: a queued handoff or rework); a Lane 3 session takes only its own owed spec or gate, and never fixes application code (R-0173); while a lane's own background wait holds the checkout it does only the read-only work R-0376 allows; it parks on ScheduleWakeup only when every item waits on someone else (harmonic-forge#1390)."
+text_sha = "4eeac795c55206d0"
+hooks = []
+
+[[rule]]
+id = "R-0432"
+file = "rules/universal-agent.md"
+anchor = "protocol-failures-are-captured-at-once"
+statement = "The moment a protocol failure is noticed, or the operator names one (a hook denial counts), the session invokes the protocol-failure skill in the same turn without asking first, and records only through that skill's own command, never a capture_failure.py call composed outside it (harmonic-forge#1390)."
+text_sha = "142e8b50566be5ba"
+hooks = []
+
+[[rule]]
+id = "R-0433"
+file = "rules/testing-gate.md"
+anchor = "live-ui-test-cases-read-the-flow-source-before-scripting"
+statement = "At the gate, once a live UI test case is authorized to execute (R-0128, or the variant's own authorization) and before scripting it, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph when the spec names one (otherwise only the steps that have no side effects, against the target the authorization names), and runs any bounded-spend action (an LLM call, a paid API, a delete) last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
+text_sha = "fd300486ca3318e7"
+hooks = []

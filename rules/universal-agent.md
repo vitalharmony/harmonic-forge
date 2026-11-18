@@ -898,6 +898,12 @@ after the fact — where the repo doesn't have either yet, the discipline
 above is what stands in.
 <!-- /R-0058 -->
 
+## PROTOCOL FAILURES ARE CAPTURED AT ONCE (harmonic-forge#1390)
+
+<!-- R-0432 -->
+The moment a protocol failure is noticed, or the operator names one (a hook denial counts), the session invokes the `protocol-failure` skill in the same turn without asking first, and records only through that skill's own command, never a `capture_failure.py` call composed outside it.
+<!-- /R-0432 -->
+
 ## ISSUE TRACKING
 
 <!-- R-0059 -->
