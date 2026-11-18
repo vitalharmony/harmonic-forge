@@ -700,6 +700,20 @@ def _check_names_pass(check: dict, last: dict) -> bool:
     return bool(sha) and sha in (check.get("base_sha"), check.get("pass_sha"))
 
 
+def reviewed_heads_of(receipt: dict | None) -> set[str]:
+    """Every head one receipt records as reviewed: each pass head and the
+    post-verdict check's head (harmonic-forge#1422). The one reader of those
+    fields, per the one-reader invariant."""
+    if not isinstance(receipt, dict):
+        return set()
+    heads = {entry.get("sha") for entry in receipt.get("pass_history") or []
+             if isinstance(entry, dict)}
+    check = receipt.get("post_verdict_check")
+    if isinstance(check, dict):
+        heads.add(check.get("head_sha"))
+    return {head for head in heads if isinstance(head, str) and head}
+
+
 def force_head(receipt: dict | None) -> str | None:
     """The head an operator --force covers (harmonic-forge#1169): the latest
     post-verdict check's head when one exists (the PATCH path, where --force is
