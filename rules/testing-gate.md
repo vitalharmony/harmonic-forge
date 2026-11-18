@@ -219,8 +219,9 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      `lane3_preflight_task` owes a task by that name that checks every
      `lane3-begin` refusal checkable without side effects before the gate
      starts** (pins, the gate graph's lease status, port ownership). A
-     repo without the key owes nothing under this rule; refusing a sweep
-     when the key names a task that does not exist is harmonic-forge#1409's.
+     repo without the key owes nothing under this rule; the sweep refuses
+     when the key names a task Lane 3's worktree does not have
+     (harmonic-forge#1409).
      The task checks readiness only: it never requires the sweep it gates,
      or the AE posted with that sweep, to exist yet (R-0128 checks both at
      Lane 3 entry). The task that runs is the one defined in Lane 3's

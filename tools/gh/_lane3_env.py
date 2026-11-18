@@ -12,6 +12,8 @@ repair, no write in the Lane 3 worktree.
 - `preflight_ok`: the repo's own `lane3-preflight` mise task, when declared
   (AC5, the hrse#2522 recurrence: `lane3-begin`'s lease needs a graph whose
   pin had drifted from native, and nothing Lane 1 ran could see it).
+  A repo whose manifest sets `lane3_preflight_task` (harmonic-forge#1409,
+  R-0434) has that task run, and the sweep refuses when it is missing.
 """
 from __future__ import annotations
 
@@ -69,6 +71,14 @@ def lane3_dir(repo: str, projects: dict | None = None) -> Path | None:
     if len(worktrees) < 2:
         raise Lane3EnvError(f"{repo}: the manifest runs Lane 3 but no Lane 3 worktree resolves")
     return worktrees[1]
+
+
+def declared_preflight(repo: str, projects: dict | None = None) -> str | None:
+    """harmonic-forge#1409: the manifest's `lane3_preflight_task`, or None."""
+    project = (projects if projects is not None else manifest.by_repo()).get(repo)
+    if project is None or project.protocol is None:
+        return None
+    return project.protocol.lane3_preflight_task
 
 
 def _platform_source() -> Path:
@@ -171,7 +181,8 @@ def probe_requires(needs: dict[str, list[tuple[str, str]]], lane3: Path,
     return misses
 
 
-def declares_preflight(lane3: Path, run: Runner = subprocess.run) -> bool:
+def declares_preflight(lane3: Path, run: Runner = subprocess.run,
+                       task: str = PREFLIGHT_TASK) -> bool:
     """AC5: whether mise, run in Lane 3's worktree, resolves the preflight task.
 
     mise is asked rather than one config file parsed, so `.mise.toml`,
@@ -189,8 +200,8 @@ def declares_preflight(lane3: Path, run: Runner = subprocess.run) -> bool:
         tasks = json.loads(result.stdout)
     except ValueError as exc:
         raise Lane3EnvError(f"`mise tasks ls --json` in {lane3} printed no JSON: {exc}") from exc
-    return any(isinstance(t, dict) and (t.get("name") == PREFLIGHT_TASK
-                                        or PREFLIGHT_TASK in (t.get("aliases") or []))
+    return any(isinstance(t, dict) and (t.get("name") == task
+                                        or task in (t.get("aliases") or []))
                for t in tasks)
 
 
@@ -198,7 +209,8 @@ TARGET_SHA_ENV = "LANE3_TARGET_SHA"
 
 
 def preflight_ok(lane3: Path, run: Runner = subprocess.run,
-                 target_sha: str | None = None) -> tuple[bool, str]:
+                 target_sha: str | None = None,
+                 task: str = PREFLIGHT_TASK) -> tuple[bool, str]:
     """AC5: `mise run lane3-preflight` in Lane 3's worktree. Exit 0 is the only ok.
 
     harmonic-forge#1380: the sweep's target SHA reaches the preflight as
@@ -209,12 +221,12 @@ def preflight_ok(lane3: Path, run: Runner = subprocess.run,
     if target_sha:
         extra["env"] = {**os.environ, TARGET_SHA_ENV: target_sha}
     try:
-        result = run(["mise", "run", PREFLIGHT_TASK], cwd=str(lane3),
+        result = run(["mise", "run", task], cwd=str(lane3),
                      capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT, **extra)
     except subprocess.TimeoutExpired:
-        return False, f"{PREFLIGHT_TASK} timed out after {PREFLIGHT_TIMEOUT}s"
+        return False, f"{task} timed out after {PREFLIGHT_TIMEOUT}s"
     except OSError as exc:
-        return False, f"{PREFLIGHT_TASK} could not run: {exc}"
+        return False, f"{task} could not run: {exc}"
     return result.returncode == 0, _tail(result)
 
 
@@ -251,11 +263,12 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
           run: Runner = subprocess.run,
           which: Callable[[str], str | None] = shutil.which,
           platform: Callable[[], Path] = _platform_source,
-          target_sha: str | None = None) -> list[str]:
+          target_sha: str | None = None,
+          projects: dict | None = None) -> list[str]:
     """Every refusal for this sweep, as messages; empty means ready.
 
     `target_sha` (harmonic-forge#1380) is the sweep's resolved target, passed
-    to the repo preflight only.
+    to the repo preflight only. `projects` replaces the manifest lookup (tests).
 
     A repo whose manifest declares no Lane 3 worktree is not checked (AC1).
     The `Requires:` grammar is checked even then, since a malformed line is the
@@ -263,7 +276,7 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
     needs = requires(case_blocks)
     fences = fence_refusals(needs)
     if lane3 is None:
-        lane3 = lane3_dir(repo)
+        lane3 = lane3_dir(repo, projects)
     if lane3 is None:
         return fences
     if not lane3.is_dir():
@@ -275,9 +288,17 @@ def check(repo: str, case_blocks: dict[str, str], *, lane3: Path | None = None,
         reasons.append(f"Lane 3's platform links do not verify from {lane3}; run "
                        f"`{REPAIR}` there:\n{detail}")
     reasons += [f"Lane 3 ({lane3}) lacks {miss}" for miss in probe_requires(needs, lane3, run, which)]
-    if declares_preflight(lane3, run=run):
-        ok, detail = preflight_ok(lane3, run=run, target_sha=target_sha)
+    # harmonic-forge#1409: a repo that declares the key names the task and owes
+    # it (R-0434); one that does not keeps the run-if-present behavior.
+    declared = declared_preflight(repo, projects)
+    task = declared or PREFLIGHT_TASK
+    if declares_preflight(lane3, run=run, task=task):
+        ok, detail = preflight_ok(lane3, run=run, target_sha=target_sha, task=task)
         if not ok:
             judged = f" for target {target_sha[:12]}" if target_sha else " on Lane 3's checkout"
-            reasons.append(f"Lane 3's `mise run {PREFLIGHT_TASK}` failed in {lane3}{judged}:\n{detail}")
+            reasons.append(f"Lane 3's `mise run {task}` failed in {lane3}{judged}:\n{detail}")
+    elif declared:
+        reasons.append(f"the manifest declares `lane3_preflight_task = {declared}` for {repo} "
+                       f"but Lane 3's worktree ({lane3}) has no such task (R-0434); add it "
+                       f"or remove the key")
     return reasons

@@ -1343,6 +1343,16 @@ class CheckTaskRequiredForLane3Tests(Base):
         self.assertEqual(check.status, fo.FAIL)
         self.assertIn("lane3_env_task", check.detail)
 
+    def test_a_declared_lane3_preflight_task_must_exist(self) -> None:
+        """harmonic-forge#1409 AC5: a declared-but-missing preflight is named."""
+        import dataclasses
+        base = self.project(self.make_repo())
+        declared = dataclasses.replace(base, protocol=dataclasses.replace(
+            base.protocol, lane3_preflight_task="lane3-preflight"))
+        check = fo.check_lane_tasks(declared)
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("lane3-preflight (lane3_preflight_task)", check.detail)
+
 
 class GateAdapterDeclarationTests(Base):
     """DJC 2: a Lane 3 repo has a manifest or says it needs none. Silence fails."""

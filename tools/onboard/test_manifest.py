@@ -399,6 +399,19 @@ class GateTaskTests(unittest.TestCase):
             mf.load(path)
         self.assertIn("gate_task", str(caught.exception))
 
+    def test_an_empty_lane3_preflight_task_is_refused(self) -> None:
+        """harmonic-forge#1409 (kill check 4): optional, never empty when present."""
+        for value in ('""', '" "'):
+            with self.subTest(value=value):
+                path = write(MINIMAL + PROTOCOL + f"    lane3_preflight_task = {value}\n")
+                with self.assertRaises(mf.ManifestError) as caught:
+                    mf.load(path)
+                self.assertIn("lane3_preflight_task", str(caught.exception))
+
+    def test_a_declared_lane3_preflight_task_loads(self) -> None:
+        path = write(MINIMAL + PROTOCOL + '    lane3_preflight_task = "lane3-preflight"\n')
+        self.assertEqual(mf.load(path)[0].protocol.lane3_preflight_task, "lane3-preflight")
+
     def test_an_empty_gate_task_is_refused(self) -> None:
         body = PROTOCOL.replace('gate_task = "check"', 'gate_task = " "')
         path = write("""
@@ -498,6 +511,8 @@ class LiveManifestTests(unittest.TestCase):
         # harmonic-forge#875: hrse's gate worktree owns its backend/.env, so
         # `lane3` runs this task instead of relinking it.
         env_task = {"hrse": "lane3-env-provision"}
+        # harmonic-forge#1409: the one repo whose sweep enforces its preflight.
+        preflight_task = {"hrse": "lane3-preflight"}
         # harmonic-forge#1057: hrse's wholly generated files lane1-rebase regenerates.
         regen = {"hrse": {
             "rebase_regenerate": {"design-system.baseline.toml": "design-system-ratchet --update",
@@ -525,6 +540,7 @@ class LiveManifestTests(unittest.TestCase):
                                needs_gate_adapter=False if name in no_adapter else None,
                                ci_parity_task=parity_task.get(name),
                                lane3_env_task=env_task.get(name),
+                               lane3_preflight_task=preflight_task.get(name),
                                **regen.get(name, {}))
              for name in ("hrse", "harmonic-forge", "cymagraph-infra",
                           "openclaw-projects", "kenekted", "kenekted-ai",

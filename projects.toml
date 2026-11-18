@@ -98,6 +98,16 @@
 #                       and silence is what harmonic-forge#730 exists to
 #                       outlaw. Omit it entirely for a repo that ships a real
 #                       manifest (hrse).
+#   lane3_env_task      Optional (harmonic-forge#875). The task `lane3` runs at
+#                       launch instead of relinking the gate worktree's
+#                       backend/.env; set only where Lane 3 owns its own env.
+#   lane3_preflight_task  Optional (harmonic-forge#1409, R-0434). The task the
+#                       gate-readiness sweep runs in Lane 3's worktree. Set it
+#                       when the repo's lane3_begin_task refuses on state a
+#                       check can read without side effects; the sweep then
+#                       refuses if Lane 3's worktree lacks the task, and
+#                       forge-onboard reports it missing from mise.toml.
+#                       Absent: a `lane3-preflight` task runs if present.
 #   rebase_regenerate   Optional (harmonic-forge#1057). Path -> mise task that
 #                       regenerates that file; lane1-rebase takes main's side
 #                       and reruns it instead of exiting 2. Only files that
@@ -171,6 +181,10 @@ ci_parity_task = "ci-parity-check-command-sets"
 # disposable-graph file harmonic-forge#861 introduced), so `lane3` runs this
 # narrow task at launch instead of relinking it to the main checkout's.
 lane3_env_task = "lane3-env-provision"
+# harmonic-forge#1409: hrse's lane3-begin refuses on pins, the gate graph's
+# lease and port ownership, so the sweep must run this task and refuses if
+# Lane 3's worktree lacks it (R-0434).
+lane3_preflight_task = "lane3-preflight"
 # harmonic-forge#1057: wholly generated files lane1-rebase regenerates on a
 # conflict. Only files generated in full: README.md (generated blocks inside
 # hand-written prose) and context-budget.baseline.toml (hand-written
