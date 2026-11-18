@@ -241,6 +241,18 @@ except Exception as _exc:  # noqa: BLE001 -- AC6: a broken module must not stop 
           file=sys.stderr)
     _tasklist_owed = None
 
+# harmonic-forge#1398: the watcher writes the belt heartbeat once per poll; a
+# suspenders tick reads its age. Never raises: a broken module must not stop the
+# belt, and a belt that cannot write its heartbeat reads as stale, which is the
+# direction that lets a tick re-arm it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
+try:
+    import belt_heartbeat as _belt_heartbeat  # noqa: E402
+except Exception as _exc:  # noqa: BLE001
+    print(f"[watch_lane_posts] heartbeat off: belt_heartbeat did not import: {_exc}",
+          file=sys.stderr)
+    _belt_heartbeat = None
+
 from belt_mechanics import (  # noqa: E402
     CallCounter,
     GhAsError,
@@ -2903,6 +2915,28 @@ def _verified_accounts(account_repos: str, primary: str) -> tuple[list[str], lis
     return verified, skipped
 
 
+def heartbeat_scope(repos: list[str] | None) -> str:
+    """The heartbeat's scope key: the `--repo` values (harmonic-forge#1199 splits
+    one workspace between two sessions of a lane), else `all`."""
+    return "+".join(sorted(repos)) if repos else "all"
+
+
+def write_poll_heartbeat(lane: str, workspace: str | None, repos: list[str] | None,
+                         deadline_seconds: float | None) -> bool:
+    """Record one finished poll (harmonic-forge#1398). The one writer of the belt
+    heartbeat; it never raises, so a heartbeat that cannot be written costs the
+    belt nothing but reads as stale to the next tick."""
+    if _belt_heartbeat is None:
+        return False
+    try:
+        _belt_heartbeat.write(lane, workspace or "none", heartbeat_scope(repos),
+                              deadline=deadline_seconds)
+        return True
+    except OSError as exc:
+        print(f"[watch_lane_posts] heartbeat write failed: {exc}", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     """The belt's entry point. harmonic-forge#958: the per-tick read cache is
     switched off however `_main` exits, so no caller inherits a tick's reads."""
@@ -3312,6 +3346,7 @@ def _main() -> int:
             #: one failure this protocol cannot tolerate (DESIGN.md).
             print(f"[watch_lane_posts] tick log write failed: {exc}",
                   file=sys.stderr)
+        write_poll_heartbeat(lane_label, args.workspace, args.repo, args.deadline_seconds)
         _end_tick_reads()  # harmonic-forge#958: nothing cached outlives its tick
         quiet_streak = 0 if not quiet else quiet_streak + 1
         polls_this_window += 1

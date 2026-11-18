@@ -68,5 +68,48 @@ class HeartbeatTests(unittest.TestCase):
         self.assertFalse((Path(self._tmp.name) / ".claude" / "state" / "afk").exists())
 
 
+class WatcherWritesItTests(unittest.TestCase):
+    """The watcher is the one writer. Its `while True:` loop has no seam a test
+    can call (the module's own docstring says so), so the loop's call is checked
+    on the syntax tree and the writer itself is called directly."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HOME": self._tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sys.path.insert(0, str(HERE.parent / "gh"))
+        import watch_lane_posts  # noqa: PLC0415
+        self.watcher = watch_lane_posts
+
+    def test_scope_is_the_sorted_repos_or_all(self):
+        self.assertEqual(self.watcher.heartbeat_scope(None), "all")
+        self.assertEqual(self.watcher.heartbeat_scope([]), "all")
+        self.assertEqual(self.watcher.heartbeat_scope(["b/y", "a/x"]), "a/x+b/y")
+
+    def test_the_writer_records_a_heartbeat_the_reader_sees(self):
+        self.assertTrue(self.watcher.write_poll_heartbeat("l1", "vh", ["a/x"], 1800))
+        self.assertIsNotNone(belt_heartbeat.read("l1", "vh", "a/x"))
+
+    def test_a_workspaceless_belt_still_writes(self):
+        self.assertTrue(self.watcher.write_poll_heartbeat("l1", None, None, None))
+        self.assertIsNotNone(belt_heartbeat.read("l1", "none", "all"))
+
+    def test_a_failed_write_never_raises(self):
+        with mock.patch.object(belt_heartbeat, "write", side_effect=OSError("disk full")):
+            self.assertFalse(self.watcher.write_poll_heartbeat("l1", "vh", None, None))
+
+    def test_the_poll_loop_calls_the_writer_after_the_tick_write(self):
+        import ast  # noqa: PLC0415
+        tree = ast.parse(Path(self.watcher.__file__).read_text(encoding="utf-8"))
+        main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_main")
+        loop = next(n for n in ast.walk(main) if isinstance(n, ast.While)
+                    and isinstance(n.test, ast.Constant) and n.test.value is True)
+        calls = [n for n in ast.walk(loop) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "write_poll_heartbeat"]
+        self.assertEqual(len(calls), 1, "the poll loop must write the heartbeat exactly once per poll")
+
+
 if __name__ == "__main__":
     unittest.main()
