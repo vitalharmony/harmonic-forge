@@ -38,9 +38,20 @@ def _record(*bodies: str) -> dict:
 
 
 class Vocabulary(unittest.TestCase):
+    def _declared_keys(self) -> list[str]:
+        """Every state key the module declares: its own `KEY_*` and `SUBKEY_*`
+        constants, less the timeline-only artifact keys. Read from the module,
+        not from a list kept beside the table, so a new key cannot be added
+        without a row."""
+        return [value for name, value in vars(lane_state).items()
+                if name.startswith(("KEY_", "SUBKEY_")) and isinstance(value, str)
+                and value not in lane_state.TIMELINE_KEYS]
+
     def test_every_state_key_has_owner_owes_and_next_lane(self) -> None:
         """AC1."""
-        for key in lane_state.STATE_KEYS:
+        keys = self._declared_keys()
+        self.assertGreaterEqual(len(keys), 15)
+        for key in keys:
             with self.subTest(key=key):
                 self.assertIn(key, lane_state.VOCABULARY)
                 entry = lane_state.VOCABULARY[key]
@@ -48,10 +59,74 @@ class Vocabulary(unittest.TestCase):
                 self.assertTrue(entry.owes)
                 self.assertIn(entry.next_lane, LANES)
 
+    def test_the_table_names_no_key_the_module_does_not_declare(self) -> None:
+        self.assertEqual(sorted(lane_state.VOCABULARY), sorted(self._declared_keys()))
+
+    def test_every_row_owner_and_next_lane_match_the_plan(self) -> None:
+        """AC3 for the rows the watcher cannot check (no `kind`): the plan's
+        table (r1 section 3.3 as amended by r2 section 3.4), written out here
+        as the independent source, so changing any owner fails a test."""
+        plan = {
+            "no-handoff": ("l1", "l2"), "blocked.no-tier": ("l1", None),
+            "blocked.dependency": ("l1", None), "blocked.lane": ("l1", None),
+            "ready.plan": ("l2", "l1"), "plan.posted": ("l1", "l2"),
+            "ready.implement": ("l2", "l1"), "l1.rework": ("l2", "l1"),
+            "implemented.awaiting-gate": (None, None),
+            "implemented.awaiting-review": ("l1", "l3"),
+            "implemented.awaiting-spec": ("l3", "l1"),
+            "spec.posted": ("l1", "l3"), "gate.ae-without-sweep": ("l1", "l3"),
+            "gate.executable": ("l3", "l1"), "gate.fail": ("l1", "l2"),
+            "gate.pass": ("operator", None), "te.open": ("l1", None),
+            "closed": (None, None), "unknown": ("l1", None),
+            "unknown.unreadable": ("operator", None),
+        }
+        self.assertEqual(sorted(plan), sorted(lane_state.VOCABULARY))
+        for key, (owner, nxt) in plan.items():
+            with self.subTest(key=key):
+                row = lane_state.VOCABULARY[key]
+                self.assertEqual((row.owner, row.next_lane), (owner, nxt))
+
     def test_no_ci_state_keys_yet(self) -> None:
         """The four CI rows are R2's, after CI slice 6's handoff."""
         for key in lane_state.VOCABULARY:
             self.assertNotIn("ci", key.split(".")[0])
+
+
+class FooterReading(unittest.TestCase):
+    """harmonic-forge#1401 preclose pass 1: what counts as Lane 1's
+    `ready-for-l3` for the subkey."""
+
+    def _subkey(self, ready: str) -> str | None:
+        return lane_state.classify(_record(HANDOFF, L2D, ready), []).subkey
+
+    def test_a_digest_after_the_footer_does_not_validate_it(self) -> None:
+        legacy_then_digest = (LEGACY_READY + "\n\nsee also body-sha256=" + "a" * 64)
+        self.assertEqual(self._subkey(legacy_then_digest),
+                         lane_state.SUBKEY_AWAITING_REVIEW)
+
+    def test_a_footer_stamped_by_another_lane_is_not_lane_1s(self) -> None:
+        for lane in ("LANE2", "LANE3"):
+            ready = ("Ready.\n\n<!-- l1-post v1; kind=ready-for-l3; "
+                     f"posted-by={lane}; sha=abc; body-sha256={'a' * 64}; checks=x -->")
+            with self.subTest(lane=lane):
+                self.assertEqual(self._subkey(ready),
+                                 lane_state.SUBKEY_AWAITING_REVIEW)
+
+    def test_lane_1s_own_stamp_still_counts(self) -> None:
+        ready = ("Ready.\n\n<!-- l1-post v1; kind=ready-for-l3; posted-by=LANE1; "
+                 f"sha=abc; body-sha256={'a' * 64}; checks=x -->")
+        self.assertEqual(self._subkey(ready), lane_state.SUBKEY_AWAITING_SPEC)
+
+    def test_a_footer_quoted_in_inline_code_is_not_read(self) -> None:
+        quoted = ("The footer looks like `<!-- l1-post v1; kind=ready-for-l3; "
+                  f"sha=abc; body-sha256={'a' * 64}; checks=x -->` in a post.")
+        self.assertEqual(self._subkey(quoted), lane_state.SUBKEY_AWAITING_REVIEW)
+
+    def test_the_digest_is_not_recomputed(self) -> None:
+        """The stated residual: any 64-hex digest inside the footer counts."""
+        ready = ("Edited body.\n\n<!-- l1-post v1; kind=ready-for-l3; sha=abc; "
+                 f"body-sha256={'b' * 64}; checks=x -->")
+        self.assertEqual(self._subkey(ready), lane_state.SUBKEY_AWAITING_SPEC)
 
 
 class Subkey(unittest.TestCase):

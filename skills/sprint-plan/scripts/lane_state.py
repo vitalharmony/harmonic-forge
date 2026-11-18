@@ -95,8 +95,23 @@ _GATE_HEADING = GATE_HEADING
 #: implementations is the defect hrse#1589 exists to fix; writing a second
 #: footer dialect in the same session would re-open it.
 _FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(?P<kind>\w[\w-]*)", re.I)
+#: harmonic-forge#1401: the digest must sit INSIDE one footer comment. The
+#: earlier `.*?` under re.S ran past the footer's closing `-->`, so a legacy
+#: footer with no digest read as validated whenever a digest appeared later in
+#: the same comment.
 _FOOTER_BODY_SHA = re.compile(
-    r"<!--\s*l1-post\s+v1;.*?\bbody-sha256=[0-9a-f]{64}\b", re.I | re.S)
+    r"<!--\s*l1-post\s+v1;(?:(?!-->).)*?\bbody-sha256=[0-9a-f]{64}\b(?:(?!-->).)*?-->",
+    re.I | re.S)
+#: A footer that names Lane 2 or Lane 3 as its poster (`l2_post.py` stamps
+#: `posted-by=LANE2`). Lane 1's own footer carries no `posted-by` or `LANE1`.
+#: Applied to `ready-for-l3` only: Lane 3's own spec and gate-result footers
+#: legitimately carry `posted-by=LANE3` and a digest.
+_FOOTER_OTHER_LANE = re.compile(
+    r"<!--\s*l1-post\s+v1;(?:(?!-->).)*?\bposted-by=LANE[23]\b(?:(?!-->).)*?-->",
+    re.I | re.S)
+#: Inline code spans, removed before a FOOTER is read so a comment that merely
+#: discusses a footer (`<!-- l1-post v1; kind=ready-for-l3 ... -->`) is not one.
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
 
 #: The headings `l1_post.py` itself validates, mirrored from `AE_HEADING` and
 #: `SWEEP_HEADING` there. They are the CROSS-CHECK (AC1), never the authority:
@@ -306,15 +321,11 @@ VOCABULARY: dict[str, Vocab] = {
                                   None, None),
 }
 
-#: The state keys `classify()` can return, plus the V1 additions; every one
-#: must be in `VOCABULARY` (AC1).
-STATE_KEYS = (KEY_NO_HANDOFF, KEY_BLOCKED_NO_TIER, KEY_BLOCKED_DEP,
-              KEY_BLOCKED_LANE, KEY_READY_PLAN, KEY_PLAN_POSTED,
-              KEY_READY_IMPLEMENT, KEY_REWORK, KEY_AWAITING_GATE,
-              KEY_SPEC_POSTED, KEY_AE_WITHOUT_SWEEP, KEY_EXECUTABLE,
-              KEY_GATE_FAIL, KEY_GATE_PASS, KEY_TE_OPEN, KEY_CLOSED,
-              KEY_UNKNOWN, KEY_UNKNOWN_UNREADABLE,
-              SUBKEY_AWAITING_REVIEW, SUBKEY_AWAITING_SPEC)
+#: Keys that name an ARTIFACT posted to a thread (the timeline namespace), not
+#: a state, so they carry no owner. Every other `KEY_*`/`SUBKEY_*` constant in
+#: this module is a state and must have a `VOCABULARY` row; the test walks the
+#: module's own constants, so a new key cannot be added without one (AC1).
+TIMELINE_KEYS = (KEY_HANDOFF, KEY_L2_DONE, KEY_AE, KEY_SWEEP, KEY_DISCUSSION)
 
 #: **The fail-loud default.** A row the parser cannot place says so rather
 #: than defaulting into "ready" — the posture `pipeline_rank.py` takes with
@@ -450,6 +461,14 @@ _GATE_VERDICT_TOKENS = {("3", "P"), ("3", "F")}
 
 
 def _validated(kind: str, body: str) -> bool:
+    """A footer that carries a body digest, from a lane that posts digests.
+
+    **The digest is not recomputed** (harmonic-forge#1401, a stated residual):
+    presence is what this module has always meant by `validated`, and
+    recomputing it would be a new mechanism. Anyone who can post an issue
+    comment can already forge any marker this module reads, so ownership
+    derived from a footer is trusted to the same degree as every other state.
+    """
     if not _FOOTER_BODY_SHA.search(body):
         return False
     heading = _KIND_HEADING.get(kind)
@@ -480,11 +499,17 @@ def _scan_comment(comment: dict) -> list[Transition]:
         return Transition(key, ident, at, provenance, validated)
 
     out: list[Transition] = []
-    footer = _FOOTER_KIND.search(body)
+    footer_scope = _INLINE_CODE.sub("", body)
+    footer = _FOOTER_KIND.search(footer_scope)
     kind = footer.group("kind").lower() if footer else ""
     key = _KIND_KEY.get(kind)
     if key is not None:
-        out.append(made(key, f"footer:{kind}", _validated(kind, body)))
+        validated = _validated(kind, footer_scope)
+        if kind == "ready-for-l3" and _FOOTER_OTHER_LANE.search(footer_scope):
+            # Only Lane 1 posts a `ready-for-l3` that makes Lane 3 owe the
+            # spec; a footer stamped by Lane 2 or Lane 3 is not that post.
+            validated = False
+        out.append(made(key, f"footer:{kind}", validated))
     # hrse#1546's handoff is stamped `kind=discussion` — a full handoff,
     # Affected Files and Ambiguity Gate and all. Footer-only detection renders
     # that issue as having no handoff at all, which is the confidently-wrong
