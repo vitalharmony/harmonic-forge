@@ -61,6 +61,18 @@ class HeartbeatTests(unittest.TestCase):
         names = sorted(p.name for p in belt_heartbeat.state_dir().iterdir())
         self.assertEqual(names, ["heartbeat-l1-vh-all.json"])
 
+    def test_the_cli_exits_0_when_fresh_and_1_when_stale_or_missing(self):
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        argv = ["read", "--lane", "l1", "--workspace", "vh"]
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(belt_heartbeat.main(argv), 1)
+        self.assertEqual(out.getvalue().strip(), "none")
+        belt_heartbeat.write("l1", "vh")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(belt_heartbeat.main(argv), 0)
+            self.assertEqual(belt_heartbeat.main(argv + ["--max-age", "-1"]), 1)
+
     def test_the_heartbeat_is_not_a_lane_action(self):
         """It lives in the belt directory and never touches the afk state, so a
         poll can never reset the afk idle clock."""

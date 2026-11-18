@@ -100,7 +100,7 @@ def build_wakeup(lane: str, source: str) -> str | None:
     return (
         f"You are LANE={lane} ({source}). Your role in the belt-and-suspenders "
         f"loop: {_ROLE_LINE[lane]}.\n"
-        "The belt (a 5-minute Monitor) and the suspenders (a 10-minute loop) are "
+        "The belt (a 5-minute Monitor) and the suspenders (a 30-minute loop) are "
         "NOT armed — run `/belt-and-suspenders` to arm them. Arming is explicit "
         "so a throwaway session does not start polling and spending."
     )

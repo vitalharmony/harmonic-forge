@@ -81,3 +81,29 @@ def is_stale(lane: str, workspace: str, scope: str = "all", max_age: float = 600
     intervals of 300 s by default)."""
     age = read(lane, workspace, scope, now)
     return age is None or age > max_age
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`belt_heartbeat.py read --lane l1 --workspace vh [--scope all] [--max-age 600]`.
+
+    Prints the heartbeat's age and exits 0 when it is fresh, prints `none` or the
+    stale age and exits 1 otherwise. A suspenders tick re-arms the Monitor only on
+    exit 1 AND no live Monitor task for the belt."""
+    import argparse  # noqa: PLC0415
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("action", choices=["read"])
+    parser.add_argument("--lane", required=True)
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--scope", default="all")
+    parser.add_argument("--max-age", type=float, default=600.0)
+    args = parser.parse_args(argv)
+    age = read(args.lane, args.workspace, args.scope)
+    if age is None:
+        print("none")
+        return 1
+    print(f"{age:.0f}s")
+    return 0 if age <= args.max_age else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
