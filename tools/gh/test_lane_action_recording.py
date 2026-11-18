@@ -109,6 +109,12 @@ class PostLaneDiscussionRecords(_Home):
         self.assertTrue(self.recorded("3"))
         self.assertFalse(self.recorded("2"))
 
+    def test_a_broken_stdout_pipe_after_the_post_still_leaves_the_action_recorded(self):
+        with mock.patch("builtins.print", side_effect=BrokenPipeError("closed stdout")):
+            with self.assertRaises(BrokenPipeError):
+                self.post("3")
+        self.assertTrue(self.recorded("3"))
+
     def test_a_failed_post_records_nothing(self):
         with self.assertRaises(RuntimeError):
             self.post("2", comment_side_effect=RuntimeError("refetch failed"))

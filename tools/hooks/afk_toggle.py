@@ -216,8 +216,13 @@ def idle_cutoff_due(lane: str, now: float | None = None, threshold: float = IDLE
         return None
     try:
         marked = json.loads(marker.read_text(encoding="utf-8")).get("since")
-    except (OSError, ValueError, AttributeError):
+    except FileNotFoundError:
         marked = None
+    except (OSError, ValueError, AttributeError):
+        # A marker that exists but cannot be read or parsed counts as announced: announcing
+        # twice in one episode is the failure the marker exists to prevent, and a corrupt
+        # marker would otherwise be rewritten and announced again on every re-arm.
+        return None
     if marked == since:
         return None
     age = last_action_age(digit, current)

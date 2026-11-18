@@ -327,6 +327,15 @@ class LastActionCase(unittest.TestCase):
         for workspace in ("vh", "kenekted", "leasepal"):
             self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace=workspace))
 
+    def test_a_marker_that_exists_but_is_unreadable_counts_as_announced(self):
+        self.afk_on()
+        marker = afk_toggle.cutoff_marker_path("l1", "vh", "all")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
+        marker.unlink()
+        self.assertIsNotNone(afk_toggle.idle_cutoff_due("l1", now=self.T0 + 4000, workspace="vh"))
+
     def test_a_failed_marker_write_reports_false_so_the_caller_does_not_announce(self):
         self.afk_on()
         with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")):

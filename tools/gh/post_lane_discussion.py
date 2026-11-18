@@ -800,9 +800,10 @@ def main() -> None:
         require_ae_by_name(final)
         require_spec_structure(final)
     url, _ = comment_body(args.repo, args.issue, final)
-    print(f"[post-comment] posted and refetched {url}")
     if _afk_toggle is not None:
-        _afk_toggle.record_lane_action(lane)  # the lane the footer above names; harmonic-forge#1398
+        # harmonic-forge#1398: before the print, which can fail on a closed stdout pipe
+        _afk_toggle.record_lane_action(lane)  # the lane the footer above names
+    print(f"[post-comment] posted and refetched {url}")
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
     #: `LANE` env var the footer above already used -- `"l1"`/`"l2"`/`"l3"`
     #: is `belt_candidates`'s own convention (matching `QUEUE_POSTERS`'
