@@ -678,6 +678,34 @@ def _run_git(worktree: str, *args: str) -> str | None:
     return result.stdout.strip()
 
 
+_SHA_RE = re.compile(r"(?:\bcommit\b|\bSHA\b|\bhead\b|@)\W{0,4}`?([0-9a-f]{7,40})\b", re.IGNORECASE)
+
+
+def _completion_sha(body: str) -> str | None:
+    """The commit a Lane 2 completion reports, read from its text after the word `commit`,
+    `SHA`, `head` or `@`; None when none is named (the notice then falls back to dates)."""
+    match = _SHA_RE.search(body or "")
+    return match.group(1) if match else None
+
+
+def _patch_id(worktree: str, base: str, head: str) -> str | None:
+    """`git patch-id --stable` of the diff from `base` to `head`, or None on any git failure.
+    The diff's own hunk positions and the base's identity do not matter, so a clean rebase onto
+    a newer main keeps it."""
+    try:
+        diff = subprocess.run(["git", "-C", worktree, "diff", base, head],
+                              capture_output=True, text=True)
+        if diff.returncode != 0:
+            return None
+        out = subprocess.run(["git", "-C", worktree, "patch-id", "--stable"],
+                             input=diff.stdout, capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.split()[0] if out.stdout.split() else ""
+
+
 def _worktree_repo(worktree: str) -> str | None:
     url = _run_git(worktree, "remote", "get-url", "origin")
     if not url:
@@ -1503,33 +1531,57 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
         return None
     last_l2: tuple[str, str] | None = None
     last_l2_at: str | None = None
+    last_l2_body = ""
     for comment in comments:
         classified = _classify(comment.get("body", ""))
         if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
             last_l2 = classified
             last_l2_at = comment.get("created_at")
+            last_l2_body = comment.get("body", "")
     since_completion = False
     if last_l2 is not None and _is_l2_completion(*last_l2):
         # harmonic-forge#1393: new work after the newest completion is owed another one
         # and surfaces once; a completion with no commit after it is the steady state.
         if not last_l2_at:
             return None
-        # AUTHOR dates, not `rev-list --after` (a committer date): a rebase or an amend
-        # gives every commit a new committer date but keeps its author date, so a rebased
-        # branch whose work was already reported is not announced again.
-        dates = _run_git(worktree, "log", "--format=%at", f"{base}..HEAD")
-        try:
-            completed_at = _parse_iso(last_l2_at).timestamp()
-            count = sum(1 for d in (dates or "").split() if int(d) > completed_at)
-        except (ValueError, TypeError):
-            return None
-        if count == 0:
-            return None
+        reported = _completion_sha(last_l2_body)
+        rework_only = False
+        if reported is not None:
+            # What the branch CHANGES, not when its commits were written: an amend or a
+            # fixup/autosquash keeps every author date, so a date test counts rework folded
+            # into an existing commit as zero new commits (harmonic-forge#1393 round 2). A
+            # clean rebase keeps the patch-id; rework changes it. Any git failure is unknown.
+            reported_base = _run_git(worktree, "merge-base", reported, "origin/main")
+            reported_id = _patch_id(worktree, reported_base, reported) if reported_base else None
+            current_id = _patch_id(worktree, base, "HEAD")
+            if reported_id is None or current_id is None:
+                return None
+            if reported_id == current_id:
+                return None
+            ahead = _run_git(worktree, "rev-list", "--count", f"{reported}..HEAD")
+            count = int(ahead) if ahead and ahead.isdigit() else 0
+            rework_only = count == 0
+        else:
+            # No SHA in the completion: fall back to AUTHOR dates, not `rev-list --after` (a
+            # committer date): a rebase gives every commit a new committer date but keeps its
+            # author date, so a rebased branch already reported is not announced again. An
+            # amend also keeps it, so this fallback cannot see amended rework.
+            dates = _run_git(worktree, "log", "--format=%at", f"{base}..HEAD")
+            try:
+                completed_at = _parse_iso(last_l2_at).timestamp()
+                count = sum(1 for d in (dates or "").split() if int(d) > completed_at)
+            except (ValueError, TypeError):
+                return None
+            if count == 0:
+                return None
         since_completion = True
     branch = _worktree_branch(worktree) or "?"
     plural = "" if count == 1 else "s"
     tail = ("since its last completion" if since_completion
             else "with no completion posted")
+    if since_completion and rework_only:
+        return (f"{repo}#{issue} branch {branch} has rework since its last completion "
+                f"(its content differs from what that completion reported)")
     return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
             f"origin/main {tail}")
 
