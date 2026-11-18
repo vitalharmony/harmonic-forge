@@ -490,6 +490,83 @@ class TestSymlinkAttribution(unittest.TestCase):
                              f" (symlink outside the repo: {self.KEY})")
 
 
+class TestMissingKeyShrinkCredit(unittest.TestCase):
+    """harmonic-forge#1414 preclose survivor: a key missing from disk credits
+    its baseline bytes as shrinkage only if git tracks it. Real git repos."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        out = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(out.cleanup)
+        self.repo = Path(tmp.name).resolve()
+        self.outside = Path(out.name).resolve()
+        (self.repo / ".claude" / "rules").mkdir(parents=True)
+        (self.repo / "CLAUDE.md").write_text("x" * 100, encoding="utf-8")
+
+    def git(self, *args: str) -> None:
+        import subprocess
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t",
+                        "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+    def init_git(self) -> None:
+        self.git("init", "-q")
+        (self.repo / ".gitignore").write_text(".claude/rules/link.md\n",
+                                              encoding="utf-8")
+
+    def grow_claude(self, by: int = 500) -> None:
+        p = self.repo / "CLAUDE.md"
+        p.write_text(p.read_text(encoding="utf-8") + "y" * by, encoding="utf-8")
+
+    def test_untracked_missing_link_is_not_credited(self):
+        self.init_git()
+        target = self.outside / "rule.md"
+        target.write_text("r" * 2000, encoding="utf-8")
+        link = self.repo / ".claude" / "rules" / "link.md"
+        os.symlink(target, link)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "init")
+        m.update(self.repo)
+        link.unlink()  # a CI checkout: the gitignored link is absent
+        self.grow_claude()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 1, report)
+        self.assertIn("NOT credited", report)
+        self.assertIn(".claude/rules/link.md", report)
+
+    def test_tracked_deleted_file_is_still_credited(self):
+        self.init_git()
+        gone = self.repo / ".claude" / "rules" / "gone.md"
+        gone.write_text("g" * 2000, encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "init")
+        m.update(self.repo)
+        gone.unlink()
+        self.grow_claude()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+        self.assertIn("shrank by 1500", report)
+        self.assertNotIn("NOT credited", report)
+
+    def test_non_git_repo_fails_closed(self):
+        gone = self.repo / ".claude" / "rules" / "gone.md"
+        gone.write_text("g" * 2000, encoding="utf-8")
+        m.update(self.repo)
+        gone.unlink()
+        self.grow_claude()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 1, report)
+        self.assertIn("NOT credited", report)
+
+    def test_non_git_pure_shrink_still_passes(self):
+        gone = self.repo / ".claude" / "rules" / "gone.md"
+        gone.write_text("g" * 2000, encoding="utf-8")
+        m.update(self.repo)
+        gone.unlink()
+        self.assertEqual(m.check(self.repo)[0], 0)
+
+
 class TestKeysForFilesOutsideTheRepo(unittest.TestCase):
     """Two measured files live outside the repo — the operator's global
     CLAUDE.md and the shared memory index. A repo-relative-only key would
@@ -542,8 +619,13 @@ class TestNoNetwork(unittest.TestCase):
     def test_the_source_reaches_no_network(self):
         source = Path(m.__file__).read_text(encoding="utf-8")
         for forbidden in ("requests", "urllib", "httpx", "socket",
-                          "subprocess", "gh api"):
+                          "gh api", '"gh"', "fetch", "ls-remote"):
             self.assertNotIn(forbidden, source)
+        # harmonic-forge#1414: one local git read (`cat-file -e HEAD:<key>`)
+        # is the only subprocess allowed — it decides whether a missing key
+        # is tracked, and touches no remote.
+        self.assertEqual(source.count("subprocess.run("), 1)
+        self.assertIn('["git", "-C", str(repo), "cat-file", "-e"', source)
 
 
 if __name__ == "__main__":

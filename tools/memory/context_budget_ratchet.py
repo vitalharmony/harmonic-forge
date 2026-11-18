@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import tomllib
 from datetime import date
@@ -228,6 +229,39 @@ def in_repo(key: str, repo: Path | None = None) -> bool:
     return True
 
 
+def _tracked_in_head(repo: Path, key: str) -> bool:
+    """True when git's HEAD commit holds `key` in `repo`.
+
+    `cat-file -e HEAD:<key>` is true for a committed file deleted from the
+    working tree (staged or not) and false for a gitignored, never-committed
+    path such as hrse's `.claude/rules/*.md` platform links. Any git failure
+    (no git, not a repo, no HEAD) answers False: the caller then declines to
+    credit shrinkage, which is the fail-closed direction — an uncredited
+    shrink can only make the gate stricter, never hide growth.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{key}"],
+            capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _credited_shrink(repo: Path, key: str, current: dict[str, int]) -> bool:
+    """Whether a shrunk key's bytes may offset in-repo growth.
+
+    A key still measured, or still on disk, is credited as before. A key gone
+    from disk counts only if git tracks it (harmonic-forge#1414 preclose): a
+    gitignored rule link absent from a CI checkout otherwise credited its
+    whole baseline size as shrinkage and hid real growth elsewhere, while a
+    deleted tracked file must still count (AC2).
+    """
+    if key in current or os.path.lexists(repo / key):
+        return True
+    return _tracked_in_head(repo, key)
+
+
 def _symlink_note(repo: Path, key: str) -> str:
     """` (symlink outside the repo: <target>)` for a repo-relative key that
     resolves outside, else empty. Never an absolute path: this line reaches
@@ -381,9 +415,13 @@ def check(repo: Path) -> tuple[int, str]:
 
     gated_grew = {key: delta for key, delta in grew.items()
                   if key in platform_keys or in_repo(key, repo=repo)}
+    gated_shrank = {key: delta for key, delta in shrank.items()
+                    if key in platform_keys or in_repo(key, repo=repo)}
+    uncredited = sorted(key for key in gated_shrank
+                        if not _credited_shrink(repo, key, current))
     gated_net = (sum(gated_grew.values())
-                 + sum(delta for key, delta in shrank.items()
-                       if key in platform_keys or in_repo(key, repo=repo)))
+                 + sum(delta for key, delta in gated_shrank.items()
+                       if key not in uncredited))
     outside_grew = {key: delta for key, delta in grew.items()
                     if not (key in platform_keys or in_repo(key, repo=repo))}
     outside_note = ""
@@ -394,10 +432,15 @@ def check(repo: Path) -> tuple[int, str]:
             f"\n  outside this repo, reported and NOT gated: {named}."
             f"\n  Nothing a commit here can be accountable for — re-baseline "
             f"with `--update` when convenient (harmonic-forge#538).")
+    if uncredited:
+        outside_note += (
+            f"\n  missing from this checkout and untracked by git, NOT "
+            f"credited as shrinkage: {', '.join(uncredited)}.")
 
     if gated_net <= 0:
         note = ""
-        if any(key in platform_keys or in_repo(key, repo=repo) for key in shrank):
+        if any((key in platform_keys or in_repo(key, repo=repo))
+               and key not in uncredited for key in shrank):
             note = (f"\n  in-repo surface shrank by {-gated_net} bytes — no "
                     f"acknowledgement needed. Run `--update` to lock it in.")
         return 0, headline + note + outside_note
