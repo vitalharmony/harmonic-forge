@@ -100,19 +100,6 @@ def covered_head(repo: str, issue: int) -> str | None:
     return preclose_passes.force_head(preclose_check.find_receipt(repo, issue))
 
 
-def _receipt_heads(receipt: dict | None) -> set[str]:
-    """Every head one receipt records as reviewed: each `pass_history` head and
-    the post-verdict check's head."""
-    if not isinstance(receipt, dict):
-        return set()
-    heads = {entry.get("sha") for entry in receipt.get("pass_history") or []
-             if isinstance(entry, dict)}
-    check = receipt.get("post_verdict_check")
-    if isinstance(check, dict):
-        heads.add(check.get("head_sha"))
-    return {head for head in heads if isinstance(head, str) and head}
-
-
 def reviewed_heads(repo: str, issue: int) -> set[str]:
     """Every head a preclose pass or post-verdict check reviewed for the issue
     (harmonic-forge#1422): the current receipt plus every archived one, because
@@ -121,9 +108,10 @@ def reviewed_heads(repo: str, issue: int) -> set[str]:
     or unreadable receipt or archive contributes nothing: a reforge line never
     required a receipt."""
     import preclose_check  # noqa: PLC0415  (imports this module; never at top level)
+    import preclose_passes  # noqa: PLC0415
     heads = set()
     try:
-        heads |= _receipt_heads(preclose_check.find_receipt(repo, issue))
+        heads |= preclose_passes.reviewed_heads_of(preclose_check.find_receipt(repo, issue))
     except Exception:  # noqa: BLE001 - an unreadable receipt adds no head
         pass
     try:
@@ -138,7 +126,7 @@ def reviewed_heads(repo: str, issue: int) -> set[str]:
                 record = envelope.get("record") if isinstance(envelope, dict) else None
                 if (isinstance(record, dict) and record.get("issue") == issue
                         and str(record.get("repo", "")).lower() == repo.lower()):
-                    heads |= _receipt_heads(record)
+                    heads |= preclose_passes.reviewed_heads_of(record)
     except Exception:  # noqa: BLE001 - an unreadable archive adds no head
         pass
     return heads
