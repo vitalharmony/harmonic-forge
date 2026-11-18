@@ -221,6 +221,7 @@ from manifest_identity import workspace_for  # noqa: E402
 from manifest_identity import workspaces as manifest_workspaces  # noqa: E402
 
 import belt_batch_view  # noqa: E402
+import _etag_cache  # noqa: E402  (harmonic-forge#1393: conditional issue and thread reads)
 import belt_candidates  # noqa: E402
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: harmonic-forge#851: the FAIL/PASS reader for a gate result is
@@ -761,19 +762,19 @@ def _report_resolutions(
 
 
 def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
-    try:
-        raw = gh_as(
-            _account_of(repo),
-            ["api", f"repos/{repo}/issues/{issue}/comments?since={since}"],
-            counter=_COUNTER,
-        )
-    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
-        print(f"[watch_lane_posts] gh api failed for #{issue}: {exc}", file=sys.stderr)
+    """Comments on `issue` last updated at or after `since`, from the same thread
+    `_fetch_all_comments` reads (harmonic-forge#1393). It makes no GitHub call of its
+    own: GitHub's `since` filters on a comment's last update, so filtering the
+    shared thread on `updated_at` delivers new and edited comments exactly as the old
+    `comments?since=` read did, without a URL that slides with the clock. Outside the
+    tick loop no per-tick cache exists, so the thread (an issue read, then its pages,
+    all conditional) is read here; it never falls back to page 1 only. A duplicate
+    delivery is absorbed by the watermark plus the overlap window, as before.
+    `None` on any failed read, never `[]`."""
+    thread = _fetch_all_comments(repo, issue)
+    if thread is None:
         return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    return [c for c in thread if str(c.get("updated_at") or c.get("created_at") or "") >= since]
 
 
 #: Triple-backtick fenced code blocks, DOTALL so a multi-line fence is one
@@ -1064,29 +1065,31 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str
     return result
 
 
+#: `(repo, issue)` -> the `comments` count of the issue's most recent read. The page
+#: count of the thread comes from it (harmonic-forge#1393): a page's ETag changes only
+#: when that page does, so a comment that opens page 2 is found only through the count.
+_ISSUE_COMMENTS: dict[tuple[str, int], int] = {}
+
+
 def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
+    account = _account_of(repo)
     try:
-        raw = gh_as(
-            _account_of(repo),
-            ["api", "-X", "GET", f"repos/{repo}/issues/{issue}",
-             "--jq", "{state: .state, labels: [.labels[].name], milestone: .milestone.title}"],
-            counter=_COUNTER,
-        )
-        meta = json.loads(raw)
-        milestone = meta.get("milestone")
-        return (str(meta["state"]), {str(name) for name in meta["labels"]},
-                str(milestone) if milestone else None)
-    except GhAsError as exc:
+        resp = _etag_cache.conditional_get(account, f"repos/{repo}/issues/{issue}", _COUNTER)
+        if resp.status in (200, 304) and resp.body:
+            meta = json.loads(resp.body)
+            _ISSUE_COMMENTS[(repo, issue)] = int(meta.get("comments") or 0)
+            milestone = (meta.get("milestone") or {}).get("title")
+            return (str(meta["state"]), {str(label["name"]) for label in meta["labels"]},
+                    str(milestone) if milestone else None)
         # harmonic-forge#866: a 404 means the issue is gone only when this
         # account can see the repo itself; a private repo read with the wrong
         # account 404s too, and must stay unreadable, never retire a real issue.
-        account = _account_of(repo)
-        if _confirmed_missing(repo, issue):
+        if resp.status == 404 and _confirmed_missing(repo, issue):
             print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
                   "retiring its candidate", file=sys.stderr)
             return "missing", None, None
-        print(f"[watch_lane_posts] issue read failed for {repo}#{issue} as {account}: {exc}",
-              file=sys.stderr)
+        print(f"[watch_lane_posts] issue read failed for {repo}#{issue} as {account}: "
+              f"HTTP {resp.status}", file=sys.stderr)
         return None, None, None
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
         print(f"[watch_lane_posts] issue read failed for #{issue}: {exc}",
@@ -1136,10 +1139,10 @@ def _http_status(repo: str, path: str) -> int | None:
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     """Every comment on `issue`, or `None` if the fetch itself failed --
-    `--paginate` is required, not optional (harmonic-forge#570 preclose
-    finding): the unpaginated single-page call returns only the first 30,
-    and a caller deciding "newest classified comment" off page 1 of a
-    50+-comment thread silently picks the wrong one. Two real
+    every page is required, not optional (harmonic-forge#570 preclose
+    finding; harmonic-forge#1393 reads them as explicit conditional pages in
+    place of `--paginate`): a caller deciding "newest classified comment" off page
+    1 of a 50+-comment thread silently picks the wrong one. Two real
     harmonic-forge issues already exceed 30 comments.
 
     `None` (harmonic-forge#579 preclose finding) is distinct from `[]`
@@ -1157,30 +1160,59 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     cached = _TICK_THREADS.get((repo, issue)) if _TICK_READS_ON else None
     if cached is not None:
         return cached  # harmonic-forge#958 AC5: one full-thread read per issue per tick
-    try:
-        raw = gh_as(
-            _account_of(repo),
-            ["api", "-X", "GET", f"repos/{repo}/issues/{issue}/comments",
-             "--paginate", "-f", "per_page=100"],
-            counter=_COUNTER,
-        )
-    except Exception as exc:  # noqa: BLE001 — reported, not swallowed (this
-        # sibling of `_fetch_comments` used to swallow silently; a quota
-        # exhaustion here previously read as "every issue has no comments,"
-        # i.e. no work, which is exactly the failure this protocol refuses
-        # everywhere else)
-        print(f"[watch_lane_posts] comment fetch failed for #{issue}: {exc}",
-              file=sys.stderr)
-        return None
-    try:
-        comments = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    # harmonic-forge#1393: the page count comes from this tick's issue read (one
+    # conditional `issues/{n}` read, shared with `_issue_meta`), then every page is
+    # read conditionally. An edited comment does not change the issue's ETag but does
+    # change its page's, so the pages are read even when the issue read was a 304.
+    state, *_ = _issue_meta(repo, issue)
+    if state is None or state == "missing":
+        return None  # no readable issue, so no readable thread (never `[]`: that reads as no work)
+    count = _ISSUE_COMMENTS.get((repo, issue))
+    pages = -(-count // _PAGE_SIZE) if count is not None else _MAX_PAGES  # 0 comments: no page to read
+    comments: list[dict] = []
+    seen: set = set()
+    account = _account_of(repo)
+    for page in range(1, min(pages, _MAX_PAGES) + 1):
+        try:
+            resp = _etag_cache.conditional_get(
+                account, f"repos/{repo}/issues/{issue}/comments?per_page={_PAGE_SIZE}&page={page}",
+                _COUNTER)
+        except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+            print(f"[watch_lane_posts] comment fetch failed for #{issue}: {exc}", file=sys.stderr)
+            return None
+        if resp.status not in (200, 304) or resp.body is None:
+            # reported, not swallowed (this used to swallow silently; a quota
+            # exhaustion here previously read as "every issue has no comments,"
+            # i.e. no work, which is exactly the failure this protocol refuses
+            # everywhere else)
+            print(f"[watch_lane_posts] comment fetch failed for #{issue}: "
+                  f"page {page} HTTP {resp.status}", file=sys.stderr)
+            return None
+        try:
+            items = json.loads(resp.body)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            # a comment added or deleted between two page reads shifts the page
+            # boundary; the id keeps it from being delivered twice
+            key = item.get("id") if isinstance(item, dict) else None
+            if key is not None and key in seen:
+                continue
+            seen.add(key)
+            comments.append(item)
+        if count is None and len(items) < _PAGE_SIZE:
+            break  # no count to bound the loop: stop at the first short page
     if _TICK_READS_ON:
         _TICK_THREADS[(repo, issue)] = comments
     return comments
 
 
+#: Comments per thread page, and a ceiling on pages read for one issue (a 5,000-comment
+#: thread is not a thing; the cap only bounds a bad count).
+_PAGE_SIZE = 100
+_MAX_PAGES = 50
 
 
 def _issue_is_open(repo: str, issue: int) -> bool:
@@ -3135,7 +3167,12 @@ def _main() -> int:
         #: A zero left in the record would be worse than absent: `belt_report`
         #: reads it as a real measurement.
         _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql,
-                           _COUNTER.http_requests)
+                           _COUNTER.http_requests, _COUNTER.calls_304,
+                           _COUNTER.calls_conditional, _COUNTER.calls_403_secondary)
+        try:
+            _etag_cache.prune()  # harmonic-forge#1393: entries unused for 24 hours go
+        except Exception as exc:  # noqa: BLE001 - a cache sweep must never stop the belt
+            print(f"[watch_lane_posts] etag cache prune failed: {exc}", file=sys.stderr)
         _COUNTER.ratelimit.clear()  # harmonic-forge#959: a per-tick snapshot
         _reset_tick_reads()  # harmonic-forge#958 AC5: the memo never spans two ticks
         #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
@@ -3292,6 +3329,9 @@ def _main() -> int:
             calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
             calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],
             http_requests=_COUNTER.http_requests - _calls_at_start[2],
+            calls_304=_COUNTER.calls_304 - _calls_at_start[3],
+            calls_conditional=_COUNTER.calls_conditional - _calls_at_start[4],
+            calls_403_secondary=_COUNTER.calls_403_secondary - _calls_at_start[5],
             ratelimit=dict(_COUNTER.ratelimit),
         )
         if comment_fetch_failed:

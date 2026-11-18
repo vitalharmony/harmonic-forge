@@ -395,6 +395,22 @@ class ReportResolutionTests(unittest.TestCase):
         self.assertEqual(buf.getvalue(), "")
 
 
+def _fake_conditional(*, count=0, pages=None, state="open", labels=()):
+    """A `_etag_cache.conditional_get` fake (harmonic-forge#1393): the issue read answers
+    with `count` comments, a thread page answers with `pages[page - 1]` (a list of
+    comment dicts, default none)."""
+    Response = watch_lane_posts._etag_cache.Response
+    pages = pages or []
+
+    def conditional_get(account, path, counter=None):
+        if "/comments" in path:
+            page = int(path.rsplit("page=", 1)[1])
+            return Response(200, json.dumps(pages[page - 1] if page <= len(pages) else []), False)
+        return Response(200, json.dumps({"state": state, "comments": count, "milestone": None,
+                                         "labels": [{"name": n} for n in labels]}), False)
+    return conditional_get
+
+
 def _fake_completed(stdout, returncode=0):
     result = subprocess.CompletedProcess(args=[], returncode=returncode)
     result.stdout = stdout
@@ -432,19 +448,25 @@ class DiscoverQueueTests(unittest.TestCase):
                 "search/issues", gh_argv,
                 "harmonic-forge#686: no belt path may issue an "
                 f"issue-number-free account-wide scan: {argv}")
+            if "api" in gh_argv and "user" in gh_argv:
+                # harmonic-forge#1393: the cache keys on the credential's login, read once.
+                return _fake_completed('HTTP/2.0 200 OK\r\n\r\n{"login": "vitalharmony"}')
             if "api" in gh_argv and any("/comments" in a for a in gh_argv):
                 # harmonic-forge#570 preclose finding: the comments fetch
-                # must be an explicit GET and must paginate -- assert both
+                # must be an explicit GET and must read every page -- assert both
                 # rather than just tolerating whichever shape shows up, so a
                 # regression back to an implicit POST or a single page fails
-                # this test instead of silently passing.
+                # this test instead of silently passing. (harmonic-forge#1393: the
+                # pages are explicit `page=` reads, not `--paginate`.)
                 self.assertIn("-X", gh_argv, f"comments fetch must be explicit GET: {gh_argv}")
                 self.assertEqual(gh_argv[gh_argv.index("-X") + 1], "GET")
-                self.assertIn("--paginate", gh_argv, f"comments fetch must paginate: {gh_argv}")
+                self.assertNotIn("--paginate", gh_argv)
                 path = next(a for a in gh_argv if a.startswith("repos/") and "/comments" in a)
-                issue = int(path.rsplit("/", 2)[-2])
+                self.assertIn("per_page=100&page=1", path, f"comments fetch must read page 1: {path}")
+                issue = int(path.split("/comments", 1)[0].rsplit("/", 1)[-1])
                 bodies = comments.get(issue, [])
-                return _fake_completed(json.dumps([{"body": b} for b in bodies]))
+                return _fake_completed('HTTP/2.0 200 OK\r\nEtag: W/"t"\r\n\r\n'
+                                       + json.dumps([{"body": b} for b in bodies]))
             if "api" in gh_argv and "--jq" in gh_argv and any(
                     "labels" in a for a in gh_argv):
                 # harmonic-forge#686/#854: `_issue_meta`'s single-issue read
@@ -1846,15 +1868,20 @@ class BeltDedupMechanicTests(unittest.TestCase):
     def test_fetch_comments_returns_none_on_failure_not_empty(self):
         """`[]` means zero comments; failure must be distinguishable, or the
         caller cannot know whether to hold its watermark."""
-        with patch("watch_lane_posts.gh_as", side_effect=RuntimeError("rate limit")):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get",
+                          side_effect=RuntimeError("rate limit")):
             self.assertIsNone(watch_lane_posts._fetch_comments("r", 1, "s"))
 
     def test_fetch_comments_returns_none_on_unparseable_body(self):
-        with patch("watch_lane_posts.gh_as", return_value="not json"):
+        def page_is_not_json(account, path, counter=None):
+            return _fake_conditional(count=1)(account, path) if "/comments" not in path \
+                else watch_lane_posts._etag_cache.Response(200, "not json", False)
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=page_is_not_json):
             self.assertIsNone(watch_lane_posts._fetch_comments("r", 1, "s"))
 
     def test_a_genuinely_empty_result_is_still_a_list(self):
-        with patch("watch_lane_posts.gh_as", return_value="[]"):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get",
+                          side_effect=_fake_conditional(count=0)):
             self.assertEqual(watch_lane_posts._fetch_comments("r", 1, "s"), [])
 
     def test_overlap_reads_from_before_the_watermark(self):
@@ -2577,8 +2604,9 @@ class PerRepoAccountTests(unittest.TestCase):
 
     def test_each_call_is_scoped_to_its_repos_account(self) -> None:
         seen = []
-        with patch.object(watch_lane_posts, "gh_as",
-                          side_effect=lambda account, args, counter=None: seen.append(account) or "[]"):
+        base = _fake_conditional(count=0)
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get",
+                          side_effect=lambda account, path, counter=None: seen.append(account) or base(account, path)):
             watch_lane_posts._fetch_comments("kenekted/kenekted-platform", 59, "2026-01-01T00:00:00Z")
             watch_lane_posts._fetch_comments("vitalharmony/hrse", 1, "2026-01-01T00:00:00Z")
         self.assertEqual(seen, ["harmonicarchitect", "vitalharmony"])
@@ -2949,7 +2977,7 @@ class TickRateLimitSnapshotTests(unittest.TestCase):
         import watch_lane_posts
         src = inspect.getsource(watch_lane_posts._main)
         start = src.index("_calls_at_start = (")
-        self.assertIn("_COUNTER.ratelimit.clear()", src[start:start + 300])
+        self.assertIn("_COUNTER.ratelimit.clear()", src[start:start + 900])
         self.assertIn("ratelimit=dict(_COUNTER.ratelimit)", src)
 
 
@@ -3465,9 +3493,19 @@ _ISSUE_META_PATCHER = patch("watch_lane_posts._issue_meta", return_value=("open"
 
 def setUpModule():
     _ISSUE_META_PATCHER.start()
+    # harmonic-forge#1393: no test may write the real `~/.claude/state/belt/etag` cache.
+    global _ETAG_TMP, _ETAG_ROOT_PATCHER
+    _ETAG_TMP = tempfile.TemporaryDirectory()
+    _ETAG_ROOT_PATCHER = patch.object(watch_lane_posts._etag_cache, "cache_root",
+                                      return_value=Path(_ETAG_TMP.name))
+    _ETAG_ROOT_PATCHER.start()
+    watch_lane_posts._etag_cache._IDENTITY.clear()
 
 
 def tearDownModule():
+    _ETAG_ROOT_PATCHER.stop()
+    _ETAG_TMP.cleanup()
+    watch_lane_posts._etag_cache._IDENTITY.clear()
     _ISSUE_META_PATCHER.stop()
 
 
@@ -3477,18 +3515,28 @@ class IssueMetaReadTests(unittest.TestCase):
     against the real function, with only the gh transport faked."""
 
     def test_one_read_returns_state_and_labels(self):
-        with patch("watch_lane_posts.gh_as",
-                   return_value='{"state": "closed", "labels": ["epic", "bug"], "milestone": "3.2"}') as g:
+        body = ('{"state": "closed", "labels": [{"name": "epic"}, {"name": "bug"}], '
+                '"milestone": {"title": "3.2"}, "comments": 4}')
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get",
+                          return_value=watch_lane_posts._etag_cache.Response(200, body, False)) as g:
             got = _REAL_ISSUE_META("vitalharmony/hrse", 7)
         # harmonic-forge#952: the milestone rides in the same single read.
         self.assertEqual(got, ("closed", {"epic", "bug"}, "3.2"))
         g.assert_called_once()
-        argv = g.call_args.args[1]
-        self.assertIn("repos/vitalharmony/hrse/issues/7", argv)
-        self.assertEqual(argv[argv.index("--jq") + 1], "{state: .state, labels: [.labels[].name], milestone: .milestone.title}")
+        # harmonic-forge#1393: the full issue object through the conditional reader (no
+        # `--jq`), and its comment count kept for the thread's page count.
+        self.assertEqual(g.call_args.args[1], "repos/vitalharmony/hrse/issues/7")
+        self.assertEqual(watch_lane_posts._ISSUE_COMMENTS[("vitalharmony/hrse", 7)], 4)
+
+    def test_a_304_serves_the_cached_body(self):
+        body = '{"state": "open", "labels": [], "milestone": null, "comments": 0}'
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get",
+                          return_value=watch_lane_posts._etag_cache.Response(304, body, True)):
+            self.assertEqual(_REAL_ISSUE_META("vitalharmony/hrse", 7), ("open", set(), None))
 
     def test_a_read_without_state_fails_open(self):
-        with patch("watch_lane_posts.gh_as", return_value='["epic"]'):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get",
+                          return_value=watch_lane_posts._etag_cache.Response(200, '["epic"]', False)):
             self.assertEqual(_REAL_ISSUE_META("vitalharmony/hrse", 7), (None, None, None))
 
 
@@ -3836,9 +3884,23 @@ class MissingIssueRetiresTests(unittest.TestCase):
             patcher = patch(target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # harmonic-forge#1393: the issue read goes through `_etag_cache.conditional_get`;
+        # `fake_gh` sets the status it answers with, and `_http_status` (the
+        # confirmed-missing probe) still runs through the faked `gh_as`.
+        self._issue_status = 200
+        cond = patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=self._cond)
+        cond.start()
+        self.addCleanup(cond.stop)
+
+    def _cond(self, account, path, counter=None):
+        Response = watch_lane_posts._etag_cache.Response
+        if self._issue_status == 200:
+            return Response(200, '{"state": "open", "labels": [], "milestone": null, "comments": 0}', False)
+        return Response(self._issue_status, None, False)
 
     def fake_gh(self, issue_status: int | None, repo_status: int | None, *, raise_on=None):
         from belt_mechanics import GhAsError
+        self._issue_status = issue_status
 
         def gh(account, argv, check=True, counter=None, **_):
             if raise_on and raise_on in argv:
@@ -4019,15 +4081,18 @@ class OneReadPerTickTests(unittest.TestCase):
         real.start()
         self.addCleanup(real.stop)
 
-    def fake_gh_as(self, account, args, **kw):
-        self.calls.append(args)
-        path = args[3]
-        if path.endswith("/comments"):
-            return '[{"id": 1, "body": "x"}]'
-        return '{"state": "open", "labels": [], "milestone": null}'
+    def fake_gh_as(self, account, path, counter=None):
+        """The `_etag_cache.conditional_get` seam (harmonic-forge#1393): the issue read
+        and each thread page are separate reads, so a thread costs the issue read plus
+        one page here."""
+        self.calls.append(path)
+        if "/comments" in path:
+            return watch_lane_posts._etag_cache.Response(200, '[{"id": 1, "body": "x"}]', False)
+        return watch_lane_posts._etag_cache.Response(
+            200, '{"state": "open", "labels": [], "milestone": null, "comments": 1}', False)
 
     def test_meta_and_is_open_share_one_issue_read_within_a_tick(self):
-        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=self.fake_gh_as):
             watch_lane_posts._reset_tick_reads()
             watch_lane_posts._issue_meta("vitalharmony/hrse", 5)
             self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
@@ -4035,15 +4100,16 @@ class OneReadPerTickTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1, self.calls)
 
     def test_the_full_thread_is_read_once_per_tick(self):
-        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=self.fake_gh_as):
             watch_lane_posts._reset_tick_reads()
             first = watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
             second = watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
         self.assertEqual(first, second)
-        self.assertEqual(len(self.calls), 1, self.calls)
+        # the issue read (for the page count) plus one page, once; the second call is cached
+        self.assertEqual(len(self.calls), 2, self.calls)
 
     def test_a_new_tick_reads_again(self):
-        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=self.fake_gh_as):
             watch_lane_posts._reset_tick_reads()
             watch_lane_posts._issue_meta("vitalharmony/hrse", 5)
             watch_lane_posts._reset_tick_reads()
@@ -4051,18 +4117,18 @@ class OneReadPerTickTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
 
     def test_nothing_is_cached_outside_a_tick(self):
-        with patch.object(watch_lane_posts, "gh_as", side_effect=self.fake_gh_as):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=self.fake_gh_as):
             watch_lane_posts._reset_tick_reads()  # a tick opens...
             watch_lane_posts._end_tick_reads()    # ...and ends: the cache is off again
             watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
             watch_lane_posts._fetch_all_comments("vitalharmony/hrse", 5)
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 4)  # nothing cached: issue read + page, twice
 
     def test_a_failed_read_is_not_cached_and_still_fails_open(self):
-        def failing(account, args, **kw):
-            self.calls.append(args)
-            raise watch_lane_posts.GhAsError("rate limited")
-        with patch.object(watch_lane_posts, "gh_as", side_effect=failing), \
+        def failing(account, path, counter=None):
+            self.calls.append(path)
+            return watch_lane_posts._etag_cache.Response(403, None, False)
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=failing), \
                 patch.object(watch_lane_posts, "_confirmed_missing", return_value=False):
             watch_lane_posts._reset_tick_reads()
             self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))  # AC6: fail open
@@ -4073,18 +4139,19 @@ class OneReadPerTickTests(unittest.TestCase):
     def test_a_closed_issue_is_not_open_and_an_open_one_is(self):
         # harmonic-forge#958 preclose pass 2 (sticky-wicket PATCH): the closed branch.
         def state(value):
-            return lambda account, args, **kw: '{"state": "%s", "labels": [], "milestone": null}' % value
-        with patch.object(watch_lane_posts, "gh_as", side_effect=state("closed")):
+            return lambda account, path, counter=None: watch_lane_posts._etag_cache.Response(
+                200, '{"state": "%s", "labels": [], "milestone": null, "comments": 0}' % value, False)
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=state("closed")):
             watch_lane_posts._reset_tick_reads()
             self.assertFalse(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
-        with patch.object(watch_lane_posts, "gh_as", side_effect=state("open")):
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=state("open")):
             watch_lane_posts._reset_tick_reads()
             self.assertTrue(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
 
     def test_a_missing_issue_is_not_open(self):
-        def gone(account, args, **kw):
-            raise watch_lane_posts.GhAsError("404")
-        with patch.object(watch_lane_posts, "gh_as", side_effect=gone), \
+        def gone(account, path, counter=None):
+            return watch_lane_posts._etag_cache.Response(404, None, False)
+        with patch.object(watch_lane_posts._etag_cache, "conditional_get", side_effect=gone), \
                 patch.object(watch_lane_posts, "_confirmed_missing", return_value=True):
             watch_lane_posts._reset_tick_reads()
             self.assertFalse(watch_lane_posts._issue_is_open("vitalharmony/hrse", 5))
