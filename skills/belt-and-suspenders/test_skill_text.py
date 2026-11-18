@@ -357,7 +357,7 @@ class TestPacingBackOffIsScheduleWakeup(unittest.TestCase):
 
     def test_design_says_arming_is_fixed_and_back_off_is_schedule_wakeup(self):
         text = _norm(DESIGN.read_text(encoding="utf-8"))
-        self.assertIn("arming is fixed at 10m", text)
+        self.assertIn("arming is fixed at 30m", text)
         self.assertIn("back off with `schedulewakeup`", text)
         self.assertNotIn("back off toward `schedulewakeup`'s", text)
 

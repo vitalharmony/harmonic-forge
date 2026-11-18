@@ -615,6 +615,15 @@ path = "tools/lane/baseline_capture.py"
   cite = ["tools/lane/baseline_capture.py:229", "tools/lane/baseline_capture.py:330", "tools/lane/baseline_capture.py:528"]
 
 [[tool]]
+path = "tools/lane/belt_heartbeat.py"
+  [[tool.mode]]
+  name = "read"
+  match = []
+  class = "read"
+  note = "prints the belt heartbeat's age; the library's write() is called by the watcher, never by this CLI"
+  cite = ["tools/lane/belt_heartbeat.py:100"]
+
+[[tool]]
 path = "tools/lane/belt_plan.py"
   [[tool.mode]]
   name = "--repo"
