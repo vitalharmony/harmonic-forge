@@ -95,8 +95,26 @@ _GATE_HEADING = GATE_HEADING
 #: implementations is the defect hrse#1589 exists to fix; writing a second
 #: footer dialect in the same session would re-open it.
 _FOOTER_KIND = re.compile(r"<!--\s*l1-post\s+v1;\s*kind=(?P<kind>\w[\w-]*)", re.I)
+#: harmonic-forge#1401: the digest must sit INSIDE one footer comment. The
+#: earlier `.*?` under re.S ran past the footer's closing `-->`, so a legacy
+#: footer with no digest read as validated whenever a digest appeared later in
+#: the same comment.
 _FOOTER_BODY_SHA = re.compile(
-    r"<!--\s*l1-post\s+v1;.*?\bbody-sha256=[0-9a-f]{64}\b", re.I | re.S)
+    r"<!--\s*l1-post\s+v1;(?:(?!-->).)*?\bbody-sha256=[0-9a-f]{64}\b(?:(?!-->).)*?-->",
+    re.I | re.S)
+#: A footer that names Lane 2 or Lane 3 as its poster (`l2_post.py` stamps
+#: `posted-by=LANE2`). Lane 1's own footer carries no `posted-by` or `LANE1`.
+#: Applied to `ready-for-l3` only: Lane 3's own spec and gate-result footers
+#: legitimately carry `posted-by=LANE3` and a digest.
+_FOOTER_OTHER_LANE = re.compile(
+    r"<!--\s*l1-post\s+v1;(?:(?!-->).)*?\bposted-by=LANE[23]\b(?:(?!-->).)*?-->",
+    re.I | re.S)
+#: Inline code spans, removed before a FOOTER is read so a comment that merely
+#: discusses a footer (`<!-- l1-post v1; kind=ready-for-l3 ... -->`) is not one.
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+#: One whole footer, from `<!--` to its own `-->`; matched at the position the
+#: kind was read from, so the digest and the poster are judged on that footer.
+_FOOTER_FULL = re.compile(r"<!--\s*l1-post\s+v1;(?:(?!-->).)*-->", re.I | re.S)
 
 #: The headings `l1_post.py` itself validates, mirrored from `AE_HEADING` and
 #: `SWEEP_HEADING` there. They are the CROSS-CHECK (AC1), never the authority:
@@ -252,6 +270,65 @@ KEY_AWAITING_GATE = "implemented.awaiting-gate"
 KEY_AE_WITHOUT_SWEEP = "gate.ae-without-sweep"
 KEY_EXECUTABLE = "gate.executable"
 KEY_UNKNOWN = "unknown"
+#: harmonic-forge#1401: new state keys (no derivation emits them yet; V2's
+#: deriver does) and the two children of `implemented.awaiting-gate`.
+KEY_TE_OPEN = "te.open"
+KEY_CLOSED = "closed"
+KEY_UNKNOWN_UNREADABLE = "unknown.unreadable"
+SUBKEY_AWAITING_REVIEW = "implemented.awaiting-review"
+SUBKEY_AWAITING_SPEC = "implemented.awaiting-spec"
+
+#: harmonic-forge#1401 (lane-status V1, S1a): ONE vocabulary for every STATE
+#: key and subkey -- who owns the next step, what it is, which lane comes
+#: after, and the post kind that produces the state. Plan r1 §3.3 as amended
+#: by r2 §3.4, without the four CI-state rows (those ship as R2, after CI
+#: slice 6's handoff). Owner values: "l1", "l2", "l3", "CI", "operator" or
+#: None (nobody owes anything). `kind` names the post that produces the state
+#: when exactly one does, so the belt watcher's `KIND_OWNER`/`OWES` can be
+#: checked against this table (test_lane_state_vocabulary.py); None where no
+#: single post kind maps (a derived condition, or a post whose watcher owner
+#: is a different lane by design, e.g. a bare AE is Lane 3's `sweep-missing`
+#: on the belt but Lane 1's sweep to post here). Timeline-only keys
+#: (`handoff.posted`, `l2.done`, `ae.posted`, `sweep.posted`,
+#: `l1.discussion`) name artifacts, not states, and are not in this table.
+class Vocab(NamedTuple):
+    owner: str | None
+    owes: str
+    next_lane: str | None
+    kind: str | None
+
+
+VOCABULARY: dict[str, Vocab] = {
+    KEY_NO_HANDOFF: Vocab("l1", "handoff", "l2", None),
+    KEY_BLOCKED_NO_TIER: Vocab("l1", "unblock", None, None),
+    KEY_BLOCKED_DEP: Vocab("l1", "unblock", None, None),
+    KEY_BLOCKED_LANE: Vocab("l1", "unblock", None, "blocked"),
+    KEY_READY_PLAN: Vocab("l2", "plan", "l1", "handoff"),
+    KEY_PLAN_POSTED: Vocab("l1", "plan-review", "l2", "plan"),
+    KEY_READY_IMPLEMENT: Vocab("l2", "implement", "l1", "handoff"),
+    KEY_REWORK: Vocab("l2", "fix", "l1", "rework"),
+    #: The parent: its owner is the subkey's. Kept for every existing reader.
+    KEY_AWAITING_GATE: Vocab(None, "see subkey", None, None),
+    SUBKEY_AWAITING_REVIEW: Vocab("l1", "review, push, ready-for-l3", "l3",
+                                  "completion"),
+    SUBKEY_AWAITING_SPEC: Vocab("l3", "spec", "l1", "ready-for-l3"),
+    KEY_SPEC_POSTED: Vocab("l1", "spec-review", "l3", "spec"),
+    KEY_AE_WITHOUT_SWEEP: Vocab("l1", "sweep", "l3", None),
+    KEY_EXECUTABLE: Vocab("l3", "gate", "l1", "ae-and-sweep"),
+    KEY_GATE_FAIL: Vocab("l1", "fail-review", "l2", "gate-result"),
+    KEY_GATE_PASS: Vocab("operator", "close", None, None),
+    KEY_TE_OPEN: Vocab("l1", "implement (Tooling Exception)", None, None),
+    KEY_CLOSED: Vocab(None, "nothing", None, None),
+    KEY_UNKNOWN: Vocab("l1", "read the thread", None, None),
+    KEY_UNKNOWN_UNREADABLE: Vocab("operator", "the credential or the installation",
+                                  None, None),
+}
+
+#: Keys that name an ARTIFACT posted to a thread (the timeline namespace), not
+#: a state, so they carry no owner. Every other `KEY_*`/`SUBKEY_*` constant in
+#: this module is a state and must have a `VOCABULARY` row; the test walks the
+#: module's own constants, so a new key cannot be added without one (AC1).
+TIMELINE_KEYS = (KEY_HANDOFF, KEY_L2_DONE, KEY_AE, KEY_SWEEP, KEY_DISCUSSION)
 
 #: **The fail-loud default.** A row the parser cannot place says so rather
 #: than defaulting into "ready" — the posture `pipeline_rank.py` takes with
@@ -386,8 +463,19 @@ _TOKEN_KEY = {("2", "P"): KEY_PLAN_POSTED, ("2", "S"): KEY_PLAN_POSTED,
 _GATE_VERDICT_TOKENS = {("3", "P"), ("3", "F")}
 
 
-def _validated(kind: str, body: str) -> bool:
-    if not _FOOTER_BODY_SHA.search(body):
+def _validated(kind: str, body: str, footer: str | None = None) -> bool:
+    """A footer that carries a body digest, from a lane that posts digests.
+
+    **The digest is not recomputed** (harmonic-forge#1401, a stated residual):
+    presence is what this module has always meant by `validated`, and
+    recomputing it would be a new mechanism. Anyone who can post an issue
+    comment can already forge any marker this module reads, so ownership
+    derived from a footer is trusted to the same degree as every other state.
+    """
+    # The digest is judged on THIS footer's own text (harmonic-forge#1401 pass 2):
+    # the kind comes from the first footer, so a digest in a different footer of
+    # the same comment must not validate it.
+    if not _FOOTER_BODY_SHA.search(body if footer is None else footer):
         return False
     heading = _KIND_HEADING.get(kind)
     return heading is None or bool(heading.search(body))
@@ -417,11 +505,19 @@ def _scan_comment(comment: dict) -> list[Transition]:
         return Transition(key, ident, at, provenance, validated)
 
     out: list[Transition] = []
-    footer = _FOOTER_KIND.search(body)
+    footer_scope = _INLINE_CODE.sub("", body)
+    footer = _FOOTER_KIND.search(footer_scope)
     kind = footer.group("kind").lower() if footer else ""
     key = _KIND_KEY.get(kind)
     if key is not None:
-        out.append(made(key, f"footer:{kind}", _validated(kind, body)))
+        whole = _FOOTER_FULL.match(footer_scope, footer.start())
+        footer_text = whole.group(0) if whole else ""
+        validated = _validated(kind, footer_scope, footer_text)
+        if kind == "ready-for-l3" and _FOOTER_OTHER_LANE.search(footer_text):
+            # Only Lane 1 posts a `ready-for-l3` that makes Lane 3 owe the
+            # spec; a footer stamped by Lane 2 or Lane 3 is not that post.
+            validated = False
+        out.append(made(key, f"footer:{kind}", validated))
     # hrse#1546's handoff is stamped `kind=discussion` — a full handoff,
     # Affected Files and Ambiguity Gate and all. Footer-only detection renders
     # that issue as having no handoff at all, which is the confidently-wrong
@@ -502,6 +598,11 @@ class _Markers:
         self.handoff = self.plan = self.done = self.discussion = None
         self.gate_pass = self.gate_fail = self.blocked = self.spec = None
         self.ae = self.sweep = self.rework = None
+        #: harmonic-forge#1401: who posted the newest `done` marker:
+        #: "ready-for-l3" (Lane 1's validated readiness post, Lane 3 owes the
+        #: spec) or "completion" (Lane 2's L2D or a legacy footer, Lane 1
+        #: owes the review). Both fold onto `KEY_L2_DONE`.
+        self.done_source: str | None = None
         #: A marker-shaped comment whose marker this module cannot interpret
         #: — an `L1D`, a gate-results heading carrying neither verdict. THIS
         #: is what `unknown` is for. Chatter with no marker at all is not
@@ -550,6 +651,12 @@ class _Markers:
             self.discussion = index
         elif key == KEY_L2_DONE:
             self.done = index
+            # Lane 1's `ready-for-l3` is the only body-sha256-validated
+            # `ready-for-l3` footer; legacy Lane 2 completions carried an
+            # unvalidated one (hrse#1441, hrse#1573) and today's carry
+            # `kind=completion`, so only a validated footer means Lane 3 owes.
+            self.done_source = ("ready-for-l3" if transition.provenance == "footer:ready-for-l3"
+                                and transition.validated else "completion")
         elif key == KEY_AE:
             self.ae = index
         elif key == KEY_SWEEP:
@@ -691,6 +798,12 @@ class LaneState(NamedTuple):
     #: timeline, and the early-return paths above it (no Tier, unmet
     #: dependency, no comments) are all states that cannot go stale anyway.
     at: str = ""
+    #: harmonic-forge#1401 (lane-status V1). `implemented.awaiting-gate`
+    #: hides two owners, so `key` stays that parent for every existing
+    #: reader and this names the child: `SUBKEY_AWAITING_REVIEW` (Lane 1
+    #: owes the review and `ready-for-l3`) or `SUBKEY_AWAITING_SPEC`
+    #: (Lane 3 owes the spec). `None` on every other key.
+    subkey: str | None = None
 
 
 def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
@@ -771,7 +884,10 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
         # found by mutation testing, where removing it killed nothing.
         if markers.authorized():
             return LaneState(EXECUTABLE, None, KEY_EXECUTABLE, at)
-        return LaneState(AWAITING_GATE, None, KEY_AWAITING_GATE, at)
+        subkey = (SUBKEY_AWAITING_SPEC
+                  if markers.done_source == "ready-for-l3"
+                  else SUBKEY_AWAITING_REVIEW)
+        return LaneState(AWAITING_GATE, None, KEY_AWAITING_GATE, at, subkey)
     if name == "spec":
         return LaneState(SPEC_POSTED, None, KEY_SPEC_POSTED, at)
     if name == "plan":

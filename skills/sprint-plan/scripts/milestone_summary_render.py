@@ -44,6 +44,12 @@ def _row_ref(record: dict) -> str:
     return f"{_repo_short(record['repo'])}/{record['key']}"
 
 
+_SUBKEY_LABEL = {
+    "implemented.awaiting-review": " | L1 owes the review",
+    "implemented.awaiting-spec": " | L3 owes the spec",
+}
+
+
 def _line(record: dict) -> str:
     """hrse#1584 appended a third bracket field, the lane state.
 
@@ -63,7 +69,12 @@ def _line(record: dict) -> str:
     # row. Appended only when past threshold, so a healthy row is
     # byte-identical to what it rendered before.
     stale = f" | {record['stale']}" if record.get("stale") else ""
-    return (f"- {_row_ref(record)}{marker} [{status} | Tier: {tier}{lane}{stale}]"
+    # harmonic-forge#1401: name which lane `implemented, awaiting gate` is
+    # waiting on, appended like `stale` so the dashboard's lane segment
+    # (`board_dashboard_renderer._BRACKETED_ROW_RE`) still parses. Absent on
+    # every other row, so they render byte-identical.
+    owner = _SUBKEY_LABEL.get(record.get("lane_subkey") or "", "")
+    return (f"- {_row_ref(record)}{marker} [{status} | Tier: {tier}{lane}{owner}{stale}]"
             f" {record['title']}")
 
 
@@ -85,6 +96,9 @@ def annotate(records: list[dict], open_keys: set[str]) -> None:
         state = classify(record, unmet)
         record["lane"], record["trigger"] = state.state, state.trigger
         record["lane_key"] = state.key
+        # harmonic-forge#1401: which owner the parent key hides; `lane_key`
+        # stays the parent for existing consumers.
+        record["lane_subkey"] = state.subkey
         record["stale"] = stale_label(state)
 
 
