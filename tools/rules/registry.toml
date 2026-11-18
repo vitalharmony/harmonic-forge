@@ -2955,7 +2955,7 @@ hooks = []
 [[rule]]
 id = "R-0434"
 file = "rules/testing-gate.md"
-anchor = "lane3-preflight-covers-every-lane3-begin-precondition"
-statement = "A repo's lane3-preflight task is the repo-side half of the gate-readiness sweep: it checks every precondition its lane3-begin refuses on (pins, the gate graph's lease, worktree state), so a passing sweep cannot be followed by a stopping lane3-begin; a precondition the task skips is a gap in the task, filed against the repo (harmonic-forge#1391)."
-text_sha = "4cb2aecc233a1ad5"
+anchor = "lane3-preflight-checks-each-pre-sweep-checkable-lane3-begin-refusal"
+statement = "A repo declaring lane3-begin also declares lane3-preflight, which checks every lane3-begin refusal checkable before the sweep without side effects, as readiness only and never requiring the sweep it gates to be posted; it judges the commit under test passed in LANE3_TARGET_SHA, its result is point-in-time (a later change is not a task gap), a skipped checkable refusal is a gap filed against the repo, and mechanical refusal of a missing task is an operator decision (harmonic-forge#1391)."
+text_sha = "11583a6dd108418e"
 hooks = []

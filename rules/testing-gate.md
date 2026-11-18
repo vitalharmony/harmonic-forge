@@ -215,13 +215,22 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      need it failed cold).
 <!-- /R-0129 -->
 <!-- R-0434 -->
-   - **A repo's `lane3-preflight` task is the repo-side half of this
-     sweep: it checks every precondition its `lane3-begin` refuses on**
-     (pins, the gate graph's lease, worktree state), so a sweep that passes
-     cannot be followed by a `lane3-begin` that stops. `l1_post.py` refuses
-     a sweep on that task's exit code; a precondition the task skips is a
-     gap in the task, filed against the repo (hrse#2786's gate stopped at
-     the lease after its sweep passed; hrse#2788 closed that gap).
+   - **A repo that declares a `lane3-begin` task also declares a
+     `lane3-preflight` task, and that task checks every `lane3-begin`
+     refusal that can be checked before the sweep without side effects**
+     (pins, the gate graph's lease status, port ownership). It checks
+     readiness only and never requires the sweep it gates to have been
+     posted already (R-0128 verifies the posted sweep at Lane 3 entry).
+     `l1_post.py` runs it in Lane 3's worktree with the commit under test
+     in `LANE3_TARGET_SHA`, which the task judges, and refuses a sweep on
+     its exit code. The result holds only when it runs: a precondition
+     that changes between the sweep and `lane3-begin` (the graph stops,
+     the heavy slot is taken) can still stop the gate, and that is not a
+     gap in the task. A refusal the task could have checked but did not
+     is a gap, filed against the repo (hrse#2786's gate stopped at the
+     lease after its sweep passed; hrse#2788 closed that gap). A missing
+     `lane3-preflight` is not yet refused mechanically (`_lane3_env.py`
+     skips it); that enforcement is an operator decision.
 <!-- /R-0434 -->
 <!-- R-0130 -->
 4. After approval, Lane 3 executes tests against Lane 2's implementation.
