@@ -221,6 +221,7 @@ from manifest_identity import workspace_for  # noqa: E402
 from manifest_identity import workspaces as manifest_workspaces  # noqa: E402
 
 import belt_batch_view  # noqa: E402
+import _etag_cache  # noqa: E402  (harmonic-forge#1393: conditional issue and thread reads)
 import belt_candidates  # noqa: E402
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: harmonic-forge#851: the FAIL/PASS reader for a gate result is
@@ -779,19 +780,19 @@ def _report_resolutions(
 
 
 def _fetch_comments(repo: str, issue: int, since: str) -> list[dict] | None:
-    try:
-        raw = gh_as(
-            _account_of(repo),
-            ["api", f"repos/{repo}/issues/{issue}/comments?since={since}"],
-            counter=_COUNTER,
-        )
-    except Exception as exc:  # noqa: BLE001 — network/auth, reported not swallowed
-        print(f"[watch_lane_posts] gh api failed for #{issue}: {exc}", file=sys.stderr)
+    """Comments on `issue` last updated at or after `since`, from the same thread
+    `_fetch_all_comments` reads (harmonic-forge#1393). It makes no GitHub call of its
+    own: GitHub's `since` filters on a comment's last update, so filtering the
+    shared thread on `updated_at` delivers new and edited comments exactly as the old
+    `comments?since=` read did, without a URL that slides with the clock. Outside the
+    tick loop no per-tick cache exists, so the thread (an issue read, then its pages,
+    all conditional) is read here; it never falls back to page 1 only. A duplicate
+    delivery is absorbed by the watermark plus the overlap window, as before.
+    `None` on any failed read, never `[]`."""
+    thread = _fetch_all_comments(repo, issue)
+    if thread is None:
         return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    return [c for c in thread if str(c.get("updated_at") or c.get("created_at") or "") >= since]
 
 
 #: Triple-backtick fenced code blocks, DOTALL so a multi-line fence is one
@@ -1082,29 +1083,31 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str
     return result
 
 
+#: `(repo, issue)` -> the `comments` count of the issue's most recent read. The page
+#: count of the thread comes from it (harmonic-forge#1393): a page's ETag changes only
+#: when that page does, so a comment that opens page 2 is found only through the count.
+_ISSUE_COMMENTS: dict[tuple[str, int], int] = {}
+
+
 def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
+    account = _account_of(repo)
     try:
-        raw = gh_as(
-            _account_of(repo),
-            ["api", "-X", "GET", f"repos/{repo}/issues/{issue}",
-             "--jq", "{state: .state, labels: [.labels[].name], milestone: .milestone.title}"],
-            counter=_COUNTER,
-        )
-        meta = json.loads(raw)
-        milestone = meta.get("milestone")
-        return (str(meta["state"]), {str(name) for name in meta["labels"]},
-                str(milestone) if milestone else None)
-    except GhAsError as exc:
+        resp = _etag_cache.conditional_get(account, f"repos/{repo}/issues/{issue}", _COUNTER)
+        if resp.status in (200, 304) and resp.body:
+            meta = json.loads(resp.body)
+            _ISSUE_COMMENTS[(repo, issue)] = int(meta.get("comments") or 0)
+            milestone = (meta.get("milestone") or {}).get("title")
+            return (str(meta["state"]), {str(label["name"]) for label in meta["labels"]},
+                    str(milestone) if milestone else None)
         # harmonic-forge#866: a 404 means the issue is gone only when this
         # account can see the repo itself; a private repo read with the wrong
         # account 404s too, and must stay unreadable, never retire a real issue.
-        account = _account_of(repo)
-        if _confirmed_missing(repo, issue):
+        if resp.status == 404 and _confirmed_missing(repo, issue):
             print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
                   "retiring its candidate", file=sys.stderr)
             return "missing", None, None
-        print(f"[watch_lane_posts] issue read failed for {repo}#{issue} as {account}: {exc}",
-              file=sys.stderr)
+        print(f"[watch_lane_posts] issue read failed for {repo}#{issue} as {account}: "
+              f"HTTP {resp.status}", file=sys.stderr)
         return None, None, None
     except Exception as exc:  # noqa: BLE001 — reported, not swallowed
         print(f"[watch_lane_posts] issue read failed for #{issue}: {exc}",
@@ -1154,10 +1157,10 @@ def _http_status(repo: str, path: str) -> int | None:
 
 def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     """Every comment on `issue`, or `None` if the fetch itself failed --
-    `--paginate` is required, not optional (harmonic-forge#570 preclose
-    finding): the unpaginated single-page call returns only the first 30,
-    and a caller deciding "newest classified comment" off page 1 of a
-    50+-comment thread silently picks the wrong one. Two real
+    every page is required, not optional (harmonic-forge#570 preclose
+    finding; harmonic-forge#1393 reads them as explicit conditional pages in
+    place of `--paginate`): a caller deciding "newest classified comment" off page
+    1 of a 50+-comment thread silently picks the wrong one. Two real
     harmonic-forge issues already exceed 30 comments.
 
     `None` (harmonic-forge#579 preclose finding) is distinct from `[]`
@@ -1175,30 +1178,76 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     cached = _TICK_THREADS.get((repo, issue)) if _TICK_READS_ON else None
     if cached is not None:
         return cached  # harmonic-forge#958 AC5: one full-thread read per issue per tick
-    try:
-        raw = gh_as(
-            _account_of(repo),
-            ["api", "-X", "GET", f"repos/{repo}/issues/{issue}/comments",
-             "--paginate", "-f", "per_page=100"],
-            counter=_COUNTER,
-        )
-    except Exception as exc:  # noqa: BLE001 — reported, not swallowed (this
-        # sibling of `_fetch_comments` used to swallow silently; a quota
-        # exhaustion here previously read as "every issue has no comments,"
-        # i.e. no work, which is exactly the failure this protocol refuses
-        # everywhere else)
-        print(f"[watch_lane_posts] comment fetch failed for #{issue}: {exc}",
-              file=sys.stderr)
-        return None
-    try:
-        comments = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if _TICK_READS_ON:
+    # harmonic-forge#1393: the page count comes from this tick's issue read (one
+    # conditional `issues/{n}` read, shared with `_issue_meta`), then every page is
+    # read conditionally. An edited comment does not change the issue's ETag but does
+    # change its page's, so the pages are read even when the issue read was a 304.
+    state, *_ = _issue_meta(repo, issue)
+    if state is None or state == "missing":
+        return None  # no readable issue, so no readable thread (never `[]`: that reads as no work)
+    comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
+    if comments is not None:
+        count = _ISSUE_COMMENTS.get((repo, issue))
+        if count is not None and len(comments) != count:
+            # The thread moved while its pages were read (a comment deleted or added
+            # between two page reads shifts every boundary): refresh the count once and
+            # read the pages again (harmonic-forge#1393 AC3). A thread still off after
+            # that is returned for this tick but not memoized; the next tick re-reads it.
+            _read_issue_meta(repo, issue)
+            comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
+            if comments is not None and len(comments) != _ISSUE_COMMENTS.get((repo, issue)):
+                return comments
+    if comments is not None and _TICK_READS_ON:
         _TICK_THREADS[(repo, issue)] = comments
     return comments
 
 
+def _read_thread_pages(repo: str, issue: int, count: int | None) -> list[dict] | None:
+    """The thread's pages, read conditionally, deduplicated by comment id, or `None` if
+    any page fails. `count` is the issue's `comments` field, or None when unknown."""
+    pages = -(-count // _PAGE_SIZE) if count is not None else _MAX_PAGES  # 0 comments: no page to read
+    comments: list[dict] = []
+    seen: set = set()
+    account = _account_of(repo)
+    for page in range(1, min(pages, _MAX_PAGES) + 1):
+        try:
+            resp = _etag_cache.conditional_get(
+                account, f"repos/{repo}/issues/{issue}/comments?per_page={_PAGE_SIZE}&page={page}",
+                _COUNTER)
+        except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+            print(f"[watch_lane_posts] comment fetch failed for #{issue}: {exc}", file=sys.stderr)
+            return None
+        if resp.status not in (200, 304) or resp.body is None:
+            # reported, not swallowed (this used to swallow silently; a quota
+            # exhaustion here previously read as "every issue has no comments,"
+            # i.e. no work, which is exactly the failure this protocol refuses
+            # everywhere else)
+            print(f"[watch_lane_posts] comment fetch failed for #{issue}: "
+                  f"page {page} HTTP {resp.status}", file=sys.stderr)
+            return None
+        try:
+            items = json.loads(resp.body)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            # a comment added or deleted between two page reads shifts the page
+            # boundary; the id keeps it from being delivered twice
+            key = item.get("id") if isinstance(item, dict) else None
+            if key is not None and key in seen:
+                continue
+            seen.add(key)
+            comments.append(item)
+        if count is None and len(items) < _PAGE_SIZE:
+            break  # no count to bound the loop: stop at the first short page
+    return comments
+
+
+#: Comments per thread page, and a ceiling on pages read for one issue (a 5,000-comment
+#: thread is not a thing; the cap only bounds a bad count).
+_PAGE_SIZE = 100
+_MAX_PAGES = 50
 
 
 def _issue_is_open(repo: str, issue: int) -> bool:
@@ -1461,25 +1510,70 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
     count = int(count_text)
     if count == 0:
         return None
+    # harmonic-forge#1393 (token-sinks T2): a Tooling Exception branch never receives a
+    # Lane 2 completion, so the notice would be permanent noise for whichever lane gets
+    # it. An unreadable label set suppresses it for this tick: unknown is not owed work.
+    _state, labels, *_ = _issue_meta(repo, issue)
+    if labels is None or "tooling-exception" in labels:
+        return None
     comments = _fetch_all_comments(repo, issue)
     if comments is None:
         return None
     last_l2: tuple[str, str] | None = None
+    last_l2_at: str | None = None
     for comment in comments:
         classified = _classify(comment.get("body", ""))
         if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
             last_l2 = classified
+            last_l2_at = comment.get("created_at")
     if last_l2 is not None and _is_l2_completion(*last_l2):
+        # A completion exists: the steady state. Whether work after it is unreported is
+        # tracked separately (operator ruling 2026-11-18 on harmonic-forge#1393's post-verdict
+        # check), so this notice speaks only for a branch with no completion at all.
         return None
     branch = _worktree_branch(worktree) or "?"
     plural = "" if count == 1 else "s"
+    tail = "with no completion posted"
     return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
-            f"origin/main with no completion posted")
+            f"origin/main {tail}")
+
+
+#: harmonic-forge#1393 (token-sinks T2): the branch-ahead notices already announced, one
+#: key per (repo, issue, branch, HEAD sha), beside the belt's watermarks. The old dedupe
+#: compared the whole report string, which changes with the commit count, so one branch
+#: woke Lane 2 sixty-one times; a restarted watcher (every 1800 s) also forgot it.
+def _notice_lane(queue_for: str | None) -> str:
+    """The lane this belt serves: the session's own `LANE` (the Monitor inherits it),
+    else `--queue-for`. Not the `--watch` label: a Lane 3 belt only watches `l1`."""
+    digit = re.fullmatch(r"[lL]?([123])", (os.environ.get("LANE") or "").strip())
+    return f"l{digit.group(1)}" if digit else (queue_for or "none")
+
+
+def _branch_notices_path(lane: str) -> Path:
+    """One notice store per lane: every lane's watcher reads and writes its own, so
+    Lane 1's belt announcing a HEAD never silences Lane 2's."""
+    return _BELT_STATE / f"branch-ahead-notified-{re.sub(r'[^A-Za-z0-9_-]', '_', lane) or 'none'}.json"
+
+
+def _load_notices(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _save_notices(path: Path, notices: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(notices, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def branch_ahead_lines(
     resolutions: list[tuple[str, tuple[str, int] | None, str]],
     last_ahead: dict[str, str | None],
+    notices_path: Path | None = None,
 ) -> list[str]:
     """One poll cycle's worth of AC4 output lines, factored out of `main()`
     (harmonic-forge#583 preclose finding) so this is directly unit-testable
@@ -1492,18 +1586,45 @@ def branch_ahead_lines(
     owns a worktree (Lane 2) is, by definition, watching OTHER lanes'
     posts (`--watch l1`), never its own. `last_ahead` is mutated in place
     (`main()`'s own state dict) so a worktree that stops resolving forgets
-    its prior report rather than repeating it forever."""
+    its prior report rather than repeating it forever.
+
+    harmonic-forge#1393: a notice is keyed by `(repo, issue, branch, HEAD sha)` and
+    emitted once per key, not once per report string. With `notices_path` the
+    announced keys persist across watcher restarts and are pruned when their
+    worktree is no longer resolved (branch gone or issue closed)."""
     lines: list[str] = []
+    notified = _load_notices(notices_path) if notices_path is not None else {}
+    changed = False
+    current_paths: set[str] = set()
     for path, pair, _reason in resolutions:
+        current_paths.add(path)
         if pair is None:
             last_ahead.pop(path, None)
             continue
         repo, issue = pair
         report = branch_ahead_without_completion(path, repo, issue)
-        if report != last_ahead.get(path):
-            if report:
-                lines.append(report)
-            last_ahead[path] = report
+        if report is None:
+            last_ahead[path] = None
+            continue
+        head = _run_git(path, "rev-parse", "HEAD")
+        key = f"{repo}#{issue}|{_worktree_branch(path) or '?'}|{head}" if head else report
+        if last_ahead.get(path) == key or key in notified:
+            last_ahead[path] = key
+            continue
+        lines.append(report)
+        last_ahead[path] = key
+        if notices_path is not None:
+            notified[key] = path
+            changed = True
+    if notices_path is not None:
+        for key in [k for k, p in notified.items() if p not in current_paths]:
+            del notified[key]
+            changed = True
+        if changed:
+            try:
+                _save_notices(notices_path, notified)
+            except OSError as exc:
+                print(f"[watch_lane_posts] branch notice state not saved: {exc}", file=sys.stderr)
     return lines
 
 
@@ -2323,7 +2444,18 @@ def queue_cycle(
             if recorded_only or key in checked_pairs:
                 retract.add(key)
     for repo, issue in retract:
-        lines.append(f"{repo}#{issue} left-queue-for-{lane}")
+        retraction = f"{repo}#{issue} left-queue-for-{lane}"
+        if lane == "l1":
+            # harmonic-forge#1393 (token-sinks T2): Lane 1 woken to be told its own queue
+            # shrank is pure noise. stderr and the tick record carry it instead. Only
+            # Lane 1's own: a `left-queue-for-l2` or `-l3` can withdraw authority a lane
+            # may act on (`OWES`: spec, gate, sweep-missing, plan, implement, fix), so
+            # those stay on stdout.
+            print(retraction, file=sys.stderr)
+            if tick is not None:
+                tick.actions_taken.append(f"retraction-to-stderr {repo}#{issue}")
+        else:
+            lines.append(retraction)
         if offers is not None:
             offers.remove((repo, issue))
 
@@ -3221,7 +3353,12 @@ def _main() -> int:
         #: A zero left in the record would be worse than absent: `belt_report`
         #: reads it as a real measurement.
         _calls_at_start = (_COUNTER.calls_rest, _COUNTER.calls_graphql,
-                           _COUNTER.http_requests)
+                           _COUNTER.http_requests, _COUNTER.calls_304,
+                           _COUNTER.calls_conditional, _COUNTER.calls_403_secondary)
+        try:
+            _etag_cache.prune()  # harmonic-forge#1393: entries unused for 24 hours go
+        except Exception as exc:  # noqa: BLE001 - a cache sweep must never stop the belt
+            print(f"[watch_lane_posts] etag cache prune failed: {exc}", file=sys.stderr)
         _COUNTER.ratelimit.clear()  # harmonic-forge#959: a per-tick snapshot
         _reset_tick_reads()  # harmonic-forge#958 AC5: the memo never spans two ticks
         #: harmonic-forge#638 AC1: whether THIS cycle emitted any stdout
@@ -3325,7 +3462,7 @@ def _main() -> int:
         #: permanently "ahead" (main squash-merged their work). That is why
         #: `resolutions` is filtered through `drop_closed_targets` above --
         #: the filter, not an empty list, is what keeps this honest now.
-        ahead_lines = branch_ahead_lines(resolutions, last_ahead)
+        ahead_lines = branch_ahead_lines(resolutions, last_ahead, _branch_notices_path(_notice_lane(args.queue_for)))
         for line in ahead_lines:
             print(line)
             sys.stdout.flush()
@@ -3378,6 +3515,9 @@ def _main() -> int:
             calls_rest=_COUNTER.calls_rest - _calls_at_start[0],
             calls_graphql=_COUNTER.calls_graphql - _calls_at_start[1],
             http_requests=_COUNTER.http_requests - _calls_at_start[2],
+            calls_304=_COUNTER.calls_304 - _calls_at_start[3],
+            calls_conditional=_COUNTER.calls_conditional - _calls_at_start[4],
+            calls_403_secondary=_COUNTER.calls_403_secondary - _calls_at_start[5],
             ratelimit=dict(_COUNTER.ratelimit),
         )
         if comment_fetch_failed:

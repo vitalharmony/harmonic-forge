@@ -285,6 +285,36 @@ class TestTickLogRecordsTheMarkerTimestamp(unittest.TestCase):
         self.assertEqual(rec["owed_found"][0]["id"], "hrse#3")
 
 
+class ConditionalCountersTests(unittest.TestCase):
+    """harmonic-forge#1393 AC4/AC5: the three counters and the rate-limited REST figure."""
+
+    def _records(self):
+        def rec(hour, rest, n304, cond, secondary=0):
+            return {"ts": f"2026-10-10T{hour:02d}:30:00Z", "calls_rest": rest, "calls_graphql": 0,
+                    "http_requests": rest, "calls_304": n304, "calls_conditional": cond,
+                    "calls_403_secondary": secondary, "lock": "acquired", "repos_polled": []}
+        return [rec(1, 100, 80, 90), rec(1, 50, 40, 45), rec(2, 30, 0, 0, secondary=2)]
+
+    def test_the_report_prints_the_three_counters_and_the_rate_limited_total(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = run_report(write_log(d, self._records()))
+        self.assertIn("conditional: reads=135  304=120  rate_limited_rest=60  secondary_403=2", out)
+
+    def test_the_hourly_figure_is_rest_minus_304(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            belt_report.hourly_report(self._records())
+        # hour 1: (100-80)+(50-40) = 30; hour 2: 30
+        self.assertIn("median 30  p90 30  peak 30  over 2 hour(s)", buf.getvalue())
+
+    def test_a_record_written_before_1393_counts_as_all_rate_limited(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            belt_report.hourly_report([{"ts": "2026-10-10T01:30:00Z", "calls_rest": 40,
+                                        "http_requests": 40}])
+        self.assertIn("median 40  p90 40  peak 40", buf.getvalue())
+
+
 class HourlyReportTests(unittest.TestCase):
     """harmonic-forge#959 AC3-AC5."""
 

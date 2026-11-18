@@ -314,5 +314,90 @@ class RequestAccountingTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class RawReadTests(unittest.TestCase):
+    """harmonic-forge#1393: `gh_as_raw` returns the status, headers and body of any
+    response, never raises on gh's non-zero exit for a 304, and counts it."""
+
+    H304 = ("HTTP/2.0 304 Not Modified\r\nEtag: \"abc\"\r\nX-Ratelimit-Used: 609\r\n"
+            "X-Ratelimit-Reset: 99\r\nX-Ratelimit-Resource: core\r\n\r\n")
+    H200 = ("HTTP/2.0 200 OK\r\nEtag: W/\"abc\"\r\nX-Ratelimit-Used: 610\r\n"
+            "X-Ratelimit-Reset: 99\r\nX-Ratelimit-Resource: core\r\n\r\n")
+
+    def _raw(self, stdout, returncode=0, stderr="", conditional=False, side_effect=None):
+        import belt_mechanics
+        from unittest.mock import patch
+        counter = belt_mechanics.CallCounter()
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            if side_effect:
+                raise side_effect
+            return type("P", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
+
+        with patch("belt_mechanics.subprocess.run", side_effect=fake):
+            resp = belt_mechanics.gh_as_raw("vitalharmony", ["api", "-X", "GET", "repos/o/r/issues/1"],
+                                            counter=counter, conditional=conditional)
+        return resp, counter, calls
+
+    def test_a_304_with_gh_exit_1_is_a_response_not_an_error(self):
+        resp, counter, _ = self._raw(self.H304 + "{}", returncode=1, stderr="gh: HTTP 304",
+                                     conditional=True)
+        self.assertEqual(resp.status, 304)
+        self.assertEqual((counter.calls_304, counter.calls_conditional, counter.calls_rest), (1, 1, 1))
+
+    def test_rate_limit_headers_are_recorded_for_a_304(self):
+        _, counter, _ = self._raw(self.H304, returncode=1)
+        self.assertEqual(counter.ratelimit["vitalharmony"]["used"], 609)
+
+    def test_a_200_returns_the_body_after_the_last_header_block(self):
+        resp, counter, calls = self._raw(self.H200 + '{"a": 1}')
+        self.assertEqual((resp.status, resp.body), (200, '{"a": 1}'))
+        self.assertEqual((counter.calls_304, counter.calls_conditional), (0, 0))
+        self.assertEqual(calls[0].count("--include"), 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_unconditional_read_is_not_counted_conditional(self):
+        _, counter, _ = self._raw(self.H200 + "{}", conditional=False)
+        self.assertEqual(counter.calls_conditional, 0)
+
+    def test_a_timeout_or_missing_gh_has_no_status(self):
+        import subprocess
+        for exc in (subprocess.TimeoutExpired("gh", 60), FileNotFoundError("gh-as")):
+            resp, counter, _ = self._raw("", side_effect=exc)
+            self.assertIsNone(resp.status)
+            self.assertEqual(counter.calls_304, 0)
+
+    def test_garbled_output_has_no_status(self):
+        resp, _, _ = self._raw("not an http response", returncode=1)
+        self.assertIsNone(resp.status)
+
+    def test_a_403_naming_a_secondary_limit_is_counted_and_named(self):
+        import io
+        from contextlib import redirect_stderr
+        hdr = "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Used: 1\r\nX-Ratelimit-Reset: 9\r\n\r\n"
+        err = io.StringIO()
+        with redirect_stderr(err):
+            resp, counter, _ = self._raw(hdr + '{"message":"You have exceeded a secondary rate limit"}',
+                                         returncode=1)
+        self.assertEqual((resp.status, counter.calls_403_secondary), (403, 1))
+        self.assertIn("secondary rate limit", err.getvalue())
+
+    def test_a_plain_403_is_not_a_secondary_limit(self):
+        hdr = "HTTP/2.0 403 Forbidden\r\n\r\n"
+        resp, counter, _ = self._raw(hdr + '{"message":"Resource not accessible"}', returncode=1)
+        self.assertEqual((resp.status, counter.calls_403_secondary), (403, 0))
+
+    def test_the_tick_record_carries_the_three_counters(self):
+        import belt_mechanics
+        with tempfile.TemporaryDirectory() as tmp:
+            log = belt_mechanics.TickLog(path=Path(tmp) / "t.jsonl", lane="l1", trigger="belt")
+            log.counter.calls_304, log.counter.calls_conditional = 4, 6
+            log.counter.calls_403_secondary = 1
+            record = log.write()
+        self.assertEqual((record["calls_304"], record["calls_conditional"],
+                          record["calls_403_secondary"]), (4, 6, 1))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
