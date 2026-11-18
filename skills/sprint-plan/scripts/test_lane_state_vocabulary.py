@@ -119,9 +119,6 @@ class AgreesWithTheWatcher(unittest.TestCase):
                     self.assertIn(kind, kinds)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class Rendered(unittest.TestCase):
     """AC4: the summary row names the owner of the split state."""
@@ -135,3 +132,6 @@ class Rendered(unittest.TestCase):
         self.assertIn("| L3 owes the spec]", render._line(record))
         record["lane_subkey"] = None
         self.assertNotIn("owes", render._line(record))
+
+if __name__ == "__main__":
+    unittest.main()
