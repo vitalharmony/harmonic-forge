@@ -825,6 +825,19 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
         self.assertIsInstance(env["duration_ms"], int)
         self.assertGreaterEqual(env["duration_ms"], 1)
 
+    def test_duration_ms_measures_the_reviewer_call(self):
+        """harmonic-forge#1422 preclose: a constant would pass an `int >= 1`
+        check, so a reviewer that takes 400 ms must measure at least that."""
+        slow = make_stub_path(self.tmp.name)
+        stub_dir = Path(slow.split(os.pathsep)[0])
+        for name in ("codex", "claude"):
+            stub = stub_dir / name
+            stub.write_text(stub.read_text().replace("#!/usr/bin/env bash\n",
+                                                     "#!/usr/bin/env bash\nsleep 0.4\n", 1))
+        result = self._run(path=slow)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(parse_envelopes(result.stdout)[-1]["duration_ms"], 350)
+
 
 class TestCodexGitRepoCheck(unittest.TestCase):
     """harmonic-forge#483 — `codex exec` refuses to run outside a git repo,

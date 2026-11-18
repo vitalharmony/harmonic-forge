@@ -694,7 +694,8 @@ def gate(args: argparse.Namespace) -> int:
     print()
     print("Then record the pass with the same --findings. The label is computed from the")
     print("envelope, never typed:")
-    tail = ("--envelope <envelope path> --cross-family-ms <ms>" if required
+    tail = ("--envelope <envelope path> [--cross-family-ms <ms>, only for an envelope with no "
+            "duration_ms]" if required
             else "--not-triggered") + \
         " --own-model <your session's model> --panel-tokens <sum> --panel-ms <ms>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
@@ -1324,15 +1325,19 @@ def envelope_duration_ms(path: str | None) -> int | None:
     if not path:
         return None
     try:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return None
-    found = None
-    for line in lines:
+    decoder, index, found = json.JSONDecoder(), 0, None
+    while True:  # the same raw_decode walk require_recorded_envelope uses
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
         try:
-            record = json.loads(line)
+            record, index = decoder.raw_decode(text, index)
         except ValueError:
-            continue
+            break
         value = record.get("duration_ms") if isinstance(record, dict) else None
         if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
             found = value

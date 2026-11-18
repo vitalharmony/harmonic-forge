@@ -708,6 +708,7 @@ def reviewed_heads_of(receipt: dict | None) -> set[str]:
         return set()
     heads = {entry.get("sha") for entry in receipt.get("pass_history") or []
              if isinstance(entry, dict)}
+    heads.add(receipt.get("reviewed_sha"))  # a pre-#834 receipt's one pass
     check = receipt.get("post_verdict_check")
     if isinstance(check, dict):
         heads.add(check.get("head_sha"))
