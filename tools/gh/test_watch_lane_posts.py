@@ -4576,14 +4576,13 @@ class TokenSinksT2Tests(unittest.TestCase):
         self.assertEqual(json.loads(self.notices.read_text()), {})
 
     # counted after the newest completion
-    def test_new_commits_after_the_newest_completion_surface_once(self):
+    def test_commits_after_a_completion_are_not_announced_here(self):
+        """Operator ruling 2026-11-18 (harmonic-forge#1393 post-verdict): unreported work after a
+        completion is tracked by its own issue; this notice speaks only for no completion."""
         done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]
         t = watch_lane_posts._parse_iso("2026-11-18T01:00:00Z").timestamp()
-        self.author_dates = f"{int(t) - 500}\n{int(t) + 10}\n{int(t) + 20}"  # one older, two newer
-        out = self.lines(comments=done)
-        self.assertEqual(len(out), 1)
-        self.assertIn("2 commits ahead of origin/main since its last completion", out[0])
-        self.assertEqual(self.lines(comments=done, last_ahead={}), [])
+        self.author_dates = f"{int(t) - 500}\n{int(t) + 10}\n{int(t) + 20}"
+        self.assertEqual(self.lines(comments=done), [])
 
     def test_a_completion_with_nothing_after_it_is_silent(self):
         done = [{"body": self.COMPLETION, "created_at": "2026-11-18T01:00:00Z"}]

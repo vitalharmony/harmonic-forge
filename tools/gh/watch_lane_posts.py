@@ -1508,28 +1508,14 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
         if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
             last_l2 = classified
             last_l2_at = comment.get("created_at")
-    since_completion = False
     if last_l2 is not None and _is_l2_completion(*last_l2):
-        # harmonic-forge#1393: new work after the newest completion is owed another one
-        # and surfaces once; a completion with no commit after it is the steady state.
-        if not last_l2_at:
-            return None
-        # AUTHOR dates, not `rev-list --after` (a committer date): a rebase or an amend
-        # gives every commit a new committer date but keeps its author date, so a rebased
-        # branch whose work was already reported is not announced again.
-        dates = _run_git(worktree, "log", "--format=%at", f"{base}..HEAD")
-        try:
-            completed_at = _parse_iso(last_l2_at).timestamp()
-            count = sum(1 for d in (dates or "").split() if int(d) > completed_at)
-        except (ValueError, TypeError):
-            return None
-        if count == 0:
-            return None
-        since_completion = True
+        # A completion exists: the steady state. Whether work after it is unreported is
+        # tracked separately (operator ruling 2026-11-18 on harmonic-forge#1393's post-verdict
+        # check), so this notice speaks only for a branch with no completion at all.
+        return None
     branch = _worktree_branch(worktree) or "?"
     plural = "" if count == 1 else "s"
-    tail = ("since its last completion" if since_completion
-            else "with no completion posted")
+    tail = "with no completion posted"
     return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
             f"origin/main {tail}")
 
