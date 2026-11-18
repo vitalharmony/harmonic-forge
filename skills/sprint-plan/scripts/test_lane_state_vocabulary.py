@@ -62,34 +62,40 @@ class Vocabulary(unittest.TestCase):
     def test_the_table_names_no_key_the_module_does_not_declare(self) -> None:
         self.assertEqual(sorted(lane_state.VOCABULARY), sorted(self._declared_keys()))
 
-    def test_every_row_owner_and_next_lane_match_the_plan(self) -> None:
-        """AC3 for the rows the watcher cannot check (no `kind`): the plan's
-        table (r1 section 3.3 as amended by r2 section 3.4), written out here
-        as the independent source, so changing any owner fails a test."""
+    def test_every_row_owner_owes_and_next_lane_match_the_plan(self) -> None:
+        """AC3 for every row, including the ones the watcher cannot check (no
+        `kind`): the plan's table (r1 section 3.3 as amended by r2 section
+        3.4), written out here as the independent source, so changing any
+        owner, any `owes` text or any next lane fails a test. `spec.posted`
+        reads "spec-review" where the plan says "spec-review, AE and sweep":
+        the belt watcher's `OWES` label governs and AC3 pins it."""
         plan = {
-            "no-handoff": ("l1", "l2"), "blocked.no-tier": ("l1", None),
-            "blocked.dependency": ("l1", None), "blocked.lane": ("l1", None),
-            "ready.plan": ("l2", "l1"), "plan.posted": ("l1", "l2"),
-            "ready.implement": ("l2", "l1"), "l1.rework": ("l2", "l1"),
-            "implemented.awaiting-gate": (None, None),
-            "implemented.awaiting-review": ("l1", "l3"),
-            "implemented.awaiting-spec": ("l3", "l1"),
-            "spec.posted": ("l1", "l3"), "gate.ae-without-sweep": ("l1", "l3"),
-            "gate.executable": ("l3", "l1"), "gate.fail": ("l1", "l2"),
-            "gate.pass": ("operator", None), "te.open": ("l1", None),
-            "closed": (None, None), "unknown": ("l1", None),
-            "unknown.unreadable": ("operator", None),
+            "no-handoff": ("l1", "handoff", "l2"),
+            "blocked.no-tier": ("l1", "unblock", None),
+            "blocked.dependency": ("l1", "unblock", None),
+            "blocked.lane": ("l1", "unblock", None),
+            "ready.plan": ("l2", "plan", "l1"),
+            "plan.posted": ("l1", "plan-review", "l2"),
+            "ready.implement": ("l2", "implement", "l1"),
+            "l1.rework": ("l2", "fix", "l1"),
+            "implemented.awaiting-gate": (None, "see subkey", None),
+            "implemented.awaiting-review": ("l1", "review, push, ready-for-l3", "l3"),
+            "implemented.awaiting-spec": ("l3", "spec", "l1"),
+            "spec.posted": ("l1", "spec-review", "l3"),
+            "gate.ae-without-sweep": ("l1", "sweep", "l3"),
+            "gate.executable": ("l3", "gate", "l1"),
+            "gate.fail": ("l1", "fail-review", "l2"),
+            "gate.pass": ("operator", "close", None),
+            "te.open": ("l1", "implement (Tooling Exception)", None),
+            "closed": (None, "nothing", None),
+            "unknown": ("l1", "read the thread", None),
+            "unknown.unreadable": ("operator", "the credential or the installation", None),
         }
         self.assertEqual(sorted(plan), sorted(lane_state.VOCABULARY))
-        for key, (owner, nxt) in plan.items():
+        for key, (owner, owes, nxt) in plan.items():
             with self.subTest(key=key):
                 row = lane_state.VOCABULARY[key]
-                self.assertEqual((row.owner, row.next_lane), (owner, nxt))
-
-    def test_no_ci_state_keys_yet(self) -> None:
-        """The four CI rows are R2's, after CI slice 6's handoff."""
-        for key in lane_state.VOCABULARY:
-            self.assertNotIn("ci", key.split(".")[0])
+                self.assertEqual((row.owner, row.owes, row.next_lane), (owner, owes, nxt))
 
 
 class FooterReading(unittest.TestCase):
