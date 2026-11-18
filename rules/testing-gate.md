@@ -215,22 +215,23 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      need it failed cold).
 <!-- /R-0129 -->
 <!-- R-0434 -->
-   - **A repo that declares a `lane3-begin` task also declares a
-     `lane3-preflight` task, and that task checks every `lane3-begin`
-     refusal that can be checked before the sweep without side effects**
-     (pins, the gate graph's lease status, port ownership). It checks
-     readiness only and never requires the sweep it gates to have been
-     posted already (R-0128 verifies the posted sweep at Lane 3 entry).
-     `l1_post.py` runs it in Lane 3's worktree with the commit under test
-     in `LANE3_TARGET_SHA`, which the task judges, and refuses a sweep on
-     its exit code. The result holds only when it runs: a precondition
-     that changes between the sweep and `lane3-begin` (the graph stops,
-     the heavy slot is taken) can still stop the gate, and that is not a
-     gap in the task. A refusal the task could have checked but did not
-     is a gap, filed against the repo (hrse#2786's gate stopped at the
-     lease after its sweep passed; hrse#2788 closed that gap). A missing
-     `lane3-preflight` is not yet refused mechanically (`_lane3_env.py`
-     skips it); that enforcement is an operator decision.
+   - **A repo whose `projects.toml` protocol table sets
+     `lane3_preflight_task` owes a task by that name that checks every
+     `lane3-begin` refusal checkable without side effects before the gate
+     starts** (pins, the gate graph's lease status, port ownership). A
+     repo without the key owes nothing under this rule; refusing a sweep
+     when the key names a task that does not exist is harmonic-forge#1409's.
+     The task checks readiness only: it never requires the sweep it gates,
+     or the AE posted with that sweep, to exist yet (R-0128 checks both at
+     Lane 3 entry). The task that runs is the one defined in Lane 3's
+     checkout at sweep time, with the target commit passed to it only as
+     `LANE3_TARGET_SHA`; a task or check that the target commit itself adds
+     takes effect only once Lane 3's checkout carries it. A gate stopped by
+     a refusal the task's definition does not check is a gap in the task,
+     filed against the repo, whatever the timing (hrse#2786's gate stopped
+     at the lease after its sweep passed; hrse#2788 closed that gap). Only
+     a refusal the task does check, and that passed at the sweep, counts
+     as a later change rather than a gap.
 <!-- /R-0434 -->
 <!-- R-0130 -->
 4. After approval, Lane 3 executes tests against Lane 2's implementation.

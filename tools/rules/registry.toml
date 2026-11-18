@@ -2955,7 +2955,7 @@ hooks = []
 [[rule]]
 id = "R-0434"
 file = "rules/testing-gate.md"
-anchor = "lane3-preflight-checks-each-pre-sweep-checkable-lane3-begin-refusal"
-statement = "A repo declaring lane3-begin also declares lane3-preflight, which checks every lane3-begin refusal checkable before the sweep without side effects, as readiness only and never requiring the sweep it gates to be posted; it judges the commit under test passed in LANE3_TARGET_SHA, its result is point-in-time (a later change is not a task gap), a skipped checkable refusal is a gap filed against the repo, and mechanical refusal of a missing task is an operator decision (harmonic-forge#1391)."
-text_sha = "11583a6dd108418e"
+anchor = "opted-in-lane3-preflight-checks-each-checkable-lane3-begin-refusal"
+statement = "A repo whose projects.toml protocol table sets lane3_preflight_task owes a task by that name that checks every lane3-begin refusal checkable without side effects before the gate starts, as readiness only and never requiring the sweep or its paired AE to exist; the task run is the one in Lane 3's checkout at sweep time, with the target commit passed only as LANE3_TARGET_SHA; a refusal the task's definition does not check is a repo gap whatever the timing, and only a checked refusal that passed at the sweep counts as a later change; refusing a declared-but-missing task is harmonic-forge#1409's (harmonic-forge#1391)."
+text_sha = "88872046df213bb2"
 hooks = []
