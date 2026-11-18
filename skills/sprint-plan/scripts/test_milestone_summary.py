@@ -762,6 +762,10 @@ class LaneStateTests(unittest.TestCase):
         misread the most common live shape."""
         self.assertEqual(self.state(self.HANDOFF, self.READY),
                          (lane_state.AWAITING_GATE, None))
+        # harmonic-forge#1401: this footer is unvalidated (no body-sha256), the
+        # legacy Lane 2 completion shape, so Lane 1 still owes the review.
+        self.assertEqual(self.full(self.HANDOFF, self.READY).subkey,
+                         lane_state.SUBKEY_AWAITING_REVIEW)
 
     def test_fail_after_pass_routes_to_lane_1(self) -> None:
         """TC4 -- an earlier PASS does not survive a later FAIL, which is

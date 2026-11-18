@@ -252,6 +252,69 @@ KEY_AWAITING_GATE = "implemented.awaiting-gate"
 KEY_AE_WITHOUT_SWEEP = "gate.ae-without-sweep"
 KEY_EXECUTABLE = "gate.executable"
 KEY_UNKNOWN = "unknown"
+#: harmonic-forge#1401: new state keys (no derivation emits them yet; V2's
+#: deriver does) and the two children of `implemented.awaiting-gate`.
+KEY_TE_OPEN = "te.open"
+KEY_CLOSED = "closed"
+KEY_UNKNOWN_UNREADABLE = "unknown.unreadable"
+SUBKEY_AWAITING_REVIEW = "implemented.awaiting-review"
+SUBKEY_AWAITING_SPEC = "implemented.awaiting-spec"
+
+#: harmonic-forge#1401 (lane-status V1, S1a): ONE vocabulary for every STATE
+#: key and subkey -- who owns the next step, what it is, which lane comes
+#: after, and the post kind that produces the state. Plan r1 §3.3 as amended
+#: by r2 §3.4, without the four CI-state rows (those ship as R2, after CI
+#: slice 6's handoff). Owner values: "l1", "l2", "l3", "CI", "operator" or
+#: None (nobody owes anything). `kind` names the post that produces the state
+#: when exactly one does, so the belt watcher's `KIND_OWNER`/`OWES` can be
+#: checked against this table (test_lane_state_vocabulary.py); None where no
+#: single post kind maps (a derived condition, or a post whose watcher owner
+#: is a different lane by design, e.g. a bare AE is Lane 3's `sweep-missing`
+#: on the belt but Lane 1's sweep to post here). Timeline-only keys
+#: (`handoff.posted`, `l2.done`, `ae.posted`, `sweep.posted`,
+#: `l1.discussion`) name artifacts, not states, and are not in this table.
+class Vocab(NamedTuple):
+    owner: str | None
+    owes: str
+    next_lane: str | None
+    kind: str | None
+
+
+VOCABULARY: dict[str, Vocab] = {
+    KEY_NO_HANDOFF: Vocab("l1", "handoff", "l2", None),
+    KEY_BLOCKED_NO_TIER: Vocab("l1", "unblock", None, None),
+    KEY_BLOCKED_DEP: Vocab("l1", "unblock", None, None),
+    KEY_BLOCKED_LANE: Vocab("l1", "unblock", None, "blocked"),
+    KEY_READY_PLAN: Vocab("l2", "plan", "l1", "handoff"),
+    KEY_PLAN_POSTED: Vocab("l1", "plan-review", "l2", "plan"),
+    KEY_READY_IMPLEMENT: Vocab("l2", "implement", "l1", "handoff"),
+    KEY_REWORK: Vocab("l2", "fix", "l1", "rework"),
+    #: The parent: its owner is the subkey's. Kept for every existing reader.
+    KEY_AWAITING_GATE: Vocab(None, "see subkey", None, None),
+    SUBKEY_AWAITING_REVIEW: Vocab("l1", "review, push, ready-for-l3", "l3",
+                                  "completion"),
+    SUBKEY_AWAITING_SPEC: Vocab("l3", "spec", "l1", "ready-for-l3"),
+    KEY_SPEC_POSTED: Vocab("l1", "spec-review", "l3", "spec"),
+    KEY_AE_WITHOUT_SWEEP: Vocab("l1", "sweep", "l3", None),
+    KEY_EXECUTABLE: Vocab("l3", "gate", "l1", "ae-and-sweep"),
+    KEY_GATE_FAIL: Vocab("l1", "fail-review", "l2", "gate-result"),
+    KEY_GATE_PASS: Vocab("operator", "close", None, None),
+    KEY_TE_OPEN: Vocab("l1", "implement (Tooling Exception)", None, None),
+    KEY_CLOSED: Vocab(None, "nothing", None, None),
+    KEY_UNKNOWN: Vocab("l1", "read the thread", None, None),
+    KEY_UNKNOWN_UNREADABLE: Vocab("operator", "the credential or the installation",
+                                  None, None),
+}
+
+#: The state keys `classify()` can return, plus the V1 additions; every one
+#: must be in `VOCABULARY` (AC1).
+STATE_KEYS = (KEY_NO_HANDOFF, KEY_BLOCKED_NO_TIER, KEY_BLOCKED_DEP,
+              KEY_BLOCKED_LANE, KEY_READY_PLAN, KEY_PLAN_POSTED,
+              KEY_READY_IMPLEMENT, KEY_REWORK, KEY_AWAITING_GATE,
+              KEY_SPEC_POSTED, KEY_AE_WITHOUT_SWEEP, KEY_EXECUTABLE,
+              KEY_GATE_FAIL, KEY_GATE_PASS, KEY_TE_OPEN, KEY_CLOSED,
+              KEY_UNKNOWN, KEY_UNKNOWN_UNREADABLE,
+              SUBKEY_AWAITING_REVIEW, SUBKEY_AWAITING_SPEC)
 
 #: **The fail-loud default.** A row the parser cannot place says so rather
 #: than defaulting into "ready" — the posture `pipeline_rank.py` takes with
@@ -502,6 +565,11 @@ class _Markers:
         self.handoff = self.plan = self.done = self.discussion = None
         self.gate_pass = self.gate_fail = self.blocked = self.spec = None
         self.ae = self.sweep = self.rework = None
+        #: harmonic-forge#1401: who posted the newest `done` marker:
+        #: "ready-for-l3" (Lane 1's validated readiness post, Lane 3 owes the
+        #: spec) or "completion" (Lane 2's L2D or a legacy footer, Lane 1
+        #: owes the review). Both fold onto `KEY_L2_DONE`.
+        self.done_source: str | None = None
         #: A marker-shaped comment whose marker this module cannot interpret
         #: — an `L1D`, a gate-results heading carrying neither verdict. THIS
         #: is what `unknown` is for. Chatter with no marker at all is not
@@ -550,6 +618,12 @@ class _Markers:
             self.discussion = index
         elif key == KEY_L2_DONE:
             self.done = index
+            # Lane 1's `ready-for-l3` is the only body-sha256-validated
+            # `ready-for-l3` footer; legacy Lane 2 completions carried an
+            # unvalidated one (hrse#1441, hrse#1573) and today's carry
+            # `kind=completion`, so only a validated footer means Lane 3 owes.
+            self.done_source = ("ready-for-l3" if transition.provenance == "footer:ready-for-l3"
+                                and transition.validated else "completion")
         elif key == KEY_AE:
             self.ae = index
         elif key == KEY_SWEEP:
@@ -691,6 +765,12 @@ class LaneState(NamedTuple):
     #: timeline, and the early-return paths above it (no Tier, unmet
     #: dependency, no comments) are all states that cannot go stale anyway.
     at: str = ""
+    #: harmonic-forge#1401 (lane-status V1). `implemented.awaiting-gate`
+    #: hides two owners, so `key` stays that parent for every existing
+    #: reader and this names the child: `SUBKEY_AWAITING_REVIEW` (Lane 1
+    #: owes the review and `ready-for-l3`) or `SUBKEY_AWAITING_SPEC`
+    #: (Lane 3 owes the spec). `None` on every other key.
+    subkey: str | None = None
 
 
 def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
@@ -771,7 +851,10 @@ def classify(record: dict, unmet: list[tuple[str, str]]) -> LaneState:
         # found by mutation testing, where removing it killed nothing.
         if markers.authorized():
             return LaneState(EXECUTABLE, None, KEY_EXECUTABLE, at)
-        return LaneState(AWAITING_GATE, None, KEY_AWAITING_GATE, at)
+        subkey = (SUBKEY_AWAITING_SPEC
+                  if markers.done_source == "ready-for-l3"
+                  else SUBKEY_AWAITING_REVIEW)
+        return LaneState(AWAITING_GATE, None, KEY_AWAITING_GATE, at, subkey)
     if name == "spec":
         return LaneState(SPEC_POSTED, None, KEY_SPEC_POSTED, at)
     if name == "plan":
