@@ -257,7 +257,7 @@ def candidate_kind(kind: str, body: str) -> str:
 
 from l1_post import (
     comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
-    apply_project_identity, validate_lead,
+    apply_project_identity, validate_lead, _afk_toggle,
 )
 
 #: The kinds this script may stamp. `discussion` is the default and the
@@ -801,6 +801,8 @@ def main() -> None:
         require_spec_structure(final)
     url, _ = comment_body(args.repo, args.issue, final)
     print(f"[post-comment] posted and refetched {url}")
+    if _afk_toggle is not None:
+        _afk_toggle.record_lane_action()  # harmonic-forge#1398: a verified post is a real lane action
     #: harmonic-forge#691 (AC1'). `posted_by` here is derived from the SAME
     #: `LANE` env var the footer above already used -- `"l1"`/`"l2"`/`"l3"`
     #: is `belt_candidates`'s own convention (matching `QUEUE_POSTERS`'

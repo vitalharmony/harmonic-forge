@@ -190,5 +190,74 @@ class ToggleCase(unittest.TestCase):
         kept = [json.loads(l)["command"] for l in self.archives()[0].read_text().splitlines()]
         self.assertEqual(kept, ["gh issue close 1", "gh issue close 2"])
 
+
+class LastActionCase(unittest.TestCase):
+    """harmonic-forge#1398: one record per lane, written only by a posting tool."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HOME": tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_record_reads_back_as_its_age(self):
+        self.assertTrue(afk_toggle.record_lane_action("1", now=1000.0))
+        self.assertEqual(afk_toggle.last_action_age("1", now=1090.0), 90.0)
+
+    def test_lane_spellings_agree(self):
+        for spelling in ("1", "l1", "L1"):
+            afk_toggle.record_lane_action(spelling, now=2000.0)
+            self.assertEqual(afk_toggle.last_action_age("l1", now=2001.0), 1.0)
+
+    def test_a_lane_2_post_never_resets_lane_1(self):
+        afk_toggle.record_lane_action("1", now=1000.0)
+        afk_toggle.record_lane_action("2", now=5000.0)
+        self.assertEqual(afk_toggle.last_action_age("1", now=5000.0), 4000.0)
+        self.assertEqual(afk_toggle.last_action_age("2", now=5000.0), 0.0)
+
+    def test_the_lane_comes_from_the_environment_by_default(self):
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            self.assertTrue(afk_toggle.record_lane_action(now=10.0))
+        self.assertIsNotNone(afk_toggle.last_action_age("1", now=11.0))
+
+    def test_a_session_with_no_lane_records_nothing(self):
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(afk_toggle.record_lane_action())
+        self.assertFalse(list(afk_toggle.state_dir().glob("last_action-*")) if afk_toggle.state_dir().exists() else [])
+
+    def test_an_unknown_lane_records_nothing(self):
+        self.assertFalse(afk_toggle.record_lane_action("4"))
+        self.assertFalse(afk_toggle.record_lane_action("x"))
+
+    def test_no_record_future_or_garbled_reads_as_none(self):
+        self.assertIsNone(afk_toggle.last_action_age("1"))
+        afk_toggle.record_lane_action("1", now=9000.0)
+        self.assertIsNone(afk_toggle.last_action_age("1", now=100.0))
+        afk_toggle.last_action_path("1").write_text("garbled")
+        self.assertIsNone(afk_toggle.last_action_age("1", now=9500.0))
+
+    def test_a_failed_write_never_raises(self):
+        with mock.patch.object(afk_toggle, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(afk_toggle.record_lane_action("1"))
+
+    def test_the_belt_heartbeat_never_writes_a_lane_action(self):
+        import sys  # noqa: PLC0415
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lane"))
+        import belt_heartbeat  # noqa: PLC0415
+        belt_heartbeat.write("l1", "vh")
+        self.assertIsNone(afk_toggle.last_action_age("1"))
+
+    def test_each_posting_tool_records_a_lane_action_on_its_success_path(self):
+        import ast  # noqa: PLC0415
+        gh = Path(__file__).resolve().parent.parent / "gh"
+        for name in ("l1_post.py", "l2_post.py", "post_lane_discussion.py"):
+            tree = ast.parse((gh / name).read_text(encoding="utf-8"))
+            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                     and getattr(n.func, "attr", None) == "record_lane_action"]
+            self.assertEqual(len(calls), 1, f"{name} must record one lane action per verified post")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -117,6 +117,47 @@ def append_queue(entry: dict) -> bool:
         return True
 
 
+def _lane_digit(lane: str | None) -> str | None:
+    """`1`, `2` or `3` from `LANE`'s value (`1`, `l1`, `L1`), else None."""
+    match = re.fullmatch(r"[lL]?([123])", (lane or "").strip())
+    return match.group(1) if match else None
+
+
+def last_action_path(lane: str) -> Path:
+    return state_dir() / f"last_action-{lane}.json"
+
+
+def record_lane_action(lane: str | None = None, now: float | None = None) -> bool:
+    """Mark a real lane action (harmonic-forge#1398): called by a posting tool
+    after a verified post, never by the belt's heartbeat. One file per lane, so a
+    Lane 2 post never resets Lane 1's afk idle clock. Never raises; a session with
+    no `LANE` records nothing. Returns whether a record was written."""
+    digit = _lane_digit(os.environ.get("LANE") if lane is None else lane)
+    if digit is None:
+        return False
+    try:
+        with Locked():
+            _atomic_write(last_action_path(digit),
+                          json.dumps({"lane": digit, "at": time.time() if now is None else now}))
+        return True
+    except Exception:  # noqa: BLE001 - a liveness note must never fail a post
+        return False
+
+
+def last_action_age(lane: str, now: float | None = None) -> float | None:
+    """Seconds since this lane's last recorded action, or None when there is none
+    (or it is unreadable or future-dated)."""
+    digit = _lane_digit(lane)
+    if digit is None:
+        return None
+    try:
+        at = float(json.loads(last_action_path(digit).read_text(encoding="utf-8"))["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    age = (time.time() if now is None else now) - at
+    return age if age >= 0 else None
+
+
 def _read_queue() -> list[str]:
     path = queue_path()
     if not path.exists():

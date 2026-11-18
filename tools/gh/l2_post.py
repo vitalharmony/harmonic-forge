@@ -37,6 +37,7 @@ import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a pos
 import _caller_path  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import tasklist_owed  # noqa: E402  (harmonic-forge#1126: never raises)
+import afk_toggle  # noqa: E402  (harmonic-forge#1398: record_lane_action never raises)
 
 
 def _sha(text: str) -> str:
@@ -576,6 +577,7 @@ def main() -> int:
     if args.kind != "finding":
         belt_candidates.record_candidate(args.repo, args.issue, args.kind, "l2")
     tasklist_owed.record_post(args.repo, args.issue, args.kind)
+    afk_toggle.record_lane_action()  # harmonic-forge#1398: a verified post is a real lane action
     print(json.dumps(result))
     return 0
 
