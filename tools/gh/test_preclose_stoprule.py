@@ -341,6 +341,38 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
                                  passes.shadow_error("x"), {"site": "pass"}, "2026-10-27T00:00:00Z")
         self.assertIn("shadow telemetry not written", err.getvalue())
 
+    def test_post_verdict_counts_cross_family_survivors(self):
+        """harmonic-forge#1419 AC3 (reforge pass 1, test-honesty): the post-verdict
+        count reads every source, so a cross-family survivor counts."""
+        findings = Path(tempfile.mkdtemp()) / "pv.json"
+        findings.write_text(json.dumps([{"anchor": "tools/x.py:3", "scenario": "input Z loses the write",
+                                         "mechanism": "unlocked rename", "source": "cross-family"}]))
+        args = mock.Mock(repo="vitalharmony/harmonic-forge", issue=1189, base="b", head="HEAD",
+                         main="origin/main", envelope="e.jsonl", own_model="claude-opus-5-5",
+                         findings=str(findings), cross_family_ms="300", threat_model="good-faith",
+                         reverify=None)
+        out = io.StringIO()
+        with mock.patch.object(preclose, "require_writable"), \
+                mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
+                mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
+                mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="b" * 40)), \
+                mock.patch.object(preclose, "find_receipt", return_value={"pass_history": [
+                    {"sha": "b" * 40, "epoch": 0}]}), \
+                mock.patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
+                mock.patch.object(passes, "current", side_effect=lambda h: h * 2 if len(h) == 1 else h), \
+                mock.patch.object(passes, "accepts_entry", return_value=True), \
+                mock.patch.object(preclose, "local_patch_id", return_value="p"), \
+                mock.patch.object(preclose, "require_recorded_envelope"), \
+                mock.patch.object(preclose, "compute_provenance",
+                                  return_value=preclose.PROVENANCE_TRIGGERED[0] + " (codex)"), \
+                mock.patch.object(preclose, "check_provenance"), \
+                mock.patch.object(preclose, "write_receipt", return_value=Path("r")), \
+                mock.patch.object(preclose, "emit_shadow"), \
+                contextlib.redirect_stdout(out):
+            preclose.post_verdict(args)
+        self.assertIn("(1 surviving finding(s))", out.getvalue())
+
     def test_post_verdict_records_and_emits_the_shadow(self):
         """The decision point itself: post_verdict() writes the shadow on the
         check and emits one event, with prior obligations carried in."""

@@ -1193,6 +1193,14 @@ def complete(args: argparse.Namespace) -> int:
     if provenance.startswith(PROVENANCE_TRIGGERED[1]):
         imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
                     "could not run is an IMC stop, never a pass")
+    # harmonic-forge#1419 reforge pass 1 (cross-family): a finding marked
+    # source=cross-family needs a call that ran; a failed-call envelope's
+    # in-family fallback label cannot carry one.
+    if (any(isinstance(finding, dict) and finding.get("source") == "cross-family" for finding in findings)
+            and not provenance.startswith(PROVENANCE_TRIGGERED[0])):
+        raise SystemExit("preclose-check: findings marked source=cross-family need an envelope whose "
+                         "cross-family call ran; this one's provenance is not a cross-family label. "
+                         "Nothing recorded.")
     # harmonic-forge#1419 reforge: the plan step. Every read, parse and
     # computation the receipt needs runs here, before the grant is reserved,
     # so nothing after the reservation can refuse on input.

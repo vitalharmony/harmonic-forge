@@ -1006,13 +1006,26 @@ class FindingSourceTests(ScratchRepo):
             "neither envelope nor not-triggered": ([], None, False),
             "both envelope and not-triggered": ([], missing, True),
             # A silent panel on a high-blast change requires the branch.
-            "required branch with not-triggered": ([], None, True),            "envelope that was never recorded": ([ANCHORED], missing, False),
+            "required branch with not-triggered": ([], None, True),            # A silent panel requires the branch, so the missing envelope is what
+            # refuses (reforge pass 1, test-honesty: a survivor here let
+            # check_provenance refuse first and never reached it).
+            "envelope that was never recorded": ([], missing, False),
             "cross-family survivor with no envelope": ([self.XF], None, True),
         }
         for name, (findings, envelope, not_triggered) in cases.items():
             with self.subTest(name):
                 _text, reserve = self._forced_complete_refusal(findings, envelope, not_triggered)
                 reserve.assert_not_called()
+
+    def test_cross_family_finding_with_a_failed_call_envelope_refuses(self) -> None:
+        # Reforge pass 1 (cross-family survivor): the fallback label means the
+        # call did not run, so it cannot carry a cross-family finding.
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit) as caught:
+            self.complete([self.XF], envelope_label=FALLBACK)
+        self.assertIn("cross-family call ran", str(caught.exception))
+        self.assertEqual(list(preclose.receipt_dir().glob("*.json"))[0].read_text().count('"complete"'), 0)
 
     def test_forced_complete_with_a_malformed_prior_receipt_leaves_the_grant_unspent(self) -> None:
         # Reforge (post-verdict survivor 1): the prior receipt is read and parsed
@@ -1053,13 +1066,22 @@ class FindingSourceTests(ScratchRepo):
                 return real(*a, **k)
             return call
 
-        patches = {name: track(name, getattr(preclose, name))
-                   for name in ("find_receipt", "load_findings", "stop_rule_shadow", "gate_decision",
-                                "compute_provenance", "write_receipt")}
+        # Every plan-step read, parse and computation (reforge pass 1, test-honesty:
+        # the first version tracked a subset, so an untracked one could move).
+        plan_step = ("find_receipt", "load_findings", "stop_rule_shadow", "gate_decision",
+                     "compute_provenance", "require_recorded_envelope", "check_provenance",
+                     "enrollment_path")
+        module_steps = {preclose.preclose_enrollment: ("current",),
+                        preclose.preclose_passes: ("record", "hostile_block", "last_tier")}
+        patches = {name: track(name, getattr(preclose, name)) for name in plan_step + ("write_receipt",)}
         patches["reserve_force_grant"] = lambda *a, **k: order.append("reserve_force_grant") or {"id": "g"}
         with contextlib.ExitStack() as stack:
             for name, fake in patches.items():
                 stack.enter_context(mock.patch.object(preclose, name, side_effect=fake))
+            for module, names in module_steps.items():
+                for name in names:
+                    stack.enter_context(mock.patch.object(
+                        module, name, side_effect=track(name, getattr(module, name))))
             stack.enter_context(mock.patch.object(preclose, "emit_force"))
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
@@ -1069,9 +1091,14 @@ class FindingSourceTests(ScratchRepo):
                                         threat_model="good-faith"))
         after = order[order.index("reserve_force_grant") + 1:]
         self.assertEqual(after[0], "write_receipt")
-        self.assertNotIn("load_findings", after)
-        self.assertNotIn("stop_rule_shadow", after)
-        self.assertNotIn("gate_decision", after)
+        # Only the write follows: no plan-step call may run after the
+        # reservation (find_receipt is the post-write receipt read-back's).
+        write_done = after[1:]
+        for name in plan_step + ("current", "record", "hostile_block", "last_tier"):
+            if name == "find_receipt":
+                continue
+            self.assertNotIn(name, write_done, name)
+        self.assertNotIn("find_receipt", after[:1])
 
     def test_post_verdict_loads_the_findings_once(self) -> None:
         # Pass 1 survivor: the validated load is the one every later count reads.
