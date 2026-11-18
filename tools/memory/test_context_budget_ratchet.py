@@ -2,6 +2,8 @@
 """Tests for the context-budget ratchet (harmonic-forge#521)."""
 from __future__ import annotations
 
+import inspect
+import os
 import sys
 import tempfile
 import tomllib
@@ -355,6 +357,111 @@ class TestInRepoPredicate(unittest.TestCase):
                     "/etc/somewhere/else.md"):
             with self.subTest(key=key):
                 self.assertFalse(m.in_repo(key))
+
+
+class TestSymlinkAttribution(unittest.TestCase):
+    """harmonic-forge#1414: a repo-relative key whose real path is outside the
+    repo is reported, not gated. Real temp dirs, real symlinks, real sizes —
+    no `surface()` stub, because the bug lived in what the key resolves to."""
+
+    KEY = ".claude/rules/linked.md"
+
+    def setUp(self) -> None:
+        repo_tmp = tempfile.TemporaryDirectory()
+        out_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(repo_tmp.cleanup)
+        self.addCleanup(out_tmp.cleanup)
+        self.repo = Path(repo_tmp.name).resolve()
+        self.outside = Path(out_tmp.name).resolve()
+        (self.repo / ".claude" / "rules").mkdir(parents=True)
+        (self.repo / "CLAUDE.md").write_text("x" * 100, encoding="utf-8")
+
+    def link(self, target: Path) -> Path:
+        link = self.repo / self.KEY
+        os.symlink(target, link)
+        return target
+
+    def baseline_then_grow(self, path: Path, grow: int = 500) -> tuple[int, str]:
+        m.update(self.repo)
+        path.write_text(path.read_text(encoding="utf-8") + "y" * grow,
+                        encoding="utf-8")
+        return m.check(self.repo)
+
+    def test_a_link_to_a_file_outside_is_reported_not_gated(self):
+        target = self.outside / "rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        code, report = self.baseline_then_grow(target)
+        self.assertEqual(code, 0, report)
+        self.assertIn("NOT gated", report)
+        self.assertIn(f"{self.KEY} +500", report)
+        self.assertIn("symlink outside the repo", report)
+
+    def test_b_link_to_a_file_inside_the_repo_gates(self):
+        target = self.repo / "docs-rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        code, report = self.baseline_then_grow(target)
+        self.assertEqual(code, 1, report)
+
+    def test_c_ordinary_file_gates(self):
+        plain = self.repo / self.KEY
+        plain.write_text("r" * 200, encoding="utf-8")
+        code, report = self.baseline_then_grow(plain)
+        self.assertEqual(code, 1, report)
+
+    def test_d_deleted_tracked_file_stays_in_repo(self):
+        self.assertTrue(m.in_repo(".claude/rules/gone.md", repo=self.repo))
+
+    def test_e_platform_rule_link_outside_still_gates(self):
+        (self.repo / "sync_rules.py").write_text(
+            'UNIVERSAL_RULE_FILES = ["x.md"]\n', encoding="utf-8")
+        (self.repo / "rules").mkdir()
+        own = self.repo / "rules" / "x.md"
+        own.write_text("r" * 200, encoding="utf-8")
+        foreign = self.outside / "x.md"
+        foreign.write_text("r" * 200, encoding="utf-8")
+        os.symlink(foreign, self.repo / ".claude" / "rules" / "x.md")
+        code, report = self.baseline_then_grow(own)
+        self.assertEqual(code, 1, report)
+
+    def test_f_every_check_call_site_passes_repo(self):
+        """Outside link grows AND an in-repo file shrinks, so all four
+        `in_repo` call sites in `check` run; any one missing `repo=` fails."""
+        target = self.outside / "rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        m.update(self.repo)
+        target.write_text("r" * 700, encoding="utf-8")
+        (self.repo / "CLAUDE.md").write_text("x" * 50, encoding="utf-8")
+        calls: list[Path | None] = []
+        real = m.in_repo
+
+        def spy(key, repo=None):
+            calls.append(repo)
+            return real(key, repo)
+
+        m.in_repo = spy
+        self.addCleanup(lambda: setattr(m, "in_repo", real))
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+        self.assertTrue(calls)
+        self.assertNotIn(None, calls, "a check() call site dropped repo=")
+        # Each of the four sites ran at least once.
+        src = inspect.getsource(m.check)
+        self.assertEqual(src.count("in_repo(key, repo=repo)"), 4)
+        self.assertNotRegex(src, r"in_repo\(key\)")
+
+    def test_g_report_line_has_no_absolute_path(self):
+        target = self.outside / "rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        _code, report = self.baseline_then_grow(target)
+        line = next(l for l in report.splitlines() if "NOT gated" in l)
+        self.assertNotIn("/home", line)
+        self.assertNotIn(str(self.outside), line)
+        note = line.split("symlink outside the repo: ", 1)[1]
+        self.assertFalse(note.startswith("/"), line)
 
 
 class TestKeysForFilesOutsideTheRepo(unittest.TestCase):
