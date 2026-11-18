@@ -100,6 +100,49 @@ class WatcherWritesItTests(unittest.TestCase):
         with mock.patch.object(belt_heartbeat, "write", side_effect=OSError("disk full")):
             self.assertFalse(self.watcher.write_poll_heartbeat("l1", "vh", None, None))
 
+    def test_the_serving_lane_is_the_session_lane_then_queue_for(self):
+        with mock.patch.dict(os.environ, {"LANE": "3"}):
+            self.assertEqual(self.watcher.belt_lane(None), "l3")
+            self.assertEqual(self.watcher.belt_lane("l1"), "l3")
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(self.watcher.belt_lane("l2"), "l2")
+            self.assertEqual(self.watcher.belt_lane(None), "none")
+
+    def test_the_cutoff_line_prints_once_per_episode_and_survives_a_restart(self):
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        afk = self.watcher._afk_toggle
+        afk.toggle({"prompt": "/afk on", "session_id": "s", "cwd": os.getcwd()}, "cli", now=1.0)
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(afk.time, "time", return_value=1.0 + 3700):
+            self.assertTrue(self.watcher.announce_afk_idle_cutoff("l1"))
+            # a restarted watcher has no memory, only the marker file
+            self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1"))
+        self.assertEqual(out.getvalue().count("afk-idle-cutoff l1"), 1)
+
+    def test_no_cutoff_line_before_the_hour_or_with_afk_off(self):
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        afk = self.watcher._afk_toggle
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1"))
+            afk.toggle({"prompt": "/afk on", "session_id": "s", "cwd": os.getcwd()}, "cli", now=1.0)
+            with mock.patch.object(afk.time, "time", return_value=1.0 + 600):
+                self.assertFalse(self.watcher.announce_afk_idle_cutoff("l1"))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_the_poll_loop_calls_the_cutoff_check_once_per_poll(self):
+        import ast  # noqa: PLC0415
+        tree = ast.parse(Path(self.watcher.__file__).read_text(encoding="utf-8"))
+        main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_main")
+        loop = next(n for n in ast.walk(main) if isinstance(n, ast.While)
+                    and isinstance(n.test, ast.Constant) and n.test.value is True)
+        calls = [n for n in ast.walk(loop) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "announce_afk_idle_cutoff"]
+        self.assertEqual(len(calls), 1)
+
     def test_the_poll_loop_calls_the_writer_after_the_tick_write(self):
         import ast  # noqa: PLC0415
         tree = ast.parse(Path(self.watcher.__file__).read_text(encoding="utf-8"))

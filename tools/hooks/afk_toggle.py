@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -156,6 +157,62 @@ def last_action_age(lane: str, now: float | None = None) -> float | None:
         return None
     age = (time.time() if now is None else now) - at
     return age if age >= 0 else None
+
+
+IDLE_CUTOFF_SECONDS = 3600
+
+
+def _afk_since() -> tuple[str, float] | None:
+    """The current afk episode: the `since` string `/afk on` wrote and its epoch."""
+    try:
+        since = json.loads(state_path().read_text(encoding="utf-8"))["since"]
+        return since, datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def cutoff_marker_path(lane: str) -> Path:
+    return state_dir() / f"cutoff-{lane}.json"
+
+
+def idle_cutoff_due(lane: str, now: float | None = None,
+                    threshold: float = IDLE_CUTOFF_SECONDS) -> str | None:
+    """The episode key (the afk `since` string) when this lane has been idle for
+    `threshold` seconds while afk is on and its cutoff has not been announced
+    for this episode, else None (harmonic-forge#1398).
+
+    Idle time runs from the later of the lane's last recorded action and the
+    moment afk went on, so a lane that never acted since `/afk on` counts from
+    `/afk on`. The marker is a file, not a flag: the watcher exits every 1800 s
+    and is re-armed, and a flag in its memory would announce the cutoff again."""
+    digit = _lane_digit(lane)
+    episode = _afk_since() if is_on() else None
+    if digit is None or episode is None:
+        return None
+    since, since_at = episode
+    current = time.time() if now is None else now
+    try:
+        marked = json.loads(cutoff_marker_path(digit).read_text(encoding="utf-8")).get("since")
+    except (OSError, ValueError, AttributeError):
+        marked = None
+    if marked == since:
+        return None
+    age = last_action_age(digit, current)
+    idle = min(current - since_at, age) if age is not None else current - since_at
+    return since if idle >= threshold else None
+
+
+def mark_cutoff_announced(lane: str, since: str) -> bool:
+    """Record that this episode's cutoff was announced. Never raises."""
+    digit = _lane_digit(lane)
+    if digit is None:
+        return False
+    try:
+        with Locked():
+            _atomic_write(cutoff_marker_path(digit), json.dumps({"since": since}))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _read_queue() -> list[str]:
