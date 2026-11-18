@@ -37,9 +37,10 @@ fi
 cd "$target"
 # shellcheck source=_lane_args.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_args.sh" "$@"
+# harmonic-forge#1396: LANE is set first, so the slot script picks this lane's token.
+export LANE=1
 # shellcheck source=_gh_config_dir.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_gh_config_dir.sh"
-export LANE=1
 
 # shellcheck source=_lane_refresh.sh
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_refresh.sh"

@@ -41,8 +41,16 @@ case "$1" in
       for d in "$ACCT_HOME"/*/; do
         [ -d "$d" ] || continue
         acct="$(basename "$d")"
-        who="$(GH_CONFIG_DIR="$d" gh api user --jq .login 2>/dev/null || echo '(not authenticated)')"
-        printf '%-24s %s\n' "$acct" "$who"
+        # harmonic-forge#1396: the slot's own file token, never the keyring's.
+        tok="$(awk '/^[[:space:]]*oauth_token:/ {print $2; exit}' "$d/hosts.yml" 2>/dev/null || true)"
+        if [ -n "$tok" ]; then
+          who="$(GH_TOKEN="$tok" GH_CONFIG_DIR="$d" gh api user --jq .login 2>/dev/null || echo '(not authenticated)')"
+          src="file"
+        else
+          who="$(GH_CONFIG_DIR="$d" gh api user --jq .login 2>/dev/null || echo '(not authenticated)')"
+          src="keyring"
+        fi
+        printf '%-24s %-20s %s\n' "$acct" "$who" "$src"
       done
     else
       echo "no accounts configured under $ACCT_HOME" >&2
@@ -71,12 +79,35 @@ esac
 acct="$1"; shift
 [ $# -ge 1 ] || usage 1
 
-dir="$ACCT_HOME/$acct"
+# harmonic-forge#1396: a lane session's vitalharmony calls use that lane's own
+# least-privilege slot. The login it must report stays `vitalharmony`.
+slot="$acct"
+lane_slot=0
+case "${LANE:-}" in
+  1|2|3) if [ "$acct" = "vitalharmony" ]; then slot="vitalharmony-lane$LANE"; lane_slot=1; fi ;;
+esac
+
+dir="$ACCT_HOME/$slot"
 if [ ! -d "$dir" ]; then
-  echo "gh-as: no config for account '$acct'." >&2
-  echo "Set it up once with:  gh-as --init $acct" >&2
+  echo "gh-as: no config for account '$acct' (slot '$slot')." >&2
+  [ "$lane_slot" = 1 ] && echo "A lane never falls back to the shared slot (harmonic-forge#1396)." >&2
+  echo "Set it up once with:  gh-as --init $slot" >&2
   exit 1
 fi
+
+# harmonic-forge#1396 amendment: gh reads the shared keyring entry before a
+# slot's hosts.yml, and every vitalharmony slot logs in as the same user, so
+# GH_CONFIG_DIR alone resolves to the keyring's (admin) token. A slot whose
+# file holds a token passes it explicitly; a lane slot without one refuses.
+slot_token="$(awk '/^[[:space:]]*oauth_token:/ {print $2; exit}' "$dir/hosts.yml" 2>/dev/null || true)"
+if [ -n "$slot_token" ]; then
+  export GH_TOKEN="$slot_token"
+elif [ "$lane_slot" = 1 ]; then
+  echo "gh-as: lane slot '$slot' has no token in $dir/hosts.yml; refusing rather than using the keyring." >&2
+  echo "Store it with:  GH_CONFIG_DIR=$dir gh auth login --with-token --insecure-storage" >&2
+  exit 1
+fi
+unset slot_token
 
 # harmonic-forge#957: a probe that succeeded under the slot's CURRENT token is
 # remembered for GH_AS_IDENTITY_TTL seconds (default 900; 0 disables), keyed by

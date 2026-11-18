@@ -42,6 +42,9 @@ class GhAsMemoTests(unittest.TestCase):
 
     def run_gh_as(self, ttl: str | None = None) -> subprocess.CompletedProcess:
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "GH_ACCT_HOME": str(self.home)}
+        # harmonic-forge#1396: a lane session's LANE maps vitalharmony to its lane
+        # slot; these tests exercise the plain account mapping.
+        env.pop("LANE", None)
         env.pop("GH_AS_IDENTITY_TTL", None)
         if ttl is not None:
             env["GH_AS_IDENTITY_TTL"] = ttl

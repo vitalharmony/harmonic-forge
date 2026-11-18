@@ -243,5 +243,80 @@ class Installer(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class LaneCredentialTests(unittest.TestCase):
+    """harmonic-forge#1396: Projects calls carry the projects slot's token in a
+    lane; protection and ruleset writes are refused in a lane."""
+
+    def setUp(self):
+        self.shim = _load_shim()
+        self.home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.home, "vitalharmony-projects"))
+
+    def _store_projects(self, text, name="token"):
+        with open(os.path.join(self.home, "vitalharmony-projects", name), "w") as fh:
+            fh.write(text)
+
+    def test_projects_calls_are_recognized(self):
+        yes = (["project", "item-edit", "--id", "x"],
+               ["api", "graphql", "-f", "query=query { user { projectV2(number:1) { id } } }"],
+               ["api", "graphql", "-f", "query=query { repository { issue { projectItems(first:1) { nodes { id } } } } }"])
+        no = (["api", "repos/o/r/issues/1"], ["api", "graphql", "-f", "query=query { viewer { login } }"],
+              ["pr", "list"])
+        for argv in yes:
+            self.assertTrue(self.shim._is_projects_call(argv), argv)
+        for argv in no:
+            self.assertFalse(self.shim._is_projects_call(argv), argv)
+
+    def test_a_lane_projects_call_gets_the_projects_slot_token(self):
+        self._store_projects("projtok\n")
+        env = {"LANE": "1", "GH_ACCT_HOME": self.home, "GH_TOKEN": "lanetok"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            self.shim._route_projects_token(["project", "item-edit"])
+            self.assertEqual(os.environ["GH_TOKEN"], "projtok")
+
+    def test_a_hosts_yml_slot_token_is_read_too(self):
+        self._store_projects("github.com:\n    users:\n        vitalharmony:\n            oauth_token: hosttok\n",
+                             name="hosts.yml")
+        with mock.patch.dict(os.environ, {"GH_ACCT_HOME": self.home}):
+            self.assertEqual(self.shim._slot_file_token("vitalharmony-projects"), "hosttok")
+
+    def test_no_lane_or_no_projects_token_keeps_the_callers_token(self):
+        for env in ({"LANE": "", "GH_ACCT_HOME": self.home, "GH_TOKEN": "lanetok"},
+                    {"LANE": "2", "GH_ACCT_HOME": self.home, "GH_TOKEN": "lanetok"}):
+            with self.subTest(env=env["LANE"]), mock.patch.dict(os.environ, env, clear=False), \
+                    mock.patch("sys.stderr"):
+                if env["LANE"] == "":
+                    self._store_projects("projtok")
+                else:
+                    os.remove(os.path.join(self.home, "vitalharmony-projects", "token"))
+                self.shim._route_projects_token(["project", "item-edit"])
+                self.assertEqual(os.environ["GH_TOKEN"], "lanetok")
+
+    def test_protection_and_ruleset_writes_are_recognized(self):
+        writes = (["api", "-X", "PUT", "repos/o/r/branches/main/protection"],
+                  ["api", "-XDELETE", "repos/o/r/branches/main/protection/enforce_admins"],
+                  ["api", "--method=POST", "repos/o/r/rulesets"],
+                  ["api", "repos/o/r/branches/main/protection/required_status_checks", "-f", "strict=true"],
+                  ["api", "repos/o/r/rulesets/7", "--input", "r.json"],
+                  ["api", "repos/o/r/branches/main/protection", "-Fstrict=true"])
+        reads = (["api", "repos/o/r/branches/main/protection"],
+                 ["api", "-X", "GET", "repos/o/r/rulesets"],
+                 ["api", "-X", "PUT", "repos/o/r/issues/1"],
+                 ["api", "repos/o/r/branches/main"])
+        for argv in writes:
+            self.assertTrue(self.shim._protection_write(argv), argv)
+        for argv in reads:
+            self.assertFalse(self.shim._protection_write(argv), argv)
+
+    def test_a_lane_protection_write_exits_before_gh_runs(self):
+        with mock.patch.dict(os.environ, {"LANE": "1"}), \
+                mock.patch.object(sys, "argv", ["gh", "api", "-X", "PUT", "repos/o/r/branches/main/protection"]), \
+                mock.patch.object(self.shim.os, "execv") as execv, mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit) as caught:
+                self.shim.main()
+        self.assertEqual(caught.exception.code, 3)
+        execv.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
