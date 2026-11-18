@@ -18,7 +18,7 @@ Prints a JSON object:
                 The command is built from `watch_lane_posts.CANONICAL_BELTS`,
                 never retyped here.
     loop     -- the `Skill` tool input: {"skill": "loop", "args": ...}, i.e.
-                the literal `/loop 10m proactively find work to do`.
+                the literal `/loop 30m proactively find work to do`.
     report   -- what to report once both are armed.
 
 Exits 2 when `LANE` is not 1, 2 or 3: no lane means no protocols. Exits 2 too
@@ -57,7 +57,7 @@ WATCHER = "~/harmonic-forge/tools/gh/watch_lane_posts.py"
 MONITOR_TIMEOUT_MS = MONITOR_LIFETIME_S * 1000
 
 LOOP_SKILL = "loop"
-LOOP_ARGS = "10m proactively find work to do"
+LOOP_ARGS = "30m proactively find work to do"
 
 
 def monitor_command(lane: str, workspace: str, repo: str | None = None) -> str:

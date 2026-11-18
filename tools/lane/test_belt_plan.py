@@ -129,7 +129,7 @@ class PlanOutput(unittest.TestCase):
     def test_loop_is_the_literal_invocation(self):
         plan = json.loads(_run_vh("3").stdout)
         self.assertEqual(plan["loop"], {"skill": "loop",
-                                        "args": "10m proactively find work to do"})
+                                        "args": "30m proactively find work to do"})
 
     def test_report_template_names_both_ids(self):
         report = json.loads(_run_vh("1").stdout)["report"]
