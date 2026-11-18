@@ -972,6 +972,48 @@ class FindingSourceTests(ScratchRepo):
         self.assertIn("source", str(caught.exception))
         reserve.assert_not_called()
 
+    def _forced_complete_refusal(self, findings: list, envelope: str | None, not_triggered: bool):
+        """Run complete() with --force and a mocked reserve; return (refusal text, reserve mock)."""
+        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
+            with self.assertRaises(SystemExit) as caught:
+                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
+                                        findings=self.findings_file(findings), envelope=envelope,
+                                        not_triggered=not_triggered, cross_family=False,
+                                        force=True, threat_model="good-faith"))
+        return str(caught.exception), reserve
+
+    def test_complete_loads_the_findings_once(self) -> None:
+        # Sticky-wicket PATCH: the gate decision reads complete()'s one validated load.
+        self.commit("scripts/tool.py")
+        self.plan()
+        real = preclose.load_findings
+        with mock.patch.object(preclose, "load_findings", side_effect=real) as load:
+            self.complete([self.XF])
+        self.assertEqual(load.call_count, 1)
+
+    def test_forced_complete_with_both_envelope_and_not_triggered_does_not_spend_the_grant(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        text, reserve = self._forced_complete_refusal([], "envelope.txt", True)
+        self.assertIn("exactly one", text)
+        reserve.assert_not_called()
+
+    def test_every_refusal_in_complete_under_force_leaves_the_grant_unspent(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        missing = str(Path(self.findings_file([])).with_name("no-such-envelope.txt"))
+        cases = {
+            "neither envelope nor not-triggered": ([], None, False),
+            "both envelope and not-triggered": ([], missing, True),
+            # A silent panel on a high-blast change requires the branch.
+            "required branch with not-triggered": ([], None, True),            "envelope that was never recorded": ([ANCHORED], missing, False),
+            "cross-family survivor with no envelope": ([self.XF], None, True),
+        }
+        for name, (findings, envelope, not_triggered) in cases.items():
+            with self.subTest(name):
+                _text, reserve = self._forced_complete_refusal(findings, envelope, not_triggered)
+                reserve.assert_not_called()
+
     def test_post_verdict_loads_the_findings_once(self) -> None:
         # Pass 1 survivor: the validated load is the one every later count reads.
         self.commit("scripts/tool.py")

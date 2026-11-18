@@ -650,8 +650,12 @@ def require_sources(findings: list, post_verdict: bool = False) -> None:
             + ": " + "; ".join(bad) + ". Nothing recorded.")
 
 
-def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
-    findings = load_findings(args.findings)
+def gate_decision(args: argparse.Namespace,
+                  findings: list | None = None) -> tuple[bool, str, int, list[str]]:
+    # harmonic-forge#1419 sticky-wicket PATCH: --complete passes its one validated
+    # load; only the standalone --gate reads the file here.
+    if findings is None:
+        findings = load_findings(args.findings)
     require_sources(findings)
     # harmonic-forge#1419: silence of the PANEL is the trigger; a cross-family
     # survivor recorded in the same file must not flip it after the branch ran.
@@ -1166,22 +1170,26 @@ def complete(args: argparse.Namespace) -> int:
                                  for finding in findings):
         raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
                          "(the recorded cross-family call they came from); nothing recorded.")
+    # harmonic-forge#1419 sticky-wicket PATCH: every step that can refuse runs
+    # before the grant is reserved, on the one load above; none of them writes.
+    if args.not_triggered == bool(args.envelope):
+        raise SystemExit("preclose-check: pass exactly one of --envelope <path> or --not-triggered.")
+    mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
+                  for finding in surviving_findings(findings)]
+    required, why, _panel, reasons = gate_decision(args, findings)
+    # harmonic-forge#1419: the gate read panel survivors; the pass outcome
+    # (count, mechanisms, shadow, hostile block, cluster) reads every source.
+    surviving = len(surviving_findings(findings))
+    if required and args.envelope:
+        require_recorded_envelope(args.envelope)
+    provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
+    check_provenance(required, provenance)
+    if provenance.startswith(PROVENANCE_TRIGGERED[1]):
+        imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
+                    "could not run is an IMC stop, never a pass")
     grant = (reserve_force_grant(repo, args.issue, head_sha, "reforge" if reforge else "plain")
              if args.force else None)
     try:
-        mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
-                      for finding in surviving_findings(findings)]
-        required, why, _panel, reasons = gate_decision(args)
-        # harmonic-forge#1419: the gate read panel survivors; the pass outcome
-        # (count, mechanisms, shadow, hostile block, cluster) reads every source.
-        surviving = len(surviving_findings(findings))
-        if required and args.envelope:
-            require_recorded_envelope(args.envelope)
-        provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
-        check_provenance(required, provenance)
-        if provenance.startswith(PROVENANCE_TRIGGERED[1]):
-            imc_refusal(repo, args.issue, "the in-family fallback label: a cross-family call that "
-                        "could not run is an IMC stop, never a pass")
         # The call ran whenever an envelope is recorded, a fallback included: a
         # call that timed out still spent its wall-clock (#889 preclose pass 1).
         ran = bool(args.envelope)
