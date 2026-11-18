@@ -120,63 +120,39 @@ def _bounded_scan_admitted(argv: list[str]) -> bool:
     return _bounded_scan_refusal(argv) is None
 
 
-#: harmonic-forge#1396: the classic `project`/`read:org` token's slot. A lane's
-#: fine-grained token cannot read or write the user-owned Projects board
-#: (operator-approved 2026-11-17), so a lane's Projects calls carry this token.
-PROJECTS_SLOT = "vitalharmony-projects"
+_MUTATION = re.compile(r"\bmutation\b", re.IGNORECASE)
+_FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
 
 
-def _is_projects_call(argv: list[str]) -> bool:
-    """`gh project …`, or a GraphQL call whose inline query names a ProjectV2 or
-    an issue's projectItems (a mixed repo-and-board read: the projects slot's
-    classic token carries `repo` for it, operator ruling 2026-11-18, option A)."""
-    if argv[:1] == ["project"]:
-        return True
-    if argv[:2] == ["api", "graphql"]:
-        return any("projectv2" in arg.lower() or "projectitems" in arg.lower() for arg in argv[2:])
+def _graphql_mutation(argv: list[str]) -> bool:
+    """A lane `gh api graphql` call that is, or may be, a mutation
+    (harmonic-forge#1396 preclose pass 1). No forge tool sends a GraphQL
+    mutation (board edits go through `gh project item-edit`), so a lane
+    refuses them all, failing closed: a query read from a file (`query=@f`)
+    or an `--input` body cannot be inspected and counts as one."""
+    if argv[:2] != ["api", "graphql"]:
+        return False
+    args = argv[2:]
+    for i, arg in enumerate(args):
+        if arg == "--input" or arg.startswith("--input="):
+            return True
+        value = None
+        if arg in _FIELD_FLAGS and i + 1 < len(args):
+            value = args[i + 1]
+        elif arg[:2] in ("-f", "-F") and len(arg) > 2:
+            value = arg[2:]
+        elif arg.startswith(("--field=", "--raw-field=")):
+            value = arg.split("=", 1)[1]
+        if value is None or not value.startswith("query="):
+            continue
+        query = value[len("query="):]
+        if query.startswith("@") or _MUTATION.search(query):
+            return True
     return False
 
 
-def _slot_file_token(slot: str) -> str:
-    """The token in a slot's hosts.yml (`--insecure-storage`), or "" if none.
-    Read from the file on purpose: gh itself prefers the shared keyring entry."""
-    home = os.environ.get("GH_ACCT_HOME") or os.path.expanduser("~/.config/gh-accounts")
-    # The projects slot holds a bare `token` file (store-lane-token.sh), since a
-    # classic token there is never a gh login of its own.
-    try:
-        with open(os.path.join(home, slot, "token"), encoding="utf-8") as handle:
-            bare = handle.read().strip()
-        if bare:
-            return bare
-    except OSError:
-        pass
-    try:
-        with open(os.path.join(home, slot, "hosts.yml"), encoding="utf-8") as handle:
-            for line in handle:
-                match = re.match(r"\s*oauth_token:\s*(\S+)", line)
-                if match:
-                    return match.group(1)
-    except OSError:
-        return ""
-    return ""
-
-
-def _route_projects_token(argv: list[str]) -> None:
-    """In a lane session, a Projects call runs on the projects slot's token.
-
-    Least privilege either way: if the slot has no token, the call keeps the
-    lane's own token and fails visibly; it never falls back to the keyring."""
-    if os.environ.get("LANE") not in ("1", "2", "3") or not _is_projects_call(argv):
-        return
-    token = _slot_file_token(PROJECTS_SLOT)
-    if token:
-        os.environ["GH_TOKEN"] = token
-    else:
-        print(f"gh-shim: no token in the {PROJECTS_SLOT} slot; this Projects call runs on the "
-              "lane's own token and may be refused (harmonic-forge#1396)", file=sys.stderr)
-
-
-_PROTECTION_ENDPOINT = re.compile(r"(^|/)repos/[^/]+/[^/]+/(branches/[^/]+/protection(/|$)|rulesets(/|$))")
+_PROTECTION_ENDPOINT = re.compile(
+    r"(^|/)(repos/[^/]+/[^/]+/(branches/[^/]+/protection(/|$)|rulesets(/|$))|orgs/[^/]+/rulesets(/|$))")
 _WRITE_METHODS = {"PUT", "POST", "PATCH", "DELETE"}
 
 
@@ -198,7 +174,7 @@ def _protection_write(argv: list[str]) -> bool:
         elif arg.startswith("--method="):
             method = arg.split("=", 1)[1]
         elif arg.startswith("-X") and len(arg) > 2:
-            method = arg[2:]
+            method = arg[2:].lstrip("=")
         elif arg in ("-f", "-F", "--field", "--raw-field", "--input") or \
                 arg.startswith(("--field=", "--raw-field=", "--input=")) or \
                 (arg[:2] in ("-f", "-F") and len(arg) > 2):
@@ -219,10 +195,10 @@ def main() -> None:
               "(harmonic-forge#1396). The operator makes that change from a session with no LANE.",
               file=sys.stderr)
         sys.exit(3)
-    try:
-        _route_projects_token(argv)
-    except Exception as exc:  # pragma: no cover - the lane token stays in place
-        print(f"gh-shim: projects routing skipped ({exc!r})", file=sys.stderr)
+    if os.environ.get("LANE") in ("1", "2", "3") and _graphql_mutation(argv):
+        print("gh-shim: refused: a lane session sends no GraphQL mutation (harmonic-forge#1396); "
+              "board edits use `gh project item-edit`.", file=sys.stderr)
+        sys.exit(3)
 
     try:
         # harmonic-forge#1378: the real directory, not the ~/.local/bin symlink's.

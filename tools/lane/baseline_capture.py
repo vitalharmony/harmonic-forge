@@ -78,7 +78,7 @@ ARG_SHAPES: dict[str, list[str]] = {
 # Only these two agents are covered by AC8's byte-identity claim.
 AC8_AGENTS = ("claude", "codex")
 
-CAPTURED_ENV_KEYS = ("LANE", "LANE_AGENT", "GH_CONFIG_DIR")
+CAPTURED_ENV_KEYS = ("LANE", "LANE_AGENT", "GH_CONFIG_DIR", "GH_TOKEN")
 
 _STUB_INHIBIT = """#!/usr/bin/env python3
 import json, os, sys
@@ -452,6 +452,10 @@ def _apply_declared_deltas(cell: dict, agent: str, key: str | None = None) -> di
     if lane_env in ("1", "2", "3") and \
             updated["env"].get("GH_CONFIG_DIR") == "<HOME>/.config/gh-accounts/vitalharmony":
         updated["env"]["GH_CONFIG_DIR"] = f"<HOME>/.config/gh-accounts/vitalharmony-lane{lane_env}"
+    # harmonic-forge#1396 preclose pass 1: the lane token itself reaches the
+    # agent, as GH_TOKEN (the baseline captured no GH_TOKEN, so it is null there).
+    if lane_env in ("1", "2", "3") and updated["env"].get("GH_TOKEN") is None:
+        updated["env"]["GH_TOKEN"] = FIXTURE_LANE_TOKENS[lane_env]
     updated["argv"] = [
         arg.replace("Claude Code", AGENT_DISPLAY[agent])
         if arg.startswith("--why=") else arg

@@ -585,6 +585,8 @@ class LaneSlotCredential(unittest.TestCase):
                     self.assertTrue(cell["launched"], cell.get("stderr"))
                     self.assertEqual(cell["env"]["GH_CONFIG_DIR"],
                                      str(tree.home / ".config" / "gh-accounts" / f"vitalharmony-lane{lane}"))
+                    # Preclose pass 1 (test-honesty): the token itself reaches the agent.
+                    self.assertEqual(cell["env"]["GH_TOKEN"], bc.FIXTURE_LANE_TOKENS[lane])
 
     def test_a_missing_or_bad_lane_token_refuses_and_launches_nothing(self):
         for damage in ("no-slot", "no-token", "bad-token"):

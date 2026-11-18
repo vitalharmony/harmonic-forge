@@ -256,41 +256,31 @@ class LaneCredentialTests(unittest.TestCase):
         with open(os.path.join(self.home, "vitalharmony-projects", name), "w") as fh:
             fh.write(text)
 
-    def test_projects_calls_are_recognized(self):
-        yes = (["project", "item-edit", "--id", "x"],
-               ["api", "graphql", "-f", "query=query { user { projectV2(number:1) { id } } }"],
-               ["api", "graphql", "-f", "query=query { repository { issue { projectItems(first:1) { nodes { id } } } } }"])
-        no = (["api", "repos/o/r/issues/1"], ["api", "graphql", "-f", "query=query { viewer { login } }"],
-              ["pr", "list"])
-        for argv in yes:
-            self.assertTrue(self.shim._is_projects_call(argv), argv)
-        for argv in no:
-            self.assertFalse(self.shim._is_projects_call(argv), argv)
+    def test_graphql_mutations_are_recognized_in_every_form(self):
+        mutations = (["api", "graphql", "-f", "query=mutation { deleteRef(input:{refId:\"x\"}) { clientMutationId } }"],
+                     ["api", "graphql", "-F", "query=  Mutation M { updateBranchProtectionRule(input:{}) { clientMutationId } }"],
+                     ["api", "graphql", "-fquery=mutation{x}"],
+                     ["api", "graphql", "--raw-field=query=mutation{x}"],
+                     ["api", "graphql", "-f", "query=@mutation.graphql"],
+                     ["api", "graphql", "--input", "body.json"],
+                     # The old routing keyed on this text; a comment cannot unlock a mutation now.
+                     ["api", "graphql", "-f", "query=mutation { updateBranchProtectionRule(input:{}) { x } } # projectV2"])
+        queries = (["api", "graphql", "-f", "query=query { viewer { login } }"],
+                   ["api", "graphql", "-f", "query=query { user(login:\"v\") { projectV2(number:1) { id } } }"],
+                   ["api", "repos/o/r/issues/1"])
+        for argv in mutations:
+            self.assertTrue(self.shim._graphql_mutation(argv), argv)
+        for argv in queries:
+            self.assertFalse(self.shim._graphql_mutation(argv), argv)
 
-    def test_a_lane_projects_call_gets_the_projects_slot_token(self):
-        self._store_projects("projtok\n")
-        env = {"LANE": "1", "GH_ACCT_HOME": self.home, "GH_TOKEN": "lanetok"}
-        with mock.patch.dict(os.environ, env, clear=False):
-            self.shim._route_projects_token(["project", "item-edit"])
-            self.assertEqual(os.environ["GH_TOKEN"], "projtok")
-
-    def test_a_hosts_yml_slot_token_is_read_too(self):
-        self._store_projects("github.com:\n    users:\n        vitalharmony:\n            oauth_token: hosttok\n",
-                             name="hosts.yml")
-        with mock.patch.dict(os.environ, {"GH_ACCT_HOME": self.home}):
-            self.assertEqual(self.shim._slot_file_token("vitalharmony-projects"), "hosttok")
-
-    def test_no_lane_or_no_projects_token_keeps_the_callers_token(self):
-        for env in ({"LANE": "", "GH_ACCT_HOME": self.home, "GH_TOKEN": "lanetok"},
-                    {"LANE": "2", "GH_ACCT_HOME": self.home, "GH_TOKEN": "lanetok"}):
-            with self.subTest(env=env["LANE"]), mock.patch.dict(os.environ, env, clear=False), \
-                    mock.patch("sys.stderr"):
-                if env["LANE"] == "":
-                    self._store_projects("projtok")
-                else:
-                    os.remove(os.path.join(self.home, "vitalharmony-projects", "token"))
-                self.shim._route_projects_token(["project", "item-edit"])
-                self.assertEqual(os.environ["GH_TOKEN"], "lanetok")
+    def test_a_lane_graphql_mutation_exits_before_gh_runs(self):
+        argv = ["gh", "api", "graphql", "-f", "query=mutation { updateBranchProtectionRule(input:{}) { x } }"]
+        with mock.patch.dict(os.environ, {"LANE": "2"}), mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(self.shim.os, "execv") as execv, mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit) as caught:
+                self.shim.main()
+        self.assertEqual(caught.exception.code, 3)
+        execv.assert_not_called()
 
     def test_protection_and_ruleset_writes_are_recognized(self):
         writes = (["api", "-X", "PUT", "repos/o/r/branches/main/protection"],
@@ -298,7 +288,9 @@ class LaneCredentialTests(unittest.TestCase):
                   ["api", "--method=POST", "repos/o/r/rulesets"],
                   ["api", "repos/o/r/branches/main/protection/required_status_checks", "-f", "strict=true"],
                   ["api", "repos/o/r/rulesets/7", "--input", "r.json"],
-                  ["api", "repos/o/r/branches/main/protection", "-Fstrict=true"])
+                  ["api", "repos/o/r/branches/main/protection", "-Fstrict=true"],
+                  ["api", "-X=PUT", "repos/o/r/branches/main/protection"],
+                  ["api", "-X", "POST", "orgs/vitalharmony/rulesets"])
         reads = (["api", "repos/o/r/branches/main/protection"],
                  ["api", "-X", "GET", "repos/o/r/rulesets"],
                  ["api", "-X", "PUT", "repos/o/r/issues/1"],

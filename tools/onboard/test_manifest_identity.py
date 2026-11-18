@@ -139,7 +139,7 @@ class ProjectForPathTests(unittest.TestCase):
 class SlotEnvTests(unittest.TestCase):
     def test_injects_the_slot_and_strips_both_tokens_without_mutating_os_environ(self) -> None:
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "GITHUB_TOKEN": "u",
-                                          "GH_CONFIG_DIR": "/elsewhere"}):
+                                          "GH_CONFIG_DIR": "/elsewhere", "LANE": ""}):
             env = mi.slot_env("vitalharmony/hrse")
             self.assertNotIn("GH_TOKEN", env)
             self.assertNotIn("GITHUB_TOKEN", env)
@@ -153,9 +153,43 @@ class SlotEnvTests(unittest.TestCase):
         probe.assert_not_called()
 
 
+class SlotEnvLaneTests(unittest.TestCase):
+    """harmonic-forge#1396 preclose pass 1: in a lane, a vitalharmony child runs
+    on the lane slot's file token, never the shared slot (and its keyring)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        (self.home / "vitalharmony-lane2").mkdir()
+
+    def env_for(self, lane: str, repo: str = "vitalharmony/hrse") -> dict[str, str]:
+        with mock.patch.dict(os.environ, {"GH_ACCT_HOME": str(self.home), "LANE": lane,
+                                          "GH_TOKEN": "inherited"}):
+            return mi.slot_env(repo)
+
+    def test_a_lane_gets_its_slot_and_file_token(self) -> None:
+        (self.home / "vitalharmony-lane2" / "hosts.yml").write_text(
+            "github.com:\n    users:\n        vitalharmony:\n            oauth_token: lane2tok\n")
+        env = self.env_for("2")
+        self.assertEqual(env["GH_CONFIG_DIR"], str(self.home / "vitalharmony-lane2"))
+        self.assertEqual(env["GH_TOKEN"], "lane2tok")
+
+    def test_a_lane_slot_without_a_token_passes_none_and_never_the_shared_slot(self) -> None:
+        env = self.env_for("2")
+        self.assertEqual(env["GH_CONFIG_DIR"], str(self.home / "vitalharmony-lane2"))
+        self.assertNotIn("GH_TOKEN", env)
+
+    def test_another_account_in_a_lane_keeps_its_own_slot(self) -> None:
+        env = self.env_for("2", repo="kenekted/kenekted-platform")
+        self.assertEqual(env["GH_CONFIG_DIR"], str(self.home / "harmonicarchitect"))
+        self.assertNotIn("GH_TOKEN", env)
+
+
 class SlotEnvOrNoneTests(unittest.TestCase):
     def test_a_registered_repo_gets_its_slot(self) -> None:
-        env = mi.slot_env_or_none("vitalharmony/hrse")
+        with mock.patch.dict(os.environ, {"LANE": ""}):  # harmonic-forge#1396: outside a lane
+            env = mi.slot_env_or_none("vitalharmony/hrse")
         self.assertEqual(env["GH_CONFIG_DIR"], str(mi.slot_dir("vitalharmony")))
 
     def test_an_unregistered_or_missing_repo_is_none_not_an_error(self) -> None:

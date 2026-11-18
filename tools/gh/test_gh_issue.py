@@ -91,7 +91,7 @@ class TestBoardContextFetchedOnce(unittest.TestCase):
             ("gh", "project", "item-edit"): _completed(""),
         }
 
-        def fake_run(cmd, check=False):
+        def fake_run(cmd, check=False, env=None):
             for prefix, resp in responses.items():
                 if tuple(cmd[:3]) == prefix:
                     return resp
@@ -100,7 +100,7 @@ class TestBoardContextFetchedOnce(unittest.TestCase):
         view_calls = []
         fieldlist_calls = []
 
-        def counting_run(cmd, check=False):
+        def counting_run(cmd, check=False, env=None):
             if tuple(cmd[:3]) == ("gh", "project", "view"):
                 view_calls.append(cmd)
             if tuple(cmd[:3]) == ("gh", "project", "field-list"):
@@ -119,7 +119,7 @@ class TestStandaloneSetTier(unittest.TestCase):
     def test_set_tier_standalone_still_works_for_backfill_use(self):
         calls = []
 
-        def fake_run(cmd, check=False):
+        def fake_run(cmd, check=False, env=None):
             calls.append(cmd)
             if cmd[:3] == ["gh", "project", "view"]:
                 return _completed(VIEW_JSON)

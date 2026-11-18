@@ -63,7 +63,7 @@ def find_item(repo: str, issue: int, board_owner: str, board_number: str) -> str
     which is why `main` refuses cross-owner repos before reaching here.
     """
     repo_owner, repo_name = repo.split("/", 1)
-    result = gh_issue._run(
+    result = gh_issue._run_board(
         ["gh", "api", "graphql", "-f", f"query={_ITEM_QUERY}",
          "-F", f"owner={repo_owner}", "-F", f"repo={repo_name}", "-F", f"number={int(issue)}"],
         check=False,
@@ -148,7 +148,7 @@ def cmd_set(args: argparse.Namespace) -> int:
     for name, value in written:
         try:
             actual = item_list_cache.fetch_issue_field(
-                repo, args.issue, number, field=name, run=lambda cmd: gh_issue._run(cmd, check=False),
+                repo, args.issue, number, field=name, run=lambda cmd: gh_issue._run_board(cmd, check=False),
                 ttl=0, owner=owner)
         except item_list_cache.GhItemListError as exc:
             print(f"[board-fields] cannot re-read {name}: {exc}", file=sys.stderr)

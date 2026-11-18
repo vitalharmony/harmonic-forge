@@ -44,7 +44,7 @@ class FakeGh:
         self.items = items if items is not None else _items(_node("ITEM", 1, "vitalharmony"))
         self.edit_rc = edit_rc
 
-    def __call__(self, cmd, check=False):
+    def __call__(self, cmd, check=False, env=None):
         self.calls.append(list(cmd))
         if cmd[:3] == ["gh", "api", "graphql"]:
             return self.items if isinstance(self.items, SimpleNamespace) else _done(self.items)
