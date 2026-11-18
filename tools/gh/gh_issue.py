@@ -119,12 +119,15 @@ def _run(cmd: list[str], check: bool = True,
     return subprocess.run(cmd, capture_output=True, text=True, check=check, env=env)
 
 
-def _run_board(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+def _run_board(cmd: list[str], check: bool = True,
+               owner: str | None = None) -> subprocess.CompletedProcess:
     """A Projects-board call: in a lane it carries the projects slot's token
     (harmonic-forge#1396, projects_token.projects_env), chosen here by the
     caller's own code and never from the command's text."""
     from projects_token import projects_env  # noqa: PLC0415
-    return _run(cmd, check=check, env=projects_env(cmd))
+    # `owner` names the board when the command names another account
+    # (the issue repo owner in _find_existing_item; harmonic-forge#1396 post-verdict).
+    return _run(cmd, check=check, env=projects_env(cmd, owner=owner))
 
 
 #: harmonic-forge#1032 (R-0397). Words too common in issue titles to identify
@@ -612,7 +615,7 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
          "-f", f"query={_ITEM_ID_QUERY}",
          "-F", f"owner={repo_owner}", "-F", f"repo={repo_name}",
          "-F", f"number={int(issue_number)}"],
-        check=False,
+        check=False, owner=project_owner,
     )
     if result.returncode != 0:
         return None

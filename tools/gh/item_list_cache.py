@@ -647,7 +647,7 @@ def fetch_issue_field(
 
         def run(args: list[str]):
             from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
-            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args))
+            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args, owner=owner))
     return _scan_issue_field(repo, issue_number, project_number, owner, field, run)
 
 
