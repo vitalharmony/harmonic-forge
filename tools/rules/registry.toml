@@ -2951,3 +2951,11 @@ anchor = "live-ui-test-cases-read-the-flow-source-before-scripting"
 statement = "At the gate, once a live UI test case is authorized to execute (R-0128, or the variant's own authorization) and before scripting it, Lane 3 reads the source of every component and handler the flow touches, writes the full step list, rehearses each side-effect-free step on the disposable graph when the spec names one (otherwise only the steps that have no side effects, against the target the authorization names), and runs any bounded-spend action (an LLM call, a paid API, a delete) last; the spec itself is still derived without reading Lane 2's implementation (R-0123); a check asserts the specific element, never a word matched anywhere in body (harmonic-forge#1390)."
 text_sha = "fd300486ca3318e7"
 hooks = []
+
+[[rule]]
+id = "R-0434"
+file = "rules/testing-gate.md"
+anchor = "lane3-preflight-covers-every-lane3-begin-precondition"
+statement = "A repo's lane3-preflight task is the repo-side half of the gate-readiness sweep: it checks every precondition its lane3-begin refuses on (pins, the gate graph's lease, worktree state), so a passing sweep cannot be followed by a stopping lane3-begin; a precondition the task skips is a gap in the task, filed against the repo (harmonic-forge#1391)."
+text_sha = "4cb2aecc233a1ad5"
+hooks = []

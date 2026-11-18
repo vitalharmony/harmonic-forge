@@ -214,6 +214,15 @@ A sweep, AE or ready-for-l3 is composed from this file and `l1_post.py`'s `LEAD_
      months, never declared anywhere, so the first fresh gate venv to
      need it failed cold).
 <!-- /R-0129 -->
+<!-- R-0434 -->
+   - **A repo's `lane3-preflight` task is the repo-side half of this
+     sweep: it checks every precondition its `lane3-begin` refuses on**
+     (pins, the gate graph's lease, worktree state), so a sweep that passes
+     cannot be followed by a `lane3-begin` that stops. `l1_post.py` refuses
+     a sweep on that task's exit code; a precondition the task skips is a
+     gap in the task, filed against the repo (hrse#2786's gate stopped at
+     the lease after its sweep passed; hrse#2788 closed that gap).
+<!-- /R-0434 -->
 <!-- R-0130 -->
 4. After approval, Lane 3 executes tests against Lane 2's implementation.
    Live execution only — an "Evidence type: Source" citation (Lane 3 read
