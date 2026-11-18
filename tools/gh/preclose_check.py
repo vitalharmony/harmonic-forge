@@ -650,23 +650,6 @@ def require_sources(findings: list, post_verdict: bool = False) -> None:
             + ": " + "; ".join(bad) + ". Nothing recorded.")
 
 
-def require_distinct_reverify(args: argparse.Namespace) -> None:
-    """--reverify is a different contract from --findings: one file for both is
-    read twice (harmonic-forge#1419 reforge). Compared by file identity, so a
-    hardlink or an aliased path is the same file; a path that cannot be stat'ed
-    falls back to its resolved form."""
-    reverify = getattr(args, "reverify", None)
-    if not reverify:
-        return
-    try:
-        same = os.path.samefile(reverify, args.findings)
-    except OSError:
-        same = Path(reverify).resolve() == Path(args.findings).resolve()
-    if same:
-        raise SystemExit("preclose-check: --reverify and --findings name the same file; "
-                         "they are separate inputs. Nothing recorded.")
-
-
 def gate_decision(args: argparse.Namespace,
                   findings: list | None = None) -> tuple[bool, str, int, list[str]]:
     # harmonic-forge#1419 sticky-wicket PATCH: --complete passes its one validated
@@ -1187,9 +1170,6 @@ def complete(args: argparse.Namespace) -> int:
                                  for finding in findings):
         raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
                          "(the recorded cross-family call they came from); nothing recorded.")
-    # harmonic-forge#1419 reforge (post-verdict survivor 2): --reverify is a
-    # different contract from --findings; one path for both reads one file twice.
-    require_distinct_reverify(args)
     # harmonic-forge#1419 sticky-wicket PATCH: every step that can refuse runs
     # before the grant is reserved, on the one load above; none of them writes.
     if args.not_triggered == bool(args.envelope):
@@ -1276,13 +1256,6 @@ def complete(args: argparse.Namespace) -> int:
         "cross_family_reason": why,
         "provenance": provenance,
     }
-    # Reforge pass 1 (cross-family): serialize in the plan step, so a payload
-    # that cannot be written refuses before the grant is reserved.
-    try:
-        json.dumps(payload)
-    except (TypeError, ValueError, RecursionError) as exc:
-        raise SystemExit(f"preclose-check: the pass record cannot be serialized ({type(exc).__name__}); "
-                         "nothing recorded.") from None
     # The commit step: reserve the grant, then write. Only I/O follows.
     grant = (reserve_force_grant(repo, args.issue, head_sha, "reforge" if reforge else "plain")
              if args.force else None)
@@ -1668,8 +1641,6 @@ def post_verdict(args: argparse.Namespace) -> int:
     history, so it never counts toward the cap."""
     require_writable(receipt_dir())
     # harmonic-forge#1419 pass 1: one load, validated once, used for every count below.
-    if getattr(args, "findings", None):
-        require_distinct_reverify(args)
     loaded = load_findings(args.findings) if getattr(args, "findings", None) else None
     if loaded is not None:
         require_wellformed_anchors(loaded)

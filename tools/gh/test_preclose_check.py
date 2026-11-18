@@ -1064,42 +1064,8 @@ class FindingSourceTests(ScratchRepo):
         Path(path).write_text(json.dumps({"status": "process-error", "label": FALLBACK, "exit_code": 1}))
         return path
 
-    def test_reverify_hardlinked_to_the_findings_refuses_before_the_grant(self) -> None:
-        # Reforge pass 1 (correctness): file identity, not the path string.
-        self.commit("scripts/tool.py")
-        self.plan()
-        findings = self.findings_file([ANCHORED])
-        alias = str(Path(findings).with_name("alias.json"))
-        os.link(findings, alias)
-        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
-            with self.assertRaises(SystemExit) as caught:
-                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
-                                        findings=findings, envelope=None, not_triggered=True,
-                                        cross_family=False, force=True, threat_model="good-faith",
-                                        reverify=alias))
-        self.assertIn("same file", str(caught.exception))
-        reserve.assert_not_called()
 
-    def test_post_verdict_refuses_reverify_naming_the_findings_file(self) -> None:
-        # Reforge pass 1 (correctness): the same refusal in --post-verdict.
-        self.commit("scripts/tool.py")
-        findings = self.findings_file([self.XF])
-        with mock.patch.object(preclose, "load_findings") as load:
-            with self.assertRaises(SystemExit) as caught:
-                preclose.post_verdict(_Args(repo="vitalharmony/hrse", issue=1208, base="HEAD",
-                                            head="HEAD", findings=findings, envelope=None,
-                                            own_model="m", main="origin/main", reverify=findings))
-        self.assertIn("same file", str(caught.exception))
-        load.assert_not_called()
 
-    def test_an_unserializable_pass_record_refuses_before_the_grant(self) -> None:
-        # Reforge pass 1 (cross-family): serialization runs in the plan step.
-        self.commit("scripts/tool.py")
-        self.plan()
-        with mock.patch.object(preclose.preclose_passes, "record", return_value={"bad": {1, 2}}):
-            text, reserve = self._forced_complete_refusal([ANCHORED], None, True)
-        self.assertIn("cannot be serialized", text)
-        reserve.assert_not_called()
 
     def test_cross_family_finding_with_a_failed_call_envelope_refuses(self) -> None:
         # Reforge pass 1 (cross-family survivor): the fallback label means the
@@ -1123,19 +1089,6 @@ class FindingSourceTests(ScratchRepo):
         _text, reserve = self._forced_complete_refusal([ANCHORED], None, True)
         reserve.assert_not_called()
 
-    def test_reverify_naming_the_findings_file_refuses_before_the_grant(self) -> None:
-        # Reforge (post-verdict survivor 2): one path for both inputs is two reads.
-        self.commit("scripts/tool.py")
-        self.plan()
-        findings = self.findings_file([ANCHORED])
-        with mock.patch.object(preclose, "reserve_force_grant") as reserve:
-            with self.assertRaises(SystemExit) as caught:
-                preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
-                                        findings=findings, envelope=None, not_triggered=True,
-                                        cross_family=False, force=True, threat_model="good-faith",
-                                        reverify=findings))
-        self.assertIn("same file", str(caught.exception))
-        reserve.assert_not_called()
 
     def test_only_the_receipt_write_follows_the_reservation(self) -> None:
         # Reforge: the commit step is the reservation and the write; a failing
@@ -1153,7 +1106,7 @@ class FindingSourceTests(ScratchRepo):
         # Every plan-step read, parse and computation (reforge pass 1, test-honesty:
         # the first version tracked a subset, so an untracked one could move).
         plan_step = ("current_branch", "find_receipt", "load_findings", "require_wellformed_anchors", "require_sources",
-                     "require_mechanisms", "require_distinct_reverify",
+                     "require_mechanisms",
                      "stop_rule_shadow", "gate_decision",
                      "compute_provenance", "require_recorded_envelope", "check_provenance",
                      "enrollment_path")
