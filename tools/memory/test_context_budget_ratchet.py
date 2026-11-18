@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -462,6 +463,31 @@ class TestSymlinkAttribution(unittest.TestCase):
         self.assertNotIn(str(self.outside), line)
         note = line.split("symlink outside the repo: ", 1)[1]
         self.assertFalse(note.startswith("/"), line)
+        self.assertNotIn("../..", note, "relpath climbed toward the root")
+
+    def test_g2_note_forms(self):
+        """Under the repo's parent: `../`; under home: `~/`; else the key."""
+        # Own layout under self.outside: <o>/wt/repo links to <o>/forge/x.md
+        # and <o>/wt/x.md — a `.worktrees/` checkout's shape.
+        repo = self.outside / "wt" / "repo"
+        (repo / ".claude" / "rules").mkdir(parents=True)
+        (self.outside / "forge").mkdir()
+        far = self.outside / "forge" / "x.md"
+        near = self.outside / "wt" / "x.md"
+        for f in (far, near):
+            f.write_text("r", encoding="utf-8")
+        link = repo / self.KEY
+        os.symlink(near, link)
+        self.assertEqual(m._symlink_note(repo, self.KEY),
+                         " (symlink outside the repo: ../x.md)")
+        link.unlink()
+        os.symlink(far, link)
+        with mock.patch.object(m.Path, "home", return_value=self.outside):
+            self.assertEqual(m._symlink_note(repo, self.KEY),
+                             " (symlink outside the repo: ~/forge/x.md)")
+        with mock.patch.object(m.Path, "home", return_value=self.repo):
+            self.assertEqual(m._symlink_note(repo, self.KEY),
+                             f" (symlink outside the repo: {self.KEY})")
 
 
 class TestKeysForFilesOutsideTheRepo(unittest.TestCase):

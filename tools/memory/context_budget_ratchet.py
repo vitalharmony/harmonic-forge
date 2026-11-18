@@ -240,11 +240,17 @@ def _symlink_note(repo: Path, key: str) -> str:
         return ""
     target = os.readlink(link)
     if os.path.isabs(target):
-        try:
-            target = os.path.relpath(Path(target), repo.resolve().parent)
-        except ValueError:
-            target = key
-        if os.path.isabs(target):
+        # Never `os.path.relpath`: from a checkout whose parent does not hold
+        # the target (a `.worktrees/` checkout, a scratch copy) it climbs
+        # `../../..` to the root and spells the home path out anyway.
+        absolute = Path(target)
+        for base, prefix in ((repo.resolve().parent, "../"), (Path.home(), "~/")):
+            try:
+                target = prefix + str(absolute.relative_to(base))
+                break
+            except ValueError:
+                continue
+        else:
             target = key
     return f" (symlink outside the repo: {target})"
 
