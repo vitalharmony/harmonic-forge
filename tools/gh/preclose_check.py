@@ -694,14 +694,16 @@ def gate(args: argparse.Namespace) -> int:
     print()
     print("Then record the pass with the same --findings. The label is computed from the")
     print("envelope, never typed:")
-    tail = ("--envelope <envelope path> [--cross-family-ms <ms>, only for an envelope with no "
-            "duration_ms]" if required
+    tail = ("--envelope <envelope path>" if required
             else "--not-triggered") + \
         " --own-model <your session's model> --panel-tokens <sum> --panel-ms <ms>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
           f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} "
           f"--threat-model <good-faith|hostile-author> {tail}"
           + (" --cross-family" if args.cross_family else ""))
+    if required:
+        print("  (add --cross-family-ms <ms> only for a legacy envelope with no duration_ms;")
+        print("   the measured duration is recorded otherwise, harmonic-forge#1422)")
     print()
     print(NOT_A_GATE)
     return 0
