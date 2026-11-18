@@ -175,10 +175,12 @@ class SlotEnvLaneTests(unittest.TestCase):
         self.assertEqual(env["GH_CONFIG_DIR"], str(self.home / "vitalharmony-lane2"))
         self.assertEqual(env["GH_TOKEN"], "lane2tok")
 
-    def test_a_lane_slot_without_a_token_passes_none_and_never_the_shared_slot(self) -> None:
+    def test_a_lane_slot_without_a_token_fails_closed_and_never_the_keyring(self) -> None:
+        # Preclose pass 2: no GH_TOKEN would let gh read the shared keyring entry.
         env = self.env_for("2")
         self.assertEqual(env["GH_CONFIG_DIR"], str(self.home / "vitalharmony-lane2"))
-        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env["GH_TOKEN"], mi.LANE_SLOT_MISSING_TOKEN)
+        self.assertNotEqual(env["GH_TOKEN"], "inherited")
 
     def test_another_account_in_a_lane_keeps_its_own_slot(self) -> None:
         env = self.env_for("2", repo="kenekted/kenekted-platform")

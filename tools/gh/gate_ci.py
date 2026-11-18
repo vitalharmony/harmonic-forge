@@ -426,10 +426,11 @@ PAT_FORBIDDEN_MESSAGE = "Resource not accessible by personal access token"
 def _required_checks_from_branch(repo: str, branch: str, run) -> set[str] | None:
     """`required_checks` read from `repos/<repo>/branches/<branch>` (harmonic-forge#1396).
 
-    Same three outcomes: a protected branch gives its contexts (null contexts
-    are the empty set, as on the protection read); `protected: false` is the
-    empty set, which is what the admin read's "Branch not protected" 404 gives
-    for the same branch; any failed or unparseable read is None.
+    Same three outcomes: a protected branch gives its contexts (omitted or null
+    contexts are None, unreadable -- stricter than the protection read, which
+    the lane token cannot make); `protected: false` is the empty set, which is
+    what the admin read's "Branch not protected" 404 gives for the same branch;
+    any failed or unparseable read is None.
     """
     code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}",
                      "--jq", "{protected, contexts: .protection.required_status_checks.contexts}"])
@@ -445,7 +446,11 @@ def _required_checks_from_branch(repo: str, branch: str, run) -> set[str] | None
         return set()
     contexts = body.get("contexts")
     if contexts is None:
-        return set()
+        # Preclose pass 2: a protected branch whose response omits contexts
+        # cannot be told apart from one whose contexts the branch read did not
+        # carry, so it is unreadable (None, which every caller refuses), never
+        # "nothing required" (which reads green on whatever ran).
+        return None
     if not isinstance(contexts, list) or not all(isinstance(c, str) for c in contexts):
         return None
     return set(contexts)

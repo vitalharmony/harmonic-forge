@@ -149,12 +149,19 @@ def slot_env(repo: str, path: Path | None = None) -> dict[str, str]:
         # token passes none, so the call fails rather than falling back.
         lane_slot = slot_dir(f"vitalharmony-lane{lane}")
         env["GH_CONFIG_DIR"] = str(lane_slot)
-        token = _hosts_file_token(lane_slot)
-        if token:
-            env["GH_TOKEN"] = token
+        # Preclose pass 2: with no GH_TOKEN, gh reads the shared keyring entry
+        # (every slot logs in as the same user), so a token-less lane slot must
+        # fail closed. This sentinel makes gh's call fail authentication; it is
+        # never the keyring.
+        env["GH_TOKEN"] = _hosts_file_token(lane_slot) or LANE_SLOT_MISSING_TOKEN
         return env
     env["GH_CONFIG_DIR"] = str(slot_dir(account))
     return env
+
+
+#: harmonic-forge#1396: what a lane child carries as GH_TOKEN when its lane slot
+#: has no file token. Not a credential; GitHub rejects it, so the call fails.
+LANE_SLOT_MISSING_TOKEN = "lane-slot-has-no-token-harmonic-forge-1396"
 
 
 def _hosts_file_token(slot: Path) -> str:

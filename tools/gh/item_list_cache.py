@@ -707,7 +707,10 @@ def _fetch_issue_field_live(
 
         def run(args: list[str]):
             from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
-            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args))
+            # The query names the issue's repo owner; the board's owner decides
+            # the token (harmonic-forge#1396 preclose pass 2).
+            return subprocess.run(args, capture_output=True, text=True,
+                                  env=projects_env(args, owner=board_owner))
 
     try:
         owner, name = repo.split("/", 1)

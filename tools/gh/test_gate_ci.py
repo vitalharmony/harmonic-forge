@@ -1453,6 +1453,16 @@ class LaneTokenRequiredChecksTests(unittest.TestCase):
                     verdicts[credential] = (required, state)
                 self.assertEqual(verdicts["admin"], verdicts["lane"], name)
 
+    def test_a_protected_branch_with_omitted_contexts_is_unreadable(self):
+        # Preclose pass 2: never an empty required set, which reads green.
+        for body in ('{"protected": true, "contexts": null}', '{"protected": true}'):
+            with self.subTest(body):
+                def run(cmd, body=body):
+                    if cmd[2].endswith("/protection"):
+                        return 1, self.FORBIDDEN
+                    return 0, body
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+
     def test_a_lane_token_that_cannot_read_the_branch_is_unreadable(self):
         def run(cmd):
             return 1, self.FORBIDDEN

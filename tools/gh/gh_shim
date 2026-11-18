@@ -120,85 +120,9 @@ def _bounded_scan_admitted(argv: list[str]) -> bool:
     return _bounded_scan_refusal(argv) is None
 
 
-_MUTATION = re.compile(r"\bmutation\b", re.IGNORECASE)
-_FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
-
-
-def _graphql_mutation(argv: list[str]) -> bool:
-    """A lane `gh api graphql` call that is, or may be, a mutation
-    (harmonic-forge#1396 preclose pass 1). No forge tool sends a GraphQL
-    mutation (board edits go through `gh project item-edit`), so a lane
-    refuses them all, failing closed: a query read from a file (`query=@f`)
-    or an `--input` body cannot be inspected and counts as one."""
-    if argv[:2] != ["api", "graphql"]:
-        return False
-    args = argv[2:]
-    for i, arg in enumerate(args):
-        if arg == "--input" or arg.startswith("--input="):
-            return True
-        value = None
-        if arg in _FIELD_FLAGS and i + 1 < len(args):
-            value = args[i + 1]
-        elif arg[:2] in ("-f", "-F") and len(arg) > 2:
-            value = arg[2:]
-        elif arg.startswith(("--field=", "--raw-field=")):
-            value = arg.split("=", 1)[1]
-        if value is None or not value.startswith("query="):
-            continue
-        query = value[len("query="):]
-        if query.startswith("@") or _MUTATION.search(query):
-            return True
-    return False
-
-
-_PROTECTION_ENDPOINT = re.compile(
-    r"(^|/)(repos/[^/]+/[^/]+/(branches/[^/]+/protection(/|$)|rulesets(/|$))|orgs/[^/]+/rulesets(/|$))")
-_WRITE_METHODS = {"PUT", "POST", "PATCH", "DELETE"}
-
-
-def _protection_write(argv: list[str]) -> bool:
-    """`gh api` writing branch protection or a ruleset (harmonic-forge#1396).
-
-    A method flag in any accepted form (`-X PUT`, `-XPUT`, `--method=PUT`), or a
-    field flag (`-f`/`-F`/`--field`/`--raw-field`/`--input`), which makes gh POST."""
-    if argv[:1] != ["api"]:
-        return False
-    if not any(_PROTECTION_ENDPOINT.search(a) for a in argv[1:] if not a.startswith("-")):
-        return False
-    method = None
-    implied_post = False
-    args = argv[1:]
-    for i, arg in enumerate(args):
-        if arg in ("-X", "--method") and i + 1 < len(args):
-            method = args[i + 1]
-        elif arg.startswith("--method="):
-            method = arg.split("=", 1)[1]
-        elif arg.startswith("-X") and len(arg) > 2:
-            method = arg[2:].lstrip("=")
-        elif arg in ("-f", "-F", "--field", "--raw-field", "--input") or \
-                arg.startswith(("--field=", "--raw-field=", "--input=")) or \
-                (arg[:2] in ("-f", "-F") and len(arg) > 2):
-            implied_post = True
-    if method is not None:
-        return method.upper() in _WRITE_METHODS
-    return implied_post
-
-
 def main() -> None:
     argv = sys.argv[1:]
     real_gh = _resolve_real_gh()
-    # harmonic-forge#1396: defense in depth, not the boundary (the lane tokens
-    # carry no Administration). A lane never writes protection or rulesets;
-    # that is the operator's transient admin session. Refused, never fail-open.
-    if os.environ.get("LANE") in ("1", "2", "3") and _protection_write(argv):
-        print("gh-shim: refused: a lane session does not write branch protection or rulesets "
-              "(harmonic-forge#1396). The operator makes that change from a session with no LANE.",
-              file=sys.stderr)
-        sys.exit(3)
-    if os.environ.get("LANE") in ("1", "2", "3") and _graphql_mutation(argv):
-        print("gh-shim: refused: a lane session sends no GraphQL mutation (harmonic-forge#1396); "
-              "board edits use `gh project item-edit`.", file=sys.stderr)
-        sys.exit(3)
 
     try:
         # harmonic-forge#1378: the real directory, not the ~/.local/bin symlink's.

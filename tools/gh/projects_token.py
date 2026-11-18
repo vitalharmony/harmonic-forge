@@ -61,7 +61,8 @@ def board_owner(cmd: list[str]) -> str | None:
     return None
 
 
-def projects_env(cmd: list[str], base: dict[str, str] | None = None) -> dict[str, str]:
+def projects_env(cmd: list[str], base: dict[str, str] | None = None,
+                 owner: str | None = None) -> dict[str, str]:
     """The environment for one board command: in a lane, and only for a board
     `vitalharmony` owns, GH_TOKEN is the projects slot's token; otherwise
     `base` (default: this process's environment) unchanged."""
@@ -75,7 +76,9 @@ def projects_env(cmd: list[str], base: dict[str, str] | None = None) -> dict[str
     slot = Path(env.get("GH_CONFIG_DIR", "")).name
     if not slot.startswith(PROJECTS_OWNER):
         return env
-    owner = board_owner(cmd)
+    # An explicit board owner wins over the command's: an issue-field query
+    # names the issue's repo owner, which need not own the board (pass 2).
+    owner = owner if owner is not None else board_owner(cmd)
     if owner is not None and owner != PROJECTS_OWNER:
         return env
     token = slot_token(PROJECTS_SLOT, env.get("GH_ACCT_HOME"))
