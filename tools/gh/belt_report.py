@@ -236,8 +236,13 @@ def hourly_report(records: list[dict]) -> None:
         if ts is None:
             continue
         key = ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
-        h = hours.setdefault(key, {"ticks": 0, "requests": 0, "legacy": 0, "peak": {}})
+        h = hours.setdefault(key, {"ticks": 0, "requests": 0, "legacy": 0, "peak": {},
+                                   "limited": 0})
         h["ticks"] += 1
+        try:  # harmonic-forge#1393 AC5: rate-limited REST calls = calls_rest - calls_304
+            h["limited"] += int(r.get("calls_rest", 0) or 0) - int(r.get("calls_304", 0) or 0)
+        except (TypeError, ValueError):
+            pass
         if "http_requests" not in r:
             h["legacy"] += 1
             continue
@@ -272,6 +277,13 @@ def hourly_report(records: list[dict]) -> None:
         print(f"  {key}:00  {h['ticks']:>5}  {requests:>8}  {peak}")
     if unreadable:
         print(f"  {unreadable} record(s) with unreadable request fields skipped")
+    limited = sorted(h["limited"] for h in hours.values())
+    if limited:
+        # harmonic-forge#1393 AC5: the figure the before/after comparison is made on.
+        p90 = limited[min(len(limited) - 1, (len(limited) * 9) // 10)]
+        print(f"  rate-limited REST per hour (calls_rest - calls_304): "
+              f"median {limited[len(limited) // 2]}  p90 {p90}  peak {limited[-1]}  "
+              f"over {len(limited)} hour(s)")
 
     cutoff = (max(_parse_ts(f"{k}:00:00Z") for k in hours)
               - timedelta(hours=PHASE1_WINDOW_HOURS - 1))
@@ -322,6 +334,13 @@ def report(records: list[dict], malformed_lines: list[str], last: int,
     print(f"  triggers: {dict(Counter(r.get('trigger', '?') for r in records))}")
     print(f"  lock:     {dict(Counter(r.get('lock', '?') for r in records))}")
     print(f"  calls:    rest={rest}  graphql={graphql}")
+    # harmonic-forge#1393 AC4: the conditional-read counters. A 304 does not spend the
+    # primary rate limit, so the rate-limited REST calls are `calls_rest - calls_304`.
+    n304 = sum(int(r.get("calls_304", 0) or 0) for r in records)
+    conditional = sum(int(r.get("calls_conditional", 0) or 0) for r in records)
+    secondary = sum(int(r.get("calls_403_secondary", 0) or 0) for r in records)
+    print(f"  conditional: reads={conditional}  304={n304}  "
+          f"rate_limited_rest={rest - n304}  secondary_403={secondary}")
     hourly_report(records)
 
     # AC4 — name the tick, so the defect is findable rather than merely counted.
