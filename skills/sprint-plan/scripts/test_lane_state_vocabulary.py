@@ -122,6 +122,18 @@ class FooterReading(unittest.TestCase):
                   f"sha=abc; body-sha256={'a' * 64}; checks=x -->` in a post.")
         self.assertEqual(self._subkey(quoted), lane_state.SUBKEY_AWAITING_REVIEW)
 
+    def test_a_digest_in_a_different_footer_does_not_validate_the_first(self) -> None:
+        """Pass 2: the kind is read from the first footer, so the digest and the
+        poster are judged on that same footer, not on any footer in the comment."""
+        two = (LEGACY_READY + "\n\n<!-- l1-post v1; kind=discussion; sha=abc; "
+               f"body-sha256={'a' * 64}; checks=x -->")
+        self.assertEqual(self._subkey(two), lane_state.SUBKEY_AWAITING_REVIEW)
+
+    def test_another_lanes_stamp_in_a_later_footer_does_not_unvalidate_the_first(self) -> None:
+        two = (f"Ready.\n\n<!-- l1-post v1; kind=ready-for-l3; sha=abc; body-sha256={'a' * 64}; "
+               "checks=x -->\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE2 -->")
+        self.assertEqual(self._subkey(two), lane_state.SUBKEY_AWAITING_SPEC)
+
     def test_the_digest_is_not_recomputed(self) -> None:
         """The stated residual: any 64-hex digest inside the footer counts."""
         ready = ("Edited body.\n\n<!-- l1-post v1; kind=ready-for-l3; sha=abc; "

@@ -112,6 +112,9 @@ _FOOTER_OTHER_LANE = re.compile(
 #: Inline code spans, removed before a FOOTER is read so a comment that merely
 #: discusses a footer (`<!-- l1-post v1; kind=ready-for-l3 ... -->`) is not one.
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
+#: One whole footer, from `<!--` to its own `-->`; matched at the position the
+#: kind was read from, so the digest and the poster are judged on that footer.
+_FOOTER_FULL = re.compile(r"<!--\s*l1-post\s+v1;(?:(?!-->).)*-->", re.I | re.S)
 
 #: The headings `l1_post.py` itself validates, mirrored from `AE_HEADING` and
 #: `SWEEP_HEADING` there. They are the CROSS-CHECK (AC1), never the authority:
@@ -460,7 +463,7 @@ _TOKEN_KEY = {("2", "P"): KEY_PLAN_POSTED, ("2", "S"): KEY_PLAN_POSTED,
 _GATE_VERDICT_TOKENS = {("3", "P"), ("3", "F")}
 
 
-def _validated(kind: str, body: str) -> bool:
+def _validated(kind: str, body: str, footer: str | None = None) -> bool:
     """A footer that carries a body digest, from a lane that posts digests.
 
     **The digest is not recomputed** (harmonic-forge#1401, a stated residual):
@@ -469,7 +472,10 @@ def _validated(kind: str, body: str) -> bool:
     comment can already forge any marker this module reads, so ownership
     derived from a footer is trusted to the same degree as every other state.
     """
-    if not _FOOTER_BODY_SHA.search(body):
+    # The digest is judged on THIS footer's own text (harmonic-forge#1401 pass 2):
+    # the kind comes from the first footer, so a digest in a different footer of
+    # the same comment must not validate it.
+    if not _FOOTER_BODY_SHA.search(body if footer is None else footer):
         return False
     heading = _KIND_HEADING.get(kind)
     return heading is None or bool(heading.search(body))
@@ -504,8 +510,10 @@ def _scan_comment(comment: dict) -> list[Transition]:
     kind = footer.group("kind").lower() if footer else ""
     key = _KIND_KEY.get(kind)
     if key is not None:
-        validated = _validated(kind, footer_scope)
-        if kind == "ready-for-l3" and _FOOTER_OTHER_LANE.search(footer_scope):
+        whole = _FOOTER_FULL.match(footer_scope, footer.start())
+        footer_text = whole.group(0) if whole else ""
+        validated = _validated(kind, footer_scope, footer_text)
+        if kind == "ready-for-l3" and _FOOTER_OTHER_LANE.search(footer_text):
             # Only Lane 1 posts a `ready-for-l3` that makes Lane 3 owe the
             # spec; a footer stamped by Lane 2 or Lane 3 is not that post.
             validated = False
