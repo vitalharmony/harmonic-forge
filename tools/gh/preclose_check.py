@@ -397,8 +397,12 @@ def panel_size(reasons: list[str], tier: str | None, lines: int | None = None,
     return TIER_PANEL["standard"], "Tier unset — defaulting to standard"
 
 
-def surviving_findings(findings: list) -> list[dict]:
+def surviving_findings(findings: list, source: str | None = None) -> list[dict]:
     """The findings that survive the filter the plan output states (AC4).
+
+    harmonic-forge#1419: with `source`, only findings from that source
+    (`panel` | `cross-family`; a missing key is `panel`). The cross-family
+    gate reads panel survivors only; every other consumer reads all sources.
 
     A survivor carries a `file:line` anchor AND a concrete failure scenario.
     Counted here, in code, because criterion 1 turns on this number: a panel
@@ -415,6 +419,8 @@ def surviving_findings(findings: list) -> list[dict]:
             continue
         anchor = str(finding.get("anchor") or "").strip()
         scenario = str(finding.get("scenario") or "").strip()
+        if source is not None and finding.get("source", "panel") != source:
+            continue
         if _ANCHOR.fullmatch(anchor) and scenario:
             kept.append(finding)
     return kept
@@ -623,11 +629,39 @@ def require_wellformed_anchors(findings: list) -> None:
               "into the scenario. Nothing recorded.")
 
 
+FINDING_SOURCES = ("panel", "cross-family")
+
+
+def require_sources(findings: list, post_verdict: bool = False) -> None:
+    """harmonic-forge#1419: a finding's `source` is exactly `panel` or
+    `cross-family` (case-sensitive); a missing key is `panel`. A post-verdict
+    finding is the cross-family refuter's by definition, so there `source` is
+    optional and, if present, must be `cross-family`. Anything else would move
+    a survivor into or out of the gate's count unseen, so it refuses."""
+    allowed = ("cross-family",) if post_verdict else FINDING_SOURCES
+    bad = [f"{str(finding.get('anchor') or '<missing anchor>')} (source={finding['source']!r})"
+           for finding in findings if isinstance(finding, dict) and "source" in finding
+           and not (isinstance(finding["source"], str) and finding["source"] in allowed)]
+    if bad:
+        raise SystemExit(
+            "preclose-check: finding `source` must be exactly "
+            + " or ".join(repr(a) for a in allowed)
+            + (" (or omitted)" if post_verdict else " (omitted means 'panel')")
+            + ": " + "; ".join(bad) + ". Nothing recorded.")
+
+
 def gate_decision(args: argparse.Namespace) -> tuple[bool, str, int, list[str]]:
     findings = load_findings(args.findings)
-    surviving = len(surviving_findings(findings))
+    require_sources(findings)
+    # harmonic-forge#1419: silence of the PANEL is the trigger; a cross-family
+    # survivor recorded in the same file must not flip it after the branch ran.
+    surviving = len(surviving_findings(findings, "panel"))
     reasons = blast_radius(changed_files(args.base, args.head))
     required, why = cross_family_gate(surviving, reasons, args.cross_family)
+    cross = sum(1 for finding in findings
+                if isinstance(finding, dict) and finding.get("source") == "cross-family")
+    if cross:
+        why += f" ({cross} cross-family finding(s) present; they do not affect the gate)"
     if imc_forced(registered_repo(args.repo), args.issue):
         # harmonic-forge#895: forced whenever the receipt exists, not while it
         # is live -- keyed on liveness, it would invert at expiry.
@@ -642,7 +676,7 @@ def gate(args: argparse.Namespace) -> int:
     repo = registered_repo(args.repo)
     required, why, surviving, _ = gate_decision(args)
     print(f"preclose-check cross-family gate: {'REQUIRED' if required else 'not triggered'}")
-    print(f"  surviving findings: {surviving}")
+    print(f"  surviving panel findings: {surviving}")
     print(f"  reason: {why}")
     print()
     if required:
@@ -1126,10 +1160,19 @@ def complete(args: argparse.Namespace) -> int:
     try:
         findings = load_findings(args.findings)
         require_wellformed_anchors(findings)
+        require_sources(findings)
         require_mechanisms(findings)
         mechanisms = [preclose_passes.normalize_mechanism(finding["mechanism"])
                       for finding in surviving_findings(findings)]
-        required, why, surviving, reasons = gate_decision(args)
+        required, why, _panel, reasons = gate_decision(args)
+        # harmonic-forge#1419: the gate read panel survivors; the pass outcome
+        # (count, mechanisms, shadow, hostile block, cluster) reads every source.
+        surviving = len(surviving_findings(findings))
+        if not args.envelope and any(isinstance(finding, dict)
+                                     and finding.get("source") == "cross-family"
+                                     for finding in findings):
+            raise SystemExit("preclose-check: findings marked source=cross-family need --envelope "
+                             "(the recorded cross-family call they came from); nothing recorded.")
         if required and args.envelope:
             require_recorded_envelope(args.envelope)
         provenance = compute_provenance(args.envelope, args.not_triggered, getattr(args, "own_model", None))
@@ -1561,6 +1604,7 @@ def post_verdict(args: argparse.Namespace) -> int:
     require_writable(receipt_dir())
     if getattr(args, "findings", None):
         require_wellformed_anchors(load_findings(args.findings))
+        require_sources(load_findings(args.findings), post_verdict=True)
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
     base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()

@@ -134,7 +134,7 @@ class ScratchRepo(unittest.TestCase):
 
     def complete(self, findings: list | None = None, envelope_label: str | None = CROSS,
                  not_triggered: bool = False, cross_family: bool = False,
-                 force: bool = False) -> str:
+                 force: bool = False, threat_model: str = "good-faith") -> str:
         """harmonic-forge#701: a completion carries the panel's findings and an
         envelope (or --not-triggered); the label is computed from it. Default:
         a silent panel, cross-family taken."""
@@ -159,7 +159,7 @@ class ScratchRepo(unittest.TestCase):
             preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="base", head="HEAD",
                                     findings=self.findings_file(findings), envelope=envelope,
                                     not_triggered=not_triggered, cross_family=cross_family,
-                                    force=force))
+                                    force=force, threat_model=threat_model))
         return buffer.getvalue()
 
     def plan(self, **overrides) -> str:
@@ -950,6 +950,115 @@ class CrossFamilyReceiptTests(ScratchRepo):
         self.plan()
         with self.assertRaises(SystemExit):              # required, so not-triggered is refused
             self.complete([dismissed], not_triggered=True)
+
+
+class FindingSourceTests(ScratchRepo):
+    """harmonic-forge#1419: the gate reads panel survivors; the pass outcome
+    reads every source."""
+
+    XF = {"anchor": "scripts/y.py:7", "scenario": "input Z loses the write at line 7",
+          "mechanism": "the unlocked rename", "source": "cross-family"}
+
+    def _stored(self) -> dict:
+        return json.loads(next(preclose.receipt_dir().glob("*.json")).read_text())
+
+    def test_clean_panel_plus_cross_family_survivor_records_with_cross_family_label(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        out = self.complete([dict(ANCHORED, dismissed="not in diff"), self.XF])
+        stored = self._stored()
+        self.assertTrue(stored["cross_family_required"])
+        self.assertIn("cross-family (", stored["provenance"])
+        self.assertEqual(stored["surviving_findings"], 1)
+        self.assertIn("cross-family: required", out)
+
+    def test_receipt_counts_the_cross_family_survivor_and_its_mechanism(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete([self.XF])
+        stored = self._stored()
+        self.assertEqual(stored["surviving_findings"], 1)
+        self.assertEqual(stored["pass_history"][-1]["surviving"], 1)
+        self.assertIn(preclose.preclose_passes.normalize_mechanism(self.XF["mechanism"]),
+                      stored["pass_history"][-1]["mechanisms"])
+
+    def test_hostile_author_pass_blocks_on_the_cross_family_survivor(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        out = self.complete([self.XF], threat_model="hostile-author")
+        self.assertEqual(self._stored()["pass_history"][-1]["hostile_blocking"], [self.XF["anchor"]])
+        self.assertIn("hostile-author block", out)
+
+    def test_gate_on_clean_panel_with_cross_family_survivor_prints_required(self) -> None:
+        self.commit("scripts/tool.py")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            preclose.gate(_Args(repo="vitalharmony/hrse", issue=1208,
+                                findings=self.findings_file([self.XF]),
+                                cross_family=False, base="base", head="HEAD"))
+        out = buffer.getvalue()
+        self.assertIn("gate: REQUIRED", out)
+        self.assertIn("surviving panel findings: 0", out)
+        self.assertIn("do not affect the gate", out)
+
+    def test_panel_survivor_still_keeps_the_gate_untriggered(self) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        with self.assertRaises(SystemExit):
+            self.complete([ANCHORED, self.XF])   # cross-family label on an untriggered gate
+
+    def _refuses(self, findings: list, needle: str, **kwargs) -> None:
+        self.commit("scripts/tool.py")
+        self.plan()
+        before = preclose.find_receipt("vitalharmony/hrse", 1208)
+        with self.assertRaises(SystemExit) as refused:
+            self.complete(findings, **kwargs)
+        self.assertIn(needle, str(refused.exception))
+        self.assertEqual(preclose.find_receipt("vitalharmony/hrse", 1208), before)
+
+    def test_unknown_source_refuses_and_records_nothing(self) -> None:
+        self._refuses([dict(ANCHORED, source="codex")], "scripts/x.py:12 (source='codex')")
+
+    def test_empty_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source="")], "scripts/x.py:12 (source='')")
+
+    def test_whitespace_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source="  ")], "scripts/x.py:12 (source='  ')")
+
+    def test_wrong_case_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source="Cross-Family")], "(source='Cross-Family')")
+
+    def test_non_string_source_refuses(self) -> None:
+        self._refuses([dict(ANCHORED, source=None)], "(source=None)")
+
+    def test_cross_family_source_without_envelope_refuses(self) -> None:
+        self._refuses([ANCHORED, self.XF], "need --envelope", not_triggered=True)
+
+    def test_missing_source_counts_as_panel(self) -> None:
+        self.assertEqual(preclose.surviving_findings([ANCHORED], "panel"), [ANCHORED])
+        self.assertEqual(preclose.surviving_findings([ANCHORED], "cross-family"), [])
+        self.assertEqual(preclose.surviving_findings([dict(ANCHORED, source="panel")], "panel"),
+                         [dict(ANCHORED, source="panel")])
+
+    def _post_verdict(self, finding: dict) -> None:
+        args = argparse.Namespace(repo="vitalharmony/harmonic-forge", issue=848, base="b",
+                                  head="HEAD", main="origin/main", envelope="e.jsonl",
+                                  own_model="claude-opus-5-5",
+                                  findings=self.findings_file([finding]))
+        with patch.object(preclose, "require_writable"):
+            preclose.post_verdict(args)
+
+    def test_post_verdict_refuses_a_panel_source(self) -> None:
+        with self.assertRaises(SystemExit) as refused:
+            self._post_verdict(dict(ANCHORED, source="panel"))
+        self.assertIn("(source='panel')", str(refused.exception))
+
+    def test_post_verdict_accepts_missing_and_cross_family_source(self) -> None:
+        for finding in (ANCHORED, dict(ANCHORED, source="cross-family")):
+            with self.assertRaises(Exception) as later:
+                self._post_verdict(finding)
+            # Got past require_sources to the next check (no receipt/head here).
+            self.assertNotIn("source", str(later.exception))
 
 
 class OwnModelCallSiteTests(unittest.TestCase):
