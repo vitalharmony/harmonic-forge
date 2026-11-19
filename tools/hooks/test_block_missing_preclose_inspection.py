@@ -133,10 +133,13 @@ class DecisionTests(unittest.TestCase):
         # unresolvable-PR case and must NOT fall back to the default.
         if closed_issues is None:
             closed_issues = ["1476"]
+        # harmonic-forge#1433: these cases model an issue WITH a diff; the
+        # no-diff probe is tested on its own in NoDiffCloseTests.
         with mock.patch.object(hook, "resolve_repo", return_value=repo), \
              mock.patch.object(hook, "labels_for", return_value=labels), \
              mock.patch.object(hook, "issues_closed_by_pr",
                                return_value=closed_issues), \
+             mock.patch.object(hook, "_no_diff", return_value=False), \
              mock.patch("sys.stdin", mock.MagicMock()), \
              mock.patch("json.load", return_value=bash(command)), \
              mock.patch("builtins.print") as printed:
@@ -220,6 +223,205 @@ class DecisionTests(unittest.TestCase):
             with self.subTest(label=near):
                 self.assertTrue(self._denied(self._decide(
                     self.CMD, labels={hook.TOOLING_EXCEPTION_LABEL, near})))
+
+
+FORGE = "vitalharmony/harmonic-forge"
+
+
+class FakeGit:
+    """Stands in for `hook._cache_git`: never runs git, never the network.
+    `heads` is the ls-remote branch list, `subjects` origin/main's log;
+    `fail` names one git subcommand that exits nonzero, `raise_on` one that
+    raises (a timeout)."""
+
+    def __init__(self, heads=(), subjects=(), fail=None, raise_on=None):
+        self.heads, self.subjects = list(heads), list(subjects)
+        self.fail, self.raise_on = fail, raise_on
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, path, *args, timeout, env=None):
+        self.calls.append(args)
+        sub = next(a for a in args if not a.startswith("-") and "credential" not in a)
+        if sub == self.raise_on:
+            raise subprocess.TimeoutExpired(["git", sub], timeout)
+        out = ""
+        if sub == "init":
+            (Path(path) / "HEAD").write_text("ref: refs/heads/main\n")
+        if sub == "ls-remote":
+            out = "".join(f"{'a' * 40}\trefs/heads/{h}\n" for h in self.heads)
+        if sub == "log":
+            out = "".join(f"{line}\n" for line in self.subjects)
+        return subprocess.CompletedProcess(["git", *args], 1 if sub == self.fail else 0, out, "")
+
+    def ran(self, sub: str) -> bool:
+        return any(sub in call for call in self.calls)
+
+
+class NoDiffCloseTests(unittest.TestCase):
+    """harmonic-forge#1433: a TE issue close with provably no diff is allowed
+    without `preclose-inspected`; every git failure denies."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        for patcher in (mock.patch.object(hook, "_cache_root", return_value=root),
+                        mock.patch.object(hook, "_slot_env", return_value={})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _decide(self, command: str, git: FakeGit, labels=None,
+                closed_issues=("1433",)) -> dict:
+        labels = {hook.TOOLING_EXCEPTION_LABEL} if labels is None else labels
+        with mock.patch.object(hook, "_cache_git", git), \
+             mock.patch.object(hook, "resolve_repo", return_value=FORGE), \
+             mock.patch.object(hook, "labels_for", return_value=labels), \
+             mock.patch.object(hook, "issues_closed_by_pr", return_value=list(closed_issues)), \
+             mock.patch.object(hook, "_gh", side_effect=AssertionError("no gh")), \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(command)), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        return json.loads(printed.call_args[0][0])
+
+    @staticmethod
+    def _denied(payload: dict) -> bool:
+        return (payload.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny"
+
+    @staticmethod
+    def _reason(payload: dict) -> str:
+        return payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # AC1
+    def test_not_planned_close_with_no_diff_allows(self) -> None:
+        self.assertFalse(self._denied(self._decide(
+            f"gh issue close 637 --repo {FORGE} --reason 'not planned'", FakeGit())))
+
+    def test_not_planned_close_with_a_diff_denies(self) -> None:
+        """A reason alone never allows: the session typed it."""
+        payload = self._decide(f"gh issue close 1433 --repo {FORGE} -r 'not planned'",
+                               FakeGit(heads=["fix/1433-no-diff-te-close"]))
+        self.assertTrue(self._denied(payload))
+        self.assertIn("does not by itself allow", self._reason(payload))
+
+    def test_completed_close_with_a_referencing_main_commit_denies(self) -> None:
+        self.assertTrue(self._denied(self._decide(
+            f"gh issue close 1433 --repo {FORGE}",
+            FakeGit(subjects=["Fix the thing (harmonic-forge#1433) (#1440)"]))))
+
+    # AC2
+    def test_completed_close_with_no_branch_no_commit_allows(self) -> None:
+        for issue in ("1430", "1431"):
+            with self.subTest(issue=issue):
+                git = FakeGit(heads=["main", "feat/1414-x"],
+                              subjects=["Other (harmonic-forge#1416) (#1427)"])
+                self.assertFalse(self._denied(self._decide(
+                    f"gh issue close {issue} --repo {FORGE}", git)))
+                self.assertTrue(git.ran("ls-remote") and git.ran("log"))
+
+    def test_feat_branch_on_origin_denies(self) -> None:
+        self.assertTrue(self._denied(self._decide(
+            f"gh issue close 1414 --repo {FORGE}", FakeGit(heads=["feat/1414-ratchet"]))))
+
+    def test_preclose_prefix_branch_denies(self) -> None:
+        """Every origin head under BRANCH_ISSUE, not only feat|fix."""
+        self.assertTrue(self._denied(self._decide(
+            f"gh issue close 1073 --repo {FORGE}", FakeGit(heads=["preclose/1073-x"]))))
+
+    def test_merged_main_commit_denies_after_branch_deleted(self) -> None:
+        self.assertTrue(self._denied(self._decide(
+            f"gh issue close 1416 --repo {FORGE}",
+            FakeGit(subjects=["Ratchet thing (harmonic-forge#1416) (#1420)"]))))
+
+    def test_both_subject_shapes_deny(self) -> None:
+        for issue, subject in (("1274", "Split (harmonic-forge#1274, forge half) (#1300)"),
+                               ("685", "Pair (harmonic-forge#685, harmonic-forge#686) (#700)"),
+                               ("686", "Pair (harmonic-forge#685, harmonic-forge#686) (#700)"),
+                               ("1433", "lower case HARMONIC-FORGE#1433 too")):
+            with self.subTest(issue=issue):
+                self.assertTrue(self._denied(self._decide(
+                    f"gh issue close {issue} --repo {FORGE}", FakeGit(subjects=[subject]))))
+
+    def test_longer_number_does_not_match(self) -> None:
+        git = FakeGit(heads=["feat/14330-x"], subjects=["X (harmonic-forge#14330) (#1)"])
+        self.assertFalse(self._denied(self._decide(f"gh issue close 1433 --repo {FORGE}", git)))
+
+    def test_other_repo_name_does_not_match(self) -> None:
+        self.assertFalse(self._denied(self._decide(
+            f"gh issue close 1433 --repo {FORGE}", FakeGit(subjects=["X (hrse#1433) (#2)"]))))
+
+    def test_api_close_is_covered(self) -> None:
+        cmd = f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed -f state_reason=not_planned"
+        self.assertFalse(self._denied(self._decide(cmd, FakeGit())))
+        self.assertTrue(self._denied(self._decide(cmd, FakeGit(heads=["fix/1433-y"]))))
+
+    def test_exempt_bit_is_per_close(self) -> None:
+        """`5 -r 'not planned'; 6` -- 6 is a completed close and is judged so."""
+        def no_diff(repo: str, issue: str) -> bool:
+            return issue == "5"
+        with mock.patch.object(hook, "_no_diff", side_effect=no_diff):
+            payload = self._decide(
+                f"gh issue close 5 --repo {FORGE} -r 'not planned'; gh issue close 6 --repo {FORGE}",
+                FakeGit())
+        self.assertTrue(self._denied(payload))
+        self.assertIn(f"{FORGE}#6", self._reason(payload))
+        self.assertNotIn("does not by itself allow", self._reason(payload))
+        self.assertEqual([t[3] for t in hook.find_gated_targets_exempt(
+            f"gh issue close 5 -r 'not planned'; gh issue close 6")], [True, False])
+
+    def test_first_close_with_no_cache_creates_and_fetches(self) -> None:
+        git = FakeGit()
+        self.assertFalse((Path(self._tmp.name) / "vitalharmony" / "harmonic-forge" / "HEAD").exists())
+        self.assertFalse(self._denied(self._decide(f"gh issue close 1430 --repo {FORGE}", git)))
+        self.assertTrue(git.ran("init") and git.ran("fetch"))
+        fetch = next(c for c in git.calls if "fetch" in c)
+        self.assertIn("credential.helper=!gh auth git-credential", fetch)
+        self.assertIn(f"+refs/heads/main:{hook.CACHE_MAIN_REF}", fetch)
+
+    # AC3
+    def test_every_git_failure_denies_naming_the_label(self) -> None:
+        for sub in ("init", "ls-remote", "fetch", "log"):
+            for mode in ("fail", "raise_on"):
+                with self.subTest(sub=sub, mode=mode):
+                    for child in Path(self._tmp.name).iterdir():
+                        import shutil as _sh
+                        _sh.rmtree(child)
+                    payload = self._decide(f"gh issue close 1430 --repo {FORGE}",
+                                           FakeGit(**{mode: sub}))
+                    self.assertTrue(self._denied(payload))
+                    self.assertIn(hook.PRECLOSE_LABEL, self._reason(payload))
+
+    def test_remote_add_failure_denies(self) -> None:
+        class RemoteFails(FakeGit):
+            def __call__(self, path, *args, timeout, env=None):
+                if "remote" in args:
+                    self.calls.append(args)
+                    return subprocess.CompletedProcess(args, 1, "", "")
+                return super().__call__(path, *args, timeout=timeout, env=env)
+        self.assertTrue(self._denied(self._decide(f"gh issue close 1430 --repo {FORGE}",
+                                                  RemoteFails())))
+
+    def test_budget_exhausted_denies(self) -> None:
+        with mock.patch.object(hook, "FETCH_BUDGET_SECONDS", 0):
+            self.assertTrue(self._denied(self._decide(f"gh issue close 1430 --repo {FORGE}",
+                                                      FakeGit())))
+
+    # AC4
+    def test_pr_merge_unchanged_never_probes(self) -> None:
+        git = FakeGit()
+        self.assertTrue(self._denied(self._decide(
+            f"gh pr merge 1440 --repo {FORGE} --squash", git, closed_issues=("1430",))))
+        self.assertEqual(git.calls, [])
+
+    def test_labelled_or_non_te_issue_never_probes(self) -> None:
+        for labels in ({"bug"}, {hook.TOOLING_EXCEPTION_LABEL, hook.PRECLOSE_LABEL}):
+            with self.subTest(labels=labels), \
+                 mock.patch.object(hook, "_close_block", return_value=None):
+                git = FakeGit()
+                self.assertFalse(self._denied(self._decide(
+                    f"gh issue close 1430 --repo {FORGE}", git, labels=labels)))
+                self.assertEqual(git.calls, [])
 
 
 class PrShaBindingTests(unittest.TestCase):

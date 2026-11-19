@@ -60,6 +60,29 @@ is not applying it, so this docstring, the deny message, and the protocol
 docs may all quote the mechanism freely. Label application is also a
 timeline event carrying actor and timestamp, which a pasted comment is not.
 
+## A close with no diff to inspect (harmonic-forge#1433)
+
+A bare issue close (`gh issue close`, or the REST `state=closed` PATCH) of a
+`tooling-exception` issue without `preclose-inspected` is allowed when there
+is provably no diff anywhere: no origin branch head whose name matches
+`BRANCH_ISSUE` for the issue, and no `origin/main` commit subject matching
+`(?i)<repo-name>#<N>(?!\d)` (the squash title convention). Both reads run in
+the per-repo cache clone, created and fetched on first use under
+`FETCH_BUDGET_SECONDS`. Any git failure counts as "a diff may exist" and
+denies: this allowance fails CLOSED. Without it the only way through for a
+spike or a superseded issue was applying `preclose-inspected`, the
+escape-hatch-as-lie the section above rejects.
+
+A not-planned / duplicate close must pass the same no-diff test: a reason
+the session types itself is self-asserted, so it never allows alone. Each
+close carries its own exempt bit from its own tokens (used for the deny
+text), never one bit for a whole compound command. Merges are unchanged: a
+merge always has a diff.
+
+The issue timeline was rejected as the signal: a TE PR names its issue only
+in its title, which creates no cross-reference (harmonic-forge#1416's
+timeline is empty although it merged as 648522e).
+
 **It does not and cannot prevent the merge or close.** Fail-open by design,
 same rationale as every sibling hook here: it sees nothing of `gh api
 graphql` mutations, heredoc bodies, the GitHub web UI, or a merge/close
@@ -83,6 +106,7 @@ from hook_identity import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+from block_undetermined_phase_close import is_exempt_close  # noqa: E402
 
 # harmonic-forge#1077: the shared acceptance primitive, loaded once at import
 # so every reader below (and batch_preflight, which asks this hook) resolves
@@ -302,19 +326,27 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
 
     Returns None when the command cannot be tokenized (fail-open).
     """
+    found = find_gated_targets_exempt(command)
+    return None if found is None else [t[:3] for t in found]
+
+
+def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, bool]] | None:
+    """`find_gated_targets`, each target carrying its own exempt bit: True
+    only for an issue close whose OWN tokens say not planned / duplicate
+    (`is_exempt_close`). harmonic-forge#1433: never one bit per command."""
     try:
         segments = command_segments(command)
     except ValueError:
         return None
 
-    targets: list[tuple[str | None, str, str]] = []
+    targets: list[tuple[str | None, str, str, bool]] = []
     for raw_tokens in segments:
         shell_index = next((i for i, token in enumerate(raw_tokens)
                             if Path(token).name in {"bash", "sh", "zsh"}
                             and i + 2 < len(raw_tokens)
                             and raw_tokens[i + 1] in {"-c", "-lc", "--command"}), None)
         if shell_index is not None:
-            nested_targets = find_gated_targets(raw_tokens[shell_index + 2])
+            nested_targets = find_gated_targets_exempt(raw_tokens[shell_index + 2])
             if nested_targets is None:
                 return None
             targets.extend(nested_targets)
@@ -327,7 +359,8 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
         parsed = (_parse_issue_close(tokens) or _parse_pr_merge(tokens)
                   or _parse_api_merge(tokens) or _parse_api_close(tokens))
         if parsed:
-            targets.append(parsed)
+            exempt = parsed[2] == "issue" and is_exempt_close(tokens)
+            targets.append((*parsed, exempt))
     return targets
 
 
@@ -384,9 +417,18 @@ def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
     return [match.group(1)] if match else []
 
 
-def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
+def _deny_message(repo: str, issue: str, via_pr: str | None, exempt: bool = False) -> str:
     what = (f"PR #{via_pr}, which is for {repo}#{issue}," if via_pr
             else f"{repo}#{issue}")
+    tail = ""
+    if via_pr is None:
+        tail = (f"\n\nA close with no diff anywhere (no origin branch for #{issue} and no "
+                f"origin/main commit naming {repo.split('/')[-1]}#{issue}) is allowed without "
+                f"the label (harmonic-forge#1433). This one has a diff, or the git probe "
+                f"failed, which denies (fail closed).")
+        if exempt:
+            tail += ("\n\nA not-planned / duplicate reason does not by itself allow the "
+                     "close: it must pass the same no-diff test.")
     return (
         f"Blocked: {what} is labelled {TOOLING_EXCEPTION_LABEL!r} and does "
         f"not carry {PRECLOSE_LABEL!r}, so nothing records that "
@@ -401,7 +443,7 @@ def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
         f"This hook only makes the merge/close require a deliberate labelling "
         f"action -- it cannot prevent one, and does not see graphql "
         f"mutations, heredoc bodies, or web-UI merges and closes."
-    )
+    ) + tail
 
 
 def _pr_head_sha(repo: str, pr: str) -> str | None:
@@ -461,11 +503,13 @@ def _priming_command(repo: str, pr: str) -> str:
             f"+refs/heads/main:{CACHE_MAIN_REF}")
 
 
-def _cache_checkout(repo: str, pr: str, head_sha: str, recorded: dict) -> str | None:
-    """harmonic-forge#1077: the per-repo cache clone, freshly fetched, holding
-    the PR's head (which must still be `head_sha`), main, and the recorded
-    commits (b) replays. None on any failure or on the budget running out --
-    which denies, never accepts."""
+#: `-c` options every authenticated cache-clone network call carries.
+CACHE_AUTH = ("-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential")
+
+
+def _budget():
+    """A `left()` returning the seconds left of one FETCH_BUDGET_SECONDS
+    budget, raising TimeoutError once it is spent."""
     deadline = time.monotonic() + FETCH_BUDGET_SECONDS
 
     def left() -> float:
@@ -473,22 +517,78 @@ def _cache_checkout(repo: str, pr: str, head_sha: str, recorded: dict) -> str | 
         if remaining <= 0:
             raise TimeoutError("cache fetch budget exhausted")
         return remaining
+    return left
 
-    try:
-        path = _cache_path(repo)
-        if path is None or not re.fullmatch(r"\d+", str(pr)):
+
+def _cache_prepare(repo: str, left) -> tuple[Path, dict] | None:
+    """harmonic-forge#1433: the per-repo bare cache clone, created on first
+    use with its `origin` remote set, plus the slot env for authenticated
+    calls. Shared by the merge path and the no-diff close probe. None on
+    failure."""
+    path = _cache_path(repo)
+    if path is None:
+        return None
+    env = {**os.environ, **(_slot_env(repo) or {})}
+    if not (path / "HEAD").exists():
+        path.mkdir(parents=True, exist_ok=True)
+        if _cache_git(path, "init", "--bare", "-q", timeout=left()).returncode:
             return None
-        env = {**os.environ, **(_slot_env(repo) or {})}
-        fetch = ("-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
-                 "fetch", "--no-tags", "--quiet", "origin")
-        if not (path / "HEAD").exists():
-            path.mkdir(parents=True, exist_ok=True)
-            if _cache_git(path, "init", "--bare", "-q", timeout=left()).returncode:
-                return None
-        url = _cache_remote_url(repo)
-        if _cache_git(path, "remote", "set-url", "origin", url, timeout=left()).returncode:
-            if _cache_git(path, "remote", "add", "origin", url, timeout=left()).returncode:
-                return None
+    url = _cache_remote_url(repo)
+    if _cache_git(path, "remote", "set-url", "origin", url, timeout=left()).returncode:
+        if _cache_git(path, "remote", "add", "origin", url, timeout=left()).returncode:
+            return None
+    return path, env
+
+
+def _no_diff(repo: str, issue: str) -> bool:
+    """harmonic-forge#1433: True only when `repo`#`issue` provably has no diff
+    to inspect: no origin branch head matching `BRANCH_ISSUE` for it, and no
+    `origin/main` commit subject matching `(?i)<repo-name>#<issue>(?!\\d)`.
+    Any git failure, timeout or exception returns False (deny)."""
+    try:
+        if not re.fullmatch(r"\d+", str(issue)):
+            return False
+        left = _budget()
+        prepared = _cache_prepare(repo, left)
+        if prepared is None:
+            return False
+        path, env = prepared
+        heads = _cache_git(path, *CACHE_AUTH, "ls-remote", "--heads", "origin",
+                           timeout=left(), env=env)
+        if heads.returncode:
+            return False
+        for line in heads.stdout.splitlines():
+            ref = line.split("\t", 1)[-1].strip()
+            name = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+            match = BRANCH_ISSUE.match(name)
+            if match and int(match.group(1)) == int(issue):
+                return False
+        if _cache_git(path, *CACHE_AUTH, "fetch", "--no-tags", "--quiet", "origin",
+                      f"+refs/heads/main:{CACHE_MAIN_REF}", timeout=left(), env=env).returncode:
+            return False
+        log = _cache_git(path, "log", "--format=%s", CACHE_MAIN_REF, timeout=left())
+        if log.returncode:
+            return False
+        subject = re.compile(rf"(?i){re.escape(repo.split('/')[-1])}#{int(issue)}(?!\d)")
+        return not any(subject.search(line) for line in log.stdout.splitlines())
+    except Exception:  # noqa: BLE001 -- cannot tell = a diff may exist = deny
+        return False
+
+
+def _cache_checkout(repo: str, pr: str, head_sha: str, recorded: dict) -> str | None:
+    """harmonic-forge#1077: the per-repo cache clone, freshly fetched, holding
+    the PR's head (which must still be `head_sha`), main, and the recorded
+    commits (b) replays. None on any failure or on the budget running out --
+    which denies, never accepts."""
+    left = _budget()
+    try:
+        if not re.fullmatch(r"\d+", str(pr)):
+            return None
+        prepared = _cache_prepare(repo, left)
+        if prepared is None:
+            return None
+        path, env = prepared
+        fetch = (*CACHE_AUTH, "fetch", "--no-tags", "--quiet", "origin")
         if _cache_git(path, *fetch, f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}",
                       f"+refs/heads/main:{CACHE_MAIN_REF}", timeout=left(), env=env).returncode:
             return None
@@ -754,12 +854,12 @@ def main() -> None:
     command = (data.get("tool_input") or {}).get("command", "")
     payload_cwd = data.get("cwd") or None
 
-    targets = find_gated_targets(command)
+    targets = find_gated_targets_exempt(command)
     if not targets:
         _allow()
         return
 
-    if any(kind == "pr" and not number for _, number, kind in targets):
+    if any(kind == "pr" and not number for _, number, kind, _exempt in targets):
         _deny("Blocked: `gh pr merge` with no PR number merges the current branch's PR, "
               "which this hook cannot bind to a reviewed head (harmonic-forge#1077). Name "
               "the PR explicitly, e.g.:\n"
@@ -767,7 +867,7 @@ def main() -> None:
         return
 
     resolved: dict[str | None, str | None] = {}
-    for explicit_repo, number, kind in targets:
+    for explicit_repo, number, kind, exempt in targets:
         if explicit_repo not in resolved:
             resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
         repo = resolved[explicit_repo]
@@ -802,7 +902,12 @@ def main() -> None:
                 _acting = None
 
             if PRECLOSE_LABEL not in labels:
-                _deny(_deny_message(repo, issue, via_pr), target_key=_acting)
+                # harmonic-forge#1433: a bare close with provably no diff has
+                # nothing to inspect. A not-planned reason (exempt) never
+                # allows alone; it passes the same test. Merges unchanged.
+                if kind == "issue" and _no_diff(repo, issue):
+                    continue
+                _deny(_deny_message(repo, issue, via_pr, exempt), target_key=_acting)
                 return
 
             # harmonic-forge#778 AC3/AC5: the label alone says a review
