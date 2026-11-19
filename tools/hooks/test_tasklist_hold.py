@@ -555,6 +555,15 @@ class InProgressAtStop(Base):
             self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
         self.assertIn("rule 4 not checked", err.getvalue())
 
+    def test_a_marker_and_an_in_progress_entry_are_named_in_one_block(self):
+        """Pass 1 cluster: the chain's one block must name both reasons."""
+        owed.record("F9", "handoff", session=SESSION)
+        self.entry(1, "F1291 — PATCH committed · implement", status="in_progress")
+        verdict, reason = hold.stop_decide(self.stop())
+        self.assertEqual(verdict, "block")
+        self.assertIn("F9", reason)
+        self.assertIn("F1291 — PATCH committed", reason)
+
     def test_stop_hook_active_still_allows(self):
         self.entry(1, "F1291 — x", status="in_progress")
         out = io.StringIO()

@@ -313,18 +313,25 @@ def stop_decide(payload: dict) -> tuple[str, str]:
     transcript = payload.get("transcript_path") or ""
     if transcript and asks_a_question(last_assistant_text(Path(transcript))):
         return "allow", ""
+    # harmonic-forge#1445 pass 1 (sticky-wicket PATCH): one block names every
+    # reason. A stop chain gets one block (stop_hook_active lets the next Stop
+    # through), so a marker block that dropped the in_progress list would let
+    # the stall end the turn.
+    sections = []
     if found:
         missing = [f"  - {m['key']}: after `{m.get('kind') or 'post'}`, create or rewrite its entry"
                    for m in found]
-        return "block", ("Task-list entries owe an update for this turn's posts:\n"
-                         + "\n".join(missing)
-                         + f"\n\nEach entry reads \"{SHAPE}\" (tools/hooks/tasklist_hold.py).")
-    names = [f"  - {e.get('subject') or e.get('id')}" for e in active]
-    return "block", ("These task entries are still in_progress, so a step was left mid-way "
-                     "(R-0413 rule 4, harmonic-forge#1445):\n" + "\n".join(names)
-                     + "\n\nFinish the step now, or, if it waits on something outside this turn "
-                     "(another lane, YOU:, CI, a running background job), set it to pending with "
-                     "that `waiting on` named.")
+        sections.append("Task-list entries owe an update for this turn's posts:\n"
+                        + "\n".join(missing)
+                        + f"\n\nEach entry reads \"{SHAPE}\" (tools/hooks/tasklist_hold.py).")
+    if active:
+        names = [f"  - {e.get('subject') or e.get('id')}" for e in active]
+        sections.append("These task entries are still in_progress, so a step was left mid-way "
+                        "(R-0413 rule 4, harmonic-forge#1445):\n" + "\n".join(names)
+                        + "\n\nFinish the step now, or, if it waits on something outside this turn "
+                        "(another lane, YOU:, CI, a running background job), set it to pending with "
+                        "that `waiting on` named.")
+    return "block", "\n\n".join(sections)
 
 
 def main() -> int:
