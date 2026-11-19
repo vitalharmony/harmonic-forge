@@ -36,6 +36,14 @@ class KillCheckTests(unittest.TestCase):
         session.start()
         self.addCleanup(session.stop)
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        # harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+        # no-session bucket, never a skip, so removing the session id no longer
+        # turns the precheck off. Stub the tool-side check for this scope instead.
+        import unittest.mock as _pf_mock  # noqa: PLC0415
+        _pf = _pf_mock.patch("_preflight.require", return_value=None)
+        _pf.start()
+        self.addCleanup(_pf.stop)
+        self._preflight_stub = _pf  # the precheck's own tests stop it
         # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
         # is refused under /tmp (harmonic-forge#949).
         (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
@@ -111,6 +119,7 @@ class KillCheckTests(unittest.TestCase):
                                           "PREFLIGHT_RECEIPT_DIR": str(self.root / "receipts")})
         session.start()
         self.addCleanup(session.stop)
+        self._preflight_stub.stop()  # these test the precheck itself
 
     def test_run_needs_validate_in_a_session(self) -> None:
         self._in_session()
@@ -484,6 +493,14 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
         session.start()
         self.addCleanup(session.stop)
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        # harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+        # no-session bucket, never a skip, so removing the session id no longer
+        # turns the precheck off. Stub the tool-side check for this scope instead.
+        import unittest.mock as _pf_mock  # noqa: PLC0415
+        _pf = _pf_mock.patch("_preflight.require", return_value=None)
+        _pf.start()
+        self.addCleanup(_pf.stop)
+        self._preflight_stub = _pf  # the precheck's own tests stop it
         # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
         # is refused under /tmp (harmonic-forge#949).
         (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)

@@ -197,9 +197,13 @@ class DryRunTests(Harness):
         self.assertIn(NEEDLE, self.run_main(*self.r4l3(sha=SHA_B, body=body))[0])
         self.assertIsNone(self.run_main(*self.r4l3(body=body))[0])
 
-    def test_sessionless_caller_not_gated(self):
-        """AC5."""
+    def test_sessionless_caller_is_gated_in_its_own_bucket(self):
+        """harmonic-forge#1291 operator ruling 2026-11-19 (supersedes AC5): a
+        blank session is the no-session bucket, never a skip."""
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            self.assertIn(NEEDLE, self.run_main(*self.r4l3())[0])
+            self.posted.assert_not_called()
+            self.assertIsNone(self.run_main(*self.r4l3("--dry-run"))[0])
             self.assertIsNone(self.run_main(*self.r4l3())[0])
         self.posted.assert_called_once()
 

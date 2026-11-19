@@ -515,9 +515,18 @@ def kill_receipt(issue: int, base: str, head: str, env: dict[str, str], scratch:
     except (Blocked, te_queue.kill_runner.RunnerError) as exc:
         log("kill-check", str(exc))
         return False
-    result = run([sys.executable, str(HERE.parent / "gh" / "kill_check.py"), "run",
-                  "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
-                  "--checks", str(checks)], cwd=SOURCE, env=oracle_env(env))
+    argv = [sys.executable, str(HERE.parent / "gh" / "kill_check.py"), "run",
+            "--repo", te_queue.REPO, "--issue", str(issue), "--base", base, "--head", head,
+            "--checks", str(checks)]
+    # harmonic-forge#1291 (operator ruling 2026-11-19): a session-less caller is
+    # the no-session bucket, never a skip, so the runner runs the precheck form
+    # first; it writes the receipt the real run's consume() reads.
+    validate = run([*argv, "--validate"], cwd=SOURCE, env=oracle_env(env))
+    keep(scratch, "kill_check_validate", validate)
+    if validate.returncode != 0:
+        log("kill-check", "validate: " + (validate.stdout.strip().splitlines() or ["no output"])[-1])
+        return False
+    result = run(argv, cwd=SOURCE, env=oracle_env(env))
     keep(scratch, "kill_check", result)
     log("kill-check", (result.stdout.strip().splitlines() or ["no output"])[-1])
     return result.returncode == 0

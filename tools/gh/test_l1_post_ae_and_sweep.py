@@ -54,6 +54,10 @@ _SWEEP_CALLS_PATCH = _ci_mock.patch.object(
 # gate does not apply, so the outcome cannot depend on the caller's
 # CLAUDE_CODE_SESSION_ID (set in any Claude session and in kill_check runs).
 _NO_SESSION_PATCH = _ci_mock.patch.dict("os.environ")
+# harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+# no-session bucket, never a skip, so removing the session id no longer
+# turns the precheck off. Stub the tool-side check for this scope instead.
+_PREFLIGHT_PATCH = _ci_mock.patch("_preflight.require", return_value=None)
 
 
 # harmonic-forge#1218: Lane 3's environment has its own tests
@@ -68,9 +72,11 @@ def setUpModule():  # noqa: N802
     _NO_SESSION_PATCH.start()
     import os
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    _PREFLIGHT_PATCH.start()
 
 
 def tearDownModule():  # noqa: N802
+    _PREFLIGHT_PATCH.stop()
     _LANE3_ENV_PATCH.stop()
     _CI_PATCH.stop()
     _SWEEP_CALLS_PATCH.stop()

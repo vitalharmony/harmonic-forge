@@ -55,6 +55,14 @@ class _Fixture(unittest.TestCase):
         # preflight gate; an inherited session id would make them depend on
         # whatever receipts the calling session holds. Preflight is tested below.
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        # harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+        # no-session bucket, never a skip, so removing the session id no longer
+        # turns the precheck off. Stub the tool-side check for this scope instead.
+        import unittest.mock as _pf_mock  # noqa: PLC0415
+        _pf = _pf_mock.patch("_preflight.require", return_value=None)
+        _pf.start()
+        self.addCleanup(_pf.stop)
+        self._preflight_stub = _pf  # the precheck's own tests stop it
         self.origin = self.tmp / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)], check=True)
         self.repo = self.tmp / "repo"
@@ -103,6 +111,7 @@ class CheckPreflightTest(_Fixture):
 
     def setUp(self):
         super().setUp()
+        self._preflight_stub.stop()  # these test the precheck itself
         os.environ["CLAUDE_CODE_SESSION_ID"] = "test-session-1215"
         os.environ["PREFLIGHT_RECEIPT_DIR"] = str(self.tmp / "receipts")
         # harmonic-forge#1291: only lane1_rebase itself (argv[0]) writes its receipt.

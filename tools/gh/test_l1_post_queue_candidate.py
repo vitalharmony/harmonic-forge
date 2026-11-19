@@ -143,6 +143,10 @@ import os as _os  # noqa: E402
 from unittest import mock as _session_mock  # noqa: E402
 
 _NO_SESSION_PATCH = _session_mock.patch.dict(_os.environ)
+# harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+# no-session bucket, never a skip, so removing the session id no longer
+# turns the precheck off. Stub the tool-side check for this module instead.
+_PREFLIGHT_PATCH = _session_mock.patch("_preflight.require", return_value=None)
 
 
 _LANE3_ENV_PATCH = _session_mock.patch.object(L._lane3_env, "check", return_value=[])
@@ -152,10 +156,12 @@ def setUpModule():  # noqa: N802
     _LANE3_ENV_PATCH.start()
     _NO_SESSION_PATCH.start()
     _os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    _PREFLIGHT_PATCH.start()
 
 
 def tearDownModule():  # noqa: N802
     _LANE3_ENV_PATCH.stop()
+    _PREFLIGHT_PATCH.stop()
     _NO_SESSION_PATCH.stop()
 
 

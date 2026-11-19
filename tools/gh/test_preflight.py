@@ -17,10 +17,20 @@ import _preflight  # noqa: E402
 from test_l1_post_dry_run import Harness  # noqa: E402
 
 PRECLOSE = HERE / "preclose_check.py"
-PRECLOSE_TOOL = "tools/gh/preclose_check.py"
+#: The module-level sample: kill_check's real run. preclose_check's FORCE modes
+#: are grant-guarded only (harmonic-forge#1291 operator ruling 2026-11-19).
+KILL = HERE / "kill_check.py"
+TOOL = "tools/gh/kill_check.py"
 REBASE = HERE.parent / "lane" / "lane1_rebase.py"
 NEEDLE = "no live precheck receipt for this exact call"
-BASE = ["--repo", "vitalharmony/harmonic-forge", "--issue", "1", "--complete"]
+
+
+def real(checks: str, issue: str = "1") -> list[str]:
+    return ["run", "--repo", "vitalharmony/harmonic-forge", "--issue", issue, "--checks", checks]
+
+
+def precheck(checks: str, issue: str = "1") -> list[str]:
+    return [*real(checks, issue), "--validate"]
 
 
 class PreflightTests(unittest.TestCase):
@@ -32,9 +42,14 @@ class PreflightTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, self.env)
         patcher.start()
         self.addCleanup(patcher.stop)
-        argv0 = mock.patch.object(sys, "argv", [str(PRECLOSE)])
+        argv0 = mock.patch.object(sys, "argv", [str(KILL)])
         argv0.start()
         self.addCleanup(argv0.stop)
+        work = tempfile.TemporaryDirectory()  # outside the store, which tests count *.json in
+        self.addCleanup(work.cleanup)
+        self.checks = str(Path(work.name) / "checks.json")
+        Path(self.checks).write_text("[]")
+        self.REAL, self.BASE = real(self.checks), precheck(self.checks)
 
     def run_tool(self, *argv, session="session-a"):
         env = {**self.env, "CLAUDE_CODE_SESSION_ID": session}
@@ -44,56 +59,58 @@ class PreflightTests(unittest.TestCase):
     # --- the module -------------------------------------------------------
 
     def test_refuse_then_allow(self) -> None:
-        forced = [*BASE, "--force"]
-        self.assertIn(NEEDLE, _preflight.require(PRECLOSE_TOOL, forced, "cmd --complete"))
-        self.assertIn("cmd --complete", _preflight.require(PRECLOSE_TOOL, forced, "cmd --complete"))
-        _preflight.record(PRECLOSE_TOOL, BASE)
-        self.assertIsNone(_preflight.require(PRECLOSE_TOOL, forced))
+        self.assertIn(NEEDLE, _preflight.require(TOOL, self.REAL, "cmd --validate"))
+        self.assertIn("cmd --validate", _preflight.require(TOOL, self.REAL, "cmd --validate"))
+        _preflight.record(TOOL, self.BASE)
+        self.assertIsNone(_preflight.require(TOOL, self.REAL))
 
     def test_the_precheck_form_itself_is_never_refused(self) -> None:
-        self.assertIsNone(_preflight.require(PRECLOSE_TOOL, BASE))
+        self.assertIsNone(_preflight.require(TOOL, self.BASE))
 
     def test_another_sessions_receipt_does_not_count(self) -> None:
-        _preflight.record(PRECLOSE_TOOL, BASE)
+        _preflight.record(TOOL, self.BASE)
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "session-b"}):
-            self.assertIsNotNone(_preflight.require(PRECLOSE_TOOL, [*BASE, "--force"]))
+            self.assertIsNotNone(_preflight.require(TOOL, self.REAL))
 
-    def test_empty_session_is_not_enforced(self) -> None:
+    def test_empty_session_is_the_no_session_bucket(self) -> None:
+        """harmonic-forge#1291 operator ruling 2026-11-19: a blank session is
+        never a skip; it has its own receipts, which no named session shares."""
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
-            self.assertIsNone(_preflight.require(PRECLOSE_TOOL, [*BASE, "--force"]))
-            _preflight.record(PRECLOSE_TOOL, BASE)  # writes nothing, raises nothing
-        self.assertEqual(list(Path(self.tmp.name).rglob("*.json")), [])
+            self.assertIn(NEEDLE, _preflight.require(TOOL, self.REAL))
+            _preflight.record(TOOL, self.BASE)
+            self.assertIsNone(_preflight.require(TOOL, self.REAL))
+        self.assertIn(NEEDLE, _preflight.require(TOOL, self.REAL))
 
     def test_concurrent_records_keep_both_receipts(self) -> None:
         issues = [str(i) for i in range(1, 9)]
-        argvs = [["--repo", "vitalharmony/harmonic-forge", "--issue", i, "--complete"] for i in issues]
-        threads = [threading.Thread(target=_preflight.record, args=(PRECLOSE_TOOL, a)) for a in argvs]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        for argv in argvs:
-            self.assertIsNone(_preflight.require(PRECLOSE_TOOL, [*argv, "--force"]), argv)
+        threads = [threading.Thread(target=_preflight.record, args=(TOOL, precheck(self.checks, i)))
+                   for i in issues]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        for i in issues:
+            self.assertIsNone(_preflight.require(TOOL, real(self.checks, i)), i)
         self.assertEqual(list(Path(self.tmp.name).rglob(".tmp-*")), [])
 
     def test_only_the_tool_itself_records(self) -> None:
         with mock.patch.object(sys, "argv", ["/usr/bin/pytest"]), mock.patch("sys.stderr") as err:
-            _preflight.record(PRECLOSE_TOOL, BASE)
+            _preflight.record(TOOL, self.BASE)
         self.assertTrue(any("receipt not written" in str(c) for c in err.write.call_args_list))
-        self.assertIsNotNone(_preflight.require(PRECLOSE_TOOL, [*BASE, "--force"]))
+        self.assertIsNotNone(_preflight.require(TOOL, self.REAL))
 
     def test_record_never_raises_when_the_store_write_fails(self) -> None:
         """Sticky PATCH: os.replace and the cleanup unlink both fail; no raise."""
         with mock.patch("gate_receipt.os.replace", side_effect=PermissionError("store")), \
              mock.patch("gate_receipt.Path.unlink", side_effect=PermissionError("cleanup")), \
              mock.patch("sys.stderr") as err:
-            _preflight.record(PRECLOSE_TOOL, BASE)  # must not raise
+            _preflight.record(TOOL, self.BASE)  # must not raise
         self.assertTrue(any("receipt not written" in str(c) for c in err.write.call_args_list))
-        self.assertIsNotNone(_preflight.require(PRECLOSE_TOOL, [*BASE, "--force"]))
+        self.assertIsNotNone(_preflight.require(TOOL, self.REAL))
 
     def test_refusal_names_the_store(self) -> None:
         """Sticky PATCH: the guarded refusal names the store, so it does not loop."""
-        self.assertIn(self.tmp.name, _preflight.require(PRECLOSE_TOOL, [*BASE, "--force"]))
+        self.assertIn(self.tmp.name, _preflight.require(TOOL, self.REAL))
 
     # --- the tools, end to end --------------------------------------------
 
@@ -111,28 +128,13 @@ class PreflightTests(unittest.TestCase):
         return self.run_tool(PRECLOSE, "--repo", "vitalharmony/harmonic-forge",
                              "--issue", issue, *extra, session=session)
 
-    def test_preclose_force_needs_the_same_run_without_force(self) -> None:
-        forced = self._preclose("--complete", "--force", "--findings", "/nonexistent", "--own-model", "m")
-        self.assertNotEqual(forced.returncode, 0)
-        self.assertIn(NEEDLE, forced.stderr)
-        self.assertNotIn("--force", forced.stderr.split(NEEDLE)[1].splitlines()[1])
-
-    def test_failed_precheck_run_writes_no_receipt(self) -> None:
-        """harmonic-forge#1291 decision 2: preclose records only after the
-        non-force run succeeds, never before it runs."""
-        failed = self._preclose("--complete", "--findings", "/nonexistent", "--own-model", "m")
-        self.assertNotEqual(failed.returncode, 0)
+    def test_preclose_force_is_not_precheck_gated(self) -> None:
+        """harmonic-forge#1291 operator ruling 2026-11-19 (finding 8): a forced
+        preclose run is guarded by its FORCE grant only, never by a precheck."""
+        for force in ("--force", "--forc"):
+            forced = self._preclose("--complete", force, "--findings", "/nonexistent", "--own-model", "m")
+            self.assertNotIn(NEEDLE, forced.stderr, force)
         self.assertEqual(list(Path(self.tmp.name).rglob("*.json")), [])
-        self.assertIn(NEEDLE, self._preclose("--complete", "--force", "--findings", "/nonexistent",
-                                             "--own-model", "m").stderr)
-
-    def test_abbreviated_force_suggests_an_unforced_command(self) -> None:
-        """Preclose pass 1: argparse accepts `--forc`; the suggestion must not."""
-        forced = self._preclose("--complete", "--forc", "--findings", "/nonexistent",
-                                "--own-model", "m")
-        self.assertIn(NEEDLE, forced.stderr)
-        suggestion = forced.stderr.split(NEEDLE)[1].splitlines()[1]
-        self.assertNotIn("--fo", suggestion)
 
     def test_rejected_no_force_run_writes_no_receipt(self) -> None:
         """Preclose pass 1: a run main() rejects (no --own-model) is no preflight."""
