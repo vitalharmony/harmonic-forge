@@ -262,9 +262,9 @@ def posting_head(worktree: str | None, repo: str) -> str | None:
     """harmonic-forge#1416: the 40-hex HEAD of the posting worktree, or None with one
     stderr warning when the worktree's origin is not `repo` or git fails. Never raises:
     a missing head only means the footer omits the field, and the post still goes."""
-    import watch_lane_posts  # noqa: PLC0415  (heavy; only a completion needs it)
     where = worktree or os.getcwd()
     try:
+        import watch_lane_posts  # noqa: PLC0415  (heavy; only a completion needs it)
         origin = watch_lane_posts._worktree_repo(where)
         if origin is None or origin.lower() != repo.lower():
             print(f"l2-post: worktree {where} is not a checkout of {repo} (origin "

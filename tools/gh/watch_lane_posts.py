@@ -692,7 +692,7 @@ def _run_git(worktree: str, *args: str) -> str | None:
     try:
         result = subprocess.run(["git", "-C", worktree, *args],
                                 capture_output=True, text=True)
-    except OSError:  # harmonic-forge#1416: no git to launch reads as "could not check"
+    except (OSError, UnicodeDecodeError):  # harmonic-forge#1416: an unreadable git reads as "could not check"
         return None
     if result.returncode != 0:
         return None
@@ -844,7 +844,7 @@ def _is_ancestor(worktree: str, ancestor: str, descendant: str) -> bool | None:
     try:
         result = subprocess.run(["git", "-C", worktree, "merge-base", "--is-ancestor",
                                  ancestor, descendant], capture_output=True, text=True)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     return {0: True, 1: False}.get(result.returncode)
 
@@ -877,7 +877,7 @@ def _since_completion(worktree: str, reported: str) -> str | None:
         replay = subprocess.run(["git", "-C", worktree, "merge-tree", "--write-tree",
                                  "--merge-base", base_r, base_h, reported],
                                 capture_output=True, text=True)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if replay.returncode == 1:  # a conflicted replay: HEAD is not a clean rebase of R
         return "rework since its last completion"

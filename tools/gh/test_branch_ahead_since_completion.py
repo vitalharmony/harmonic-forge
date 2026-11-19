@@ -249,6 +249,25 @@ class SilentFailureTests(Repos):  # AC7
             self.assertIsNone(wlp._since_completion(str(self.lane), reported))
 
 
+class PassOneSurvivorTests(Repos):
+    """harmonic-forge#1416 preclose pass 1: neither the stamp helper nor the git
+    helpers may raise."""
+
+    def test_an_import_failure_in_posting_head_omits_head_and_never_raises(self) -> None:
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"watch_lane_posts": None}), contextlib.redirect_stderr(err):
+            self.assertIsNone(l2_post.posting_head(str(self.lane), "o/r"))
+        self.assertIn("head=", err.getvalue())
+
+    def test_undecodable_git_output_is_silent(self) -> None:
+        reported = self.reported()
+        bad = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        with mock.patch.object(wlp.subprocess, "run", side_effect=bad):
+            self.assertIsNone(wlp._run_git(str(self.lane), "rev-parse", "HEAD"))
+            self.assertIsNone(wlp._is_ancestor(str(self.lane), reported, "HEAD"))
+            self.assertIsNone(wlp._since_completion(str(self.lane), reported))
+
+
 class RegressionTests(Repos):  # AC8
     def test_no_completion_still_announces(self) -> None:
         self.reported()
