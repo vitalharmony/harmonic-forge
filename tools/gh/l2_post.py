@@ -200,7 +200,7 @@ def reject_reserved_marker(body: str) -> None:
 
 
 def compose_body(kind: str, receipts: list[dict], narrative: str,
-                 lead: dict[str, str] | None = None) -> str:
+                 lead: dict[str, str] | None = None, head: str | None = None) -> str:
     """Outcome first, evidence collapsed (harmonic-forge#472).
 
     Two changes from the shape this replaced, both structural rather than
@@ -252,7 +252,35 @@ def compose_body(kind: str, receipts: list[dict], narrative: str,
         f"</details>\n"
     )
     reject_reserved_marker(body)
-    return body + f"\n<!-- l1-post v1; kind={kind}; posted-by=LANE2 -->\n"
+    # harmonic-forge#1416: a completion records the head it reports, read from git by
+    # `posting_head`, so the belt can tell later work from what this post covered.
+    stamp = f"; head={head}" if kind == "completion" and head and re.fullmatch(r"[0-9a-f]{40}", head) else ""
+    return body + f"\n<!-- l1-post v1; kind={kind}; posted-by=LANE2{stamp} -->\n"
+
+
+def posting_head(worktree: str | None, repo: str) -> str | None:
+    """harmonic-forge#1416: the 40-hex HEAD of the posting worktree, or None with one
+    stderr warning when the worktree's origin is not `repo` or git fails. Never raises:
+    a missing head only means the footer omits the field, and the post still goes."""
+    import watch_lane_posts  # noqa: PLC0415  (heavy; only a completion needs it)
+    where = worktree or os.getcwd()
+    try:
+        origin = watch_lane_posts._worktree_repo(where)
+        if origin is None or origin.lower() != repo.lower():
+            print(f"l2-post: worktree {where} is not a checkout of {repo} (origin "
+                  f"{origin or 'unreadable'}); the completion carries no head= field",
+                  file=sys.stderr)
+            return None
+        head = watch_lane_posts._run_git(where, "rev-parse", "--verify", "HEAD^{commit}")
+    except Exception as exc:  # noqa: BLE001 - the post must never fail on this
+        print(f"l2-post: could not read HEAD in {where} ({type(exc).__name__}); "
+              "the completion carries no head= field", file=sys.stderr)
+        return None
+    if not head or not re.fullmatch(r"[0-9a-f]{40}", head):
+        print(f"l2-post: could not read HEAD in {where}; the completion carries no head= field",
+              file=sys.stderr)
+        return None
+    return head
 
 
 def validate_lead(kind: str, lead: dict[str, str]) -> None:
@@ -488,6 +516,10 @@ def main() -> int:
     post_p.add_argument("--change", default="",
                         help="Lead block: what changed, or what blocks. Required "
                              "for --kind completion/blocked.")
+    post_p.add_argument("--worktree", default=None,
+                        help="harmonic-forge#1416: the checkout whose HEAD a completion reports. "
+                             "Defaults to the caller's directory (HF_CALLER_CWD under the mise "
+                             "wrapper), else the process cwd.")
     post_p.add_argument("--next", dest="next_action", default="",
                         help="Lead block: the literal next action. Required for "
                              "--kind completion/blocked.")
@@ -502,6 +534,11 @@ def main() -> int:
     lock_p.add_argument("--resolution-comment", type=int, required=True)
 
     args = parser.parse_args()
+    # harmonic-forge#1416: read before resolve_args pops it -- under the mise wrapper the
+    # process cwd is the forge root, so cwd's HEAD would be a wrong but valid SHA.
+    caller_cwd = os.environ.get(_caller_path.CALLER_CWD)
+    if getattr(args, "worktree", None) is None and getattr(args, "action", None) == "post":
+        args.worktree = caller_cwd
     _caller_path.resolve_args(args, 'narrative_file', 'real_run_file', 'receipts')  # harmonic-forge#1117 AC2
     for task in ('l2-post', 'l2-snapshot', 'l2-resolve-lock'):
         _caller_path.refuse_repo_override(parser, task)
@@ -547,7 +584,8 @@ def main() -> int:
         real_run = args.real_run_file.read_text() if args.real_run_file else None
         require_real_run(args.repo, args.issue, real_run)
         narrative = with_real_run(narrative, real_run)
-    body = compose_body(args.kind, receipts, narrative, lead)
+    head = posting_head(args.worktree, args.repo) if args.kind == "completion" else None
+    body = compose_body(args.kind, receipts, narrative, lead, head=head)
     if args.kind == "completion":
         # hrse#2218: a completion is Lane 2's finish line; name any orphaned test graph. Report
         # only: it prints, and cannot change what is posted.
