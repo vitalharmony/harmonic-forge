@@ -39,7 +39,26 @@
             "receipt",
             "freshness"
           ],
-          "min_share": 1.0
+          "min_share": 1.0,
+          "tools": [
+            "board_fields",
+            "gh-api",
+            "gh-issue-close",
+            "gh-issue-list",
+            "gh-new-issue",
+            "gh-pr-create",
+            "gh-pr-merge",
+            "gh-workflow-run",
+            "git-push",
+            "imc_waiver",
+            "kill_check",
+            "l1_post",
+            "l2_post",
+            "lane1-rebase",
+            "post-comment",
+            "post-lane-discussion",
+            "preclose_check"
+          ]
         },
         "sample_max_refusals": 0
       }

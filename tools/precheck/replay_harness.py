@@ -88,6 +88,8 @@ LAYER_SET_KEYS = frozenset({"version", "layers", "existing", "accepted_uncovered
 LAYER_KEYS = frozenset({"name", "claims", "claims_basis", "module", "bar"})
 BAR_KEYS = frozenset({"replay", "sample_max_refusals"})
 REPLAY_KEYS = frozenset({"classes", "min_share"})
+#: Optional replay-bar key (harmonic-forge#1291): the tools the bar scores.
+REPLAY_OPTIONAL = frozenset({"tools"})
 CLAIMS_BASES = ("validated", "declared")
 #: Owner labels the report reserves; an `existing` label may not take one.
 UNCOVERED = "UNCOVERED"
@@ -116,7 +118,18 @@ def _parse_bar(bar, classes: set[str], where: str) -> tuple[dict | None, int | N
     _exact_keys(bar, BAR_KEYS, f"{where} bar")
     replay = bar["replay"]
     if replay is not None:
-        _exact_keys(replay, REPLAY_KEYS, f"{where} replay bar")
+        if not isinstance(replay, dict):
+            raise Refused(f"{where} replay bar must be an object")
+        # "tools" alone is optional: absent means every tool, today's class-only bar.
+        _exact_keys({k: v for k, v in replay.items() if k not in REPLAY_OPTIONAL}, REPLAY_KEYS,
+                    f"{where} replay bar")
+        if "tools" in replay:
+            tools = replay["tools"]
+            # An empty list is a parse error, never "no scope": it would score nothing.
+            if (not isinstance(tools, list) or not tools
+                    or any(not isinstance(t, str) or not t for t in tools)
+                    or len(set(tools)) != len(tools)):
+                raise Refused(f"{where}: replay bar tools must be a non-empty list of distinct non-empty names")
         share = replay["min_share"]
         if (not isinstance(replay["classes"], list) or not replay["classes"]
                 or any(not isinstance(c, str) or c not in classes for c in replay["classes"])
@@ -340,13 +353,15 @@ def replay_bar(layer: dict, replay: dict) -> dict | None:
     bar = layer["replay_bar"]
     if bar is None:
         return None  # refuses: a layer with no replay bar has a sample bar (parser)
-    relevant = [owner for (_tool, klass), owner in replay["_rows"] if klass in bar["classes"]]
+    scope = bar.get("tools")
+    rows = [row for row in replay["_rows"] if scope is None or row[0][0] in scope]
+    relevant = [owner for (_tool, klass), owner in rows if klass in bar["classes"]]
     # Identity, never the name: ("layer", index) is this layer and no other.
     total, claimed = len(relevant), sum(1 for owner in relevant if owner == ("layer", layer["index"]))
     name = f"{layer['name']}.coverage" + (" (declared claims)" if layer["claims_basis"] == "declared" else "")
     # Nothing to score is a failure, never a pass, and that holds per class: one
     # populated class must not stand in for an empty one (harmonic-forge#1289 epoch 5).
-    present = {klass for (_tool, klass), _owner in replay["_rows"]}
+    present = {klass for (_tool, klass), _owner in rows}
     if any(klass not in present for klass in bar["classes"]):
         return {"bar": name, "status": "fails", "claimed": claimed, "total": total}
     holds = claimed / total >= bar["min_share"]

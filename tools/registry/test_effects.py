@@ -454,7 +454,12 @@ class TestGenerated(unittest.TestCase):
         gate_index = [layer["name"] for layer in design["layers"]].index("gate")
         layer = document["layers"][gate_index]
         self.assertEqual((layer["name"], layer["claims_basis"], layer["module"]), ("registry", "validated", "../gate.py"))
-        self.assertEqual(layer["bar"], design["layers"][gate_index]["bar"])
+        design_bar = json.loads(json.dumps(design["layers"][gate_index]["bar"]))
+        design_bar["replay"]["tools"] = effects.gated_replay_tools(REGISTRY)
+        self.assertEqual(layer["bar"], design_bar)
+        for other in document["layers"]:
+            if other["name"] != "registry":
+                self.assertNotIn("tools", other["bar"]["replay"] or {})
         self.assertEqual([lay["name"] for lay in parsed["layers"]], ["lint", "registry", "provenance"])
         cited = {f"{tool}|{klass}" for tool, klass, cite in effects.claims(REGISTRY) if cite}
         for claim in layer["claims"]:
@@ -462,6 +467,36 @@ class TestGenerated(unittest.TestCase):
             self.assertIn(claim, cited)
         self.assertIn("gh-pr-merge|receipt", layer["claims"])
         self.assertIn("git-push|receipt", layer["claims"])
+
+    def test_scope_is_every_gated_mode_claimed_or_not(self):
+        # harmonic-forge#1291: an unclaimed gated tool is in scope, so its slips
+        # count against the bar; a read-only tool is not.
+        fx = fixture(tool('''
+            [[tool.mode]]
+            name = "post"
+            match = ["post"]
+            class = "shared-state"
+            cite = ["tools/gh/t.py:1"]
+            gap = "no precheck yet"
+            [[tool.mode]]
+            name = "show"
+            match = ["show"]
+            class = "read"
+            cite = ["tools/gh/t.py:1"]
+            ''', extra='replay_tool = "gh-api"') + tool('''
+            [[tool.mode]]
+            name = "show"
+            match = ["show"]
+            class = "read"
+            cite = ["tools/gh/r.py:1"]
+            ''', path="tools/gh/r.py", extra='replay_tool = "git-push"'),
+            {"tools/gh/t.py": SCRIPT, "tools/gh/r.py": SCRIPT})
+        self.addCleanup(fx.close)
+        registry = fx.load()
+        self.assertEqual(effects.claims(registry), [])
+        self.assertEqual(effects.gated_replay_tools(registry), ["gh-api"])
+        self.assertEqual(effects.layerset(registry)["bar"]["replay"]["tools"], ["gh-api"])
+        self.assertEqual(effects.gated_modes_without_alias(registry), [])
 
     def test_cli(self):
         import contextlib

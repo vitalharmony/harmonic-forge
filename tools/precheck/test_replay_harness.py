@@ -643,6 +643,56 @@ SAMPLE_ROW = {"n": 1, "id": "t1", "ts": None, "session": None, "sidechain": Fals
               "cwd": "/srv/work", "class": "read", "command": "ls"}
 
 
+class ToolsScope(Harness):
+    """harmonic-forge#1291: an optional `tools` list scopes a replay bar."""
+
+    def scoped(self, tools, claims=("gh-api|receipt",)) -> Path:
+        replay = {"classes": ["receipt"], "min_share": 1.0}
+        if tools is not None:
+            replay["tools"] = tools
+        return self.layer_set([{"name": "gate", "claims": list(claims), "bar": {"replay": replay}}])
+
+    def test_parser_accepts_a_tools_list(self):
+        parsed = rh.load_layer_set(self.scoped(["gh-api", "git-push"]))
+        self.assertEqual(parsed["layers"][0]["replay_bar"]["tools"], ["gh-api", "git-push"])
+
+    def test_parser_rejects_a_bad_tools_value(self):
+        for bad in ([], "gh-api", [""], [1], ["gh-api", "gh-api"], None):
+            with self.subTest(tools=bad):
+                with self.assertRaisesRegex(rh.Refused, "replay bar tools"):
+                    rh.load_layer_set(self.scoped(bad) if bad is not None else self.layer_set(
+                        [{"name": "gate", "claims": ["*|receipt"],
+                          "bar": {"replay": {"classes": ["receipt"], "min_share": 1.0, "tools": None}}}]))
+
+    def test_scoped_bar_counts_only_in_scope_tools(self):
+        self.slip("gh-api|receipt")
+        self.slip("operator-commands-block|receipt")
+        code, out, _err = self.run_score(self.scoped(["gh-api"]))
+        self.assertIn("gate.coverage 1/1 holds", out)
+        self.assertEqual(code, 0)
+
+    def test_scoped_bar_with_a_layer_claiming_nothing_fails(self):
+        # Non-vacuous: scope narrows what is counted, never what must be claimed.
+        self.slip("gh-api|receipt")
+        self.slip("operator-commands-block|receipt")
+        code, out, _err = self.run_score(self.scoped(["gh-api"], claims=("other|receipt",)))
+        self.assertIn("gate.coverage 0/1 fails", out)
+        self.assertEqual(code, 4)
+
+    def test_absent_scope_counts_every_tool(self):
+        self.slip("gh-api|receipt")
+        self.slip("operator-commands-block|receipt")
+        code, out, _err = self.run_score(self.scoped(None))
+        self.assertIn("gate.coverage 1/2 fails", out)
+        self.assertEqual(code, 4)
+
+    def test_scope_with_no_in_scope_slip_fails(self):
+        self.slip("operator-commands-block|receipt")
+        code, out, _err = self.run_score(self.scoped(["gh-api"]))
+        self.assertIn("gate.coverage 0/0 fails", out)
+        self.assertEqual(code, 4)
+
+
 class ParserValues(Harness):
     """Epoch 5: every value check on the layer set, one refusal each."""
 

@@ -708,15 +708,39 @@ def claims(registry: dict) -> list[tuple[str, str, str]]:
     return out
 
 
+def gated_replay_tools(registry: dict) -> list[str]:
+    """The replay-tool aliases of every registered mode (and outside family) at
+    shared state or above, claimed or not (harmonic-forge#1291): the registry
+    bar's scope. Claims never narrow it, or an unclaimed tool's slips would drop
+    out and the bar would hold by definition."""
+    scope = {name for t in registry["tools"] for m in t["modes"] if RANK[m["class"]] >= GATED
+             for name in t["replay_tools"]}
+    scope |= {name for o in registry["outside"] if RANK[o["class"]] >= GATED for name in o["replay_tools"]}
+    return sorted(scope)
+
+
+def gated_modes_without_alias(registry: dict) -> list[str]:
+    """`path mode` for each gated mode whose tool has no replay alias: modes the
+    tools-scoped bar cannot see (README disclosure)."""
+    out = [f"{t['path']} {m['name']}" for t in registry["tools"] for m in t["modes"]
+           if RANK[m["class"]] >= GATED and not t["replay_tools"]]
+    out += [f"outside {o['family']}" for o in registry["outside"]
+            if RANK[o["class"]] >= GATED and not o["replay_tools"]]
+    return out
+
+
 def layerset(registry: dict | None = None, design: Path = DESIGN_LAYER_SET) -> dict:
-    """One `registry` layer: validated claims only, design-v1's gate bar verbatim."""
+    """One `registry` layer: validated claims only, design-v1's gate bar scoped
+    to the gated modes' replay tools."""
     registry = registry if registry is not None else load()
     gate = next(layer for layer in json.loads(design.read_text(encoding="utf-8"))["layers"]
                 if layer["name"] == "gate")
     claimed = sorted({f"{tool}|{klass}" for tool, klass, cite in claims(registry)
                       if cite and klass not in NEVER_CLAIMED})
+    bar = json.loads(json.dumps(gate["bar"]))
+    bar["replay"]["tools"] = gated_replay_tools(registry)
     return {"name": "registry", "claims": claimed, "claims_basis": "validated", "module": "../gate.py",
-            "bar": gate["bar"]}
+            "bar": bar}
 
 
 def layer_set_document(registry: dict | None = None, design: Path = DESIGN_LAYER_SET) -> str:
