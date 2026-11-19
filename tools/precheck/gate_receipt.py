@@ -103,11 +103,12 @@ def registry() -> dict:
 
 @functools.lru_cache(maxsize=1)
 def tool_options() -> dict:
+    # harmonic-forge#1291 pass 2 (sticky-wicket PATCH): an unreadable catalog
+    # raises. Read as `{}` it classified every real run as ungated on both
+    # sides; raising makes consume() fail before the effect, and the hook's
+    # fail-open is safe because the tool still refuses.
     path = FORGE_ROOT / "tools" / "precheck" / "tool_options.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def precheck_tool(path: str) -> dict | None:
@@ -255,21 +256,28 @@ def precheck_argv(tool: dict, mode: dict, argv: list[str]) -> list[str]:
 # --------------------------------------------------------------------------
 # The state fingerprint (decision 4).
 
-def _flag_value(argv: list[str], flag: str) -> str | None:
+def _flag_value(argv: list[str], flag: str, options: list[str] | None = None) -> str | None:
+    """The value `flag` carries in `argv`. With `options` (a prefix-accepting
+    mode), an abbreviated spelling argparse resolves to `flag` (`--fi` for
+    `--file`) counts too, through the same `resolve_option` classify and
+    canonical use (harmonic-forge#1291 pass 2, sticky-wicket PATCH)."""
     for index, token in enumerate(argv):
-        if token == flag and index + 1 < len(argv):
-            return argv[index + 1]
-        if token.startswith(flag + "="):
+        name = token.split("=", 1)[0]
+        if name != flag and not (options is not None and resolve_option(token, options, True) == flag):
+            continue
+        if "=" in token and token.startswith("--"):
             return token.split("=", 1)[1]
+        if index + 1 < len(argv):
+            return argv[index + 1]
     return None
 
 
-def _arg(argv: list[str], spec: str) -> str | None:
+def _arg(argv: list[str], spec: str, options: list[str] | None = None) -> str | None:
     if spec.startswith("#"):
         index = int(spec[1:])
         return argv[index] if index < len(argv) else None
     if spec.startswith("-"):
-        return _flag_value(argv, spec)
+        return _flag_value(argv, spec, options)
     return None
 
 
@@ -322,7 +330,8 @@ def fingerprint(tool: dict, mode: dict, argv: list[str], cwd: str | Path,
     cwd = Path(cwd)
     canon = canonical(tool, mode, argv)
     bind_args = mode["bind_args"]
-    git_dir = _arg(canon, bind_args["git_dir"]) if "git_dir" in bind_args else None
+    opts = _options(tool, mode) if mode["prefix"] else None
+    git_dir = _arg(canon, bind_args["git_dir"], opts) if "git_dir" in bind_args else None
     git_dir = _path(cwd, git_dir) if git_dir else cwd
     state: dict[str, object] = {}
     for bind in mode["binds"]:
@@ -330,19 +339,19 @@ def fingerprint(tool: dict, mode: dict, argv: list[str], cwd: str | Path,
             continue
         spec = bind_args[bind]
         if bind == "head_sha":
-            ref = (_arg(canon, spec) if spec != "cwd" else None) or "HEAD"
+            ref = (_arg(canon, spec, opts) if spec != "cwd" else None) or "HEAD"
             state[bind] = _git_sha(git_dir, f"{ref}^{{commit}}", deadline)
         elif bind == "origin_main_sha":
             state[bind] = _git_sha(git_dir, "refs/remotes/origin/main", deadline)
         elif bind == "origin_branch_sha":
-            branch = _arg(canon, spec) or ""
+            branch = _arg(canon, spec, opts) or ""
             state[bind] = _git_sha(git_dir, f"refs/remotes/origin/{branch}", deadline)
         elif bind == "checks_file":
-            value = _arg(canon, spec)
+            value = _arg(canon, spec, opts)
             state[bind] = _checks_digest(_path(cwd, value), cwd) if value else "absent"
         elif bind == "body_content":
             specs = spec if isinstance(spec, list) else [spec]
-            state[bind] = {s: (_file_digest(_path(cwd, v)) if (v := _arg(canon, s)) else None)
+            state[bind] = {s: (_file_digest(_path(cwd, v)) if (v := _arg(canon, s, opts)) else None)
                            for s in specs}
         _remaining(deadline)
     blob = json.dumps({"tool": tool["path"], "mode": mode["name"], "argv": canon, "state": state},

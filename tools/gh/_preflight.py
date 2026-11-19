@@ -91,8 +91,10 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 | `curl, wget` | outside command | external-publish | gap: no guard on an HTTP write |
 | `podman, docker` | outside command | shared-state | gap: no guard on a container write |
 
-The session is `CLAUDE_CODE_SESSION_ID`. An empty value (a non-Claude caller,
-CI) is not enforced: an unidentified caller is never blocked. The id is hashed
+The session is `CLAUDE_CODE_SESSION_ID`. An empty or missing value (a
+non-Claude caller, CI, the operator's shell) is the fixed `no-session` bucket,
+which needs its own receipt like any session (harmonic-forge#1291, operator
+ruling 2026-11-19): it is never a skip. The id is hashed
 into the path, so no value of it can name a directory outside the receipt store.
 """
 from __future__ import annotations

@@ -119,11 +119,18 @@ class Decision3RefusalText(GateCase):
         self.assertIn("FORCE <KEY> gate ", self.decide("python3 tools/gh/repo_hygiene.py --prune-worktrees"))
 
     def test_refusal_records_are_never_overwritten(self) -> None:
+        """Pass 2 (test-honesty): write the SAME id twice with different content;
+        the first record must survive (open("x")), or a FORCE line could bind to
+        a call the operator never saw."""
         reason = self.decide(FORCE_CMD)
         rid = reason.split("Refusal id: ")[1][:12]
-        before = (self.root / "store" / "refusals" / f"{rid}.json").read_text()
-        self.decide(FORCE_CMD)
-        self.assertEqual((self.root / "store" / "refusals" / f"{rid}.json").read_text(), before)
+        path = self.root / "store" / "refusals" / f"{rid}.json"
+        before = path.read_text()
+        other = gate._Call(R.precheck_tool(KILL), ["run", "--repo", "o/x", "--issue", "9", "--checks", "c.json"],
+                           ["python3", KILL], None)
+        mode = R.classify(other.tool, other.argv)[0]
+        gate.write_refusal(rid, "another-session", "F9", other, mode, "f" * 64, 1.0)
+        self.assertEqual(path.read_text(), before)
 
     def test_mise_wrapper_gated(self) -> None:
         reason = self.decide("mise run kill-check -- run --repo vitalharmony/harmonic-forge --issue 1291 "
@@ -205,6 +212,25 @@ class Decision5Override(GateCase):
         self.assertIsNone(self.decide(f"{FORCE_CMD} && {FORCE_CMD}"))
         self.assertIsNotNone(self.decide(f"{FORCE_CMD} && python3 tools/gh/repo_hygiene.py --prune-worktrees"))
         self.assertEqual(force_grant.read_grant("F1291").get("status"), "usable")
+
+    def test_an_abbreviated_bound_flag_is_still_bound(self) -> None:
+        """Pass 2 (correctness, silent-bypass, cross-family): `--check` is argparse's
+        `--checks`; editing that file after the precheck must kill the receipt."""
+        short = FORCE_CMD.replace("--checks", "--check")
+        self.record(KILL, shlex.split(short + " --validate")[2:])
+        self.assertIsNone(self.decide(short))
+        (self.repo / "checks.json").write_text('[{"patch": "x"}]')
+        self.assertIsNotNone(self.decide(short))
+        self.assertIsNotNone(R.consume(KILL, shlex.split(short)[2:], cwd=self.repo))
+
+    def test_an_unreadable_option_catalog_never_lets_a_real_run_through(self) -> None:
+        """Pass 2 cross-family: an unreadable tool_options.json read as `{}`
+        made the real run ungated on both sides; now consume() raises."""
+        R.tool_options.cache_clear()
+        self.addCleanup(R.tool_options.cache_clear)
+        with mock.patch.object(R.Path, "read_text", side_effect=OSError("gone")):
+            with self.assertRaises(OSError):
+                R.consume(KILL, shlex.split(FORCE_CMD)[2:], cwd=self.repo)
 
     def test_an_unkeyable_repo_refuses_and_never_crashes(self) -> None:
         """batch_auth.issue_key returns None for a repo it cannot key: the grant
