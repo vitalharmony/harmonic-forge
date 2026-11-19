@@ -166,8 +166,10 @@ class ReportsOpenDependents(unittest.TestCase):
         self.assertIn(("vitalharmony/harmonic-forge", "11", "time budget spent"), result)
 
     def test_a_close_inside_shell_control_flow_prints_the_catch_all(self):
+        # harmonic-forge#1443: if/while/{ } closes now parse; a function body is
+        # a recorded residual the parser still cannot see.
         payload = {"tool_name": "Bash", "tool_input": {"command":
-                   "if true; then gh issue close 1290 --repo vitalharmony/harmonic-forge; fi"}}
+                   "function f { gh issue close 1290 --repo vitalharmony/harmonic-forge; }"}}
         out = _envelope(payload, runner=_runner("vitalharmony/harmonic-forge#1291\n"))
         self.assertIsNotNone(out)
         self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
@@ -176,7 +178,7 @@ class ReportsOpenDependents(unittest.TestCase):
         """Pass 1 cluster (correctness): one parsed close must not hide the other."""
         payload = {"tool_name": "Bash", "tool_input": {"command":
                    "gh issue close 1290 --repo vitalharmony/harmonic-forge && "
-                   "if true; then gh issue close 1291 --repo vitalharmony/harmonic-forge; fi"}}
+                   "function f { gh issue close 1291 --repo vitalharmony/harmonic-forge; }"}}
         out = _envelope(payload, runner=_runner(""))
         self.assertIsNotNone(out)
         self.assertIn("run repo_hygiene", out["hookSpecificOutput"]["additionalContext"])
