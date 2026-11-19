@@ -222,6 +222,113 @@ class DecisionTests(unittest.TestCase):
                     self.CMD, labels={hook.TOOLING_EXCEPTION_LABEL, near})))
 
 
+FORGE = "vitalharmony/harmonic-forge"
+
+
+class NotPlannedCloseTests(unittest.TestCase):
+    """harmonic-forge#1433 (REFORGE amendment): a TE close without the label
+    is allowed only when THAT close's own tokens say not planned / duplicate.
+    Every gh read is stubbed; `_gh` and `_cache_git` raise if reached."""
+
+    def _decide(self, command: str, closed_issues=("1433",)) -> dict:
+        with mock.patch.object(hook, "resolve_repo", return_value=FORGE), \
+             mock.patch.object(hook, "labels_for",
+                               return_value={hook.TOOLING_EXCEPTION_LABEL}), \
+             mock.patch.object(hook, "issues_closed_by_pr", return_value=list(closed_issues)), \
+             mock.patch.object(hook, "_gh", side_effect=AssertionError("no gh")), \
+             mock.patch.object(hook, "_cache_git", side_effect=AssertionError("no git")), \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(command)), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        return json.loads(printed.call_args[0][0])
+
+    @staticmethod
+    def _denied(payload: dict) -> bool:
+        return (payload.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny"
+
+    @staticmethod
+    def _reason(payload: dict) -> str:
+        return payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # AC1
+    def test_not_planned_and_duplicate_closes_allow(self) -> None:
+        for cmd in (f"gh issue close 1433 --repo {FORGE} --reason 'not planned'",
+                    f"gh issue close 1433 --repo {FORGE} -r duplicate",
+                    f"gh issue close 1433 --repo {FORGE} --duplicate-of 1400",
+                    f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+                    f"-f state_reason=not_planned",
+                    f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+                    f"-f state_reason=duplicate"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(self._denied(self._decide(cmd)))
+
+    # AC2
+    def test_completed_closes_deny_naming_not_planned_and_the_label(self) -> None:
+        for cmd in (f"gh issue close 1433 --repo {FORGE}",
+                    f"gh issue close 1433 --repo {FORGE} --reason completed",
+                    f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed"):
+            with self.subTest(cmd=cmd):
+                payload = self._decide(cmd)
+                self.assertTrue(self._denied(payload))
+                reason = self._reason(payload)
+                self.assertIn('--reason "not planned"', reason)
+                self.assertIn(f"--add-label {hook.PRECLOSE_LABEL}", reason)
+
+    # AC3
+    def test_exempt_bit_is_per_close(self) -> None:
+        cmd = f"gh issue close 5 --repo {FORGE} -r 'not planned'; gh issue close 6 --repo {FORGE}"
+        payload = self._decide(cmd)
+        self.assertTrue(self._denied(payload))
+        self.assertIn(f"{FORGE}#6", self._reason(payload))
+        self.assertEqual([t[3] for t in hook.find_gated_targets_exempt(cmd)], [True, False])
+        self.assertEqual([t[3] for t in hook.find_gated_targets_exempt(
+            f"gh issue close 6 --repo {FORGE}; gh issue close 5 --repo {FORGE} -r 'not planned'")],
+            [False, True])
+
+    # Sticky-wicket PATCH (issuecomment-7002145817): every pass-1 survivor shape,
+    # and every near-miss of a canonical shape, is denied.
+    def test_non_canonical_close_shapes_deny(self) -> None:
+        for cmd in (
+            f"gh issue close 1433 --repo {FORGE} -c --duplicate-of",
+            f"gh issue close 1433 --repo {FORGE} -c state_reason=duplicate",
+            f"gh issue close 1433 --repo {FORGE} -r 'not planned' -r completed",
+            f"gh issue close 1433 --repo {FORGE} -r 'Not Planned'",
+            f"gh issue close 1433 --repo {FORGE} --reason='not planned'",
+            f"gh issue close 1433 --repo {FORGE} -r 'not planned' -c done",
+            f"gh issue close 1433 --repo {FORGE} -r duplicate --duplicate-of 1400",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+            f"-f state_reason=not_planned -f state_reason=completed",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+            f"--jq state_reason=not_planned",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+            f"-H state_reason=not_planned",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -F state=closed "
+            f"-F state_reason=not_planned",
+        ):
+            with self.subTest(cmd=cmd):
+                targets = hook.find_gated_targets_exempt(cmd)
+                self.assertTrue(targets)  # every fixture is a close the hook must see;
+                # REST shapes it does not read yet (no method, a query string) are harmonic-forge#1442
+                self.assertFalse(any(t[3] for t in targets))
+                self.assertTrue(self._denied(self._decide(cmd)))
+
+    def test_deny_text_names_the_rest_canonical_form(self) -> None:
+        reason = self._reason(self._decide(f"gh issue close 1433 --repo {FORGE}"))
+        self.assertIn(f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+                      f"-f state_reason=not_planned", reason)
+
+    # AC4
+    def test_pr_merge_unchanged(self) -> None:
+        """A merge never takes the exemption, and its deny text is the
+        origin/main one (no not-planned hint)."""
+        payload = self._decide(f"gh pr merge 1440 --repo {FORGE} --squash", closed_issues=("1433",))
+        self.assertTrue(self._denied(payload))
+        self.assertNotIn("not planned", self._reason(payload))
+        self.assertEqual([t[3] for t in hook.find_gated_targets_exempt(
+            f"gh pr merge 1440 --repo {FORGE} --squash")], [False])
+
+
 class PrShaBindingTests(unittest.TestCase):
     """harmonic-forge#778 AC3: a merge with `preclose-inspected` still needs
     a completed receipt naming the PR's CURRENT head as reviewed. The label
