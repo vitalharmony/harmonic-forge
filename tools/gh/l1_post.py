@@ -3129,13 +3129,37 @@ def post_kind(
         raise
 
 
+def validate_correction_amendment(repo: str, issue: int, labels: set[str],
+                                  declared: str | None) -> None:
+    """harmonic-forge#1426: a correction rework is a Lane 1 change to a handed-off
+    design. On a tooling-exception issue with a posted handoff it declares design
+    or wording, and a design one needs a fresh pitch verdict (rebase and relay
+    reworks are never gated)."""
+    if pitch_receipt.LABEL not in labels:
+        return
+    comments = check_lane3_ready_fetch_comments(repo, issue)
+    reason = pitch_receipt.amendment_refusal(repo, issue, labels, comments, declared)
+    if reason is not None:
+        fail(reason)
+
+
+def check_lane3_ready_fetch_comments(repo: str, issue: int) -> list[dict]:
+    result = run("gh", "api", f"repos/{repo}/issues/{issue}/comments", "--paginate")
+    if result.returncode:
+        fail(f"cannot fetch comments for {repo}#{issue}: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail(f"unexpected response fetching comments for {repo}#{issue}")
+
+
 def _post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
     grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
     milestone_ack: str | None = None, carry_forward: tuple[str, int] | None = None,
-    labels=None, rework_kind: str | None = None,
+    labels=None, rework_kind: str | None = None, amendment: str | None = None,
 ) -> tuple[str, int]:
     """Run world_checks, build the footer, post, and write the receipt for
     ONE already-validated claim. Shared by the single-kind path and
@@ -3329,6 +3353,9 @@ def _post_kind(
         # so consuming it here keeps that, and a later redesigned handoff on
         # the same issue needs a fresh review.
         pitch_receipt.consume(repo, issue, url)
+    if kind == "rework" and rework_kind == "correction" and amendment == "design":
+        # harmonic-forge#1426: a design-changing correction spent its fresh verdict.
+        pitch_receipt.consume(repo, issue, url)
     if attempt is not None:
         attempt["emitted"] = True
         _emit_attempt(repo, issue, sha, "posted", attempt)
@@ -3521,6 +3548,11 @@ def main() -> None:
                                            "carry-forward"), required=True)
     # harmonic-forge#1247: a rework says whether it corrects the work or only rebases it.
     parser.add_argument("--rework-kind", choices=REWORK_KINDS)
+    parser.add_argument(
+        "--amendment", choices=pitch_receipt.AMENDMENTS, default=None,
+        help="harmonic-forge#1426: a `rework --rework-kind correction` on a tooling-exception "
+             "issue with a posted handoff declares itself `design` (needs a fresh pitch "
+             "verdict, which the post consumes) or `wording`.")
     parser.add_argument("--sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--file", type=Path, help="Body file for every --kind except ae-and-sweep")
@@ -3763,6 +3795,9 @@ def main() -> None:
         ]
     if args.kind == "rework":
         steps.append(lambda: validate_milestone_current(repo, args.issue, args.kind, args.milestone_ack))
+        if args.rework_kind == "correction":
+            steps.append(lambda: validate_correction_amendment(repo, args.issue, labels_once(),
+                                                              args.amendment))
     if args.kind in STICKY_CHECKED_KINDS:
         steps.append(lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha,
                                        rework_kind=args.rework_kind))
@@ -3823,7 +3858,7 @@ def main() -> None:
         milestone_ack=args.milestone_ack, carry_forward=(
             (args.from_sha, args.pass_comment) if args.kind == "carry-forward" else None),
         labels=(labels_once() if args.kind == "handoff" else None),
-        rework_kind=args.rework_kind,
+        rework_kind=args.rework_kind, amendment=args.amendment,
     )
     print(f"[l1-post] posted and refetched {url}")
     record_queue_candidate(repo, args.issue, args.kind)

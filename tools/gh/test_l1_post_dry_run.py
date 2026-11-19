@@ -44,6 +44,11 @@ class Harness(unittest.TestCase):
         lane3 = mock.patch.object(L._lane3_env, "check", return_value=[])
         lane3.start()
         self.addCleanup(lane3.stop)
+        # harmonic-forge#1426: the correction-rework amendment gate reads the live
+        # thread; its own tests are in test_amendment_pitch_gate.py.
+        amend = mock.patch.object(L, "validate_correction_amendment", return_value=None)
+        amend.start()
+        self.addCleanup(amend.stop)
         os.environ.pop("L1_POST_ENTRY", None)
         self.overlap = False
         self.pr_open = True

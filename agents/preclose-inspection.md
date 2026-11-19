@@ -66,6 +66,15 @@ Weight your attention accordingly:
 - **The thing the tests assert versus the thing the code does.** A passing
   test that asserts the wrong property is worse than no test. Check whether
   each new test would fail if the behavior it names were removed.
+- **Changed contracts and all their readers** (harmonic-forge#1426). For
+  every function signature, output format, CLI flag or output, receipt field
+  or heading the diff changes, list every existing reader, each with the
+  `git grep` that found it; "none found" is an answer only with its command.
+  A reader whose parse breaks on the new shape is a finding with a concrete
+  scenario. harmonic-forge#1396 added a column to `gh-as --list`, and
+  `belt_mechanics.list_accounts` read it as part of the login, so every
+  lane's belt refused at startup; two preclose passes never asked who reads
+  that output.
 - **Blast radius.** Does this run on every session, every commit, every gate?
   If so, what is the failure mode when it is wrong — noisy, or silent?
 

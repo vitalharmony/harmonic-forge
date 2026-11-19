@@ -257,8 +257,9 @@ def candidate_kind(kind: str, body: str) -> str:
 
 from l1_post import (
     comment_body, fail, regular_body, reject_reserved_marker, resolve_repo, run,
-    apply_project_identity, validate_lead, _afk_toggle,
+    apply_project_identity, validate_lead, _afk_toggle, issue_labels,
 )
+import pitch_receipt  # noqa: E402
 
 #: The kinds this script may stamp. `discussion` is the default and the
 #: pre-harmonic-forge#473 behaviour, so every existing caller — the
@@ -692,6 +693,23 @@ def require_round_approval(repo: str, issue: int, body: str) -> None:
         fail(f"[GATE] REFUSED: a PASS cannot be posted for an unapproved round -- {message}")
 
 
+def require_amendment_pitch(repo: str, issue: int, kind: str, declared: str | None) -> bool:
+    """harmonic-forge#1426: a Lane 1 discussion on a tooling-exception issue that
+    already has a posted handoff is an amendment, and a design-changing one needs
+    a fresh pitch verdict. Returns True when the post must consume that verdict.
+    The footer is untouched (its readers match it byte for byte)."""
+    if os.environ.get("LANE") != "1" or kind != "discussion":
+        return False
+    labels = issue_labels(repo, issue)
+    if pitch_receipt.LABEL not in labels:
+        return False
+    comments = check_lane3_ready.fetch_comments(repo, issue)
+    reason = pitch_receipt.amendment_refusal(repo, issue, labels, comments, declared)
+    if reason is not None:
+        fail(reason)
+    return declared == "design" and pitch_receipt.amendment_gate_applies(labels, comments)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Post an attested lane comment, tagging the posting session's LANE")
     parser.add_argument("--repo")
@@ -721,6 +739,11 @@ def main() -> None:
         "--tc-results", type=Path, default=None, metavar="JSON",
         help="harmonic-forge#893: a JSON object mapping each case id a gate report ran to "
              "pass, fail or blocked. Without it a gate report posts with results=absent.")
+    parser.add_argument(
+        "--amendment", choices=pitch_receipt.AMENDMENTS, default=None,
+        help="harmonic-forge#1426: a Lane 1 discussion on a tooling-exception issue with a "
+             "posted handoff declares itself `design` (changes Affected Files or the "
+             "mechanism; needs a fresh pitch verdict, which the post consumes) or `wording`.")
     args = parser.parse_args()
     _caller_path.resolve_args(args, 'file', 'tc_classes', 'tc_results')  # harmonic-forge#1117 AC2
     if args.ack_no_pr_required is not None and not args.ack_no_pr_required.strip():
@@ -786,6 +809,7 @@ def main() -> None:
     # harmonic-forge#1103: computed BEFORE the post, recorded after it.
     record_kind = candidate_kind(args.kind, body)
     require_round_approval(args.repo, args.issue, body)
+    consume_pitch = require_amendment_pitch(args.repo, args.issue, args.kind, args.amendment)
     lane = os.environ.get("LANE")
     posted_by = f"LANE{lane}" if lane else "LANE-unset"
     final = body.rstrip("\n") + footer(
@@ -800,6 +824,8 @@ def main() -> None:
         require_ae_by_name(final)
         require_spec_structure(final)
     url, _ = comment_body(args.repo, args.issue, final)
+    if consume_pitch:
+        pitch_receipt.consume(args.repo, args.issue, url)
     if _afk_toggle is not None:
         # harmonic-forge#1398: before the print, which can fail on a closed stdout pipe
         _afk_toggle.record_lane_action(lane)  # the lane the footer above names
