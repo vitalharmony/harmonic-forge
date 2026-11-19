@@ -507,10 +507,6 @@ class TestGenerated(unittest.TestCase):
         self.assertIn("effects: valid", out.getvalue())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestGateInputs(unittest.TestCase):
     """harmonic-forge#1291: the mise mapping and the option lists cannot drift."""
 
@@ -556,3 +552,7 @@ class TestGateInputs(unittest.TestCase):
             self.assertIn("precheck_form", mode, tool["path"])
         preclose = [m for t, m in modes if t["path"] == "tools/gh/preclose_check.py"]
         self.assertTrue(all(m["binds"] == ["head_sha", "args"] for m in preclose))
+
+
+if __name__ == "__main__":
+    unittest.main()
