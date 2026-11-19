@@ -91,7 +91,13 @@ dir="$ACCT_HOME/$slot"
 if [ ! -d "$dir" ]; then
   echo "gh-as: no config for account '$acct' (slot '$slot')." >&2
   [ "$lane_slot" = 1 ] && echo "A lane never falls back to the shared slot (harmonic-forge#1396)." >&2
-  echo "Set it up once with:  gh-as --init $slot" >&2
+  if [ "$lane_slot" = 1 ]; then
+    # harmonic-forge#1425: --init writes the keyring and checks login == slot name,
+    # so it can never set up a lane slot; the token goes in the slot's own file.
+    echo "Set it up once with:  mkdir -p $dir && GH_CONFIG_DIR=$dir gh auth login --with-token --insecure-storage" >&2
+  else
+    echo "Set it up once with:  gh-as --init $slot" >&2
+  fi
   exit 1
 fi
 
@@ -144,8 +150,12 @@ if ! actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null)"; then
   actual=""
 fi
 if [ -z "$actual" ]; then
-  echo "gh-as: account '$acct' is not authenticated (token expired or revoked)." >&2
-  echo "Re-run:  gh-as --init $acct" >&2
+  echo "gh-as: account '$acct' (slot '$slot') is not authenticated (token expired or revoked)." >&2
+  if [ "$lane_slot" = 1 ]; then
+    echo "Replace it with:  GH_CONFIG_DIR=$dir gh auth login --with-token --insecure-storage" >&2
+  else
+    echo "Re-run:  gh-as --init $acct" >&2
+  fi
   exit 1
 fi
 if [ "$actual" != "$acct" ]; then

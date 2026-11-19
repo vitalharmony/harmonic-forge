@@ -183,6 +183,27 @@ class GhAsLaneSlotTests(unittest.TestCase):
         self.assertIn("refusing rather than using the keyring", result.stderr)
         self.assertNotIn("token=", result.stdout)
 
+    def test_a_missing_lane_slot_names_a_repair_that_can_work(self):
+        """#1425: --init writes the keyring and checks login == slot name, so it
+        can never repair a lane slot; the hint names the slot's own file."""
+        import shutil
+        shutil.rmtree(self.lane_slot)
+        result = self.run_gh_as("2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"GH_CONFIG_DIR={self.lane_slot} gh auth login --with-token", result.stderr)
+        self.assertNotIn("gh-as --init", result.stderr)
+
+    def test_a_revoked_lane_token_names_the_lane_slot(self):
+        (self.lane_slot / "hosts.yml").write_text(
+            "github.com:\n    users:\n        vitalharmony:\n            oauth_token: revoked\n")
+        fake = self.bin / "gh"
+        fake.write_text("#!/usr/bin/env bash\nexit 1\n")
+        result = self.run_gh_as("2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("slot 'vitalharmony-lane2'", result.stderr)
+        self.assertIn(f"GH_CONFIG_DIR={self.lane_slot} gh auth login --with-token", result.stderr)
+        self.assertNotIn("gh-as --init", result.stderr)
+
     def test_no_lane_keeps_the_shared_slot(self):
         result = self.run_gh_as(None)
         self.assertEqual(result.returncode, 0, result.stderr)

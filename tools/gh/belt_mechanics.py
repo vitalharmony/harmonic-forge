@@ -307,15 +307,33 @@ def list_accounts() -> dict[str, str]:
         parts = line.split()
         # harmonic-forge#1425: since #1396 a third column names the token's
         # source; it is never part of the login.
+        source = None
         if len(parts) >= 3 and parts[-1] in _SLOT_SOURCES:
+            source = parts[-1]
             parts = parts[:-1]
         if len(parts) >= 2:
-            out[parts[0]] = " ".join(parts[1:])
+            # gh-as never lets a lane slot fall back to the keyring (#1396), so a
+            # lane slot with no file token cannot run a call (#1425 pass 1).
+            if source == "keyring" and parts[0].startswith(_LANE_SLOT_PREFIX):
+                out[parts[0]] = "(not authenticated)"
+            else:
+                out[parts[0]] = " ".join(parts[1:])
     return out
 
 
 #: The source column `gh-as --list` prints (harmonic-forge#1396).
 _SLOT_SOURCES = frozenset({"file", "keyring"})
+_LANE_SLOT_PREFIX = "vitalharmony-lane"
+
+
+def _repair(slot: str) -> str:
+    """The command that repairs `slot` (harmonic-forge#1425): `gh-as --init` writes
+    the keyring and requires login == slot name, so it cannot repair a lane slot,
+    whose token lives in its own hosts.yml (gh-as prints the same command)."""
+    if slot.startswith(_LANE_SLOT_PREFIX):
+        home = os.environ.get("GH_ACCT_HOME") or os.path.expanduser("~/.config/gh-accounts")
+        return f"GH_CONFIG_DIR={home}/{slot} gh auth login --with-token --insecure-storage"
+    return f"gh-as --init {slot}"
 
 
 def _lane_slot(account: str) -> str:
@@ -343,20 +361,21 @@ def assert_identity(account: str, accounts: Optional[dict[str, str]] = None) -> 
     who = accounts.get(slot)
     if who is None:
         raise IdentityMismatch(
-            f"account {account!r} is not configured (gh-as --init {slot}). "
+            f"account {account!r} is not configured ({_repair(slot)}). "
             "Refusing rather than returning an empty result."
         )
     if who == "(not authenticated)":
         raise IdentityMismatch(
-            f"account {account!r} is not authenticated. Refusing rather than "
+            f"account {account!r} (slot {slot!r}) is not authenticated "
+            f"({_repair(slot)}). Refusing rather than "
             "returning an empty result, which would read as 'no new work'."
         )
     if who != account:
         raise IdentityMismatch(
-            f"account slot {account!r} authenticates as {who!r}. Polling it "
+            f"account slot {slot!r} authenticates as {who!r}. Polling it "
             f"would silently scan {who}'s repos and report nothing for "
             f"{account}. Refusing — re-authenticate with "
-            f"`gh-as --init {account}` (operator action)."
+            f"`{_repair(slot)}` (operator action)."
         )
 
 

@@ -272,6 +272,27 @@ class TestGhAsListSourceColumn(unittest.TestCase):
                 assert_identity("vitalharmony", {"vitalharmony": "vitalharmony",
                                                  "vitalharmony-lane1": "someone-else"})
 
+    def test_lane_refusals_name_the_lane_slot(self):
+        """#1425 pass 1 survivor 1: every lane refusal names the slot checked."""
+        from unittest.mock import patch
+        with patch.dict("os.environ", {"LANE": "1"}):
+            for who in ("other", "(not authenticated)"):
+                with self.assertRaises(IdentityMismatch) as ctx:
+                    assert_identity("vitalharmony", {"vitalharmony": "vitalharmony",
+                                                     "vitalharmony-lane1": who})
+                self.assertIn("gh-accounts/vitalharmony-lane1 gh auth login --with-token", str(ctx.exception))
+
+    def test_lane_slot_on_the_keyring_cannot_run(self):
+        """#1425 pass 1 survivor 3: gh-as refuses a lane slot with no file token."""
+        from unittest.mock import patch
+        listed = self._listed("vitalharmony             vitalharmony         keyring\n"
+                              "vitalharmony-lane2       vitalharmony         keyring\n")
+        self.assertEqual(listed["vitalharmony-lane2"], "(not authenticated)")
+        self.assertEqual(listed["vitalharmony"], "vitalharmony")
+        with patch.dict("os.environ", {"LANE": "2"}):
+            with self.assertRaises(IdentityMismatch):
+                assert_identity("vitalharmony", listed)
+
     def test_no_lane_reads_the_shared_slot(self):
         from unittest.mock import patch
         with patch.dict("os.environ", {}, clear=False) as env:
