@@ -286,6 +286,40 @@ class NotPlannedCloseTests(unittest.TestCase):
             f"gh issue close 6 --repo {FORGE}; gh issue close 5 --repo {FORGE} -r 'not planned'")],
             [False, True])
 
+    # Sticky-wicket PATCH (issuecomment-7002145817): every pass-1 survivor shape,
+    # and every near-miss of a canonical shape, is denied.
+    def test_non_canonical_close_shapes_deny(self) -> None:
+        for cmd in (
+            f"gh issue close 1433 --repo {FORGE} -c --duplicate-of",
+            f"gh issue close 1433 --repo {FORGE} -c state_reason=duplicate",
+            f"gh issue close 1433 --repo {FORGE} -r 'not planned' -r completed",
+            f"gh issue close 1433 --repo {FORGE} -r 'Not Planned'",
+            f"gh issue close 1433 --repo {FORGE} --reason='not planned'",
+            f"gh issue close 1433 --repo {FORGE} -r 'not planned' -c done",
+            f"gh issue close 1433 --repo {FORGE} -r duplicate --duplicate-of 1400",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+            f"-f state_reason=not_planned -f state_reason=completed",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+            f"--jq state_reason=not_planned",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+            f"-H state_reason=not_planned",
+            f"gh api repos/{FORGE}/issues/1433 -f state=closed -f state_reason=not_planned",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433?state_reason=not_planned "
+            f"-f state=closed -f state_reason=not_planned",
+            f"gh api -X PATCH repos/{FORGE}/issues/1433 -F state=closed "
+            f"-F state_reason=not_planned",
+        ):
+            with self.subTest(cmd=cmd):
+                targets = hook.find_gated_targets_exempt(cmd)
+                self.assertFalse(any(t[3] for t in targets))
+                if targets:  # a shape _parse_api_close does not read is not a close here
+                    self.assertTrue(self._denied(self._decide(cmd)))
+
+    def test_deny_text_names_the_rest_canonical_form(self) -> None:
+        reason = self._reason(self._decide(f"gh issue close 1433 --repo {FORGE}"))
+        self.assertIn(f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+                      f"-f state_reason=not_planned", reason)
+
     # AC4
     def test_pr_merge_unchanged(self) -> None:
         """A merge never takes the exemption, and its deny text is the

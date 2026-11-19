@@ -64,10 +64,15 @@ timeline event carrying actor and timestamp, which a pasted comment is not.
 
 A bare issue close (`gh issue close`, or the REST `state=closed` PATCH) of a
 `tooling-exception` issue without `preclose-inspected` is allowed when that
-close's OWN tokens say not planned / duplicate (`-r`/`--reason "not planned"`
-or `duplicate`, `--duplicate-of`, REST `state_reason=not_planned|duplicate`;
-`is_exempt_close`, shared with `block_undetermined_phase_close.py`). Each
-close carries its own exempt bit, never one bit for a whole compound command.
+close is one of an exact allowlist of not-planned / duplicate shapes
+(`_canonical_not_planned_close`): `gh issue close <N> [--repo o/r]` with exactly
+one of `--reason|-r "not planned"|duplicate` or `--duplicate-of <N>`, or
+`gh api -X PATCH repos/o/r/issues/<N> -f state=closed -f
+state_reason=not_planned|duplicate`, and nothing else. Any other shape (an
+extra flag, a repeated flag, a comment, another spelling) is denied: the
+allowlist never searches for tokens, so an ambiguous parse fails closed
+(sticky-wicket PATCH, issuecomment-7002145817). Each close carries its own
+exempt bit, never one bit for a whole compound command.
 A completed close (no reason, `--reason completed`, a REST PATCH with no
 `state_reason`) is denied exactly as before, and the deny text names
 `--reason "not planned"` for a superseded or abandoned issue. Merges are
@@ -102,7 +107,69 @@ from hook_identity import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
-from block_undetermined_phase_close import is_exempt_close  # noqa: E402
+
+#: harmonic-forge#1433 (sticky-wicket PATCH, issuecomment-7002145817): the
+#: exemption is a closed-world allowlist of exact close shapes, never a search
+#: for tokens. A shape outside it is denied, so an ambiguous parse fails closed.
+_CLOSE_REASONS = ("not planned", "duplicate")
+_REST_REASONS = ("not_planned", "duplicate")
+_NUMBER = re.compile(r"^\d+$")
+_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_ISSUE_PATH = re.compile(r"^/?repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+$")
+
+
+def _pairs(rest: list[str]) -> list[tuple[str, str]] | None:
+    """`rest` as (flag, value) pairs, or None when it is not exactly that."""
+    if len(rest) % 2:
+        return None
+    pairs = list(zip(rest[0::2], rest[1::2]))
+    return None if any(not flag.startswith("-") or "=" in flag for flag, _ in pairs) else pairs
+
+
+def _canonical_cli_close(tokens: list[str]) -> bool:
+    """`gh issue close <N> [--repo|-R o/r] (--reason|-r "not planned"|duplicate | --duplicate-of <N>)`."""
+    if tokens[1:3] != ["issue", "close"] or len(tokens) < 4 or not _NUMBER.match(tokens[3]):
+        return False
+    pairs = _pairs(tokens[4:])
+    if pairs is None:
+        return False
+    flags = [flag for flag, _ in pairs]
+    if len(set(flags)) != len(flags):
+        return False
+    repos = [v for f, v in pairs if f in ("--repo", "-R")]
+    reasons = [v for f, v in pairs if f in ("--reason", "-r")]
+    dups = [v for f, v in pairs if f == "--duplicate-of"]
+    if len(repos) + len(reasons) + len(dups) != len(pairs) or len(repos) > 1:
+        return False
+    if any(not _SLUG.match(v) for v in repos):
+        return False
+    if len(reasons) + len(dups) != 1:
+        return False
+    return reasons[0] in _CLOSE_REASONS if reasons else bool(_NUMBER.match(dups[0]))
+
+
+def _canonical_rest_close(tokens: list[str]) -> bool:
+    """`gh api -X|--method PATCH repos/o/r/issues/N -f state=closed -f state_reason=not_planned|duplicate`."""
+    if len(tokens) < 2 or tokens[1] != "api":
+        return False
+    rest = tokens[2:]
+    paths = [t for t in rest if _ISSUE_PATH.match(t)]
+    if len(paths) != 1:
+        return False
+    rest = [t for t in rest if t != paths[0]]
+    pairs = _pairs(rest)
+    if pairs is None or len(pairs) != 3:
+        return False
+    methods = [v for f, v in pairs if f in ("-X", "--method")]
+    fields = sorted(v for f, v in pairs if f == "-f")
+    if methods != ["PATCH"] or len(fields) != 2:
+        return False
+    return fields[0] == "state=closed" and fields[1] in tuple(f"state_reason={r}" for r in _REST_REASONS)
+
+
+def _canonical_not_planned_close(tokens: list[str]) -> bool:
+    """True only for an exact not-planned or duplicate close shape."""
+    return _canonical_cli_close(tokens) or _canonical_rest_close(tokens)
 
 # harmonic-forge#1077: the shared acceptance primitive, loaded once at import
 # so every reader below (and batch_preflight, which asks this hook) resolves
@@ -328,8 +395,8 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
 
 def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, bool]] | None:
     """`find_gated_targets`, each target carrying its own exempt bit: True
-    only for an issue close whose OWN tokens say not planned / duplicate
-    (`is_exempt_close`). harmonic-forge#1433: never one bit per command."""
+    only for an issue close in an exact not-planned / duplicate shape
+    (`_canonical_not_planned_close`). harmonic-forge#1433: never one bit per command."""
     try:
         segments = command_segments(command)
     except ValueError:
@@ -355,7 +422,7 @@ def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, 
         parsed = (_parse_issue_close(tokens) or _parse_pr_merge(tokens)
                   or _parse_api_merge(tokens) or _parse_api_close(tokens))
         if parsed:
-            exempt = parsed[2] == "issue" and is_exempt_close(tokens)
+            exempt = parsed[2] == "issue" and _canonical_not_planned_close(tokens)
             targets.append((*parsed, exempt))
     return targets
 
@@ -421,6 +488,9 @@ def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
         tail = (f"\n\nIf {repo}#{issue} was superseded or abandoned and lands no "
                 f"code, close it as not planned instead (harmonic-forge#1433):\n"
                 f"  gh issue close {issue} --repo {repo} --reason \"not planned\"\n"
+                f"  (REST: gh api -X PATCH repos/{repo}/issues/{issue} "
+                f"-f state=closed -f state_reason=not_planned)\n"
+                f"Only these exact shapes are exempt; add nothing else to the command.\n"
                 f"If it was completed, it needs the {PRECLOSE_LABEL!r} label above.")
     return (
         f"Blocked: {what} is labelled {TOOLING_EXCEPTION_LABEL!r} and does "
