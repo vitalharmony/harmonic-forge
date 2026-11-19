@@ -509,7 +509,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
     if args.mark_active:
+        # harmonic-forge#792: a stale marker never survives a refusal, this one included.
         clear_marker()
+        # harmonic-forge#1291 (REFORGE, issuecomment-7002756185): --mark-active's
+        # own backstop, before any read or marker write, however it was spelled.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import _preflight  # noqa: PLC0415
+        refusal = _preflight.require("tools/gh/check_lane3_ready.py",
+                                     argv if argv is not None else sys.argv[1:])
+        if refusal:
+            fail(refusal)
     wanted = None
     if args.require_prod_run is not None:
         try:
@@ -548,10 +557,10 @@ def main(argv: list[str] | None = None) -> None:
         prod_run = _prod_run.declared(authority.get("body", ""))
     if args.mark_active:
         mark_active()
-    else:
-        # harmonic-forge#1291: a passed readiness run without --mark-active is
-        # the precheck form of lane3-begin's --mark-active run.
-        _record_precheck(argv if argv is not None else sys.argv[1:])
+    # harmonic-forge#1291 (sticky-wicket PATCH c): a passed readiness run without
+    # --mark-active is the precheck form of lane3-begin's --mark-active run. Its
+    # receipt is recorded last, after every step that can still fail the run.
+    precheck_argv = None if args.mark_active else (argv if argv is not None else sys.argv[1:])
     if args.json:
         print(json.dumps({
             "repo": repo,
@@ -562,12 +571,16 @@ def main(argv: list[str] | None = None) -> None:
             "authority_id": authority["id"],
             "prod_run": prod_run,
         }))
+        if precheck_argv is not None:
+            _record_precheck(precheck_argv)
         return
     print(f"[check-lane3-ready] {repo}#{issue}: sweep ({sweep['html_url']}), tier {tier} "
           f"-- ready, {message}")
     availability = tier_w_availability()
     if availability:
         print(availability)
+    if precheck_argv is not None:
+        _record_precheck(precheck_argv)
 
 
 if __name__ == "__main__":

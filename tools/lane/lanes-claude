@@ -438,6 +438,13 @@ if ((dry_run)); then
   exit 0
 fi
 
+# harmonic-forge#1291 (REFORGE): the launch's own backstop. A real launch from
+# a Claude session needs the dry run's live receipt, however the command was
+# spelled; with no session (an operator's own shell) consume() allows it.
+if ! python3 "${HOME}/harmonic-forge/tools/precheck/gate_receipt.py" consume --tool tools/lane/lanes-claude -- "${lanes_claude_args[@]}"; then
+  exit 2
+fi
+
 attach_or_switch() {
   tmux select-window -t "$session:lanes"
   if [[ -n "${TMUX:-}" ]]; then

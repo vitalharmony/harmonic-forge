@@ -152,28 +152,6 @@ def _names_unbackstopped(command: str) -> bool:
     return False
 
 
-def _unidentified_unbackstopped(others: list[list[str]]) -> str | None:
-    """harmonic-forge#1291 (sticky-wicket PATCH): the default turned around.
-
-    A command the gate did not recognize as a gated call is still refused when it
-    runs a tool that has a mode with no tool-side backstop: its program token's
-    basename, or (for a python interpreter) any token's basename, names that tool.
-    Only those positions: a path elsewhere in argv (`git log -- <path>`) is data,
-    not a run. Returns the tool's registry path, or None.
-    """
-    names = {Path(tool["path"]).name: tool["path"]
-             for tool, mode in _precheck_modes() if not mode["backstop"]}
-    for argv in others:
-        program = Path(argv[0]).name
-        candidates = [program]
-        if PYTHONS.match(program):
-            candidates += [Path(token).name for token in argv[1:]]
-        for name in candidates:
-            if name in names:
-                return names[name]
-    return None
-
-
 def _precheck_modes():
     import effects  # noqa: PLC0415
     return list(effects.precheck_modes(receipts.registry()))
@@ -275,8 +253,12 @@ def read_refusal(rid: str) -> dict | None:
     return data if isinstance(data, dict) and data.get("id") == rid else None
 
 
-def _override(sid: str, call: _Call, mode: dict, fp: str) -> bool:
-    """Spend a usable gate grant bound to this tool, mode and fingerprint."""
+def _override(sid: str, call: _Call, mode: dict, fp: str, *, spend: bool = True) -> bool:
+    """Spend a usable gate grant bound to this tool, mode and fingerprint.
+
+    With `spend=False` it only reports whether such a grant exists (harmonic-forge#1291
+    sticky-wicket PATCH b): the command's calls are all decided before any grant is
+    spent, so a sibling call that is refused never wastes the operator's grant."""
     import force_grant  # noqa: PLC0415
     key = _issue_key(call.argv)
     candidates = [key] if key else [p.stem for p in sorted(force_grant.state_dir().glob("*.json"))]
@@ -284,6 +266,10 @@ def _override(sid: str, call: _Call, mode: dict, fp: str) -> bool:
     for candidate in candidates:
         grant = force_grant.read_grant(candidate)
         if not grant or grant.get("mode") != "gate" or grant.get("arg_fp") != fp:
+            continue
+        if not spend:
+            if grant.get("status") == "usable":
+                return True
             continue
         try:
             force_grant.consume(candidate, grant.get("granted_at"), "", mode="gate", gate=binding)
@@ -301,17 +287,19 @@ def _override(sid: str, call: _Call, mode: dict, fp: str) -> bool:
 # --------------------------------------------------------------------------
 # The decision.
 
-def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: bool) -> str | None:
+def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: bool,
+                 spend: bool = True) -> str | None:
     found = receipts.classify(call.tool, call.argv)
     if found is None:
         return None
     mode, real = found
     if not real:
-        if store:
+        if store and spend:
             log("precheck", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], sid=sid)
         return None
     if store and not sid:
-        log("ungated", tool=call.tool["path"], mode=mode["name"], klass=mode["class"])
+        if spend:
+            log("ungated", tool=call.tool["path"], mode=mode["name"], klass=mode["class"])
         if mode["backstop"]:
             return None
         # harmonic-forge#1291 (sticky-wicket PATCH): no session means no receipt can
@@ -326,11 +314,15 @@ def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: boo
     fp = receipts.fingerprint(call.tool, mode, call.argv, cwd, deadline)
     live = receipts.live_receipt(sid, fp)
     if live is not None and live.get("kind") != "override":
-        log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+        if spend:
+            log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
         return None
-    if _override(sid, call, mode, fp):
-        log("allowed-override", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+    if _override(sid, call, mode, fp, spend=spend):
+        if spend:
+            log("allowed-override", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
         return None
+    if not spend:
+        return "refused"  # decided; the spending pass writes the refusal record
     ts = time.time()
     rid = refusal_id(sid, call.tool, mode, fp, ts)
     write_refusal(rid, sid, _issue_key(call.argv), call, mode, fp, ts)
@@ -358,14 +350,6 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> s
                         "names a gated tool with no tool-side backstop; denied. Run it as a plain "
                         "command line.")
             return None
-        unidentified = _unidentified_unbackstopped(others)
-        if unidentified:
-            if store:
-                log("refused-unidentified", tool=unidentified, sid=sid)
-            return (f"precheck gate (harmonic-forge#1291): this command runs {unidentified} in a form "
-                    "the gate cannot identify (a relative path, an interpreter option, another "
-                    "spelling), and a mode of that tool has no tool-side backstop; denied. Run it "
-                    f"by its repo path, e.g. `python3 {unidentified} ...` from the repo root.")
         if store:
             import effects  # noqa: PLC0415
             for argv in others:
@@ -378,10 +362,24 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> s
                 target = _cd_target(list(item.argv), current)
                 if target:
                     current = target
+        where = current if len(calls) == 1 else cwd
+        # harmonic-forge#1291 (sticky-wicket PATCH b): decide every call before
+        # spending any grant. Pass 1 spends nothing; if any call would be refused,
+        # pass 2 runs only up to it, so its refusal record is written and no
+        # earlier call's grant is consumed. Otherwise pass 2 spends the grants.
+        verdicts = []
         for call in calls:
             found = receipts.classify(call.tool, call.argv)
             matched = found[0] if found else matched
-            reason = _decide_call(call, sid, current if len(calls) == 1 else cwd, deadline, store=store)
+            verdicts.append(_decide_call(call, sid, where, deadline, store=store, spend=False)
+                            if store else None)
+        refused = next((i for i, v in enumerate(verdicts) if v), None)
+        if refused is not None:
+            # The refused call has no usable grant, so this spends nothing and only
+            # writes its refusal record and text.
+            return _decide_call(calls[refused], sid, where, deadline, store=store)
+        for call in calls:
+            reason = _decide_call(call, sid, where, deadline, store=store)
             if reason:
                 return reason
         return None

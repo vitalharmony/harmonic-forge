@@ -1395,6 +1395,13 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
     _flush()
 
 
+def _require_precheck() -> str | None:
+    """harmonic-forge#1291 (REFORGE): None when this real prune may run."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _preflight  # noqa: PLC0415
+    return _preflight.require("tools/gh/repo_hygiene.py", sys.argv[1:])
+
+
 def _record_precheck() -> None:
     """harmonic-forge#1291: a clean `--prune-worktrees --dry-run` writes the
     state-bound receipt the PreToolUse gate requires before the real prune."""
@@ -1426,6 +1433,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="with --prune-worktrees: print what would be removed, remove nothing")
     args = parser.parse_args()
+    if args.prune_worktrees and not args.dry_run:
+        # harmonic-forge#1291 (REFORGE, issuecomment-7002756185): the prune's own
+        # backstop, before any audit or GitHub call. The real run needs the dry run's live receipt however the
+        # command was spelled; the gate's spelling recognition is not load-bearing.
+        refusal = _require_precheck()
+        if refusal:
+            print(f"[hygiene] {refusal}", file=sys.stderr)
+            return 2
 
     # harmonic-forge#498: EXPLICIT, never inferred. An earlier draft fell back
     # to the manifest whenever `--repo` was absent, which silently turned every

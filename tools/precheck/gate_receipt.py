@@ -483,17 +483,29 @@ def consume(tool_path: str, argv: list[str], preflight_cmd: str | None = None,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Record a precheck receipt for a non-Python tool.")
     sub = parser.add_subparsers(dest="command", required=True)
-    rec = sub.add_parser("record")
-    rec.add_argument("--tool", required=True)
-    rec.add_argument("args", nargs=argparse.REMAINDER)
+    for verb in ("record", "consume"):
+        cmd = sub.add_parser(verb)
+        cmd.add_argument("--tool", required=True)
+        cmd.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     rest = args.args[1:] if args.args[:1] == ["--"] else args.args
     tool = precheck_tool(args.tool)
-    # A Python tool records in process; only a script that cannot import
-    # this module (lanes-claude, a bash script) records through the CLI.
+    # A Python tool records and consumes in process; only a script that cannot
+    # import this module (lanes-claude, a bash script) uses the CLI.
     if tool is None or tool["path"].endswith(".py"):
-        print(f"gate_receipt: {args.tool} does not record through the CLI", file=sys.stderr)
+        print(f"gate_receipt: {args.tool} does not use the CLI", file=sys.stderr)
         return 2
+    if args.command == "consume":
+        # harmonic-forge#1291 (REFORGE, issuecomment-7002756185): the same
+        # tool-side backstop the Python tools call, for a bash tool's real run.
+        try:
+            refusal = consume(tool["path"], rest)
+        except Deadline as exc:
+            refusal = f"the precheck receipt could not be checked ({exc}); retry"
+        if refusal:
+            print(f"gate_receipt: {refusal}", file=sys.stderr)
+            return 1
+        return 0
     try:
         record(tool["path"], rest, _argv0=str(FORGE_ROOT / tool["path"]))
     except (ReceiptRefused, Deadline) as exc:

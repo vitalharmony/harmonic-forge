@@ -28,7 +28,7 @@ SESSION = "sess-1291"
 FORCE_CMD = ("python3 tools/gh/preclose_check.py --repo vitalharmony/harmonic-forge --issue 1291 "
              "--complete --force")
 PRECHECK = "python3 tools/gh/preclose_check.py --repo vitalharmony/harmonic-forge --issue 1291 --complete"
-UNBACKSTOPPED = {"repo_hygiene": "python3 tools/gh/repo_hygiene.py --prune-worktrees",
+FORMERLY_UNBACKSTOPPED = {"repo_hygiene": "python3 tools/gh/repo_hygiene.py --prune-worktrees",
                  "lanes-claude": "lanes-claude --session x",
                  "check_lane3_ready": "python3 tools/gh/check_lane3_ready.py --mark-active --issue 5"}
 
@@ -187,18 +187,14 @@ class Decision5Override(GateCase):
         self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
         self.assertIsNotNone(self.decide(FORCE_CMD))
 
-    def test_an_override_on_an_unbackstopped_mode_is_one_call(self) -> None:
-        command = UNBACKSTOPPED["repo_hygiene"]
-        rid = self.decide(command).split("Refusal id: ")[1][:12]
-        refusal = gate.read_refusal(rid)
-        grant = force_grant.write_pending("F1291", "vitalharmony/harmonic-forge", 1291, None, "r", SESSION,
-                                          "FORCE line", mode="gate",
-                                          gate={"gate_tool": refusal["tool"], "gate_mode": refusal["mode"],
-                                                "arg_fp": refusal["fp"], "gate_refusal_id": rid})
-        force_grant.imc_waiver.write_json_atomic(force_grant.grant_path("F1291"), {**grant, "status": "usable"})
-        self.assertIsNone(self.decide(command))
-        self.assertEqual(self.rows()[-1]["outcome"], "allowed-override")
-        self.assertIsNotNone(self.decide(command))  # no reusable receipt: the grant was the one use
+    def test_a_refused_sibling_never_spends_the_grant(self) -> None:
+        """Sticky-wicket PATCH b: every call is decided before any grant is spent."""
+        rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
+        self._grant(rid)
+        sibling = "python3 tools/gh/repo_hygiene.py --prune-worktrees"
+        self.assertIsNotNone(self.decide(f"{FORCE_CMD} && {sibling}"))
+        self.assertEqual(force_grant.read_grant("F1291").get("status"), "usable")
+        self.assertIsNone(self.decide(FORCE_CMD))  # the grant is still there for A alone
 
     def test_the_gate_never_accepts_an_override_receipt(self) -> None:
         rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
@@ -239,15 +235,6 @@ class Decision6Log(GateCase):
 
 
 class Decision7FailClosed(GateCase):
-    def test_unbackstopped_mode_fails_closed_on_error(self) -> None:
-        for name, command in UNBACKSTOPPED.items():
-            with self.subTest(tool=name, failure="raises"), \
-                    mock.patch.object(R, "fingerprint", side_effect=RuntimeError("boom")):
-                self.assertIn("fail closed", self.decide(command) or "")
-            with self.subTest(tool=name, failure="deadline"), \
-                    mock.patch.object(R, "DEADLINE_S", 0.0):
-                self.assertIn("fail closed", self.decide(command) or "")
-
     def test_deadline_bounds_a_slow_resolver(self) -> None:
         """A slow `git rev-parse` hits the internal deadline, never the hook timeout."""
         def slow(*args, **kwargs):
@@ -266,28 +253,54 @@ class Decision7FailClosed(GateCase):
         argv = shlex.split(FORCE_CMD)[2:]
         self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
 
-    # Sticky-wicket PATCH (pass-1 clusters): the default is turned around.
-    def test_an_unidentified_spelling_of_an_unbackstopped_tool_is_denied(self) -> None:
-        for command in ("cd tools/gh && python3 repo_hygiene.py --prune-worktrees",
-                        "cd tools/gh && ./repo_hygiene.py --prune-worktrees",
-                        "python3 -W ignore tools/gh/repo_hygiene.py --prune-worktrees",
-                        "python3 -X utf8 tools/gh/check_lane3_ready.py --mark-active --issue 5"):
-            with self.subTest(command=command):
-                self.assertIn("cannot identify", self.decide(command) or "")
-        self.assertEqual(self.rows()[-1]["outcome"], "refused-unidentified")
 
-    def test_a_path_as_data_is_never_a_run(self) -> None:
-        self.assertIsNone(self.decide("git log -- tools/gh/repo_hygiene.py"))
-        self.assertIsNone(self.decide("grep -n prune tools/gh/repo_hygiene.py"))
+class ReforgeToolSideBackstop(GateCase):
+    """REFORGE (issuecomment-7002756185): the three formerly unbackstopped modes
+    refuse their own real run without a receipt, however the command was spelled;
+    the gate's spelling recognition is not load-bearing."""
 
-    def test_a_sessionless_call_on_an_unbackstopped_mode_is_denied(self) -> None:
-        for name, command in UNBACKSTOPPED.items():
-            with self.subTest(tool=name):
-                self.assertIn("no session id", self.decide(command, session="") or "")
+    def test_no_mode_is_left_without_a_backstop(self) -> None:
+        self.assertEqual([(t["path"], m["name"]) for t, m in gate._precheck_modes()
+                          if not m["backstop"]], [])
 
-    def test_an_unparseable_command_naming_an_unbackstopped_tool_is_denied(self) -> None:
-        self.assertIsNotNone(self.decide("python3 tools/gh/repo_hygiene.py --prune-worktrees 'unclosed"))
-        self.assertIsNone(self.decide("echo 'unclosed"))
+    def test_consume_refuses_each_former_unbackstopped_mode_without_a_receipt(self) -> None:
+        for tool, argv in (("tools/gh/repo_hygiene.py", ["--prune-worktrees"]),
+                           ("tools/gh/check_lane3_ready.py", ["--mark-active", "--issue", "5"]),
+                           ("tools/lane/lanes-claude", ["--session", "x"])):
+            with self.subTest(tool=tool):
+                self.assertIsNotNone(R.consume(tool, argv, cwd=self.repo))
+
+    def test_repo_hygiene_refuses_a_real_prune_before_any_call(self) -> None:
+        import repo_hygiene  # noqa: PLC0415
+        with mock.patch.object(sys, "argv", ["repo_hygiene.py", "--prune-worktrees"]), \
+                mock.patch.object(repo_hygiene.subprocess, "run", side_effect=AssertionError("no call")), \
+                contextlib.redirect_stderr(io.StringIO()) as err, \
+                mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.repo)}):
+            self.assertEqual(repo_hygiene.main(), 2)
+        self.assertIn("no live precheck receipt", err.getvalue())
+
+    def test_check_lane3_ready_refuses_mark_active_before_any_read(self) -> None:
+        import check_lane3_ready  # noqa: PLC0415
+        with mock.patch.object(check_lane3_ready, "fetch_comments", side_effect=AssertionError("no read")), \
+                mock.patch.object(check_lane3_ready, "clear_marker"), \
+                mock.patch.object(check_lane3_ready, "mark_active", side_effect=AssertionError("no mark")), \
+                mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.repo)}), \
+                contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            check_lane3_ready.main(["--mark-active", "--issue", "5"])
+        self.assertIn("no live precheck receipt", err.getvalue())
+
+    def test_the_bash_launcher_consumes_through_the_cli(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(R.main(["consume", "--tool", "tools/lane/lanes-claude", "--", "--session", "x"]), 1)
+        R.record("tools/lane/lanes-claude", ["--session", "x", "--dry-run"], self.repo,
+                 _argv0=str(FORGE / "tools/lane/lanes-claude"))
+        with mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.repo)}):
+            self.assertEqual(R.main(["consume", "--tool", "tools/lane/lanes-claude", "--", "--session", "x"]), 0)
+
+    def test_the_launcher_calls_consume_before_any_tmux_session(self) -> None:
+        text = (FORGE / "tools/lane/lanes-claude").read_text()
+        self.assertLess(text.index("gate_receipt.py\" consume --tool tools/lane/lanes-claude"),
+                        text.index("tmux new-session"))
 
 
 class HarnessLayer(unittest.TestCase):

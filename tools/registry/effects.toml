@@ -102,7 +102,7 @@ mise_tasks = [{task = "lane3-begin", prefix = ["--mark-active"]}]
   precheck_form = {strip = ["--mark-active"], add = []}
   bind_args = {}
   receipt_writer = true
-  backstop = false
+  backstop = true
   prefix = true
   cite = ["tools/gh/check_lane3_ready.py:499-500", "tools/gh/check_lane3_ready.py:537-538"]
   [[tool.mode]]
@@ -547,7 +547,7 @@ path = "tools/gh/repo_hygiene.py"
   precheck_form = {strip = [], add = ["--dry-run"]}
   bind_args = {}
   receipt_writer = true
-  backstop = false
+  backstop = true
   prefix = true
   cite = ["tools/gh/repo_hygiene.py:1175", "tools/gh/repo_hygiene.py:1185"]
   [[tool.mode]]
@@ -933,7 +933,7 @@ path = "tools/lane/lanes-claude"
   precheck_form = {strip = [], add = ["--dry-run"]}
   bind_args = {}
   receipt_writer = true
-  backstop = false
+  backstop = true
   prefix = false
   cite = ["tools/lane/lanes-claude:647"]
 
