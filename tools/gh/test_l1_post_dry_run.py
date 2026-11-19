@@ -47,7 +47,7 @@ class Harness(unittest.TestCase):
         # harmonic-forge#1426: the correction-rework amendment gate reads the live
         # thread; its own tests are in test_amendment_pitch_gate.py.
         amend = mock.patch.object(L, "validate_correction_amendment", return_value=None)
-        amend.start()
+        self.amend_gate = amend.start()
         self.addCleanup(amend.stop)
         os.environ.pop("L1_POST_ENTRY", None)
         self.overlap = False
@@ -323,6 +323,15 @@ class DryRunTests(Harness):
         self.assertIn(OVERLAP, code)
         self.posted.assert_not_called()
         self.assertEqual(self.receipts(), [])
+
+    def test_only_a_correction_rework_reaches_the_amendment_gate(self):
+        """harmonic-forge#1426 pass 1: rebase and relay reworks are never gated."""
+        for rework_kind, gated in (("correction", True), ("rebase", False), ("relay", False)):
+            self.amend_gate.reset_mock()
+            self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--rework-kind",
+                          rework_kind, "--sha", SHA_A, "--branch", "fix/1115-x",
+                          "--file", self.body(REWORK), "--dry-run")
+            self.assertEqual(self.amend_gate.called, gated, rework_kind)
 
     def test_real_post_still_runs_world_checks_after_clean_dry_run(self):
         """The dry run gates in front of the real checks; it replaces none."""

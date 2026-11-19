@@ -3129,18 +3129,25 @@ def post_kind(
         raise
 
 
+#: harmonic-forge#1426 pass 1: set by validate_correction_amendment when the
+#: gate applied to this post, so the receipt is consumed only then.
+_CORRECTION_GATED: dict[tuple[str, int], bool] = {}
+
+
 def validate_correction_amendment(repo: str, issue: int, labels: set[str],
                                   declared: str | None) -> None:
     """harmonic-forge#1426: a correction rework is a Lane 1 change to a handed-off
     design. On a tooling-exception issue with a posted handoff it declares design
     or wording, and a design one needs a fresh pitch verdict (rebase and relay
     reworks are never gated)."""
+    _CORRECTION_GATED[(repo, issue)] = False
     if pitch_receipt.LABEL not in labels:
         return
     comments = check_lane3_ready_fetch_comments(repo, issue)
     reason = pitch_receipt.amendment_refusal(repo, issue, labels, comments, declared)
     if reason is not None:
         fail(reason)
+    _CORRECTION_GATED[(repo, issue)] = pitch_receipt.amendment_gate_applies(labels, comments)
 
 
 def check_lane3_ready_fetch_comments(repo: str, issue: int) -> list[dict]:
@@ -3353,7 +3360,8 @@ def _post_kind(
         # so consuming it here keeps that, and a later redesigned handoff on
         # the same issue needs a fresh review.
         pitch_receipt.consume(repo, issue, url)
-    if kind == "rework" and rework_kind == "correction" and amendment == "design":
+    if (kind == "rework" and rework_kind == "correction" and amendment == "design"
+            and _CORRECTION_GATED.get((repo, issue))):
         # harmonic-forge#1426: a design-changing correction spent its fresh verdict.
         pitch_receipt.consume(repo, issue, url)
     if attempt is not None:

@@ -698,7 +698,7 @@ def require_amendment_pitch(repo: str, issue: int, kind: str, declared: str | No
     already has a posted handoff is an amendment, and a design-changing one needs
     a fresh pitch verdict. Returns True when the post must consume that verdict.
     The footer is untouched (its readers match it byte for byte)."""
-    if os.environ.get("LANE") != "1" or kind != "discussion":
+    if os.environ.get("LANE") in pitch_receipt.NON_AMENDING_LANES or kind != "discussion":
         return False
     labels = issue_labels(repo, issue)
     if pitch_receipt.LABEL not in labels:

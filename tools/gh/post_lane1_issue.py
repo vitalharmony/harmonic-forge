@@ -176,7 +176,7 @@ def require_amendment_pitch(repo: str, issue: int, declared: str | None) -> bool
     that already has a posted handoff declares design or wording; a design one
     needs a fresh pitch verdict. True when the edit must consume it."""
     import pitch_receipt  # noqa: PLC0415
-    if os.environ.get("LANE") != "1":
+    if os.environ.get("LANE") in pitch_receipt.NON_AMENDING_LANES:
         return False
     labels = issue_labels(repo, issue)
     if pitch_receipt.LABEL not in labels:
@@ -236,12 +236,13 @@ def main() -> None:
     # Announced BEFORE validating, so a mis-inference is visible while it can
     # still be aborted rather than discovered from the success line.
     print(f"[l1-issue] {mode} mode" + (" -- new-issue schema NOT applied" if amending else ""))
-    consume_pitch = False
     if amending:
         validate_amendment(body, current, args.allow_shrink)
-        consume_pitch = require_amendment_pitch(args.repo, args.issue, args.amendment)
     else:
         validate_body(body, issue_labels(args.repo, args.issue))
+    # harmonic-forge#1426 pass 1: fill mode too -- a stub edited after a handoff
+    # posted is still an amendment to that handoff's design.
+    consume_pitch = require_amendment_pitch(args.repo, args.issue, args.amendment)
     edit_issue_body(args.repo, args.issue, args.body_file, body)
     if consume_pitch:
         import pitch_receipt  # noqa: PLC0415

@@ -132,6 +132,15 @@ def refusal(repo: str, issue: int, labels: set[str]) -> str | None:
 AMENDMENTS = ("design", "wording")
 #: The footer `l1_post.py --kind handoff` stamps on a posted handoff.
 HANDOFF_FOOTER = "<!-- l1-post v1; kind=handoff;"
+#: Lanes that never amend a Lane 1 design; LANE unset (the advisor) is gated.
+NON_AMENDING_LANES = ("2", "3")
+
+
+def is_posted_handoff(body: str) -> bool:
+    """True when the comment's last non-empty line is the handoff footer, as
+    l1_post writes it -- a footer quoted inside an example is not a handoff."""
+    lines = [line for line in (body or "").splitlines() if line.strip()]
+    return bool(lines) and lines[-1].lstrip().startswith(HANDOFF_FOOTER)
 
 
 def amendment_gate_applies(labels: set[str], comments: list[dict]) -> bool:
@@ -140,7 +149,7 @@ def amendment_gate_applies(labels: set[str], comments: list[dict]) -> bool:
     the handoff's own pitch check covers the design."""
     if LABEL not in labels:
         return False
-    return any(HANDOFF_FOOTER in (comment.get("body") or "") for comment in comments)
+    return any(is_posted_handoff(comment.get("body") or "") for comment in comments)
 
 
 def amendment_refusal(repo: str, issue: int, labels: set[str], comments: list[dict],

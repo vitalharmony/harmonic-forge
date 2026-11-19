@@ -69,6 +69,52 @@ class HelperTests(_Receipts):
         self.assertIsNone(pitch_receipt.amendment_refusal(REPO, ISSUE, TE, NO_HANDOFF, None))
 
 
+class FooterAndLaneTests(_Receipts):
+    def test_a_quoted_footer_is_not_a_posted_handoff(self) -> None:
+        quoted = [{"body": "example:\n```\n<!-- l1-post v1; kind=handoff; sha=abc; -->\n```\nmore text"}]
+        self.assertFalse(pitch_receipt.amendment_gate_applies(TE, quoted))
+
+    def test_lane_unset_is_gated_lanes_two_and_three_are_not(self) -> None:
+        self.spend()
+        for lane, gated in ((None, True), ("1", True), ("2", False), ("3", False)):
+            env = {} if lane is None else {"LANE": lane}
+            with patch.dict(os.environ, env, clear=False) as e:
+                if lane is None:
+                    e.pop("LANE", None)
+                with patch.object(post_lane_discussion, "issue_labels", return_value=TE), \
+                        patch.object(post_lane_discussion.check_lane3_ready, "fetch_comments",
+                                     return_value=HANDOFF):
+                    if gated:
+                        with self.assertRaises(SystemExit):
+                            post_lane_discussion.require_amendment_pitch(REPO, ISSUE, "discussion", None)
+                    else:
+                        self.assertFalse(post_lane_discussion.require_amendment_pitch(
+                            REPO, ISSUE, "discussion", None))
+
+
+class ConsumeTests(_Receipts):
+    def test_correction_consumes_only_when_the_gate_applied(self) -> None:
+        for comments, consumed in ((HANDOFF, True), (NO_HANDOFF, False)):
+            self.fresh()
+            with patch.object(l1_post, "check_lane3_ready_fetch_comments", return_value=comments):
+                l1_post.validate_correction_amendment(REPO, ISSUE, TE, "design")
+            self.assertEqual(bool(l1_post._CORRECTION_GATED.get((REPO, ISSUE))), consumed)
+
+    def test_body_amendment_consumes_after_a_design_edit(self) -> None:
+        self.fresh()
+        with patch.dict(os.environ, {"LANE": "1"}), \
+                patch.object(post_lane1_issue, "issue_labels", return_value=TE), \
+                patch.object(post_lane1_issue, "issue_comments", return_value=HANDOFF):
+            self.assertTrue(post_lane1_issue.require_amendment_pitch(REPO, ISSUE, "design"))
+
+    def test_discussion_post_consumes_the_verdict(self) -> None:
+        """main() spends the receipt after a gated design post (consume is called)."""
+        import inspect
+        source = inspect.getsource(post_lane_discussion.main)
+        self.assertIn("pitch_receipt.consume(args.repo, args.issue, url)", source)
+        self.assertIn("if consume_pitch:", source)
+
+
 class DiscussionRouteTests(_Receipts):
     def gate(self, declared, comments=HANDOFF, labels=TE, lane="1", kind="discussion"):
         with patch.dict(os.environ, {"LANE": lane}), \
