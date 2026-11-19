@@ -2,10 +2,14 @@
 """Tests for the context-budget ratchet (harmonic-forge#521)."""
 from __future__ import annotations
 
+import inspect
+import os
 import sys
 import tempfile
 import tomllib
 import unittest
+import unittest.mock
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -67,7 +71,7 @@ class TestAsymmetry(_Repo):
 
     def test_a_decrease_passes_with_no_entry(self):
         self.set_surface(**{"CLAUDE.md": 500})
-        self.write_baseline('total_bytes = 900\n[files]\n"CLAUDE.md" = 900\n')
+        self.write_baseline('total_bytes = 900\noutside_files = []\n[files]\n"CLAUDE.md" = 900\n')
         code, report = m.check(self.repo)
         self.assertEqual(code, 0)
         self.assertIn("shrank by 400", report)
@@ -272,7 +276,7 @@ class TestGateNarrowsToWhatTheRepoControls(_Repo):
             ("memory index", Path.home() / "memstore" / "MEMORY.md", outside_bytes),
         ]
 
-    BASE = ('total_bytes = 1900\n[files]\n'
+    BASE = ('total_bytes = 1900\noutside_files = ["~/memstore/MEMORY.md"]\n[files]\n'
             '"CLAUDE.md" = 900\n"~/memstore/MEMORY.md" = 1000\n')
 
     def test_out_of_repo_growth_alone_does_not_gate(self):
@@ -357,6 +361,286 @@ class TestInRepoPredicate(unittest.TestCase):
                 self.assertFalse(m.in_repo(key))
 
 
+class TestSymlinkAttribution(unittest.TestCase):
+    """harmonic-forge#1414: a repo-relative key whose real path is outside the
+    repo is reported, not gated. Real temp dirs, real symlinks, real sizes —
+    no `surface()` stub, because the bug lived in what the key resolves to."""
+
+    KEY = ".claude/rules/linked.md"
+
+    def setUp(self) -> None:
+        repo_tmp = tempfile.TemporaryDirectory()
+        out_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(repo_tmp.cleanup)
+        self.addCleanup(out_tmp.cleanup)
+        self.repo = Path(repo_tmp.name).resolve()
+        self.outside = Path(out_tmp.name).resolve()
+        (self.repo / ".claude" / "rules").mkdir(parents=True)
+        (self.repo / "CLAUDE.md").write_text("x" * 100, encoding="utf-8")
+
+    def link(self, target: Path) -> Path:
+        link = self.repo / self.KEY
+        os.symlink(target, link)
+        return target
+
+    def baseline_then_grow(self, path: Path, grow: int = 500) -> tuple[int, str]:
+        m.update(self.repo)
+        path.write_text(path.read_text(encoding="utf-8") + "y" * grow,
+                        encoding="utf-8")
+        return m.check(self.repo)
+
+    def test_a_link_to_a_file_outside_is_reported_not_gated(self):
+        target = self.outside / "rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        code, report = self.baseline_then_grow(target)
+        self.assertEqual(code, 0, report)
+        self.assertIn("NOT gated", report)
+        self.assertIn(f"{self.KEY} +500", report)
+        self.assertIn("symlink outside the repo", report)
+
+    def test_b_link_to_a_file_inside_the_repo_gates(self):
+        target = self.repo / "docs-rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        code, report = self.baseline_then_grow(target)
+        self.assertEqual(code, 1, report)
+
+    def test_c_ordinary_file_gates(self):
+        plain = self.repo / self.KEY
+        plain.write_text("r" * 200, encoding="utf-8")
+        code, report = self.baseline_then_grow(plain)
+        self.assertEqual(code, 1, report)
+
+    def test_d_deleted_tracked_file_stays_in_repo(self):
+        self.assertTrue(m.in_repo(".claude/rules/gone.md", repo=self.repo))
+
+    def test_e_platform_rule_link_outside_still_gates(self):
+        (self.repo / "sync_rules.py").write_text(
+            'UNIVERSAL_RULE_FILES = ["x.md"]\n', encoding="utf-8")
+        (self.repo / "rules").mkdir()
+        own = self.repo / "rules" / "x.md"
+        own.write_text("r" * 200, encoding="utf-8")
+        foreign = self.outside / "x.md"
+        foreign.write_text("r" * 200, encoding="utf-8")
+        os.symlink(foreign, self.repo / ".claude" / "rules" / "x.md")
+        code, report = self.baseline_then_grow(own)
+        self.assertEqual(code, 1, report)
+
+    def test_f_every_check_call_site_passes_repo(self):
+        """Outside link grows AND an in-repo file shrinks, so all four
+        `in_repo` call sites in `check` run; any one missing `repo=` fails."""
+        target = self.outside / "rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        m.update(self.repo)
+        target.write_text("r" * 700, encoding="utf-8")
+        (self.repo / "CLAUDE.md").write_text("x" * 50, encoding="utf-8")
+        calls: list[Path | None] = []
+        real = m.in_repo
+
+        def spy(key, repo=None):
+            calls.append(repo)
+            return real(key, repo)
+
+        m.in_repo = spy
+        self.addCleanup(lambda: setattr(m, "in_repo", real))
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+        self.assertTrue(calls)
+        self.assertNotIn(None, calls, "a check() call site dropped repo=")
+        # The two growth sites read the key's current location; the shrinkage
+        # site reads the baseline's record (_was_in_repo, sticky-wicket PATCH).
+        src = inspect.getsource(m.check)
+        self.assertEqual(src.count("in_repo(key, repo=repo)"), 2)
+        self.assertEqual(src.count("_was_in_repo(baseline, key)"), 1)
+        self.assertNotRegex(src, r"in_repo\(key\)")
+
+    def test_g_report_line_has_no_absolute_path(self):
+        target = self.outside / "rule.md"
+        target.write_text("r" * 200, encoding="utf-8")
+        self.link(target)
+        _code, report = self.baseline_then_grow(target)
+        line = next(l for l in report.splitlines() if "NOT gated" in l)
+        self.assertNotIn("/home", line)
+        self.assertNotIn(str(self.outside), line)
+        note = line.split("symlink outside the repo: ", 1)[1]
+        self.assertFalse(note.startswith("/"), line)
+        self.assertNotIn("../..", note, "relpath climbed toward the root")
+
+    def test_g2_note_forms(self):
+        """Under the repo's parent: `../`; under home: `~/`; else the key."""
+        # Own layout under self.outside: <o>/wt/repo links to <o>/forge/x.md
+        # and <o>/wt/x.md — a `.worktrees/` checkout's shape.
+        repo = self.outside / "wt" / "repo"
+        (repo / ".claude" / "rules").mkdir(parents=True)
+        (self.outside / "forge").mkdir()
+        far = self.outside / "forge" / "x.md"
+        near = self.outside / "wt" / "x.md"
+        for f in (far, near):
+            f.write_text("r", encoding="utf-8")
+        link = repo / self.KEY
+        os.symlink(near, link)
+        self.assertEqual(m._symlink_note(repo, self.KEY),
+                         " (symlink outside the repo: ../x.md)")
+        link.unlink()
+        os.symlink(far, link)
+        with mock.patch.object(m.Path, "home", return_value=self.outside):
+            self.assertEqual(m._symlink_note(repo, self.KEY),
+                             " (symlink outside the repo: ~/forge/x.md)")
+        with mock.patch.object(m.Path, "home", return_value=self.repo):
+            self.assertEqual(m._symlink_note(repo, self.KEY),
+                             f" (symlink outside the repo: {self.KEY})")
+
+
+class TestMissingKeyShrinkCredit(unittest.TestCase):
+    """harmonic-forge#1414 reforge: a missing key's baseline bytes are credited as
+    shrinkage only if the baseline did not list it in outside_files."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        out = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(out.cleanup)
+        self.repo = Path(tmp.name).resolve()
+        self.outside = Path(out.name).resolve()
+        (self.repo / ".claude" / "rules").mkdir(parents=True)
+        (self.repo / "CLAUDE.md").write_text("x" * 100, encoding="utf-8")
+
+    def git(self, *args: str) -> None:
+        import subprocess
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t",
+                        "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+    def init_git(self) -> None:
+        self.git("init", "-q")
+        (self.repo / ".gitignore").write_text(".claude/rules/link.md\n",
+                                              encoding="utf-8")
+
+    def grow_claude(self, by: int = 500) -> None:
+        p = self.repo / "CLAUDE.md"
+        p.write_text(p.read_text(encoding="utf-8") + "y" * by, encoding="utf-8")
+
+    def test_outside_link_missing_later_is_not_credited(self):
+        """A link outside the repo at --update is listed in outside_files, so its
+        bytes never offset in-repo growth when a CI checkout lacks it."""
+        target = self.outside / "rule.md"
+        target.write_text("r" * 2000, encoding="utf-8")
+        link = self.repo / ".claude" / "rules" / "link.md"
+        os.symlink(target, link)
+        m.update(self.repo)
+        self.assertIn(".claude/rules/link.md", m.load_baseline(self.repo)["outside_files"])
+        link.unlink()  # a CI checkout: the gitignored link is absent
+        self.grow_claude()
+        code, report = m.check(self.repo)
+        # Its bytes were outside when the baseline was written, so their loss
+        # offsets nothing and the in-repo growth still fails the gate.
+        self.assertEqual(code, 1, report)
+        self.assertNotIn("shrank by", report)
+
+    def test_deleted_in_repo_file_is_still_credited(self):
+        """AC2: an in-repo file deleted after --update still counts as shrinkage."""
+        gone = self.repo / ".claude" / "rules" / "gone.md"
+        gone.write_text("g" * 2000, encoding="utf-8")
+        m.update(self.repo)
+        self.assertNotIn(".claude/rules/gone.md", m.load_baseline(self.repo)["outside_files"])
+        gone.unlink()
+        self.grow_claude()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+        self.assertIn("shrank by 1500", report)
+        self.assertNotIn("NOT credited", report)
+
+    def _replace_rule_with_outside_link(self) -> None:
+        rule = self.repo / ".claude" / "rules" / "big.md"
+        rule.write_text("b" * 2100, encoding="utf-8")
+        m.update(self.repo)
+        target = self.outside / "small.md"
+        target.write_text("s" * 100, encoding="utf-8")
+        rule.unlink()
+        os.symlink(target, rule)
+        self.grow_claude()
+
+    def test_rule_replaced_by_outside_link_credits_its_shrink(self):
+        """Sticky-wicket PATCH: shrinkage follows the baseline, not the key's new home."""
+        self._replace_rule_with_outside_link()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+
+    def test_legacy_baseline_never_credits_an_external_link(self):
+        """Post-verdict check: a pre-#1414 baseline judges keys by where they
+        resolve now, so an always-external link's shrink never hides growth."""
+        target = self.outside / "ext.md"
+        target.write_text("e" * 2100, encoding="utf-8")
+        os.symlink(target, self.repo / ".claude" / "rules" / "ext.md")
+        m.update(self.repo)
+        self._strip_outside_files()
+        target.write_text("e" * 100, encoding="utf-8")
+        self.grow_claude()
+        self.assertEqual(m.check(self.repo)[0], 1)
+
+    def test_rule_replaced_by_outside_link_is_strict_under_a_legacy_baseline(self):
+        rule = self.repo / ".claude" / "rules" / "big.md"
+        rule.write_text("b" * 2100, encoding="utf-8")
+        m.update(self.repo)
+        self._strip_outside_files()
+        target = self.outside / "small.md"
+        target.write_text("s" * 100, encoding="utf-8")
+        rule.unlink()
+        os.symlink(target, rule)
+        self.grow_claude()
+        # Strict until the next --update writes outside_files (the accepted trade).
+        self.assertEqual(m.check(self.repo)[0], 1)
+
+    def test_keys_round_trip_through_toml(self):
+        """Sticky-wicket PATCH: a backslash or quote in a key survives tomllib."""
+        import tomllib
+        for key in ('odd\\tname"q.md', "smile\U0001F600.md", "del\x7fname.md"):
+            inc = [{"date": "2026-11-18", "files": [key], "bytes": 3, "why": "w"}]
+            text = m.render_baseline({key: 3}, inc, [key])
+            data = tomllib.loads(text)
+            self.assertIn(key, data["files"])
+            self.assertEqual(data["outside_files"], [key])
+            self.assertEqual(data["increase"][0]["files"], [key])
+
+    def test_main_refuses_a_ratchet_error_without_a_traceback(self):
+        with unittest.mock.patch.object(m, "check", side_effect=m.RatchetError("bad name")):
+            self.assertEqual(m.main(["--repo", "."]), 1)
+
+    def test_an_undecodable_name_is_refused_loudly(self):
+        with self.assertRaises(m.RatchetError):
+            m.render_baseline({"bad\udcffname.md": 3}, [], [])
+
+    def _strip_outside_files(self) -> None:
+        path = m.baseline_path(self.repo)
+        text = path.read_text(encoding="utf-8")
+        path.write_text("\n".join(line for line in text.splitlines()
+                                   if not line.startswith("outside_files")) + "\n",
+                        encoding="utf-8")
+
+    def test_legacy_baseline_credits_no_shrink(self):
+        """Operator ruling 2026-11-18: a pre-#1414 baseline records nothing about
+        where bytes were, so no shrink offsets growth until --update."""
+        gone = self.repo / ".claude" / "rules" / "gone.md"
+        gone.write_text("g" * 2000, encoding="utf-8")
+        m.update(self.repo)
+        self._strip_outside_files()
+        self.assertNotIn("outside_files", m.load_baseline(self.repo))
+        gone.unlink()
+        self.grow_claude()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 1, report)
+
+    def test_legacy_baseline_pure_shrink_still_passes(self):
+        gone = self.repo / ".claude" / "rules" / "gone.md"
+        gone.write_text("g" * 2000, encoding="utf-8")
+        m.update(self.repo)
+        self._strip_outside_files()
+        gone.unlink()
+        self.assertEqual(m.check(self.repo)[0], 0)
+
+
 class TestKeysForFilesOutsideTheRepo(unittest.TestCase):
     """Two measured files live outside the repo — the operator's global
     CLAUDE.md and the shared memory index. A repo-relative-only key would
@@ -409,8 +693,11 @@ class TestNoNetwork(unittest.TestCase):
     def test_the_source_reaches_no_network(self):
         source = Path(m.__file__).read_text(encoding="utf-8")
         for forbidden in ("requests", "urllib", "httpx", "socket",
-                          "subprocess", "gh api"):
+                          "gh api", '"gh"', "fetch", "ls-remote"):
             self.assertNotIn(forbidden, source)
+        # harmonic-forge#1414 reforge: whether a key was this repo's is read
+        # from the baseline's outside_files, so the ratchet runs no subprocess.
+        self.assertEqual(source.count("subprocess"), 0)
 
 
 if __name__ == "__main__":

@@ -64,6 +64,8 @@ No network calls anywhere in this path.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 import tomllib
 from datetime import date
@@ -72,7 +74,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 
-from context_budget import BYTES_PER_TOKEN, surface  # noqa: E402
+from context_budget import BYTES_PER_TOKEN, _platform_rule_sources, surface  # noqa: E402
 
 #: Measured: harmonic-forge#497 put a compacted session at ~12k surviving
 #: tokens; at 4 bytes/token that is ~48,000 bytes of room.
@@ -136,7 +138,8 @@ def load_baseline(repo: Path) -> dict | None:
         raise RatchetError(f"{path} is not valid TOML: {exc}") from exc
 
 
-def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
+def render_baseline(rows: dict[str, int], increases: list[dict],
+                    outside: list[str] | None = None) -> str:
     """Emit the baseline by hand — there is no TOML writer in this toolchain,
     and adding a dependency for four literal types is not worth it."""
     total = sum(rows.values())
@@ -155,17 +158,21 @@ def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
         f"total_bytes = {total}",
         f"ceiling_bytes = {CEILING_BYTES}",
         f"target_bytes = {TARGET_BYTES}",
+        # harmonic-forge#1414 reforge: which keys were outside this repo when the
+        # baseline was written. A shrink is credited only for a key not listed, so
+        # bytes an outside file contributed never offset this repo's growth.
+        "outside_files = [" + ", ".join(_toml_key(k) for k in sorted(outside or [])) + "]",
         "",
         "[files]",
     ]
     for key in sorted(rows):
-        lines.append(f'"{key}" = {rows[key]}')
+        lines.append(f'{_toml_key(key)} = {rows[key]}')
     for entry in increases:
         lines.extend([
             "",
             "[[increase]]",
             f'date = "{entry.get("date", "")}"',
-            "files = [" + ", ".join(f'"{f}"' for f in entry.get("files", [])) + "]",
+            "files = [" + ", ".join(_toml_key(f) for f in entry.get("files", [])) + "]",
             f'bytes = {entry.get("bytes", 0)}',
             "why = " + _toml_string(str(entry.get("why", ""))),
         ])
@@ -198,19 +205,87 @@ def _toml_string(text: str) -> str:
     return f'"""\n{body}"""' if multi else f'"{body}"'
 
 
-def in_repo(key: str) -> bool:
+def in_repo(key: str, repo: Path | None = None) -> bool:
     """True when a baseline key names a file inside the repo being measured.
 
-    Reuses the distinction `_relative_key` already writes: anything under the
-    repo gets a repo-relative key, anything outside gets a `~`-relative one (or
-    an absolute path when even that fails). No re-resolution needed, and none
-    wanted — the key records where the file was when the baseline was taken.
+    Keys `_relative_key` wrote as `~`-relative or absolute are outside. A
+    repo-relative key is inside unless it is a symlink whose real path leaves
+    the repo (harmonic-forge#1414): hrse's `.claude/rules/lane-shorthand.md`
+    links to the platform checkout, so its growth is forge's, and gating it
+    in hrse failed a commit for bytes no hrse author wrote. Resolution is
+    non-strict, so a deleted tracked file stays in-repo.
+
+    `repo=None` keeps the key-shape answer only; `check()` must always pass
+    `repo` (a test fails if any of its call sites does not).
 
     This is what the gate narrows to (harmonic-forge#538). Out-of-repo files
     stay measured, stay in the total, and stay in the printed breakdown; they
     simply cannot fail a commit in a repo that does not contain them.
     """
-    return not (key.startswith("~") or key.startswith("/"))
+    if key.startswith("~") or key.startswith("/"):
+        return False
+    if repo is None:
+        return True
+    root = repo.resolve()
+    try:
+        (repo / key).resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _was_in_repo(baseline: dict, key: str) -> bool:
+    """Whether a shrunk key's bytes were this repo's, and so may offset in-repo
+    growth (harmonic-forge#1414). That is a fact about when the baseline was
+    written, read from its `outside_files`, never inferred now: a key listed
+    there is not credited; a key not listed is, so a deleted tracked file still
+    counts (AC2). Operator ruling 2026-11-18 (narrowed scope): a pre-#1414
+    baseline records nothing about where bytes were, so it credits no shrinkage
+    at all -- strict, never a guess -- until `--update` writes `outside_files`."""
+    outside = baseline.get("outside_files")
+    if isinstance(outside, list):
+        return key not in outside
+    return False
+
+
+def _toml_key(text: str) -> str:
+    """A TOML basic string for a key: JSON's escapes are a subset TOML accepts,
+    and non-ASCII stays literal, since JSON's surrogate-pair escapes for
+    characters past U+FFFF are not valid TOML. DEL is escaped (TOML forbids it
+    raw). A name that is not valid Unicode (an undecodable byte, surfaced by
+    Python as a lone surrogate) cannot be written as TOML and is refused loudly
+    rather than written into an unreadable baseline (operator ruling 2026-11-18)."""
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        raise RatchetError(f"cannot record {text.encode('utf-8', 'backslashreplace')!r} in the "
+                           "baseline: the file name is not valid UTF-8; rename the file")
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def _symlink_note(repo: Path, key: str) -> str:
+    """` (symlink outside the repo: <target>)` for a repo-relative key that
+    resolves outside, else empty. Never an absolute path: this line reaches
+    CI logs, so an absolute link target is rendered relative to the repo's
+    parent, falling back to the bare key."""
+    if key.startswith("~") or key.startswith("/"):
+        return ""
+    link = repo / key
+    if not link.is_symlink():
+        return ""
+    target = os.readlink(link)
+    if os.path.isabs(target):
+        # Never `os.path.relpath`: from a checkout whose parent does not hold
+        # the target (a `.worktrees/` checkout, a scratch copy) it climbs
+        # `../../..` to the root and spells the home path out anyway.
+        absolute = Path(target)
+        for base, prefix in ((repo.resolve().parent, "../"), (Path.home(), "~/")):
+            try:
+                target = prefix + str(absolute.relative_to(base))
+                break
+            except ValueError:
+                continue
+        else:
+            target = key
+    return f" (symlink outside the repo: {target})"
 
 
 def compare(baseline: dict, current: dict[str, int]) -> tuple[dict[str, int], dict[str, int], int]:
@@ -302,7 +377,7 @@ def failure_message(repo: Path, total: int, grew: dict[str, int], net: int,
         f"     [[increase]]",
         f'     date = "{date.today().isoformat()}"',
         "     files = ["
-        + ", ".join(f'"{k}"' for k in sorted(grew)) + "]",
+        + ", ".join(_toml_key(k) for k in sorted(grew)) + "]",
         f"     bytes = {net}",
         '     why = "..."',
         "",
@@ -332,22 +407,43 @@ def check(repo: Path) -> tuple[int, str]:
     # action into a red build plus a bookkeeping commit in an unrelated repo.
     # A gate that a session breaks by doing as it is told gets commented out,
     # and then the ratchet protects nothing.
-    gated_grew = {key: delta for key, delta in grew.items() if in_repo(key)}
-    gated_net = (sum(gated_grew.values())
-                 + sum(delta for key, delta in shrank.items() if in_repo(key)))
-    outside_grew = {key: delta for key, delta in grew.items() if not in_repo(key)}
+    # harmonic-forge#1414: the platform's own rule links are measured from
+    # this checkout's file (context_budget.surface), so they are this repo's
+    # growth even when the link itself points at another checkout.
+    platform_keys = {f".claude/rules/{n}" for n in _platform_rule_sources(repo)}
+
+    gated_grew = {key: delta for key, delta in grew.items()
+                  if key in platform_keys or in_repo(key, repo=repo)}
+    # harmonic-forge#1414 sticky-wicket PATCH: growth is gated by where a key is
+    # now; shrinkage by where the baseline recorded it, so a rule replaced by a
+    # link to a smaller outside file still credits the bytes it took away.
+    # Shrinkage credit follows only the baseline's record, platform rule links
+    # included: a key the baseline listed in outside_files is never credited
+    # (post-verdict check 3).
+    gated_shrank = {key: delta for key, delta in shrank.items()
+                    if _was_in_repo(baseline, key)}
+    legacy = not isinstance(baseline.get("outside_files"), list)
+    uncredited = sorted(key for key in shrank if legacy and key not in gated_shrank)
+    gated_net = sum(gated_grew.values()) + sum(gated_shrank.values())
+    outside_grew = {key: delta for key, delta in grew.items()
+                    if not (key in platform_keys or in_repo(key, repo=repo))}
     outside_note = ""
     if outside_grew:
-        named = ", ".join(f"{key} +{outside_grew[key]}"
+        named = ", ".join(f"{key} +{outside_grew[key]}{_symlink_note(repo, key)}"
                           for key in sorted(outside_grew))
         outside_note = (
             f"\n  outside this repo, reported and NOT gated: {named}."
             f"\n  Nothing a commit here can be accountable for — re-baseline "
             f"with `--update` when convenient (harmonic-forge#538).")
+    if uncredited:
+        outside_note += (
+            f"\n  outside this repo when the baseline was written (or missing "
+            f"under a pre-#1414 baseline), NOT credited as shrinkage: "
+            f"{', '.join(uncredited)}.")
 
     if gated_net <= 0:
         note = ""
-        if any(in_repo(key) for key in shrank):
+        if gated_shrank:
             note = (f"\n  in-repo surface shrank by {-gated_net} bytes — no "
                     f"acknowledgement needed. Run `--update` to lock it in.")
         return 0, headline + note + outside_note
@@ -365,8 +461,10 @@ def update(repo: Path) -> str:
     current = measure(repo)
     existing = load_baseline(repo)
     increases = list(existing.get("increase") or []) if existing else []
+    platform_keys = {f".claude/rules/{n}" for n in _platform_rule_sources(repo)}
+    outside = [key for key in current if not (key in platform_keys or in_repo(key, repo=repo))]
     path = baseline_path(repo)
-    path.write_text(render_baseline(current, increases), encoding="utf-8")
+    path.write_text(render_baseline(current, increases, outside), encoding="utf-8")
     return f"wrote {path} ({sum(current.values())} bytes across {len(current)} files)"
 
 
@@ -414,13 +512,18 @@ def main(argv: list[str] | None = None) -> int:
                              "report-only and exits 0.")
     args = parser.parse_args(argv)
 
-    if args.coverage:
-        code, report = coverage()
-    elif args.update:
-        print(update(args.repo.resolve()))
-        return 0
-    else:
-        code, report = check(args.repo.resolve())
+    try:
+        if args.coverage:
+            code, report = coverage()
+        elif args.update:
+            print(update(args.repo.resolve()))
+            return 0
+        else:
+            code, report = check(args.repo.resolve())
+    except RatchetError as exc:
+        # Refused loudly and fail-closed, never a traceback (post-verdict check 3).
+        print(f"context budget: {exc}", file=sys.stderr)
+        return 1
     print(report)
     return code if args.gate else 0
 

@@ -12,6 +12,7 @@
 total_bytes = 45456
 ceiling_bytes = 48000
 target_bytes = 24000
+outside_files = ["~/.claude/CLAUDE.md", "~/Harmonic_Projects/operator-memory/MEMORY.md"]
 
 [files]
 ".claude/rules/lane-shorthand.md" = 18351
