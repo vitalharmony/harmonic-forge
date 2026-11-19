@@ -161,18 +161,18 @@ def render_baseline(rows: dict[str, int], increases: list[dict],
         # harmonic-forge#1414 reforge: which keys were outside this repo when the
         # baseline was written. A shrink is credited only for a key not listed, so
         # bytes an outside file contributed never offset this repo's growth.
-        "outside_files = [" + ", ".join(json.dumps(k) for k in sorted(outside or [])) + "]",
+        "outside_files = [" + ", ".join(_toml_key(k) for k in sorted(outside or [])) + "]",
         "",
         "[files]",
     ]
     for key in sorted(rows):
-        lines.append(f'{json.dumps(key)} = {rows[key]}')
+        lines.append(f'{_toml_key(key)} = {rows[key]}')
     for entry in increases:
         lines.extend([
             "",
             "[[increase]]",
             f'date = "{entry.get("date", "")}"',
-            "files = [" + ", ".join(f'"{f}"' for f in entry.get("files", [])) + "]",
+            "files = [" + ", ".join(_toml_key(f) for f in entry.get("files", [])) + "]",
             f'bytes = {entry.get("bytes", 0)}',
             "why = " + _toml_string(str(entry.get("why", ""))),
         ])
@@ -250,13 +250,23 @@ def _credited_shrink(baseline: dict, key: str, current: dict[str, int]) -> bool:
     return True
 
 
-def _was_in_repo(baseline: dict, key: str) -> bool:
+def _was_in_repo(baseline: dict, key: str, repo: Path) -> bool:
     """Whether the baseline counted `key`'s bytes as this repo's: not listed in
-    its `outside_files`, or, for a pre-#1414 baseline, an in-repo key shape."""
+    its `outside_files`. A pre-#1414 baseline recorded nothing, so its keys are
+    judged by where they resolve now -- the strict direction: an external link
+    is never credited, at the cost of a rule replaced by an external link not
+    crediting its shrink until the next `--update` (post-verdict check)."""
     outside = baseline.get("outside_files")
     if isinstance(outside, list):
         return key not in outside
-    return not (key.startswith("~") or key.startswith("/"))
+    return in_repo(key, repo=repo)
+
+
+def _toml_key(text: str) -> str:
+    """A TOML basic string for a key: JSON's escapes are a subset TOML accepts,
+    and non-ASCII stays literal, since JSON's surrogate-pair escapes for
+    characters past U+FFFF are not valid TOML (post-verdict check)."""
+    return json.dumps(text, ensure_ascii=False)
 
 
 def _symlink_note(repo: Path, key: str) -> str:
@@ -375,7 +385,7 @@ def failure_message(repo: Path, total: int, grew: dict[str, int], net: int,
         f"     [[increase]]",
         f'     date = "{date.today().isoformat()}"',
         "     files = ["
-        + ", ".join(f'"{k}"' for k in sorted(grew)) + "]",
+        + ", ".join(_toml_key(k) for k in sorted(grew)) + "]",
         f"     bytes = {net}",
         '     why = "..."',
         "",
@@ -416,7 +426,7 @@ def check(repo: Path) -> tuple[int, str]:
     # now; shrinkage by where the baseline recorded it, so a rule replaced by a
     # link to a smaller outside file still credits the bytes it took away.
     gated_shrank = {key: delta for key, delta in shrank.items()
-                    if key in platform_keys or _was_in_repo(baseline, key)}
+                    if key in platform_keys or _was_in_repo(baseline, key, repo)}
     uncredited = sorted(key for key in gated_shrank
                         if not _credited_shrink(baseline, key, current))
     gated_net = (sum(gated_grew.values())
@@ -440,7 +450,7 @@ def check(repo: Path) -> tuple[int, str]:
 
     if gated_net <= 0:
         note = ""
-        if any((key in platform_keys or _was_in_repo(baseline, key))
+        if any((key in platform_keys or _was_in_repo(baseline, key, repo))
                and key not in uncredited for key in shrank):
             note = (f"\n  in-repo surface shrank by {-gated_net} bytes — no "
                     f"acknowledgement needed. Run `--update` to lock it in.")

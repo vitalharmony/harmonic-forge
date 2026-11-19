@@ -452,7 +452,7 @@ class TestSymlinkAttribution(unittest.TestCase):
         # sites read the baseline's record (_was_in_repo, sticky-wicket PATCH).
         src = inspect.getsource(m.check)
         self.assertEqual(src.count("in_repo(key, repo=repo)"), 2)
-        self.assertEqual(src.count("_was_in_repo(baseline, key)"), 2)
+        self.assertEqual(src.count("_was_in_repo(baseline, key, repo)"), 2)
         self.assertNotRegex(src, r"in_repo\(key\)")
 
     def test_g_report_line_has_no_absolute_path(self):
@@ -567,7 +567,19 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         code, report = m.check(self.repo)
         self.assertEqual(code, 0, report)
 
-    def test_rule_replaced_by_outside_link_credits_under_a_legacy_baseline(self):
+    def test_legacy_baseline_never_credits_an_external_link(self):
+        """Post-verdict check: a pre-#1414 baseline judges keys by where they
+        resolve now, so an always-external link's shrink never hides growth."""
+        target = self.outside / "ext.md"
+        target.write_text("e" * 2100, encoding="utf-8")
+        os.symlink(target, self.repo / ".claude" / "rules" / "ext.md")
+        m.update(self.repo)
+        self._strip_outside_files()
+        target.write_text("e" * 100, encoding="utf-8")
+        self.grow_claude()
+        self.assertEqual(m.check(self.repo)[0], 1)
+
+    def test_rule_replaced_by_outside_link_is_strict_under_a_legacy_baseline(self):
         rule = self.repo / ".claude" / "rules" / "big.md"
         rule.write_text("b" * 2100, encoding="utf-8")
         m.update(self.repo)
@@ -577,16 +589,19 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         rule.unlink()
         os.symlink(target, rule)
         self.grow_claude()
-        self.assertEqual(m.check(self.repo)[0], 0)
+        # Strict until the next --update writes outside_files (the accepted trade).
+        self.assertEqual(m.check(self.repo)[0], 1)
 
     def test_keys_round_trip_through_toml(self):
         """Sticky-wicket PATCH: a backslash or quote in a key survives tomllib."""
         import tomllib
-        key = 'odd\\tname"q.md'
-        text = m.render_baseline({key: 3}, [], [key])
-        data = tomllib.loads(text)
-        self.assertIn(key, data["files"])
-        self.assertEqual(data["outside_files"], [key])
+        for key in ('odd\\tname"q.md', "smile\U0001F600.md"):
+            inc = [{"date": "2026-11-18", "files": [key], "bytes": 3, "why": "w"}]
+            text = m.render_baseline({key: 3}, inc, [key])
+            data = tomllib.loads(text)
+            self.assertIn(key, data["files"])
+            self.assertEqual(data["outside_files"], [key])
+            self.assertEqual(data["increase"][0]["files"], [key])
 
     def _strip_outside_files(self) -> None:
         path = m.baseline_path(self.repo)
