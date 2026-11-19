@@ -1506,8 +1506,10 @@ def main() -> int:
             # checkout's slot too; resetting before it read a wrong "no merged PR".
             _use_slot(repo_for_path_or_none(checkout))
             prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
-        if args.dry_run and prune_exit == 0:
-            _record_precheck()
+    # harmonic-forge#1291 (sticky-wicket PATCH): the precheck receipt is recorded
+    # only once the run's FINAL exit is known to be 0, at each `return prune_exit`
+    # below, never before a later step can still fail the run.
+    record_precheck = bool(args.prune_worktrees and args.dry_run)
     _use_slot(None)
 
     if report.unlabelled_migrations:
@@ -1669,6 +1671,8 @@ def main() -> int:
             or report.blocked_open_prs or report.undetermined_phase_closures
             or report.inert_supply_landed or report.phase_candidates):
         print("repo hygiene: clean.")
+        if record_precheck and prune_exit == 0:
+            _record_precheck()
         return prune_exit
 
     # Only STRANDED fails. Orphaned branches are a cleanup opportunity, and
@@ -1692,6 +1696,8 @@ def main() -> int:
             print("Nothing was deleted.")
         return max(prune_exit, 1)
     print("Nothing stranded." if args.prune_worktrees else "Nothing stranded. Nothing was deleted.")
+    if record_precheck and prune_exit == 0:
+        _record_precheck()
     return prune_exit
 
 

@@ -152,6 +152,28 @@ def _names_unbackstopped(command: str) -> bool:
     return False
 
 
+def _unidentified_unbackstopped(others: list[list[str]]) -> str | None:
+    """harmonic-forge#1291 (sticky-wicket PATCH): the default turned around.
+
+    A command the gate did not recognize as a gated call is still refused when it
+    runs a tool that has a mode with no tool-side backstop: its program token's
+    basename, or (for a python interpreter) any token's basename, names that tool.
+    Only those positions: a path elsewhere in argv (`git log -- <path>`) is data,
+    not a run. Returns the tool's registry path, or None.
+    """
+    names = {Path(tool["path"]).name: tool["path"]
+             for tool, mode in _precheck_modes() if not mode["backstop"]}
+    for argv in others:
+        program = Path(argv[0]).name
+        candidates = [program]
+        if PYTHONS.match(program):
+            candidates += [Path(token).name for token in argv[1:]]
+        for name in candidates:
+            if name in names:
+                return names[name]
+    return None
+
+
 def _precheck_modes():
     import effects  # noqa: PLC0415
     return list(effects.precheck_modes(receipts.registry()))
@@ -267,7 +289,11 @@ def _override(sid: str, call: _Call, mode: dict, fp: str) -> bool:
             force_grant.consume(candidate, grant.get("granted_at"), "", mode="gate", gate=binding)
         except force_grant.GrantRefused:
             continue
-        receipts.write_receipt(sid, call.tool, mode, fp, kind="override", ttl=receipts.OVERRIDE_TTL_S)
+        # harmonic-forge#1291 (sticky-wicket PATCH): the grant itself is the one use.
+        # The override receipt exists only for the tool-side backstop to read and
+        # spend; a mode with no backstop gets none, and the gate never accepts one.
+        if mode["backstop"]:
+            receipts.write_receipt(sid, call.tool, mode, fp, kind="override", ttl=receipts.OVERRIDE_TTL_S)
         return True
     return False
 
@@ -286,13 +312,20 @@ def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: boo
         return None
     if store and not sid:
         log("ungated", tool=call.tool["path"], mode=mode["name"], klass=mode["class"])
-        return None
+        if mode["backstop"]:
+            return None
+        # harmonic-forge#1291 (sticky-wicket PATCH): no session means no receipt can
+        # match, and nothing on the tool side would catch it: fail closed.
+        return (f"precheck gate (harmonic-forge#1291): {call.tool['path']} {mode['name']} has no "
+                "tool-side backstop and this call carries no session id, so no precheck receipt "
+                "can be matched; denied.")
     if not store:
         # The harness has no store and no state: the fingerprint is the argv's alone.
         canon = json.dumps(receipts.canonical(call.tool, mode, call.argv))
         return refusal_text(call, mode, hashlib.sha256(canon.encode()).hexdigest(), None)
     fp = receipts.fingerprint(call.tool, mode, call.argv, cwd, deadline)
-    if receipts.live_receipt(sid, fp) is not None:
+    live = receipts.live_receipt(sid, fp)
+    if live is not None and live.get("kind") != "override":
         log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
         return None
     if _override(sid, call, mode, fp):
@@ -325,6 +358,14 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> s
                         "names a gated tool with no tool-side backstop; denied. Run it as a plain "
                         "command line.")
             return None
+        unidentified = _unidentified_unbackstopped(others)
+        if unidentified:
+            if store:
+                log("refused-unidentified", tool=unidentified, sid=sid)
+            return (f"precheck gate (harmonic-forge#1291): this command runs {unidentified} in a form "
+                    "the gate cannot identify (a relative path, an interpreter option, another "
+                    "spelling), and a mode of that tool has no tool-side backstop; denied. Run it "
+                    f"by its repo path, e.g. `python3 {unidentified} ...` from the repo root.")
         if store:
             import effects  # noqa: PLC0415
             for argv in others:

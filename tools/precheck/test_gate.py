@@ -187,6 +187,25 @@ class Decision5Override(GateCase):
         self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
         self.assertIsNotNone(self.decide(FORCE_CMD))
 
+    def test_an_override_on_an_unbackstopped_mode_is_one_call(self) -> None:
+        command = UNBACKSTOPPED["repo_hygiene"]
+        rid = self.decide(command).split("Refusal id: ")[1][:12]
+        refusal = gate.read_refusal(rid)
+        grant = force_grant.write_pending("F1291", "vitalharmony/harmonic-forge", 1291, None, "r", SESSION,
+                                          "FORCE line", mode="gate",
+                                          gate={"gate_tool": refusal["tool"], "gate_mode": refusal["mode"],
+                                                "arg_fp": refusal["fp"], "gate_refusal_id": rid})
+        force_grant.imc_waiver.write_json_atomic(force_grant.grant_path("F1291"), {**grant, "status": "usable"})
+        self.assertIsNone(self.decide(command))
+        self.assertEqual(self.rows()[-1]["outcome"], "allowed-override")
+        self.assertIsNotNone(self.decide(command))  # no reusable receipt: the grant was the one use
+
+    def test_the_gate_never_accepts_an_override_receipt(self) -> None:
+        rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
+        self._grant(rid)
+        self.assertIsNone(self.decide(FORCE_CMD))
+        self.assertIsNotNone(self.decide(FORCE_CMD))  # the receipt left for consume() is not the gate's
+
     def test_a_gate_grant_never_releases_another_call(self) -> None:
         rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
         self._grant(rid)
@@ -246,6 +265,25 @@ class Decision7FailClosed(GateCase):
         self.assertEqual(self.rows()[-1]["outcome"], "error")
         argv = shlex.split(FORCE_CMD)[2:]
         self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
+
+    # Sticky-wicket PATCH (pass-1 clusters): the default is turned around.
+    def test_an_unidentified_spelling_of_an_unbackstopped_tool_is_denied(self) -> None:
+        for command in ("cd tools/gh && python3 repo_hygiene.py --prune-worktrees",
+                        "cd tools/gh && ./repo_hygiene.py --prune-worktrees",
+                        "python3 -W ignore tools/gh/repo_hygiene.py --prune-worktrees",
+                        "python3 -X utf8 tools/gh/check_lane3_ready.py --mark-active --issue 5"):
+            with self.subTest(command=command):
+                self.assertIn("cannot identify", self.decide(command) or "")
+        self.assertEqual(self.rows()[-1]["outcome"], "refused-unidentified")
+
+    def test_a_path_as_data_is_never_a_run(self) -> None:
+        self.assertIsNone(self.decide("git log -- tools/gh/repo_hygiene.py"))
+        self.assertIsNone(self.decide("grep -n prune tools/gh/repo_hygiene.py"))
+
+    def test_a_sessionless_call_on_an_unbackstopped_mode_is_denied(self) -> None:
+        for name, command in UNBACKSTOPPED.items():
+            with self.subTest(tool=name):
+                self.assertIn("no session id", self.decide(command, session="") or "")
 
     def test_an_unparseable_command_naming_an_unbackstopped_tool_is_denied(self) -> None:
         self.assertIsNotNone(self.decide("python3 tools/gh/repo_hygiene.py --prune-worktrees 'unclosed"))
