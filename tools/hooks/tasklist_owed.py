@@ -72,8 +72,12 @@ def key_for(repo: str, issue: int | str) -> str | None:
 def read_entries(session: str, tasks_dir: Path | None = None) -> list[dict]:
     """Every task entry of `session`, each with `_mtime`. Raises OSError when
     the directory or any `.json` entry cannot be read: a skipped entry would be
-    judged absent, so the caller cannot judge and allows (reforge epoch 1)."""
+    judged absent, so the caller cannot judge and allows (reforge epoch 1).
+    A session with no task directory has no entries (harmonic-forge#1445):
+    a missing list is not an unreadable one."""
     base = (tasks_dir or TASKS_DIR) / session
+    if not base.exists():
+        return []
     entries = []
     for path in base.iterdir():
         if path.suffix != ".json":

@@ -67,7 +67,7 @@ class Base(unittest.TestCase):
 
 class PreToolUse(Base):
     def test_completing_only_entry_of_open_issue_is_denied(self):
-        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review", status="pending")
         with self.closed(False):
             verdict, reason = hold.pretooluse_decide(self.update(1, "completed"))
         self.assertEqual(verdict, "deny")
@@ -178,7 +178,7 @@ class PreToolUse(Base):
         self.entry(1, "F1112 — merged 5a1b2c3, deployed · waiting on YOU: close")
         with self.closed(True):
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "deny")
-            self.entry(1, "F1112 — closed (5a1b2c3)")
+            self.entry(1, "F1112 — closed (5a1b2c3)", status="pending")
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
             # Preclose pass 2 (G): renaming to "closed" in the completing call
             # never showed the close, so it is refused; the stored entry rules.
@@ -188,7 +188,7 @@ class PreToolUse(Base):
 
     def test_renaming_in_the_completing_call_keeps_the_hold(self):
         """Preclose pass 1: the key is the stored entry's, not the update's."""
-        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review", status="pending")
         with self.closed(False):
             for subject in ("done", "H1 — closed"):
                 payload = self.update(1, "completed", subject=subject)
@@ -205,7 +205,7 @@ class PreToolUse(Base):
         with self.closed(False):
             for name, change in steps.items():
                 for combined in (change, {**change, "status": "completed"}):
-                    self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+                    self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review", status="pending")
                     payload = self.update(1, combined.get("status"), **{
                         k: v for k, v in combined.items() if k != "status"})
                     verdict = hold.pretooluse_decide(payload)[0]
@@ -226,7 +226,7 @@ class PreToolUse(Base):
     def test_a_slow_read_denies_inside_the_hook_timeout(self):
         """Pass 2 (F): the read times out under the hook's 10 s and denies."""
         self.assertLess(hold.GH_TIMEOUT, 10)
-        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review", status="pending")
         with mock.patch.object(hold.subprocess, "run",
                                side_effect=subprocess.TimeoutExpired("gh", hold.GH_TIMEOUT)):
             verdict, reason = hold.pretooluse_decide(self.update(1, "completed"))
@@ -273,7 +273,7 @@ class PreToolUse(Base):
 
     def test_an_empty_proposed_subject_is_applied(self):
         """Epoch 3 pass 1: '' removes the key, so it is a rename away."""
-        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review", status="pending")
         with self.closed(False):
             self.assertEqual(hold.pretooluse_decide(self.update(1, None, subject=""))[0], "deny")
 
@@ -336,7 +336,7 @@ class Stop(Base):
 
     def test_rewritten_subject_settles_and_clears(self):
         owed.record("H2463", "completion", session=SESSION, now=time.time() - 5)
-        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review")
+        self.entry(1, "H2463 — L2D posted · waiting on Lane 1 review", status="pending")
         self.assertEqual(hold.posttooluse_decide(self.post(
             "TaskUpdate", taskId="1", subject="H2463 — L2D posted · waiting on Lane 1 review")),
             "H2463")
@@ -347,7 +347,7 @@ class Stop(Base):
         """Pass 2 survivors 2 and 5: no history guess; creating the entry settles it."""
         owed.record("H2500", "completion", session=SESSION)
         self.assertEqual(hold.stop_decide(self.stop())[0], "block")
-        self.entry(1, "H2500 — L2D posted", mtime=time.time() + 5)
+        self.entry(1, "H2500 — L2D posted", status="pending", mtime=time.time() + 5)
         hold.posttooluse_decide(self.post("TaskCreate", subject="H2500 — L2D posted"))
         self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
 
@@ -371,11 +371,11 @@ class Stop(Base):
         self.assertEqual(hold.stop_decide(self.stop())[0], "block")
 
     def test_close_then_closed_subject_then_complete_stop_allows(self):
-        self.entry(1, "F1112 — merged 5a1b2c3 · waiting on YOU: close")
+        self.entry(1, "F1112 — merged 5a1b2c3 · waiting on YOU: close", status="pending")
         owed.record("F1112", "close", session=SESSION)
         with self.closed(True):
             self.assertEqual(hold.stop_decide(self.stop())[0], "block")
-            self.entry(1, "F1112 — closed (5a1b2c3)")
+            self.entry(1, "F1112 — closed (5a1b2c3)", status="pending")
             hold.posttooluse_decide(self.post("TaskUpdate", taskId="1",
                                               subject="F1112 — closed (5a1b2c3)"))
             self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
@@ -502,6 +502,75 @@ def _calls_record_post(path: Path) -> bool:
     tree = ast.parse(path.read_text())
     return any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                and node.func.attr == "record_post" for node in ast.walk(tree))
+
+
+class InProgressAtStop(Base):
+    """harmonic-forge#1445: Stop refuses a turn end while an entry is in_progress."""
+
+    def test_an_in_progress_entry_blocks_and_is_named(self):
+        self.entry(1, "F1291 — PATCH committed · waiting on nothing implement", status="in_progress")
+        verdict, reason = hold.stop_decide(self.stop())
+        self.assertEqual(verdict, "block")
+        self.assertIn("F1291 — PATCH committed", reason)
+
+    def test_in_progress_blocks_whatever_the_subject_says(self):
+        self.entry(1, "F1443 — pushed · waiting on PR CI", status="in_progress")
+        self.assertEqual(hold.stop_decide(self.stop())[0], "block")
+
+    def test_pending_entries_never_block_whatever_their_subject(self):
+        for i, subject in enumerate(("F1140 — deferred · waiting on nothing: 3.0 ships",
+                                     "F1177 — queued · waiting on nothing: Lane 1 implements (after queue)",
+                                     "H2463 — L2D posted · waiting on nobody")):
+            self.entry(i, subject, status="pending")
+        self.entry(9, "F1 — closed", status="completed")
+        self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+
+    def test_a_question_allows(self):
+        self.entry(1, "F1291 — x · waiting on nothing", status="in_progress")
+        with mock.patch.object(hold, "last_assistant_text", return_value="Should I merge it?"), \
+                mock.patch.object(hold, "asks_a_question", return_value=True):
+            self.assertEqual(hold.stop_decide(self.stop(transcript_path="/x"))[0], "allow")
+
+    def test_no_lane_is_never_blocked(self):
+        self.entry(1, "F1291 — x", status="in_progress")
+        with mock.patch.dict(os.environ, {"LANE": ""}):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+
+    def test_a_missing_task_directory_allows_silently(self):
+        shutil.rmtree(self.tasks)
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(owed.read_entries(SESSION), [])
+
+    def test_a_missing_task_directory_allows_a_task_update(self):
+        shutil.rmtree(self.tasks)
+        self.assertEqual(hold.pretooluse_decide(self.update(1, "completed"))[0], "allow")
+
+    def test_an_unreadable_task_file_allows_with_a_note(self):
+        (self.tasks / "1.json").write_text("{not json")
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            self.assertEqual(hold.stop_decide(self.stop())[0], "allow")
+        self.assertIn("rule 4 not checked", err.getvalue())
+
+    def test_a_marker_and_an_in_progress_entry_are_named_in_one_block(self):
+        """Pass 1 cluster: the chain's one block must name both reasons."""
+        owed.record("F9", "handoff", session=SESSION)
+        self.entry(1, "F1291 — PATCH committed · implement", status="in_progress")
+        verdict, reason = hold.stop_decide(self.stop())
+        self.assertEqual(verdict, "block")
+        self.assertIn("F9", reason)
+        self.assertIn("F1291 — PATCH committed", reason)
+
+    def test_stop_hook_active_still_allows(self):
+        self.entry(1, "F1291 — x", status="in_progress")
+        out = io.StringIO()
+        payload = self.stop(stop_hook_active=True)
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), redirect_stdout(out):
+            hold.main()
+        self.assertEqual(out.getvalue(), "")
 
 
 class Wiring(unittest.TestCase):

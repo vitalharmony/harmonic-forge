@@ -34,17 +34,21 @@ is this lane's own.
    (`tasklist_owed.record_if_stale`, harmonic-forge#1221), when this session
    holds an open entry for the issue last written before that post. Reforge epoch 4: only a successful TaskCreate or TaskUpdate that
    gives an entry carrying the key its subject clears the marker
-   (`posttooluse_decide`). Stop compares nothing and makes no state read.
+   (`posttooluse_decide`). For this rule, Stop compares nothing.
 3. An entry names a concrete step (read, review, push/PR, post), never only
    the issue.
 4. With no active step, nothing is `in_progress`; while working, at most one
-   entry is `in_progress`.
+   entry is `in_progress`. Stop refuses to end the turn while any entry is
+   `in_progress` (harmonic-forge#1445): finish the step, or, if it now waits on
+   something outside this turn (another lane, `YOU:`, CI, a running background
+   job), set it `pending` with that `waiting on` named. This is the only rule
+   4 check; a lane that marks owed work `pending` and stops is not caught.
 5. The belt watch is never listed.
 6. Only operator-owned items carry a `YOU:` prefix.
 7. The list is updated inside the action that changes it.
 
-Rules 3-7 are not enforced by these hooks; they live here so the rule has
-one home.
+Rules 3 and 5-7, and rule 4's "at most one", are not enforced by these
+hooks; they live here so the rule has one home.
 
 ## Scope and failure direction
 
@@ -299,16 +303,35 @@ def stop_decide(payload: dict) -> tuple[str, str]:
     if not session:
         return "allow", ""
     found = owed.markers(session)
-    if not found:
+    try:
+        active = [e for e in owed.read_entries(session) if e.get("status") == "in_progress"]
+    except OSError as exc:
+        _note(f"task list unreadable at Stop ({exc}); rule 4 not checked")
+        active = []
+    if not found and not active:
         return "allow", ""
     transcript = payload.get("transcript_path") or ""
     if transcript and asks_a_question(last_assistant_text(Path(transcript))):
         return "allow", ""
-    missing = [f"  - {m['key']}: after `{m.get('kind') or 'post'}`, create or rewrite its entry"
-               for m in found]
-    return "block", ("Task-list entries owe an update for this turn's posts:\n"
-                     + "\n".join(missing)
-                     + f"\n\nEach entry reads \"{SHAPE}\" (tools/hooks/tasklist_hold.py).")
+    # harmonic-forge#1445 pass 1 (sticky-wicket PATCH): one block names every
+    # reason. A stop chain gets one block (stop_hook_active lets the next Stop
+    # through), so a marker block that dropped the in_progress list would let
+    # the stall end the turn.
+    sections = []
+    if found:
+        missing = [f"  - {m['key']}: after `{m.get('kind') or 'post'}`, create or rewrite its entry"
+                   for m in found]
+        sections.append("Task-list entries owe an update for this turn's posts:\n"
+                        + "\n".join(missing)
+                        + f"\n\nEach entry reads \"{SHAPE}\" (tools/hooks/tasklist_hold.py).")
+    if active:
+        names = [f"  - {e.get('subject') or e.get('id')}" for e in active]
+        sections.append("These task entries are still in_progress, so a step was left mid-way "
+                        "(R-0413 rule 4, harmonic-forge#1445):\n" + "\n".join(names)
+                        + "\n\nFinish the step now, or, if it waits on something outside this turn "
+                        "(another lane, YOU:, CI, a running background job), set it to pending with "
+                        "that `waiting on` named.")
+    return "block", "\n\n".join(sections)
 
 
 def main() -> int:
