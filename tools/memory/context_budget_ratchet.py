@@ -247,7 +247,10 @@ def _credited_shrink(baseline: dict, key: str, current: dict[str, int]) -> bool:
     outside = baseline.get("outside_files")
     if isinstance(outside, list):
         return key not in outside
-    return True
+    # Operator ruling 2026-11-18 (narrowed scope): a pre-#1414 baseline records
+    # nothing about where bytes were, so it credits no shrinkage at all -- strict,
+    # never a guess -- until the next `--update` writes `outside_files`.
+    return False
 
 
 def _was_in_repo(baseline: dict, key: str, repo: Path) -> bool:
@@ -265,8 +268,14 @@ def _was_in_repo(baseline: dict, key: str, repo: Path) -> bool:
 def _toml_key(text: str) -> str:
     """A TOML basic string for a key: JSON's escapes are a subset TOML accepts,
     and non-ASCII stays literal, since JSON's surrogate-pair escapes for
-    characters past U+FFFF are not valid TOML (post-verdict check)."""
-    return json.dumps(text, ensure_ascii=False)
+    characters past U+FFFF are not valid TOML. DEL is escaped (TOML forbids it
+    raw). A name that is not valid Unicode (an undecodable byte, surfaced by
+    Python as a lone surrogate) cannot be written as TOML and is refused loudly
+    rather than written into an unreadable baseline (operator ruling 2026-11-18)."""
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        raise RatchetError(f"cannot record {text.encode('utf-8', 'backslashreplace')!r} in the "
+                           "baseline: the file name is not valid UTF-8; rename the file")
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def _symlink_note(repo: Path, key: str) -> str:

@@ -70,7 +70,7 @@ class TestAsymmetry(_Repo):
 
     def test_a_decrease_passes_with_no_entry(self):
         self.set_surface(**{"CLAUDE.md": 500})
-        self.write_baseline('total_bytes = 900\n[files]\n"CLAUDE.md" = 900\n')
+        self.write_baseline('total_bytes = 900\noutside_files = []\n[files]\n"CLAUDE.md" = 900\n')
         code, report = m.check(self.repo)
         self.assertEqual(code, 0)
         self.assertIn("shrank by 400", report)
@@ -275,7 +275,7 @@ class TestGateNarrowsToWhatTheRepoControls(_Repo):
             ("memory index", Path.home() / "memstore" / "MEMORY.md", outside_bytes),
         ]
 
-    BASE = ('total_bytes = 1900\n[files]\n'
+    BASE = ('total_bytes = 1900\noutside_files = ["~/memstore/MEMORY.md"]\n[files]\n'
             '"CLAUDE.md" = 900\n"~/memstore/MEMORY.md" = 1000\n')
 
     def test_out_of_repo_growth_alone_does_not_gate(self):
@@ -595,13 +595,17 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
     def test_keys_round_trip_through_toml(self):
         """Sticky-wicket PATCH: a backslash or quote in a key survives tomllib."""
         import tomllib
-        for key in ('odd\\tname"q.md', "smile\U0001F600.md"):
+        for key in ('odd\\tname"q.md', "smile\U0001F600.md", "del\x7fname.md"):
             inc = [{"date": "2026-11-18", "files": [key], "bytes": 3, "why": "w"}]
             text = m.render_baseline({key: 3}, inc, [key])
             data = tomllib.loads(text)
             self.assertIn(key, data["files"])
             self.assertEqual(data["outside_files"], [key])
             self.assertEqual(data["increase"][0]["files"], [key])
+
+    def test_an_undecodable_name_is_refused_loudly(self):
+        with self.assertRaises(m.RatchetError):
+            m.render_baseline({"bad\udcffname.md": 3}, [], [])
 
     def _strip_outside_files(self) -> None:
         path = m.baseline_path(self.repo)
@@ -610,9 +614,9 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
                                    if not line.startswith("outside_files")) + "\n",
                         encoding="utf-8")
 
-    def test_legacy_baseline_still_credits_a_deleted_in_repo_file(self):
-        """Reforge pass 1: a pre-#1414 baseline keeps the old rule, so a deleted
-        in-repo file is credited (AC2) and the gate result does not change."""
+    def test_legacy_baseline_credits_no_shrink(self):
+        """Operator ruling 2026-11-18: a pre-#1414 baseline records nothing about
+        where bytes were, so no shrink offsets growth until --update."""
         gone = self.repo / ".claude" / "rules" / "gone.md"
         gone.write_text("g" * 2000, encoding="utf-8")
         m.update(self.repo)
@@ -621,9 +625,7 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         gone.unlink()
         self.grow_claude()
         code, report = m.check(self.repo)
-        self.assertEqual(code, 0, report)
-        self.assertIn("shrank by 1500", report)
-        self.assertNotIn("NOT credited", report)
+        self.assertEqual(code, 1, report)
 
     def test_legacy_baseline_pure_shrink_still_passes(self):
         gone = self.repo / ".claude" / "rules" / "gone.md"
