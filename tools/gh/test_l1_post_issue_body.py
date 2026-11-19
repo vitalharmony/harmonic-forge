@@ -294,6 +294,7 @@ Update `scripts/post_lane1_issue.py` with structural validation.
         with patch.object(discussion, "regular_body", return_value="Discussion."), \
              patch.object(discussion, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.dict("os.environ", {}, clear=True), \
+             patch.object(discussion, "issue_labels", return_value=set()), \
              patch.object(sys, "argv", [
                  "post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "123", "--file", _body_file(),
              ]):
