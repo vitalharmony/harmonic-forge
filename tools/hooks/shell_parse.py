@@ -110,8 +110,36 @@ def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> li
     index = 0
     while index < len(working):
         token = working[index]
-        if _ASSIGNMENT.match(token) or token in ("command", "nohup", "time"):
+        if _ASSIGNMENT.match(token) or token == "nohup":
             index += 1
+        # harmonic-forge#1443 pass 1 (sticky-wicket PATCH): exec, time and
+        # command take their own options before the program, so each strips
+        # them here like env/timeout/nice below. `command -v`/`-V` only look
+        # the program up and never run it, so they are left standing.
+        elif token == "exec":
+            index += 1
+            while index < len(working) and working[index].startswith("-"):
+                opt = working[index]
+                index += 1
+                if opt == "--":
+                    break
+                if opt == "-a" and index < len(working):  # -a NAME
+                    index += 1
+        elif token == "time":
+            index += 1
+            while index < len(working) and working[index] in ("-p", "--"):
+                index += 1
+                if working[index - 1] == "--":
+                    break
+        elif token == "command":
+            nxt = working[index + 1] if index + 1 < len(working) else ""
+            if nxt.startswith("-") and set(nxt[1:]) & {"v", "V"}:
+                break
+            index += 1
+            while index < len(working) and working[index] in ("-p", "--"):
+                index += 1
+                if working[index - 1] == "--":
+                    break
         # harmonic-forge#1443: a reserved word (`then`, `do`, `!`, `{`, ...) or
         # `exec` leads the segment `command_segments` cuts from a compound
         # command; the program follows it. One branch of this loop, so an
@@ -217,9 +245,10 @@ _SEPARATORS = frozenset({";", "&", "|", "&&", "||", "|&", ";;", "\n"})
 #: Reserved words stripped from the front of a simple command's argv.
 RESERVED_WORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
                             "{", "}", "!"})
-#: harmonic-forge#1443: what `strip_invocation_prefix` drops before the program.
+#: harmonic-forge#1443: the reserved words `strip_invocation_prefix` drops before
+#: the program (`exec`, `time` and `command` have their own option-aware branches).
 #: Known residuals, not stripped: `function f { ...; }`, `eval "..."`, `coproc`.
-PREFIX_WORDS = RESERVED_WORDS | {"exec"}
+PREFIX_WORDS = RESERVED_WORDS
 _HEREDOC_MASK = "__HEREDOC_BODY__"
 
 
