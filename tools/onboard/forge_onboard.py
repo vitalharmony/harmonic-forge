@@ -333,6 +333,14 @@ def check_lane_tasks(project: Project) -> Check:
         # harmonic-forge#875: a declared-but-absent task refuses every `lane3`
         # launch, so it is checked like the five required names.
         declared["lane3_env_task"] = project.protocol.lane3_env_task
+    if project.protocol.lane3_preflight_task:
+        # harmonic-forge#1409: the sweep refuses while the declared task is
+        # missing from Lane 3's worktree. That check asks `mise tasks ls`; this
+        # one reads mise.toml text, so a task defined only in a file task or
+        # `.config/mise.toml` reads missing here while the sweep passes. The
+        # asymmetry is deliberate: onboarding checks the declaration where the
+        # other lane tasks live, and the sweep remains the authority.
+        declared["lane3_preflight_task"] = project.protocol.lane3_preflight_task
     if project.protocol.runs_lane3:
         # harmonic-forge#800: `l1-post --kind ready-for-l3` runs `mise run check`
         # unconditionally (tools/gh/l1_post.py:1549), with no fallback -- a

@@ -57,6 +57,13 @@ class Protocol:
     #: non-zero unless they are verifiably provisioned. `None` keeps today's
     #: relink exactly.
     lane3_env_task: str | None = None
+    #: harmonic-forge#1409. The mise task the gate-readiness sweep runs in Lane
+    #: 3's worktree before posting (R-0434). Declared by a repo whose
+    #: `lane3_begin_task` refuses on checkable state (hrse); the sweep then
+    #: refuses when Lane 3's worktree has no task by this name. `None` keeps the
+    #: undeclared behavior: a `lane3-preflight` task runs if present, else
+    #: nothing is checked.
+    lane3_preflight_task: str | None = None
     #: harmonic-forge#1057. Generated files `lane1-rebase` regenerates on a
     #: rebase conflict instead of exiting 2: repo-relative path -> the mise task
     #: (with arguments) that rewrites it. A declared file must be generated IN
@@ -135,11 +142,13 @@ def load_protocol(raw: object, target: Path, project: str) -> Protocol | None:
     # Optional, but never empty when present: an empty name would make the
     # launcher run `mise run ""` -- or, read as "declared nothing", silently
     # bring back the relink this key exists to stop (harmonic-forge#875).
-    if protocol.lane3_env_task is not None and (
-            not isinstance(protocol.lane3_env_task, str)
-            or not protocol.lane3_env_task.strip()):
-        raise ManifestError(
-            f"{target}: {project} protocol.lane3_env_task must be non-empty when present")
+    # Same for the sweep's preflight (harmonic-forge#1409): an empty name read
+    # as "declared nothing" would silently drop the enforcement the key opts into.
+    for field in ("lane3_env_task", "lane3_preflight_task"):
+        value = getattr(protocol, field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ManifestError(
+                f"{target}: {project} protocol.{field} must be non-empty when present")
     _check_rebase_regenerate(protocol, target, project)
     _check_rebase_visual_baselines(protocol, target, project)
     if not isinstance(protocol.runs_lane3, bool):

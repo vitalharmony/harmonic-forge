@@ -28,14 +28,30 @@ class Recorder:
     """A subprocess stand-in: records each call, answers by the first match.
 
     `mise tasks ls --json` answers with `tasks` (no tasks by default), the way
-    mise lists what it resolves in the worktree."""
+    mise lists what it resolves in the worktree. Each entry's `source` is the
+    worktree's own `mise.toml` unless `source` names another path; `NO_SOURCE`
+    omits the field (harmonic-forge#1409 survivor 6971721115)."""
+
+    NO_SOURCE = object()
 
     def __init__(self, answers: dict[str, int] | None = None, tasks: list[str] | None = None,
-                 tasks_out: str | None = None):
+                 tasks_out: str | None = None, source: object = None):
         self.calls: list[tuple[list[str], str, dict]] = []
         self.answers = answers or {}
-        self.tasks_out = tasks_out if tasks_out is not None else json.dumps(
-            [{"name": n} for n in (tasks or [])])
+        self.tasks = tasks or []
+        self.source = source
+        self.tasks_out = tasks_out
+
+    def _listing(self, cwd) -> str:
+        if self.tasks_out is not None:
+            return self.tasks_out
+        out = []
+        for n in self.tasks:
+            entry = {"name": n}
+            if self.source is not Recorder.NO_SOURCE:
+                entry["source"] = self.source or f"{cwd}/mise.toml"
+            out.append(entry)
+        return json.dumps(out)
 
     def __call__(self, cmd, cwd=None, **kw):
         self.calls.append((list(cmd), cwd, kw))
@@ -44,7 +60,7 @@ class Recorder:
             if needle in joined:
                 return _done(rc, f"{needle} -> {rc}")
         if "tasks ls" in joined:
-            return _done(0, self.tasks_out)
+            return _done(0, self._listing(cwd))
         return _done(0)
 
 
@@ -68,9 +84,13 @@ class Lane3EnvCase(unittest.TestCase):
             (base / "tools" / "onboard" / "platform_link_report.py").write_text("")
         self.root = root
 
-    def check(self, blocks, run, repo="vitalharmony/hrse", which=_present, lane3=None):
+    def check(self, blocks, run, repo="vitalharmony/hrse", which=_present, lane3=None,
+              projects=None):
+        # `projects={}` by default: the live manifest's declarations (hrse's
+        # lane3_preflight_task, harmonic-forge#1409) never leak into a case.
         return _lane3_env.check(repo, blocks, lane3=lane3 or self.lane3, run=run,
-                                which=which, platform=lambda: self.platform)
+                                which=which, platform=lambda: self.platform,
+                                projects={} if projects is None else projects)
 
 
 
@@ -320,6 +340,85 @@ class PreflightTest(Lane3EnvCase):
         self.check({}, run)
         pre = [c for c in run.calls if c[0] == ["mise", "run", "lane3-preflight"]][0]
         self.assertNotIn("env", pre[2])
+
+
+def _declaring(task: str | None, repo: str = "vitalharmony/hrse") -> dict:
+    """A manifest stand-in whose repo declares `lane3_preflight_task = task`."""
+    return {repo: SimpleNamespace(protocol=SimpleNamespace(lane3_preflight_task=task))}
+
+
+class DeclaredPreflightTest(Lane3EnvCase):
+    """harmonic-forge#1409: a repo that declares `lane3_preflight_task` owes it."""
+
+    def test_global_config_task_of_declared_name_refuses(self):
+        """Survivor 6971721115: a same-named global/parent task is not the checkout's."""
+        for source in (str(self.root / "global" / "config.toml"), str(self.root / "mise.toml")):
+            with self.subTest(source=source):
+                run = Recorder(source=source, tasks=["lane3-preflight"])
+                reasons = self.check({}, run, projects=_declaring("lane3-preflight"))
+                self.assertEqual(len(reasons), 1, reasons)
+                self.assertIn("outside the checkout", reasons[0])
+                self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
+
+    def test_checkout_own_task_passes(self):
+        """The checkout's own definition (any config file inside it) passes."""
+        for source in (str(self.lane3 / "mise.toml"), str(self.lane3 / ".config" / "mise.toml")):
+            with self.subTest(source=source):
+                run = Recorder(source=source, tasks=["lane3-preflight"])
+                self.assertEqual(self.check({}, run, projects=_declaring("lane3-preflight")), [])
+                self.assertIn(["mise", "run", "lane3-preflight"], [c[0] for c in run.calls])
+
+    def test_missing_source_field_refuses(self):
+        """No `source` on the entry: fail closed, with a reason."""
+        run = Recorder(source=Recorder.NO_SOURCE, tasks=["lane3-preflight"])
+        reasons = self.check({}, run, projects=_declaring("lane3-preflight"))
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn("no `source` field", reasons[0])
+        self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
+
+    def test_declared_but_missing_task_refuses(self):
+        """AC1 (kill check 1): the declared task is absent from Lane 3's worktree."""
+        reasons = self.check({}, Recorder(tasks=["lane3-begin"]),
+                             projects=_declaring("lane3-preflight"))
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn("lane3_preflight_task = lane3-preflight", reasons[0])
+        self.assertIn("R-0434", reasons[0])
+
+    def test_undeclared_repo_with_marker_begin_is_not_refused(self):
+        """AC2 (kill check 2): a marker-only lane3-begin and no key: unaffected."""
+        for projects in ({}, _declaring(None)):
+            with self.subTest(projects=projects):
+                run = Recorder(tasks=["lane3-begin"])
+                self.assertEqual(self.check({}, run, projects=projects), [])
+                self.assertFalse(any(c[0][:2] == ["mise", "run"] for c in run.calls))
+
+    def test_declared_and_present_task_runs(self):
+        """AC2: declared and present runs the preflight as today."""
+        run = Recorder({"run lane3-preflight": 1}, tasks=["lane3-preflight"])
+        reasons = self.check({}, run, projects=_declaring("lane3-preflight"))
+        self.assertTrue(reasons and "mise run lane3-preflight" in reasons[0], reasons)
+
+    def test_declared_name_is_the_one_checked_and_run(self):
+        """Kill check 3: the declared name, never the `lane3-preflight` constant."""
+        run = Recorder(tasks=["gate-ready"])
+        self.assertEqual(self.check({}, run, projects=_declaring("gate-ready")), [])
+        self.assertIn((["mise", "run", "gate-ready"], str(self.lane3)),
+                      [c[:2] for c in run.calls])
+        only_default = self.check({}, Recorder(tasks=["lane3-preflight"]),
+                                  projects=_declaring("gate-ready"))
+        self.assertTrue(only_default and "gate-ready" in only_default[0], only_default)
+
+    def test_mise_failure_still_raises_when_declared(self):
+        """AC3: a `mise tasks ls` failure raises, never reads as missing."""
+        with self.assertRaises(_lane3_env.Lane3EnvError):
+            self.check({}, Recorder({"tasks ls": 1}), projects=_declaring("lane3-preflight"))
+
+    def test_live_manifest_declares_hrse_only(self):
+        """The one opted-in repo is hrse (handoff assumption 2)."""
+        declared = {repo: p.protocol.lane3_preflight_task
+                    for repo, p in _lane3_env.manifest.by_repo().items()
+                    if p.protocol is not None and p.protocol.lane3_preflight_task}
+        self.assertEqual(declared, {"vitalharmony/hrse": "lane3-preflight"})
 
 
 class WiringTest(unittest.TestCase):

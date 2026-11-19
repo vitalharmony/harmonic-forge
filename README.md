@@ -215,6 +215,19 @@ python3 ~/harmonic-forge/sync_rules.py --pull
 
 Then read [`3-lane-protocol.md`](3-lane-protocol.md) before pulling a first ticket.
 
+**Onboarding a repo for Lane 3.** A repo's lane facts live in its
+[`projects.toml`](projects.toml) `[project.protocol]` table, whose header
+documents every key. The Lane 3 keys:
+
+| Key | Required | Set it when |
+|---|---|---|
+| `runs_lane3` | yes | the repo has its own Lane 3 gate worktree |
+| `lane3_begin_task` / `lane3_end_task` | yes | always; the mise tasks that open and close a Lane 3 session |
+| `lane3_env_task` | no | Lane 3's worktree owns its own env files instead of linking the main checkout's |
+| `lane3_preflight_task` | no | `lane3_begin_task` refuses on state checkable without side effects (pins, leases, ports); the gate-readiness sweep runs it and refuses if Lane 3's worktree lacks it (R-0434) |
+
+`forge-onboard` reports any declared task missing from the repo's `mise.toml`.
+
 **Working on this repo itself:**
 ```bash
 git config core.hooksPath .githooks   # required — direct commits to main are rejected
