@@ -9,17 +9,19 @@ each real run of a precheck mode:
 
 - allow on a live, state-bound receipt for this exact call (`allowed-receipt`);
 - allow on a usable `FORCE <KEY> gate <refusal-id>` grant bound to this tool,
-  mode and argument fingerprint, spending it (`allowed-override`);
+  mode and argument fingerprint (`allowed-override`). The gate never spends
+  it: the tool's own `consume()` does, as the real run starts;
 - else deny, printing the exact precheck command, the fingerprint, a refusal
   id and the FORCE line that would release this one call (`refused`).
 
 The precheck form itself is logged `precheck` and allowed. A session-less call
-is `ungated`. An outside family (`git push`, `gh pr merge`, ...) is logged
+is decided in the fixed `no-session` bucket, never skipped. An outside family (`git push`, `gh pr merge`, ...) is logged
 `guarded-elsewhere` and never refused here: its own hook decides it.
 
-On the gate's own error, or its internal 5 s deadline, the decision follows
-the mode's `backstop` (design alternative 7): a mode with a tool-side backstop
-fails open (the tool's `consume` still refuses), one without fails closed.
+On the gate's own error, its internal 5 s deadline, or a command that does
+not parse, the gate fails open and logs `error`: every precheck mode's tool
+runs `consume()` itself, which still refuses (harmonic-forge#1291
+sticky-wicket PATCH; the fail-closed paths guarded modes that no longer exist).
 
 Every decision is one row of `decisions.jsonl` in the store: ts, outcome,
 tool, mode, class, fp, session. Never an argv token. A refusal also writes a
@@ -145,18 +147,6 @@ def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]
     return calls, others, True
 
 
-def _names_unbackstopped(command: str) -> bool:
-    for tool, mode in _precheck_modes():
-        if not mode["backstop"] and Path(tool["path"]).name in command:
-            return True
-    return False
-
-
-def _precheck_modes():
-    import effects  # noqa: PLC0415
-    return list(effects.precheck_modes(receipts.registry()))
-
-
 # --------------------------------------------------------------------------
 # The refusal text.
 
@@ -210,7 +200,7 @@ def refusal_text(call: _Call, mode: dict, fp: str, rid: str | None, why: str = "
 
 
 # --------------------------------------------------------------------------
-# The store: decisions, refusal records, overrides.
+# The store: decisions and refusal records.
 
 def decisions_path() -> Path:
     return receipts.store_dir() / "decisions.jsonl"
@@ -253,76 +243,29 @@ def read_refusal(rid: str) -> dict | None:
     return data if isinstance(data, dict) and data.get("id") == rid else None
 
 
-def _override(sid: str, call: _Call, mode: dict, fp: str, *, spend: bool = True) -> bool:
-    """Spend a usable gate grant bound to this tool, mode and fingerprint.
-
-    With `spend=False` it only reports whether such a grant exists (harmonic-forge#1291
-    sticky-wicket PATCH b): the command's calls are all decided before any grant is
-    spent, so a sibling call that is refused never wastes the operator's grant."""
-    import force_grant  # noqa: PLC0415
-    key = _issue_key(call.argv)
-    candidates = [key] if key else [p.stem for p in sorted(force_grant.state_dir().glob("*.json"))]
-    binding = {"gate_tool": call.tool["path"], "gate_mode": mode["name"], "arg_fp": fp}
-    for candidate in candidates:
-        grant = force_grant.read_grant(candidate)
-        if not grant or grant.get("mode") != "gate" or grant.get("arg_fp") != fp:
-            continue
-        if not spend:
-            if grant.get("status") == "usable":
-                return True
-            continue
-        try:
-            force_grant.consume(candidate, grant.get("granted_at"), "", mode="gate", gate=binding)
-        except force_grant.GrantRefused:
-            continue
-        # harmonic-forge#1291 (sticky-wicket PATCH): the grant itself is the one use.
-        # The override receipt exists only for the tool-side backstop to read and
-        # spend; a mode with no backstop gets none, and the gate never accepts one.
-        if mode["backstop"]:
-            receipts.write_receipt(sid, call.tool, mode, fp, kind="override", ttl=receipts.OVERRIDE_TTL_S)
-        return True
-    return False
-
-
 # --------------------------------------------------------------------------
 # The decision.
 
-def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: bool,
-                 spend: bool = True) -> str | None:
+def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: bool) -> str | None:
     found = receipts.classify(call.tool, call.argv)
     if found is None:
         return None
     mode, real = found
     if not real:
-        if store and spend:
+        if store:
             log("precheck", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], sid=sid)
         return None
-    if store and not sid:
-        if spend:
-            log("ungated", tool=call.tool["path"], mode=mode["name"], klass=mode["class"])
-        if mode["backstop"]:
-            return None
-        # harmonic-forge#1291 (sticky-wicket PATCH): no session means no receipt can
-        # match, and nothing on the tool side would catch it: fail closed.
-        return (f"precheck gate (harmonic-forge#1291): {call.tool['path']} {mode['name']} has no "
-                "tool-side backstop and this call carries no session id, so no precheck receipt "
-                "can be matched; denied.")
     if not store:
         # The harness has no store and no state: the fingerprint is the argv's alone.
         canon = json.dumps(receipts.canonical(call.tool, mode, call.argv))
         return refusal_text(call, mode, hashlib.sha256(canon.encode()).hexdigest(), None)
     fp = receipts.fingerprint(call.tool, mode, call.argv, cwd, deadline)
-    live = receipts.live_receipt(sid, fp)
-    if live is not None and live.get("kind") != "override":
-        if spend:
-            log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+    if receipts.live_receipt(sid, fp) is not None:
+        log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
         return None
-    if _override(sid, call, mode, fp, spend=spend):
-        if spend:
-            log("allowed-override", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+    if receipts.gate_grant_usable(call.tool, mode, call.argv, fp):
+        log("allowed-override", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
         return None
-    if not spend:
-        return "refused"  # decided; the spending pass writes the refusal record
     ts = time.time()
     rid = refusal_id(sid, call.tool, mode, fp, ts)
     write_refusal(rid, sid, _issue_key(call.argv), call, mode, fp, ts)
@@ -339,16 +282,11 @@ def _cd_target(argv: list[str], cwd: str) -> str | None:
 def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> str | None:
     """The deny reason for one Bash command, or None."""
     deadline = time.monotonic() + receipts.DEADLINE_S
-    matched: dict | None = None
     try:
         calls, others, parsed = _calls_in(command)
         if not parsed:
-            if _names_unbackstopped(command):
-                if store:
-                    log("error", sid=sid)
-                return ("precheck gate (harmonic-forge#1291): this command does not parse, and it "
-                        "names a gated tool with no tool-side backstop; denied. Run it as a plain "
-                        "command line.")
+            if store:
+                log("error", sid=sid)
             return None
         if store:
             import effects  # noqa: PLC0415
@@ -363,43 +301,16 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> s
                 if target:
                     current = target
         where = current if len(calls) == 1 else cwd
-        # harmonic-forge#1291 (sticky-wicket PATCH b): decide every call before
-        # spending any grant. Pass 1 spends nothing; if any call would be refused,
-        # pass 2 runs only up to it, so its refusal record is written and no
-        # earlier call's grant is consumed. Otherwise pass 2 spends the grants.
-        verdicts = []
-        for call in calls:
-            found = receipts.classify(call.tool, call.argv)
-            matched = found[0] if found else matched
-            verdicts.append(_decide_call(call, sid, where, deadline, store=store, spend=False)
-                            if store else None)
-        refused = next((i for i, v in enumerate(verdicts) if v), None)
-        if refused is not None:
-            # The refused call has no usable grant, so this spends nothing and only
-            # writes its refusal record and text.
-            return _decide_call(calls[refused], sid, where, deadline, store=store)
         for call in calls:
             reason = _decide_call(call, sid, where, deadline, store=store)
             if reason:
                 return reason
         return None
-    except Exception as exc:  # noqa: BLE001 - the backstop rule decides
+    except Exception:  # noqa: BLE001 - fail open: the tool's own consume() still refuses
         if store:
-            log("error", tool=None, mode=(matched or {}).get("name"), sid=sid)
-        unbackstopped = (matched is not None and not matched["backstop"]) or (
-            matched is None and _safe_names_unbackstopped(command))
-        if unbackstopped:
-            return (f"precheck gate (harmonic-forge#1291): the gate could not decide this call "
-                    f"({type(exc).__name__}), and its mode has no tool-side backstop; denied "
-                    "(fail closed). Retry; if it persists, the operator runs it.")
+            with contextlib.suppress(Exception):
+                log("error", sid=sid)
         return None
-
-
-def _safe_names_unbackstopped(command: str) -> bool:
-    try:
-        return _names_unbackstopped(command)
-    except Exception:  # noqa: BLE001 - the registry itself is unreadable: fail closed
-        return True
 
 
 def decide(payload: dict) -> str | None:
@@ -409,7 +320,7 @@ def decide(payload: dict) -> str | None:
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or not command.strip():
         return None
-    sid = str(payload.get("session_id") or "")
+    sid = str(payload.get("session_id") or "").strip() or receipts.NO_SESSION
     cwd = str(payload.get("cwd") or os.getcwd())
     return decide_command(command, sid, cwd)
 

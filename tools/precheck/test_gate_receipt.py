@@ -38,6 +38,7 @@ class Store(unittest.TestCase):
         git(self.repo, "config", "user.name", "t")
         git(self.repo, "config", "user.email", "t@example.test")
         git(self.repo, "commit", "-q", "--allow-empty", "-m", "a")
+        (self.repo / "b.md").write_text("body\n")
         env = mock.patch.dict(os.environ, {"PRECHECK_GATE_DIR": str(self.root / "store"),
                                            "CLAUDE_CODE_SESSION_ID": SESSION, "HF_CALLER_CWD": ""})
         env.start()
@@ -55,18 +56,21 @@ class Store(unittest.TestCase):
         return list((self.root / "store").rglob("*.json")) if (self.root / "store").exists() else []
 
 
-PRECLOSE_ARGS = ["--repo", "vitalharmony/harmonic-forge", "--issue", "1291", "--complete"]
-PRECLOSE_CMD = "python3 tools/gh/preclose_check.py " + " ".join(PRECLOSE_ARGS)
+#: The sample gated tool: l1_post (precheck `--dry-run`, binds --sha and --file).
+L1 = "tools/gh/l1_post.py"
+L1_REAL = ["--repo", "vitalharmony/harmonic-forge", "--issue", "1291", "--kind", "ae", "--sha", "HEAD",
+           "--file", "b.md"]
+L1_ARGS = [*L1_REAL, "--dry-run"]
+L1_CMD = "python3 tools/gh/l1_post.py " + " ".join(L1_REAL)
 
 
 class ReceiptBinding(Store):
     def test_receipt_bound_to_exact_args(self) -> None:
-        self.record("tools/gh/preclose_check.py", PRECLOSE_ARGS)
-        self.assertIsNone(self.gate(PRECLOSE_CMD + " --force"))
-        self.assertIsNotNone(self.gate(PRECLOSE_CMD + " --force --allow-dirty"))
-        self.assertIsNotNone(self.gate(PRECLOSE_CMD.replace("1291", "1292") + " --force"))
-        self.assertIsNotNone(self.gate(PRECLOSE_CMD.replace("--complete", "--complete --tier deep")
-                                       + " --force"))
+        self.record(L1, L1_ARGS)
+        self.assertIsNone(self.gate(L1_CMD))
+        self.assertIsNotNone(self.gate(L1_CMD + " --branch x"))
+        self.assertIsNotNone(self.gate(L1_CMD.replace("1291", "1292")))
+        self.assertIsNotNone(self.gate(L1_CMD.replace("--kind ae", "--kind handoff")))
 
     def test_receipt_dies_when_head_moves(self) -> None:
         """kill_check's run binds --head (registry bind_args)."""
@@ -79,12 +83,15 @@ class ReceiptBinding(Store):
         git(self.repo, "commit", "-q", "--allow-empty", "-m", "b")
         self.assertIsNotNone(self.gate(real))
 
-    def test_preclose_receipt_dies_when_head_moves(self) -> None:
-        """Finding 6: preclose's force modes bind the resolved --head."""
-        self.record("tools/gh/preclose_check.py", PRECLOSE_ARGS)
-        self.assertIsNone(self.gate(PRECLOSE_CMD + " --force"))
+    def test_l1_post_receipt_dies_when_head_or_body_moves(self) -> None:
+        self.record(L1, L1_ARGS)
+        self.assertIsNone(self.gate(L1_CMD))
+        (self.repo / "b.md").write_text("edited\n")
+        self.assertIn("real run with no live precheck receipt", self.gate(L1_CMD))
+        (self.repo / "b.md").write_text("body\n")
+        self.assertIsNone(self.gate(L1_CMD))
         git(self.repo, "commit", "-q", "--allow-empty", "-m", "b")  # HEAD moved, within 30 min
-        self.assertIn("real run with no live precheck receipt", self.gate(PRECLOSE_CMD + " --force"))
+        self.assertIn("real run with no live precheck receipt", self.gate(L1_CMD))
 
     def test_checks_file_content_is_bound(self) -> None:
         checks = self.root / "checks.json"
@@ -105,7 +112,7 @@ class ReceiptBinding(Store):
         self.assertIsNone(R.live_receipt(SESSION, fp, now=1000.0 + 1800))
 
     def test_the_receipt_never_holds_the_command_text(self) -> None:
-        self.record("tools/gh/preclose_check.py", PRECLOSE_ARGS)
+        self.record(L1, L1_ARGS)
         (path,) = self.receipts()
         self.assertNotIn("vitalharmony/harmonic-forge", path.read_text())
 
@@ -113,18 +120,17 @@ class ReceiptBinding(Store):
 class ReceiptWriters(Store):
     def test_only_the_tool_itself_records(self) -> None:
         with self.assertRaises(R.ReceiptRefused):
-            R.record("tools/gh/preclose_check.py", PRECLOSE_ARGS, self.repo, _argv0="/usr/bin/python3")
+            R.record(L1, L1_ARGS, self.repo, _argv0="/usr/bin/python3")
         with self.assertRaises(R.ReceiptRefused):
-            R.record("tools/gh/preclose_check.py", PRECLOSE_ARGS, self.repo,
-                     _argv0=str(FORGE / "tools" / "gh" / "l1_post.py"))
+            R.record(L1, L1_ARGS, self.repo, _argv0=str(FORGE / "tools" / "gh" / "kill_check.py"))
         self.assertEqual(self.receipts(), [])
 
     def test_a_real_run_is_never_recorded_as_its_precheck(self) -> None:
         with self.assertRaises(R.ReceiptRefused):
-            self.record("tools/gh/preclose_check.py", [*PRECLOSE_ARGS, "--force"])
+            self.record(L1, L1_REAL)
 
     def test_the_cli_records_only_for_a_non_python_tool(self) -> None:
-        self.assertEqual(R.main(["record", "--tool", "tools/gh/preclose_check.py", "--", *PRECLOSE_ARGS]), 2)
+        self.assertEqual(R.main(["record", "--tool", L1, "--", *L1_ARGS]), 2)
         with mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.repo)}):
             self.assertEqual(R.main(["record", "--tool", "tools/lane/lanes-claude", "--",
                                      "--session", "x", "--dry-run"]), 0)
@@ -139,19 +145,16 @@ class ReceiptWriters(Store):
             with contextlib.suppress(SystemExit):
                 preclose_check.main()
 
-    def test_failed_precheck_writes_no_receipt(self) -> None:
-        """Decision 2: preclose records after a clean non-force run, never before."""
-        argv = [*PRECLOSE_ARGS, "--own-model", "m"]
-
-        def refused(args):
-            raise SystemExit("preclose-check: refused")
-        self._preclose_main(argv, refused)
-        self.assertEqual(self.receipts(), [])
-        self._preclose_main(argv, lambda args: 1)
-        self.assertEqual(self.receipts(), [])
+    def test_preclose_force_modes_are_grant_guarded_only(self) -> None:
+        """Operator ruling 2026-11-19 (finding 8): preclose's FORCE modes are not
+        precheck-gated; a non-force run writes no receipt, and the gate never
+        refuses a forced run (force_grant.require is its guard)."""
+        argv = ["--repo", "vitalharmony/harmonic-forge", "--issue", "1291", "--complete", "--own-model", "m"]
         self._preclose_main(argv, lambda args: 0)
-        self.assertEqual(len(self.receipts()), 1)
-        self.assertIsNone(self.gate(PRECLOSE_CMD + " --own-model m --force"))
+        self.assertEqual(self.receipts(), [])
+        cmd = "python3 tools/gh/preclose_check.py " + " ".join(argv)
+        for force in (" --force", " --force --reforge", " --cluster-verdict PATCH --force"):
+            self.assertIsNone(self.gate(cmd + force), force)
 
     def test_lane3_readiness_run_unlocks_mark_active(self) -> None:
         """Finding 4: a passed check_lane3_ready run without --mark-active is
@@ -176,15 +179,6 @@ class ReceiptWriters(Store):
                 stack.enter_context(patch)
             C.main(["--issue", "5"])
         self.assertIsNone(self.gate("mise run lane3-begin -- --issue 5"))
-
-    def test_override_receipt_admits_the_backstop_once(self) -> None:
-        tool = R.precheck_tool("tools/gh/preclose_check.py")
-        argv = [*PRECLOSE_ARGS, "--force"]
-        mode, _ = R.classify(tool, argv)
-        fp = R.fingerprint(tool, mode, argv, self.repo)
-        R.write_receipt(SESSION, tool, mode, fp, kind="override", ttl=R.OVERRIDE_TTL_S)
-        self.assertIsNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
-        self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
 
     def test_tool_only_extra_state_is_bound_by_the_backstop(self) -> None:
         argv = ["--check", str(self.repo), "1", "main"]

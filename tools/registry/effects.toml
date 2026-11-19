@@ -102,7 +102,6 @@ mise_tasks = [{task = "lane3-begin", prefix = ["--mark-active"]}]
   precheck_form = {strip = ["--mark-active"], add = []}
   bind_args = {}
   receipt_writer = true
-  backstop = true
   prefix = true
   cite = ["tools/gh/check_lane3_ready.py:499-500", "tools/gh/check_lane3_ready.py:537-538"]
   [[tool.mode]]
@@ -273,7 +272,6 @@ mise_tasks = [{task = "kill-check", prefix = []}]
   precheck_form = {strip = [], add = ["--validate"]}
   bind_args = {head_sha = "--head", checks_file = "--checks"}
   receipt_writer = true
-  backstop = true
   prefix = true
   cite = ["tools/gh/kill_check.py:335", "tools/gh/kill_check.py:343"]
   validates = [
@@ -309,7 +307,6 @@ mise_tasks = [{task = "l1-post", prefix = []}]
   precheck_form = {strip = [], add = ["--dry-run"]}
   bind_args = {head_sha = "--sha", body_content = ["--file", "--ae-file", "--sweep-file"]}
   receipt_writer = true
-  backstop = true
   prefix = true
   cite = ["tools/gh/l1_post.py:3488", "tools/gh/l1_post.py:3642-3647", "tools/gh/l1_post.py:3786"]
   validates = [
@@ -417,20 +414,12 @@ mise_tasks = [{task = "preclose-check", prefix = []}]
   name = "--cluster-verdict --force"
   match = ["--cluster-verdict", "--force"]
   class = "shared-state"
-  precheck = "--cluster-verdict"
   guard_kind = "operator-grant"
   guard = "FORCE <key> cluster line (force_grant.require)"
-  binds = ["head_sha", "args"]
-  binds_cite = "tools/gh/preclose_check.py:1473"
-  precheck_form = {strip = ["--force"], add = []}
-  bind_args = {head_sha = "--head"}
-  receipt_writer = true
-  backstop = true
-  prefix = true
-  guard_note = "the precheck receipt binds the exact arguments and the resolved --head (harmonic-forge#1291)"
+  guard_note = "the FORCE grant binds the head or typed SHA; no precheck receipt (harmonic-forge#1291 operator ruling 2026-11-19)"
   cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:1507", "tools/gh/preclose_check.py:1542-1545"]
   validates = [
-    {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
+    {class = "receipt", cite = "tools/gh/preclose_check.py:184"},
   ]
   [[tool.mode]]
   name = "--cluster-verdict"
@@ -442,20 +431,11 @@ mise_tasks = [{task = "preclose-check", prefix = []}]
   name = "--complete --force"
   match = ["--complete", "--force"]
   class = "shared-state"
-  precheck = "--complete"
   guard_kind = "operator-grant"
   guard = "FORCE line (force_grant.require)"
-  binds = ["head_sha", "args"]
-  binds_cite = "tools/gh/preclose_check.py:1473"
-  precheck_form = {strip = ["--force"], add = []}
-  bind_args = {head_sha = "--head"}
-  receipt_writer = true
-  backstop = true
-  prefix = true
-  guard_note = "the precheck receipt binds the exact arguments and the resolved --head (harmonic-forge#1291)"
+  guard_note = "the FORCE grant binds the head or typed SHA; no precheck receipt (harmonic-forge#1291 operator ruling 2026-11-19)"
   cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:184"]
   validates = [
-    {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
     {class = "receipt", cite = "tools/gh/preclose_check.py:184"},
   ]
   [[tool.mode]]
@@ -468,20 +448,11 @@ mise_tasks = [{task = "preclose-check", prefix = []}]
   name = "plan --force [--reforge]"
   match = ["--force"]
   class = "shared-state"
-  precheck = "plan"
   guard_kind = "operator-grant"
   guard = "FORCE line, plain or reforge (force_grant.require)"
-  binds = ["head_sha", "args"]
-  binds_cite = "tools/gh/preclose_check.py:1473"
-  precheck_form = {strip = ["--force"], add = []}
-  bind_args = {head_sha = "--head"}
-  receipt_writer = true
-  backstop = true
-  prefix = true
-  guard_note = "the precheck receipt binds the exact arguments and the resolved --head (harmonic-forge#1291)"
+  guard_note = "the FORCE grant binds the head or typed SHA; no precheck receipt (harmonic-forge#1291 operator ruling 2026-11-19)"
   cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:184", "tools/gh/preclose_check.py:930-934"]
   validates = [
-    {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
     {class = "receipt", cite = "tools/gh/preclose_check.py:184"},
   ]
   [[tool.mode]]
@@ -547,7 +518,6 @@ path = "tools/gh/repo_hygiene.py"
   precheck_form = {strip = [], add = ["--dry-run"]}
   bind_args = {}
   receipt_writer = true
-  backstop = true
   prefix = true
   cite = ["tools/gh/repo_hygiene.py:1175", "tools/gh/repo_hygiene.py:1185"]
   [[tool.mode]]
@@ -798,7 +768,6 @@ mise_tasks = [{task = "lane1-rebase", prefix = []}]
   precheck_form = {strip = [], add = ["--check"], add_at = 0}
   bind_args = {origin_branch_sha = "#2", origin_main_sha = "main", git_dir = "#0"}
   receipt_writer = true
-  backstop = true
   prefix = false
   note = "a lease-guarded push; the worktree it removes is its own"
   cite = ["tools/lane/lane1_rebase.py:890", "tools/lane/lane1_rebase.py:403", "tools/lane/lane1_rebase.py:387"]
@@ -933,7 +902,6 @@ path = "tools/lane/lanes-claude"
   precheck_form = {strip = [], add = ["--dry-run"]}
   bind_args = {}
   receipt_writer = true
-  backstop = true
   prefix = false
   cite = ["tools/lane/lanes-claude:647"]
 

@@ -1431,31 +1431,11 @@ def _preclose_mode(args: argparse.Namespace) -> str:
 TOOL_PATH = "tools/gh/preclose_check.py"
 
 
-def _preflight_force(args: argparse.Namespace, argv: list[str]) -> None:
-    """harmonic-forge#1076, #1291: a `--force` run needs this exact call run
-    without `--force` first, at the same resolved `--head`, in this session.
-    That run is real, not a pure dry run: if it succeeds it writes its
-    receipts, and no `--force` is needed. The receipt is written only after it
-    succeeds (`_finish`), never before it runs."""
-    import _preflight  # noqa: PLC0415
-    if not args.force:
-        return
-    # argparse accepts any unambiguous prefix (`--forc`), so strip every one,
-    # or the suggested command would itself still be forced.
-    dry = " ".join(shlex.quote(a) for a in argv
-                   if not (a.startswith("--fo") and "--force".startswith(a)))
-    refusal = _preflight.require(TOOL_PATH, argv, f"python3 {Path(__file__).resolve()} {dry}")
-    if refusal:
-        raise SystemExit(f"preclose-check: {refusal}\n  That run is real: if it succeeds it "
-                         "records the pass, and no --force is needed.")
-
-
-def _finish(args: argparse.Namespace, argv: list[str], code) -> None:
-    """Exit with `code`; a non-force run that exits 0 first records the
-    precheck receipt its `--force` form needs (harmonic-forge#1291 decision 2)."""
-    if not args.force and code in (0, None):
-        import _preflight  # noqa: PLC0415
-        _preflight.record(TOOL_PATH, argv)
+def _finish(code) -> None:
+    """Exit with `code`. The three `--force` modes are not precheck-gated
+    (harmonic-forge#1291, operator ruling 2026-11-19): each FORCE grant is
+    already bound to a head or typed SHA, and a precheck receipt written only on
+    exit 0 could never exist for a run that needed `--force`."""
     sys.exit(code)
 
 
@@ -1560,8 +1540,7 @@ def main() -> None:
     if args.gate:
         if not args.findings:
             parser.error("--gate needs --findings")
-        _preflight_force(args, sys.argv[1:])
-        _finish(args, sys.argv[1:], gate(args))
+        _finish(gate(args))
     if args.post_verdict:
         if not (args.findings and args.envelope):
             parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
@@ -1571,15 +1550,12 @@ def main() -> None:
         if args.panel_tokens is not None or args.panel_ms is not None or args.cost_unavailable:
             parser.error("--post-verdict is one cross-family refuter, not a panel: it takes "
                          "--cross-family-ms only")
-        _preflight_force(args, sys.argv[1:])
-        _finish(args, sys.argv[1:], post_verdict(args))
+        _finish(post_verdict(args))
     if args.cluster_verdict:
         if not args.comment_url:
             parser.error("--cluster-verdict needs --comment-url")
-        _preflight_force(args, sys.argv[1:])
-        _finish(args, sys.argv[1:], cluster_verdict(args))
-    _preflight_force(args, sys.argv[1:])
-    _finish(args, sys.argv[1:], complete(args) if args.complete else plan(args))
+        _finish(cluster_verdict(args))
+    _finish(complete(args) if args.complete else plan(args))
 
 
 @serialized_receipt

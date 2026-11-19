@@ -49,11 +49,11 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 | `post_lane1_issue.py` | fill or amend | external-publish | gap: validates before the PATCH, no dry run |
 | `post_lane_discussion.py` | post (every --kind) | external-publish | gap: no dry run |
 | `preclose_check.py` | --post-verdict | shared-state | gap: writes the pass receipt |
-| `preclose_check.py` | --cluster-verdict --force | shared-state | precheck: `--cluster-verdict`; guard (operator grant): FORCE <key> cluster line (force_grant.require) |
+| `preclose_check.py` | --cluster-verdict --force | shared-state | guard (operator grant): FORCE <key> cluster line (force_grant.require) |
 | `preclose_check.py` | --cluster-verdict | shared-state | gap: writes the cluster verdict into the receipt |
-| `preclose_check.py` | --complete --force | shared-state | precheck: `--complete`; guard (operator grant): FORCE line (force_grant.require) |
+| `preclose_check.py` | --complete --force | shared-state | guard (operator grant): FORCE line (force_grant.require) |
 | `preclose_check.py` | --complete | shared-state | gap: records the pass |
-| `preclose_check.py` | plan --force [--reforge] | shared-state | precheck: `plan`; guard (operator grant): FORCE line, plain or reforge (force_grant.require) |
+| `preclose_check.py` | plan --force [--reforge] | shared-state | guard (operator grant): FORCE line, plain or reforge (force_grant.require) |
 | `preclose_check.py` | plan | shared-state | gap: writes the planned receipt |
 | `preclose_enrollment.py` | --enroll | shared-state | gap: writes the experiment file every preclose plan reads |
 | `preclose_enrollment.py` | --stop | shared-state | gap: writes the experiment file every preclose plan reads |

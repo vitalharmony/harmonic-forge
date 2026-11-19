@@ -25,12 +25,13 @@ import gate  # noqa: E402
 import gate_receipt as R  # noqa: E402
 
 SESSION = "sess-1291"
-FORCE_CMD = ("python3 tools/gh/preclose_check.py --repo vitalharmony/harmonic-forge --issue 1291 "
-             "--complete --force")
-PRECHECK = "python3 tools/gh/preclose_check.py --repo vitalharmony/harmonic-forge --issue 1291 --complete"
-FORMERLY_UNBACKSTOPPED = {"repo_hygiene": "python3 tools/gh/repo_hygiene.py --prune-worktrees",
-                 "lanes-claude": "lanes-claude --session x",
-                 "check_lane3_ready": "python3 tools/gh/check_lane3_ready.py --mark-active --issue 5"}
+#: The sample gated call: kill_check's real run, keyed to an issue. preclose_check's
+#: FORCE modes are grant-guarded only (operator ruling 2026-11-19), never gated here.
+FORCE_CMD = ("python3 tools/gh/kill_check.py run --repo vitalharmony/harmonic-forge --issue 1291 "
+             "--checks checks.json")
+PRECHECK = FORCE_CMD + " --validate"
+KILL = "tools/gh/kill_check.py"
+MODE = "run"
 
 
 class GateCase(unittest.TestCase):
@@ -43,6 +44,7 @@ class GateCase(unittest.TestCase):
         for args in (("init", "-q", "-b", "main"), ("config", "user.name", "t"),
                      ("config", "user.email", "t@example.test"), ("commit", "-q", "--allow-empty", "-m", "a")):
             subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True)
+        (self.repo / "checks.json").write_text("[]\n")
         env = mock.patch.dict(os.environ, {"PRECHECK_GATE_DIR": str(self.root / "store"),
                                            "CLAUDE_CODE_SESSION_ID": SESSION, "HF_CALLER_CWD": ""})
         env.start()
@@ -68,19 +70,26 @@ class Decision1(GateCase):
         self.assertIsNotNone(self.decide(FORCE_CMD))
 
     def test_receipt_allows(self) -> None:
-        self.record("tools/gh/preclose_check.py", shlex.split(PRECHECK)[2:])
+        self.record(KILL, shlex.split(PRECHECK)[2:])
         self.assertIsNone(self.decide(FORCE_CMD))
 
     def test_the_precheck_form_is_allowed(self) -> None:
         self.assertIsNone(self.decide(PRECHECK))
 
-    def test_a_sessionless_call_is_ungated(self) -> None:
+    def test_a_sessionless_call_is_gated_in_the_no_session_bucket(self) -> None:
+        """Operator ruling 2026-11-19: a blank session is never a skip."""
+        for session in ("", "   "):
+            with self.subTest(session=session):
+                self.assertIsNotNone(self.decide(FORCE_CMD, session=session))
+        self.assertEqual(self.rows()[-1]["outcome"], "refused")
+        # A receipt the session-less precheck wrote releases the session-less call only.
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            self.record(KILL, shlex.split(PRECHECK)[2:])
         self.assertIsNone(self.decide(FORCE_CMD, session=""))
-        self.assertEqual(self.rows()[-1]["outcome"], "ungated")
+        self.assertIsNotNone(self.decide(FORCE_CMD))
 
-    def test_abbreviated_force_still_gated(self) -> None:
-        self.assertIsNotNone(self.decide(FORCE_CMD.replace("--force", "--forc")))
-        self.assertIsNotNone(self.decide(FORCE_CMD.replace("--force", "--fo")))
+    def test_abbreviated_precheck_token_is_the_precheck(self) -> None:
+        self.assertIsNone(self.decide(FORCE_CMD + " --valid"))
 
     def test_help_is_not_gated(self) -> None:
         self.assertIsNone(self.decide(FORCE_CMD + " --help"))
@@ -104,7 +113,7 @@ class Decision3RefusalText(GateCase):
         rid = reason.split("Refusal id: ")[1][:12]
         self.assertIn(f"FORCE F1291 gate {rid}: <reason>", reason)
         record = gate.read_refusal(rid)
-        self.assertEqual((record["key"], record["mode"], record["session"]), ("F1291", "--complete --force", SESSION))
+        self.assertEqual((record["key"], record["mode"], record["session"]), ("F1291", MODE, SESSION))
 
     def test_a_call_with_no_issue_prints_the_key_placeholder(self) -> None:
         self.assertIn("FORCE <KEY> gate ", self.decide("python3 tools/gh/repo_hygiene.py --prune-worktrees"))
@@ -117,25 +126,24 @@ class Decision3RefusalText(GateCase):
         self.assertEqual((self.root / "store" / "refusals" / f"{rid}.json").read_text(), before)
 
     def test_mise_wrapper_gated(self) -> None:
-        reason = self.decide("mise run preclose-check -- --repo vitalharmony/harmonic-forge --issue 1291 "
-                             "--complete --force")
-        self.assertIn("mise run preclose-check -- --repo vitalharmony/harmonic-forge --issue 1291 --complete\n",
-                      reason)
+        reason = self.decide("mise run kill-check -- run --repo vitalharmony/harmonic-forge --issue 1291 "
+                             "--checks checks.json")
+        self.assertIn("mise run kill-check -- run --repo vitalharmony/harmonic-forge --issue 1291 "
+                      "--checks checks.json --validate\n", reason)
         lane3 = self.decide("mise run lane3-begin -- --issue 5")
         self.assertIn("check_lane3_ready.py --issue 5\n", lane3)
         self.assertIsNone(self.decide("mise run lane3-end"))
 
     def test_mise_and_direct_share_one_receipt(self) -> None:
-        self.record("tools/gh/preclose_check.py", shlex.split(PRECHECK)[2:])
-        self.assertIsNone(self.decide("mise run preclose-check -- --repo vitalharmony/harmonic-forge "
-                                      "--issue 1291 --complete --force"))
+        self.record(KILL, shlex.split(PRECHECK)[2:])
+        self.assertIsNone(self.decide("mise run kill-check -- run --repo vitalharmony/harmonic-forge "
+                                      "--issue 1291 --checks checks.json"))
 
     def test_ambiguous_or_foreign_prefix_not_precheck(self) -> None:
-        # `--c` is a prefix of several of preclose_check's options: never the strip token.
-        tool = R.precheck_tool("tools/gh/preclose_check.py")
-        self.assertIsNone(R.resolve_option("--c", R.tool_options()["tools/gh/preclose_check.py"], True))
-        self.assertEqual(R.canonical(tool, R.classify(tool, ["--complete", "--c"])[0], ["--complete", "--c"]),
-                         ["--complete", "--c"])
+        # A preclose FORCE mode is no longer a precheck tool at all.
+        self.assertIsNone(R.precheck_tool("tools/gh/preclose_check.py"))
+        self.assertIsNone(self.decide("python3 tools/gh/preclose_check.py --repo vitalharmony/harmonic-forge "
+                                      "--issue 1291 --complete --force"))
         # `--dry` resolves to l1_post's --dry-run, so it is the precheck there.
         self.assertIsNone(self.decide("python3 tools/gh/l1_post.py --issue 1 --kind ae --sha HEAD "
                                       "--branch b --file f --dry"))
@@ -181,52 +189,57 @@ class Decision5Override(GateCase):
         self._grant(rid)
         self.assertIsNone(self.decide(FORCE_CMD))
         self.assertEqual(self.rows()[-1]["outcome"], "allowed-override")
-        # The tool-side backstop admits that one call too, once.
+        # The tool spends the grant as its real run starts, once.
         argv = shlex.split(FORCE_CMD)[2:]
-        self.assertIsNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
-        self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
+        self.assertIsNone(R.consume(KILL, argv, cwd=self.repo))
+        self.assertNotEqual(force_grant.read_grant("F1291").get("status"), "usable")
+        self.assertIsNotNone(R.consume(KILL, argv, cwd=self.repo))
         self.assertIsNotNone(self.decide(FORCE_CMD))
 
-    def test_a_refused_sibling_never_spends_the_grant(self) -> None:
-        """Sticky-wicket PATCH b: every call is decided before any grant is spent."""
+    def test_the_gate_never_spends_the_grant(self) -> None:
+        """Sticky-wicket PATCH (grant spent before the effect is assured): a hook cannot
+        know the call runs, so `<FORCE_CMD> && <FORCE_CMD>` and a refused sibling both
+        leave the grant usable for the call that does run."""
         rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
         self._grant(rid)
-        sibling = "python3 tools/gh/repo_hygiene.py --prune-worktrees"
-        self.assertIsNotNone(self.decide(f"{FORCE_CMD} && {sibling}"))
+        self.assertIsNone(self.decide(f"{FORCE_CMD} && {FORCE_CMD}"))
+        self.assertIsNotNone(self.decide(f"{FORCE_CMD} && python3 tools/gh/repo_hygiene.py --prune-worktrees"))
         self.assertEqual(force_grant.read_grant("F1291").get("status"), "usable")
-        self.assertIsNone(self.decide(FORCE_CMD))  # the grant is still there for A alone
 
-    def test_the_gate_never_accepts_an_override_receipt(self) -> None:
-        rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
-        self._grant(rid)
-        self.assertIsNone(self.decide(FORCE_CMD))
-        self.assertIsNotNone(self.decide(FORCE_CMD))  # the receipt left for consume() is not the gate's
+    def test_an_unkeyable_repo_refuses_and_never_crashes(self) -> None:
+        """batch_auth.issue_key returns None for a repo it cannot key: the grant
+        lookup falls back to every grant file, never `None.upper()`."""
+        cmd = FORCE_CMD.replace("vitalharmony/harmonic-forge", "R")
+        self.assertIn("Refusal id: ", self.decide(cmd))
+        self.assertIn("no live precheck receipt", R.consume(KILL, shlex.split(cmd)[2:], cwd=self.repo))
 
     def test_a_gate_grant_never_releases_another_call(self) -> None:
         rid = self.decide(FORCE_CMD).split("Refusal id: ")[1][:12]
         self._grant(rid)
-        self.assertIsNotNone(self.decide(FORCE_CMD + " --allow-dirty"))
+        self.assertIsNotNone(self.decide(FORCE_CMD + " --timeout 5"))
+        self.assertIsNotNone(R.consume(KILL, shlex.split(FORCE_CMD + " --timeout 5")[2:], cwd=self.repo))
+        self.assertEqual(force_grant.read_grant("F1291").get("status"), "usable")
 
 
 class Decision6Log(GateCase):
     def test_every_outcome_logged(self) -> None:
         self.decide(FORCE_CMD)
         self.decide(PRECHECK)
-        self.record("tools/gh/preclose_check.py", shlex.split(PRECHECK)[2:])
+        self.record(KILL, shlex.split(PRECHECK)[2:])
         self.decide(FORCE_CMD)
-        self.decide(FORCE_CMD, session="")
+        self.decide("python3 tools/gh/kill_check.py run 'unterminated")
         self.decide("git push origin feat/x")
         outcomes = [row["outcome"] for row in self.rows()]
-        self.assertEqual(outcomes, ["refused", "precheck", "allowed-receipt", "ungated", "guarded-elsewhere"])
+        self.assertEqual(outcomes, ["refused", "precheck", "allowed-receipt", "error", "guarded-elsewhere"])
         for row in self.rows():
             self.assertEqual(set(row), {"ts", "outcome", "tool", "mode", "class", "fp", "session"})
 
     def test_log_never_holds_argv(self) -> None:
-        self.decide(FORCE_CMD + " --own-model secret-model-name")
+        self.decide(FORCE_CMD + " --base secret-model-name")
         self.decide("mise run lane3-begin -- --issue 424242")
         text = (self.root / "store" / "decisions.jsonl").read_text()
         # The mode column is the registry's mode name, never the call's tokens.
-        for token in ("vitalharmony", "secret-model-name", "424242", "--own-model", "--issue", SESSION):
+        for token in ("vitalharmony", "secret-model-name", "424242", "--base", "--issue", SESSION):
             self.assertNotIn(token, text)
 
     def test_outside_families_are_never_refused(self) -> None:
@@ -234,24 +247,48 @@ class Decision6Log(GateCase):
         self.assertIsNone(self.decide("git push origin main"))
 
 
-class Decision7FailClosed(GateCase):
+class Decision7FailOpen(GateCase):
+    """Sticky-wicket PATCH: the gate fails open on its own error; every precheck
+    mode's tool runs consume() itself, which still refuses."""
+
     def test_deadline_bounds_a_slow_resolver(self) -> None:
         """A slow `git rev-parse` hits the internal deadline, never the hook timeout."""
+        timeouts = []
+
         def slow(*args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
             time.sleep(0.05)
             raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
         started = time.monotonic()
         with mock.patch.object(R.subprocess, "run", side_effect=slow):
-            self.assertIsNone(self.decide(FORCE_CMD))  # backstopped: open, consume still refuses
+            self.assertIsNone(self.decide(FORCE_CMD))
         self.assertLess(time.monotonic() - started, R.DEADLINE_S + 1)
         self.assertEqual(self.rows()[-1]["outcome"], "error")
+        # The resolver is handed the remaining deadline, never no timeout at all.
+        self.assertTrue(timeouts)
+        self.assertTrue(all(isinstance(s, (int, float)) and 0 < s <= R.DEADLINE_S for s in timeouts), timeouts)
 
-    def test_backstopped_mode_fails_open_on_error(self) -> None:
+    def test_an_error_fails_open_and_consume_still_refuses(self) -> None:
         with mock.patch.object(R, "fingerprint", side_effect=RuntimeError("boom")):
             self.assertIsNone(self.decide(FORCE_CMD))
         self.assertEqual(self.rows()[-1]["outcome"], "error")
-        argv = shlex.split(FORCE_CMD)[2:]
-        self.assertIsNotNone(R.consume("tools/gh/preclose_check.py", argv, cwd=self.repo))
+        self.assertIsNotNone(R.consume(KILL, shlex.split(FORCE_CMD)[2:], cwd=self.repo))
+
+    def test_a_broken_registry_never_denies_unrelated_bash(self) -> None:
+        with mock.patch.object(R, "registry", side_effect=RuntimeError("cite drift")):
+            for command in ("git status", "echo repo_hygiene", FORCE_CMD):
+                self.assertIsNone(self.decide(command), command)
+
+    def test_the_hook_fails_open_when_the_gate_cannot_load(self) -> None:
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "grep repo_hygiene f"},
+                              "session_id": SESSION, "cwd": str(self.repo)})
+        sys.path.insert(0, str(FORGE / "tools" / "hooks"))
+        import precheck_gate  # noqa: PLC0415
+        out = io.StringIO()
+        with mock.patch.dict(sys.modules, {"gate": None}), contextlib.redirect_stdout(out), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload.encode()))):
+            self.assertEqual(precheck_gate.main(), 0)
+        self.assertEqual(out.getvalue(), "")
 
 
 class ReforgeToolSideBackstop(GateCase):
@@ -259,9 +296,19 @@ class ReforgeToolSideBackstop(GateCase):
     refuse their own real run without a receipt, however the command was spelled;
     the gate's spelling recognition is not load-bearing."""
 
-    def test_no_mode_is_left_without_a_backstop(self) -> None:
-        self.assertEqual([(t["path"], m["name"]) for t, m in gate._precheck_modes()
-                          if not m["backstop"]], [])
+    def test_no_mode_can_declare_no_backstop(self) -> None:
+        import effects  # noqa: PLC0415
+        self.assertFalse([m for _, m in effects.precheck_modes(R.registry()) if "backstop" in m])
+
+    def test_a_blank_session_is_the_no_session_bucket_tool_side(self) -> None:
+        """Survivors 2/X2: blanking CLAUDE_CODE_SESSION_ID never skips consume()."""
+        argv = shlex.split(FORCE_CMD)[2:]
+        for value in ("", "  "):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": value}):
+                self.assertIsNotNone(R.consume(KILL, argv, cwd=self.repo))
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsNotNone(R.consume(KILL, argv, cwd=self.repo))
 
     def test_consume_refuses_each_former_unbackstopped_mode_without_a_receipt(self) -> None:
         for tool, argv in (("tools/gh/repo_hygiene.py", ["--prune-worktrees"]),

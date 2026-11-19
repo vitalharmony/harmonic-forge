@@ -336,7 +336,7 @@ class TestSchema(unittest.TestCase):
 
     #: harmonic-forge#1291: every precheck mode carries the gate's fields.
     GATE = ('precheck_form = {add = ["--check"]}\nbind_args = {}\nprefix = true\n'
-            'backstop = true\nreceipt_writer = true\n')
+            'receipt_writer = true\n')
 
     def test_empty_binds_is_the_ceiling(self):
         fx = fixture(tool(self.PRECHECK + "binds = []\n" + self.GATE))
@@ -368,7 +368,12 @@ class TestSchema(unittest.TestCase):
                      "unknown key")
 
     def test_gate_fields_belong_to_a_precheck_mode(self):
-        self.refuses(self.BASE_MODE + 'class = "read"\nbackstop = true\n', "belong to a precheck mode")
+        self.refuses(self.BASE_MODE + 'class = "read"\nreceipt_writer = true\n', "belong to a precheck mode")
+
+    def test_backstop_is_not_a_registry_key(self):
+        # harmonic-forge#1291 sticky-wicket PATCH: every precheck mode's tool runs
+        # consume() itself, so a mode can never again declare it has no backstop.
+        self.refuses(self.BASE_MODE + 'class = "read"\nbackstop = false\n', "unknown key")
 
     def test_gaps_lists_exactly_the_gap_entries(self):
         rows = effects.gaps(REGISTRY).splitlines()[2:]
@@ -541,17 +546,17 @@ class TestGateInputs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             stale = Path(tmp) / "tool_options.json"
             data = json.loads(effects.TOOL_OPTIONS_FILE.read_text(encoding="utf-8"))
-            data["tools/gh/preclose_check.py"].remove("--force")
+            data["tools/gh/l1_post.py"].remove("--dry-run")
             stale.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             self.assertEqual(len(effects.options_problems(REGISTRY, stale)), 1)
 
     def test_every_precheck_mode_carries_the_gate_fields(self):
         modes = list(effects.precheck_modes(REGISTRY))
-        self.assertEqual(len(modes), 9)
+        self.assertEqual(len(modes), 6)
         for tool, mode in modes:
             self.assertIn("precheck_form", mode, tool["path"])
-        preclose = [m for t, m in modes if t["path"] == "tools/gh/preclose_check.py"]
-        self.assertTrue(all(m["binds"] == ["head_sha", "args"] for m in preclose))
+        # Operator ruling 2026-11-19: preclose's FORCE modes are grant-guarded only.
+        self.assertFalse([m for t, m in modes if t["path"] == "tools/gh/preclose_check.py"])
 
 
 if __name__ == "__main__":

@@ -16,10 +16,12 @@ Two readers decide on the same receipt, so they can never disagree:
 - the tool itself through `_preflight.require` -> `consume()` (the backstop the
   operator kept on 2026-11-18), which sees argparse's real parse.
 
-`consume()` does not spend a precheck receipt: the gate and the backstop both
-read it, and the real run may be retried within the binding. It spends only an
-override receipt, which the gate writes when a `FORCE <KEY> gate <id>` grant
-let one call through, so the tool-side backstop admits exactly that one call.
+`consume()` does not spend a precheck receipt: the gate and the tool both read
+it, and the real run may be retried within the binding. With no receipt, it
+spends a usable `FORCE <KEY> gate <id>` grant bound to this call, at the point
+the real run starts; the gate only checks that such a grant exists, because a
+PreToolUse hook cannot know the call will run (harmonic-forge#1291 sticky-wicket
+PATCH, cluster "grant spent before the effect is assured").
 
 The store is `~/.claude/state/precheck-gate/` (`PRECHECK_GATE_DIR` overrides
 it for tests). `tools/hooks/precheck_store_guard.py` denies agent writes into
@@ -27,8 +29,10 @@ it; like the FORCE and IMC stores it is an audit trail, not proof against a
 session that can write the store. A receipt never holds the command text.
 
 The session is `CLAUDE_CODE_SESSION_ID` (the PreToolUse payload's
-`session_id`). No session, no receipt, and no enforcement: an unidentified
-caller is never blocked (unchanged from harmonic-forge#1076).
+`session_id`). A blank or missing session is the fixed `no-session` bucket,
+which needs its own receipt like any other: the caller controls that variable,
+so a blank one is never a skip (harmonic-forge#1291, operator ruling
+2026-11-19, reversing design alternative 6's "empty session stays ungated").
 
 CLI (lanes-claude's dry-run exit only; a Python tool calls `record()`):
     gate_receipt.py record --tool tools/lane/lanes-claude -- <original args>
@@ -50,10 +54,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FORGE_ROOT = HERE.parents[1]
 sys.path.insert(0, str(FORGE_ROOT / "tools" / "registry"))
+for _extra_path in ("gh", "hooks"):  # force_grant, batch_auth: the gate grant
+    if str(FORGE_ROOT / "tools" / _extra_path) not in sys.path:
+        sys.path.append(str(FORGE_ROOT / "tools" / _extra_path))
 
 STORE_ENV = "PRECHECK_GATE_DIR"
 CEILING_S = 1800
-OVERRIDE_TTL_S = 300
+NO_SESSION = "no-session"
 DEADLINE_S = 5.0
 LANES_CLAUDE = "tools/lane/lanes-claude"
 #: lanes-claude's options that consume the next token (`shift 2`, tools/lane/lanes-claude:50-75).
@@ -72,7 +79,7 @@ class ReceiptRefused(Exception):
 
 
 def session() -> str:
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or ""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or NO_SESSION
 
 
 def store_dir() -> Path:
@@ -137,7 +144,7 @@ def _lanes_claude(argv: list[str]) -> tuple[str, list[int]]:
     """Replays lanes-claude's own `case` loop: (`help`|`stop`|`dry-run`|`launch`,
     the indexes of `--dry-run` tokens in flag position). A value-taking option
     consumes the next token, whatever it is; a missing value or an unknown
-    token is a launch (fail closed: lanes-claude has no backstop)."""
+    token is a launch (the conservative reading: consume() then requires its receipt)."""
     index, dry, stop, broken = 0, [], False, False
     while index < len(argv):
         token = argv[index]
@@ -418,7 +425,7 @@ def record(tool_path: str, argv: list[str], cwd: str | Path | None = None, *,
     `tool_path`. Called only from the tool's own clean point. Refuses
     (ReceiptRefused) unless the running program is that registry tool and its
     precheck mode is a receipt writer, and unless `argv` is the precheck form.
-    No session: nothing is written (and nothing is enforced).
+    No session: written to the `no-session` bucket.
 
     `extra` is state only the tool can read (lane1_rebase's `ls-remote` SHAs,
     a network read the gate never makes): the backstop `consume(extra=...)`
@@ -436,8 +443,6 @@ def record(tool_path: str, argv: list[str], cwd: str | Path | None = None, *,
     if not mode["receipt_writer"]:
         raise ReceiptRefused(f"{tool['path']} {mode['name']}: not a receipt writer")
     sid = session()
-    if not sid:
-        return None
     fp = fingerprint(tool, mode, list(argv), _caller_cwd(cwd))
     try:
         return write_receipt(sid, tool, mode, fp, now=now, extra=extra)
@@ -447,15 +452,61 @@ def record(tool_path: str, argv: list[str], cwd: str | Path | None = None, *,
         return None
 
 
+def gate_binding(tool: dict, mode: dict, fp: str) -> dict:
+    return {"gate_tool": tool["path"], "gate_mode": mode["name"], "arg_fp": fp}
+
+
+def _gate_grant_keys(argv: list[str]) -> list[str]:
+    import force_grant  # noqa: PLC0415
+    repo, issue = _flag_value(argv, "--repo"), _flag_value(argv, "--issue")
+    if repo and issue and issue.isdigit():
+        key = None
+        with contextlib.suppress(Exception):
+            import batch_auth  # noqa: PLC0415
+            key = batch_auth.issue_key(repo, int(issue))
+        if isinstance(key, str) and key:
+            return [key]
+    # No resolvable issue key: every grant file is a candidate (each is still
+    # matched on its bound tool, mode and argument fingerprint).
+    return [p.stem for p in sorted(force_grant.state_dir().glob("*.json"))]
+
+
+def gate_grant_usable(tool: dict, mode: dict, argv: list[str], fp: str) -> bool:
+    """Whether a usable gate grant is bound to this call. Never spends it."""
+    import force_grant  # noqa: PLC0415
+    for key in _gate_grant_keys(argv):
+        grant = force_grant.read_grant(key)
+        if grant and grant.get("mode") == "gate" and grant.get("arg_fp") == fp \
+                and grant.get("status") == "usable":
+            return True
+    return False
+
+
+def spend_gate_grant(tool: dict, mode: dict, argv: list[str], fp: str) -> bool:
+    """Spend a usable gate grant bound to this call, as the real run starts."""
+    import force_grant  # noqa: PLC0415
+    for key in _gate_grant_keys(argv):
+        grant = force_grant.read_grant(key)
+        if not grant or grant.get("mode") != "gate" or grant.get("arg_fp") != fp:
+            continue
+        try:
+            force_grant.consume(key, grant.get("granted_at"), "", mode="gate",
+                                gate=gate_binding(tool, mode, fp))
+        except force_grant.GrantRefused:
+            continue
+        return True
+    return False
+
+
 def consume(tool_path: str, argv: list[str], preflight_cmd: str | None = None,
             cwd: str | Path | None = None, *, now: float | None = None,
             extra: str | None = None) -> str | None:
-    """The tool-side backstop: None when this real run may proceed, else the
-    refusal. Reads the same state-bound receipt the gate reads; spends only a
-    one-call override receipt."""
+    """The tool-side check: None when this real run may proceed, else the
+    refusal. Reads the same state-bound receipt the gate reads; with none, it
+    spends a usable gate grant bound to this exact call."""
     tool = precheck_tool(tool_path)
     sid = session()
-    if tool is None or not sid:
+    if tool is None:
         return None
     found = classify(tool, list(argv))
     if found is None or not found[1]:
@@ -463,13 +514,10 @@ def consume(tool_path: str, argv: list[str], preflight_cmd: str | None = None,
     mode = found[0]
     fp = fingerprint(tool, mode, list(argv), _caller_cwd(cwd))
     receipt = live_receipt(sid, fp, now)
-    if receipt is not None and receipt.get("kind") != "override" and receipt.get("extra") is not None \
+    if receipt is not None and receipt.get("extra") is not None \
             and receipt.get("extra") != _extra_digest(extra):
         receipt = None  # the tool-only state moved since the precheck
-    if receipt is not None:
-        if receipt.get("kind") == "override":
-            with contextlib.suppress(OSError):
-                _receipt_path(sid, fp).unlink()
+    if receipt is not None or spend_gate_grant(tool, mode, list(argv), fp):
         return None
     command = preflight_cmd or " ".join(["python3", str(FORGE_ROOT / tool["path"]),
                                          *precheck_argv(tool, mode, list(argv))])

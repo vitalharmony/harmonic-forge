@@ -63,7 +63,8 @@ TOOL_KEYS = {"path", "replay_tool", "wrapper", "alias_of", "mode", "note", "mise
 MODE_KEYS = {"name", "match", "exact", "class", "cite", "note", "precheck", "guard_kind", "guard",
              "gap", "binds", "binds_cite", "duration_s", "guard_note", "validates",
              # harmonic-forge#1291: what the gate needs to tell a precheck from its real run.
-             "precheck_form", "bind_args", "prefix", "backstop", "receipt_writer"}
+             # Every precheck mode has a tool-side consume(); there is no backstop field.
+             "precheck_form", "bind_args", "prefix", "receipt_writer"}
 PRECHECK_FORM_KEYS = {"strip", "add", "add_at"}
 #: bind_args keys beyond BINDS: the directory git runs in for the origin binds.
 BIND_ARG_EXTRA = ("git_dir",)
@@ -206,8 +207,8 @@ def _mode(raw, where: str, classes: set[str], roots: list[Path]) -> dict:
         _precheck_gate_fields(mode, where)
     elif "binds" in mode or "binds_cite" in mode:
         raise RegistryError(f"{where}: binds belongs to a precheck mode")
-    elif any(k in mode for k in ("precheck_form", "bind_args", "prefix", "backstop", "receipt_writer")):
-        raise RegistryError(f"{where}: precheck_form, bind_args, prefix, backstop and receipt_writer "
+    elif any(k in mode for k in ("precheck_form", "bind_args", "prefix", "receipt_writer")):
+        raise RegistryError(f"{where}: precheck_form, bind_args, prefix and receipt_writer "
                             "belong to a precheck mode")
     if "duration_s" in mode and (not isinstance(mode["duration_s"], int) or mode["duration_s"] <= 0):
         raise RegistryError(f"{where}: duration_s must be a positive integer")
@@ -227,9 +228,9 @@ def _bind_value(value, where: str, name: str) -> None:
 
 
 def _precheck_gate_fields(mode: dict, where: str) -> None:
-    """harmonic-forge#1291: precheck_form, bind_args, prefix, backstop and
-    receipt_writer are required on every precheck mode, never defaulted."""
-    for field in ("precheck_form", "bind_args", "prefix", "backstop", "receipt_writer"):
+    """harmonic-forge#1291: precheck_form, bind_args, prefix and receipt_writer
+    are required on every precheck mode, never defaulted."""
+    for field in ("precheck_form", "bind_args", "prefix", "receipt_writer"):
         if field not in mode:
             raise RegistryError(f"{where}: a precheck mode needs {field} (harmonic-forge#1291)")
     form = _keys(mode["precheck_form"], PRECHECK_FORM_KEYS, f"{where} precheck_form")
@@ -253,7 +254,7 @@ def _precheck_gate_fields(mode: dict, where: str) -> None:
     missing = [b for b in mode["binds"] if b != "args" and b not in bind_args]
     if missing:
         raise RegistryError(f"{where}: bind_args names no input for {missing}")
-    for field in ("prefix", "backstop", "receipt_writer"):
+    for field in ("prefix", "receipt_writer"):
         if not isinstance(mode[field], bool):
             raise RegistryError(f"{where}: {field} must be true or false")
 
