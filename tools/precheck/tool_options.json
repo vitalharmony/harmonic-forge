@@ -23,6 +23,7 @@
     "--ack-no-pr-required",
     "--ack-overlap",
     "--ae-file",
+    "--amendment",
     "--branch",
     "--cross-repo",
     "--dry-run",
