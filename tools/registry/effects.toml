@@ -972,6 +972,8 @@ path = "tools/gh/markdown_strip.py"
 [[library]]
 path = "tools/gh/preclose_passes.py"
 [[library]]
+path = "tools/gh/projects_token.py"
+[[library]]
 path = "tools/gh/retired_artifacts.py"
 [[library]]
 path = "tools/gh/staleness_ff.py"

@@ -78,7 +78,7 @@ ARG_SHAPES: dict[str, list[str]] = {
 # Only these two agents are covered by AC8's byte-identity claim.
 AC8_AGENTS = ("claude", "codex")
 
-CAPTURED_ENV_KEYS = ("LANE", "LANE_AGENT", "GH_CONFIG_DIR")
+CAPTURED_ENV_KEYS = ("LANE", "LANE_AGENT", "GH_CONFIG_DIR", "GH_TOKEN")
 
 _STUB_INHIBIT = """#!/usr/bin/env python3
 import json, os, sys
@@ -154,6 +154,29 @@ def link_forge_tools(home: Path, tools: Path) -> None:
         link.symlink_to(tools.resolve())
 
 
+#: harmonic-forge#1396: the fixture lane tokens and the stub gh that knows them.
+FIXTURE_LANE_TOKENS = {lane: f"fixture-lane{lane}-token" for lane in ("1", "2", "3")}
+
+_STUB_GH = """#!/usr/bin/env bash
+if [ "$*" = "api user --jq .login" ]; then
+  case "${GH_TOKEN:-}" in fixture-lane[123]-token) echo vitalharmony; exit 0 ;; esac
+  echo "gh stub: bad credentials" >&2; exit 1
+fi
+echo "gh stub: unexpected call: $*" >&2; exit 1
+"""
+
+
+def write_lane_slots(home: Path) -> None:
+    """Each lane's `vitalharmony-lane<N>` slot with its fixture token in
+    hosts.yml, as `gh auth login --insecure-storage` writes it (harmonic-forge#1396)."""
+    for lane, token in FIXTURE_LANE_TOKENS.items():
+        slot = home / ".config" / "gh-accounts" / f"vitalharmony-lane{lane}"
+        slot.mkdir(parents=True, exist_ok=True)
+        (slot / "hosts.yml").write_text(
+            "github.com:\n    users:\n        vitalharmony:\n"
+            f"            oauth_token: {token}\n    user: vitalharmony\n")
+
+
 def build_fixture_tree(
     root: Path,
     project: str = "proj",
@@ -206,6 +229,14 @@ def build_fixture_tree(
             stub = stub_bin / binary
             stub.write_text(_STUB_AGENT % {"name": binary, "version": version})
             stub.chmod(0o755)
+
+    # harmonic-forge#1396: the launchers probe each lane slot's token with
+    # `gh api user --jq .login` before launching. This stub answers it for the
+    # fixture tokens `write_lane_slots` stores, and fails for anything else, so
+    # a launch on a missing or wrong token is refused exactly as live.
+    gh = stub_bin / "gh"
+    gh.write_text(_STUB_GH)
+    gh.chmod(0o755)
 
     # `_cli_launch.sh` checks `$PWD` (each lane's checkout) and
     # `$HOME/Harmonic_Projects/HRSE2`; the caller owns HOME, so it writes that
@@ -335,6 +366,7 @@ def capture_all(lane_dir: Path) -> dict:
         # this pass locally while failing on CI (harmonic-forge#783).
         home = root / "home"
         write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
+        write_lane_slots(home)
         link_forge_tools(home, lane_dir.parent)
         for lane in LANES:
             for agent in AGENTS:
@@ -375,6 +407,9 @@ def capture_all(lane_dir: Path) -> dict:
 #      Declared here, never re-captured into the fixture.
 #   4. harmonic-forge#1250 -- a Claude lane loads the route-floor mod, just
 #      before that session name. Declared the same way.
+#   5. harmonic-forge#1396 -- a lane's GH_CONFIG_DIR is its own least-privilege
+#      slot, `vitalharmony-lane<N>`, never the shared `vitalharmony` slot. The
+#      lane is the cell's own captured LANE, so every call site applies it alike.
 #
 #   Not a delta: harmonic-forge#1307's `--settings <LANE_SETTINGS>` (the Forge
 #   lane hook set, at step 4's argv position) was written INTO the fixture's
@@ -382,7 +417,7 @@ def capture_all(lane_dir: Path) -> dict:
 #   normalized by `_normalize`. The Codex cells did not change.
 # ---------------------------------------------------------------------------
 DECLARED_DELTAS = ("AC2:LANE_AGENT-exported", "AC7:agent-aware-why",
-                   "F1014:session-name", "F1250:route-floor-mod")
+                   "F1014:session-name", "F1250:route-floor-mod", "F1396:lane-slot")
 
 # Operator-facing display name per agent, mirroring AGENT_DISPLAY in
 # _agent_registry.sh. Duplicated here deliberately and minimally: the point of
@@ -413,6 +448,14 @@ def _apply_declared_deltas(cell: dict, agent: str, key: str | None = None) -> di
     if not updated.get("launched"):
         return updated
     updated["env"]["LANE_AGENT"] = agent
+    lane_env = updated["env"].get("LANE")
+    if lane_env in ("1", "2", "3") and \
+            updated["env"].get("GH_CONFIG_DIR") == "<HOME>/.config/gh-accounts/vitalharmony":
+        updated["env"]["GH_CONFIG_DIR"] = f"<HOME>/.config/gh-accounts/vitalharmony-lane{lane_env}"
+    # harmonic-forge#1396 preclose pass 1: the lane token itself reaches the
+    # agent, as GH_TOKEN (the baseline captured no GH_TOKEN, so it is null there).
+    if lane_env in ("1", "2", "3") and updated["env"].get("GH_TOKEN") is None:
+        updated["env"]["GH_TOKEN"] = FIXTURE_LANE_TOKENS[lane_env]
     updated["argv"] = [
         arg.replace("Claude Code", AGENT_DISPLAY[agent])
         if arg.startswith("--why=") else arg

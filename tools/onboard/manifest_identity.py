@@ -29,6 +29,7 @@ can use it without a network probe.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -139,8 +140,40 @@ def slot_env(repo: str, path: Path | None = None) -> dict[str, str]:
     rather than mutating the process environment.
     """
     env = {k: v for k, v in os.environ.items() if k not in STRIPPED_TOKEN_VARS}
-    env["GH_CONFIG_DIR"] = str(slot_dir(account_for(repo, path)))
+    account = account_for(repo, path)
+    lane = os.environ.get("LANE")
+    if account == "vitalharmony" and lane in ("1", "2", "3"):
+        # harmonic-forge#1396 preclose pass 1: in a lane, a vitalharmony child
+        # runs on the lane's own slot and its file token, never the shared slot,
+        # whose keyring entry gh would otherwise read. A lane slot with no file
+        # token passes none, so the call fails rather than falling back.
+        lane_slot = slot_dir(f"vitalharmony-lane{lane}")
+        env["GH_CONFIG_DIR"] = str(lane_slot)
+        # Preclose pass 2: with no GH_TOKEN, gh reads the shared keyring entry
+        # (every slot logs in as the same user), so a token-less lane slot must
+        # fail closed. This sentinel makes gh's call fail authentication; it is
+        # never the keyring.
+        env["GH_TOKEN"] = _hosts_file_token(lane_slot) or LANE_SLOT_MISSING_TOKEN
+        return env
+    env["GH_CONFIG_DIR"] = str(slot_dir(account))
     return env
+
+
+#: harmonic-forge#1396: what a lane child carries as GH_TOKEN when its lane slot
+#: has no file token. Not a credential; GitHub rejects it, so the call fails.
+LANE_SLOT_MISSING_TOKEN = "lane-slot-has-no-token-harmonic-forge-1396"
+
+
+def _hosts_file_token(slot: Path) -> str:
+    """The `oauth_token` a `--insecure-storage` login wrote to the slot's hosts.yml."""
+    try:
+        for line in (slot / "hosts.yml").read_text(encoding="utf-8").splitlines():
+            match = re.match(r"\s*oauth_token:\s*(\S+)", line)
+            if match:
+                return match.group(1)
+    except OSError:
+        return ""
+    return ""
 
 
 def slot_env_or_none(repo: str | None, path: Path | None = None) -> dict[str, str] | None:

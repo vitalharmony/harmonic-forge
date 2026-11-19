@@ -384,6 +384,11 @@ def required_checks(repo: str, branch: str = "main", run=None, *, bare_404_ok: b
     run = run or _run
     code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}/protection",
                      "--jq", ".required_status_checks.contexts"])
+    if code != 0 and PAT_FORBIDDEN_MESSAGE in (out or "") and "HTTP 403" in (out or ""):
+        # harmonic-forge#1396: a lane's fine-grained token has no Administration,
+        # so the protection read is 403. The branch read (Contents/Metadata)
+        # carries the same required contexts; read them there.
+        return _required_checks_from_branch(repo, branch, run)
     if code != 0:
         err = out or ""
         # Only GitHub's own 404 means "no protection rule"; any other failure
@@ -409,6 +414,44 @@ def required_checks(repo: str, branch: str = "main", run=None, *, bare_404_ok: b
     if contexts is None:
         return set()
     if not isinstance(contexts, list):
+        return None
+    return set(contexts)
+
+
+#: GitHub's message for an endpoint a fine-grained token's permissions do not
+#: cover (the protection read without Administration, harmonic-forge#1396).
+PAT_FORBIDDEN_MESSAGE = "Resource not accessible by personal access token"
+
+
+def _required_checks_from_branch(repo: str, branch: str, run) -> set[str] | None:
+    """`required_checks` read from `repos/<repo>/branches/<branch>` (harmonic-forge#1396).
+
+    Same three outcomes: a protected branch gives its contexts (omitted or null
+    contexts are None, unreadable -- stricter than the protection read, which
+    the lane token cannot make); `protected: false` is the empty set, which is
+    what the admin read's "Branch not protected" 404 gives for the same branch;
+    any failed or unparseable read is None.
+    """
+    code, out = run(["gh", "api", f"repos/{repo}/branches/{branch}",
+                     "--jq", "{protected, contexts: .protection.required_status_checks.contexts}"])
+    if code != 0 or not (out or "").strip():
+        return None
+    try:
+        body = json.loads(out)
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("protected"), bool):
+        return None
+    if body["protected"] is False:
+        return set()
+    contexts = body.get("contexts")
+    if contexts is None:
+        # Preclose pass 2: a protected branch whose response omits contexts
+        # cannot be told apart from one whose contexts the branch read did not
+        # carry, so it is unreadable (None, which every caller refuses), never
+        # "nothing required" (which reads green on whatever ran).
+        return None
+    if not isinstance(contexts, list) or not all(isinstance(c, str) for c in contexts):
         return None
     return set(contexts)
 

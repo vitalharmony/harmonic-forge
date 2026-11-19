@@ -85,6 +85,8 @@ class _FixtureTree:
         # this tree's HOME differs from capture_cell's default, so HRSE2's
         # copy is written here too.
         bc.write_codex_hooks(self.home / "Harmonic_Projects" / "HRSE2")
+        # harmonic-forge#1396: each lane launches on its own slot's token.
+        bc.write_lane_slots(self.home)
         # harmonic-forge#1307 change 3: the lane hook set's scripts resolve.
         bc.link_forge_tools(self.home, LANE_DIR.parent)
         self.lane2 = self.root / "proj-lane2"
@@ -279,7 +281,7 @@ class NineCombinations(unittest.TestCase):
                         self.assertEqual(cell["env"]["LANE_AGENT"], agent)
                         self.assertEqual(
                             cell["env"]["GH_CONFIG_DIR"],
-                            str(tree.home / ".config" / "gh-accounts" / "vitalharmony"))
+                            str(tree.home / ".config" / "gh-accounts" / f"vitalharmony-lane{lane}"))
                         # The agent's own command is always the first token
                         # after any env(1) prefix.
                         self.assertIn(agent, _agent_args(cell))
@@ -571,6 +573,37 @@ class RegistryIntegrity(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # TC4 -- LANE and LANE_AGENT reach the child and cannot be set by passthrough
 # ---------------------------------------------------------------------------
+class LaneSlotCredential(unittest.TestCase):
+    """harmonic-forge#1396 AC4: a lane launches only on its own slot's token,
+    passed as GH_TOKEN, and refuses rather than falling back to the shared slot."""
+
+    def test_each_lane_exports_its_own_slot_and_token(self):
+        with _FixtureTree() as tree:
+            for lane in ("1", "2", "3"):
+                with self.subTest(lane=lane):
+                    cell = tree.run(lane, [], LANE_CLI="claude")
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+                    self.assertEqual(cell["env"]["GH_CONFIG_DIR"],
+                                     str(tree.home / ".config" / "gh-accounts" / f"vitalharmony-lane{lane}"))
+                    # Preclose pass 1 (test-honesty): the token itself reaches the agent.
+                    self.assertEqual(cell["env"]["GH_TOKEN"], bc.FIXTURE_LANE_TOKENS[lane])
+
+    def test_a_missing_or_bad_lane_token_refuses_and_launches_nothing(self):
+        for damage in ("no-slot", "no-token", "bad-token"):
+            with self.subTest(damage), _FixtureTree() as tree:
+                slot = tree.home / ".config" / "gh-accounts" / "vitalharmony-lane1"
+                if damage == "no-slot":
+                    shutil.rmtree(slot)
+                elif damage == "no-token":
+                    (slot / "hosts.yml").write_text("github.com:\n    user: vitalharmony\n")
+                else:
+                    (slot / "hosts.yml").write_text(
+                        "github.com:\n    users:\n        vitalharmony:\n            oauth_token: wrong\n")
+                cell = tree.run("1", [], LANE_CLI="claude")
+                self.assertFalse(cell["launched"])
+                self.assertIn("harmonic-forge#1396", cell.get("stderr", ""))
+
+
 class LaneEnvironment(unittest.TestCase):
 
     def test_lane_and_lane_agent_reach_the_child_process(self):

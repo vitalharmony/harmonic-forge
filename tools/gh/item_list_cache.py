@@ -232,7 +232,8 @@ def fetch_full_board(
         import subprocess
 
         def run(args: list[str]):
-            return subprocess.run(args, capture_output=True, text=True)
+            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
+            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args))
 
     resolved_cache_dir = cache_dir if cache_dir is not None else _CACHE_DIR
     # The path is computed unconditionally. `ttl <= 0` means "do not READ or
@@ -318,7 +319,8 @@ def _board_currency(owner: str, number: str, run=None) -> dict | None:
         import subprocess
 
         def run(args: list[str]):
-            return subprocess.run(args, capture_output=True, text=True)
+            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
+            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args))
 
     result = run([
         "gh", "api", "graphql",
@@ -644,7 +646,8 @@ def fetch_issue_field(
         import subprocess
 
         def run(args: list[str]):
-            return subprocess.run(args, capture_output=True, text=True)
+            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
+            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args, owner=owner))
     return _scan_issue_field(repo, issue_number, project_number, owner, field, run)
 
 
@@ -703,7 +706,11 @@ def _fetch_issue_field_live(
         import subprocess
 
         def run(args: list[str]):
-            return subprocess.run(args, capture_output=True, text=True)
+            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
+            # The query names the issue's repo owner; the board's owner decides
+            # the token (harmonic-forge#1396 preclose pass 2).
+            return subprocess.run(args, capture_output=True, text=True,
+                                  env=projects_env(args, owner=board_owner))
 
     try:
         owner, name = repo.split("/", 1)

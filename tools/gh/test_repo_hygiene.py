@@ -2,6 +2,7 @@
 """Tests for repo_hygiene.py (hrse#808)."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ class ClassificationTests(unittest.TestCase):
     sweep actually produced."""
 
     def _audit(self, branches, prs, compares, errors=None, default="main"):
-        def fake_run(args, cwd=None):
+        def fake_run(args, cwd=None, board=False):
             joined = " ".join(args)
             if "--jq" in args and "default_branch" in joined:
                 return json.dumps({"d": default})
@@ -86,7 +87,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_compare_failure_is_stranded_not_silently_clean(self):
         """A failed lookup must never read as 'nothing here'."""
-        def fake_run(args, cwd=None):
+        def fake_run(args, cwd=None, board=False):
             joined = " ".join(args)
             if "--jq" in args and "default_branch" in joined:
                 return json.dumps({"d": "main"})
@@ -450,7 +451,7 @@ class AuditStashesTests(unittest.TestCase):
         """Report-only: assert the module never invokes a mutating stash verb."""
         calls: list[list[str]] = []
 
-        def fake_run(args, cwd=None):
+        def fake_run(args, cwd=None, board=False):
             calls.append(args)
             return "stash@{0}: On main: wip\n"
 
@@ -492,7 +493,7 @@ class AuditTransactionLogTests(unittest.TestCase):
                 recent_lines.append("some/other/file.py")
         recent_text = "\n".join(recent_lines) + ("\n" if recent_lines else "")
 
-        def fake_run(args, cwd=None):
+        def fake_run(args, cwd=None, board=False):
             calls["order"].append(args[1])
             if args[:2] == ["git", "fetch"]:
                 calls["fetch"] += 1
@@ -656,7 +657,7 @@ class BoardOwnerTypeTests(unittest.TestCase):
             "items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
                        "nodes": []}}}}})
 
-        def fake_run(args, cwd=None):
+        def fake_run(args, cwd=None, board=False):
             if f"query={rh._BOARD_ITEMS_QUERY_ORG}" in args:
                 raise rh.GhError("Could not resolve to an Organization with the login of 'vitalharmony'.")
             return user_hit
@@ -675,7 +676,7 @@ class BoardOwnerTypeTests(unittest.TestCase):
     def test_organization_gherror_then_user_also_missing_still_raises(self):
         user_miss = json.dumps({"data": {"user": None}})
 
-        def fake_run(args, cwd=None):
+        def fake_run(args, cwd=None, board=False):
             if f"query={rh._BOARD_ITEMS_QUERY_ORG}" in args:
                 raise rh.GhError("Could not resolve to an Organization with the login of 'ghost'.")
             return user_miss
@@ -953,6 +954,16 @@ class MainCleanGuardTests(unittest.TestCase):
 
 
 class PerRepoIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # harmonic-forge#1396: slot_env maps a lane to its lane slot; these
+        # tests pin the per-repo mapping outside a lane.
+        lane = patch.dict(os.environ, {"LANE": ""})
+        lane.start()
+        self.addCleanup(lane.stop)
+        super_setup = getattr(super(), "setUp", None)
+        if super_setup:
+            super_setup()
+
     """harmonic-forge#804: the sweep spans accounts, so each repo's subprocesses
     run under that repo's own slot -- never one process-wide identity."""
 
@@ -990,6 +1001,16 @@ class PerRepoIdentityTests(unittest.TestCase):
 
 
 class MainSwitchesSlotPerRepoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # harmonic-forge#1396: slot_env maps a lane to its lane slot; these
+        # tests pin the per-repo mapping outside a lane.
+        lane = patch.dict(os.environ, {"LANE": ""})
+        lane.start()
+        self.addCleanup(lane.stop)
+        super_setup = getattr(super(), "setUp", None)
+        if super_setup:
+            super_setup()
+
     """The test-honesty lens's surviving mutation: deleting `_use_slot` from `main`'s
     loops left every hygiene test green, because the tests above call `_use_slot`
     themselves. This drives `main` and reads `_ENV` from INSIDE each repo's audit."""

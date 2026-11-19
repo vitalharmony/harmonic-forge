@@ -20,8 +20,31 @@ _gh_slots="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
 _gh_remote="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
 case "$_gh_remote" in
   *github.com*vitalharmony*)
-    export GH_CONFIG_DIR="$_gh_slots/vitalharmony"
     unset GH_TOKEN GITHUB_TOKEN
+    case "${LANE:-}" in
+      1|2|3)
+        # harmonic-forge#1396: each lane runs on its own least-privilege token,
+        # passed as GH_TOKEN from the slot's hosts.yml (the shared keyring entry
+        # would otherwise win). No slot, no token or a failed identity probe
+        # refuses the launch; a lane never falls back to the shared slot.
+        _gh_lane_dir="$_gh_slots/vitalharmony-lane$LANE"
+        _gh_lane_tok="$(awk '/^[[:space:]]*oauth_token:/ {print $2; exit}' "$_gh_lane_dir/hosts.yml" 2>/dev/null || true)"
+        if [ -z "$_gh_lane_tok" ]; then
+          echo "lane$LANE: no token in $_gh_lane_dir/hosts.yml -- refusing to launch on the shared credential (harmonic-forge#1396)." >&2
+          echo "Store it with:  GH_CONFIG_DIR=$_gh_lane_dir gh auth login --with-token --insecure-storage" >&2
+          return 1 2>/dev/null || exit 1
+        fi
+        if [ "$(GH_TOKEN="$_gh_lane_tok" GH_CONFIG_DIR="$_gh_lane_dir" gh api user --jq .login 2>/dev/null)" != "vitalharmony" ]; then
+          echo "lane$LANE: the token in $_gh_lane_dir does not authenticate as vitalharmony -- refusing to launch (harmonic-forge#1396)." >&2
+          return 1 2>/dev/null || exit 1
+        fi
+        export GH_CONFIG_DIR="$_gh_lane_dir" GH_TOKEN="$_gh_lane_tok"
+        unset _gh_lane_dir _gh_lane_tok
+        ;;
+      *)
+        export GH_CONFIG_DIR="$_gh_slots/vitalharmony"
+        ;;
+    esac
     ;;
   *github.com*harmonicarchitect*)
     export GH_CONFIG_DIR="$_gh_slots/harmonicarchitect"

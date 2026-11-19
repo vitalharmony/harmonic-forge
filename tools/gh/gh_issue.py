@@ -119,6 +119,17 @@ def _run(cmd: list[str], check: bool = True,
     return subprocess.run(cmd, capture_output=True, text=True, check=check, env=env)
 
 
+def _run_board(cmd: list[str], check: bool = True,
+               owner: str | None = None) -> subprocess.CompletedProcess:
+    """A Projects-board call: in a lane it carries the projects slot's token
+    (harmonic-forge#1396, projects_token.projects_env), chosen here by the
+    caller's own code and never from the command's text."""
+    from projects_token import projects_env  # noqa: PLC0415
+    # `owner` names the board when the command names another account
+    # (the issue repo owner in _find_existing_item; harmonic-forge#1396 post-verdict).
+    return _run(cmd, check=check, env=projects_env(cmd, owner=owner))
+
+
 #: harmonic-forge#1032 (R-0397). Words too common in issue titles to identify
 #: an artifact's owner. Kept short on purpose: the AND-joined query already
 #: does most of the precision work.
@@ -461,7 +472,7 @@ def _fetch_project_context(project_owner: str, project_number: str) -> dict | No
     """One `project view` + one `field-list` call, shared by every field write
     in a single `add_to_board()` invocation instead of each field fetching
     independently (harmonic-forge#203)."""
-    view_result = _run(
+    view_result = _run_board(
         ["gh", "project", "view", project_number, "--owner", project_owner, "--format", "json"],
         check=False,
     )
@@ -474,7 +485,7 @@ def _fetch_project_context(project_owner: str, project_number: str) -> dict | No
         print(f"[GH] Could not parse project id: {exc}", file=sys.stderr)
         return None
 
-    fields_result = _run(
+    fields_result = _run_board(
         ["gh", "project", "field-list", project_number, "--owner", project_owner, "--format", "json"],
         check=False,
     )
@@ -529,7 +540,7 @@ def _set_single_select(item_id: str, project_id: str, fields: list[dict],
         "--field-id", field["id"],
         "--single-select-option-id", option["id"],
     ]
-    edit_result = _run(cmd, check=False)
+    edit_result = _run_board(cmd, check=False)
     if edit_result.returncode != 0:
         # harmonic-forge#263 AC3: name the exact repair command. Every id
         # is already resolved at this point, so the failing invocation is
@@ -599,12 +610,12 @@ def _find_existing_item(issue_url: str, project_owner: str, project_number: str)
         return None
     repo_owner, repo_name, issue_number = match.groups()
 
-    result = _run(
+    result = _run_board(
         ["gh", "api", "graphql",
          "-f", f"query={_ITEM_ID_QUERY}",
          "-F", f"owner={repo_owner}", "-F", f"repo={repo_name}",
          "-F", f"number={int(issue_number)}"],
-        check=False,
+        check=False, owner=project_owner,
     )
     if result.returncode != 0:
         return None
@@ -721,7 +732,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
         "--url", issue_url,
         "--format", "json",
     ]
-    add_result = _run(add_cmd, check=False)
+    add_result = _run_board(add_cmd, check=False)
     if add_result.returncode != 0:
         # hrse#883: a repo-level auto-add can win the race and put the issue
         # on the board before this call runs, and GitHub answers the second

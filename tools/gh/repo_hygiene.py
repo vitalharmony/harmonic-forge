@@ -59,8 +59,14 @@ def _use_slot(repo: str | None) -> None:
     _ENV = slot_env_or_none(repo)
 
 
-def _run(args: list[str], cwd: str | None = None) -> str:
-    result = subprocess.run(args, capture_output=True, text=True, cwd=cwd, env=_ENV)
+def _run(args: list[str], cwd: str | None = None, board: bool = False) -> str:
+    env = _ENV
+    if board:
+        # harmonic-forge#1396: a vitalharmony board query in a lane carries the
+        # projects slot's token (projects_token.projects_env); others keep _ENV.
+        from projects_token import projects_env  # noqa: PLC0415
+        env = projects_env(args, _ENV)
+    result = subprocess.run(args, capture_output=True, text=True, cwd=cwd, env=env)
     if result.returncode != 0:
         raise GhError(f"{' '.join(args[:3])}…: {result.stderr.strip()[:200]}")
     return result.stdout
@@ -853,7 +859,7 @@ def _run_board_query(query: str, owner: str, number: str, cursor: str | None) ->
             "-F", f"owner={owner}", "-F", f"number={int(number)}"]
     if cursor:
         args += ["-F", f"cursor={cursor}"]
-    payload = json.loads(_run(args))
+    payload = json.loads(_run(args, board=True))
     if payload.get("errors"):
         raise GhError("; ".join(e.get("message", "?") for e in payload["errors"]))
     return payload

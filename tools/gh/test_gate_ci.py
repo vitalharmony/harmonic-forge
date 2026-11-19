@@ -1401,5 +1401,82 @@ class StatusChecks(unittest.TestCase):
         self.assertEqual(state, "absent", detail)
 
 
+class LaneTokenRequiredChecksTests(unittest.TestCase):
+    """harmonic-forge#1396 amendment: under a lane's fine-grained token (no
+    Administration) the protection read is 403, and `required_checks` reads the
+    same contexts from `branches/<b>`. Every verdict must equal the admin read's."""
+
+    FORBIDDEN = ('{"message":"Resource not accessible by personal access token","status":"403"}'
+                 "gh: Resource not accessible by personal access token (HTTP 403)")
+
+    def _run(self, credential, protection, checks):
+        """`protection`: a list of contexts, "unprotected", or "unreadable"."""
+        inner = fake_gh(checks=checks)
+
+        def run(cmd):
+            url = next((a for a in cmd if a.startswith("repos/")), "")
+            if url.endswith("/protection"):
+                if credential == "lane":
+                    return 1, self.FORBIDDEN
+                if protection == "unprotected":
+                    return 1, "gh: Branch not protected (HTTP 404)"
+                if protection == "unreadable":
+                    return 1, "gh: HTTP 502"
+                return 0, json.dumps(protection)
+            if re.fullmatch(r"repos/[^/]+/[^/]+/branches/[^/]+", url):
+                if protection == "unreadable":
+                    return 1, "gh: HTTP 502"
+                if protection == "unprotected":
+                    return 0, json.dumps({"protected": False, "contexts": None})
+                return 0, json.dumps({"protected": True, "contexts": protection})
+            return inner(cmd)
+        return run
+
+    SCENARIOS = {
+        "green": (["verify"], [check("verify")]),
+        "red": (["verify"], [check("verify", "failure")]),
+        "pending": (["verify"], [check("verify", None, "in_progress")]),
+        "missing required context": (["verify", "ui-approval"], [check("verify")]),
+        "unprotected branch": ("unprotected", [check("verify")]),
+        "unreadable": ("unreadable", [check("verify")]),
+    }
+
+    def test_lane_token_verdicts_equal_the_admin_reads(self):
+        for name, (protection, checks) in self.SCENARIOS.items():
+            with self.subTest(name):
+                verdicts = {}
+                for credential in ("admin", "lane"):
+                    run = self._run(credential, protection, checks)
+                    required = gate_ci.required_checks("o/r", run=run)
+                    state = (gate_ci.ci_conclusion("o/r", "abc1234", run=run, required=required)[0]
+                             if required is not None else "unreadable")
+                    verdicts[credential] = (required, state)
+                self.assertEqual(verdicts["admin"], verdicts["lane"], name)
+
+    def test_a_protected_branch_with_omitted_contexts_is_unreadable(self):
+        # Preclose pass 2: never an empty required set, which reads green.
+        for body in ('{"protected": true, "contexts": null}', '{"protected": true}'):
+            with self.subTest(body):
+                def run(cmd, body=body):
+                    if cmd[2].endswith("/protection"):
+                        return 1, self.FORBIDDEN
+                    return 0, body
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+
+    def test_a_lane_token_that_cannot_read_the_branch_is_unreadable(self):
+        def run(cmd):
+            return 1, self.FORBIDDEN
+        self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+
+    def test_a_malformed_branch_body_is_unreadable(self):
+        for body in ("", "null", "[]", '{"protected": "yes"}', '{"protected": true, "contexts": [1]}'):
+            with self.subTest(body):
+                def run(cmd, body=body):
+                    if cmd[2].endswith("/protection"):
+                        return 1, self.FORBIDDEN
+                    return 0, body
+                self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
