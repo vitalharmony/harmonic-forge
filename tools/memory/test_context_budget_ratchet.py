@@ -491,8 +491,8 @@ class TestSymlinkAttribution(unittest.TestCase):
 
 
 class TestMissingKeyShrinkCredit(unittest.TestCase):
-    """harmonic-forge#1414 preclose survivor: a key missing from disk credits
-    its baseline bytes as shrinkage only if git tracks it. Real git repos."""
+    """harmonic-forge#1414 reforge: a missing key's baseline bytes are credited as
+    shrinkage only if the baseline did not list it in outside_files."""
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -519,15 +519,15 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         p = self.repo / "CLAUDE.md"
         p.write_text(p.read_text(encoding="utf-8") + "y" * by, encoding="utf-8")
 
-    def test_untracked_missing_link_is_not_credited(self):
-        self.init_git()
+    def test_outside_link_missing_later_is_not_credited(self):
+        """A link outside the repo at --update is listed in outside_files, so its
+        bytes never offset in-repo growth when a CI checkout lacks it."""
         target = self.outside / "rule.md"
         target.write_text("r" * 2000, encoding="utf-8")
         link = self.repo / ".claude" / "rules" / "link.md"
         os.symlink(target, link)
-        self.git("add", "-A")
-        self.git("commit", "-qm", "init")
         m.update(self.repo)
+        self.assertIn(".claude/rules/link.md", m.load_baseline(self.repo)["outside_files"])
         link.unlink()  # a CI checkout: the gitignored link is absent
         self.grow_claude()
         code, report = m.check(self.repo)
@@ -535,13 +535,12 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         self.assertIn("NOT credited", report)
         self.assertIn(".claude/rules/link.md", report)
 
-    def test_tracked_deleted_file_is_still_credited(self):
-        self.init_git()
+    def test_deleted_in_repo_file_is_still_credited(self):
+        """AC2: an in-repo file deleted after --update still counts as shrinkage."""
         gone = self.repo / ".claude" / "rules" / "gone.md"
         gone.write_text("g" * 2000, encoding="utf-8")
-        self.git("add", "-A")
-        self.git("commit", "-qm", "init")
         m.update(self.repo)
+        self.assertNotIn(".claude/rules/gone.md", m.load_baseline(self.repo)["outside_files"])
         gone.unlink()
         self.grow_claude()
         code, report = m.check(self.repo)
@@ -549,20 +548,31 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         self.assertIn("shrank by 1500", report)
         self.assertNotIn("NOT credited", report)
 
-    def test_non_git_repo_fails_closed(self):
+    def _strip_outside_files(self) -> None:
+        path = m.baseline_path(self.repo)
+        text = path.read_text(encoding="utf-8")
+        path.write_text("\n".join(line for line in text.splitlines()
+                                   if not line.startswith("outside_files")) + "\n",
+                        encoding="utf-8")
+
+    def test_legacy_baseline_missing_key_fails_closed(self):
+        """A baseline written before outside_files credits only measured keys."""
         gone = self.repo / ".claude" / "rules" / "gone.md"
         gone.write_text("g" * 2000, encoding="utf-8")
         m.update(self.repo)
+        self._strip_outside_files()
+        self.assertNotIn("outside_files", m.load_baseline(self.repo))
         gone.unlink()
         self.grow_claude()
         code, report = m.check(self.repo)
         self.assertEqual(code, 1, report)
         self.assertIn("NOT credited", report)
 
-    def test_non_git_pure_shrink_still_passes(self):
+    def test_legacy_baseline_pure_shrink_still_passes(self):
         gone = self.repo / ".claude" / "rules" / "gone.md"
         gone.write_text("g" * 2000, encoding="utf-8")
         m.update(self.repo)
+        self._strip_outside_files()
         gone.unlink()
         self.assertEqual(m.check(self.repo)[0], 0)
 
@@ -621,11 +631,9 @@ class TestNoNetwork(unittest.TestCase):
         for forbidden in ("requests", "urllib", "httpx", "socket",
                           "gh api", '"gh"', "fetch", "ls-remote"):
             self.assertNotIn(forbidden, source)
-        # harmonic-forge#1414: one local git read (`cat-file -e HEAD:<key>`)
-        # is the only subprocess allowed — it decides whether a missing key
-        # is tracked, and touches no remote.
-        self.assertEqual(source.count("subprocess.run("), 1)
-        self.assertIn('["git", "-C", str(repo), "cat-file", "-e"', source)
+        # harmonic-forge#1414 reforge: whether a key was this repo's is read
+        # from the baseline's outside_files, so the ratchet runs no subprocess.
+        self.assertEqual(source.count("subprocess"), 0)
 
 
 if __name__ == "__main__":

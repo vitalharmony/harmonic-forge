@@ -65,7 +65,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import tomllib
 from datetime import date
@@ -138,7 +137,8 @@ def load_baseline(repo: Path) -> dict | None:
         raise RatchetError(f"{path} is not valid TOML: {exc}") from exc
 
 
-def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
+def render_baseline(rows: dict[str, int], increases: list[dict],
+                    outside: list[str] | None = None) -> str:
     """Emit the baseline by hand — there is no TOML writer in this toolchain,
     and adding a dependency for four literal types is not worth it."""
     total = sum(rows.values())
@@ -157,6 +157,10 @@ def render_baseline(rows: dict[str, int], increases: list[dict]) -> str:
         f"total_bytes = {total}",
         f"ceiling_bytes = {CEILING_BYTES}",
         f"target_bytes = {TARGET_BYTES}",
+        # harmonic-forge#1414 reforge: which keys were outside this repo when the
+        # baseline was written. A shrink is credited only for a key not listed, so
+        # bytes an outside file contributed never offset this repo's growth.
+        "outside_files = [" + ", ".join(f'"{k}"' for k in sorted(outside or [])) + "]",
         "",
         "[files]",
     ]
@@ -229,37 +233,18 @@ def in_repo(key: str, repo: Path | None = None) -> bool:
     return True
 
 
-def _tracked_in_head(repo: Path, key: str) -> bool:
-    """True when git's HEAD commit holds `key` in `repo`.
-
-    `cat-file -e HEAD:<key>` is true for a committed file deleted from the
-    working tree (staged or not) and false for a gitignored, never-committed
-    path such as hrse's `.claude/rules/*.md` platform links. Any git failure
-    (no git, not a repo, no HEAD) answers False: the caller then declines to
-    credit shrinkage, which is the fail-closed direction — an uncredited
-    shrink can only make the gate stricter, never hide growth.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{key}"],
-            capture_output=True, timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
-
-def _credited_shrink(repo: Path, key: str, current: dict[str, int]) -> bool:
-    """Whether a shrunk key's bytes may offset in-repo growth.
-
-    A key still measured, or still on disk, is credited as before. A key gone
-    from disk counts only if git tracks it (harmonic-forge#1414 preclose): a
-    gitignored rule link absent from a CI checkout otherwise credited its
-    whole baseline size as shrinkage and hid real growth elsewhere, while a
-    deleted tracked file must still count (AC2).
-    """
-    if key in current or os.path.lexists(repo / key):
-        return True
-    return _tracked_in_head(repo, key)
+def _credited_shrink(baseline: dict, key: str, current: dict[str, int]) -> bool:
+    """Whether a shrunk key's bytes may offset in-repo growth (harmonic-forge#1414
+    reforge). Whether those bytes were this repo's is a fact about when the
+    baseline was written, so it is read from the baseline's `outside_files`, never
+    inferred now: a key listed there is never credited, a key not listed is (a
+    deleted tracked file still counts, AC2). A baseline written before the field
+    existed credits only a key still measured; a missing one is not credited,
+    which can only make the gate stricter until the next `--update`."""
+    outside = baseline.get("outside_files")
+    if isinstance(outside, list):
+        return key not in outside
+    return key in current
 
 
 def _symlink_note(repo: Path, key: str) -> str:
@@ -418,7 +403,7 @@ def check(repo: Path) -> tuple[int, str]:
     gated_shrank = {key: delta for key, delta in shrank.items()
                     if key in platform_keys or in_repo(key, repo=repo)}
     uncredited = sorted(key for key in gated_shrank
-                        if not _credited_shrink(repo, key, current))
+                        if not _credited_shrink(baseline, key, current))
     gated_net = (sum(gated_grew.values())
                  + sum(delta for key, delta in gated_shrank.items()
                        if key not in uncredited))
@@ -434,8 +419,9 @@ def check(repo: Path) -> tuple[int, str]:
             f"with `--update` when convenient (harmonic-forge#538).")
     if uncredited:
         outside_note += (
-            f"\n  missing from this checkout and untracked by git, NOT "
-            f"credited as shrinkage: {', '.join(uncredited)}.")
+            f"\n  outside this repo when the baseline was written (or missing "
+            f"under a pre-#1414 baseline), NOT credited as shrinkage: "
+            f"{', '.join(uncredited)}.")
 
     if gated_net <= 0:
         note = ""
@@ -458,8 +444,10 @@ def update(repo: Path) -> str:
     current = measure(repo)
     existing = load_baseline(repo)
     increases = list(existing.get("increase") or []) if existing else []
+    platform_keys = {f".claude/rules/{n}" for n in _platform_rule_sources(repo)}
+    outside = [key for key in current if not (key in platform_keys or in_repo(key, repo=repo))]
     path = baseline_path(repo)
-    path.write_text(render_baseline(current, increases), encoding="utf-8")
+    path.write_text(render_baseline(current, increases, outside), encoding="utf-8")
     return f"wrote {path} ({sum(current.values())} bytes across {len(current)} files)"
 
 
