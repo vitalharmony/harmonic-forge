@@ -16,7 +16,13 @@ a layer on a past slip; only the sample bars execute a layer.
 
 A layer module defines `refuses(command, cwd, env_names) -> str | None`;
 `env_names` is always the empty set: the harness never passes its own
-environment to historical rows.
+environment to historical rows. It may also define
+`refuses_post(body) -> str | None` (harmonic-forge#1450), which the harness
+runs over the second input kind, the frozen posts sample
+(`never_refuse_posts.py derive`), for a layer whose bar sets
+`posts_max_refusals`. The posts sample is read only when some layer sets that
+bar, and a layer whose module has no `refuses_post` reports unexecuted, so its
+posts bar is not measurable.
 
 The report prints counts, owners and up to 20 `(n, reason)` pairs per layer.
 The harness never prints a command or a stored probe; a reason is the layer's
@@ -27,7 +33,8 @@ bar also fails; without it the verdict line names how many bars were not
 measured); 4 a bar fails, including a replay bar with no slips to score; 2 refused (a malformed layer set, including
 an unknown key at any level, a layer with no bar and a set with no layers; a
 sample without its manifest, with a changed sha256, or not exactly 10,000 rows;
-a store path inside forge);
+a posts sample without its manifest, with a changed sha256, or not exactly 200
+rows; a store path inside forge);
 3 any other error. Never 1.
 
 Stdlib only, no network and no subprocess.
@@ -50,6 +57,7 @@ sys.path.insert(0, str(TOOLS / "memory"))
 sys.path.insert(0, str(HERE))
 
 import failure_store  # noqa: E402
+import never_refuse_posts  # noqa: E402
 import never_refuse_sample  # noqa: E402
 
 CLASSES_FILE = TOOLS / "memory" / "failure_classes.json"
@@ -87,6 +95,9 @@ def _claim(text, classes: set[str], where: str) -> tuple[str, str]:
 LAYER_SET_KEYS = frozenset({"version", "layers", "existing", "accepted_uncovered"})
 LAYER_KEYS = frozenset({"name", "claims", "claims_basis", "module", "bar"})
 BAR_KEYS = frozenset({"replay", "sample_max_refusals"})
+#: Optional bar key (harmonic-forge#1450): the posts-sample bar. Optional, like
+#: REPLAY_OPTIONAL, so every existing layer set parses unchanged.
+BAR_OPTIONAL = frozenset({"posts_max_refusals"})
 REPLAY_KEYS = frozenset({"classes", "min_share"})
 #: Optional replay-bar key (harmonic-forge#1291): the tools the bar scores.
 REPLAY_OPTIONAL = frozenset({"tools"})
@@ -112,10 +123,15 @@ def _is_count(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _parse_bar(bar, classes: set[str], where: str) -> tuple[dict | None, int | None]:
+def _parse_bar(bar, classes: set[str], where: str) -> tuple[dict | None, int | None, int | None]:
     if bar is None or bar == {}:
         raise Refused(f"{where} needs a bar: a replay bar, a sample_max_refusals bar or both")
-    _exact_keys(bar, BAR_KEYS, f"{where} bar")
+    if not isinstance(bar, dict):
+        raise Refused(f"{where} bar must be an object")
+    _exact_keys({k: v for k, v in bar.items() if k not in BAR_OPTIONAL}, BAR_KEYS, f"{where} bar")
+    posts_max = bar.get("posts_max_refusals")
+    if posts_max is not None and (not _is_count(posts_max) or posts_max < 0):
+        raise Refused(f"{where}: posts_max_refusals must be a non-negative integer or null")
     replay = bar["replay"]
     if replay is not None:
         if not isinstance(replay, dict):
@@ -141,7 +157,7 @@ def _parse_bar(bar, classes: set[str], where: str) -> tuple[dict | None, int | N
         raise Refused(f"{where}: sample_max_refusals must be a non-negative integer")
     if replay is None and max_refusals is None:
         raise Refused(f"{where}: bar sets neither a replay bar nor sample_max_refusals")
-    return replay, max_refusals
+    return replay, max_refusals, posts_max
 
 
 def _parse_layer(index: int, layer, classes: set[str], base: Path) -> dict:
@@ -167,7 +183,10 @@ def _parse_layer(index: int, layer, classes: set[str], base: Path) -> dict:
         if not module_path.is_file():
             raise Refused(f"{where}: module {module_path} does not exist")
         module = module_path
-    replay, max_refusals = _parse_bar(layer["bar"], classes, where)
+    replay, max_refusals, posts_max = _parse_bar(layer["bar"], classes, where)
+    # A posts bar on no module could only ever be not-measurable.
+    if posts_max is not None and module is None:
+        raise Refused(f"{where} sets posts_max_refusals, so it needs a module")
     # A module with no sample bar would run over the sample and have its
     # errors and refusals ignored (codex #10): a module needs its bar.
     if module is not None and max_refusals is None:
@@ -180,7 +199,8 @@ def _parse_layer(index: int, layer, classes: set[str], base: Path) -> dict:
     if layer["claims_basis"] not in CLAIMS_BASES:
         raise Refused(f"{where}: claims_basis must be validated or declared")
     return {"index": index, "name": layer["name"], "claims": parsed_claims, "module": module,
-            "replay_bar": replay, "sample_max_refusals": max_refusals, "claims_basis": layer["claims_basis"]}
+            "replay_bar": replay, "sample_max_refusals": max_refusals, "posts_max_refusals": posts_max,
+            "claims_basis": layer["claims_basis"]}
 
 
 def load_layer_set(path: Path) -> dict:
@@ -371,14 +391,16 @@ def replay_bar(layer: dict, replay: dict) -> dict | None:
 # --------------------------------------------------------------------------
 # Sample.
 
-def read_sample(path: Path) -> list[dict]:
+def _read_frozen(path: Path, size: int, row_parser, deriver: str) -> list[dict]:
+    """A frozen sample of either kind: manifest present, sha256 unchanged, one
+    parsed row per line, exactly `size` rows."""
     path = Path(path).expanduser()
     orphan = never_refuse_sample.orphan_refusal(path)
     if orphan:
         raise Refused(orphan)
     manifest = never_refuse_sample.manifest_path(path)
     if not path.exists():
-        raise Refused(f"no sample at {path}: run never_refuse_sample.py derive first")
+        raise Refused(f"no sample at {path}: run {deriver} derive first")
     meta = json.loads(manifest.read_text(encoding="utf-8"))
     data = path.read_bytes()
     # refuses: an absent sha256 reads as None and never equals a digest.
@@ -387,16 +409,28 @@ def read_sample(path: Path) -> list[dict]:
     if data and not data.endswith(b"\n"):
         raise Refused(f"sample {path} does not end in a newline; derive writes one per row")
     # Every line is a row: no blank line or unparsed line is skipped.
-    rows = [parse_sample_row(line, index) for index, line in enumerate(data.decode("utf-8").split("\n")[:-1])]
-    if len({row["n"] for row in rows}) != len(rows):
-        raise Refused(f"sample {path}: a row number n appears twice")
+    rows = [row_parser(line, index) for index, line in enumerate(data.decode("utf-8").split("\n")[:-1])]
     # Absent input refuses (harmonic-forge#1289 epoch 2): a sample of any
-    # other size, however it was made, holds a bar over fewer rows than 10,000.
-    # refuses: an absent manifest size reads as None and never equals SIZE.
-    size = never_refuse_sample.SIZE
+    # other size, however it was made, holds a bar over fewer rows than its size.
+    # refuses: an absent manifest size reads as None and never equals size.
     if meta.get("size") != size or len(rows) != size:
         raise Refused(f"sample {path} has {len(rows)} rows (manifest size {meta.get('size')!r}); "
                       f"a sample is exactly {size} rows")
+    return rows
+
+
+def read_sample(path: Path) -> list[dict]:
+    rows = _read_frozen(path, never_refuse_sample.SIZE, parse_sample_row, "never_refuse_sample.py")
+    if len({row["n"] for row in rows}) != len(rows):
+        raise Refused(f"sample {Path(path).expanduser()}: a row number n appears twice")
+    return rows
+
+
+def read_posts_sample(path: Path) -> list[dict]:
+    """The posts sample (harmonic-forge#1450), exactly `never_refuse_posts.SIZE` rows."""
+    rows = _read_frozen(path, never_refuse_posts.SIZE, parse_post_row, "never_refuse_posts.py")
+    if len({row["body_digest"] for row in rows}) != len(rows):
+        raise Refused(f"posts sample {Path(path).expanduser()}: a body_digest appears twice")
     return rows
 
 
@@ -423,21 +457,55 @@ def parse_sample_row(line: str, index: int) -> dict:
     return row
 
 
+#: Exactly the keys `never_refuse_posts.py derive` writes per row.
+POST_ROW_KEYS = frozenset({"repo", "issue", "kind", "body_digest", "body"})
+
+
+def parse_post_row(line: str, index: int) -> dict:
+    """One posts row, parsed (harmonic-forge#1450): exactly derive's keys,
+    `issue` an int, `repo`/`kind` non-empty strs, `body` a non-empty str whose
+    sha256 is `body_digest`. Anything else refuses, including a blank line."""
+    where = f"posts row {index + 1}"
+    try:
+        row = json.loads(line)
+    except ValueError as exc:
+        raise Refused(f"{where} is not JSON") from exc
+    _exact_keys(row, POST_ROW_KEYS, where)
+    if not _is_count(row["issue"]):
+        raise Refused(f"{where}: issue must be an integer")
+    if any(not isinstance(row[k], str) or not row[k] for k in ("repo", "kind", "body")):
+        raise Refused(f"{where}: repo, kind and body must be non-empty strings")
+    if hashlib.sha256(row["body"].encode("utf-8")).hexdigest() != row["body_digest"]:
+        raise Refused(f"{where}: body_digest is not the body's sha256")
+    return row
+
+
 def load_module(path: Path):
+    """The module itself: callers take `.refuses` and, optionally, `.refuses_post`."""
     spec = importlib.util.spec_from_file_location(f"_precheck_layer_{Path(path).stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.refuses
+    return module
 
 
 def run_layer(refuses, rows: list[dict], env_names: frozenset[str]) -> dict:
+    return _tally(rows, lambda row: refuses(row["command"], row["cwd"], env_names),
+                  lambda index, row: row["n"])
+
+
+def run_post_layer(refuses_post, rows: list[dict]) -> dict:
+    """`run_layer` over the posts sample: same contract, reasons numbered by row."""
+    return _tally(rows, lambda row: refuses_post(row["body"]), lambda index, row: index + 1)
+
+
+def _tally(rows: list[dict], call, number) -> dict:
     """A layer's return is parsed too (harmonic-forge#1289 epoch 3, codex #9):
     `None` allows, a non-empty `str` refuses, and anything else (`""`, a
     bool, a number) is an error, which fails the sample bar."""
     refusals, errors, reasons = 0, 0, []
-    for row in rows:
+    for index, row in enumerate(rows):
         try:
-            reason = refuses(row["command"], row["cwd"], env_names)
+            reason = call(row)
         # SystemExit too: a layer calling sys.exit is an error, never the
         # harness's exit (harmonic-forge#1289 epoch 4). KeyboardInterrupt propagates.
         except (Exception, SystemExit):  # noqa: BLE001 - a layer that raises is counted, never trusted
@@ -450,19 +518,21 @@ def run_layer(refuses, rows: list[dict], env_names: frozenset[str]) -> dict:
             continue
         refusals += 1
         if len(reasons) < MAX_REASONS:  # display cap only; every refusal is counted above
-            reasons.append((row["n"], reason[:80]))
+            reasons.append((number(index, row), reason[:80]))
     return {"refusals": refusals, "size": len(rows), "errors": errors, "reasons": reasons}
 
 
 #: Constant controls, keyed by fixed names; never input.
 CONTROLS = {"null": lambda command, cwd, env_names: None,
             "all": lambda command, cwd, env_names: "control: refuses every row"}
+POST_CONTROLS = {"null": lambda body: None,
+                 "all": lambda body: "control: refuses every row"}
 
 
 # --------------------------------------------------------------------------
 
 def score(layer_file: Path, sample: Path, db: Path, logs: dict, overlays: Path,
-          control: bool = False) -> dict:
+          control: bool = False, posts_sample: Path | None = None) -> dict:
     layer_set = load_layer_set(layer_file)
     try:
         replay_rows, other, skipped = read_replay(db, logs, overlays)
@@ -476,14 +546,21 @@ def score(layer_file: Path, sample: Path, db: Path, logs: dict, overlays: Path,
     # historical, so the shell scoring them must not change a verdict
     # (harmonic-forge#1289 epoch 4).
     env_names: frozenset[str] = frozenset()
-    bars, layers = [], {}
+    # The posts sample is read only when a bar needs it, so a layer set with no
+    # posts bar scores exactly as before (harmonic-forge#1450).
+    wants_posts = any(layer["posts_max_refusals"] is not None for layer in layer_set["layers"])
+    if wants_posts and posts_sample is None:
+        raise Refused("a layer sets posts_max_refusals but no posts sample was given")
+    post_rows = read_posts_sample(posts_sample) if wants_posts else None
+    bars, layers, posts = [], {}, {}
     for layer in layer_set["layers"]:
         bar = replay_bar(layer, replay)
         if bar is not None:  # refuses: a layer with neither bar was refused by the parser
             bars.append(bar)
         result = None  # fail-direction: no module is not-measurable, a FAIL under --strict, never a bare PASS
-        if layer["module"] is not None:
-            result = run_layer(load_module(layer["module"]), rows, env_names)
+        module = load_module(layer["module"]) if layer["module"] is not None else None
+        if module is not None:
+            result = run_layer(module.refuses, rows, env_names)
         # refuses: keyed by name, and duplicate names were refused by the parser.
         layers[layer["name"]] = result
         if layer["sample_max_refusals"] is not None:
@@ -495,10 +572,31 @@ def score(layer_file: Path, sample: Path, db: Path, logs: dict, overlays: Path,
                 bars.append({"bar": name, "status": "holds" if holds else "fails",
                              "refusals": result["refusals"], "size": result["size"],
                              "errors": result["errors"]})
+        if post_rows is not None:
+            refuses_post = getattr(module, "refuses_post", None) if module is not None else None
+            # fail-direction: None is unexecuted (no module, or no refuses_post): not-measurable.
+            post_result = run_post_layer(refuses_post, post_rows) if callable(refuses_post) else None
+            posts[layer["name"]] = post_result
+            if layer["posts_max_refusals"] is not None:
+                name = f"{layer['name']}.posts"
+                if post_result is None:
+                    bars.append({"bar": name, "status": "not-measurable"})
+                else:
+                    holds = (post_result["refusals"] <= layer["posts_max_refusals"]
+                             and post_result["errors"] == 0)
+                    bars.append({"bar": name, "status": "holds" if holds else "fails",
+                                 "refusals": post_result["refusals"], "size": post_result["size"],
+                                 "errors": post_result["errors"]})
     controls = {name: run_layer(fn, rows, env_names) for name, fn in CONTROLS.items()} if control else {}
     replay.pop("_rows")
-    return {"replay": replay, "sample_rows": len(rows), "layers": layers, "controls": controls,
-            "bars": bars}
+    report = {"replay": replay, "sample_rows": len(rows), "layers": layers, "controls": controls,
+              "bars": bars}
+    if post_rows is not None:
+        report["posts_rows"] = len(post_rows)
+        report["posts"] = posts
+        report["posts_controls"] = ({name: run_post_layer(fn, post_rows) for name, fn in POST_CONTROLS.items()}
+                                    if control else {})
+    return report
 
 
 def exit_code(report: dict, strict: bool) -> int:
@@ -534,6 +632,15 @@ def render(report: dict, code: int) -> str:
             continue  # fail-direction: display only; the bar itself is not-measurable
         lines.append(f"  {name}: {result['refusals']}/{result['size']} refused, {result['errors']} errors")
         lines += [f"    n={n}: {reason}" for n, reason in result["reasons"]]
+    if "posts_rows" in report:
+        lines.append(f"posts: {report['posts_rows']} rows")
+        for name, result in [*report["posts"].items(),
+                             *(("control " + k, v) for k, v in report["posts_controls"].items())]:
+            if result is None:
+                lines.append(f"  {name}: unexecuted (no refuses_post)")
+                continue  # fail-direction: display only; a posts bar on it is not-measurable
+            lines.append(f"  {name}: {result['refusals']}/{result['size']} refused, {result['errors']} errors")
+            lines += [f"    n={n}: {reason}" for n, reason in result["reasons"]]
     unmeasured = sum(1 for b in report["bars"] if b["status"] == "not-measurable")
     verdict = "FAIL" if code != EXIT_OK else (
         f"PASS with {unmeasured} bar(s) not measured" if unmeasured else "PASS")
@@ -549,6 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     # refuses: each default is the real store; an absent sample refuses, and an absent
     # overlays folder leaves every replay bar 0/0, which fails.
     s.add_argument("--sample", type=Path, default=never_refuse_sample.DEFAULT_OUT)
+    # Read only when a layer sets posts_max_refusals (harmonic-forge#1450).
+    s.add_argument("--posts-sample", type=Path, default=never_refuse_posts.DEFAULT_OUT)
     s.add_argument("--db", type=Path, default=failure_store.DEFAULT_DB)
     s.add_argument("--memory-log", type=Path, default=failure_store.DEFAULT_LOGS["memory"])
     s.add_argument("--testplan-log", type=Path, default=failure_store.DEFAULT_LOGS["testplan"])
@@ -563,7 +672,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logs = {"memory": args.memory_log, "testplan": args.testplan_log}
     try:
-        report = score(args.layers, args.sample, args.db, logs, args.overlays, args.control)
+        report = score(args.layers, args.sample, args.db, logs, args.overlays, args.control, args.posts_sample)
         code = exit_code(report, args.strict)
         print(json.dumps(report, indent=2) if args.json else render(report, code))
         sys.stdout.flush()
