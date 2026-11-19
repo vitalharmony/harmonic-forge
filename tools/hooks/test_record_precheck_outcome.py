@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -36,7 +37,7 @@ class Recorder(unittest.TestCase):
         self.log = self.store / "decisions.jsonl"
 
     def gate_row(self, outcome="allowed-receipt", tuid=TUID, session=SESSION) -> None:
-        decision_row.append(self.log, decision_row.row(
+        decision_row.record_gate(self.store, decision_row.row(
             outcome, tool="tools/gh/l1_post.py", mode="post", klass="github-write", fp="f" * 64,
             sid=session, tuid=tuid))
 
@@ -82,13 +83,43 @@ class Recorder(unittest.TestCase):
     def test_several_gate_rows_attribute_to_receipted_call(self) -> None:
         """One command logs allowed-receipt then precheck under one tuid."""
         self.gate_row()
-        decision_row.append(self.log, decision_row.row(
+        decision_row.record_gate(self.store, decision_row.row(
             "precheck", tool="tools/gh/kill_check.py", mode="precheck-form", klass="",
             fp="e" * 64, sid=SESSION, tuid=TUID))
+        decision_row.record_gate(self.store, decision_row.row(
+            "error", sid=SESSION, tuid=TUID, reason="fault"))
         rec.record(self.payload("PostToolUseFailure", error="Exit code 1"))
         posts = [r for r in self.rows() if r["outcome"] == "ran-failed"]
         self.assertEqual(len(posts), 1)
         self.assertEqual((posts[0]["tool"], posts[0]["mode"]), ("tools/gh/l1_post.py", "post"))
+
+    def test_join_survives_log_growth(self) -> None:
+        """Sticky-wicket D: ~2 MB of other sessions' rows between the gate row
+        and the outcome never lose the join."""
+        self.gate_row()
+        filler = json.dumps(decision_row.row("allowed-receipt", tool="tools/x.py", mode="m", klass="k",
+                                             fp="a" * 64, sid="other", tuid="other")) + "\n"
+        with self.log.open("a", encoding="utf-8") as fh:
+            fh.write(filler * (2 * 1024 * 1024 // len(filler) + 1))
+        self.assertGreater(self.log.stat().st_size, 2 * 1024 * 1024)
+        rec.record(self.payload("PostToolUseFailure", error="Exit code 2"))
+        post = self.rows()[-1]
+        self.assertEqual((post["outcome"], post["tool"], post["mode"], post["exit"]),
+                         ("ran-failed", "tools/gh/l1_post.py", "post", 2))
+
+    def test_call_file_deleted_after_join_and_stale_pruned(self) -> None:
+        self.gate_row()
+        call = decision_row.call_path(self.store, decision_row.digest(SESSION), decision_row.digest(TUID))
+        self.assertTrue(call.exists())
+        stale = self.store / "calls" / "old-old.json"
+        stale.write_text("{}")
+        old = time.time() - decision_row.CALL_TTL - 60
+        os.utime(stale, (old, old))
+        rec.record(self.payload())
+        self.assertFalse(call.exists())
+        self.assertFalse(stale.exists())
+        rec.record(self.payload())
+        self.assertEqual(len([r for r in self.rows() if r["outcome"] == "ran-ok"]), 1)
 
     def test_join_survives_head_move(self) -> None:
         """KC1b: the join is on tuid; the post row never recomputes the fp."""

@@ -112,6 +112,29 @@ class Report(unittest.TestCase):
         self.assertIn("seen-state unreadable", text)
         self.assertIn(f"tool={L1} mode={self.mode}", text)
 
+    def test_wrong_typed_seen_field_does_not_crash(self) -> None:
+        """Sticky-wicket C: a parseable seen-file with a wrong-typed field is
+        unreadable, never a crash and never a seed."""
+        self.add("allowed-receipt")
+        self.store.mkdir(parents=True, exist_ok=True)
+        for body in ('{"pairs": null}', '{"cases": 5}'):
+            gate_report.seen_path().write_text(body)
+            with self.assertRaises(gate_report.SeenUnreadable):
+                gate_report.read_seen()
+            text = self.run_report("--new-cases")
+            self.assertIn("seen-state unreadable", text)
+            self.assertIn(f"tool={L1} mode={self.mode}", text)
+        with mock.patch.object(gate_report, "read_seen", side_effect=RuntimeError("boom")):
+            text = self.run_report("--new-cases")
+        self.assertIn("seen-state unreadable", text)
+
+    def test_wrong_typed_log_row_is_skipped(self) -> None:
+        """Audit: a log row with an unhashable join key never crashes the tick."""
+        self.add("allowed-receipt")
+        with self.log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": self.now, "outcome": "ran-failed", "session": ["x"], "tuid": {}}) + "\n")
+        self.assertIn("total\t1", self.run_report())
+
     def test_non_object_seen_does_not_seed(self) -> None:
         self.add("allowed-receipt")
         self.store.mkdir(parents=True, exist_ok=True)

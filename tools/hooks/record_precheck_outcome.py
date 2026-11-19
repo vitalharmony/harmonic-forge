@@ -4,7 +4,8 @@ precheck gate decided on (harmonic-forge#1448 AC1).
 
 Joins the run to the gate's row by the hashed `tool_use_id` and session (never
 by fingerprint: the fingerprint hashes live state, which a push or rebase
-moves). No gate row with that tuid in that session -> no row, so only calls
+moves), read from the gate's per-call file, which is deleted once joined
+(stale ones are pruned after 24 hours). No gate row with that tuid in that session -> no row, so only calls
 the gate decided on are recorded. The row copies tool, mode, class and fp from
 the gate row and adds `ran-ok` (exit 0: PostToolUse fires only on success and
 its tool_response has no exit field) or `ran-failed` (exit from a strict
@@ -17,12 +18,12 @@ and the exit is always 0.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
 from pathlib import Path
 
-TAIL_BYTES = 256 * 1024
 EXIT_LINE = re.compile(r"^Exit code (-?\d+)$")
 #: The gate's per-call decisions a post-run row may join to.
 GATE_OUTCOMES = ("precheck", "allowed-receipt", "allowed-override", "refused",
@@ -37,31 +38,23 @@ def exit_code(payload: dict) -> int | None:
     return int(found.group(1)) if found else None
 
 
-def gate_row(path: Path, session: str, tuid: str) -> dict | None:
-    """The gate row this run joins to, from the log's tail.
-
-    One Bash command can log several gate rows under one tuid (e.g. an
-    allowed-receipt then a precheck). Every row for (session, tuid) is read;
-    the allowed-receipt row wins when one exists, so a failed run of a
-    receipted call is attributed to that call's tool/mode, else the newest."""
-    with path.open("rb") as fh:
-        fh.seek(0, 2)
-        size = fh.tell()
-        fh.seek(max(0, size - TAIL_BYTES))
-        lines = fh.read().decode("utf-8", "replace").splitlines()
-    matches = []
-    for line in reversed(lines):
-        try:
-            data = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(data, dict) and data.get("tuid") == tuid and data.get("session") == session \
-                and data.get("outcome") in GATE_OUTCOMES:
-            matches.append(data)
-    for data in matches:
-        if data.get("outcome") == "allowed-receipt":
-            return data
-    return matches[0] if matches else None
+def gate_row(store: Path, session: str, tuid: str) -> dict | None:
+    """The gate row this run joins to, read from the gate's per-call file
+    `<store>/calls/<session>-<tuid>.json` (decision_row.write_call), never by
+    scanning the shared log. The gate keeps an allowed-receipt row there over a
+    later row under the same tuid, so a receipted call keeps its attribution."""
+    import decision_row  # noqa: PLC0415
+    path = decision_row.call_path(store, session, tuid)
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("tuid") != tuid or data.get("session") != session \
+            or data.get("outcome") not in GATE_OUTCOMES:
+        return None
+    return data
 
 
 def record(payload: dict) -> None:
@@ -79,15 +72,18 @@ def record(payload: dict) -> None:
         return
     sid = str(payload.get("session_id") or "").strip() or gate_receipt.NO_SESSION
     session, tuid = decision_row.digest(sid), decision_row.digest(raw_tuid)
-    path = gate_receipt.store_dir() / "decisions.jsonl"
-    joined = gate_row(path, session, tuid)
+    store = gate_receipt.store_dir()
+    joined = gate_row(store, session, tuid)
     if joined is None:
         return
     failed = event == "PostToolUseFailure"
-    decision_row.append(path, decision_row.row(
+    decision_row.append(store / "decisions.jsonl", decision_row.row(
         "ran-failed" if failed else "ran-ok", tool=joined.get("tool"), mode=joined.get("mode"),
         klass=joined.get("class"), fp=joined.get("fp"), sid=session, tuid=tuid,
         exit=exit_code(payload) if failed else 0, hashed=True))
+    with contextlib.suppress(OSError):
+        decision_row.call_path(store, session, tuid).unlink()
+    decision_row.prune_calls(store)
 
 
 def main() -> None:

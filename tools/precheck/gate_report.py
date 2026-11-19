@@ -82,7 +82,12 @@ def rows() -> list[dict]:
             data = json.loads(line)
         except ValueError:
             continue
-        if isinstance(data, dict) and isinstance(data.get("ts"), (int, float)):
+        # A row is untrusted data: a wrong-typed join key (unhashable) or ts
+        # is skipped rather than crashing the belt tick.
+        if isinstance(data, dict) and isinstance(data.get("ts"), (int, float)) \
+                and not isinstance(data.get("ts"), bool) \
+                and all(data.get(k) is None or isinstance(data.get(k), str)
+                        for k in ("session", "tuid", "tool", "mode", "outcome")):
             out.append(data)
     return out
 
@@ -110,6 +115,9 @@ def read_seen() -> dict | None:
         raise SeenUnreadable(str(exc)) from exc
     if not isinstance(data, dict):
         raise SeenUnreadable("not a JSON object")
+    for key in ("pairs", "cases"):
+        if key in data and not isinstance(data[key], list):
+            raise SeenUnreadable(f"{key} is not a list")
     return {"pairs": [p for p in data.get("pairs", []) if isinstance(p, str)],
             "cases": [c for c in data.get("cases", []) if isinstance(c, str)]}
 
@@ -194,7 +202,12 @@ def main(argv: list[str] | None = None) -> int:
     mask = Masker()
     notices = []
     try:
-        seen = read_seen()
+        try:
+            seen = read_seen()
+        except SeenUnreadable:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- a belt tick never crashes on seen-state
+            raise SeenUnreadable(str(exc)) from exc
     except SeenUnreadable:
         # Never re-seed from a corrupt file: treat no pair as seen.
         seen = {"pairs": [], "cases": []}

@@ -48,6 +48,20 @@ class Telemetry(Store):
         self.assertNotIn("toolu_abc", json.dumps(row))
         self.assertEqual(set(row), ROW_KEYS)
 
+    def test_gate_writes_call_file_beside_row(self) -> None:
+        """Sticky-wicket D: the recorder's join reads this file, not the log."""
+        self.record(L1, L1_ARGS)
+        self.assertIsNone(self.gate_with(L1_CMD, "toolu_call"))
+        call = decision_row.call_path(self.root / "store", decision_row.digest(SESSION),
+                                      decision_row.digest("toolu_call"))
+        self.assertEqual(json.loads(call.read_text()), self.rows()[-1])
+
+    def test_call_file_fault_never_changes_decision(self) -> None:
+        self.record(L1, L1_ARGS)
+        with mock.patch.object(decision_row.tempfile, "mkstemp", side_effect=OSError("full")):
+            self.assertIsNone(self.gate_with(L1_CMD, "toolu_full"))
+        self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
+
     def test_fault_reason(self) -> None:
         with mock.patch.object(gate, "_calls_in", side_effect=RuntimeError("boom")):
             self.gate_with("echo hi", "t2")

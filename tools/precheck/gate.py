@@ -205,10 +205,6 @@ def refusal_text(call: _Call, mode: dict, fp: str, rid: str | None, why: str = "
 # --------------------------------------------------------------------------
 # The store: decisions and refusal records.
 
-def decisions_path() -> Path:
-    return receipts.store_dir() / "decisions.jsonl"
-
-
 def refusals_dir() -> Path:
     return receipts.store_dir() / "refusals"
 
@@ -216,7 +212,7 @@ def refusals_dir() -> Path:
 def log(outcome: str, *, tool: str | None = None, mode: str | None = None, klass: str | None = None,
         fp: str | None = None, sid: str = "", now: float | None = None, tuid: str | None = None,
         exit: int | None = None, reason: str | None = None) -> None:
-    decision_row.append(decisions_path(), decision_row.row(
+    decision_row.record_gate(receipts.store_dir(), decision_row.row(
         outcome, tool=tool, mode=mode, klass=klass, fp=fp, sid=sid, tuid=tuid, exit=exit,
         reason=reason, now=now))
 
