@@ -689,8 +689,11 @@ def _now() -> str:
 
 
 def _run_git(worktree: str, *args: str) -> str | None:
-    result = subprocess.run(["git", "-C", worktree, *args],
-                            capture_output=True, text=True)
+    try:
+        result = subprocess.run(["git", "-C", worktree, *args],
+                                capture_output=True, text=True)
+    except (OSError, UnicodeDecodeError):  # harmonic-forge#1416: an unreadable git reads as "could not check"
+        return None
     if result.returncode != 0:
         return None
     return result.stdout.strip()
@@ -819,6 +822,73 @@ def _strip_fenced_blocks(body: str) -> str:
 def _strip_quoted(body: str) -> str:
     """`body` without code blocks or `>` quote lines."""
     return markdown_strip.visible_text(body)
+
+
+def _completion_head(body: str) -> str | None:
+    """harmonic-forge#1416: the head a Lane 2 completion reported, read only from
+    the tool-written footer (`l2_post.py` stamps `head=<40-hex>` from git), never
+    from narrative text. None when the footer carries no such field."""
+    marker = _own_marker(body)
+    if not marker:
+        return None
+    inner = marker.strip().removeprefix("<!--").removesuffix("-->")
+    for field in inner.split(";"):
+        match = re.fullmatch(r"\s*head=([0-9a-f]{40})\s*", field)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _is_ancestor(worktree: str, ancestor: str, descendant: str) -> bool | None:
+    """`git merge-base --is-ancestor`: True, False, or None when git failed."""
+    try:
+        result = subprocess.run(["git", "-C", worktree, "merge-base", "--is-ancestor",
+                                 ancestor, descendant], capture_output=True, text=True)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return {0: True, 1: False}.get(result.returncode)
+
+
+def _since_completion(worktree: str, reported: str) -> str | None:
+    """harmonic-forge#1416: what the branch carries that the completion reporting
+    `reported` did not. None when nothing (or when it cannot be decided: every
+    failure is silent). Ancestry first, then an exact tree comparison of R
+    replayed onto HEAD's base, so a clean rebase is silent and a whitespace-only
+    amend is not."""
+    if _run_git(worktree, "cat-file", "-e", f"{reported}^{{commit}}") is None:
+        return None
+    head = _run_git(worktree, "rev-parse", "--verify", "HEAD^{commit}")
+    if not head or head == reported:
+        return None
+    ancestor = _is_ancestor(worktree, reported, head)
+    if ancestor is None:
+        return None
+    if ancestor:
+        count_text = _run_git(worktree, "rev-list", "--count", "--first-parent", f"{reported}..{head}")
+        if not count_text or not count_text.isdigit() or int(count_text) == 0:
+            return None
+        count = int(count_text)
+        return f"{count} commit{'' if count == 1 else 's'} after its last completion"
+    base_r = _run_git(worktree, "merge-base", reported, "origin/main")
+    base_h = _run_git(worktree, "merge-base", head, "origin/main")
+    if not base_r or not base_h:
+        return None
+    try:
+        replay = subprocess.run(["git", "-C", worktree, "merge-tree", "--write-tree",
+                                 "--merge-base", base_r, base_h, reported],
+                                capture_output=True, text=True)
+    except (OSError, UnicodeDecodeError):
+        return None
+    if replay.returncode == 1:  # a conflicted replay: HEAD is not a clean rebase of R
+        return "rework since its last completion"
+    lines = replay.stdout.split("\n")
+    tree = lines[0].strip() if replay.returncode == 0 and lines else ""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        return None
+    head_tree = _run_git(worktree, "rev-parse", "HEAD^{tree}")
+    if not head_tree:
+        return None
+    return None if tree == head_tree else "rework since its last completion"
 
 
 def _own_marker(body: str) -> str | None:
@@ -1472,7 +1542,9 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
     finishes and the issue thread never says so, and only a human noticing
     reconciles the two. Returns `None` when there's nothing ahead to report,
     or when the LATEST `l2`-classified comment on the issue already is a
-    completion (in sync) -- silence there is the correct, steady state, not
+    completion whose footer `head=` covers the branch (harmonic-forge#1416:
+    new commits, an amend or a non-clean rebase after it are announced; a
+    completion with no `head=` stays silent) -- silence there is the correct, steady state, not
     a gap (contrast with this module's "empty reads as no new work"
     principle: this function's `None` is a real, checked negative, not an
     unattempted check).
@@ -1521,17 +1593,23 @@ def branch_ahead_without_completion(worktree: str, repo: str, issue: int) -> str
         return None
     last_l2: tuple[str, str] | None = None
     last_l2_at: str | None = None
+    last_l2_body = ""
     for comment in comments:
         classified = _classify(comment.get("body", ""))
         if classified is not None and not _is_l2_finding(*classified) and classified[0] == "l2":
             last_l2 = classified
             last_l2_at = comment.get("created_at")
-    if last_l2 is not None and _is_l2_completion(*last_l2):
-        # A completion exists: the steady state. Whether work after it is unreported is
-        # tracked separately (operator ruling 2026-11-18 on harmonic-forge#1393's post-verdict
-        # check), so this notice speaks only for a branch with no completion at all.
-        return None
+            last_l2_body = comment.get("body", "")
     branch = _worktree_branch(worktree) or "?"
+    if last_l2 is not None and _is_l2_completion(*last_l2):
+        # harmonic-forge#1416: a completion exists. Silent unless the branch carries work
+        # that completion did not report (its footer's `head=`); a completion with no
+        # `head=` (every one posted before #1416) or any git failure stays silent.
+        reported = _completion_head(last_l2_body)
+        since = _since_completion(worktree, reported) if reported else None
+        if since is None:
+            return None
+        return f"{repo}#{issue} branch {branch} has {since}"
     plural = "" if count == 1 else "s"
     tail = "with no completion posted"
     return (f"{repo}#{issue} branch {branch} is {count} commit{plural} ahead of "
