@@ -47,7 +47,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import time
@@ -328,14 +327,11 @@ _LANE_SLOT_PREFIX = "vitalharmony-lane"
 
 
 def _repair(slot: str) -> str:
-    """The command that repairs `slot` (harmonic-forge#1425): `gh-as --init` writes
-    the keyring and requires login == slot name, so it cannot repair a lane slot,
-    whose token lives in its own hosts.yml (gh-as prints the same command)."""
+    """How to repair `slot` (harmonic-forge#1425). `gh-as --init` cannot repair a
+    lane slot, whose token lives in its own hosts.yml; for one this names the slot
+    and points at `gh-as --help`, and prints no shell command (gh-as says the same)."""
     if slot.startswith(_LANE_SLOT_PREFIX):
-        home = os.environ.get("GH_ACCT_HOME") or os.path.expanduser("~/.config/gh-accounts")
-        # Pass 2: shell-quoted, and runnable from a shell that still exports a token.
-        return ("env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="
-                f"{shlex.quote(f'{home}/{slot}')} gh auth login --with-token --insecure-storage")
+        return f"lane slot {slot} keeps its own token in its hosts.yml; see: gh-as --help"
     return f"gh-as --init {slot}"
 
 
