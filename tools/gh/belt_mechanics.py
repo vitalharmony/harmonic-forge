@@ -305,9 +305,43 @@ def list_accounts() -> dict[str, str]:
     out: dict[str, str] = {}
     for line in proc.stdout.splitlines():
         parts = line.split()
+        # harmonic-forge#1425: since #1396 a third column names the token's
+        # source; it is never part of the login.
+        source = None
+        if len(parts) >= 3 and parts[-1] in _SLOT_SOURCES:
+            source = parts[-1]
+            parts = parts[:-1]
         if len(parts) >= 2:
-            out[parts[0]] = " ".join(parts[1:])
+            # gh-as never lets a lane slot fall back to the keyring (#1396), so a
+            # lane slot with no file token cannot run a call (#1425 pass 1).
+            if source == "keyring" and parts[0].startswith(_LANE_SLOT_PREFIX):
+                out[parts[0]] = "(not authenticated)"
+            else:
+                out[parts[0]] = " ".join(parts[1:])
     return out
+
+
+#: The source column `gh-as --list` prints (harmonic-forge#1396).
+_SLOT_SOURCES = frozenset({"file", "keyring"})
+_LANE_SLOT_PREFIX = "vitalharmony-lane"
+
+
+def _repair(slot: str) -> str:
+    """How to repair `slot` (harmonic-forge#1425). `gh-as --init` cannot repair a
+    lane slot, whose token lives in its own hosts.yml; for one this names the slot
+    and points at `gh-as --help`, and prints no shell command (gh-as says the same)."""
+    if slot.startswith(_LANE_SLOT_PREFIX):
+        return f"lane slot {slot} keeps its own token in its hosts.yml; see: gh-as --help"
+    return f"gh-as --init {slot}"
+
+
+def _lane_slot(account: str) -> str:
+    """The slot `gh-as <account>` actually runs as: in a lane, vitalharmony is
+    that lane's own slot (gh-as, harmonic-forge#1396), with no fallback."""
+    lane = os.environ.get("LANE", "")
+    if account == "vitalharmony" and lane in ("1", "2", "3"):
+        return f"vitalharmony-lane{lane}"
+    return account
 
 
 def assert_identity(account: str, accounts: Optional[dict[str, str]] = None) -> None:
@@ -322,23 +356,25 @@ def assert_identity(account: str, accounts: Optional[dict[str, str]] = None) -> 
     `vitalharmony`; that is a real fixture, not a hypothetical.
     """
     accounts = accounts if accounts is not None else list_accounts()
-    who = accounts.get(account)
+    slot = _lane_slot(account)
+    who = accounts.get(slot)
     if who is None:
         raise IdentityMismatch(
-            f"account {account!r} is not configured (gh-as --init {account}). "
+            f"account {account!r} is not configured ({_repair(slot)}). "
             "Refusing rather than returning an empty result."
         )
     if who == "(not authenticated)":
         raise IdentityMismatch(
-            f"account {account!r} is not authenticated. Refusing rather than "
+            f"account {account!r} (slot {slot!r}) is not authenticated "
+            f"({_repair(slot)}). Refusing rather than "
             "returning an empty result, which would read as 'no new work'."
         )
     if who != account:
         raise IdentityMismatch(
-            f"account slot {account!r} authenticates as {who!r}. Polling it "
+            f"account slot {slot!r} authenticates as {who!r}. Polling it "
             f"would silently scan {who}'s repos and report nothing for "
             f"{account}. Refusing — re-authenticate with "
-            f"`gh-as --init {account}` (operator action)."
+            f"`{_repair(slot)}` (operator action)."
         )
 
 

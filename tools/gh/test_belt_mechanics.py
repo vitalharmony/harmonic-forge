@@ -216,7 +216,90 @@ class TestIdentityRefusesLoudly(unittest.TestCase):
             assert_identity("kenekted", {"kenekted": "(not authenticated)"})
 
     def test_matching_identity_passes(self):
-        assert_identity("vitalharmony", {"vitalharmony": "vitalharmony"})
+        from unittest.mock import patch
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("LANE", None)
+            assert_identity("vitalharmony", {"vitalharmony": "vitalharmony"})
+
+
+class TestGhAsListSourceColumn(unittest.TestCase):
+    """harmonic-forge#1425: `gh-as --list` gained a source column in #1396."""
+
+    THREE = (
+        "harmonicarchitect        harmonicarchitect    keyring\n"
+        "vitalharmony             vitalharmony         keyring\n"
+        "vitalharmony-lane1       vitalharmony         file\n"
+        "vitalharmony-lane2       vitalharmony         file\n"
+        "vitalharmony-projects    (not authenticated)  keyring\n"
+    )
+    TWO = (
+        "vitalharmony             vitalharmony\n"
+        "kenekted                 (not authenticated)\n"
+    )
+
+    def _listed(self, stdout):
+        import subprocess
+        from unittest.mock import patch
+        done = subprocess.CompletedProcess(["gh-as", "--list"], 0, stdout, "")
+        with patch("belt_mechanics.subprocess.run", return_value=done):
+            return list_accounts()
+
+    def test_three_columns_drop_the_source(self):
+        got = self._listed(self.THREE)
+        self.assertEqual(got["vitalharmony"], "vitalharmony")
+        self.assertEqual(got["vitalharmony-lane1"], "vitalharmony")
+        self.assertEqual(got["vitalharmony-projects"], "(not authenticated)")
+
+    def test_two_columns_still_parse(self):
+        got = self._listed(self.TWO)
+        self.assertEqual(got, {"vitalharmony": "vitalharmony",
+                               "kenekted": "(not authenticated)"})
+
+    def test_lane_checks_its_own_slot(self):
+        from unittest.mock import patch
+        accounts = self._listed(self.THREE)
+        with patch.dict("os.environ", {"LANE": "2"}):
+            assert_identity("vitalharmony", accounts)
+            accounts_no_lane2 = {k: v for k, v in accounts.items() if k != "vitalharmony-lane2"}
+            with self.assertRaises(IdentityMismatch) as ctx:
+                assert_identity("vitalharmony", accounts_no_lane2)
+            self.assertIn("vitalharmony-lane2", str(ctx.exception))
+
+    def test_lane_slot_with_wrong_login_is_refused(self):
+        from unittest.mock import patch
+        with patch.dict("os.environ", {"LANE": "1"}):
+            with self.assertRaises(IdentityMismatch):
+                assert_identity("vitalharmony", {"vitalharmony": "vitalharmony",
+                                                 "vitalharmony-lane1": "someone-else"})
+
+    def test_lane_refusals_name_the_lane_slot(self):
+        """#1425 pass 1 survivor 1: every lane refusal names the slot checked."""
+        from unittest.mock import patch
+        with patch.dict("os.environ", {"LANE": "1"}):
+            for who in ("other", "(not authenticated)"):
+                with self.assertRaises(IdentityMismatch) as ctx:
+                    assert_identity("vitalharmony", {"vitalharmony": "vitalharmony",
+                                                     "vitalharmony-lane1": who})
+                self.assertIn("lane slot vitalharmony-lane1", str(ctx.exception))
+                self.assertIn("gh-as --help", str(ctx.exception))
+                self.assertNotIn("gh auth login", str(ctx.exception))
+
+    def test_lane_slot_on_the_keyring_cannot_run(self):
+        """#1425 pass 1 survivor 3: gh-as refuses a lane slot with no file token."""
+        from unittest.mock import patch
+        listed = self._listed("vitalharmony             vitalharmony         keyring\n"
+                              "vitalharmony-lane2       vitalharmony         keyring\n")
+        self.assertEqual(listed["vitalharmony-lane2"], "(not authenticated)")
+        self.assertEqual(listed["vitalharmony"], "vitalharmony")
+        with patch.dict("os.environ", {"LANE": "2"}):
+            with self.assertRaises(IdentityMismatch):
+                assert_identity("vitalharmony", listed)
+
+    def test_no_lane_reads_the_shared_slot(self):
+        from unittest.mock import patch
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("LANE", None)
+            assert_identity("vitalharmony", {"vitalharmony": "vitalharmony"})
 
 
 class TestAgainstTheLiveAccounts(unittest.TestCase):

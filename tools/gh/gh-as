@@ -16,6 +16,12 @@
 #   gh-as --init <account>
 #
 # Accounts live in $GH_ACCT_HOME (default ~/.config/gh-accounts/<account>).
+#
+# A lane slot (vitalharmony-lane<N>, harmonic-forge#1396) is not set up with
+# --init: its token lives in the slot's own hosts.yml as `oauth_token:`, and
+# gh-as never falls back to the keyring for it. Store a lane's token with
+# `gh auth login --with-token --insecure-storage`, run with GH_CONFIG_DIR set
+# to the slot directory and GH_TOKEN unset.
 
 set -euo pipefail
 
@@ -28,7 +34,7 @@ ACCT_HOME="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
 unset GH_TOKEN GITHUB_TOKEN
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-1}"
 }
 
@@ -88,10 +94,20 @@ case "${LANE:-}" in
 esac
 
 dir="$ACCT_HOME/$slot"
+# harmonic-forge#1425: a lane slot's message names the slot and points at
+# --help; it prints no shell command (three preclose findings in a row were the
+# printed command failing in some shell or path).
+lane_help="Lane slot '$slot' keeps its own token in its hosts.yml; see: gh-as --help"
 if [ ! -d "$dir" ]; then
   echo "gh-as: no config for account '$acct' (slot '$slot')." >&2
   [ "$lane_slot" = 1 ] && echo "A lane never falls back to the shared slot (harmonic-forge#1396)." >&2
-  echo "Set it up once with:  gh-as --init $slot" >&2
+  if [ "$lane_slot" = 1 ]; then
+    # harmonic-forge#1425: --init writes the keyring and checks login == slot name,
+    # so it can never set up a lane slot.
+    echo "$lane_help" >&2
+  else
+    echo "Set it up once with:  gh-as --init $slot" >&2
+  fi
   exit 1
 fi
 
@@ -104,7 +120,7 @@ if [ -n "$slot_token" ]; then
   export GH_TOKEN="$slot_token"
 elif [ "$lane_slot" = 1 ]; then
   echo "gh-as: lane slot '$slot' has no token in $dir/hosts.yml; refusing rather than using the keyring." >&2
-  echo "Store it with:  GH_CONFIG_DIR=$dir gh auth login --with-token --insecure-storage" >&2
+  echo "$lane_help" >&2
   exit 1
 fi
 unset slot_token
@@ -144,8 +160,12 @@ if ! actual="$(GH_CONFIG_DIR="$dir" gh api user --jq .login 2>/dev/null)"; then
   actual=""
 fi
 if [ -z "$actual" ]; then
-  echo "gh-as: account '$acct' is not authenticated (token expired or revoked)." >&2
-  echo "Re-run:  gh-as --init $acct" >&2
+  echo "gh-as: account '$acct' (slot '$slot') is not authenticated (token expired or revoked)." >&2
+  if [ "$lane_slot" = 1 ]; then
+    echo "$lane_help" >&2
+  else
+    echo "Re-run:  gh-as --init $acct" >&2
+  fi
   exit 1
 fi
 if [ "$actual" != "$acct" ]; then

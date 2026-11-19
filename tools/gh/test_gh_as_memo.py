@@ -183,6 +183,47 @@ class GhAsLaneSlotTests(unittest.TestCase):
         self.assertIn("refusing rather than using the keyring", result.stderr)
         self.assertNotIn("token=", result.stdout)
 
+    def test_a_missing_lane_slot_names_a_repair_that_can_work(self):
+        """#1425: --init writes the keyring and checks login == slot name, so it
+        can never repair a lane slot; the hint names the slot's own file."""
+        import shutil
+        shutil.rmtree(self.lane_slot)
+        result = self.run_gh_as("2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gh-as --help", result.stderr)
+        self.assertNotIn("gh-as --init", result.stderr)
+
+    def test_a_revoked_lane_token_names_the_lane_slot(self):
+        (self.lane_slot / "hosts.yml").write_text(
+            "github.com:\n    users:\n        vitalharmony:\n            oauth_token: revoked\n")
+        fake = self.bin / "gh"
+        fake.write_text("#!/usr/bin/env bash\nexit 1\n")
+        result = self.run_gh_as("2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("slot 'vitalharmony-lane2'", result.stderr)
+        self.assertIn("gh-as --help", result.stderr)
+        self.assertNotIn("gh-as --init", result.stderr)
+
+    def test_lane_messages_print_no_shell_command(self):
+        """#1425 post-verdict: three faults in a row were the printed command
+        failing in some shell or path, so a lane message prints none."""
+        import shutil
+        shutil.rmtree(self.lane_slot)
+        missing = self.run_gh_as("2")
+        self.lane_slot.mkdir()
+        no_token = self.run_gh_as("2")
+        for result in (missing, no_token):
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Lane slot 'vitalharmony-lane2'", result.stderr)
+            self.assertIn("gh-as --help", result.stderr)
+            self.assertNotIn("gh auth login", result.stderr)
+            self.assertNotIn("GH_CONFIG_DIR=", result.stderr)
+
+    def test_help_explains_lane_slot_setup(self):
+        result = subprocess.run(["bash", str(GH_AS), "--help"], capture_output=True, text=True)
+        self.assertIn("A lane slot", result.stdout)
+        self.assertIn("--insecure-storage", result.stdout)
+
     def test_no_lane_keeps_the_shared_slot(self):
         result = self.run_gh_as(None)
         self.assertEqual(result.returncode, 0, result.stderr)
