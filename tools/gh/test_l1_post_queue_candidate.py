@@ -91,6 +91,7 @@ class L1PostBeltCandidateIntegrationTests(unittest.TestCase):
              unittest.mock.patch.object(L, "validate_lead"), \
              unittest.mock.patch.object(L, "validate_sticky_wicket"), \
              unittest.mock.patch.object(L, "validate_milestone_current"), \
+             unittest.mock.patch.object(L, "issue_labels", return_value=set()), \
              unittest.mock.patch.object(
                  L, "post_kind", return_value=("https://example/1", 1)), \
              unittest.mock.patch.object(L, "record_queue_candidate") as recorder:

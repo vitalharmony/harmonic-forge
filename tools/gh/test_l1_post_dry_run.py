@@ -49,6 +49,11 @@ class Harness(unittest.TestCase):
         amend = mock.patch.object(L, "validate_correction_amendment", return_value=None)
         self.amend_gate = amend.start()
         self.addCleanup(amend.stop)
+        # Its label argument is read before the stub is called; no live gh here
+        # (CI has no gh auth).
+        labels = mock.patch.object(L, "issue_labels", return_value=set())
+        labels.start()
+        self.addCleanup(labels.stop)
         os.environ.pop("L1_POST_ENTRY", None)
         self.overlap = False
         self.pr_open = True

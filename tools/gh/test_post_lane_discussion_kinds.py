@@ -312,6 +312,7 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
             argv = ["post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1",
                     "--file", str(path), "--kind", kind]
             with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(P, "issue_labels", return_value=set()), \
                     mock.patch.object(P, "comment_body",
                                       return_value=("https://example/1", "")):
                 P.main()
@@ -347,6 +348,7 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
             argv = ["post_lane_discussion.py", "--issue", "1", "--file", str(path)]
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.object(P, "resolve_repo", return_value="vitalharmony/harmonic-forge") as resolve, \
+                 mock.patch.object(P, "issue_labels", return_value=set()), \
                  mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
                 P.main()
         resolve.assert_called_once_with(None)

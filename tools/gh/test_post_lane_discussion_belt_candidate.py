@@ -72,6 +72,7 @@ class PostLaneDiscussionBeltCandidateIntegrationTests(unittest.TestCase):
                     "--file", str(path), "--kind", "discussion"]
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.object(P, "belt_candidates", None), \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body", return_value=("https://example/1", 1)):
                 P.main()  # must not raise
@@ -97,6 +98,7 @@ class BeltCandidateFailedImportIsVisibleTests(unittest.TestCase):
                     "--issue", "618", "--file", str(path), "--kind", "discussion"]
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.object(P, "belt_candidates", None), \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body", return_value=("https://example/1", 1)), \
                  unittest.mock.patch.object(sys, "stderr", new=__import__("io").StringIO()) as fake_err:
@@ -116,6 +118,7 @@ class BeltCandidateFailedImportIsVisibleTests(unittest.TestCase):
                     "--issue", "618", "--file", str(path), "--kind", "discussion"]
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.object(P, "belt_candidates") as recorder, \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body", return_value=("https://example/1", 1)), \
                  unittest.mock.patch.object(sys, "stderr", new=__import__("io").StringIO()) as fake_err:
