@@ -239,12 +239,14 @@ def _credited_shrink(baseline: dict, key: str, current: dict[str, int]) -> bool:
     baseline was written, so it is read from the baseline's `outside_files`, never
     inferred now: a key listed there is never credited, a key not listed is (a
     deleted tracked file still counts, AC2). A baseline written before the field
-    existed credits only a key still measured; a missing one is not credited,
-    which can only make the gate stricter until the next `--update`."""
+    existed keeps the pre-#1414 rule and credits every shrunk key, so a deleted
+    in-repo file still counts (AC2) and no existing `[[increase]]` changes
+    meaning; the next `--update` writes `outside_files` and the stricter rule
+    applies from then on (reforge pass 1)."""
     outside = baseline.get("outside_files")
     if isinstance(outside, list):
         return key not in outside
-    return key in current
+    return True
 
 
 def _symlink_note(repo: Path, key: str) -> str:

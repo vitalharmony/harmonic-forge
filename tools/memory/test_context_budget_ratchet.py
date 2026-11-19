@@ -555,8 +555,9 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
                                    if not line.startswith("outside_files")) + "\n",
                         encoding="utf-8")
 
-    def test_legacy_baseline_missing_key_fails_closed(self):
-        """A baseline written before outside_files credits only measured keys."""
+    def test_legacy_baseline_still_credits_a_deleted_in_repo_file(self):
+        """Reforge pass 1: a pre-#1414 baseline keeps the old rule, so a deleted
+        in-repo file is credited (AC2) and the gate result does not change."""
         gone = self.repo / ".claude" / "rules" / "gone.md"
         gone.write_text("g" * 2000, encoding="utf-8")
         m.update(self.repo)
@@ -565,8 +566,9 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         gone.unlink()
         self.grow_claude()
         code, report = m.check(self.repo)
-        self.assertEqual(code, 1, report)
-        self.assertIn("NOT credited", report)
+        self.assertEqual(code, 0, report)
+        self.assertIn("shrank by 1500", report)
+        self.assertNotIn("NOT credited", report)
 
     def test_legacy_baseline_pure_shrink_still_passes(self):
         gone = self.repo / ".claude" / "rules" / "gone.md"
