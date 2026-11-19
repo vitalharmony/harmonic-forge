@@ -24,7 +24,9 @@ runs `consume()` itself, which still refuses (harmonic-forge#1291
 sticky-wicket PATCH; the fail-closed paths guarded modes that no longer exist).
 
 Every decision is one row of `decisions.jsonl` in the store: ts, outcome,
-tool, mode, class, fp, session. Never an argv token. A refusal also writes a
+tool, mode, class, fp, session, tuid (the hashed `tool_use_id`, the join key
+for the post-run outcome row, harmonic-forge#1448), exit, reason (`parse` or
+`fault` on an `error` row). Never an argv token. A refusal also writes a
 refusal record keyed by its id (never overwritten), which the FORCE gate line
 binds to; that record holds the canonical argv so the FORCE receipt can echo
 what the grant releases.
@@ -52,6 +54,7 @@ sys.path.insert(0, str(FORGE_ROOT / "tools" / "hooks"))
 sys.path.insert(0, str(FORGE_ROOT / "tools" / "gh"))
 sys.path.insert(0, str(FORGE_ROOT / "tools" / "registry"))
 
+import decision_row  # noqa: E402
 import gate_receipt as receipts  # noqa: E402
 import shell_parse  # noqa: E402
 
@@ -211,15 +214,11 @@ def refusals_dir() -> Path:
 
 
 def log(outcome: str, *, tool: str | None = None, mode: str | None = None, klass: str | None = None,
-        fp: str | None = None, sid: str = "", now: float | None = None) -> None:
-    row = {"ts": time.time() if now is None else now, "outcome": outcome, "tool": tool,
-           "mode": mode, "class": klass, "fp": fp[:12] if fp else None,
-           "session": hashlib.sha256(sid.encode()).hexdigest()[:16] if sid else None}
-    with contextlib.suppress(OSError):
-        path = decisions_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, sort_keys=True) + "\n")
+        fp: str | None = None, sid: str = "", now: float | None = None, tuid: str | None = None,
+        exit: int | None = None, reason: str | None = None) -> None:
+    decision_row.append(decisions_path(), decision_row.row(
+        outcome, tool=tool, mode=mode, klass=klass, fp=fp, sid=sid, tuid=tuid, exit=exit,
+        reason=reason, now=now))
 
 
 def write_refusal(rid: str, sid: str, key: str | None, call: _Call, mode: dict, fp: str, ts: float) -> None:
@@ -246,14 +245,15 @@ def read_refusal(rid: str) -> dict | None:
 # --------------------------------------------------------------------------
 # The decision.
 
-def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: bool) -> str | None:
+def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: bool,
+                 tuid: str | None = None) -> str | None:
     found = receipts.classify(call.tool, call.argv)
     if found is None:
         return None
     mode, real = found
     if not real:
         if store:
-            log("precheck", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], sid=sid)
+            log("precheck", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], sid=sid, tuid=tuid)
         return None
     if not store:
         # The harness has no store and no state: the fingerprint is the argv's alone.
@@ -261,15 +261,17 @@ def _decide_call(call: _Call, sid: str, cwd: str, deadline: float, *, store: boo
         return refusal_text(call, mode, hashlib.sha256(canon.encode()).hexdigest(), None)
     fp = receipts.fingerprint(call.tool, mode, call.argv, cwd, deadline)
     if receipts.live_receipt(sid, fp) is not None:
-        log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+        log("allowed-receipt", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid,
+            tuid=tuid)
         return None
     if receipts.gate_grant_usable(call.tool, mode, call.argv, fp):
-        log("allowed-override", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+        log("allowed-override", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid,
+            tuid=tuid)
         return None
     ts = time.time()
     rid = refusal_id(sid, call.tool, mode, fp, ts)
     write_refusal(rid, sid, _issue_key(call.argv), call, mode, fp, ts)
-    log("refused", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid)
+    log("refused", tool=call.tool["path"], mode=mode["name"], klass=mode["class"], fp=fp, sid=sid, tuid=tuid)
     return refusal_text(call, mode, fp, rid)
 
 
@@ -279,21 +281,22 @@ def _cd_target(argv: list[str], cwd: str) -> str | None:
     return str(Path(cwd) / Path(argv[1]).expanduser())
 
 
-def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> str | None:
+def decide_command(command: str, sid: str, cwd: str, *, store: bool = True,
+                   tuid: str | None = None) -> str | None:
     """The deny reason for one Bash command, or None."""
     deadline = time.monotonic() + receipts.DEADLINE_S
     try:
         calls, others, parsed = _calls_in(command)
         if not parsed:
             if store:
-                log("error", sid=sid)
+                log("error", sid=sid, tuid=tuid, reason="parse")
             return None
         if store:
             import effects  # noqa: PLC0415
             for argv in others:
                 found = effects.classify_outside(argv, receipts.registry())
                 if found is not None and not found.read:
-                    log("guarded-elsewhere", tool=found.family, klass=found.klass, sid=sid)
+                    log("guarded-elsewhere", tool=found.family, klass=found.klass, sid=sid, tuid=tuid)
         current = cwd
         for item in shell_parse.simple_commands(command):
             if isinstance(item, shell_parse.SimpleCommand):
@@ -302,14 +305,14 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True) -> s
                     current = target
         where = current if len(calls) == 1 else cwd
         for call in calls:
-            reason = _decide_call(call, sid, where, deadline, store=store)
+            reason = _decide_call(call, sid, where, deadline, store=store, tuid=tuid)
             if reason:
                 return reason
         return None
     except Exception:  # noqa: BLE001 - fail open: the tool's own consume() still refuses
         if store:
             with contextlib.suppress(Exception):
-                log("error", sid=sid)
+                log("error", sid=sid, tuid=tuid, reason="fault")
         return None
 
 
@@ -322,7 +325,8 @@ def decide(payload: dict) -> str | None:
         return None
     sid = str(payload.get("session_id") or "").strip() or receipts.NO_SESSION
     cwd = str(payload.get("cwd") or os.getcwd())
-    return decide_command(command, sid, cwd)
+    tuid = payload.get("tool_use_id")
+    return decide_command(command, sid, cwd, tuid=tuid if isinstance(tuid, str) and tuid else None)
 
 
 def refuses(command: str, cwd: str | None, env_names) -> str | None:

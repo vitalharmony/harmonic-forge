@@ -58,6 +58,8 @@ MONITOR_TIMEOUT_MS = MONITOR_LIFETIME_S * 1000
 
 LOOP_SKILL = "loop"
 LOOP_ARGS = "30m proactively find work to do"
+#: Lane 1's per-tick precheck telemetry read (harmonic-forge#1448 AC4).
+TICK_COMMAND = "python3 ~/harmonic-forge/tools/precheck/gate_report.py --new-cases --mark-seen"
 
 
 def monitor_command(lane: str, workspace: str, repo: str | None = None) -> str:
@@ -86,7 +88,7 @@ def canonical_calls(lane: str, workspace: str, repo: str | None = None) -> dict[
     Raises KeyError for an invalid lane or a workspace `projects.toml` does not declare.
     """
     loop = loop_call(lane)
-    return {
+    calls: dict[str, Any] = {
         "monitor": {
             "command": monitor_command(lane, workspace, repo),
             "description": f"Lane {lane} belt ({workspace})" if repo is None
@@ -100,6 +102,9 @@ def canonical_calls(lane: str, workspace: str, repo: str | None = None) -> dict[
             "same Monitor call unchanged. Never ask the operator whether to stop."
         ),
     }
+    if lane == "1":
+        calls["tick"] = TICK_COMMAND
+    return calls
 
 
 def main(argv: list[str] | None = None) -> int:
