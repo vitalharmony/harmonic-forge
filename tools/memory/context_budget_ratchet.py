@@ -64,6 +64,7 @@ No network calls anywhere in this path.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tomllib
@@ -160,12 +161,12 @@ def render_baseline(rows: dict[str, int], increases: list[dict],
         # harmonic-forge#1414 reforge: which keys were outside this repo when the
         # baseline was written. A shrink is credited only for a key not listed, so
         # bytes an outside file contributed never offset this repo's growth.
-        "outside_files = [" + ", ".join(f'"{k}"' for k in sorted(outside or [])) + "]",
+        "outside_files = [" + ", ".join(json.dumps(k) for k in sorted(outside or [])) + "]",
         "",
         "[files]",
     ]
     for key in sorted(rows):
-        lines.append(f'"{key}" = {rows[key]}')
+        lines.append(f'{json.dumps(key)} = {rows[key]}')
     for entry in increases:
         lines.extend([
             "",
@@ -247,6 +248,15 @@ def _credited_shrink(baseline: dict, key: str, current: dict[str, int]) -> bool:
     if isinstance(outside, list):
         return key not in outside
     return True
+
+
+def _was_in_repo(baseline: dict, key: str) -> bool:
+    """Whether the baseline counted `key`'s bytes as this repo's: not listed in
+    its `outside_files`, or, for a pre-#1414 baseline, an in-repo key shape."""
+    outside = baseline.get("outside_files")
+    if isinstance(outside, list):
+        return key not in outside
+    return not (key.startswith("~") or key.startswith("/"))
 
 
 def _symlink_note(repo: Path, key: str) -> str:
@@ -402,8 +412,11 @@ def check(repo: Path) -> tuple[int, str]:
 
     gated_grew = {key: delta for key, delta in grew.items()
                   if key in platform_keys or in_repo(key, repo=repo)}
+    # harmonic-forge#1414 sticky-wicket PATCH: growth is gated by where a key is
+    # now; shrinkage by where the baseline recorded it, so a rule replaced by a
+    # link to a smaller outside file still credits the bytes it took away.
     gated_shrank = {key: delta for key, delta in shrank.items()
-                    if key in platform_keys or in_repo(key, repo=repo)}
+                    if key in platform_keys or _was_in_repo(baseline, key)}
     uncredited = sorted(key for key in gated_shrank
                         if not _credited_shrink(baseline, key, current))
     gated_net = (sum(gated_grew.values())
@@ -427,7 +440,7 @@ def check(repo: Path) -> tuple[int, str]:
 
     if gated_net <= 0:
         note = ""
-        if any((key in platform_keys or in_repo(key, repo=repo))
+        if any((key in platform_keys or _was_in_repo(baseline, key))
                and key not in uncredited for key in shrank):
             note = (f"\n  in-repo surface shrank by {-gated_net} bytes — no "
                     f"acknowledgement needed. Run `--update` to lock it in.")

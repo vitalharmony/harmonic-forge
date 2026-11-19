@@ -448,9 +448,11 @@ class TestSymlinkAttribution(unittest.TestCase):
         self.assertEqual(code, 0, report)
         self.assertTrue(calls)
         self.assertNotIn(None, calls, "a check() call site dropped repo=")
-        # Each of the four sites ran at least once.
+        # The two growth sites read the key's current location; both shrinkage
+        # sites read the baseline's record (_was_in_repo, sticky-wicket PATCH).
         src = inspect.getsource(m.check)
-        self.assertEqual(src.count("in_repo(key, repo=repo)"), 4)
+        self.assertEqual(src.count("in_repo(key, repo=repo)"), 2)
+        self.assertEqual(src.count("_was_in_repo(baseline, key)"), 2)
         self.assertNotRegex(src, r"in_repo\(key\)")
 
     def test_g_report_line_has_no_absolute_path(self):
@@ -531,9 +533,10 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         link.unlink()  # a CI checkout: the gitignored link is absent
         self.grow_claude()
         code, report = m.check(self.repo)
+        # Its bytes were outside when the baseline was written, so their loss
+        # offsets nothing and the in-repo growth still fails the gate.
         self.assertEqual(code, 1, report)
-        self.assertIn("NOT credited", report)
-        self.assertIn(".claude/rules/link.md", report)
+        self.assertNotIn("shrank by", report)
 
     def test_deleted_in_repo_file_is_still_credited(self):
         """AC2: an in-repo file deleted after --update still counts as shrinkage."""
@@ -547,6 +550,43 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
         self.assertEqual(code, 0, report)
         self.assertIn("shrank by 1500", report)
         self.assertNotIn("NOT credited", report)
+
+    def _replace_rule_with_outside_link(self) -> None:
+        rule = self.repo / ".claude" / "rules" / "big.md"
+        rule.write_text("b" * 2100, encoding="utf-8")
+        m.update(self.repo)
+        target = self.outside / "small.md"
+        target.write_text("s" * 100, encoding="utf-8")
+        rule.unlink()
+        os.symlink(target, rule)
+        self.grow_claude()
+
+    def test_rule_replaced_by_outside_link_credits_its_shrink(self):
+        """Sticky-wicket PATCH: shrinkage follows the baseline, not the key's new home."""
+        self._replace_rule_with_outside_link()
+        code, report = m.check(self.repo)
+        self.assertEqual(code, 0, report)
+
+    def test_rule_replaced_by_outside_link_credits_under_a_legacy_baseline(self):
+        rule = self.repo / ".claude" / "rules" / "big.md"
+        rule.write_text("b" * 2100, encoding="utf-8")
+        m.update(self.repo)
+        self._strip_outside_files()
+        target = self.outside / "small.md"
+        target.write_text("s" * 100, encoding="utf-8")
+        rule.unlink()
+        os.symlink(target, rule)
+        self.grow_claude()
+        self.assertEqual(m.check(self.repo)[0], 0)
+
+    def test_keys_round_trip_through_toml(self):
+        """Sticky-wicket PATCH: a backslash or quote in a key survives tomllib."""
+        import tomllib
+        key = 'odd\\tname"q.md'
+        text = m.render_baseline({key: 3}, [], [key])
+        data = tomllib.loads(text)
+        self.assertIn(key, data["files"])
+        self.assertEqual(data["outside_files"], [key])
 
     def _strip_outside_files(self) -> None:
         path = m.baseline_path(self.repo)
