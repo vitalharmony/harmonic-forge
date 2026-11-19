@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+import unittest.mock
 from unittest import mock
 from pathlib import Path
 
@@ -602,6 +603,10 @@ class TestMissingKeyShrinkCredit(unittest.TestCase):
             self.assertIn(key, data["files"])
             self.assertEqual(data["outside_files"], [key])
             self.assertEqual(data["increase"][0]["files"], [key])
+
+    def test_main_refuses_a_ratchet_error_without_a_traceback(self):
+        with unittest.mock.patch.object(m, "check", side_effect=m.RatchetError("bad name")):
+            self.assertEqual(m.main(["--repo", "."]), 1)
 
     def test_an_undecodable_name_is_refused_loudly(self):
         with self.assertRaises(m.RatchetError):

@@ -417,8 +417,11 @@ def check(repo: Path) -> tuple[int, str]:
     # harmonic-forge#1414 sticky-wicket PATCH: growth is gated by where a key is
     # now; shrinkage by where the baseline recorded it, so a rule replaced by a
     # link to a smaller outside file still credits the bytes it took away.
+    # Shrinkage credit follows only the baseline's record, platform rule links
+    # included: a key the baseline listed in outside_files is never credited
+    # (post-verdict check 3).
     gated_shrank = {key: delta for key, delta in shrank.items()
-                    if key in platform_keys or _was_in_repo(baseline, key)}
+                    if _was_in_repo(baseline, key)}
     legacy = not isinstance(baseline.get("outside_files"), list)
     uncredited = sorted(key for key in shrank if legacy and key not in gated_shrank)
     gated_net = sum(gated_grew.values()) + sum(gated_shrank.values())
@@ -509,13 +512,18 @@ def main(argv: list[str] | None = None) -> int:
                              "report-only and exits 0.")
     args = parser.parse_args(argv)
 
-    if args.coverage:
-        code, report = coverage()
-    elif args.update:
-        print(update(args.repo.resolve()))
-        return 0
-    else:
-        code, report = check(args.repo.resolve())
+    try:
+        if args.coverage:
+            code, report = coverage()
+        elif args.update:
+            print(update(args.repo.resolve()))
+            return 0
+        else:
+            code, report = check(args.repo.resolve())
+    except RatchetError as exc:
+        # Refused loudly and fail-closed, never a traceback (post-verdict check 3).
+        print(f"context budget: {exc}", file=sys.stderr)
+        return 1
     print(report)
     return code if args.gate else 0
 
