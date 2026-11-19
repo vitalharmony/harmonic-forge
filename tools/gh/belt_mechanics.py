@@ -305,9 +305,26 @@ def list_accounts() -> dict[str, str]:
     out: dict[str, str] = {}
     for line in proc.stdout.splitlines():
         parts = line.split()
+        # harmonic-forge#1425: since #1396 a third column names the token's
+        # source; it is never part of the login.
+        if len(parts) >= 3 and parts[-1] in _SLOT_SOURCES:
+            parts = parts[:-1]
         if len(parts) >= 2:
             out[parts[0]] = " ".join(parts[1:])
     return out
+
+
+#: The source column `gh-as --list` prints (harmonic-forge#1396).
+_SLOT_SOURCES = frozenset({"file", "keyring"})
+
+
+def _lane_slot(account: str) -> str:
+    """The slot `gh-as <account>` actually runs as: in a lane, vitalharmony is
+    that lane's own slot (gh-as, harmonic-forge#1396), with no fallback."""
+    lane = os.environ.get("LANE", "")
+    if account == "vitalharmony" and lane in ("1", "2", "3"):
+        return f"vitalharmony-lane{lane}"
+    return account
 
 
 def assert_identity(account: str, accounts: Optional[dict[str, str]] = None) -> None:
@@ -322,10 +339,11 @@ def assert_identity(account: str, accounts: Optional[dict[str, str]] = None) -> 
     `vitalharmony`; that is a real fixture, not a hypothetical.
     """
     accounts = accounts if accounts is not None else list_accounts()
-    who = accounts.get(account)
+    slot = _lane_slot(account)
+    who = accounts.get(slot)
     if who is None:
         raise IdentityMismatch(
-            f"account {account!r} is not configured (gh-as --init {account}). "
+            f"account {account!r} is not configured (gh-as --init {slot}). "
             "Refusing rather than returning an empty result."
         )
     if who == "(not authenticated)":

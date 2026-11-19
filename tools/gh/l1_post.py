@@ -353,7 +353,21 @@ RESERVED_MARKER = "<!-- l1-post "
 
 def run(*args: str, cwd: Path | None = None,
         env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    # harmonic-forge#1425: a board command (`gh project ...`) in a lane carries
+    # the projects slot's token; the lane's own token cannot read a user board.
+    if env is None and args[:2] == ("gh", "project"):
+        from projects_token import projects_env  # noqa: PLC0415
+        env = projects_env(list(args))
     return subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+
+
+def board_run(cmd: Iterable[str], owner: str) -> subprocess.CompletedProcess[str]:
+    """A board read handed to item_list_cache (`gh api graphql` or `gh project`):
+    in a lane it carries the projects slot's token for `owner`'s board
+    (harmonic-forge#1425, projects_token.projects_env)."""
+    from projects_token import projects_env  # noqa: PLC0415
+    cmd = list(cmd)
+    return run(*cmd, env=projects_env(cmd, owner=owner))
 
 
 def _pr_lookup_env() -> dict[str, str]:
@@ -1544,7 +1558,7 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
     if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_issue_tier"):
         try:
             tier = _item_list_cache.fetch_issue_tier(
-                repo, issue_number, number, run=lambda cmd: run(*cmd), owner=owner,
+                repo, issue_number, number, run=lambda cmd: board_run(cmd, owner), owner=owner,
             )
         except _item_list_cache.GhItemListError as exc:
             fail(f"cannot read Tier for {repo}#{issue_number} on board {owner}/{number}: {exc}")
@@ -1564,7 +1578,7 @@ def resolve_board_tier(repo: str, owner: str, number: str, issue_number: int) ->
     if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_full_board"):
         try:
             items = _item_list_cache.fetch_full_board(
-                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: run(*cmd))
+                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: board_run(cmd, owner))
         except _item_list_cache.GhItemListError as exc:
             fail(f"cannot fetch project board {owner}/{number} to verify Estimate: {exc}")
     else:
@@ -1681,7 +1695,7 @@ def read_board_fields(repo: str, owner: str, number: str, issue: int,
         for name in names:
             try:
                 value = _item_list_cache.fetch_issue_field(
-                    repo, issue, number, field=name, run=lambda cmd: run(*cmd), ttl=0,
+                    repo, issue, number, field=name, run=lambda cmd: board_run(cmd, owner), ttl=0,
                     owner=owner)
             except _item_list_cache.GhItemListError as exc:
                 fail(f"cannot read {name} for {repo}#{issue} on board {owner}/{number}: {exc}")
@@ -1692,7 +1706,7 @@ def read_board_fields(repo: str, owner: str, number: str, issue: int,
     if _item_list_cache is not None and hasattr(_item_list_cache, "fetch_full_board"):
         try:
             items = _item_list_cache.fetch_full_board(
-                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: run(*cmd))
+                number, owner, limit=1000, ttl=0, force=True, run=lambda cmd: board_run(cmd, owner))
         except _item_list_cache.GhItemListError as exc:
             fail(f"cannot fetch project board {owner}/{number} to verify board fields: {exc}")
     else:
