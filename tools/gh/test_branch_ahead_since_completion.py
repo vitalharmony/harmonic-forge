@@ -145,6 +145,30 @@ class PostingHeadTests(Repos):
             l2_post.main()
         self.assertIn(f"head={self.head}", posted.get("body", ""))
 
+    def test_an_explicit_relative_worktree_resolves_against_the_caller(self) -> None:
+        """#1416 pass 2: `--worktree .` under the wrapper (cwd = forge root) means the
+        caller's directory, so head= is the lane worktree's HEAD, not cwd's."""
+        narrative = Path(tempfile.mkdtemp()) / "n.md"
+        narrative.write_text("done")
+        posted = {}
+        argv = ["l2_post.py", "post", "--kind", "completion", "--repo", "o/r", "--issue", "1",
+                "--narrative-file", str(narrative), "--status", "s", "--change", "c",
+                "--next", "Lane 1 to review", "--worktree", "."]
+        elsewhere = Path(tempfile.mkdtemp())
+        cwd = os.getcwd()
+        os.chdir(elsewhere)
+        self.addCleanup(os.chdir, cwd)
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.lane)}), \
+             mock.patch.object(l2_post, "apply_project_identity"), \
+             mock.patch.object(l2_post, "lock_blocks", return_value=False), \
+             mock.patch.object(l2_post, "require_real_run"), \
+             mock.patch.object(l2_post.orphan_report, "report"), \
+             mock.patch.object(l2_post, "post", side_effect=lambda r, i, b: posted.update(body=b)), \
+             contextlib.suppress(Exception):
+            l2_post.main()
+        self.assertIn(f"head={self.head}", posted.get("body", ""))
+
     def test_a_worktree_of_another_repo_omits_head_and_warns(self) -> None:
         err = io.StringIO()
         with contextlib.redirect_stderr(err):

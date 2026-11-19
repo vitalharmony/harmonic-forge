@@ -539,7 +539,10 @@ def main() -> int:
     caller_cwd = os.environ.get(_caller_path.CALLER_CWD)
     if getattr(args, "worktree", None) is None and getattr(args, "action", None) == "post":
         args.worktree = caller_cwd
-    _caller_path.resolve_args(args, 'narrative_file', 'real_run_file', 'receipts')  # harmonic-forge#1117 AC2
+    # harmonic-forge#1416 pass 2: an explicit relative --worktree resolves against the
+    # caller's directory too, not the forge root the wrapper runs from.
+    _caller_path.resolve_args(args, 'narrative_file', 'real_run_file', 'receipts',
+                              'worktree')  # harmonic-forge#1117 AC2
     for task in ('l2-post', 'l2-snapshot', 'l2-resolve-lock'):
         _caller_path.refuse_repo_override(parser, task)
     apply_project_identity(args.repo)  # harmonic-forge#804
