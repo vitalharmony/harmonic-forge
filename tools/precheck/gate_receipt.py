@@ -260,16 +260,18 @@ def _flag_value(argv: list[str], flag: str, options: list[str] | None = None) ->
     """The value `flag` carries in `argv`. With `options` (a prefix-accepting
     mode), an abbreviated spelling argparse resolves to `flag` (`--fi` for
     `--file`) counts too, through the same `resolve_option` classify and
-    canonical use (harmonic-forge#1291 pass 2, sticky-wicket PATCH)."""
+    canonical use (harmonic-forge#1291 pass 2, sticky-wicket PATCH). A flag
+    given twice binds its LAST value, as argparse does (post-verdict check)."""
+    found = None
     for index, token in enumerate(argv):
         name = token.split("=", 1)[0]
         if name != flag and not (options is not None and resolve_option(token, options, True) == flag):
             continue
         if "=" in token and token.startswith("--"):
-            return token.split("=", 1)[1]
-        if index + 1 < len(argv):
-            return argv[index + 1]
-    return None
+            found = token.split("=", 1)[1]
+        elif index + 1 < len(argv):
+            found = argv[index + 1]
+    return found
 
 
 def _arg(argv: list[str], spec: str, options: list[str] | None = None) -> str | None:
@@ -317,7 +319,10 @@ def _checks_digest(path: Path, cwd: Path) -> str:
 
 
 def _path(cwd: Path, value: str) -> Path:
-    path = Path(value).expanduser()
+    # No `~` expansion (post-verdict check): the shell has already expanded an
+    # unquoted `~` before the tool and the gate see argv; a quoted literal `~`
+    # reaches the tool as a cwd-relative path, and the receipt must bind that.
+    path = Path(value)
     return path if path.is_absolute() else cwd / path
 
 

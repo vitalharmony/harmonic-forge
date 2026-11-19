@@ -232,6 +232,27 @@ class Decision5Override(GateCase):
             with self.assertRaises(OSError):
                 R.consume(KILL, shlex.split(FORCE_CMD)[2:], cwd=self.repo)
 
+    def test_a_repeated_bound_flag_binds_its_last_value(self) -> None:
+        """Post-verdict: argparse uses the last --checks; so must the receipt."""
+        (self.repo / "effective.json").write_text("[]\n")
+        cmd = FORCE_CMD + " --checks effective.json"
+        self.record(KILL, shlex.split(cmd + " --validate")[2:])
+        self.assertIsNone(self.decide(cmd))
+        (self.repo / "effective.json").write_text('[{"patch": "x"}]')
+        self.assertIsNotNone(self.decide(cmd))
+        self.assertIsNotNone(R.consume(KILL, shlex.split(cmd)[2:], cwd=self.repo))
+
+    def test_a_literal_tilde_path_binds_the_file_the_tool_reads(self) -> None:
+        """Post-verdict: a quoted `~/x` reaches the tool as cwd/~/x; the receipt
+        must bind that file, not $HOME/x."""
+        (self.repo / "~").mkdir()
+        (self.repo / "~" / "c.json").write_text("[]\n")
+        argv = ["run", "--repo", "vitalharmony/harmonic-forge", "--issue", "1291", "--checks", "~/c.json"]
+        self.record(KILL, [*argv, "--validate"])
+        self.assertIsNone(R.consume(KILL, argv, cwd=self.repo))
+        (self.repo / "~" / "c.json").write_text('[{"patch": "x"}]')
+        self.assertIsNotNone(R.consume(KILL, argv, cwd=self.repo))
+
     def test_an_unkeyable_repo_refuses_and_never_crashes(self) -> None:
         """batch_auth.issue_key returns None for a repo it cannot key: the grant
         lookup falls back to every grant file, never `None.upper()`."""
