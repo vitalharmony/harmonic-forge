@@ -36,6 +36,14 @@ class KillCheckTests(unittest.TestCase):
         session.start()
         self.addCleanup(session.stop)
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        # harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+        # no-session bucket, never a skip, so removing the session id no longer
+        # turns the precheck off. Stub the tool-side check for this scope instead.
+        import unittest.mock as _pf_mock  # noqa: PLC0415
+        _pf = _pf_mock.patch("_preflight.require", return_value=None)
+        _pf.start()
+        self.addCleanup(_pf.stop)
+        self._preflight_stub = _pf  # the precheck's own tests stop it
         # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
         # is refused under /tmp (harmonic-forge#949).
         (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)
@@ -77,8 +85,17 @@ class KillCheckTests(unittest.TestCase):
             "ac": "AC1", "mechanism": "f returns 1", "patch": patch_path or str(self.patch_file),
             "test": test or ["python3", "check.py"]}]))
 
+    def _argv(self, *, validate: bool = False, base: str = "origin/main", checks: str | None = None,
+              timeout: int = 300):
+        """harmonic-forge#1291: the receipt binds the tool's own argv, so the
+        command line a Namespace stands for is patched in as sys.argv."""
+        argv = [str(Path(kill.__file__).resolve()), "run", "--repo", REPO, "--issue", str(ISSUE),
+                "--base", base, "--head", "HEAD", "--checks", checks or str(self.checks_file),
+                "--timeout", str(timeout), *(["--validate"] if validate else [])]
+        return patch.object(sys, "argv", argv)
+
     def execute(self, *, timeout: int = 300, checks: str | None = None) -> int:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), self._argv(checks=checks, timeout=timeout):
             return kill.run(argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main",
                                                head="HEAD", checks=checks or str(self.checks_file),
                                                timeout=timeout))
@@ -89,7 +106,7 @@ class KillCheckTests(unittest.TestCase):
     # --- harmonic-forge#1215 AC2: `run --validate` is run's read-only preflight ---
 
     def _validate(self, checks: str | None = None) -> int:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), self._argv(validate=True, checks=checks):
             try:
                 return kill.validate(argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main",
                                                         head="HEAD", checks=checks or str(self.checks_file),
@@ -102,6 +119,7 @@ class KillCheckTests(unittest.TestCase):
                                           "PREFLIGHT_RECEIPT_DIR": str(self.root / "receipts")})
         session.start()
         self.addCleanup(session.stop)
+        self._preflight_stub.stop()  # these test the precheck itself
 
     def test_run_needs_validate_in_a_session(self) -> None:
         self._in_session()
@@ -130,7 +148,8 @@ class KillCheckTests(unittest.TestCase):
     def test_a_changed_base_needs_a_new_validate(self) -> None:
         self._in_session()
         self.assertEqual(self._validate(), 0)
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                self._argv(base="HEAD~1"):
             code = kill.run(argparse.Namespace(repo=REPO, issue=ISSUE, base="HEAD~1", head="HEAD",
                                                checks=str(self.checks_file), timeout=300))
         self.assertEqual(code, 1)
@@ -474,6 +493,14 @@ class MaterializeDisablesMaintenanceTests(unittest.TestCase):
         session.start()
         self.addCleanup(session.stop)
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        # harmonic-forge#1291 (operator ruling 2026-11-19): a blank session is the
+        # no-session bucket, never a skip, so removing the session id no longer
+        # turns the precheck off. Stub the tool-side check for this scope instead.
+        import unittest.mock as _pf_mock  # noqa: PLC0415
+        _pf = _pf_mock.patch("_preflight.require", return_value=None)
+        _pf.start()
+        self.addCleanup(_pf.stop)
+        self._preflight_stub = _pf  # the precheck's own tests stop it
         # Under the real ~/.cache, not /tmp: the scratch root (here HOME/.cache)
         # is refused under /tmp (harmonic-forge#949).
         (Path.home() / ".cache").mkdir(parents=True, exist_ok=True)

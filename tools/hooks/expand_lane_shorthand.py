@@ -803,6 +803,8 @@ _FORCE_SHA_RE = re.compile(r"^[0-9a-f]{12,40}$")
 #: A route grant binds the whole head: a 12-hex prefix is birthday-searchable when
 #: the author controls both commits (harmonic-forge#1244).
 _FORCE_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+#: harmonic-forge#1291: the precheck gate's refusal id (12 hex, as printed).
+_FORCE_REFUSAL_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
 def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
@@ -826,10 +828,25 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
         if rest:
             return "a cluster FORCE takes no SHA: `FORCE <KEY> cluster: <reason>`"
         return "cluster", None
-    return f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>` and `cluster` (lowercase)"
+    if word == "gate":
+        # harmonic-forge#1291: the id the gate's refusal printed, never "the newest refusal".
+        if len(rest) != 1:
+            return "a gate FORCE names the refusal it releases: `FORCE <KEY> gate <refusal-id>: <reason>`"
+        if not _FORCE_REFUSAL_ID_RE.match(rest[0]):
+            return f"{rest[0]!r} is not a 12-character hex refusal id"
+        return "gate", rest[0]
+    return (f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>`, `cluster` "
+            "and `gate <refusal-id>` (lowercase)")
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
 #: An unindented, uppercase FORCE first line that is not the grammar: well placed, malformed.
 _FORCE_MALFORMED_RE = re.compile(r"^FORCE[ \t]+\S")
+
+
+def _gate_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "precheck"))
+    import gate  # noqa: PLC0415
+
+    return gate
 
 
 def _force_module():
@@ -861,7 +878,7 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     match = _FORCE_RE.match(lines[first]) if first is not None else None
     if match is None and first is not None and _FORCE_MALFORMED_RE.match(lines[first]):
         return ("FORCE REFUSED: the line needs a key like F1244 and a colon before the reason. "
-                "The form is `FORCE <KEY> [reforge <sha> | route <sha> | cluster]: <reason>`. "
+                "The form is `FORCE <KEY> [reforge <sha> | route <sha> | cluster | gate <refusal-id>]: <reason>`. "
                 "No grant written.")
     if match is None:
         return ("FORCE REFUSED: FORCE is honored only as the prompt's first line, typed "
@@ -890,7 +907,21 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
                 "there. No grant written.")
     grants = _force_module()
     head = None
-    if mode not in ("reforge", "route"):
+    gate_binding = None
+    if mode == "gate":
+        refusal = _gate_module().read_refusal(sha_prefix)
+        if refusal is None:
+            return f"FORCE REFUSED for {key}: no precheck gate refusal has the id {sha_prefix}. No grant written."
+        if str(refusal.get("session") or "") != str(session_id or ""):
+            return (f"FORCE REFUSED for {key}: refusal {sha_prefix} was printed in another session. "
+                    "No grant written.")
+        if refusal.get("key") and str(refusal["key"]).upper() != key:
+            return (f"FORCE REFUSED for {key}: refusal {sha_prefix} is {refusal['key']}'s, not {key}'s. "
+                    "No grant written.")
+        gate_binding = {"gate_tool": refusal.get("tool"), "gate_mode": refusal.get("mode"),
+                        "arg_fp": refusal.get("fp"), "gate_refusal_id": sha_prefix}
+        sha_prefix = None
+    elif mode not in ("reforge", "route"):
         # A reforge or route grant binds the head the operator typed; that
         # head may have no receipt (harmonic-forge#1174, #1244).
         head = grants.covered_head(repo, number)
@@ -899,16 +930,21 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
                     "no head to bind the force to. No grant written.")
     previous = grants.read_grant(key)
     grant = grants.write_pending(key, repo, number, head, reason, session_id, lines[first], now,
-                                 mode=mode, sha_prefix=sha_prefix)
-    bound = (head or sha_prefix or "")[:12]
+                                 mode=mode, sha_prefix=sha_prefix, gate=gate_binding)
+    bound = (head or sha_prefix or (gate_binding or {}).get("arg_fp") or "")[:12]
     replaced = ""
     if previous:
         replaced = (f" It replaces the {previous.get('mode') or 'plain'} grant at "
                     f"{str(previous.get('sha') or previous.get('sha_prefix') or '?')[:12]}.")
     after = "the merge" if mode == "route" else "the non-force preflight and the --force run"
+    releases = ""
+    if mode == "gate":
+        after = "the refused call, unchanged"
+        releases = (f" It releases exactly one call: {refusal.get('tool')} {refusal.get('mode')} with "
+                    f"arguments {json.dumps(refusal.get('canonical') or [])}.")
     return (f"FORCE: pending {mode} grant written for {key} at {bound} (single use, until "
-            f"{grant['expires_at']}).{replaced} Next: `python3 tools/gh/force_grant.py record --key "
-            f"{key}`, then {after} (harmonic-forge#1169, #1174, #1244).")
+            f"{grant['expires_at']}).{releases}{replaced} Next: `python3 tools/gh/force_grant.py record --key "
+            f"{key}`, then {after} (harmonic-forge#1169, #1174, #1244, #1291).")
 
 
 #: `PARK <KEY>[: <reason>]` (harmonic-forge#1281): FORCE's placement. It lets

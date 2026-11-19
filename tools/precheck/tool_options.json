@@ -1,0 +1,57 @@
+{
+  "tools/gh/check_lane3_ready.py": [
+    "--help",
+    "--issue",
+    "--json",
+    "--mark-active",
+    "--require-prod-run",
+    "--require-tier",
+    "-h"
+  ],
+  "tools/gh/kill_check.py run": [
+    "--base",
+    "--checks",
+    "--head",
+    "--help",
+    "--issue",
+    "--repo",
+    "--timeout",
+    "--validate",
+    "-h"
+  ],
+  "tools/gh/l1_post.py": [
+    "--ack-no-pr-required",
+    "--ack-overlap",
+    "--ae-file",
+    "--amendment",
+    "--branch",
+    "--cross-repo",
+    "--dry-run",
+    "--file",
+    "--from-sha",
+    "--help",
+    "--issue",
+    "--kind",
+    "--milestone-ack",
+    "--mutates-live",
+    "--pass-comment",
+    "--plan-first",
+    "--prod-run",
+    "--repo",
+    "--rework-kind",
+    "--sha",
+    "--spec-comment",
+    "--sweep-file",
+    "-h"
+  ],
+  "tools/gh/repo_hygiene.py": [
+    "--checkout",
+    "--checkout-only",
+    "--dry-run",
+    "--help",
+    "--manifest-repos",
+    "--prune-worktrees",
+    "--repo",
+    "-h"
+  ]
+}

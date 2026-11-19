@@ -334,18 +334,46 @@ class TestSchema(unittest.TestCase):
     def test_binds_without_cite_refuses(self):
         self.refuses(self.PRECHECK + 'binds = ["head_sha"]\n', "binds_cite")
 
+    #: harmonic-forge#1291: every precheck mode carries the gate's fields.
+    GATE = ('precheck_form = {add = ["--check"]}\nbind_args = {}\nprefix = true\n'
+            'receipt_writer = true\n')
+
     def test_empty_binds_is_the_ceiling(self):
-        fx = fixture(tool(self.PRECHECK + "binds = []\n"))
+        fx = fixture(tool(self.PRECHECK + "binds = []\n" + self.GATE))
         self.addCleanup(fx.close)
         self.assertEqual(fx.load()["tools"][0]["modes"][1]["binds"], [])
 
     def test_precheck_must_name_another_mode(self):
-        self.refuses(self.BASE_MODE + 'class = "shared-state"\nprecheck = "nope"\nbinds = []\n',
+        self.refuses(self.BASE_MODE + 'class = "shared-state"\nprecheck = "nope"\nbinds = []\n' + self.GATE,
                      "names no other mode")
 
     def test_validates_shell_or_provenance_refuses(self):
-        self.refuses(self.PRECHECK + 'binds = []\nvalidates = [{class = "provenance", cite = "tools/gh/t.py:1"}]\n',
+        self.refuses(self.PRECHECK + 'binds = []\n' + self.GATE
+                     + 'validates = [{class = "provenance", cite = "tools/gh/t.py:1"}]\n',
                      "never claimed")
+
+    def test_precheck_mode_needs_precheck_form(self):
+        self.refuses(self.PRECHECK + "binds = []\n", "needs precheck_form")
+
+    def test_precheck_form_needs_a_token(self):
+        self.refuses(self.PRECHECK + "binds = []\n" + self.GATE.replace('add = ["--check"]', "add = []"),
+                     "strip or an add token")
+
+    def test_bind_args_must_cover_every_bind(self):
+        self.refuses(self.PRECHECK + 'binds = ["head_sha", "args"]\nbinds_cite = "tools/gh/t.py:1"\n'
+                     + self.GATE, r"names no input for \['head_sha'\]")
+
+    def test_bind_args_refuses_an_unknown_bind(self):
+        self.refuses(self.PRECHECK + "binds = []\n" + self.GATE.replace("bind_args = {}", 'bind_args = {vibes = "--x"}'),
+                     "unknown key")
+
+    def test_gate_fields_belong_to_a_precheck_mode(self):
+        self.refuses(self.BASE_MODE + 'class = "read"\nreceipt_writer = true\n', "belong to a precheck mode")
+
+    def test_backstop_is_not_a_registry_key(self):
+        # harmonic-forge#1291 sticky-wicket PATCH: every precheck mode's tool runs
+        # consume() itself, so a mode can never again declare it has no backstop.
+        self.refuses(self.BASE_MODE + 'class = "read"\nbackstop = false\n', "unknown key")
 
     def test_gaps_lists_exactly_the_gap_entries(self):
         rows = effects.gaps(REGISTRY).splitlines()[2:]
@@ -430,8 +458,13 @@ class TestGenerated(unittest.TestCase):
         document = json.loads(path.read_text(encoding="utf-8"))
         gate_index = [layer["name"] for layer in design["layers"]].index("gate")
         layer = document["layers"][gate_index]
-        self.assertEqual((layer["name"], layer["claims_basis"], layer["module"]), ("registry", "validated", None))
-        self.assertEqual(layer["bar"], design["layers"][gate_index]["bar"])
+        self.assertEqual((layer["name"], layer["claims_basis"], layer["module"]), ("registry", "validated", "../gate.py"))
+        design_bar = json.loads(json.dumps(design["layers"][gate_index]["bar"]))
+        design_bar["replay"]["tools"] = effects.gated_replay_tools(REGISTRY)
+        self.assertEqual(layer["bar"], design_bar)
+        for other in document["layers"]:
+            if other["name"] != "registry":
+                self.assertNotIn("tools", other["bar"]["replay"] or {})
         self.assertEqual([lay["name"] for lay in parsed["layers"]], ["lint", "registry", "provenance"])
         cited = {f"{tool}|{klass}" for tool, klass, cite in effects.claims(REGISTRY) if cite}
         for claim in layer["claims"]:
@@ -440,6 +473,36 @@ class TestGenerated(unittest.TestCase):
         self.assertIn("gh-pr-merge|receipt", layer["claims"])
         self.assertIn("git-push|receipt", layer["claims"])
 
+    def test_scope_is_every_gated_mode_claimed_or_not(self):
+        # harmonic-forge#1291: an unclaimed gated tool is in scope, so its slips
+        # count against the bar; a read-only tool is not.
+        fx = fixture(tool('''
+            [[tool.mode]]
+            name = "post"
+            match = ["post"]
+            class = "shared-state"
+            cite = ["tools/gh/t.py:1"]
+            gap = "no precheck yet"
+            [[tool.mode]]
+            name = "show"
+            match = ["show"]
+            class = "read"
+            cite = ["tools/gh/t.py:1"]
+            ''', extra='replay_tool = "gh-api"') + tool('''
+            [[tool.mode]]
+            name = "show"
+            match = ["show"]
+            class = "read"
+            cite = ["tools/gh/r.py:1"]
+            ''', path="tools/gh/r.py", extra='replay_tool = "git-push"'),
+            {"tools/gh/t.py": SCRIPT, "tools/gh/r.py": SCRIPT})
+        self.addCleanup(fx.close)
+        registry = fx.load()
+        self.assertEqual(effects.claims(registry), [])
+        self.assertEqual(effects.gated_replay_tools(registry), ["gh-api"])
+        self.assertEqual(effects.layerset(registry)["bar"]["replay"]["tools"], ["gh-api"])
+        self.assertEqual(effects.gated_modes_without_alias(registry), [])
+
     def test_cli(self):
         import contextlib
         import io
@@ -447,6 +510,53 @@ class TestGenerated(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(effects.main(["validate"]), 0)
         self.assertIn("effects: valid", out.getvalue())
+
+
+class TestGateInputs(unittest.TestCase):
+    """harmonic-forge#1291: the mise mapping and the option lists cannot drift."""
+
+    def test_live_mise_mapping_is_valid(self):
+        self.assertEqual(effects.mise_problems(REGISTRY), [])
+
+    def test_mise_task_mapping_validated(self):
+        text = effects.MISE_FILE.read_text(encoding="utf-8")
+        self.assertIn("[tasks.preclose-check]", text)  # the known positive
+        with tempfile.TemporaryDirectory() as tmp:
+            renamed = Path(tmp) / "mise.toml"
+            renamed.write_text(text.replace("[tasks.preclose-check]", "[tasks.preclose-renamed]"),
+                               encoding="utf-8")
+            problems = effects.mise_problems(REGISTRY, renamed)
+        self.assertEqual(problems, ["mise task preclose-check does not run tools/gh/preclose_check.py"])
+
+    def test_mise_prefix_validated(self):
+        text = effects.MISE_FILE.read_text(encoding="utf-8")
+        self.assertIn("check_lane3_ready.py --mark-active", text)
+        with tempfile.TemporaryDirectory() as tmp:
+            changed = Path(tmp) / "mise.toml"
+            changed.write_text(text.replace("check_lane3_ready.py --mark-active", "check_lane3_ready.py"),
+                               encoding="utf-8")
+            problems = effects.mise_problems(REGISTRY, changed)
+        self.assertEqual(problems, ["mise task lane3-begin does not pass --mark-active"])
+
+    def test_committed_tool_options_are_fresh(self):
+        self.assertEqual(effects.options_problems(REGISTRY), [],
+                         "regenerate with: python3 tools/registry/effects.py options")
+
+    def test_stale_tool_options_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = Path(tmp) / "tool_options.json"
+            data = json.loads(effects.TOOL_OPTIONS_FILE.read_text(encoding="utf-8"))
+            data["tools/gh/l1_post.py"].remove("--dry-run")
+            stale.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            self.assertEqual(len(effects.options_problems(REGISTRY, stale)), 1)
+
+    def test_every_precheck_mode_carries_the_gate_fields(self):
+        modes = list(effects.precheck_modes(REGISTRY))
+        self.assertEqual(len(modes), 6)
+        for tool, mode in modes:
+            self.assertIn("precheck_form", mode, tool["path"])
+        # Operator ruling 2026-11-19: preclose's FORCE modes are grant-guarded only.
+        self.assertFalse([m for t, m in modes if t["path"] == "tools/gh/preclose_check.py"])
 
 
 if __name__ == "__main__":

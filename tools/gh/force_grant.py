@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """The FORCE grant: an operator-typed, single-use authorization for one
-preclose override (harmonic-forge#1169, #1174) or one merge past the route
-recheck (harmonic-forge#1244).
+preclose override (harmonic-forge#1169, #1174), one merge past the route
+recheck (harmonic-forge#1244), or one call past the precheck gate
+(harmonic-forge#1291: `FORCE <KEY> gate <refusal-id>: <reason>`, bound to the
+tool, mode and argument fingerprint of the refusal record with that id).
 
 `FORCE <KEY>: <reason>`, typed as the prompt's first line in a LANE=1 session,
 is honored by `expand_lane_shorthand.py` on `UserPromptSubmit` (R-0117, the
@@ -105,11 +107,13 @@ def read_grant(key: str) -> dict | None:
 
 def write_pending(key: str, repo: str, issue: int, sha: str | None, reason: str,
                   session_id: str | None, line: str, now: datetime | None = None,
-                  mode: str = "plain", sha_prefix: str | None = None) -> dict:
+                  mode: str = "plain", sha_prefix: str | None = None,
+                  gate: dict | None = None) -> dict:
     """The hook's write. A new FORCE line replaces any earlier grant for the key.
-    `mode` is plain, reforge, route or cluster (harmonic-forge#1174, #1244): plain
-    and cluster bind the full `sha`; reforge and route bind the operator-typed
-    `sha_prefix`."""
+    `mode` is plain, reforge, route, cluster or gate (harmonic-forge#1174, #1244,
+    #1291): plain and cluster bind the full `sha`; reforge and route bind the
+    operator-typed `sha_prefix`; gate binds the refusal record the operator
+    named (`gate`: gate_tool, gate_mode, arg_fp, gate_refusal_id)."""
     moment = now or imc_waiver._now()
     grant = {
         "key": key.upper(), "repo": repo, "issue": issue, "sha": sha, "reason": reason,
@@ -119,6 +123,9 @@ def write_pending(key: str, repo: str, issue: int, sha: str | None, reason: str,
         "session_id": session_id or "", "line": line, "status": "pending",
         "comment_url": None, "comment_id": None, "hook_version": HOOK_VERSION,
     }
+    if mode == "gate":
+        gate = gate or {}
+        grant.update({field: gate.get(field) for field in GATE_FIELDS + ("gate_refusal_id",)})
     with grant_lock(key):
         imc_waiver.write_json_atomic(grant_path(key), grant)
     return grant
@@ -193,7 +200,10 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> d
 _AUTHORIZES = {"plain": "one plain `preclose_check.py --force`",
                "reforge": "one `preclose_check.py --force --reforge`",
                "route": "one merge past the route recheck (block_route_tightened_merge.py)",
-               "cluster": "one `preclose_check.py --cluster-verdict ... --force`"}
+               "cluster": "one `preclose_check.py --cluster-verdict ... --force`",
+               "gate": "one call past the precheck gate"}
+#: harmonic-forge#1291: what a gate grant is bound to; each must match the call.
+GATE_FIELDS = ("gate_tool", "gate_mode", "arg_fp")
 #: The modes bound to the operator-typed SHA prefix, not the covered head.
 _PREFIX_MODES = ("reforge", "route")
 
@@ -208,6 +218,8 @@ def _authorizes(grant: dict) -> str:
 
 
 def _bound(grant: dict) -> str:
+    if _mode(grant) == "gate":
+        return str(grant.get("arg_fp") or "")
     return str((grant.get("sha_prefix") if _mode(grant) in _PREFIX_MODES else grant.get("sha")) or "")
 
 
@@ -218,11 +230,20 @@ def _scope(grant: dict) -> str:
     return f"({_mode(grant)}) at {bound[:12]}" if bound else f"({_mode(grant)})"
 
 
-def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str) -> str | None:
-    """Why this grant does not cover a `mode` force at `head_sha`, or None."""
+def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str,
+                     gate: dict | None = None) -> str | None:
+    """Why this grant does not cover a `mode` force at `head_sha` (for a gate
+    grant: the call's tool, mode and argument fingerprint in `gate`), or None."""
     if _mode(grant) != mode:
         return (f"the FORCE grant for {key} authorizes a {_mode(grant)} force, not a {mode} one; "
                 f"the operator types `FORCE {key}{'' if mode == 'plain' else ' ' + mode} ...: <reason>`")
+    if mode == "gate":
+        gate = gate or {}
+        for field in GATE_FIELDS:
+            if not grant.get(field) or grant.get(field) != gate.get(field):
+                return (f"the gate grant for {key} is bound to another {field.replace('_', ' ')} "
+                        f"({str(grant.get(field))[:12]}, not {str(gate.get(field))[:12]})")
+        return None
     if mode in _PREFIX_MODES:
         prefix = str(grant.get("sha_prefix") or "")
         if len(prefix) < (40 if mode == "route" else 12) or not head_sha or not head_sha.startswith(prefix):
@@ -235,7 +256,7 @@ def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str) -> str | N
 
 
 def require(repo: str, issue: int, head_sha: str, now: datetime | None = None,
-            mode: str = "plain") -> dict:
+            mode: str = "plain", gate: dict | None = None) -> dict:
     """AC3: the usable grant covering exactly this force, or GrantRefused."""
     key = imc_waiver.issue_key(repo, issue)
     if key is None:
@@ -255,14 +276,14 @@ def require(repo: str, issue: int, head_sha: str, now: datetime | None = None,
                            f"`python3 tools/gh/force_grant.py record --key {key}` first")
     if _expired(grant, now or imc_waiver._now()):
         raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
-    refusal = _binding_refusal(grant, key, head_sha, mode)
+    refusal = _binding_refusal(grant, key, head_sha, mode, gate)
     if refusal:
         raise GrantRefused(refusal)
     return grant
 
 
 def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | None = None,
-            mode: str = "plain") -> dict:
+            mode: str = "plain", gate: dict | None = None) -> dict:
     """Spend exactly the grant `require()` returned: same `granted_at`, still
     usable and unexpired, bound to this head. Anything else refuses (preclose
     pass 1, finding 1), so a newer grant is never spent in an older one's place."""
@@ -278,7 +299,7 @@ def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | N
             raise GrantRefused(f"the FORCE grant for {key} is {grant.get('status')}, not usable")
         if _expired(grant, moment):
             raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
-        refusal = _binding_refusal(grant, key, head_sha, mode)
+        refusal = _binding_refusal(grant, key, head_sha, mode, gate)
         if refusal:
             raise GrantRefused(refusal)
         spent = {**grant, "status": "consumed", "consumed_at": imc_waiver._iso(moment),

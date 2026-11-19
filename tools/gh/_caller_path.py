@@ -20,6 +20,10 @@ import sys
 from pathlib import Path
 
 CALLER_CWD = "HF_CALLER_CWD"
+#: The value `resolve_args` consumed, so this process can still name the
+#: caller's directory after the variable is gone (harmonic-forge#1291: the
+#: precheck receipt resolves `HEAD` and relative files there, as the gate does).
+CONSUMED: str | None = None
 
 
 def _resolve(path, base):
@@ -40,7 +44,10 @@ def resolve_args(args, *names: str) -> None:
     """Resolve each named attribute of an argparse namespace in place; a list
     value (nargs) is resolved element by element. Consumes `HF_CALLER_CWD`, so
     no child process inherits it."""
+    global CONSUMED
     base = os.environ.pop(CALLER_CWD, None)
+    if base:
+        CONSUMED = base
     for name in names:
         value = getattr(args, name, None)
         if isinstance(value, list):

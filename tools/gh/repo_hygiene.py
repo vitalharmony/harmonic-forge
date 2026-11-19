@@ -1395,6 +1395,24 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
     _flush()
 
 
+def _require_precheck() -> str | None:
+    """harmonic-forge#1291 (REFORGE): None when this real prune may run."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _preflight  # noqa: PLC0415
+    return _preflight.require("tools/gh/repo_hygiene.py", sys.argv[1:])
+
+
+def _record_precheck() -> None:
+    """harmonic-forge#1291: a clean `--prune-worktrees --dry-run` writes the
+    state-bound receipt the PreToolUse gate requires before the real prune."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "precheck"))
+    import gate_receipt  # noqa: PLC0415
+    try:
+        gate_receipt.record("tools/gh/repo_hygiene.py", sys.argv[1:])
+    except (gate_receipt.ReceiptRefused, gate_receipt.Deadline, OSError) as exc:
+        print(f"[hygiene] precheck receipt not written ({exc})", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME",
@@ -1415,6 +1433,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="with --prune-worktrees: print what would be removed, remove nothing")
     args = parser.parse_args()
+    if args.prune_worktrees and not args.dry_run:
+        # harmonic-forge#1291 (REFORGE, issuecomment-7002756185): the prune's own
+        # backstop, before any audit or GitHub call. The real run needs the dry run's live receipt however the
+        # command was spelled; the gate's spelling recognition is not load-bearing.
+        refusal = _require_precheck()
+        if refusal:
+            print(f"[hygiene] {refusal}", file=sys.stderr)
+            return 2
 
     # harmonic-forge#498: EXPLICIT, never inferred. An earlier draft fell back
     # to the manifest whenever `--repo` was absent, which silently turned every
@@ -1495,6 +1521,10 @@ def main() -> int:
             # checkout's slot too; resetting before it read a wrong "no merged PR".
             _use_slot(repo_for_path_or_none(checkout))
             prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
+    # harmonic-forge#1291 (sticky-wicket PATCH): the precheck receipt is recorded
+    # only once the run's FINAL exit is known to be 0, at each `return prune_exit`
+    # below, never before a later step can still fail the run.
+    record_precheck = bool(args.prune_worktrees and args.dry_run)
     _use_slot(None)
 
     if report.unlabelled_migrations:
@@ -1656,6 +1686,8 @@ def main() -> int:
             or report.blocked_open_prs or report.undetermined_phase_closures
             or report.inert_supply_landed or report.phase_candidates):
         print("repo hygiene: clean.")
+        if record_precheck and prune_exit == 0:
+            _record_precheck()
         return prune_exit
 
     # Only STRANDED fails. Orphaned branches are a cleanup opportunity, and
@@ -1679,6 +1711,8 @@ def main() -> int:
             print("Nothing was deleted.")
         return max(prune_exit, 1)
     print("Nothing stranded." if args.prune_worktrees else "Nothing stranded. Nothing was deleted.")
+    if record_precheck and prune_exit == 0:
+        _record_precheck()
     return prune_exit
 
 

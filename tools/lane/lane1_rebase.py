@@ -805,12 +805,13 @@ UNCHECKED_BY_CHECK = ("per-commit conflicts", "version-line resolution (exit 2)"
                       "the pre-push hook (exit 5)", "a Render-Pending head (exit 6)")
 
 
-def preflight_key(repo_dir: str, issue: int, branch: str, old: str, main: str) -> str:
-    import _preflight  # noqa: PLC0415
-    # pass 2 survivor 1: origin/main's SHA too, so a moved main needs a new --check.
-    digest = hashlib.sha256(
-        f"{Path(repo_dir).resolve()}|{issue}|{branch}|{old}|{main}".encode()).hexdigest()
-    return _preflight.digest_key("lane1_rebase", digest)
+#: harmonic-forge#1291: the receipt is gate_receipt's state-bound one (the
+#: registry binds origin/<branch>, origin/main and the exact arguments).
+TOOL_PATH = "tools/lane/lane1_rebase.py"
+#: The ls-remote SHAs the last clean `check()` saw (pass 2 survivor 1: a push
+#: or a moved main after --check needs a new --check). The gate cannot make
+#: that network read, so the tool-side backstop binds it as receipt `extra`.
+_CHECKED: list[str | None] = [None]
 
 
 def _version_only_conflict(repo_dir: str, main: str, old: str, path: str) -> bool:
@@ -865,8 +866,7 @@ def check(repo_dir: str, issue: int, branch: str) -> tuple[int, list[str]]:
         lines.append("conflicts: none predicted" if not paths else
                      f"conflicts: {', '.join(paths)} ({'version-only' if version_only else 'not version-only'})")
     lines.append("unchecked: " + "; ".join(UNCHECKED_BY_CHECK))
-    import _preflight  # noqa: PLC0415
-    _preflight.record(preflight_key(repo_dir, issue, branch, old, main))
+    _CHECKED[0] = f"{old}|{main}"
     return 0, lines
 
 
@@ -885,13 +885,16 @@ def main(argv: list[str]) -> int:
         code, lines = check(args[0], int(args[1]), args[2])
         for line in lines:
             print(f"[lane1-rebase --check] {line}")
+        if code == 0:
+            _preflight.record(TOOL_PATH, argv, extra=_CHECKED[0])
         return code
     # harmonic-forge#1215 AC1: --help no longer unlocks a run; the preflight is
     # `--check` with the same arguments, bound to origin's branch SHA.
     old = remote_sha(args[0], f"refs/heads/{args[2]}") or ""
     main_sha = remote_sha(args[0], "refs/heads/main") or ""
-    refusal = _preflight.require(preflight_key(args[0], int(args[1]), args[2], old, main_sha),
-                                 f"python3 {Path(__file__).resolve()} --check {' '.join(args)}")
+    refusal = _preflight.require(TOOL_PATH, argv,
+                                 f"python3 {Path(__file__).resolve()} --check {' '.join(args)}",
+                                 extra=f"{old}|{main_sha}")
     if refusal:
         print(f"[lane1-rebase] {refusal}", file=sys.stderr)
         return 1

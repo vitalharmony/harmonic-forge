@@ -168,6 +168,32 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
   non-empty label that is not a layer name, `UNCOVERED` or
   `accepted-uncovered:*`. Ownership is scored as an identity (a layer's
   index, an existing class, an accepted class), never by comparing labels.
+- A replay bar may carry one optional key, `tools`: a non-empty list of
+  distinct replay tool names (harmonic-forge#1291). When present the bar
+  counts only slips whose class is in `classes` **and** whose tool is in
+  `tools`; absent, it counts every tool (class only). An empty list refuses
+  (exit 2): it is never read as "no scope". Scope narrows what is counted,
+  never what must be claimed, so a layer claiming nothing still fails, and a
+  scope with no slip in it fails like any empty bar.
+  - `registry-v1.json`'s registry layer gets its scope from
+    `effects.py layerset`: the sorted union of the replay tool aliases of
+    every registered mode at shared-state, external-publish or irreversible,
+    plus the gated `outside` families, claimed or not (a claims-only scope
+    would hold by definition). Lint and provenance carry no scope.
+  - The scope is per tool alias, an approximation of the written bar
+    ("registered shared-state-or-above modes"): an ungated mode of a gated
+    tool is counted too. Gated modes with no replay alias are invisible to
+    it; `effects.gated_modes_without_alias()` lists them (37 at
+    harmonic-forge#1291, including `tools/gh/force_grant.py record`,
+    `tools/gh/ui_grant.py record`, the `lane1/2/3` launchers, and the
+    `curl, wget` and `podman, docker` outside families).
+  - `operator-commands-block` slips are commands handed to the operator,
+    which no PreToolUse gate sees, so they are out of the registry's scope.
+    They are owned by `tools/hooks/require_probed_operator_commands.py`
+    (harmonic-forge#1151); its gap (FORCE and waiver lines, and `--help`
+    accepted as a probe for state-bound modes) is a follow-up.
+  - Lint's unscoped coverage includes one `operator-commands-block` slip it
+    cannot refuse.
 - A claim is `*|<class>` (any tool) or `<tool>|<class>` (one tool's mode). Every
   class must be in `tools/memory/failure_classes.json`'s current version; the
   loader refuses (exit 2) anything else.

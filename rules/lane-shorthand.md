@@ -334,7 +334,7 @@ proof against a session that can write files.
 ## `FORCE` — the operator's preclose override
 
 Grammar: **`FORCE` + issue key + optional mode + `:` + reason**, as the
-prompt's first line, typed unindented and uppercase. Four modes:
+prompt's first line, typed unindented and uppercase. Five modes:
 
 | Line | Grant | Authorizes |
 |---|---|---|
@@ -342,6 +342,7 @@ prompt's first line, typed unindented and uppercase. Four modes:
 | `FORCE F1174 reforge <sha>: <reason>` | `reforge`, bound to the typed 12–40 hex SHA prefix | `--plan`/`--complete --force --reforge` on a head starting with it |
 | `FORCE F1174 cluster: <reason>` | `cluster`, bound to the covered head | `--cluster-verdict --force` |
 | `FORCE F1244 route <sha>: <reason>` | `route`, bound to the full typed SHA | one merge past the route recheck |
+| `FORCE F1291 gate <refusal-id>: <reason>` | `gate`, bound to the refusal record with that id (printed by the refusal) | one call past the precheck gate whose tool, mode and argument fingerprint match that record |
 
 <!-- R-0418 -->
 The hook writes one grant per issue (`force_grant.py`, 1h TTL) only for an

@@ -129,7 +129,11 @@ class MarkActiveTests(unittest.TestCase):
     check run. The check owns the marker now and writes it only on a pass."""
 
     def _main(self, comments, argv):
-        with mock.patch.object(c, "current_branch", return_value="fix/1-x"), \
+        # harmonic-forge#1291 (REFORGE): --mark-active now requires its precheck
+        # receipt first; these tests are about the marker, so the receipt passes.
+        import _preflight  # noqa: PLC0415
+        with mock.patch.object(_preflight, "require", return_value=None), \
+             mock.patch.object(c, "current_branch", return_value="fix/1-x"), \
              mock.patch.object(c, "current_repo", return_value="vitalharmony/hrse"), \
              mock.patch.object(c, "issue_for_branch", return_value=1), \
              mock.patch.object(c, "fetch_comments", return_value=comments), \

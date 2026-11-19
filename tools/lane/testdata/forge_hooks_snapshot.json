@@ -2,9 +2,9 @@
   "schema": 1,
   "source": {
     "repo": "vitalharmony/harmonic-forge",
-    "commit": "e237ab0a1e18207f66baaf48fedf6f4c8d984d5e",
+    "commit": "475aa6d5208b22c7f4562b44eb82bc0d6d03d543",
     "path": ".claude/settings.json",
-    "blob": "7def25aac77ba07e2350fbb7155736df94c91c3b"
+    "blob": "a11e4d11e5971f80a03165b718d22d25e467dff3"
   },
   "entries": [
     {
@@ -100,6 +100,12 @@
     {
       "event": "PreToolUse",
       "matcher": "Bash",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_gate.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 5
     },
@@ -126,6 +132,12 @@
       "matcher": "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": null
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_store_guard.py\"",
+      "timeout": 10
     },
     {
       "event": "PreToolUse",
