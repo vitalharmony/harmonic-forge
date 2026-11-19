@@ -3332,6 +3332,18 @@ def _post_kind(
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
+    # harmonic-forge#1426 sticky-wicket PATCH: spend the pitch verdict right after the
+    # confirmed post, before the fallible local receipt write below.
+    if kind == "handoff":
+        # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one
+        # handoff it reviewed. R-0239's single revision happens before posting,
+        # so consuming it here keeps that, and a later redesigned handoff on
+        # the same issue needs a fresh review.
+        pitch_receipt.consume(repo, issue, url)
+    if (kind == "rework" and rework_kind == "correction" and amendment == "design"
+            and _CORRECTION_GATED.get((repo, issue))):
+        # harmonic-forge#1426: a design-changing correction spent its fresh verdict.
+        pitch_receipt.consume(repo, issue, url)
     if _afk_toggle is not None:
         # harmonic-forge#1398: right after the confirmed post, before the receipt, task-list and
         # route steps, so a failure in any of them cannot leave the idle clock unchanged.
@@ -3355,15 +3367,6 @@ def _post_kind(
             print(f"[route] handoff snapshot not recorded: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
-        # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one
-        # handoff it reviewed. R-0239's single revision happens before posting,
-        # so consuming it here keeps that, and a later redesigned handoff on
-        # the same issue needs a fresh review.
-        pitch_receipt.consume(repo, issue, url)
-    if (kind == "rework" and rework_kind == "correction" and amendment == "design"
-            and _CORRECTION_GATED.get((repo, issue))):
-        # harmonic-forge#1426: a design-changing correction spent its fresh verdict.
-        pitch_receipt.consume(repo, issue, url)
     if attempt is not None:
         attempt["emitted"] = True
         _emit_attempt(repo, issue, sha, "posted", attempt)
@@ -3490,6 +3493,8 @@ def _post_digest(args: argparse.Namespace, repo: str, sha: str) -> str:
     # Added for a rework only, so every other kind's digest is unchanged.
     if args.kind == "rework":
         fields["rework_kind"] = args.rework_kind
+        # harmonic-forge#1426 sticky-wicket PATCH: a wording dry run never clears a design post.
+        fields["amendment"] = getattr(args, "amendment", None)
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 

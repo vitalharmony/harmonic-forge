@@ -91,6 +91,27 @@ def post_comment(repo: str, issue: int, body_file: Path, source_content: str) ->
     return 0
 
 
+def refuse_amendment_route(repo: str, issue: int) -> None:
+    """harmonic-forge#1426 sticky-wicket PATCH: a Lane 1 (or LANE-unset) comment on a
+    tooling-exception issue with a posted handoff is an amendment, so it goes through
+    the route that declares it. A redirect, not a second gate: the same helper the
+    gated routes use (`pitch_receipt.amendment_gate_applies`) decides."""
+    import pitch_receipt  # noqa: PLC0415
+    if os.environ.get("LANE") in pitch_receipt.NON_AMENDING_LANES:
+        return
+    import post_lane1_issue  # noqa: PLC0415  (its label and comment reads, reused)
+    labels = post_lane1_issue.issue_labels(repo, issue)
+    if pitch_receipt.LABEL not in labels:
+        return
+    comments = post_lane1_issue.issue_comments(repo, issue)
+    if pitch_receipt.amendment_gate_applies(labels, comments):
+        raise SystemExit(
+            f"[POST-COMMENT] REFUSED: {repo}#{issue} is labeled {pitch_receipt.LABEL} and has a "
+            "posted handoff, so a Lane 1 comment on it is an amendment. Post it with\n"
+            "  mise run lane-comment -- --kind discussion --amendment {design,wording} "
+            f"--issue {issue} --file <body> (harmonic-forge#1426)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post a GitHub issue comment with a mandatory self-check")
     parser.add_argument("--repo", required=True, help="Target repo, e.g. vitalharmony/hrse (no default — must be explicit)")
@@ -109,6 +130,7 @@ def main() -> int:
         parser.error("--body is refused through `mise run post-comment`; write the body "
                      "to a file and pass --file (harmonic-forge#266)")
     apply_project_identity(args.repo)  # harmonic-forge#804
+    refuse_amendment_route(args.repo, args.issue)  # harmonic-forge#1426
 
     tmp_path: Path | None = None
     if args.file:

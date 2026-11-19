@@ -363,6 +363,8 @@ DIGEST_ROWS = [
     ("ack_no_pr_required", "ready-for-l3", {}, {"--ack-no-pr-required": "no CI here"}, None),
     ("milestone_ack", "rework", {}, {"--milestone-ack": "outside the release, operator ruling"}, None),
     ("rework_kind", "rework", {}, {"--rework-kind": "rebase"}, None),  # harmonic-forge#1247
+    # harmonic-forge#1426 sticky-wicket PATCH: a wording dry run never clears a design post.
+    ("amendment", "rework", {"--amendment": "wording"}, {"--amendment": "design"}, None),
     ("plan_first", "handoff", {"--plan-first": "false"}, {"--plan-first": "true"}, None),
     ("mutates_live", "handoff", {"--plan-first": "false"}, {"--mutates-live": True}, None),
     ("cross_repo", "handoff", {"--plan-first": "false"}, {"--cross-repo": True}, None),
