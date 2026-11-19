@@ -284,10 +284,34 @@ in lane tooling reads the retired ones.
 
 ---
 
+## Operator commands
+
+The lines the operator types to steer a lane. This table only indexes them: each command's grammar and authority live in the linked section of [`rules/lane-shorthand.md`](rules/lane-shorthand.md) or the named skill, never here.
+
+| Command | What it does | Defined in |
+|---|---|---|
+| `L2D`, `L2S`, `L3P`, `L3F`, `L3S`, `L<N>B` | Lane status tokens: a pointer to a lane's report | [Lane status tokens](rules/lane-shorthand.md#lane-status-tokens) |
+| `Plan`, `Implement` / `Fix`, `Spec`, `AE` + issue key | Start a lane's next step on an issue | [Operator → lane triggers](rules/lane-shorthand.md#operator--lane-triggers) |
+| `close` + issue key | PR, merge and close as one instruction | [`close`](rules/lane-shorthand.md#close--one-compound-instruction-not-three-approvals) |
+| `EOQ` or an unmarked message | Queue behind the work in flight | [`EOQ`](rules/lane-shorthand.md#eoq--end-of-queue-the-default-for-any-unmarked-mid-turn-message) |
+| `NOW` | Interrupt the work in flight | [`NOW`](rules/lane-shorthand.md#now--interrupt) |
+| `BATCH` + issue keys | Pre-authorize merges for the named issues | [`BATCH`](rules/lane-shorthand.md#batch--pre-authorize-a-multi-issue-merge-pass) |
+| `IMC` + issue keys, on a `BATCH` line | Waive the Tooling Exception review for the named issues | [`IMC`](rules/lane-shorthand.md#imc--per-issue-waiver-of-the-tooling-exception-review) |
+| `FORCE` + issue key (plain, reforge, cluster, route) | Override a preclose refusal | [`FORCE`](rules/lane-shorthand.md#force--the-operators-preclose-override) |
+| `PARK` + issue key | Let an open issue leave a lane's task list | [`PARK`](rules/lane-shorthand.md#park--the-operator-lets-an-open-issue-leave-a-lanes-task-list) |
+| `SCAN` + repo letter + scope | Allow one bounded GitHub scan | [`SCAN`](rules/lane-shorthand.md#scan--the-operator-allows-one-bounded-gh-scan) |
+| `UI` + issue key (plan or digest) | Approve a rendered-UI change | [`UI`](rules/lane-shorthand.md#ui--the-operators-approval-of-a-rendered-ui-change) |
+| `H`, `F`, `I`, `O`, `K`, `Y`, `D`, `P` | Repo prefixes for issue keys | [Repo prefixes](rules/lane-shorthand.md#repo-prefixes) |
+| `/afk on\|off\|status` | Afk mode | [`skills/afk/SKILL.md`](skills/afk/SKILL.md) |
+| `/auto-ae on\|off\|status` | Auto-AE for live `BATCH` leases | [`skills/auto-ae/SKILL.md`](skills/auto-ae/SKILL.md) |
+
+---
+
 ## Documentation
 
 | Document | What it's for |
 |---|---|
+| [Operator commands](#operator-commands) | Index of every operator command line |
 | [`harmonic-forge.md`](harmonic-forge.md) | Full platform specification — philosophy, structure, topology, registry |
 | [`3-lane-protocol.md`](3-lane-protocol.md) | Condensed, agent-readable operational protocol |
 | [`rules/`](rules/) | The universal directive files themselves |
