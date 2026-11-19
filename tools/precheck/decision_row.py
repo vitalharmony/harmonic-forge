@@ -57,19 +57,37 @@ def call_path(store: Path, session: str | None, tuid: str | None) -> Path | None
     return store / "calls" / f"{session}-{tuid}.json"
 
 
+#: A call file larger than this is treated as absent, never parsed.
+CALL_MAX_BYTES = 64 * 1024
+
+
+def read_call(path: Path) -> dict | None:
+    """An existing call file's row, or None for a file that is absent,
+    oversized or unreadable for any reason (a 10,000-deep nest raises
+    RecursionError; a planted file must never change the gate's decision)."""
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(CALL_MAX_BYTES + 1)
+        if len(raw) > CALL_MAX_BYTES:
+            return None
+        prior = json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001 -- includes RecursionError and MemoryError
+        return None
+    return prior if isinstance(prior, dict) else None
+
+
 def write_call(store: Path, data: dict) -> None:
-    """Atomically write the per-call file for a gate row. An existing
-    allowed-receipt file is never overwritten by a later non-receipt row, so a
-    receipted call keeps its attribution. A store problem is never surfaced."""
-    with contextlib.suppress(OSError, ValueError, TypeError):
+    """Atomically write the per-call file for a gate row. First allowed-receipt
+    wins: once the file holds an allowed-receipt row, no later row (receipt or
+    not) replaces it; before any receipt, the newest row is kept. A store
+    problem is never surfaced."""
+    with contextlib.suppress(Exception):
         path = call_path(store, data.get("session"), data.get("tuid"))
         if path is None:
             return
-        if data.get("outcome") != "allowed-receipt":
-            with contextlib.suppress(OSError, ValueError):
-                prior = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(prior, dict) and prior.get("outcome") == "allowed-receipt":
-                    return
+        prior = read_call(path)
+        if prior is not None and prior.get("outcome") == "allowed-receipt":
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".call.")
         try:

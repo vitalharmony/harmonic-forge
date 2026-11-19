@@ -62,6 +62,58 @@ class Telemetry(Store):
             self.assertIsNone(self.gate_with(L1_CMD, "toolu_full"))
         self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
 
+    def _call(self, tuid: str) -> Path:
+        return decision_row.call_path(self.root / "store", decision_row.digest(SESSION),
+                                      decision_row.digest(tuid))
+
+    def _decide_with_planted(self, content: bytes | None) -> str | None:
+        self.record(L1, L1_ARGS)
+        call = self._call("toolu_plant")
+        if content is not None:
+            call.parent.mkdir(parents=True, exist_ok=True)
+            call.write_bytes(content)
+        return self.gate_with(L1_CMD, "toolu_plant")
+
+    def test_deep_nested_call_file_never_changes_decision(self) -> None:
+        """Post-verdict A1: a 10,000-deep planted file raises RecursionError in
+        json.loads; the decision must equal the no-file decision."""
+        baseline = self._decide_with_planted(None)
+        self._call("toolu_plant").unlink()
+        self.assertEqual(self._decide_with_planted(b"[" * 10000 + b"]" * 10000), baseline)
+        self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
+
+    def test_oversized_call_file_never_changes_decision(self) -> None:
+        baseline = self._decide_with_planted(None)
+        self._call("toolu_plant").unlink()
+        big = json.dumps({"outcome": "allowed-receipt", "pad": "x" * (decision_row.CALL_MAX_BYTES + 10)})
+        self.assertEqual(self._decide_with_planted(big.encode()), baseline)
+        self.assertEqual(json.loads(self._call("toolu_plant").read_text())["outcome"], "allowed-receipt")
+        self.assertNotIn("pad", json.loads(self._call("toolu_plant").read_text()))
+
+    def test_first_receipt_wins(self) -> None:
+        """Post-verdict A4: receipt->receipt keeps the first; precheck->receipt
+        keeps the receipt; receipt->precheck->receipt keeps the first receipt."""
+        store = self.root / "store"
+
+        def put(outcome: str, ts: float, tuid: str) -> None:
+            decision_row.write_call(store, decision_row.row(outcome, sid=SESSION, tuid=tuid, now=ts))
+
+        def kept(tuid: str) -> tuple:
+            data = json.loads(self._call(tuid).read_text())
+            return data["outcome"], data["ts"]
+
+        orders = {"a": ["allowed-receipt", "allowed-receipt"],
+                  "b": ["precheck", "allowed-receipt"],
+                  "c": ["allowed-receipt", "precheck", "allowed-receipt"],
+                  "d": ["precheck", "refused"]}
+        for tuid, outcomes in orders.items():
+            for ts, outcome in enumerate(outcomes, start=1):
+                put(outcome, float(ts), tuid)
+        self.assertEqual(kept("a"), ("allowed-receipt", 1.0))
+        self.assertEqual(kept("b"), ("allowed-receipt", 2.0))
+        self.assertEqual(kept("c"), ("allowed-receipt", 1.0))
+        self.assertEqual(kept("d"), ("refused", 2.0))
+
     def test_fault_reason(self) -> None:
         with mock.patch.object(gate, "_calls_in", side_effect=RuntimeError("boom")):
             self.gate_with("echo hi", "t2")
