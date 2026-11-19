@@ -357,5 +357,44 @@ class ModeBindingTests(Store):
         self.assertIn("one merge past the route recheck", route)
         self.assertIn("never past an IMC receipt", G.comment_body(self.usable()))
 
+class GateGrant(unittest.TestCase):
+    """harmonic-forge#1291: a gate grant releases one call whose tool, mode and
+    argument fingerprint match the refusal it was typed against."""
+
+    BINDING = {"gate_tool": "tools/gh/preclose_check.py", "gate_mode": "--complete --force",
+               "arg_fp": "9" * 64}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(G, "FORCE_STATE_DIR", Path(tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        grant = G.write_pending(KEY, REPO, ISSUE, None, "stale receipt", "s1", "FORCE line",
+                                mode="gate", gate={**self.BINDING, "gate_refusal_id": "a" * 12})
+        usable = {**grant, "status": "usable", "comment_url": "u#issuecomment-1", "comment_id": "1"}
+        G.imc_waiver.write_json_atomic(G.grant_path(KEY), usable)
+        self.granted_at = grant["granted_at"]
+
+    def test_gate_grant_bound_to_mode_and_fp(self):
+        for field in ("gate_tool", "gate_mode", "arg_fp"):
+            with self.subTest(field=field):
+                with self.assertRaises(G.GrantRefused):
+                    G.require(REPO, ISSUE, "", mode="gate", gate={**self.BINDING, field: "other"})
+        self.assertEqual(G.require(REPO, ISSUE, "", mode="gate", gate=self.BINDING)["mode"], "gate")
+        with self.assertRaises(G.GrantRefused):
+            G.require(REPO, ISSUE, "", mode="plain")
+
+    def test_gate_grant_single_use(self):
+        G.consume(KEY, self.granted_at, "", mode="gate", gate=self.BINDING)
+        with self.assertRaisesRegex(G.GrantRefused, "consumed|not usable"):
+            G.consume(KEY, self.granted_at, "", mode="gate", gate=self.BINDING)
+
+    def test_comment_names_what_a_gate_grant_releases(self):
+        body = G.comment_body(G.read_grant(KEY))
+        self.assertIn("one call past the precheck gate", body)
+        self.assertIn("9" * 12, body)
+
+
 if __name__ == "__main__":
     unittest.main()

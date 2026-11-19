@@ -1395,6 +1395,17 @@ def audit_transaction_log(checkout: str, report: Report) -> None:
     _flush()
 
 
+def _record_precheck() -> None:
+    """harmonic-forge#1291: a clean `--prune-worktrees --dry-run` writes the
+    state-bound receipt the PreToolUse gate requires before the real prune."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "precheck"))
+    import gate_receipt  # noqa: PLC0415
+    try:
+        gate_receipt.record("tools/gh/repo_hygiene.py", sys.argv[1:])
+    except (gate_receipt.ReceiptRefused, gate_receipt.Deadline, OSError) as exc:
+        print(f"[hygiene] precheck receipt not written ({exc})", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME",
@@ -1495,6 +1506,8 @@ def main() -> int:
             # checkout's slot too; resetting before it read a wrong "no merged PR".
             _use_slot(repo_for_path_or_none(checkout))
             prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
+        if args.dry_run and prune_exit == 0:
+            _record_precheck()
     _use_slot(None)
 
     if report.unlabelled_migrations:

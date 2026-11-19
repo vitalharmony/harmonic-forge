@@ -181,5 +181,62 @@ class ForceModes(ForceTrigger):
     def test_unknown_mode_names_route(self) -> None:
         self.assertIn("`route <sha>`", self.force("FORCE F1166 rebase: x"))
 
+class GateMode(ForceTrigger):
+    """harmonic-forge#1291: `FORCE <KEY> gate <refusal-id>: <reason>` binds the
+    refusal record with that id, never the newest refusal."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        store = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ, {"PRECHECK_GATE_DIR": store})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.gate = m._gate_module()
+
+    def refusal(self, rid: str, fp: str, *, key: str | None = "F1166", session: str = "sess-7") -> None:
+        path = self.gate.refusals_dir() / f"{rid}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"id": rid, "session": session, "key": key,
+                                    "tool": "tools/gh/preclose_check.py", "mode": "--complete --force",
+                                    "fp": fp, "canonical": ["--repo", "R", "--issue", "1166", "--complete"],
+                                    "ts": 1.0}))
+
+    def test_gate_grant_binds_typed_refusal_id(self) -> None:
+        self.refusal("a" * 12, "1" * 64)
+        self.refusal("b" * 12, "2" * 64)  # newer: never the one bound
+        receipt = self.force(f"FORCE F1166 gate {'a' * 12}: the refusal was a stale receipt")
+        self.assertIn("pending gate grant written for F1166", receipt)
+        grant = self.grant()
+        self.assertEqual((grant["mode"], grant["arg_fp"], grant["gate_tool"], grant["gate_mode"],
+                          grant["gate_refusal_id"]),
+                         ("gate", "1" * 64, "tools/gh/preclose_check.py", "--complete --force", "a" * 12))
+        self.assertIsNone(grant["sha"])
+
+    def test_gate_force_receipt_echoes_argv(self) -> None:
+        self.refusal("a" * 12, "1" * 64)
+        receipt = self.force(f"FORCE F1166 gate {'a' * 12}: reason")
+        self.assertIn('["--repo", "R", "--issue", "1166", "--complete"]', receipt)
+        self.assertIn("tools/gh/preclose_check.py --complete --force", receipt)
+
+    def test_gate_line_without_id_refused(self) -> None:
+        self.refusal("a" * 12, "1" * 64)
+        self.assertIn("names the refusal it releases", self.force("FORCE F1166 gate: reason"))
+        self.assertIn("not a 12-character hex refusal id", self.force("FORCE F1166 gate abc: reason"))
+        self.assertIsNone(self.grant())
+
+    def test_unknown_foreign_or_other_session_id_refused(self) -> None:
+        self.assertIn("no precheck gate refusal", self.force(f"FORCE F1166 gate {'c' * 12}: reason"))
+        self.refusal("d" * 12, "1" * 64, key="F9")
+        self.assertIn("is F9's", self.force(f"FORCE F1166 gate {'d' * 12}: reason"))
+        self.refusal("e" * 12, "1" * 64, session="other")
+        self.assertIn("another session", self.force(f"FORCE F1166 gate {'e' * 12}: reason"))
+        self.assertIsNone(self.grant())
+
+    def test_a_keyless_refusal_takes_the_typed_key(self) -> None:
+        self.refusal("f" * 12, "3" * 64, key=None)
+        self.assertIn("pending gate grant", self.force(f"FORCE F1166 gate {'f' * 12}: reason"))
+        self.assertEqual(self.grant()["arg_fp"], "3" * 64)
+
+
 if __name__ == "__main__":
     unittest.main()

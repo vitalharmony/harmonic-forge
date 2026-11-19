@@ -45,6 +45,8 @@ teardown from where the live tmux panes are (each pane's git repository, with it
 EOF
 }
 
+# harmonic-forge#1291: the original arguments, for the dry run's precheck receipt.
+lanes_claude_args=("$@")
 while (($#)); do
   case "$1" in
     --session)
@@ -430,6 +432,9 @@ printf 'workspace dirs (hrse#2258):\n'
 printf '  %s\n' "${workspace_dirs[@]}"
 
 if ((dry_run)); then
+  # harmonic-forge#1291: the clean dry run is the launch's precheck; record
+  # its state-bound receipt (best effort: a failure only means the launch is refused).
+  python3 "${HOME}/harmonic-forge/tools/precheck/gate_receipt.py" record --tool tools/lane/lanes-claude -- "${lanes_claude_args[@]}" || true
   exit 0
 fi
 

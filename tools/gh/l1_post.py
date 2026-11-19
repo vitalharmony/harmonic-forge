@@ -3535,9 +3535,12 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
     return steps
 
 
-def _dry_run_clean(receipt_key: str, kind: str, repo: str, issue: int, sha: str) -> None:
+def _dry_run_clean(kind: str, repo: str, issue: int, sha: str) -> None:
     print(f"[l1-post] dry run clean: {kind} {repo}#{issue} @ {sha[:12]}")
-    _preflight.record(receipt_key)
+    # harmonic-forge#1291: gate_receipt's state-bound receipt for this exact
+    # call (argv, --sha resolved, every body file by content), the one the
+    # PreToolUse gate and the require() below both read.
+    _preflight.record("tools/gh/l1_post.py", sys.argv[1:])
 
 
 def main() -> None:
@@ -3681,11 +3684,10 @@ def main() -> None:
     sha = resolve_sha(args.sha)
     if prod_run and "script" in prod_run:
         _refuse_script_contract(prod_run["script"], sha)
-    receipt_key = _preflight.digest_key("l1_post", _post_digest(args, repo, sha))
     if not args.dry_run:
         # harmonic-forge#1115: the real post needs a clean dry run of this exact
         # post in this session. The dry run itself is never gated.
-        refusal = _preflight.require(receipt_key, _dry_run_command())
+        refusal = _preflight.require("tools/gh/l1_post.py", sys.argv[1:], _dry_run_command())
         if refusal:
             fail(refusal)
 
@@ -3730,7 +3732,7 @@ def main() -> None:
         if args.dry_run:
             # The sweep half's publish checks (world checks) are the AE half's,
             # same repo/issue/SHA/branch/ack, so they are not run twice.
-            _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
+            _dry_run_clean(args.kind, repo, args.issue, sha)
             return
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
@@ -3856,7 +3858,7 @@ def main() -> None:
             steps.append(lambda: _dry_run_check(sha, args.branch))
     _collect(steps)
     if args.dry_run:
-        _dry_run_clean(receipt_key, args.kind, repo, args.issue, sha)
+        _dry_run_clean(args.kind, repo, args.issue, sha)
         return
     if args.kind == "carry-forward":
         # harmonic-forge#1036: every live check, all named, before anything posts.

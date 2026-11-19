@@ -77,8 +77,17 @@ class KillCheckTests(unittest.TestCase):
             "ac": "AC1", "mechanism": "f returns 1", "patch": patch_path or str(self.patch_file),
             "test": test or ["python3", "check.py"]}]))
 
+    def _argv(self, *, validate: bool = False, base: str = "origin/main", checks: str | None = None,
+              timeout: int = 300):
+        """harmonic-forge#1291: the receipt binds the tool's own argv, so the
+        command line a Namespace stands for is patched in as sys.argv."""
+        argv = [str(Path(kill.__file__).resolve()), "run", "--repo", REPO, "--issue", str(ISSUE),
+                "--base", base, "--head", "HEAD", "--checks", checks or str(self.checks_file),
+                "--timeout", str(timeout), *(["--validate"] if validate else [])]
+        return patch.object(sys, "argv", argv)
+
     def execute(self, *, timeout: int = 300, checks: str | None = None) -> int:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), self._argv(checks=checks, timeout=timeout):
             return kill.run(argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main",
                                                head="HEAD", checks=checks or str(self.checks_file),
                                                timeout=timeout))
@@ -89,7 +98,7 @@ class KillCheckTests(unittest.TestCase):
     # --- harmonic-forge#1215 AC2: `run --validate` is run's read-only preflight ---
 
     def _validate(self, checks: str | None = None) -> int:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), self._argv(validate=True, checks=checks):
             try:
                 return kill.validate(argparse.Namespace(repo=REPO, issue=ISSUE, base="origin/main",
                                                         head="HEAD", checks=checks or str(self.checks_file),
@@ -130,7 +139,8 @@ class KillCheckTests(unittest.TestCase):
     def test_a_changed_base_needs_a_new_validate(self) -> None:
         self._in_session()
         self.assertEqual(self._validate(), 0)
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                self._argv(base="HEAD~1"):
             code = kill.run(argparse.Namespace(repo=REPO, issue=ISSUE, base="HEAD~1", head="HEAD",
                                                checks=str(self.checks_file), timeout=300))
         self.assertEqual(code, 1)

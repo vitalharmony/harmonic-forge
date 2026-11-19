@@ -255,3 +255,14 @@ is typed as the prompt's first line, so the session must recognize it before any
 consulted, and the grammar stays always-loaded. The tool's behavior is in its docstring and
 in skills/bounded-scan, not here.
 """
+
+[[increase]]
+date = "2026-11-18"
+files = [".claude/rules/lane-shorthand.md"]
+bytes = 8774
+why = """
+Cumulative since the last baseline: 8558 (entry above) plus harmonic-forge#1291 (216): the
+FORCE table's `gate <refusal-id>` row. The operator types it as the prompt's first line, after
+the precheck gate prints the refusal id, so the grammar stays always-loaded with the other
+FORCE modes. The gate's behavior is in tools/precheck/gate.py's docstring, not here.
+"""

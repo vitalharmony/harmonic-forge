@@ -8,13 +8,16 @@ the libraries and data files; and the outside-command table (decision 4). A
 consuming repo adds its own scripts in `<repo>/.claude/effects.toml`, which
 may hold `[[tool]]` and `[[library]]` entries only (decision 7).
 
-Nothing here allows or denies a call: harmonic-forge#1291's gate is the first
-runtime reader. This module reads local files only and makes no external call.
+Nothing here allows or denies a call: harmonic-forge#1291's gate
+(tools/precheck/gate.py) is the runtime reader. This module reads local files
+only and makes no external call; `options` runs each gated tool's local
+`--help`.
 
     effects.py validate [--repo-root DIR]   schema, citations and declarations
     effects.py inventory                    tools/gh/_preflight.py's table
     effects.py gaps                         the decision 6 gap list
     effects.py layerset                     tools/precheck/layersets/registry-v1.json
+    effects.py options                      tools/precheck/tool_options.json (each gated tool's --help)
 """
 from __future__ import annotations
 
@@ -56,9 +59,17 @@ RECOGNIZERS = {"classify_pr_merge": batch_auth.classify_pr_merge,
 
 TOP_KEYS = {"data", "tool", "library", "outside"}
 EXTENSION_KEYS = {"tool", "library"}
-TOOL_KEYS = {"path", "replay_tool", "wrapper", "alias_of", "mode", "note"}
+TOOL_KEYS = {"path", "replay_tool", "wrapper", "alias_of", "mode", "note", "mise_tasks"}
 MODE_KEYS = {"name", "match", "exact", "class", "cite", "note", "precheck", "guard_kind", "guard",
-             "gap", "binds", "binds_cite", "duration_s", "guard_note", "validates"}
+             "gap", "binds", "binds_cite", "duration_s", "guard_note", "validates",
+             # harmonic-forge#1291: what the gate needs to tell a precheck from its real run.
+             "precheck_form", "bind_args", "prefix", "backstop", "receipt_writer"}
+PRECHECK_FORM_KEYS = {"strip", "add", "add_at"}
+#: bind_args keys beyond BINDS: the directory git runs in for the origin binds.
+BIND_ARG_EXTRA = ("git_dir",)
+MISE_TASK_KEYS = {"task", "prefix"}
+MISE_FILE = FORGE_ROOT / "mise.toml"
+TOOL_OPTIONS_FILE = FORGE_ROOT / "tools" / "precheck" / "tool_options.json"
 LIBRARY_KEYS = {"path", "sourced_by"}
 OUTSIDE_KEYS = {"family", "programs", "match", "class", "read_shape", "flags", "first_token",
                 "guard_kind", "guard", "gap", "guard_note", "replay_tool", "validates"}
@@ -192,14 +203,75 @@ def _mode(raw, where: str, classes: set[str], roots: list[Path]) -> dict:
             raise RegistryError(f"{where}: a non-empty binds needs binds_cite")
         if "binds_cite" in mode:
             _cite(mode["binds_cite"], where, roots)
+        _precheck_gate_fields(mode, where)
     elif "binds" in mode or "binds_cite" in mode:
         raise RegistryError(f"{where}: binds belongs to a precheck mode")
+    elif any(k in mode for k in ("precheck_form", "bind_args", "prefix", "backstop", "receipt_writer")):
+        raise RegistryError(f"{where}: precheck_form, bind_args, prefix, backstop and receipt_writer "
+                            "belong to a precheck mode")
     if "duration_s" in mode and (not isinstance(mode["duration_s"], int) or mode["duration_s"] <= 0):
         raise RegistryError(f"{where}: duration_s must be a positive integer")
     mode["validates"] = _validates(mode, where, classes, roots)
     if mode["validates"] and has_gap:
         raise RegistryError(f"{where}: a gap validates nothing")
     return mode
+
+
+def _bind_value(value, where: str, name: str) -> None:
+    values = value if isinstance(value, list) else [value]
+    if not values or not all(isinstance(v, str) and v for v in values):
+        raise RegistryError(f"{where}: bind_args.{name} must be a flag, '#N', 'cwd', 'main' or a list of flags")
+    for v in values:
+        if not (v.startswith("-") or re.fullmatch(r"#\d+", v) or v in ("cwd", "main")):
+            raise RegistryError(f"{where}: bind_args.{name} value {v!r} is not a flag, '#N', 'cwd' or 'main'")
+
+
+def _precheck_gate_fields(mode: dict, where: str) -> None:
+    """harmonic-forge#1291: precheck_form, bind_args, prefix, backstop and
+    receipt_writer are required on every precheck mode, never defaulted."""
+    for field in ("precheck_form", "bind_args", "prefix", "backstop", "receipt_writer"):
+        if field not in mode:
+            raise RegistryError(f"{where}: a precheck mode needs {field} (harmonic-forge#1291)")
+    form = _keys(mode["precheck_form"], PRECHECK_FORM_KEYS, f"{where} precheck_form")
+    strip, add = form.get("strip", []), form.get("add", [])
+    for name, tokens in (("strip", strip), ("add", add)):
+        if not isinstance(tokens, list) or not all(isinstance(t, str) and t.startswith("-") for t in tokens):
+            raise RegistryError(f"{where}: precheck_form.{name} must be a list of option tokens")
+    if not strip and not add:
+        raise RegistryError(f"{where}: precheck_form needs a strip or an add token")
+    if "add_at" in form and (not isinstance(form["add_at"], int) or form["add_at"] < 0 or not add):
+        raise RegistryError(f"{where}: precheck_form.add_at is a non-negative position for an add token")
+    form.setdefault("strip", [])
+    form.setdefault("add", [])
+    bind_args = _keys(mode["bind_args"], set(BINDS) | set(BIND_ARG_EXTRA), f"{where} bind_args")
+    if "args" in bind_args:
+        raise RegistryError(f"{where}: bind_args never names args (the argv is always bound)")
+    for name, value in bind_args.items():
+        if name not in BIND_ARG_EXTRA and name not in mode["binds"]:
+            raise RegistryError(f"{where}: bind_args.{name} is not in binds")
+        _bind_value(value, where, name)
+    missing = [b for b in mode["binds"] if b != "args" and b not in bind_args]
+    if missing:
+        raise RegistryError(f"{where}: bind_args names no input for {missing}")
+    for field in ("prefix", "backstop", "receipt_writer"):
+        if not isinstance(mode[field], bool):
+            raise RegistryError(f"{where}: {field} must be true or false")
+
+
+def _mise_tasks(tool: dict, where: str) -> list[dict]:
+    value = tool.get("mise_tasks", [])
+    if not isinstance(value, list):
+        raise RegistryError(f"{where}: mise_tasks must be a list")
+    out = []
+    for item in value:
+        _keys(item, MISE_TASK_KEYS, f"{where} mise_tasks")
+        task, prefix = item.get("task"), item.get("prefix", [])
+        if not isinstance(task, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]+", task or ""):
+            raise RegistryError(f"{where}: mise_tasks task {task!r} is not a task name")
+        if not isinstance(prefix, list) or not all(isinstance(t, str) and t for t in prefix):
+            raise RegistryError(f"{where}: mise_tasks prefix must be a list of tokens")
+        out.append({"task": task, "prefix": list(prefix)})
+    return out
 
 
 def _tool(raw, where: str, classes: set[str], interim: set[str], roots: list[Path]) -> dict:
@@ -209,6 +281,7 @@ def _tool(raw, where: str, classes: set[str], interim: set[str], roots: list[Pat
         raise RegistryError(f"{where}: needs a path")
     where = f"tool {path}"
     tool["replay_tools"] = _replay_tools(tool, where, interim)
+    tool["mise_tasks"] = _mise_tasks(tool, where)
     if not isinstance(tool.get("wrapper", False), bool):
         raise RegistryError(f"{where}: wrapper must be true or false")
     if "alias_of" in tool:
@@ -642,7 +715,7 @@ def layerset(registry: dict | None = None, design: Path = DESIGN_LAYER_SET) -> d
                 if layer["name"] == "gate")
     claimed = sorted({f"{tool}|{klass}" for tool, klass, cite in claims(registry)
                       if cite and klass not in NEVER_CLAIMED})
-    return {"name": "registry", "claims": claimed, "claims_basis": "validated", "module": None,
+    return {"name": "registry", "claims": claimed, "claims_basis": "validated", "module": "../gate.py",
             "bar": gate["bar"]}
 
 
@@ -655,6 +728,81 @@ def layer_set_document(registry: dict | None = None, design: Path = DESIGN_LAYER
     return json.dumps(document, indent=2) + "\n"
 
 
+# --------------------------------------------------------------------------
+# harmonic-forge#1291: the gate's inputs the registry vouches for.
+
+def precheck_modes(registry: dict):
+    """(tool, mode) for every precheck mode, in declaration order."""
+    for tool in registry["tools"]:
+        for mode in tool["modes"]:
+            if "precheck" in mode:
+                yield tool, mode
+
+
+def mise_problems(registry: dict, mise_file: Path = MISE_FILE) -> list[str]:
+    """Each `mise_tasks` entry whose `[tasks.<name>]` run line does not name
+    the tool's path (and its prefix tokens), so the mapping cannot drift."""
+    if not any(t["mise_tasks"] for t in registry["tools"]):
+        return []
+    try:
+        tasks = _parse(Path(mise_file)).get("tasks", {})
+    except RegistryError as exc:
+        return [str(exc)]
+    problems = []
+    for tool in registry["tools"]:
+        for entry in tool["mise_tasks"]:
+            run = (tasks.get(entry["task"]) or {}).get("run")
+            text = "\n".join(run) if isinstance(run, list) else str(run or "")
+            if tool["path"] not in text:
+                problems.append(f"mise task {entry['task']} does not run {tool['path']}")
+            elif entry["prefix"] and " ".join(entry["prefix"]) not in text:
+                problems.append(f"mise task {entry['task']} does not pass {' '.join(entry['prefix'])}")
+    return problems
+
+
+_OPTION = re.compile(r"(?<![\w-])(--?[A-Za-z][\w-]*)")
+
+
+def _help_options(argv: list[str]) -> list[str]:
+    import subprocess  # noqa: PLC0415 - local --help runs only, never at import
+    done = subprocess.run([sys.executable, *argv, "--help"], capture_output=True, text=True,
+                          timeout=60, cwd=FORGE_ROOT, check=False)
+    if done.returncode != 0:
+        raise RegistryError(f"{' '.join(argv)} --help exited {done.returncode}")
+    return sorted(set(_OPTION.findall(done.stdout)))
+
+
+def tool_options(registry: dict | None = None) -> dict:
+    """Each prefix-resolving precheck tool's real option list, from its own
+    `--help` (and each subcommand's, keyed `<path> <sub>`). Runs local
+    `--help` only."""
+    registry = registry if registry is not None else load()
+    out: dict[str, list[str]] = {}
+    for tool, mode in precheck_modes(registry):
+        if not mode["prefix"] or not tool["path"].endswith(".py"):
+            continue
+        path = str(Path(tool["root"]) / tool["path"])
+        subs = [t for t in mode["match"] if not t.startswith("-")]
+        key = " ".join([tool["path"], *subs])
+        if key not in out:
+            out[key] = _help_options([path, *subs])
+    return dict(sorted(out.items()))
+
+
+def tool_options_document(registry: dict | None = None) -> str:
+    return json.dumps(tool_options(registry), indent=2, sort_keys=True) + "\n"
+
+
+def options_problems(registry: dict, path: Path = TOOL_OPTIONS_FILE) -> list[str]:
+    try:
+        current = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return [f"{path} is missing: run `python3 tools/registry/effects.py options`"]
+    if current != tool_options_document(registry):
+        return [f"{path} is stale: run `python3 tools/registry/effects.py options`"]
+    return []
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -664,11 +812,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("inventory", help="print tools/gh/_preflight.py's table")
     sub.add_parser("gaps", help="print the decision 6 gap list")
     sub.add_parser("layerset", help="print registry-v1.json")
+    sub.add_parser("options", help="write tools/precheck/tool_options.json from each tool's --help")
     args = parser.parse_args(argv)
     try:
         if args.command == "validate":
             registry = load(args.repo_root)
             problems = declaration_problems(registry)
+            if args.repo_root is None or Path(args.repo_root).resolve() == FORGE_ROOT:
+                problems += mise_problems(registry) + options_problems(registry)
             if args.repo_root is not None and Path(args.repo_root).resolve() != FORGE_ROOT:
                 problems += declaration_problems(registry, args.repo_root, dirs=())
             for problem in problems:
@@ -683,6 +834,9 @@ def main(argv: list[str] | None = None) -> int:
             print(inventory())
         elif args.command == "gaps":
             print(gaps())
+        elif args.command == "options":
+            TOOL_OPTIONS_FILE.write_text(tool_options_document(), encoding="utf-8")
+            print(f"effects: wrote {TOOL_OPTIONS_FILE}")
         else:
             sys.stdout.write(layer_set_document())
     except RegistryError as exc:

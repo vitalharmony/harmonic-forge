@@ -32,7 +32,7 @@
         "preclose_check|receipt"
       ],
       "claims_basis": "validated",
-      "module": null,
+      "module": "../gate.py",
       "bar": {
         "replay": {
           "classes": [

@@ -92,18 +92,24 @@ replay_tool = "board_fields"
 
 [[tool]]
 path = "tools/gh/check_lane3_ready.py"
+mise_tasks = [{task = "lane3-begin", prefix = ["--mark-active"]}]
   [[tool.mode]]
   name = "--mark-active"
   match = ["--mark-active"]
   class = "shared-state"
   precheck = "default"
   binds = []
-  cite = ["tools/gh/check_lane3_ready.py:490-491", "tools/gh/check_lane3_ready.py:528-529"]
+  precheck_form = {strip = ["--mark-active"], add = []}
+  bind_args = {}
+  receipt_writer = true
+  backstop = false
+  prefix = true
+  cite = ["tools/gh/check_lane3_ready.py:499-500", "tools/gh/check_lane3_ready.py:537-538"]
   [[tool.mode]]
   name = "default"
   match = []
   class = "read"
-  cite = ["tools/gh/check_lane3_ready.py:489-546"]
+  cite = ["tools/gh/check_lane3_ready.py:498-559"]
 
 [[tool]]
 path = "tools/gh/fetch_lane1_context.py"
@@ -120,13 +126,13 @@ path = "tools/gh/force_grant.py"
   match = ["record"]
   class = "external-publish"
   guard_kind = "operator-grant"
-  guard = "FORCE line: refuses with no operator-typed grant (tools/gh/force_grant.py:163-165)"
-  cite = ["tools/gh/force_grant.py:163-165", "tools/gh/force_grant.py:174"]
+  guard = "FORCE line: refuses with no operator-typed grant (tools/gh/force_grant.py:170-172)"
+  cite = ["tools/gh/force_grant.py:170-172", "tools/gh/force_grant.py:181"]
   [[tool.mode]]
   name = "status"
   match = ["status"]
   class = "read"
-  cite = ["tools/gh/force_grant.py:302"]
+  cite = ["tools/gh/force_grant.py:323"]
 
 [[tool]]
 path = "tools/gh/gate_ci.py"
@@ -250,54 +256,66 @@ path = "tools/gh/install_gh_shim.sh"
 [[tool]]
 path = "tools/gh/kill_check.py"
 replay_tool = "kill_check"
+mise_tasks = [{task = "kill-check", prefix = []}]
   [[tool.mode]]
   name = "run --validate"
   match = ["run", "--validate"]
   class = "local-write"
   note = "preflight receipt (rule step 3)"
-  cite = ["tools/gh/kill_check.py:415", "tools/gh/kill_check.py:336"]
+  cite = ["tools/gh/kill_check.py:403", "tools/gh/kill_check.py:326"]
   [[tool.mode]]
   name = "run"
   match = ["run"]
   class = "shared-state"
   precheck = "run --validate"
   binds = ["head_sha", "checks_file", "args"]
-  binds_cite = "tools/gh/kill_check.py:302-315"
-  cite = ["tools/gh/kill_check.py:345", "tools/gh/kill_check.py:355"]
+  binds_cite = "tools/precheck/gate_receipt.py:287-296"
+  precheck_form = {strip = [], add = ["--validate"]}
+  bind_args = {head_sha = "--head", checks_file = "--checks"}
+  receipt_writer = true
+  backstop = true
+  prefix = true
+  cite = ["tools/gh/kill_check.py:335", "tools/gh/kill_check.py:343"]
   validates = [
-    {class = "receipt", cite = "tools/gh/kill_check.py:336"},
-    {class = "receipt", cite = "tools/gh/kill_check.py:345"},
-    {class = "freshness", cite = "tools/gh/kill_check.py:302-315"},
-    {class = "freshness", cite = "tools/gh/kill_check.py:345"},
+    {class = "receipt", cite = "tools/gh/kill_check.py:326"},
+    {class = "receipt", cite = "tools/gh/kill_check.py:335"},
+    {class = "freshness", cite = "tools/precheck/gate_receipt.py:287-296"},
+    {class = "freshness", cite = "tools/gh/kill_check.py:335"},
   ]
   [[tool.mode]]
   name = "waive"
   match = ["waive"]
   class = "shared-state"
   gap = "writes a waived kill-check receipt"
-  cite = ["tools/gh/kill_check.py:388"]
+  cite = ["tools/gh/kill_check.py:376"]
 
 [[tool]]
 path = "tools/gh/l1_post.py"
 replay_tool = "l1_post"
+mise_tasks = [{task = "l1-post", prefix = []}]
   [[tool.mode]]
   name = "--dry-run"
   match = ["--dry-run"]
   class = "local-write"
   note = "preflight receipt (rule step 3); refresh_main's fetch is a cache (step 2)"
-  cite = ["tools/gh/l1_post.py:3776-3778", "tools/gh/l1_post.py:3466-3468"]
+  cite = ["tools/gh/l1_post.py:3778-3780", "tools/gh/l1_post.py:3466-3468"]
   [[tool.mode]]
   name = "post (every --kind)"
   match = []
   class = "external-publish"
   precheck = "--dry-run"
   binds = ["head_sha", "body_content", "args"]
-  binds_cite = "tools/gh/l1_post.py:3408-3426"
-  cite = ["tools/gh/l1_post.py:3488", "tools/gh/l1_post.py:3608-3613", "tools/gh/l1_post.py:3784"]
+  binds_cite = "tools/gh/l1_post.py:3440-3458"
+  precheck_form = {strip = [], add = ["--dry-run"]}
+  bind_args = {head_sha = "--sha", body_content = ["--file", "--ae-file", "--sweep-file"]}
+  receipt_writer = true
+  backstop = true
+  prefix = true
+  cite = ["tools/gh/l1_post.py:3488", "tools/gh/l1_post.py:3642-3647", "tools/gh/l1_post.py:3786"]
   validates = [
-    {class = "receipt", cite = "tools/gh/l1_post.py:3608-3613"},
-    {class = "freshness", cite = "tools/gh/l1_post.py:3408-3426"},
-    {class = "freshness", cite = "tools/gh/l1_post.py:3607-3611"},
+    {class = "receipt", cite = "tools/gh/l1_post.py:3642-3647"},
+    {class = "freshness", cite = "tools/gh/l1_post.py:3440-3458"},
+    {class = "freshness", cite = "tools/gh/l1_post.py:3610-3614"},
   ]
 
 [[tool]]
@@ -382,18 +400,19 @@ replay_tool = "post-lane-discussion"
 [[tool]]
 path = "tools/gh/preclose_check.py"
 replay_tool = "preclose_check"
+mise_tasks = [{task = "preclose-check", prefix = []}]
   [[tool.mode]]
   name = "--gate"
   match = ["--gate"]
   class = "local-write"
   note = "prints the branch; writes only its _preflight receipt (rule step 3)"
-  cite = ["tools/gh/preclose_check.py:638-640", "tools/gh/preclose_check.py:1465-1469", "tools/gh/preclose_check.py:1362"]
+  cite = ["tools/gh/preclose_check.py:638-640", "tools/gh/preclose_check.py:1477-1481", "tools/gh/preclose_check.py:1362"]
   [[tool.mode]]
   name = "--post-verdict"
   match = ["--post-verdict"]
   class = "shared-state"
   gap = "writes the pass receipt"
-  cite = ["tools/gh/preclose_check.py:1470", "tools/gh/preclose_check.py:1606"]
+  cite = ["tools/gh/preclose_check.py:1482", "tools/gh/preclose_check.py:1618"]
   [[tool.mode]]
   name = "--cluster-verdict --force"
   match = ["--cluster-verdict", "--force"]
@@ -401,9 +420,15 @@ replay_tool = "preclose_check"
   precheck = "--cluster-verdict"
   guard_kind = "operator-grant"
   guard = "FORCE <key> cluster line (force_grant.require)"
-  binds = []
-  guard_note = "the precheck key binds repo, issue and mode only"
-  cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:1495", "tools/gh/preclose_check.py:1530-1533"]
+  binds = ["head_sha", "args"]
+  binds_cite = "tools/gh/preclose_check.py:1473"
+  precheck_form = {strip = ["--force"], add = []}
+  bind_args = {head_sha = "--head"}
+  receipt_writer = true
+  backstop = true
+  prefix = true
+  guard_note = "the precheck receipt binds the exact arguments and the resolved --head (harmonic-forge#1291)"
+  cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:1507", "tools/gh/preclose_check.py:1542-1545"]
   validates = [
     {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
   ]
@@ -412,7 +437,7 @@ replay_tool = "preclose_check"
   match = ["--cluster-verdict"]
   class = "shared-state"
   gap = "writes the cluster verdict into the receipt"
-  cite = ["tools/gh/preclose_check.py:1481", "tools/gh/preclose_check.py:1539"]
+  cite = ["tools/gh/preclose_check.py:1493", "tools/gh/preclose_check.py:1551"]
   [[tool.mode]]
   name = "--complete --force"
   match = ["--complete", "--force"]
@@ -420,8 +445,14 @@ replay_tool = "preclose_check"
   precheck = "--complete"
   guard_kind = "operator-grant"
   guard = "FORCE line (force_grant.require)"
-  binds = []
-  guard_note = "the precheck key binds repo, issue and mode only"
+  binds = ["head_sha", "args"]
+  binds_cite = "tools/gh/preclose_check.py:1473"
+  precheck_form = {strip = ["--force"], add = []}
+  bind_args = {head_sha = "--head"}
+  receipt_writer = true
+  backstop = true
+  prefix = true
+  guard_note = "the precheck receipt binds the exact arguments and the resolved --head (harmonic-forge#1291)"
   cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:184"]
   validates = [
     {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
@@ -440,8 +471,14 @@ replay_tool = "preclose_check"
   precheck = "plan"
   guard_kind = "operator-grant"
   guard = "FORCE line, plain or reforge (force_grant.require)"
-  binds = []
-  guard_note = "the precheck key binds repo, issue and mode only"
+  binds = ["head_sha", "args"]
+  binds_cite = "tools/gh/preclose_check.py:1473"
+  precheck_form = {strip = ["--force"], add = []}
+  bind_args = {head_sha = "--head"}
+  receipt_writer = true
+  backstop = true
+  prefix = true
+  guard_note = "the precheck receipt binds the exact arguments and the resolved --head (harmonic-forge#1291)"
   cite = ["tools/gh/preclose_check.py:1355-1371", "tools/gh/preclose_check.py:184", "tools/gh/preclose_check.py:930-934"]
   validates = [
     {class = "receipt", cite = "tools/gh/preclose_check.py:1368"},
@@ -452,7 +489,7 @@ replay_tool = "preclose_check"
   match = []
   class = "shared-state"
   gap = "writes the planned receipt"
-  cite = ["tools/gh/preclose_check.py:1487", "tools/gh/preclose_check.py:1013"]
+  cite = ["tools/gh/preclose_check.py:1499", "tools/gh/preclose_check.py:1013"]
 
 [[tool]]
 path = "tools/gh/preclose_enrollment.py"
@@ -500,25 +537,30 @@ path = "tools/gh/repo_hygiene.py"
   match = ["--prune-worktrees", "--dry-run"]
   class = "local-write"
   note = "cache: the report pass fetches first; the dry run only stops the removal"
-  cite = ["tools/gh/repo_hygiene.py:1451", "tools/gh/repo_hygiene.py:1165-1168"]
+  cite = ["tools/gh/repo_hygiene.py:1462", "tools/gh/repo_hygiene.py:1165-1168"]
   [[tool.mode]]
   name = "--prune-worktrees"
   match = ["--prune-worktrees"]
   class = "irreversible"
   precheck = "--prune-worktrees --dry-run"
   binds = []
+  precheck_form = {strip = [], add = ["--dry-run"]}
+  bind_args = {}
+  receipt_writer = true
+  backstop = false
+  prefix = true
   cite = ["tools/gh/repo_hygiene.py:1175", "tools/gh/repo_hygiene.py:1185"]
   [[tool.mode]]
   name = "report with --checkout"
   match = ["--checkout"]
   class = "local-write"
   note = "cache: git fetch origin main"
-  cite = ["tools/gh/repo_hygiene.py:1451", "tools/gh/repo_hygiene.py:1302"]
+  cite = ["tools/gh/repo_hygiene.py:1462", "tools/gh/repo_hygiene.py:1302"]
   [[tool.mode]]
   name = "report, --repo or --manifest-repos only"
   match = []
   class = "read"
-  cite = ["tools/gh/repo_hygiene.py:1414", "tools/gh/repo_hygiene.py:1425"]
+  cite = ["tools/gh/repo_hygiene.py:1425", "tools/gh/repo_hygiene.py:1436"]
 
 [[tool]]
 path = "tools/gh/run_lane1_transport_tests.py"
@@ -739,26 +781,32 @@ alias_of = "tools/lane/lane1_rebase.py"
 [[tool]]
 path = "tools/lane/lane1_rebase.py"
 replay_tool = "lane1-rebase"
+mise_tasks = [{task = "lane1-rebase", prefix = []}]
   [[tool.mode]]
   name = "--check"
   match = ["--check"]
   class = "local-write"
   note = "preflight receipt (rule step 3); ls-remote, no fetch"
-  cite = ["tools/lane/lane1_rebase.py:879", "tools/lane/lane1_rebase.py:869"]
+  cite = ["tools/lane/lane1_rebase.py:874", "tools/lane/lane1_rebase.py:884"]
   [[tool.mode]]
   name = "run"
   match = []
   class = "external-publish"
   precheck = "--check"
   binds = ["origin_branch_sha", "origin_main_sha", "args"]
-  binds_cite = "tools/lane/lane1_rebase.py:808-812"
+  binds_cite = "tools/lane/lane1_rebase.py:808-810"
+  precheck_form = {strip = [], add = ["--check"], add_at = 0}
+  bind_args = {origin_branch_sha = "#2", origin_main_sha = "main", git_dir = "#0"}
+  receipt_writer = true
+  backstop = true
+  prefix = false
   note = "a lease-guarded push; the worktree it removes is its own"
-  cite = ["tools/lane/lane1_rebase.py:893", "tools/lane/lane1_rebase.py:403", "tools/lane/lane1_rebase.py:387"]
+  cite = ["tools/lane/lane1_rebase.py:890", "tools/lane/lane1_rebase.py:403", "tools/lane/lane1_rebase.py:387"]
   validates = [
-    {class = "receipt", cite = "tools/lane/lane1_rebase.py:869"},
-    {class = "receipt", cite = "tools/lane/lane1_rebase.py:893"},
-    {class = "freshness", cite = "tools/lane/lane1_rebase.py:795-812"},
-    {class = "freshness", cite = "tools/lane/lane1_rebase.py:893"},
+    {class = "receipt", cite = "tools/lane/lane1_rebase.py:884"},
+    {class = "receipt", cite = "tools/lane/lane1_rebase.py:890"},
+    {class = "freshness", cite = "tools/lane/lane1_rebase.py:795-810"},
+    {class = "freshness", cite = "tools/lane/lane1_rebase.py:890"},
   ]
 
 [[tool]]
@@ -857,32 +905,37 @@ path = "tools/lane/lanes-claude"
   match = ["--dry-run"]
   exact = true
   class = "read"
-  cite = ["tools/lane/lanes-claude:77", "tools/lane/lanes-claude:432"]
+  cite = ["tools/lane/lanes-claude:79", "tools/lane/lanes-claude:434"]
   [[tool.mode]]
   name = "--stop-lanes"
   match = ["--stop-lanes"]
   class = "shared-state"
   gap = "stops every lane session process"
-  cite = ["tools/lane/lanes-claude:81", "tools/lane/lanes-claude:347"]
+  cite = ["tools/lane/lanes-claude:83", "tools/lane/lanes-claude:349"]
   [[tool.mode]]
   name = "--stop-advisor"
   match = ["--stop-advisor"]
   class = "shared-state"
   gap = "stops the advisor session and kills its tmux session"
-  cite = ["tools/lane/lanes-claude:85", "tools/lane/lanes-claude:365"]
+  cite = ["tools/lane/lanes-claude:87", "tools/lane/lanes-claude:367"]
   [[tool.mode]]
   name = "--record-lanes"
   match = ["--record-lanes"]
   class = "shared-state"
   gap = "writes the session-id state file teardown reads"
-  cite = ["tools/lane/lanes-claude:89", "tools/lane/lanes-claude:343-345", "tools/lane/lanes-claude:266-271"]
+  cite = ["tools/lane/lanes-claude:91", "tools/lane/lanes-claude:345-347", "tools/lane/lanes-claude:268-273"]
   [[tool.mode]]
   name = "launch"
   match = []
   class = "shared-state"
   precheck = "--dry-run"
   binds = []
-  cite = ["tools/lane/lanes-claude:642"]
+  precheck_form = {strip = [], add = ["--dry-run"]}
+  bind_args = {}
+  receipt_writer = true
+  backstop = false
+  prefix = false
+  cite = ["tools/lane/lanes-claude:647"]
 
 [[tool]]
 path = "tools/lane/lanes_reap.py"

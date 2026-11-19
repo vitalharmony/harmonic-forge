@@ -105,6 +105,10 @@ class CheckPreflightTest(_Fixture):
         super().setUp()
         os.environ["CLAUDE_CODE_SESSION_ID"] = "test-session-1215"
         os.environ["PREFLIGHT_RECEIPT_DIR"] = str(self.tmp / "receipts")
+        # harmonic-forge#1291: only lane1_rebase itself (argv[0]) writes its receipt.
+        argv0 = mock.patch.object(sys, "argv", [str(Path(lane1_rebase.__file__).resolve())])
+        argv0.start()
+        self.addCleanup(argv0.stop)
         self.addCleanup(os.environ.pop, "CLAUDE_CODE_SESSION_ID", None)
         self.addCleanup(os.environ.pop, "PREFLIGHT_RECEIPT_DIR", None)
 
@@ -146,7 +150,7 @@ class CheckPreflightTest(_Fixture):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(self.run_main(), 1)
-        self.assertIn("harmonic-forge#1076", err.getvalue())
+        self.assertIn("harmonic-forge#1291", err.getvalue())
 
     def test_a_push_after_check_needs_a_new_check(self):
         self.assertEqual(self.check()[0], 0)
@@ -155,7 +159,7 @@ class CheckPreflightTest(_Fixture):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(self.run_main(), 1)
-        self.assertIn("harmonic-forge#1076", err.getvalue())
+        self.assertIn("harmonic-forge#1291", err.getvalue())
 
     def test_package_json_only_conflict_is_version_only(self):
         """pass 1 survivor 2: merge-tree's messages are not conflict paths."""
@@ -188,7 +192,7 @@ class CheckPreflightTest(_Fixture):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(self.run_main(), 1)
-        self.assertIn("harmonic-forge#1076", err.getvalue())
+        self.assertIn("harmonic-forge#1291", err.getvalue())
 
     def test_run_refuses_a_main_check_never_saw(self):
         """pass 2 survivor 1: the run acts only on the --check main."""

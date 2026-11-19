@@ -449,6 +449,15 @@ def mark_active() -> None:
     print(f"lane3-begin: {Path.cwd()} marked Lane 3-active", file=sys.stderr)
 
 
+def _record_precheck(argv: list[str]) -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "precheck"))
+    import gate_receipt  # noqa: PLC0415
+    try:
+        gate_receipt.record("tools/gh/check_lane3_ready.py", list(argv))
+    except (gate_receipt.ReceiptRefused, gate_receipt.Deadline, OSError) as exc:
+        print(f"[check-lane3-ready] precheck receipt not written ({exc})", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -539,6 +548,10 @@ def main(argv: list[str] | None = None) -> None:
         prod_run = _prod_run.declared(authority.get("body", ""))
     if args.mark_active:
         mark_active()
+    else:
+        # harmonic-forge#1291: a passed readiness run without --mark-active is
+        # the precheck form of lane3-begin's --mark-active run.
+        _record_precheck(argv if argv is not None else sys.argv[1:])
     if args.json:
         print(json.dumps({
             "repo": repo,

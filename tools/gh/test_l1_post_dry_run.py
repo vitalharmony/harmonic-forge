@@ -20,7 +20,7 @@ import check_lane3_ready as _lane3  # noqa: E402
 
 REPO, ISSUE = "vitalharmony/harmonic-forge", 1115
 SHA_A, SHA_B = "a" * 40, "b" * 40
-NEEDLE = "first real run of this tool in this session"
+NEEDLE = "no live precheck receipt for this exact call"  # harmonic-forge#1291
 R4L3 = "## Ready for Lane 3 — F1115\n\n**Target:** the dry-run gate\n**Verified:** every kill check\n**Next:** Lane 3 to spec the gate\n"
 REWORK = "## Rework — F1115\n\n**Finding:** the branch needs a rebase onto main\n**Next:** Lane 2 to rebase the branch\n"
 NO_NEXT = "## Rework — F1115\n\n**Finding:** the branch needs a rebase onto main\n"
@@ -91,7 +91,8 @@ class Harness(unittest.TestCase):
     def run_main(self, *argv, real_post_kind: bool = False):
         """(exit text or None, stdout, stderr)."""
         patches = [
-            mock.patch.object(sys, "argv", ["l1_post.py", *map(str, argv)]),
+            # harmonic-forge#1291: only l1_post itself (argv[0]) writes its receipt.
+            mock.patch.object(sys, "argv", [str(HERE / "l1_post.py"), *map(str, argv)]),
             mock.patch.object(L, "resolve_repo", side_effect=lambda value, *a, **k: value),
             mock.patch.object(L, "apply_project_identity"),
             mock.patch.object(L, "resolve_sha", side_effect=lambda value, *a, **k: value),
@@ -164,7 +165,7 @@ class DryRunTests(Harness):
         self.static.assert_called_once()
         receipts = self.receipts()
         self.assertEqual(len(receipts), 1)
-        self.assertTrue(receipts[0].read_text().find('"key": "l1_post:') >= 0)
+        self.assertIn('"tool": "tools/gh/l1_post.py"', receipts[0].read_text())
 
     def test_real_post_without_matching_dry_run_refused(self):
         """AC3a."""
@@ -180,8 +181,9 @@ class DryRunTests(Harness):
         self.posted.assert_called_once()
 
     def test_a_plain_l1_post_receipt_does_not_admit(self):
-        """AC3a: the gate is keyed to the post, not to the tool."""
-        L._preflight.record("l1_post")
+        """AC3a: the gate is keyed to the post, not to the tool: another
+        post's clean dry run admits only that post."""
+        self.assertIsNone(self.run_main("--repo", REPO, "--issue", ISSUE + 1, *self.r4l3("--dry-run")[4:])[0])
         self.assertIn(NEEDLE, self.run_main(*self.r4l3())[0])
 
     def test_changed_body_ack_or_sha_invalidates_receipt(self):
@@ -209,6 +211,10 @@ class DryRunTests(Harness):
         self.assertTrue(command.endswith("--dry-run"), command)
 
     def test_wrapper_and_direct_runs_share_digest(self):
+        """harmonic-forge#1291 decision 3: the receipt binds the exact
+        arguments, so a wrapper run and a direct run share it when they pass
+        the same argv (the gate sees the argv after `--`), and a reordered or
+        respelled call needs its own dry run."""
         body = self.body(R4L3)
         cwd = os.getcwd()
         # The wrapper cds elsewhere (Lane 1's tools worktree), so run from a
@@ -226,11 +232,13 @@ class DryRunTests(Harness):
         with mock.patch.dict(os.environ, {"L1_POST_ENTRY": "mise run l1-post",
                                           "HF_CALLER_CWD": str(self.dir)}):
             self.assertIsNone(self.run_main(*relative)[0])
+        with mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.dir)}):
+            self.assertIsNone(self.run_main(*relative[:-1])[0])  # direct, same argv, same caller cwd
+        self.posted.assert_called_once()
         os.chdir(cwd)
         reordered = ("--file", str(body.resolve()), "--branch", "fix/1115-x", "--sha", SHA_A,
                      "--kind", "ready-for-l3", "--issue", ISSUE, "--repo", REPO)
-        self.assertIsNone(self.run_main(*reordered)[0])
-        self.posted.assert_called_once()
+        self.assertIn(NEEDLE, self.run_main(*reordered)[0])
 
     def test_dry_run_ready_for_l3_missing_pr_is_info(self):
         """AC7."""
