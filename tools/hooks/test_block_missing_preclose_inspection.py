@@ -315,6 +315,13 @@ class NotPlannedCloseTests(unittest.TestCase):
                 self.assertFalse(any(t[3] for t in targets))
                 self.assertTrue(self._denied(self._decide(cmd)))
 
+    def test_a_template_value_is_not_a_method_flag(self) -> None:
+        """Post-verdict finding: `--template -xtext` must not unset a PATCH close."""
+        cmd = (f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "
+               f"--template -xtext")
+        self.assertEqual([t[2] for t in hook.find_gated_targets_exempt(cmd)], ["issue"])
+        self.assertTrue(self._denied(self._decide(cmd)))
+
     def test_deny_text_names_the_rest_canonical_form(self) -> None:
         reason = self._reason(self._decide(f"gh issue close 1433 --repo {FORGE}"))
         self.assertIn(f"gh api -X PATCH repos/{FORGE}/issues/1433 -f state=closed "

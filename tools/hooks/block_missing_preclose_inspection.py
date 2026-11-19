@@ -356,6 +356,9 @@ def _parse_api_merge(tokens: list[str]) -> tuple[str, str, str] | None:
     return None
 
 
+_HTTP_VERBS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+
+
 def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
     """`gh api ... issues/N ... state=closed` -> (repo, issue, kind='issue').
 
@@ -376,9 +379,12 @@ def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
 
     for i, token in enumerate(joined):
         upper = token.upper()
-        for prefix in ("-X", "--METHOD=", "-X="):
-            if upper.startswith(prefix) and len(upper) > len(prefix) and upper != "-X":
-                method = upper[len(prefix):].lstrip("=")
+        # Only a real HTTP verb glued to -X / --method= sets the method: a value
+        # like `--template -xtext` is not a method flag (post-verdict finding).
+        for prefix in ("--METHOD=", "-X=", "-X"):
+            if upper.startswith(prefix) and upper[len(prefix):] in _HTTP_VERBS:
+                method = upper[len(prefix):]
+                break
         if token in ("-X", "--method") and i + 1 < len(joined):
             method = joined[i + 1].upper()
         if token in ("-f", "-F", "--field", "--raw-field") or token.startswith(
