@@ -234,35 +234,18 @@ def in_repo(key: str, repo: Path | None = None) -> bool:
     return True
 
 
-def _credited_shrink(baseline: dict, key: str, current: dict[str, int]) -> bool:
-    """Whether a shrunk key's bytes may offset in-repo growth (harmonic-forge#1414
-    reforge). Whether those bytes were this repo's is a fact about when the
-    baseline was written, so it is read from the baseline's `outside_files`, never
-    inferred now: a key listed there is never credited, a key not listed is (a
-    deleted tracked file still counts, AC2). A baseline written before the field
-    existed keeps the pre-#1414 rule and credits every shrunk key, so a deleted
-    in-repo file still counts (AC2) and no existing `[[increase]]` changes
-    meaning; the next `--update` writes `outside_files` and the stricter rule
-    applies from then on (reforge pass 1)."""
+def _was_in_repo(baseline: dict, key: str) -> bool:
+    """Whether a shrunk key's bytes were this repo's, and so may offset in-repo
+    growth (harmonic-forge#1414). That is a fact about when the baseline was
+    written, read from its `outside_files`, never inferred now: a key listed
+    there is not credited; a key not listed is, so a deleted tracked file still
+    counts (AC2). Operator ruling 2026-11-18 (narrowed scope): a pre-#1414
+    baseline records nothing about where bytes were, so it credits no shrinkage
+    at all -- strict, never a guess -- until `--update` writes `outside_files`."""
     outside = baseline.get("outside_files")
     if isinstance(outside, list):
         return key not in outside
-    # Operator ruling 2026-11-18 (narrowed scope): a pre-#1414 baseline records
-    # nothing about where bytes were, so it credits no shrinkage at all -- strict,
-    # never a guess -- until the next `--update` writes `outside_files`.
     return False
-
-
-def _was_in_repo(baseline: dict, key: str, repo: Path) -> bool:
-    """Whether the baseline counted `key`'s bytes as this repo's: not listed in
-    its `outside_files`. A pre-#1414 baseline recorded nothing, so its keys are
-    judged by where they resolve now -- the strict direction: an external link
-    is never credited, at the cost of a rule replaced by an external link not
-    crediting its shrink until the next `--update` (post-verdict check)."""
-    outside = baseline.get("outside_files")
-    if isinstance(outside, list):
-        return key not in outside
-    return in_repo(key, repo=repo)
 
 
 def _toml_key(text: str) -> str:
@@ -435,12 +418,10 @@ def check(repo: Path) -> tuple[int, str]:
     # now; shrinkage by where the baseline recorded it, so a rule replaced by a
     # link to a smaller outside file still credits the bytes it took away.
     gated_shrank = {key: delta for key, delta in shrank.items()
-                    if key in platform_keys or _was_in_repo(baseline, key, repo)}
-    uncredited = sorted(key for key in gated_shrank
-                        if not _credited_shrink(baseline, key, current))
-    gated_net = (sum(gated_grew.values())
-                 + sum(delta for key, delta in gated_shrank.items()
-                       if key not in uncredited))
+                    if key in platform_keys or _was_in_repo(baseline, key)}
+    legacy = not isinstance(baseline.get("outside_files"), list)
+    uncredited = sorted(key for key in shrank if legacy and key not in gated_shrank)
+    gated_net = sum(gated_grew.values()) + sum(gated_shrank.values())
     outside_grew = {key: delta for key, delta in grew.items()
                     if not (key in platform_keys or in_repo(key, repo=repo))}
     outside_note = ""
@@ -459,8 +440,7 @@ def check(repo: Path) -> tuple[int, str]:
 
     if gated_net <= 0:
         note = ""
-        if any((key in platform_keys or _was_in_repo(baseline, key, repo))
-               and key not in uncredited for key in shrank):
+        if gated_shrank:
             note = (f"\n  in-repo surface shrank by {-gated_net} bytes — no "
                     f"acknowledgement needed. Run `--update` to lock it in.")
         return 0, headline + note + outside_note

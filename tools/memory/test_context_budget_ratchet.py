@@ -448,11 +448,11 @@ class TestSymlinkAttribution(unittest.TestCase):
         self.assertEqual(code, 0, report)
         self.assertTrue(calls)
         self.assertNotIn(None, calls, "a check() call site dropped repo=")
-        # The two growth sites read the key's current location; both shrinkage
-        # sites read the baseline's record (_was_in_repo, sticky-wicket PATCH).
+        # The two growth sites read the key's current location; the shrinkage
+        # site reads the baseline's record (_was_in_repo, sticky-wicket PATCH).
         src = inspect.getsource(m.check)
         self.assertEqual(src.count("in_repo(key, repo=repo)"), 2)
-        self.assertEqual(src.count("_was_in_repo(baseline, key, repo)"), 2)
+        self.assertEqual(src.count("_was_in_repo(baseline, key)"), 1)
         self.assertNotRegex(src, r"in_repo\(key\)")
 
     def test_g_report_line_has_no_absolute_path(self):
