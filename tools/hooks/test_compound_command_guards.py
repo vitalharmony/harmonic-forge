@@ -65,6 +65,25 @@ class StripReservedWords(unittest.TestCase):
                          ["gh", "pr", "merge", "2"])
 
 
+class Pass1WrapperOptions(unittest.TestCase):
+    """Pass 1 (correctness, silent-bypass, cross-family; sticky-wicket PATCH):
+    a wrapper's own options never hide the gh command."""
+
+    FORMS = ("exec -a x", "exec -c", "exec -l", "exec -cl", "exec --", "exec -a x --",
+             "time -p", "time --", "command -p", "command --", "command")
+
+    def test_each_wrapper_form_is_a_gated_target_bare_and_in_if(self):
+        for form in self.FORMS:
+            for command in (f"{form} {CLOSE}", f"if true; then {form} {CLOSE}; fi"):
+                with self.subTest(command=command):
+                    self.assertEqual(preclose.find_gated_targets(command), [(REPO, "7", "issue")])
+
+    def test_command_v_only_looks_the_program_up(self):
+        for command in ("command -v gh", "command -V gh", f"command -v {CLOSE}"):
+            with self.subTest(command=command):
+                self.assertEqual(preclose.find_gated_targets(command), [])
+
+
 class Problem1PrecloseGateSeesTheClose(unittest.TestCase):
     def test_every_compound_form_is_a_gated_target(self):
         for name, command in COMPOUND_CLOSES.items():
