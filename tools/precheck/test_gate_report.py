@@ -94,6 +94,51 @@ class Report(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("outcome=ran-failed", lines[0])
 
+    def test_flag_ran_failed_with_several_gate_rows(self) -> None:
+        """One command, two gate rows under one tuid: allowed-receipt then precheck."""
+        self.seed()
+        self.add("allowed-receipt", sid="a", tuid="x")
+        self.add("precheck", sid="a", tuid="x", mode="precheck-form", klass="")
+        self.add("ran-failed", sid="a", tuid="x", exit=1)
+        lines = [l for l in self.run_report("--new-cases").splitlines() if "outcome=ran-failed" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn(f"tool={L1} mode={self.mode} outcome=ran-failed", lines[0])
+
+    def test_corrupt_seen_does_not_seed(self) -> None:
+        self.add("allowed-receipt")
+        self.store.mkdir(parents=True, exist_ok=True)
+        gate_report.seen_path().write_text("{not json")
+        text = self.run_report("--new-cases")
+        self.assertIn("seen-state unreadable", text)
+        self.assertIn(f"tool={L1} mode={self.mode}", text)
+
+    def test_non_object_seen_does_not_seed(self) -> None:
+        self.add("allowed-receipt")
+        self.store.mkdir(parents=True, exist_ok=True)
+        gate_report.seen_path().write_text("[1, 2]")
+        text = self.run_report("--new-cases")
+        self.assertIn("seen-state unreadable", text)
+        self.assertIn(f"tool={L1} mode={self.mode}", text)
+
+    def test_unreadable_seen_does_not_seed(self) -> None:
+        """Present but unreadable (here a directory: an OSError that is not
+        FileNotFoundError) is never a first run."""
+        self.add("allowed-receipt")
+        gate_report.seen_path().mkdir(parents=True)
+        text = self.run_report("--new-cases")
+        self.assertIn("seen-state unreadable", text)
+        self.assertIn(f"tool={L1} mode={self.mode}", text)
+
+    def test_missing_seen_seeds_silently(self) -> None:
+        self.add("allowed-receipt")
+        self.assertEqual(self.run_report("--new-cases"), "")
+
+    def test_unwritable_seen_is_visible(self) -> None:
+        self.add("allowed-receipt")
+        with mock.patch.object(gate_report, "write_seen", side_effect=PermissionError(13, "Permission denied")):
+            text = self.run_report("--new-cases", "--mark-seen")
+        self.assertIn("seen-state not written", text)
+
     def test_flag_backstop(self) -> None:
         self.seed()
         self.add("refused-backstop", tuid=None, reason="no-receipt")

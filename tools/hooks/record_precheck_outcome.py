@@ -38,12 +38,18 @@ def exit_code(payload: dict) -> int | None:
 
 
 def gate_row(path: Path, session: str, tuid: str) -> dict | None:
-    """The newest gate row with this session and tuid, from the log's tail."""
+    """The gate row this run joins to, from the log's tail.
+
+    One Bash command can log several gate rows under one tuid (e.g. an
+    allowed-receipt then a precheck). Every row for (session, tuid) is read;
+    the allowed-receipt row wins when one exists, so a failed run of a
+    receipted call is attributed to that call's tool/mode, else the newest."""
     with path.open("rb") as fh:
         fh.seek(0, 2)
         size = fh.tell()
         fh.seek(max(0, size - TAIL_BYTES))
         lines = fh.read().decode("utf-8", "replace").splitlines()
+    matches = []
     for line in reversed(lines):
         try:
             data = json.loads(line)
@@ -51,8 +57,11 @@ def gate_row(path: Path, session: str, tuid: str) -> dict | None:
             continue
         if isinstance(data, dict) and data.get("tuid") == tuid and data.get("session") == session \
                 and data.get("outcome") in GATE_OUTCOMES:
+            matches.append(data)
+    for data in matches:
+        if data.get("outcome") == "allowed-receipt":
             return data
-    return None
+    return matches[0] if matches else None
 
 
 def record(payload: dict) -> None:

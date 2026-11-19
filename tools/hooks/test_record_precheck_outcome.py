@@ -79,6 +79,17 @@ class Recorder(unittest.TestCase):
         rec.record(self.payload())
         self.assertEqual(len(self.rows()), 2)
 
+    def test_several_gate_rows_attribute_to_receipted_call(self) -> None:
+        """One command logs allowed-receipt then precheck under one tuid."""
+        self.gate_row()
+        decision_row.append(self.log, decision_row.row(
+            "precheck", tool="tools/gh/kill_check.py", mode="precheck-form", klass="",
+            fp="e" * 64, sid=SESSION, tuid=TUID))
+        rec.record(self.payload("PostToolUseFailure", error="Exit code 1"))
+        posts = [r for r in self.rows() if r["outcome"] == "ran-failed"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual((posts[0]["tool"], posts[0]["mode"]), ("tools/gh/l1_post.py", "post"))
+
     def test_join_survives_head_move(self) -> None:
         """KC1b: the join is on tuid; the post row never recomputes the fp."""
         self.gate_row()

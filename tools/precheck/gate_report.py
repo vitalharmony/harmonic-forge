@@ -91,13 +91,25 @@ def seen_path() -> Path:
     return gate_receipt.store_dir() / "report-seen.json"
 
 
+class SeenUnreadable(Exception):
+    """report-seen.json exists but cannot be read or parsed."""
+
+
 def read_seen() -> dict | None:
+    """None only when the file is missing (a genuine first run); a present but
+    unreadable or corrupt file raises SeenUnreadable, never reads as first run."""
     try:
-        data = json.loads(seen_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = seen_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:
+        raise SeenUnreadable(str(exc)) from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise SeenUnreadable(str(exc)) from exc
     if not isinstance(data, dict):
-        return None
+        raise SeenUnreadable("not a JSON object")
     return {"pairs": [p for p in data.get("pairs", []) if isinstance(p, str)],
             "cases": [c for c in data.get("cases", []) if isinstance(c, str)]}
 
@@ -145,13 +157,13 @@ def new_cases(all_rows: list[dict], recent: list[dict], seen: dict | None) -> tu
     every_pair = {_pair(r) for r in all_rows if r.get("mode")}
     known_pairs = set(every_pair) if seen is None else set(seen["pairs"])
     known_cases = set() if seen is None else set(seen["cases"])
-    gate_by_join = {(r.get("session"), r.get("tuid")): r.get("outcome") for r in all_rows
-                    if r.get("tuid") and r.get("outcome") not in ("ran-ok", "ran-failed", "refused-backstop")}
+    # Every gate row counts: one command can log several under one tuid.
+    receipted = {(r.get("session"), r.get("tuid")) for r in all_rows
+                 if r.get("tuid") and r.get("outcome") == "allowed-receipt"}
     cases, flagged_pairs = [], set()
     for r in recent:
         outcome = r.get("outcome")
-        hit = (outcome == "ran-failed"
-               and gate_by_join.get((r.get("session"), r.get("tuid"))) == "allowed-receipt") \
+        hit = (outcome == "ran-failed" and (r.get("session"), r.get("tuid")) in receipted) \
             or outcome in ("refused-backstop", "error")
         pair = _pair(r)
         if not hit and r.get("mode") and pair not in known_pairs and pair not in flagged_pairs:
@@ -180,7 +192,15 @@ def main(argv: list[str] | None = None) -> int:
     cutoff = time.time() - args.since
     recent = [r for r in all_rows if r["ts"] >= cutoff]
     mask = Masker()
-    seen = read_seen()
+    notices = []
+    try:
+        seen = read_seen()
+    except SeenUnreadable:
+        # Never re-seed from a corrupt file: treat no pair as seen.
+        seen = {"pairs": [], "cases": []}
+        notices.append("gate_report: seen-state unreadable (report-seen.json); no pair treated as seen")
+    for notice in notices:
+        print(notice)
     cases, every_pair = new_cases(all_rows, recent, seen)
     if not args.new_cases:
         counts = Counter((*mask(r), _outcome(r)) for r in recent)
@@ -199,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             write_seen(state)
         except OSError as exc:
-            print(f"gate_report: seen-state not written ({exc.strerror})", file=sys.stderr)
+            print(f"gate_report: seen-state not written ({exc.strerror or exc})")
     return 0
 
 
