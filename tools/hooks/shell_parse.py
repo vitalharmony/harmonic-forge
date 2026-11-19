@@ -114,8 +114,7 @@ def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> li
             index += 1
         # harmonic-forge#1443 pass 1 (sticky-wicket PATCH): exec, time and
         # command take their own options before the program, so each strips
-        # them here like env/timeout/nice below. `command -v`/`-V` only look
-        # the program up and never run it, so they are left standing.
+        # them here like env/timeout/nice below.
         elif token == "exec":
             index += 1
             while index < len(working) and working[index].startswith("-"):
@@ -132,9 +131,8 @@ def strip_invocation_prefix(tokens: list[str], unwrap_shells: bool = True) -> li
                 if working[index - 1] == "--":
                     break
         elif token == "command":
-            nxt = working[index + 1] if index + 1 < len(working) else ""
-            if nxt.startswith("-") and set(nxt[1:]) & {"v", "V"}:
-                break
+            # Only -p and -- are consumed: `command -v`/`-V` leave their flag
+            # standing as the program, so a lookup is never read as a run.
             index += 1
             while index < len(working) and working[index] in ("-p", "--"):
                 index += 1
