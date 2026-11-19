@@ -29,9 +29,14 @@ class PostLaneDiscussionBeltCandidateIntegrationTests(unittest.TestCase):
             path.write_text(body)
             argv = ["post_lane_discussion.py", "--repo", "vitalharmony/harmonic-forge",
                     "--issue", "618", "--file", str(path), "--kind", kind]
-            env = {"LANE": lane} if lane else {}
+            # harmonic-forge#1426: a cleared environment has no HOME, so any gh
+            # subprocess wrote its state under the cwd (`.local/state/gh`), which
+            # left the checkout dirty and blocked the check receipt.
+            env = {"LANE": lane} if lane else {"XDG_STATE_HOME": str(Path(tmp) / "state")}
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.dict("os.environ", env, clear=not lane), \
+                 unittest.mock.patch.object(P, "apply_project_identity"), \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body",
                      return_value=("https://example/1", 1)), \
@@ -67,6 +72,7 @@ class PostLaneDiscussionBeltCandidateIntegrationTests(unittest.TestCase):
                     "--file", str(path), "--kind", "discussion"]
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.object(P, "belt_candidates", None), \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body", return_value=("https://example/1", 1)):
                 P.main()  # must not raise
@@ -92,6 +98,7 @@ class BeltCandidateFailedImportIsVisibleTests(unittest.TestCase):
                     "--issue", "618", "--file", str(path), "--kind", "discussion"]
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.object(P, "belt_candidates", None), \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body", return_value=("https://example/1", 1)), \
                  unittest.mock.patch.object(sys, "stderr", new=__import__("io").StringIO()) as fake_err:
@@ -111,6 +118,7 @@ class BeltCandidateFailedImportIsVisibleTests(unittest.TestCase):
                     "--issue", "618", "--file", str(path), "--kind", "discussion"]
             with unittest.mock.patch.object(sys, "argv", argv), \
                  unittest.mock.patch.object(P, "belt_candidates") as recorder, \
+                 unittest.mock.patch.object(P, "issue_labels", return_value=set()), \
                  unittest.mock.patch.object(
                      P, "comment_body", return_value=("https://example/1", 1)), \
                  unittest.mock.patch.object(sys, "stderr", new=__import__("io").StringIO()) as fake_err:

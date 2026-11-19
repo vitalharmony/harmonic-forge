@@ -31,6 +31,8 @@ edit. The tempting workaround was to reword the issue to match the validator
 """
 
 import argparse
+import json
+import os
 import re
 from pathlib import Path
 
@@ -159,6 +161,33 @@ def edit_issue_body(repo: str, issue: int, body_file: Path, body: str) -> None:
         fail("edited issue body did not match the validated body")
 
 
+def issue_comments(repo: str, issue: int) -> list[dict]:
+    result = run("gh", "api", f"repos/{repo}/issues/{issue}/comments", "--paginate")
+    if result.returncode:
+        fail(f"cannot read comments for {repo}#{issue}: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail(f"unexpected response reading comments for {repo}#{issue}")
+
+
+def require_amendment_pitch(repo: str, issue: int, declared: str | None) -> bool:
+    """harmonic-forge#1426: a Lane 1 body amendment to a tooling-exception issue
+    that already has a posted handoff declares design or wording; a design one
+    needs a fresh pitch verdict. True when the edit must consume it."""
+    import pitch_receipt  # noqa: PLC0415
+    if os.environ.get("LANE") in pitch_receipt.NON_AMENDING_LANES:
+        return False
+    labels = issue_labels(repo, issue)
+    if pitch_receipt.LABEL not in labels:
+        return False
+    comments = issue_comments(repo, issue)
+    reason = pitch_receipt.amendment_refusal(repo, issue, labels, comments, declared)
+    if reason is not None:
+        fail(reason)
+    return declared == "design" and pitch_receipt.amendment_gate_applies(labels, comments)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate and set a substantive Lane 1 issue body")
     parser.add_argument("--repo")
@@ -184,6 +213,11 @@ def main() -> None:
         help=f"Permit an amendment below {SHRINK_FLOOR:.0%} of the current body's length."
         .replace("%", "%%"),
     )
+    parser.add_argument(
+        "--amendment", choices=("design", "wording"), default=None,
+        help="harmonic-forge#1426: a Lane 1 amendment to a tooling-exception issue with a "
+             "posted handoff declares itself `design` (changes Affected Files or the "
+             "mechanism; needs a fresh pitch verdict, which the edit consumes) or `wording`.")
     args = parser.parse_args()
     _caller_path.resolve_args(args, 'body_file')  # harmonic-forge#1117 AC2
     args.repo = resolve_repo(args.repo)
@@ -206,7 +240,13 @@ def main() -> None:
         validate_amendment(body, current, args.allow_shrink)
     else:
         validate_body(body, issue_labels(args.repo, args.issue))
+    # harmonic-forge#1426 pass 1: fill mode too -- a stub edited after a handoff
+    # posted is still an amendment to that handoff's design.
+    consume_pitch = require_amendment_pitch(args.repo, args.issue, args.amendment)
     edit_issue_body(args.repo, args.issue, args.body_file, body)
+    if consume_pitch:
+        import pitch_receipt  # noqa: PLC0415
+        pitch_receipt.consume(args.repo, args.issue, f"{args.repo}#{args.issue} body amendment")
     print(f"[l1-issue] {'amended' if amending else 'filled'} and refetched {args.repo}#{args.issue}")
 
 

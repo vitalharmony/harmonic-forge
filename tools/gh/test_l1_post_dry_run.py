@@ -44,6 +44,16 @@ class Harness(unittest.TestCase):
         lane3 = mock.patch.object(L._lane3_env, "check", return_value=[])
         lane3.start()
         self.addCleanup(lane3.stop)
+        # harmonic-forge#1426: the correction-rework amendment gate reads the live
+        # thread; its own tests are in test_amendment_pitch_gate.py.
+        amend = mock.patch.object(L, "validate_correction_amendment", return_value=None)
+        self.amend_gate = amend.start()
+        self.addCleanup(amend.stop)
+        # Its label argument is read before the stub is called; no live gh here
+        # (CI has no gh auth).
+        labels = mock.patch.object(L, "issue_labels", return_value=set())
+        labels.start()
+        self.addCleanup(labels.stop)
         os.environ.pop("L1_POST_ENTRY", None)
         self.overlap = False
         self.pr_open = True
@@ -319,6 +329,15 @@ class DryRunTests(Harness):
         self.posted.assert_not_called()
         self.assertEqual(self.receipts(), [])
 
+    def test_only_a_correction_rework_reaches_the_amendment_gate(self):
+        """harmonic-forge#1426 pass 1: rebase and relay reworks are never gated."""
+        for rework_kind, gated in (("correction", True), ("rebase", False), ("relay", False)):
+            self.amend_gate.reset_mock()
+            self.run_main("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--rework-kind",
+                          rework_kind, "--sha", SHA_A, "--branch", "fix/1115-x",
+                          "--file", self.body(REWORK), "--dry-run")
+            self.assertEqual(self.amend_gate.called, gated, rework_kind)
+
     def test_real_post_still_runs_world_checks_after_clean_dry_run(self):
         """The dry run gates in front of the real checks; it replaces none."""
         argv = ("--repo", REPO, "--issue", ISSUE, "--kind", "rework", "--rework-kind", "correction", "--sha", SHA_A,
@@ -349,6 +368,8 @@ DIGEST_ROWS = [
     ("ack_no_pr_required", "ready-for-l3", {}, {"--ack-no-pr-required": "no CI here"}, None),
     ("milestone_ack", "rework", {}, {"--milestone-ack": "outside the release, operator ruling"}, None),
     ("rework_kind", "rework", {}, {"--rework-kind": "rebase"}, None),  # harmonic-forge#1247
+    # harmonic-forge#1426 sticky-wicket PATCH: a wording dry run never clears a design post.
+    ("amendment", "rework", {"--amendment": "wording"}, {"--amendment": "design"}, None),
     ("plan_first", "handoff", {"--plan-first": "false"}, {"--plan-first": "true"}, None),
     ("mutates_live", "handoff", {"--plan-first": "false"}, {"--mutates-live": True}, None),
     ("cross_repo", "handoff", {"--plan-first": "false"}, {"--cross-repo": True}, None),

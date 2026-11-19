@@ -128,6 +128,53 @@ def refusal(repo: str, issue: int, labels: set[str]) -> str | None:
     return None
 
 
+#: harmonic-forge#1426: the values a Lane 1 amendment declares itself as.
+AMENDMENTS = ("design", "wording")
+#: The footer `l1_post.py --kind handoff` stamps on a posted handoff.
+HANDOFF_FOOTER = "<!-- l1-post v1; kind=handoff;"
+#: Lanes that never amend a Lane 1 design; LANE unset (the advisor) is gated.
+NON_AMENDING_LANES = ("2", "3")
+
+
+def is_posted_handoff(body: str) -> bool:
+    """True when the comment's last non-empty line is the handoff footer, as
+    l1_post writes it -- a footer quoted inside an example is not a handoff."""
+    lines = [line for line in (body or "").splitlines() if line.strip()]
+    return bool(lines) and lines[-1].lstrip().startswith(HANDOFF_FOOTER)
+
+
+def amendment_gate_applies(labels: set[str], comments: list[dict]) -> bool:
+    """A Lane 1 amendment is gated only on a tooling-exception issue that
+    already carries a posted handoff (harmonic-forge#1426): before the handoff,
+    the handoff's own pitch check covers the design."""
+    if LABEL not in labels:
+        return False
+    return any(is_posted_handoff(comment.get("body") or "") for comment in comments)
+
+
+def amendment_refusal(repo: str, issue: int, labels: set[str], comments: list[dict],
+                      declared: str | None) -> str | None:
+    """Why this Lane 1 amendment must not post, or None (harmonic-forge#1426).
+
+    The author declares the amendment `design` (it changes the handoff's
+    Affected Files or mechanism) or `wording` (anything else). Under the
+    good-faith threat model the declaration is the signal; a design amendment
+    needs a fresh, unused pitch verdict, which the caller consumes after posting.
+    """
+    if not amendment_gate_applies(labels, comments):
+        return None
+    if declared not in AMENDMENTS:
+        return (f"{repo}#{issue} is labeled {LABEL} and has a posted handoff, so a Lane 1 amendment "
+                f"must declare --amendment design (it changes Affected Files or the mechanism) "
+                f"or --amendment wording (harmonic-forge#1426)")
+    if declared == "wording":
+        return None
+    reason = refusal(repo, issue, labels)
+    if reason is None:
+        return None
+    return reason.replace("before this handoff posts", "before this design-changing amendment posts")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
