@@ -198,7 +198,7 @@ VALUE_TAKING_FLAGS = frozenset({
     "--author-email",
 })
 
-API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:/|$)")
+API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:[/?]|$)")
 ISSUE_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
 PR_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 ENV_ASSIGNMENT = re.compile(r"^\w+=")
@@ -357,29 +357,43 @@ def _parse_api_merge(tokens: list[str]) -> tuple[str, str, str] | None:
 
 
 def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
-    """`gh api ... PATCH ... state=closed` -> (repo, issue, kind='issue')."""
+    """`gh api ... issues/N ... state=closed` -> (repo, issue, kind='issue').
+
+    harmonic-forge#1433 (sticky-wicket PATCH after pass 2): a request is a close
+    target whenever it could close the issue: method PATCH or POST, or no method
+    at all with a field (gh then sends POST), and `state=closed` in a field or
+    in the path's query string. Recognizing more shapes as closes only ever
+    denies more: the exemption is the separate closed-world allowlist.
+    """
     if len(tokens) < 3 or tokens[1] != "api":
         return None
 
     joined = tokens[2:]
-    is_patch = False
+    method: str | None = None
+    has_field = False
     closes = False
     target: tuple[str, str] | None = None
 
     for i, token in enumerate(joined):
         upper = token.upper()
-        if upper in ("-XPATCH", "--METHOD=PATCH", "-X=PATCH"):
-            is_patch = True
+        for prefix in ("-X", "--METHOD=", "-X="):
+            if upper.startswith(prefix) and len(upper) > len(prefix) and upper != "-X":
+                method = upper[len(prefix):].lstrip("=")
         if token in ("-X", "--method") and i + 1 < len(joined):
-            if joined[i + 1].upper() == "PATCH":
-                is_patch = True
+            method = joined[i + 1].upper()
+        if token in ("-f", "-F", "--field", "--raw-field") or token.startswith(
+                ("--field=", "--raw-field=")):
+            has_field = True
         if token.replace(" ", "") == "state=closed":
             closes = True
         match = API_ISSUE_PATH.search(token)
         if match:
             target = (match.group(1), match.group(2))
+            if "?" in token and "state=closed" in token.split("?", 1)[1]:
+                closes = True
 
-    if is_patch and closes and target:
+    could_close = method in ("PATCH", "POST") or (method is None and has_field)
+    if could_close and closes and target:
         return (target[0], target[1], "issue")
     return None
 

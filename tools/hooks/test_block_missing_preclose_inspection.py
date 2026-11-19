@@ -311,9 +311,9 @@ class NotPlannedCloseTests(unittest.TestCase):
         ):
             with self.subTest(cmd=cmd):
                 targets = hook.find_gated_targets_exempt(cmd)
+                self.assertTrue(targets)  # every fixture is a close the hook must see
                 self.assertFalse(any(t[3] for t in targets))
-                if targets:  # a shape _parse_api_close does not read is not a close here
-                    self.assertTrue(self._denied(self._decide(cmd)))
+                self.assertTrue(self._denied(self._decide(cmd)))
 
     def test_deny_text_names_the_rest_canonical_form(self) -> None:
         reason = self._reason(self._decide(f"gh issue close 1433 --repo {FORGE}"))
