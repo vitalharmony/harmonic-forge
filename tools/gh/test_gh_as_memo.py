@@ -204,6 +204,38 @@ class GhAsLaneSlotTests(unittest.TestCase):
         self.assertIn(f"GH_CONFIG_DIR={self.lane_slot} gh auth login --with-token", result.stderr)
         self.assertNotIn("gh-as --init", result.stderr)
 
+    def test_the_printed_lane_repair_pastes_safely(self):
+        """#1425 pass 2: the repair runs under a shell that exports GH_TOKEN and
+        from a slot path holding a space."""
+        import shlex
+        import shutil
+        spaced = self.home.parent / "acct home"
+        shutil.move(str(self.home), str(spaced))
+        self.home = spaced
+        self.lane_slot = spaced / "vitalharmony-lane2"
+        shutil.rmtree(self.lane_slot)
+        result = self.run_gh_as("2")
+        self.assertNotEqual(result.returncode, 0)
+        line = next(l for l in result.stderr.splitlines() if "Set it up once with:" in l)
+        argv = shlex.split(line.split("Set it up once with:", 1)[1].split("&&", 1)[1])
+        self.assertEqual(argv[:5], ["env", "-u", "GH_TOKEN", "-u", "GITHUB_TOKEN"])
+        self.assertEqual(argv[5], f"GH_CONFIG_DIR={self.lane_slot}")
+        self.assertEqual(argv[6:], ["gh", "auth", "login", "--with-token", "--insecure-storage"])
+        # Property (sticky-wicket PATCH): run the printed repair through bash with
+        # GH_TOKEN exported, against a stub gh that records what it received.
+        stub = self.bin / "gh"
+        stub.write_text('#!/usr/bin/env bash\nprintf "tok=[%s] dir=[%s] args=[%s]\\n" '
+                        '"${GH_TOKEN-unset}" "$GH_CONFIG_DIR" "$*"\n')
+        stub.chmod(0o755)
+        repair = line.split("Set it up once with:", 1)[1].split("&&", 1)[1].strip()
+        ran = subprocess.run(["bash", "-c", repair], capture_output=True, text=True,
+                             env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
+                                  "GH_TOKEN": "revoked-lane-token"})
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertEqual(ran.stdout.strip(),
+                         f"tok=[unset] dir=[{self.lane_slot}] "
+                         "args=[auth login --with-token --insecure-storage]")
+
     def test_no_lane_keeps_the_shared_slot(self):
         result = self.run_gh_as(None)
         self.assertEqual(result.returncode, 0, result.stderr)

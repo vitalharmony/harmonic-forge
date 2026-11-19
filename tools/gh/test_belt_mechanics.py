@@ -282,6 +282,18 @@ class TestGhAsListSourceColumn(unittest.TestCase):
                                                      "vitalharmony-lane1": who})
                 self.assertIn("gh-accounts/vitalharmony-lane1 gh auth login --with-token", str(ctx.exception))
 
+    def test_lane_repair_is_shell_safe(self):
+        """#1425 pass 2: quoted slot path, and runnable with GH_TOKEN exported."""
+        import shlex
+        from unittest.mock import patch
+        with patch.dict("os.environ", {"LANE": "1", "GH_ACCT_HOME": "/tmp/acct home"}):
+            with self.assertRaises(IdentityMismatch) as ctx:
+                assert_identity("vitalharmony", {"vitalharmony": "vitalharmony"})
+        repair = str(ctx.exception).split("(", 1)[1].rsplit(")", 1)[0]
+        argv = shlex.split(repair)
+        self.assertEqual(argv[:6], ["env", "-u", "GH_TOKEN", "-u", "GITHUB_TOKEN",
+                                    "GH_CONFIG_DIR=/tmp/acct home/vitalharmony-lane1"])
+
     def test_lane_slot_on_the_keyring_cannot_run(self):
         """#1425 pass 1 survivor 3: gh-as refuses a lane slot with no file token."""
         from unittest.mock import patch

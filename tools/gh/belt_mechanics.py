@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -332,7 +333,9 @@ def _repair(slot: str) -> str:
     whose token lives in its own hosts.yml (gh-as prints the same command)."""
     if slot.startswith(_LANE_SLOT_PREFIX):
         home = os.environ.get("GH_ACCT_HOME") or os.path.expanduser("~/.config/gh-accounts")
-        return f"GH_CONFIG_DIR={home}/{slot} gh auth login --with-token --insecure-storage"
+        # Pass 2: shell-quoted, and runnable from a shell that still exports a token.
+        return ("env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="
+                f"{shlex.quote(f'{home}/{slot}')} gh auth login --with-token --insecure-storage")
     return f"gh-as --init {slot}"
 
 
