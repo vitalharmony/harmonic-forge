@@ -210,12 +210,35 @@ def new_cases(all_rows: list[dict], recent: list[dict], seen: dict | None) -> tu
     return cases, every_pair
 
 
+_FAILURE_CLASSES = Path(__file__).resolve().parents[1] / "memory" / "failure_classes.json"
+
+
+def _capture_tool(tool: str) -> str:
+    """The name capture_failure.py accepts (harmonic-forge#1461): the registry
+    path's stem when it is on the interim tool list, else the `bash-string`
+    pseudo-tool."""
+    try:
+        listed = set(json.loads(_FAILURE_CLASSES.read_text(encoding="utf-8")).get("interim_tools") or [])
+    except (OSError, ValueError):
+        listed = set()
+    stem = Path(tool).stem
+    return stem if stem in listed else "bash-string"
+
+
+def _capture_class(klass: str) -> str:
+    """An effect class is not a failure class; capture_failure.py accepts
+    `other:<name>` with `[a-z][a-z0-9-]*` (harmonic-forge#1461)."""
+    name = re.sub(r"[^a-z0-9-]+", "-", str(klass or "").lower()).strip("-")
+    return f"other:{name}" if name and name[0].isalpha() else "other:precheck"
+
+
 def capture_line(row: dict, mask: Masker) -> str:
     tool, mode, klass = mask(row)
     outcome = _outcome(row)
-    return (f"tool={tool} mode={mode} outcome={outcome} -> {CAPTURE} --tool {tool} --class {klass} "
-            f'--probe "<fill in>" --caught-by hook --rule-existed rule --expected "<fill in>" '
-            f'--happened "precheck gate {outcome} on {tool} {mode}"')
+    return (f"tool={tool} mode={mode} outcome={outcome} -> {CAPTURE} --tool {_capture_tool(tool)} "
+            f"--class {_capture_class(klass)} "
+            f'--probe "<fill in>" --caught-by hook --rule-existed rule --rule-ref harmonic-forge#1291 '
+            f'--expected "<fill in>" --happened "precheck gate {outcome} on {tool} {mode}"')
 
 
 def main(argv: list[str] | None = None) -> int:

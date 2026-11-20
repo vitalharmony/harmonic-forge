@@ -104,10 +104,56 @@ def _mise_call(argv: list[str]) -> _Call | None:
     return None
 
 
+_WORD_START = frozenset(" \t\n;|&()")
+
+
+def _strip_fd_digits(command: str) -> str:
+    """Drop a redirect's file-descriptor digit before the gate tokenizes
+    (harmonic-forge#1461). shlex keeps no whitespace, so `2>&1` and `2 >&1`
+    tokenize alike and shell_parse keeps the digit as an argument
+    (harmonic-forge#1289); only the raw text tells them apart. A run of digits
+    is removed when it is unquoted and unescaped, starts a word, and is
+    followed immediately by `>` or `<`. Everything else is copied unchanged."""
+    out: list[str] = []
+    i, n = 0, len(command)
+    quote: str | None = None
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            out.append(ch)
+            quote = None if ch == "'" else quote
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if quote == '"':
+            out.append(ch)
+            quote = None if ch == '"' else quote
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch.isdigit() and (i == 0 or command[i - 1] in _WORD_START):
+            j = i
+            while j < n and command[j].isdigit():
+                j += 1
+            if j < n and command[j] in "<>":
+                i = j  # drop the descriptor digits; the operator follows
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
     """(gated calls, other argvs, parsed). `parsed` is False when the text does not parse."""
     try:
-        items = shell_parse.simple_commands(command)
+        items = shell_parse.simple_commands(_strip_fd_digits(command))
     except (ValueError, shell_parse.NotOrdinary):
         return [], [], False
     calls: list[_Call] = []

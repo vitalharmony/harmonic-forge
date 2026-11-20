@@ -228,6 +228,27 @@ class Report(unittest.TestCase):
         command = line.split("-> ", 1)[1]
         self.assertIsNone(precheck_store_guard.guard({"tool_name": "Bash", "tool_input": {"command": command}}))
 
+    def test_capture_line_is_accepted_by_capture_failure(self) -> None:
+        """harmonic-forge#1461 AC4: the printed command, run as printed, is accepted."""
+        import shlex  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        self.seed()
+        self.add("refused-backstop", tuid=None, reason="no-receipt")
+        line = self.run_report("--new-cases").strip().splitlines()[0]
+        argv = shlex.split(line.split("-> ", 1)[1])
+        argv[1] = os.path.expanduser(argv[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "protocol-failures.jsonl"
+            result = subprocess.run([*argv, "--path", str(log)], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(log.exists())
+
+    def test_capture_tool_and_class_mapping(self) -> None:
+        self.assertEqual(gate_report._capture_tool("tools/gh/l1_post.py"), "l1_post")
+        self.assertEqual(gate_report._capture_tool("tools/gh/not_listed_xyz.py"), "bash-string")
+        self.assertEqual(gate_report._capture_class("external-publish"), "other:external-publish")
+        self.assertEqual(gate_report._capture_class(""), "other:precheck")
+
     def test_guard_allows_report_command(self) -> None:
         sys.path.insert(0, str(FORGE / "tools" / "lane"))
         import belt_plan  # noqa: PLC0415

@@ -414,5 +414,32 @@ class HarnessLayer(unittest.TestCase):
         self.assertIn("../gate.py", [layer.get("module") for layer in layers])
 
 
+class RedirectDescriptorDigit(unittest.TestCase):
+    """harmonic-forge#1461: a redirect's descriptor digit is not an argument."""
+
+    BASE = "python3 tools/gh/l1_post.py --repo o/r --issue 7 --kind handoff"
+
+    def argv(self, command: str) -> list[str]:
+        calls, _others, ok = gate._calls_in(command)
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 1)
+        return calls[0].argv
+
+    def test_attached_digit_redirects_fingerprint_like_the_plain_call(self) -> None:
+        plain = self.argv(self.BASE)
+        for suffix in (" > log 2>&1", " 2>/dev/null", " 2>>err", " 1>out", " 0<in", " &>log"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.argv(self.BASE + suffix), plain)
+
+    def test_spaced_or_quoted_digit_stays_an_argument(self) -> None:
+        for suffix, kept in ((" 2 >f", "2"), (" '2'>f", "2"), (" 2 2>f", "2")):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.argv(self.BASE + suffix)[-1], kept)
+
+    def test_strip_leaves_quoted_text_alone(self) -> None:
+        self.assertEqual(gate._strip_fd_digits('a="x 2>y" cmd'), 'a="x 2>y" cmd')
+        self.assertEqual(gate._strip_fd_digits("cmd \\2>f"), "cmd \\2>f")
+
+
 if __name__ == "__main__":
     unittest.main()
