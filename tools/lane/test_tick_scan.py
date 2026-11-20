@@ -62,6 +62,8 @@ class Classification(unittest.TestCase):
                                         "pending", "1"))
         self.assertTrue(tick_scan.owed("F1 — no longer waiting on Lane 2 · waiting on Lane 1 review",
                                        "pending", "1"))
+        self.assertTrue(tick_scan.owed("F1 — x · waiting on Lane 1 review · note: was waiting on Lane 2",
+                                       "pending", "1"))
 
     def test_lane_spellings_with_separators(self) -> None:
         self.assertTrue(tick_scan.owed("F1 — x · waiting on lane-1 review", "pending", "1"))
