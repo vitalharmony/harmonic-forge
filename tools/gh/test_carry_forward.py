@@ -585,6 +585,13 @@ class CarryForwardOverlapTests(unittest.TestCase):
     def setUp(self):
         import l1_post  # noqa: PLC0415
         self.l1 = l1_post
+        # harmonic-forge#1457: a successful post records an overlap ruling;
+        # keep it out of ~/.claude/state.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {l1_post.OVERLAP_RULINGS_ENV: tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
 
     def args(self, **overrides):
         import argparse  # noqa: PLC0415

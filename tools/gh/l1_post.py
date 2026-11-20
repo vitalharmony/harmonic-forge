@@ -2155,7 +2155,8 @@ def validate_comment_target(url: str, repo: str, issue: int) -> int:
 
 
 def world_checks(
-    repo: str, issue: int, sha: str, branch: str, *, ack_overlap: str | None = None
+    repo: str, issue: int, sha: str, branch: str, *, ack_overlap: str | None = None,
+    acknowledged_out: list[tuple[str, list[str]]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Run non-cacheable readiness checks immediately before publication.
 
@@ -2174,14 +2175,78 @@ def world_checks(
         fail("cannot calculate target merge-base")
     target_files = changed_files(target_base.stdout.strip(), sha)
     warnings: list[str] = []
+    rulings = load_overlap_rulings(repo)
     for sibling, overlap in sibling_overlaps(
         target_files, active_worktree_branches() - {branch, "main"}
     ):
         message = f"active sibling branch {sibling!r} overlaps target files: {', '.join(sorted(overlap))}"
-        if ack_overlap is None:
-            fail(message)
-        warnings.append(f"- {message} -- acknowledged: {ack_overlap}")
+        if ack_overlap is not None:
+            # harmonic-forge#1457 AC5: an explicit flag wins; the post path
+            # records it (with these paths) only after the comment publishes.
+            warnings.append(f"- {message} -- acknowledged: {ack_overlap}")
+            if acknowledged_out is not None:
+                acknowledged_out.append((sibling, sorted(overlap)))
+            continue
+        ruling = find_overlap_ruling(rulings, branch, sibling)
+        if ruling is None or not overlap <= set(ruling["paths"]):
+            fail(message)  # AC3: no ruling for the pair, or a path it never covered
+        warnings.append(f"- {message} -- acknowledged: stored ruling: {ruling['reason']}")
     return ["issue-open", "origin-branch-sha-match", "active-worktree-overlap"], warnings
+
+
+# harmonic-forge#1457: an operator's overlap ruling, entered once per branch
+# pair. Keyed on repo + the sorted branch pair and the overlapping paths, never
+# a SHA, so it survives a rebase (AC4). A coordination warning, not an
+# authorization (harmonic-forge#1297): the threat model is good-faith.
+OVERLAP_RULINGS_ENV = "L1_POST_OVERLAP_RULINGS_DIR"
+
+
+def _overlap_rulings_path(repo: str) -> Path:
+    root = os.environ.get(OVERLAP_RULINGS_ENV) or str(Path.home() / ".claude/state/overlap-rulings")
+    return Path(root) / (repo.lower().replace("/", "__") + ".json")
+
+
+def load_overlap_rulings(repo: str) -> list[dict]:
+    """The repo's stored rulings; a missing or unreadable store is empty."""
+    try:
+        data = json.loads(_overlap_rulings_path(repo).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    return [r for r in data.get("rulings", []) if isinstance(r, dict)]
+
+
+def find_overlap_ruling(rulings: list[dict], branch: str, sibling: str) -> dict | None:
+    pair = sorted((branch, sibling))
+    return next((r for r in rulings if r.get("branches") == pair), None)
+
+
+def record_overlap_rulings(repo: str, branch: str, reason: str | None,
+                           acknowledged: list[tuple[str, list[str]]], active: set[str]) -> None:
+    """Write or replace the ruling for each acknowledged pair, and drop every
+    ruling of this repo naming a branch that is no longer an active worktree
+    branch (AC4). Called only after a comment publishes, so a dry run or a
+    refused post records nothing. Atomic replace, as `_etag_cache._store`."""
+    rulings = [r for r in load_overlap_rulings(repo)
+               if all(b in active for b in r.get("branches", []))]
+    for sibling, paths in (acknowledged if reason is not None else []):
+        pair = sorted((branch, sibling))
+        rulings = [r for r in rulings if r.get("branches") != pair]
+        rulings.append({"branches": pair, "reason": reason, "paths": sorted(paths),
+                        "recorded_at": datetime.now(UTC).isoformat()})
+    path = _overlap_rulings_path(repo)
+    if not rulings and not path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "repo": repo.lower(), "rulings": rulings}, handle, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 _REMOTE_URL = re.compile(
@@ -3213,7 +3278,9 @@ def _post_kind(
         checks = ["body-validation"]
     if is_handoff_extra_checks:
         checks.append("tier-set")
-    world_check_names, overlap_warnings = world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
+    acknowledged_overlaps: list[tuple[str, list[str]]] = []
+    world_check_names, overlap_warnings = world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap,
+                                                       acknowledged_out=acknowledged_overlaps)
     checks += world_check_names
     # a private-repo incident: only the two kinds Lane 3 actually gates against CI need a
     # PR to exist first -- `handoff`/`rework` precede any gate, and `sweep`
@@ -3356,6 +3423,13 @@ def _post_kind(
                    "created_at": datetime.now(UTC).isoformat(), "comment_id": comment_id, "url": url})
     if _tasklist_owed is not None:
         _tasklist_owed.record_post(repo, issue, kind)
+    # harmonic-forge#1457: after the confirmed post, so a dry run or a refused
+    # post records nothing; a store error is printed and never raised.
+    try:
+        record_overlap_rulings(repo, branch, ack_overlap, acknowledged_overlaps,
+                               active_worktree_branches())
+    except (Exception, SystemExit) as exc:  # active_worktree_branches() exits via fail()
+        print(f"[l1-post] overlap ruling not recorded: {type(exc).__name__}: {exc}")
     if snapshot_route is not None:
         # harmonic-forge#1231: after the post, so a refused or failed post
         # records nothing; a store error is printed and never raised.
