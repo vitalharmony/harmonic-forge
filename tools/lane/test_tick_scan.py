@@ -38,10 +38,38 @@ class Classification(unittest.TestCase):
         self.assertFalse(tick_scan.owed("F1 — x · waiting on L10 review", "pending", "1"))
         self.assertFalse(tick_scan.owed("F1 — x · waiting on Lane 12 review", "pending", "1"))
 
-    def test_an_own_lane_step_already_running_is_not_reworked(self) -> None:
-        self.assertFalse(tick_scan.owed("F1399 — filed · waiting on Lane 1 handoff (pitch-inspection running)",
-                                        "pending", "1"))
+    def test_an_own_lane_step_marked_bg_is_not_reworked(self) -> None:
         self.assertFalse(tick_scan.owed("F1 — x · waiting on Lane 1 check (bg)", "pending", "1"))
+        self.assertFalse(tick_scan.owed("F1 — x · waiting on nothing kill checks (bg)", "pending", "1"))
+
+    def test_the_word_running_does_not_hide_owed_work(self) -> None:
+        """Preclose pass 1: only the explicit `(bg)` marker means in flight."""
+        self.assertTrue(tick_scan.owed("F1 — x · waiting on Lane 1 rerun the running-total fix", "pending", "1"))
+
+    def test_nothing_and_nobody_mean_this_lane(self) -> None:
+        """Preclose pass 1: `nothing` is the hold hook's own-lane `<who>`."""
+        self.assertTrue(tick_scan.owed("F1 — reviewed · waiting on nothing push/PR", "pending", "1"))
+        self.assertTrue(tick_scan.owed("F1 — reviewed · waiting on nobody push", "pending", "1"))
+
+    def test_operator_items_and_closed_entries_are_never_owed(self) -> None:
+        self.assertFalse(tick_scan.owed("YOU: run the red-team sessions", "pending", "1"))
+        self.assertFalse(tick_scan.owed("F1 — merged 5a1b · waiting on YOU: close", "pending", "1"))
+        self.assertFalse(tick_scan.owed("F1 — closed", "pending", "1"))
+        self.assertFalse(tick_scan.owed("F1 — closed (merge 5a1b2c3)", "pending", "1"))
+
+    def test_prose_in_the_last_action_never_counts_as_the_clause(self) -> None:
+        self.assertFalse(tick_scan.owed("F1 — fixed waiting on Lane 1 bug · waiting on Lane 2 implement",
+                                        "pending", "1"))
+        self.assertTrue(tick_scan.owed("F1 — no longer waiting on Lane 2 · waiting on Lane 1 review",
+                                       "pending", "1"))
+
+    def test_lane_spellings_with_separators(self) -> None:
+        self.assertTrue(tick_scan.owed("F1 — x · waiting on lane-1 review", "pending", "1"))
+        self.assertTrue(tick_scan.owed("F1 — x · waiting on Lane: 1 review", "pending", "1"))
+        self.assertFalse(tick_scan.owed("F1 — x · waiting on Lane 1_review", "pending", "1"))
+
+    def test_an_unplaceable_who_is_named_not_dropped(self) -> None:
+        self.assertEqual(tick_scan.classify("F1 — x · waiting on the moon", "pending", "1"), "unparsed")
 
     def test_a_completed_entry_is_not_owed(self) -> None:
         self.assertFalse(tick_scan.owed("F1 — closed", "completed", "1"))
@@ -69,9 +97,16 @@ class Scan(unittest.TestCase):
         self.put("4", "F4 open")
         self.assertEqual(tick_scan.scan(self.store, "1"), ["tick-scan: unreadable 3.json", "owed-own-queue F4 open"])
 
-    def test_a_missing_store_is_named(self) -> None:
-        self.assertEqual(tick_scan.scan(self.store / "nope", "1"),
-                         [f"tick-scan: no task list at {self.store / 'nope'}"])
+    def test_a_missing_store_is_an_empty_list(self) -> None:
+        """Preclose pass 1: as tasklist_owed.py reads it, so an empty lane can be silent."""
+        self.assertEqual(tick_scan.scan(self.store / "nope", "1"), [])
+
+    def test_an_unparsed_wait_and_a_null_subject_are_named(self) -> None:
+        self.put("5", "F5 — x · waiting on the moon")
+        (self.store / "6.json").write_text(json.dumps({"id": "6", "subject": None, "status": "pending"}))
+        self.assertEqual(tick_scan.scan(self.store, "1"),
+                         ["tick-scan: unparsed waiting-on in F5 — x · waiting on the moon",
+                          "tick-scan: unreadable 6.json"])
 
     def test_main_names_a_missing_session_and_never_fails(self) -> None:
         with mock.patch.dict(os.environ, {"LANE": "1"}, clear=False):
