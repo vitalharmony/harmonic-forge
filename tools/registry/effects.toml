@@ -888,6 +888,12 @@ path = "tools/lane/lanes-claude"
   gap = "stops the advisor session and kills its tmux session"
   cite = ["tools/lane/lanes-claude:87", "tools/lane/lanes-claude:367"]
   [[tool.mode]]
+  name = "--stop-second-lane1"
+  match = ["--stop-second-lane1"]
+  class = "shared-state"
+  gap = "stops the second Lane 1's session and kills its tmux session"
+  cite = ["tools/lane/lanes-claude:105", "tools/lane/lanes-claude:425"]
+  [[tool.mode]]
   name = "--record-lanes"
   match = ["--record-lanes"]
   class = "shared-state"
