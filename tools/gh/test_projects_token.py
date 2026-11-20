@@ -202,6 +202,13 @@ class ProjectsEnvTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LANE": ""}):
             self.assertEqual(pt.withhold_projects_token({})  , {})
 
+    def test_undecodable_token_file_falls_back_to_hosts_yml(self):
+        """harmonic-forge#1466 sticky-wicket PATCH (c)."""
+        slot = Path(self.lane_slot)
+        (slot / "token").write_bytes(b"\xff\xfe\x00")
+        (slot / "hosts.yml").write_text("github.com:\n    oauth_token: fromhosts\n")
+        self.assertEqual(pt.slot_token("vitalharmony-lane1", str(self.home)), "fromhosts")
+
     def test_board_owner_reads_every_owner_form(self):
         self.assertEqual(pt.board_owner(["gh", "project", "view", "1", "--owner", "a"]), "a")
         self.assertEqual(pt.board_owner(["gh", "project", "view", "1", "--owner=b"]), "b")

@@ -320,11 +320,16 @@ def _board_currency(owner: str, number: str, run=None) -> dict | None:
         def run(args: list[str]):
             return subprocess.run(args, capture_output=True, text=True, env=_board_env(args))
 
-    result = run([
-        "gh", "api", "graphql",
-        "-f", f"query={_BOARD_CURRENCY_QUERY}",
-        "-F", f"owner={owner}", "-F", f"number={int(number)}",
-    ])
+    try:
+        result = run([
+            "gh", "api", "graphql",
+            "-f", f"query={_BOARD_CURRENCY_QUERY}",
+            "-F", f"owner={owner}", "-F", f"number={int(number)}",
+        ])
+    except GhItemListError:
+        # harmonic-forge#1466 sticky-wicket PATCH: no lane token is a failed
+        # probe, which this contract returns as None, never a raise.
+        return None
     if getattr(result, "returncode", 1) != 0:
         return None
     try:

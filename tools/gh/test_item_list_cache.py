@@ -406,3 +406,13 @@ class NoLaneTokenIsALookupFailure(unittest.TestCase):
                                         side_effect=projects_token.NoLaneToken("no lane token")):
             with self.assertRaises(cache.GhItemListError):
                 cache._board_env(["gh", "api", "graphql"], owner="vitalharmony")
+
+
+class BoardCurrencyNeverRaises(unittest.TestCase):
+    """harmonic-forge#1466 sticky-wicket PATCH: `_board_currency` returns None
+    when the board read cannot get a lane token, as its contract says."""
+
+    def test_no_lane_token_is_a_failed_probe(self):
+        def run(args):
+            raise cache.GhItemListError("no lane token")
+        self.assertIsNone(cache._board_currency("vitalharmony", "3", run))
