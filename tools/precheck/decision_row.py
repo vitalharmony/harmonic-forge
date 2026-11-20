@@ -17,6 +17,7 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -61,13 +62,26 @@ def call_path(store: Path, session: str | None, tuid: str | None) -> Path | None
 CALL_MAX_BYTES = 64 * 1024
 
 
+#: The whole call-file step's budget inside the gate (pass 2, cross-family).
+CALL_STEP_BUDGET_S = 0.25
+
+
 def read_call(path: Path) -> dict | None:
     """An existing call file's row, or None for a file that is absent,
-    oversized or unreadable for any reason (a 10,000-deep nest raises
-    RecursionError; a planted file must never change the gate's decision)."""
+    oversized, not a regular file, or unreadable for any reason (a 10,000-deep
+    nest raises RecursionError; a planted file must never change the gate's
+    decision). The size is checked with lstat before any open, so an oversized
+    file costs one stat; the read is a single bounded `os.read`, non-blocking
+    and never following a symlink."""
     try:
-        with path.open("rb") as fh:
-            raw = fh.read(CALL_MAX_BYTES + 1)
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > CALL_MAX_BYTES:
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            raw = os.read(fd, CALL_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
         if len(raw) > CALL_MAX_BYTES:
             return None
         prior = json.loads(raw.decode("utf-8"))
@@ -85,7 +99,10 @@ def write_call(store: Path, data: dict) -> None:
         path = call_path(store, data.get("session"), data.get("tuid"))
         if path is None:
             return
+        started = time.monotonic()
         prior = read_call(path)
+        if time.monotonic() - started > CALL_STEP_BUDGET_S:
+            return  # over budget: skip the file write, never the gate's deadline
         if prior is not None and prior.get("outcome") == "allowed-receipt":
             return
         path.parent.mkdir(parents=True, exist_ok=True)

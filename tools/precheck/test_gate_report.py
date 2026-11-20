@@ -180,6 +180,32 @@ class Report(unittest.TestCase):
         text = self.run_report("--new-cases")
         self.assertIn(f"tool={other} mode={mode['name']}", text)
 
+    def test_gap_since_last_run_reports_old_cases(self) -> None:
+        """Pass 2: a tick after a gap longer than --since still reports the new
+        pair and the cases since the last marked run, and only then marks them."""
+        self.seed()
+        seen = json.loads(gate_report.seen_path().read_text())
+        seen["last_run"] = self.now - 9 * 86400
+        gate_report.seen_path().write_text(json.dumps(seen))
+        other = "tools/gh/kill_check.py"
+        mode = _first_mode(other)
+        self.add("allowed-receipt", tool=other, mode=mode["name"], klass=mode["class"],
+                 sid="old", tuid="old", ts=self.now - 8 * 86400)
+        self.add("error", sid="olderr", tuid="olderr", ts=self.now - 8 * 86400)
+        text = self.run_report("--new-cases", "--mark-seen")
+        self.assertIn(f"tool={other} mode={mode['name']}", text)
+        self.assertIn("outcome=error", text)
+        self.assertEqual(self.run_report("--new-cases", "--mark-seen"), "")
+
+    def test_bad_log_lines_skipped(self) -> None:
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        with self.log.open("a") as fh:
+            fh.write("[" * 10000 + "]" * 10000 + "\n")
+            fh.write(json.dumps({"ts": self.now, "outcome": "error", "pad": "x" * (gate_report.LINE_MAX_BYTES + 5)}) + "\n")
+        self.add("allowed-receipt")
+        self.assertEqual(len(gate_report.rows()), 1)
+        self.assertIn("total\t1", self.run_report())
+
     def test_first_run_seeds_pairs(self) -> None:
         self.add("allowed-receipt")
         self.assertEqual(self.run_report("--new-cases", "--mark-seen"), "")

@@ -13,7 +13,9 @@ tuid) is `allowed-receipt`, every `refused-backstop`, every `error`, and every
 tool|mode pair never seen before. `--new-cases` prints one `protocol-failure`
 capture line per case (AC4); `--mark-seen` records the printed cases and the
 pairs in `<store>/report-seen.json` so the next tick does not print them
-again. The first run seeds the pairs from all history without flagging them.
+again. The first run seeds the pairs from all history without flagging them;
+every later run judges cases from the last marked run (`last_run`) or the
+`--since` window, whichever is older, and marks seen only the pairs in it.
 
 The store is `gate_receipt.store_dir()`, outside forge (AC5); no network.
 
@@ -70,17 +72,37 @@ def names() -> tuple[set[str], set[str], set[str]]:
     return tools, modes, classes
 
 
+#: A log line longer than this is skipped unparsed (harmonic-forge#1448 pass 2).
+LINE_MAX_BYTES = 64 * 1024
+
+
+def _lines(path: Path) -> list[bytes]:
+    """Every line of `path` up to LINE_MAX_BYTES; a longer line is consumed in
+    bounded chunks and dropped, never held whole."""
+    out: list[bytes] = []
+    with path.open("rb") as fh:
+        while True:
+            line = fh.readline(LINE_MAX_BYTES + 1)
+            if not line:
+                return out
+            if len(line) > LINE_MAX_BYTES and not line.endswith(b"\n"):
+                while line and not line.endswith(b"\n"):
+                    line = fh.readline(LINE_MAX_BYTES + 1)
+                continue
+            out.append(line)
+
+
 def rows() -> list[dict]:
     path = gate_receipt.store_dir() / "decisions.jsonl"
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = _lines(path)
     except OSError:
         return []
     out = []
     for line in lines:
         try:
-            data = json.loads(line)
-        except ValueError:
+            data = json.loads(line.decode("utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001 -- RecursionError, MemoryError: a bad line is skipped
             continue
         # A row is untrusted data: a wrong-typed join key (unhashable) or ts
         # is skipped rather than crashing the belt tick.
@@ -118,8 +140,10 @@ def read_seen() -> dict | None:
     for key in ("pairs", "cases"):
         if key in data and not isinstance(data[key], list):
             raise SeenUnreadable(f"{key} is not a list")
+    last = data.get("last_run")
     return {"pairs": [p for p in data.get("pairs", []) if isinstance(p, str)],
-            "cases": [c for c in data.get("cases", []) if isinstance(c, str)]}
+            "cases": [c for c in data.get("cases", []) if isinstance(c, str)],
+            "last_run": last if isinstance(last, (int, float)) and not isinstance(last, bool) else None}
 
 
 def write_seen(seen: dict) -> None:
@@ -127,7 +151,8 @@ def write_seen(seen: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".report-seen.")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"pairs": sorted(set(seen["pairs"])), "cases": sorted(set(seen["cases"]))}, fh)
+        json.dump({"pairs": sorted(set(seen["pairs"])), "cases": sorted(set(seen["cases"])),
+                   "last_run": seen.get("last_run")}, fh)
     os.replace(tmp, path)
 
 
@@ -161,8 +186,11 @@ def _outcome(row: dict) -> str:
 
 
 def new_cases(all_rows: list[dict], recent: list[dict], seen: dict | None) -> tuple[list[dict], set[str]]:
-    """The new-case rows in `recent`, and every pair in all history."""
-    every_pair = {_pair(r) for r in all_rows if r.get("mode")}
+    """The new-case rows in `recent`, and the pairs to mark seen: all history
+    on a first run (silent seeding), otherwise only the pairs in `recent`, the
+    same window the cases were judged in, so a pair is never marked seen
+    without having been reported."""
+    every_pair = {_pair(r) for r in (all_rows if seen is None else recent) if r.get("mode")}
     known_pairs = set(every_pair) if seen is None else set(seen["pairs"])
     known_cases = set() if seen is None else set(seen["cases"])
     # Every gate row counts: one command can log several under one tuid.
@@ -197,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mark-seen", action="store_true", help="remember the printed cases")
     args = parser.parse_args(argv)
     all_rows = rows()
-    cutoff = time.time() - args.since
+    started = time.time()
+    cutoff = started - args.since
     recent = [r for r in all_rows if r["ts"] >= cutoff]
     mask = Masker()
     notices = []
@@ -214,7 +243,12 @@ def main(argv: list[str] | None = None) -> int:
         notices.append("gate_report: seen-state unreadable (report-seen.json); no pair treated as seen")
     for notice in notices:
         print(notice)
-    cases, every_pair = new_cases(all_rows, recent, seen)
+    # Cases are judged since the last marked run when that is older than the
+    # --since window, so a gap between ticks never hides a case or a pair.
+    last_run = seen.get("last_run") if seen else None
+    since_last = recent if last_run is None or last_run >= cutoff \
+        else [r for r in all_rows if r["ts"] >= last_run]
+    cases, every_pair = new_cases(all_rows, since_last, seen)
     if not args.new_cases:
         counts = Counter((*mask(r), _outcome(r)) for r in recent)
         for key in sorted(counts):
@@ -229,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         state = seen or {"pairs": [], "cases": []}
         state["pairs"] = sorted(set(state["pairs"]) | every_pair)
         state["cases"] = sorted(set(state["cases"]) | {case_key(r) for r in cases})
+        state["last_run"] = started
         try:
             write_seen(state)
         except OSError as exc:

@@ -8,6 +8,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -80,6 +81,29 @@ class Telemetry(Store):
         baseline = self._decide_with_planted(None)
         self._call("toolu_plant").unlink()
         self.assertEqual(self._decide_with_planted(b"[" * 10000 + b"]" * 10000), baseline)
+        self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
+        # The planted file was read as absent and replaced by the gate's row.
+        self.assertEqual(json.loads(self._call("toolu_plant").read_text()), self.rows()[-1])
+
+    def test_huge_call_file_step_is_bounded(self) -> None:
+        """Pass 2 cross-family: a 50 MB planted call file leaves the decision
+        unchanged, is never read whole, and the step finishes well under 1 s."""
+        baseline = self._decide_with_planted(None)
+        call = self._call("toolu_plant")
+        call.unlink()
+        call.write_bytes(b'{"outcome": "allowed-receipt", "pad": "' + b"x" * (50 * 1024 * 1024) + b'"}')
+        with mock.patch.object(decision_row.json, "loads", wraps=json.loads) as loads:
+            started = time.monotonic()
+            self.assertIsNone(decision_row.read_call(call))
+            self.assertLess(time.monotonic() - started, 0.5)
+            loads.assert_not_called()
+        started = time.monotonic()
+        decision_row.write_call(self.root / "store", decision_row.row(
+            "allowed-receipt", sid=SESSION, tuid="toolu_plant"))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertNotIn("pad", json.loads(call.read_text()))
+        call.write_bytes(b'{"outcome": "precheck", "pad": "' + b"x" * (50 * 1024 * 1024) + b'"}')
+        self.assertEqual(self.gate_with(L1_CMD, "toolu_plant"), baseline)
         self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
 
     def test_oversized_call_file_never_changes_decision(self) -> None:
