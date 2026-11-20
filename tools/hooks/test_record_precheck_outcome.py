@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -110,16 +111,60 @@ class Recorder(unittest.TestCase):
     def test_call_file_deleted_after_join_and_stale_pruned(self) -> None:
         self.gate_row()
         call = decision_row.call_path(self.store, decision_row.digest(SESSION), decision_row.digest(TUID))
+        receipt = decision_row.receipt_path(call)
+        decision_row.record_gate(self.store, decision_row.row(
+            "precheck", tool="tools/x.py", sid=SESSION, tuid=TUID))
+        self.assertTrue(receipt.exists())
         self.assertTrue(call.exists())
         stale = self.store / "calls" / "old-old.json"
         stale.write_text("{}")
         old = time.time() - decision_row.CALL_TTL - 60
         os.utime(stale, (old, old))
         rec.record(self.payload())
+        self.assertFalse(receipt.exists())
         self.assertFalse(call.exists())
         self.assertFalse(stale.exists())
         rec.record(self.payload())
         self.assertEqual(len([r for r in self.rows() if r["outcome"] == "ran-ok"]), 1)
+
+    def _paths(self) -> tuple[Path, Path]:
+        call = decision_row.call_path(self.store, decision_row.digest(SESSION), decision_row.digest(TUID))
+        return call, decision_row.receipt_path(call)
+
+    def _precheck_row(self) -> None:
+        decision_row.record_gate(self.store, decision_row.row(
+            "precheck", tool="tools/gh/kill_check.py", mode="precheck-form", klass="",
+            fp="e" * 64, sid=SESSION, tuid=TUID))
+
+    def test_receipt_then_precheck_joins_to_receipt(self) -> None:
+        self.gate_row()
+        self._precheck_row()
+        rec.record(self.payload())
+        self.assertEqual((self.rows()[-1]["outcome"], self.rows()[-1]["tool"]),
+                         ("ran-ok", "tools/gh/l1_post.py"))
+
+    def test_invalid_receipt_falls_back_to_json(self) -> None:
+        for bad in (b"not json", json.dumps({"outcome": "allowed-receipt", "tuid": "x",
+                                              "session": decision_row.digest(SESSION)}).encode()):
+            self._precheck_row()
+            call, receipt = self._paths()
+            receipt.write_bytes(bad)
+            rec.record(self.payload())
+            post = self.rows()[-1]
+            self.assertEqual((post["outcome"], post["tool"]), ("ran-ok", "tools/gh/kill_check.py"))
+            self.assertFalse(receipt.exists())
+            self.assertFalse(call.exists())
+
+    def test_recorder_never_blocks_on_planted_fifo(self) -> None:
+        self._precheck_row()
+        call, receipt = self._paths()
+        os.mkfifo(receipt)
+        worker = threading.Thread(target=rec.record, args=(self.payload(),), daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "recorder blocked on a planted FIFO")
+        self.assertEqual((self.rows()[-1]["outcome"], self.rows()[-1]["tool"]),
+                         ("ran-ok", "tools/gh/kill_check.py"))
 
     def test_join_survives_head_move(self) -> None:
         """KC1b: the join is on tuid; the post row never recomputes the fp."""

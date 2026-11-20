@@ -6,8 +6,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -50,12 +52,13 @@ class Telemetry(Store):
         self.assertEqual(set(row), ROW_KEYS)
 
     def test_gate_writes_call_file_beside_row(self) -> None:
-        """Sticky-wicket D: the recorder's join reads this file, not the log."""
+        """Sticky-wicket D: the recorder's join reads this file, not the log.
+        An allowed-receipt row lands in the receipt file."""
         self.record(L1, L1_ARGS)
         self.assertIsNone(self.gate_with(L1_CMD, "toolu_call"))
-        call = decision_row.call_path(self.root / "store", decision_row.digest(SESSION),
-                                      decision_row.digest("toolu_call"))
-        self.assertEqual(json.loads(call.read_text()), self.rows()[-1])
+        call = self._call("toolu_call")
+        self.assertEqual(json.loads(decision_row.receipt_path(call).read_text()), self.rows()[-1])
+        self.assertFalse(call.exists())
 
     def test_call_file_fault_never_changes_decision(self) -> None:
         self.record(L1, L1_ARGS)
@@ -67,76 +70,85 @@ class Telemetry(Store):
         return decision_row.call_path(self.root / "store", decision_row.digest(SESSION),
                                       decision_row.digest(tuid))
 
-    def _decide_with_planted(self, content: bytes | None) -> str | None:
+    def test_gate_never_reads_call_file(self) -> None:
+        """Sticky-wicket epoch 2: the gate path does no call-file reads. Any
+        read of a calls/ path fails; the gate still decides and writes its row."""
         self.record(L1, L1_ARGS)
-        call = self._call("toolu_plant")
-        if content is not None:
-            call.parent.mkdir(parents=True, exist_ok=True)
-            call.write_bytes(content)
-        return self.gate_with(L1_CMD, "toolu_plant")
+        calls = str(self.root / "store" / "calls")
+        real_open, real_os_open = open, os.open
 
-    def test_deep_nested_call_file_never_changes_decision(self) -> None:
-        """Post-verdict A1: a 10,000-deep planted file raises RecursionError in
-        json.loads; the decision must equal the no-file decision."""
-        baseline = self._decide_with_planted(None)
-        self._call("toolu_plant").unlink()
-        self.assertEqual(self._decide_with_planted(b"[" * 10000 + b"]" * 10000), baseline)
+        def guarded_open(file, mode="r", *args, **kwargs):  # noqa: ANN001, ANN202
+            if str(file).startswith(calls) and "r" in mode and "+" not in mode:
+                raise AssertionError("gate read a call file")
+            return real_open(file, mode, *args, **kwargs)
+
+        def guarded_os_open(path, flags, *args, **kwargs):  # noqa: ANN001, ANN202
+            if str(path).startswith(calls) and not flags & (os.O_WRONLY | os.O_RDWR):
+                raise AssertionError("gate read a call file")
+            return real_os_open(path, flags, *args, **kwargs)
+
+        def guarded_path_read(real):  # noqa: ANN001, ANN202
+            def read(path, *args, **kwargs):  # noqa: ANN001, ANN202
+                if str(path).startswith(calls):
+                    raise AssertionError("gate read a call file")
+                return real(path, *args, **kwargs)
+            return read
+
+        with mock.patch.object(decision_row, "read_call", side_effect=AssertionError("read")), \
+                mock.patch("builtins.open", guarded_open), mock.patch.object(os, "open", guarded_os_open), \
+                mock.patch.object(Path, "read_text", guarded_path_read(Path.read_text)), \
+                mock.patch.object(Path, "read_bytes", guarded_path_read(Path.read_bytes)):
+            self.assertIsNone(self.gate_with(L1_CMD, "toolu_noread"))
         self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
-        # The planted file was read as absent and replaced by the gate's row.
-        self.assertEqual(json.loads(self._call("toolu_plant").read_text()), self.rows()[-1])
+        receipt = decision_row.receipt_path(self._call("toolu_noread"))
+        self.assertEqual(json.loads(receipt.read_text()), self.rows()[-1])
 
-    def test_huge_call_file_step_is_bounded(self) -> None:
-        """Pass 2 cross-family: a 50 MB planted call file leaves the decision
-        unchanged, is never read whole, and the step finishes well under 1 s."""
-        baseline = self._decide_with_planted(None)
-        call = self._call("toolu_plant")
-        call.unlink()
-        call.write_bytes(b'{"outcome": "allowed-receipt", "pad": "' + b"x" * (50 * 1024 * 1024) + b'"}')
-        with mock.patch.object(decision_row.json, "loads", wraps=json.loads) as loads:
-            started = time.monotonic()
-            self.assertIsNone(decision_row.read_call(call))
-            self.assertLess(time.monotonic() - started, 0.5)
-            loads.assert_not_called()
-        started = time.monotonic()
-        decision_row.write_call(self.root / "store", decision_row.row(
-            "allowed-receipt", sid=SESSION, tuid="toolu_plant"))
-        self.assertLess(time.monotonic() - started, 1.0)
-        self.assertNotIn("pad", json.loads(call.read_text()))
-        call.write_bytes(b'{"outcome": "precheck", "pad": "' + b"x" * (50 * 1024 * 1024) + b'"}')
-        self.assertEqual(self.gate_with(L1_CMD, "toolu_plant"), baseline)
+    def _gate_in_thread(self, tuid: str) -> list:
+        result: list = []
+        worker = threading.Thread(target=lambda: result.append(self.gate_with(L1_CMD, tuid)), daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "gate blocked on a planted receipt path")
+        return result
+
+    def test_planted_fifo_at_receipt_path_never_blocks_or_changes_decision(self) -> None:
+        self.record(L1, L1_ARGS)
+        baseline = self.gate_with(L1_CMD, "toolu_base")
+        self.record(L1, L1_ARGS)
+        receipt = decision_row.receipt_path(self._call("toolu_fifo"))
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(receipt)
+        self.assertEqual(self._gate_in_thread("toolu_fifo"), [baseline])
         self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
 
-    def test_oversized_call_file_never_changes_decision(self) -> None:
-        baseline = self._decide_with_planted(None)
-        self._call("toolu_plant").unlink()
-        big = json.dumps({"outcome": "allowed-receipt", "pad": "x" * (decision_row.CALL_MAX_BYTES + 10)})
-        self.assertEqual(self._decide_with_planted(big.encode()), baseline)
-        self.assertEqual(json.loads(self._call("toolu_plant").read_text())["outcome"], "allowed-receipt")
-        self.assertNotIn("pad", json.loads(self._call("toolu_plant").read_text()))
+    def test_planted_symlink_at_receipt_path_never_blocks_or_changes_decision(self) -> None:
+        self.record(L1, L1_ARGS)
+        baseline = self.gate_with(L1_CMD, "toolu_base")
+        self.record(L1, L1_ARGS)
+        receipt = decision_row.receipt_path(self._call("toolu_link"))
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        fifo = self.root / "target.fifo"
+        os.mkfifo(fifo)
+        receipt.symlink_to(fifo)
+        self.assertEqual(self._gate_in_thread("toolu_link"), [baseline])
+        self.assertTrue(receipt.is_symlink())
+        self.assertEqual(self.rows()[-1]["outcome"], "allowed-receipt")
 
     def test_first_receipt_wins(self) -> None:
-        """Post-verdict A4: receipt->receipt keeps the first; precheck->receipt
-        keeps the receipt; receipt->precheck->receipt keeps the first receipt."""
+        """A second receipt never overwrites the first; non-receipt rows go to
+        the .json file and leave the receipt alone."""
         store = self.root / "store"
 
         def put(outcome: str, ts: float, tuid: str) -> None:
             decision_row.write_call(store, decision_row.row(outcome, sid=SESSION, tuid=tuid, now=ts))
 
-        def kept(tuid: str) -> tuple:
-            data = json.loads(self._call(tuid).read_text())
-            return data["outcome"], data["ts"]
-
-        orders = {"a": ["allowed-receipt", "allowed-receipt"],
-                  "b": ["precheck", "allowed-receipt"],
-                  "c": ["allowed-receipt", "precheck", "allowed-receipt"],
-                  "d": ["precheck", "refused"]}
-        for tuid, outcomes in orders.items():
-            for ts, outcome in enumerate(outcomes, start=1):
-                put(outcome, float(ts), tuid)
-        self.assertEqual(kept("a"), ("allowed-receipt", 1.0))
-        self.assertEqual(kept("b"), ("allowed-receipt", 2.0))
-        self.assertEqual(kept("c"), ("allowed-receipt", 1.0))
-        self.assertEqual(kept("d"), ("refused", 2.0))
+        put("allowed-receipt", 1.0, "a")
+        put("precheck", 2.0, "a")
+        put("allowed-receipt", 3.0, "a")
+        receipt = decision_row.receipt_path(self._call("a"))
+        self.assertEqual(json.loads(receipt.read_text())["ts"], 1.0)
+        self.assertEqual(json.loads(self._call("a").read_text())["outcome"], "precheck")
+        self.assertEqual([p.name for p in receipt.parent.iterdir() if p.name.startswith(".call.")], [])
 
     def test_fault_reason(self) -> None:
         with mock.patch.object(gate, "_calls_in", side_effect=RuntimeError("boom")):

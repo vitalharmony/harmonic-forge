@@ -7,8 +7,8 @@ through here, so the three writers cannot drift apart. A row is ts, outcome,
 tool, mode, class, fp (12 chars), session (hashed), tuid (hashed
 `tool_use_id`), exit, reason. Never an argv token.
 
-Each gate row with a tuid is also written to `<store>/calls/<session>-<tuid>.json`
-(`record_gate`), so the recorder finds its row by name, never by scanning the
+Each gate row with a tuid is also written to `<store>/calls/<session>-<tuid>.json`,
+or `.receipt.json` for an allowed-receipt row (`record_gate`), so the recorder finds its row by name, never by scanning the
 shared log, whatever its size (harmonic-forge#1448 sticky-wicket D).
 """
 from __future__ import annotations
@@ -62,17 +62,13 @@ def call_path(store: Path, session: str | None, tuid: str | None) -> Path | None
 CALL_MAX_BYTES = 64 * 1024
 
 
-#: The whole call-file step's budget inside the gate (pass 2, cross-family).
-CALL_STEP_BUDGET_S = 0.25
-
-
 def read_call(path: Path) -> dict | None:
-    """An existing call file's row, or None for a file that is absent,
-    oversized, not a regular file, or unreadable for any reason (a 10,000-deep
-    nest raises RecursionError; a planted file must never change the gate's
-    decision). The size is checked with lstat before any open, so an oversized
-    file costs one stat; the read is a single bounded `os.read`, non-blocking
-    and never following a symlink."""
+    """A call file's row, or None for a file that is absent, oversized, not a
+    regular file, or unreadable for any reason (a 10,000-deep nest raises
+    RecursionError). Used by the recorder only, never by the gate: the gate path
+    does no reads (sticky-wicket F1448 epoch 2). The size is checked with lstat
+    before any open; the read is a single bounded `os.read`, non-blocking and
+    never following a symlink, so a planted FIFO or huge file never blocks."""
     try:
         info = os.lstat(path)
         if not stat.S_ISREG(info.st_mode) or info.st_size > CALL_MAX_BYTES:
@@ -90,31 +86,36 @@ def read_call(path: Path) -> dict | None:
     return prior if isinstance(prior, dict) else None
 
 
+def receipt_path(path: Path) -> Path:
+    """`<s>-<t>.receipt.json` beside `<s>-<t>.json`."""
+    return path.with_name(path.name[: -len(".json")] + ".receipt.json")
+
+
 def write_call(store: Path, data: dict) -> None:
-    """Atomically write the per-call file for a gate row. First allowed-receipt
-    wins: once the file holds an allowed-receipt row, no later row (receipt or
-    not) replaces it; before any receipt, the newest row is kept. A store
-    problem is never surfaced."""
+    """Write the per-call file for a gate row without reading anything.
+
+    An allowed-receipt row goes to `<s>-<t>.receipt.json`: written to a temp
+    file, then `os.link`ed into place, so the kernel makes the first receipt win
+    (a later one gets EEXIST and is dropped) and a crash never leaves an empty
+    receipt. Any other row replaces `<s>-<t>.json` atomically. A store problem
+    is never surfaced."""
     with contextlib.suppress(Exception):
         path = call_path(store, data.get("session"), data.get("tuid"))
         if path is None:
-            return
-        started = time.monotonic()
-        prior = read_call(path)
-        if time.monotonic() - started > CALL_STEP_BUDGET_S:
-            return  # over budget: skip the file write, never the gate's deadline
-        if prior is not None and prior.get("outcome") == "allowed-receipt":
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".call.")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, sort_keys=True)
-            os.replace(tmp, path)
-        except BaseException:
+            if data.get("outcome") == "allowed-receipt":
+                with contextlib.suppress(FileExistsError):
+                    os.link(tmp, receipt_path(path))
+            else:
+                os.replace(tmp, path)
+        finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            raise
 
 
 def record_gate(store: Path, data: dict) -> None:
