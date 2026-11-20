@@ -107,7 +107,9 @@ class ProjectsEnvTests(unittest.TestCase):
         for name, extra in refused.items():
             with self.subTest(name):
                 self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(**extra))["GH_TOKEN"], "lanetok")
-        with mock.patch.dict(os.environ, {}, clear=True):
+        # The process has no lane; it keeps its accounts root, so the result
+        # does not depend on the machine's ~/.config/gh-accounts.
+        with mock.patch.dict(os.environ, {"GH_ACCT_HOME": str(self.home)}, clear=True):
             self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env())["GH_TOKEN"], "lanetok")
 
     def test_a_slot_other_than_the_process_own_is_refused(self):
