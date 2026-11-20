@@ -177,81 +177,113 @@ def _only_drops_digits(raw: list[str], stripped: list[str]) -> bool:
     return j == len(stripped)
 
 
-def _fingerprint_items(command: str) -> list:
-    """The parsed simple commands of the RAW text, with each one's argv
-    replaced by the descriptor-stripped argv only where that is provably the
-    same command minus descriptor digits (harmonic-forge#1461 reforge).
-
-    Invariant: the raw parse alone decides whether the text parses and which
-    calls exist, so `_strip_fd_digits` can never turn a refused command into an
-    allowed one. A lexer miss can only leave a digit in the fingerprint, which
-    costs a receipt mismatch (a refusal), never a bypass. Raises like
-    `shell_parse.simple_commands` when the raw text does not parse."""
-    raw_items = shell_parse.simple_commands(command)
+def _fingerprint_argvs(command: str, raw_items: list) -> dict[int, list[str]]:
+    """For each raw simple command whose descriptor-stripped argv provably
+    differs only by removed all-ASCII-digit tokens, that stripped argv, keyed by
+    the item's index (harmonic-forge#1461 reforge). Any doubt -- the stripped
+    text fails to parse, or its structure differs from the raw parse -- returns
+    an empty map, so the raw argv is used."""
     try:
         stripped_items = shell_parse.simple_commands(_strip_fd_digits(command))
     except (ValueError, shell_parse.NotOrdinary):
-        return raw_items
+        return {}
     if len(stripped_items) != len(raw_items):
-        return raw_items
-    merged = []
-    for raw, stripped in zip(raw_items, stripped_items):
+        return {}
+    out: dict[int, list[str]] = {}
+    for i, (raw, stripped) in enumerate(zip(raw_items, stripped_items)):
         raw_simple = isinstance(raw, shell_parse.SimpleCommand)
         if raw_simple != isinstance(stripped, shell_parse.SimpleCommand):
-            return raw_items
+            return {}
         if raw_simple and raw.argv and stripped.argv != raw.argv:
             if not _only_drops_digits(list(raw.argv), list(stripped.argv)):
-                return raw_items
-            merged.append(stripped)
-        else:
-            merged.append(raw)
-    return merged
+                return {}
+            out[i] = list(stripped.argv)
+    return out
+
+
+def _normalize(argv: list[str]) -> list[str]:
+    argv = shell_parse.strip_invocation_prefix(list(argv), unwrap_shells=False)
+    # The shell expands a leading `~` before the tool sees it; so does the gate,
+    # or the two would fingerprint different argv.
+    return [os.path.expanduser(t) if t == "~" or t.startswith("~/") else t for t in argv]
+
+
+def _direct_call(argv: list[str]) -> "_Call | None":
+    """The gated call `argv` invokes directly (mise task, python script, or the
+    tool itself), or None. Never a shell wrapper: that is recursion, below."""
+    if not argv:
+        return None
+    mise = _mise_call(argv)
+    if mise is not None:
+        return mise
+    program = Path(argv[0]).name
+    if PYTHONS.match(program):
+        index = 1
+        while index < len(argv) and argv[index].startswith("-"):
+            index += 1
+        if index < len(argv):
+            tool = _tool_for_program(argv[index])
+            if tool is not None:
+                return _Call(tool, argv[index + 1:], argv[:index + 1], None)
+    tool = _tool_for_program(argv[0])
+    if tool is not None:
+        return _Call(tool, argv[1:], argv[:1], None)
+    return None
 
 
 def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
-    """(gated calls, other argvs, parsed). `parsed` is False when the RAW text
-    does not parse (harmonic-forge#1461: never decided by the stripped text)."""
+    """(gated calls, other argvs, parsed).
+
+    harmonic-forge#1461 reforge invariant, refined at reforge preclose pass 1:
+    - Parsing is decided by the RAW text alone; a stripped reading (or a
+      recursion into one) that fails to parse never marks the command
+      unparsed, so it can never turn a refusal into an allow.
+    - A call is gated if EITHER reading finds it. Bash removes an attached
+      redirect before the program sees its argv, so `bash -c 2>/dev/null 'x'`
+      runs `x` and `python3 2>f tool` runs `tool`: the stripped reading is the
+      executed argv there, and the raw reading alone (main) misses the call.
+    - Where both readings find the same tool with the same spelling, the
+      stripped argv is the fingerprint (AC1); otherwise each call keeps the
+      argv of the reading that found it."""
     try:
-        items = _fingerprint_items(command)
+        items = shell_parse.simple_commands(command)
     except (ValueError, shell_parse.NotOrdinary):
         return [], [], False
+    fingerprints = _fingerprint_argvs(command, items)
     calls: list[_Call] = []
     others: list[list[str]] = []
-    for item in items:
+    for i, item in enumerate(items):
         if not isinstance(item, shell_parse.SimpleCommand) or not item.argv:
             continue
-        argv = shell_parse.strip_invocation_prefix(list(item.argv), unwrap_shells=False)
-        # The shell expands a leading `~` before the tool sees it; so does the gate,
-        # or the two would fingerprint different argv.
-        argv = [os.path.expanduser(t) if t == "~" or t.startswith("~/") else t for t in argv]
-        if not argv:
-            continue
-        program = Path(argv[0]).name
-        if program in SHELLS and len(argv) > 2 and argv[1] in ("-c", "-lc", "--command") and depth < 3:
-            inner_calls, inner_others, ok = _calls_in(argv[2], depth + 1)
-            calls += inner_calls
-            others += inner_others
-            if not ok:
-                return calls, others, False
-            continue
-        mise = _mise_call(argv)
-        if mise is not None:
-            calls.append(mise)
-            continue
-        if PYTHONS.match(program):
-            index = 1
-            while index < len(argv) and argv[index].startswith("-"):
-                index += 1
-            if index < len(argv):
-                tool = _tool_for_program(argv[index])
-                if tool is not None:
-                    calls.append(_Call(tool, argv[index + 1:], argv[:index + 1], None))
-                    continue
-        tool = _tool_for_program(argv[0])
-        if tool is not None:
-            calls.append(_Call(tool, argv[1:], argv[:1], None))
-            continue
-        others.append(argv)
+        readings = [_normalize(item.argv)]
+        if i in fingerprints:
+            readings.append(_normalize(fingerprints[i]))
+        found: list[_Call] = []
+        for n, argv in enumerate(readings):
+            if not argv:
+                continue
+            program = Path(argv[0]).name
+            if program in SHELLS and len(argv) > 2 and argv[1] in ("-c", "-lc", "--command") and depth < 3:
+                inner_calls, inner_others, ok = _calls_in(argv[2], depth + 1)
+                if n == 0:
+                    others += inner_others
+                    if not ok:
+                        return calls + found + inner_calls, others, False
+                found += inner_calls
+                continue
+            call = _direct_call(argv)
+            if call is None:
+                continue
+            twin = next((c for c in found if c.tool["path"] == call.tool["path"]
+                         and c.spelling == call.spelling), None)
+            if twin is not None:
+                found[found.index(twin)] = call  # same call: the stripped argv fingerprints it
+            else:
+                found.append(call)
+        if found:
+            calls += found
+        elif readings[0]:
+            others.append(readings[0])
     return calls, others, True
 
 

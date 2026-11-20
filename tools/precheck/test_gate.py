@@ -483,12 +483,38 @@ class RedirectReforgeInvariant(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(calls[0].argv[-2:], ["handoff", "2"])
 
-    def test_the_corpus_finds_exactly_the_calls_main_finds(self) -> None:
+    def test_a_stripped_recursion_that_fails_never_unparses_the_command(self) -> None:
+        """Reforge preclose pass 1 (cross-family, reproduced at 7e5ae58): the
+        digit token `2` shifts which word `-c` takes in the stripped reading;
+        that inner text fails to parse, and the whole command read as unparsed,
+        so the earlier gated call was allowed. Parsing is the raw text's alone."""
+        command = FORCE_CMD + """ ; bash -c 2>/dev/null 'x "'"""
+        calls, _others, ok = gate._calls_in(command)
+        self.assertTrue(ok)
+        self.assertIn("tools/gh/kill_check.py", [c.tool["path"] for c in calls])
+        self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+
+    def test_a_call_only_the_executed_argv_reveals_is_still_gated(self) -> None:
+        """Reforge preclose pass 1: bash removes an attached redirect before the
+        program sees argv, so these run the gated tool; a raw-only reading
+        (main) misses them. Either reading finding a call gates it."""
+        for command in ("bash -c 2>/dev/null '" + FORCE_CMD + "'",
+                        "python3 2>f tools/gh/kill_check.py run --repo vitalharmony/harmonic-forge --issue 1291"):
+            with self.subTest(command=command):
+                calls, _others, ok = gate._calls_in(command)
+                self.assertTrue(ok)
+                self.assertEqual([c.tool["path"] for c in calls], ["tools/gh/kill_check.py"])
+                self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+
+    def test_the_corpus_finds_at_least_the_calls_main_finds(self) -> None:
         for suffix in self.CORPUS:
             command = self.BASE + suffix
             with self.subTest(suffix=suffix):
                 calls, _others, ok = gate._calls_in(command)
-                self.assertEqual(([c.tool["path"] for c in calls], ok), self.raw_only(command))
+                main_calls, main_ok = self.raw_only(command)
+                self.assertEqual(ok, main_ok)
+                for path in main_calls:
+                    self.assertIn(path, [c.tool["path"] for c in calls])
 
     def test_the_corpus_never_allows_what_main_refuses(self) -> None:
         for suffix in self.CORPUS:
