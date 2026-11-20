@@ -1589,6 +1589,42 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("SUPPRESSED", out)
         self.assertIn("vitalharmony/hrse#1530", out)
 
+    def _thread(self, owed_at: str, size: int = 35):
+        """A >30-comment thread with one owed marker at `owed_at`, served the
+        way the REST `since=` filter does: only comments at or after `since`."""
+        thread = [{"id": str(100 + n), "body": "chatter",
+                   "created_at": f"2026-09-10T0{n % 10}:00:00Z"} for n in range(size)]
+        thread.append({"id": "7029911999", "body": self.HANDOFF, "created_at": owed_at,
+                       "html_url": "https://github.com/vitalharmony/hrse/issues/1530#issuecomment-7029911999"})
+        asked = {}
+
+        def fetch(repo, issue, since):
+            asked["since"] = since
+            return [c for c in thread if c["created_at"] >= since]
+        return fetch, asked
+
+    def test_an_owed_post_from_before_first_arm_is_named_at_first_arm(self):
+        """harmonic-forge#1469 AC2 (hrse#1810's shape): an owed marker posted
+        hours before the belt's first arm, on a thread past one page, must reach
+        the first-arm PRIMED line. The first-arm fetch used to start 15 minutes
+        back, so it was never fetched and nothing named it."""
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")   # NOW - 2 h
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch)
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1, lines)
+        self.assertIn("issuecomment-7029911999", primed[0])
+        self.assertLessEqual(asked["since"], "2026-09-10T10:00:00Z")
+
+    def test_a_later_arm_still_reads_from_its_watermark(self):
+        """harmonic-forge#1469: the wider first-arm read is for a target with no
+        watermark only; an armed target keeps the watermark-minus-overlap read."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        self._cycle(None, fetch=fetch)
+        # min(watermark 11:50, now - 15 min = 11:45): the pre-#1469 read.
+        self.assertEqual(asked["since"], "2026-09-10T11:45:00Z")
+
     def test_suppressed_markers_carry_their_comment_url_and_no_state_edit_advice(self):
         """harmonic-forge#921: the printed recovery used to advise a state edit, which
         replays nothing (the watermark has advanced) or re-primes the same marker.

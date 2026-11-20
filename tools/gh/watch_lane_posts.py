@@ -2062,10 +2062,14 @@ def comment_watch_cycle(
                   f"than {_WATERMARK_STALE_HOURS}h; posts before {horizon:%Y-%m-%dT%H:%M:%SZ} "
                   "are not replayed", file=sys.stderr)
             mark = horizon
-        comments = _fetch_comments(
-            repo, issue,
-            query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"))
+        # harmonic-forge#1469: on a target's first arm (no watermark) read back
+        # to the stale horizon, not just the overlap window. With the bare
+        # overlap a post owed to this lane more than 15 minutes older than first
+        # arm was never fetched, so it reached neither the PRIMED line nor a
+        # queued line (hrse#1810's L2D). `mark` stays None, so priming still applies.
+        since = query_since(mark if mark is not None else horizon, _OVERLAP_MINUTES,
+                            _parse_iso(now))
+        comments = _fetch_comments(repo, issue, since.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if comments is None:
             print(f"[watch_lane_posts] {target}: comment fetch failed -- "
                   "watermark held, window will be re-read", file=sys.stderr)

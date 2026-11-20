@@ -72,8 +72,30 @@ class ScanReason(unittest.TestCase):
     def test_single_issue_read_is_not_a_scan(self):
         self.assertIsNone(gsp.scan_reason(["api", "repos/o/r/issues/123"]))
 
-    def test_single_issue_comments_is_not_a_scan(self):
-        self.assertIsNone(gsp.scan_reason(["api", "repos/o/r/issues/123/comments"]))
+    def test_an_unpaginated_issue_thread_read_is_refused(self):
+        """harmonic-forge#1469 AC3: the first page alone (30) reads the rest of
+        the thread as absent (hrse#289)."""
+        for argv in (["api", "repos/o/r/issues/123/comments"],
+                     ["api", "/repos/o/r/issues/123/comments"],
+                     ["api", "repos/o/r/issues/123/comments?since=2026-01-01T00:00:00Z"],
+                     ["api", "-X", "GET", "repos/o/r/issues/123/comments", "-f", "since=x"]):
+            with self.subTest(argv=argv):
+                reason = gsp.scan_reason(argv)
+                self.assertIsNotNone(reason)
+                self.assertIn("hrse#289", reason)
+
+    def test_a_paginated_or_explicit_page_thread_read_passes(self):
+        for argv in (["api", "repos/o/r/issues/123/comments", "--paginate"],
+                     ["api", "--paginate", "repos/o/r/issues/123/comments"],
+                     ["api", "repos/o/r/issues/123/comments?per_page=100"],
+                     ["api", "repos/o/r/issues/123/comments?since=x&page=2"],
+                     ["api", "-X", "GET", "repos/o/r/issues/123/comments", "-F", "per_page=100"],
+                     ["api", "-X", "GET", "repos/o/r/issues/123/comments", "-fpage=2"],
+                     ["api", "repos/o/r/issues/comments/987"],
+                     ["api", "repos/o/r/issues/123/comments", "-X", "POST", "-f", "body=hi"],
+                     ["api", "repos/o/r/issues/123/comments", "-f", "body=hi"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(gsp.scan_reason(argv))
 
     def test_project_item_add_is_not_a_scan(self):
         self.assertIsNone(gsp.scan_reason(["project", "item-add", "1"]))
