@@ -103,6 +103,16 @@ class ProjectsEnvTests(unittest.TestCase):
                 self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(slot)))["GH_TOKEN"],
                                  "lanetok")
 
+    def test_a_process_slot_outside_the_accounts_root_is_refused(self):
+        """harmonic-forge#1463 AC2: the slot must sit directly under the
+        accounts root, even when it is the process's own GH_CONFIG_DIR."""
+        elsewhere = Path(tempfile.mkdtemp()) / "vitalharmony-lane1"
+        elsewhere.mkdir()
+        self.addCleanup(lambda: elsewhere.rmdir())
+        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": str(elsewhere)}):
+            env = pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(elsewhere)))
+        self.assertEqual(env["GH_TOKEN"], "lanetok")
+
     def test_strip_reads_the_process_accounts_root_not_the_base(self):
         """harmonic-forge#1463 AC1, preclose pass 1: a base pointing GH_ACCT_HOME
         at an empty directory still loses the inherited token."""
