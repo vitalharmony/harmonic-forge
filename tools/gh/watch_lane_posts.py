@@ -2072,16 +2072,25 @@ def comment_watch_cycle(
         # names every marker on the stdout PRIMED line and announces none, so
         # both failures are closed. A target with a watermark never takes this
         # branch (the #697 no-re-priming rule).
-        first_sight = mark is None and target not in primed_targets
-        since = query_since(horizon if first_sight else mark, _OVERLAP_MINUTES,
-                            _parse_iso(now))
+        # Reforge preclose pass 1: a watermark FILE that exists but cannot be
+        # read means this target WAS read before, so it is not first sight.
+        # It still reads back to the horizon (an unreadable mark gives no
+        # floor), but it primes only where main did (`allow_priming`); its
+        # settled markers are already in the seen-set, so an owed post the
+        # seen-set does not hold is announced live, never silently primed.
+        recorded = watermarks.recorded(account, _wm_key(repo, issue))
+        first_sight = mark is None and not recorded and target not in primed_targets
+        unreadable = mark is None and recorded
+        since = query_since(horizon if (first_sight or unreadable) else mark,
+                            _OVERLAP_MINUTES, _parse_iso(now))
         comments = _fetch_comments(repo, issue, since.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if comments is None:
             print(f"[watch_lane_posts] {target}: comment fetch failed -- "
                   "watermark held, window will be re-read", file=sys.stderr)
             fetch_failed = True
             continue
-        priming = first_sight
+        priming = first_sight or (unreadable and allow_priming
+                                  and target not in primed_targets)
         emitted_here = False
         suppressed: list[str] = []
         for comment in comments:

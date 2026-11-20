@@ -1631,13 +1631,29 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("issuecomment-7029911999", primed[0])
         self.assertEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
 
-    def test_a_rearmed_belt_never_replays_an_answered_marker_as_live(self):
-        """Required test 3 (the pass-1 survivor): a marker already answered on
-        its thread is primed, never announced, even with the wide read."""
+    def test_a_rearmed_belt_never_announces_a_first_sight_marker_as_live(self):
+        """Required test 3 (the pass-1 survivor): on a re-armed belt, a marker
+        from before first sight (here 10 h old, the kind that may already have
+        been acted on) is primed, never announced, even with the wide read."""
         fetch, _asked = self._thread(owed_at="2026-09-10T02:00:00Z")
         with patch("sys.stderr", new_callable=io.StringIO):
             lines = self._cycle(None, fetch=fetch, allow_priming=False)
         self.assertEqual(self._announced(lines), [])
+
+    def test_an_unreadable_watermark_is_not_first_sight(self):
+        """Reforge preclose pass 1: a watermark file that exists but cannot be
+        read means the target WAS read before. On a re-armed belt its owed post
+        is read from the horizon and announced live (the seen-set dedups what
+        was handled), never silently primed."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        self.wm._path("vitalharmony", self.key).write_text("", encoding="utf-8")
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertEqual(asked["since"], "2026-09-09T12:00:00Z")
+        self.assertEqual(len(self._announced(lines)), 1, lines)
+        self.assertEqual([l for l in lines if "PRIMED at first arm" in l], [])
+        self.assertNotEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
 
     def test_a_watermarked_target_on_a_rearmed_belt_reads_narrow_and_announces_live(self):
         """Required test 4 (the #697 guard): a target with a watermark never
