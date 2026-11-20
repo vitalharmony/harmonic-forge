@@ -75,7 +75,7 @@ def _routes(repo: str = "vitalharmony/widget", *, timeline=None) -> dict[str, ob
             {"event": "connected", "created_at": "2026-10-02T09:00:00Z"},
         ],
         f"repos/{repo}/issues/7": {"created_at": "2026-09-30T10:00:00Z", "closed_at": "2026-10-01T10:05:00Z"},
-        f"repos/{repo}/actions/runs?head_sha=sha11": [{"total_count": 1, "workflow_runs": [{"id": 77}]}],
+        f"repos/{repo}/actions/runs?head_sha=sha11": [{"total_count": 1, "workflow_runs": [{"id": 77, "run_attempt": 1}]}],
         f"repos/{repo}/actions/runs/77/jobs": [
             {"total_count": 1, "jobs": [{"id": 9001, "name": "verify", "status": "completed",
                                          "conclusion": "success", "completed_at": "2026-10-01T10:10:00Z"}]}],
@@ -275,9 +275,14 @@ class FetchTests(unittest.TestCase):
         self.assertFalse([e for e in ci if e["attrs"].get("jobless_run")])
 
     def test_a_run_with_jobs_adds_no_synthetic_record(self) -> None:
-        """AC3: only a jobless run gets a synthetic record."""
-        self.run_repo("vitalharmony/widget", FakeGh(_routes()))
-        self.assertFalse([e for e in self.of("ci.conclusion") if e["attrs"].get("jobless_run")])
+        """AC3: a run with jobs is unchanged: its jobs are recorded, no
+        synthetic record is added, and no attempt read is made."""
+        gh = FakeGh(_routes())
+        self.run_repo("vitalharmony/widget", gh)
+        ci = self.of("ci.conclusion")
+        self.assertFalse([e for e in ci if e["attrs"].get("jobless_run")])
+        self.assertEqual([e["attrs"]["run_id"] for e in ci], [9001])
+        self.assertFalse([c for c in gh.calls if "/attempts/" in c])
 
     def test_an_emit_rejection_fails_the_pr_instead_of_ok(self) -> None:
         routes = _routes()
