@@ -28,14 +28,23 @@ def slot_token(slot: str, home: str | None = None) -> str:
         bare = (root / slot / "token").read_text(encoding="utf-8").strip()
         if bare:
             return bare
-    except (OSError, ValueError):
-        pass  # harmonic-forge#1466 sticky-wicket PATCH: an undecodable file is unreadable
+    except OSError:
+        pass
+    except ValueError:
+        # harmonic-forge#1466: in a lane an undecodable file is unreadable (fall
+        # back to hosts.yml); outside a lane it raises as before (AC2).
+        if os.environ.get("LANE") not in ("1", "2", "3"):
+            raise
     try:
         for line in (root / slot / "hosts.yml").read_text(encoding="utf-8").splitlines():
             match = re.match(r"\s*oauth_token:\s*(\S+)", line)
             if match:
                 return match.group(1)
-    except (OSError, ValueError):
+    except OSError:
+        return ""
+    except ValueError:
+        if os.environ.get("LANE") not in ("1", "2", "3"):
+            raise
         return ""
     return ""
 

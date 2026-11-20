@@ -207,7 +207,12 @@ class ProjectsEnvTests(unittest.TestCase):
         slot = Path(self.lane_slot)
         (slot / "token").write_bytes(b"\xff\xfe\x00")
         (slot / "hosts.yml").write_text("github.com:\n    oauth_token: fromhosts\n")
-        self.assertEqual(pt.slot_token("vitalharmony-lane1", str(self.home)), "fromhosts")
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            self.assertEqual(pt.slot_token("vitalharmony-lane1", str(self.home)), "fromhosts")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LANE", None)
+            with self.assertRaises(UnicodeDecodeError):  # AC2: unchanged outside a lane
+                pt.slot_token("vitalharmony-lane1", str(self.home))
 
     def test_board_owner_reads_every_owner_form(self):
         self.assertEqual(pt.board_owner(["gh", "project", "view", "1", "--owner", "a"]), "a")

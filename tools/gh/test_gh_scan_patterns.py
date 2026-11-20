@@ -384,10 +384,16 @@ class ProbeUnreadableTokenIsUnknown(unittest.TestCase):
             slot.mkdir()
             (slot / "token").write_bytes(b"\xff\xfe\x00bad")
             env = {"GH_ACCT_HOME": tmp, "GH_TOKEN": "x", "PATH": os.environ.get("PATH", "")}
+            ran = []
+
+            def record(*a, **k):
+                ran.append(a)
+                raise OSError("stop")
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(gsp.subprocess, "run", side_effect=OSError("stop")):
+                    mock.patch.object(gsp.subprocess, "run", side_effect=record):
                 self.assertIsNone(gsp._fetch_budget_live())
                 self.assertIsNone(gsp.graphql_budget())
+            self.assertEqual(ran, [], "an undecodable projects token file outside a lane must not run gh")
 
 
 if __name__ == "__main__":
