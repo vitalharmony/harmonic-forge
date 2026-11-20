@@ -181,7 +181,7 @@ class OutPath(Base):
         (forge / "tools" / "memory" / "capture_failure.py").write_text("", encoding="utf-8")
         self.out = forge / "never-refuse-posts-v1.jsonl"
         fetch = FakeFetch({})
-        with self.assertRaisesRegex(nrp.Refused, "inside a harmonic-forge checkout"):
+        with self.assertRaisesRegex(nrp.Refused, r"^--out .* inside a harmonic-forge checkout"):
             self.derive(fetch)
         self.assertEqual(fetch.calls, [])
         self.assertFalse(self.out.exists())
@@ -207,6 +207,7 @@ class OutPath(Base):
             code = nrp.main(["derive", "--receipts", str(self.receipts),
                              "--out", str(HERE / "never-refuse-posts-v1.jsonl")])
         self.assertEqual(code, 2)
+        self.assertIn("refused: --out ", stderr.getvalue())
         self.assertIn("inside a harmonic-forge checkout", stderr.getvalue())
 
 
