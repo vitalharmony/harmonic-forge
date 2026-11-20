@@ -104,6 +104,24 @@ class TierHooksReadWithProjectsToken(Harness):
         self.assertTrue(self.seen)
         self.assertTrue(all(s.get("GH_TOKEN") != PROJECTS_TOKEN for s in self.seen))
 
+    def _read_as(self, slot: str, board_owner: str):
+        self.patch_env(self.lane_env("1", slot=slot))
+        run = self.fake_run(board_owner)
+        run.board_base_env = None
+        try:
+            item_list_cache.fetch_issue_tier("vitalharmony/hrse", 1, "1", run=run, owner=board_owner)
+        except item_list_cache.GhItemListError:
+            pass
+        return self.seen[-1].get("GH_TOKEN")
+
+    def test_owner_guard_alone_withholds_the_token(self):
+        """A vitalharmony lane slot reading a board another owner owns."""
+        self.assertNotEqual(self._read_as("vitalharmony-lane", "harmonicarchitect"), PROJECTS_TOKEN)
+
+    def test_slot_guard_alone_withholds_the_token(self):
+        """A harmonicarchitect slot reading a vitalharmony-owned board."""
+        self.assertNotEqual(self._read_as("harmonicarchitect-lane", "vitalharmony"), PROJECTS_TOKEN)
+
     def test_empty_projects_slot_is_lookup_failed(self):
         (self.home / "vitalharmony-projects" / "token").write_text("")
         self.patch_env(self.lane_env("1"))
