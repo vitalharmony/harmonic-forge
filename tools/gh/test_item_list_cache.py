@@ -394,3 +394,15 @@ class ShimMarker(unittest.TestCase):  # harmonic-forge#964
             self.assertNotIn("GH_SHIM_CALLER", os.environ)
         self.assertEqual(seen, ["item_list_cache"])
 
+
+
+class NoLaneTokenIsALookupFailure(unittest.TestCase):
+    """harmonic-forge#1466: a board read that cannot get a lane token raises
+    GhItemListError (the Tier hooks report it as LOOKUP_FAILED), never a gh call."""
+
+    def test_board_env_converts_no_lane_token(self):
+        import projects_token  # noqa: PLC0415
+        with unittest.mock.patch.object(projects_token, "projects_env",
+                                        side_effect=projects_token.NoLaneToken("no lane token")):
+            with self.assertRaises(cache.GhItemListError):
+                cache._board_env(["gh", "api", "graphql"], owner="vitalharmony")

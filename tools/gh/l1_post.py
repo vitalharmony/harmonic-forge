@@ -356,8 +356,11 @@ def run(*args: str, cwd: Path | None = None,
     # harmonic-forge#1425: a board command (`gh project ...`) in a lane carries
     # the projects slot's token; the lane's own token cannot read a user board.
     if env is None and args[:2] == ("gh", "project"):
-        from projects_token import projects_env  # noqa: PLC0415
-        env = projects_env(list(args))
+        from projects_token import NoLaneToken, projects_env  # noqa: PLC0415
+        try:
+            env = projects_env(list(args))
+        except NoLaneToken as exc:  # harmonic-forge#1466: never a keyring call
+            return subprocess.CompletedProcess(list(args), 1, "", str(exc))
     return subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
@@ -365,9 +368,13 @@ def board_run(cmd: Iterable[str], owner: str) -> subprocess.CompletedProcess[str
     """A board read handed to item_list_cache (`gh api graphql` or `gh project`):
     in a lane it carries the projects slot's token for `owner`'s board
     (harmonic-forge#1425, projects_token.projects_env)."""
-    from projects_token import projects_env  # noqa: PLC0415
+    from projects_token import NoLaneToken, projects_env  # noqa: PLC0415
     cmd = list(cmd)
-    return run(*cmd, env=projects_env(cmd, owner=owner))
+    try:
+        env = projects_env(cmd, owner=owner)
+    except NoLaneToken as exc:  # harmonic-forge#1466: never a keyring call
+        return subprocess.CompletedProcess(cmd, 1, "", str(exc))
+    return run(*cmd, env=env)
 
 
 def _pr_lookup_env() -> dict[str, str]:

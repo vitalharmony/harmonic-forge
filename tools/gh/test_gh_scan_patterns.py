@@ -344,5 +344,34 @@ class BudgetProbeWithholdsProjectsToken(unittest.TestCase):
         self.assertIn("PATH", seen)
 
 
+class ProbeNeverRunsOnTheKeyring(unittest.TestCase):
+    """harmonic-forge#1466: in a lane with no lane token, neither probe runs gh."""
+
+    def test_no_lane_token_means_no_gh_call(self):
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "vitalharmony-lane1").mkdir()  # no token file
+            env = {"LANE": "1", "GH_ACCT_HOME": tmp, "GH_CONFIG_DIR": str(Path(tmp) / "vitalharmony-lane1"),
+                   "PATH": os.environ.get("PATH", "")}
+            ran = []
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(gsp.subprocess, "run", side_effect=lambda *a, **k: ran.append(a)):
+                self.assertIsNone(gsp._fetch_budget_live())
+                self.assertIsNone(gsp.graphql_budget())
+            self.assertEqual(ran, [])
+
+    def test_import_failure_in_a_lane_means_no_gh_call(self):
+        from unittest import mock  # noqa: PLC0415
+        import builtins  # noqa: PLC0415
+        real_import = builtins.__import__
+
+        def no_helper(name, *a, **k):
+            if name == "projects_token":
+                raise ImportError("simulated")
+            return real_import(name, *a, **k)
+        with mock.patch.dict(os.environ, {"LANE": "1"}), mock.patch.object(builtins, "__import__", no_helper):
+            self.assertIsNone(gsp._probe_env())
+
+
 if __name__ == "__main__":
     unittest.main()
