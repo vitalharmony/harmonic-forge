@@ -216,6 +216,40 @@ class FetchTests(unittest.TestCase):
         ci = self.of("ci.conclusion")
         self.assertEqual([(e["attrs"]["run_id"], e["attrs"]["conclusion"]) for e in ci], [(9001, "success")])
 
+    def _jobless(self, run: dict) -> list[dict]:
+        routes = _routes()
+        routes["repos/vitalharmony/widget/actions/runs?head_sha=sha11"] = [
+            {"total_count": 2, "workflow_runs": [{"id": 77}, run]}]
+        routes[f"repos/vitalharmony/widget/actions/runs/{run['id']}/jobs"] = [{"total_count": 0, "jobs": []}]
+        self.run_repo("vitalharmony/widget", FakeGh(routes))
+        return self.of("ci.conclusion")
+
+    def test_a_completed_jobless_run_emits_one_conclusion(self) -> None:
+        """harmonic-forge#1472 AC1/AC2: a workflow run with no jobs is recorded
+        from the run itself (real run keys), marked jobless_run."""
+        ci = self._jobless({"id": 555, "name": "CI", "status": "completed",
+                            "conclusion": "startup_failure", "updated_at": "2026-10-01T10:12:00Z"})
+        jobless = [e for e in ci if e["attrs"].get("jobless_run")]
+        self.assertEqual(len(jobless), 1, ci)
+        self.assertEqual(jobless[0]["attrs"]["run_id"], 555)
+        self.assertEqual(jobless[0]["attrs"]["conclusion"], "startup_failure")
+        self.assertEqual(jobless[0]["attrs"]["check"], "CI")
+        self.assertEqual(jobless[0]["ts"], "2026-10-01T10:12:00Z")
+
+    def test_a_queued_jobless_run_makes_ci_in_progress(self) -> None:
+        """AC2 second half: a jobless run that is not completed emits nothing
+        and marks the PR's CI in-progress."""
+        ci = self._jobless({"id": 556, "name": "CI", "status": "queued", "conclusion": None,
+                            "updated_at": "2026-10-01T10:12:00Z"})
+        self.assertFalse([e for e in ci if e["attrs"].get("jobless_run")])
+        pr11 = [s for s in self.statuses() if s.get("stage") == "pr" and s.get("pr") == 11]
+        self.assertEqual([s.get("ci") for s in pr11], ["in-progress"])
+
+    def test_a_run_with_jobs_adds_no_synthetic_record(self) -> None:
+        """AC3: only a jobless run gets a synthetic record."""
+        self.run_repo("vitalharmony/widget", FakeGh(_routes()))
+        self.assertFalse([e for e in self.of("ci.conclusion") if e["attrs"].get("jobless_run")])
+
     def test_an_emit_rejection_fails_the_pr_instead_of_ok(self) -> None:
         routes = _routes()
         routes["repos/vitalharmony/widget/actions/runs/77/jobs"] = [

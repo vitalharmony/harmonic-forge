@@ -13,6 +13,7 @@ join, so a later observation revises it instead of conflicting with a stamp.
                     gh-timeline  <repo>#<pr>:timeline:...           event created_at
   issue.opened/closed gh-thread  <repo>#<issue>                     created_at / closed_at
   ci.conclusion     gate-run     <repo>@<sha>:<check run id>        completed_at
+                                 (a jobless workflow run: its run id, harmonic-forge#1472)
   fetch.status      gh-pr        <repo>:fetch:<run start>[:<pr>:<stage>]   run start
 
 Unknown is recorded, never collapsed: a failed call emits `fetch.status`
@@ -80,11 +81,25 @@ def check_runs(gh: GhJson, repo: str, sha: str) -> list[dict]:
     `checks` and gets 403 on a private repo (harmonic-forge#805, #1470). The
     same read `gate_ci._read_check_runs` uses; `filter=latest` keeps each job's
     latest attempt. A job's id is its check-run id. Checks from a third-party
-    app are not visible (the #805 limit)."""
+    app are not visible (the #805 limit).
+
+    harmonic-forge#1472: a workflow run with NO jobs (startup_failure,
+    awaiting approval, cancelled while queued) yields one record built from the
+    run itself, marked `jobless_run`, so a broken workflow is not invisible. Its
+    `id` is the workflow run id (the `jobless_run` attr distinguishes it from a
+    job id). A run object has no `completed_at`, so `updated_at` stands in when
+    the run is completed."""
     jobs: list[dict] = []
     for wf in _flatten(gh(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100"), "workflow_runs"):
-        jobs.extend(_flatten(gh(f"repos/{repo}/actions/runs/{wf['id']}/jobs?per_page=100&filter=latest"),
-                             "jobs"))
+        run_jobs = _flatten(gh(f"repos/{repo}/actions/runs/{wf['id']}/jobs?per_page=100&filter=latest"),
+                            "jobs")
+        if not run_jobs:
+            record = {"id": wf["id"], "name": wf.get("name"), "status": wf.get("status"),
+                      "conclusion": wf.get("conclusion"), "jobless_run": True}
+            if wf.get("status") == "completed" and wf.get("updated_at"):
+                record["completed_at"] = wf["updated_at"]
+            run_jobs = [record]
+        jobs.extend(run_jobs)
     return jobs
 
 
@@ -242,7 +257,8 @@ def observe_pr(rec: Recorder, gh: GhJson, pr: dict, markers: dict[int, list[dict
                     ci = "found" if ci == "none-found" else ci
                     rec.add(event_type="ci.conclusion", source="gate-run", subject_id=f"{repo}@{sha}:{run['id']}",
                             ts=run["completed_at"], sha=sha, pr=number,
-                            attrs={"conclusion": run.get("conclusion"), "run_id": run["id"], "check": run.get("name")})
+                            attrs={"conclusion": run.get("conclusion"), "run_id": run["id"], "check": run.get("name"),
+                                   **({"jobless_run": True} if run.get("jobless_run") else {})})
         except Exception as exc:  # noqa: BLE001
             rec.status("failed", "ci", pr=number, error_kind=_error_kind(exc))
             failed = True
