@@ -280,9 +280,6 @@ class ApplyProjectIdentityTests(unittest.TestCase):
             self.assertNotIn("switch", call.args[0])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ApplyProjectIdentityLaneTests(unittest.TestCase):
     """harmonic-forge#1470: in a lane, apply_project_identity keeps the lane's
@@ -323,3 +320,7 @@ class ApplyProjectIdentityLaneTests(unittest.TestCase):
         cfg, tok = self._apply(None)
         self.assertEqual(cfg, str(self.home / "vitalharmony"))
         self.assertIsNone(tok)
+
+
+if __name__ == "__main__":
+    unittest.main()
