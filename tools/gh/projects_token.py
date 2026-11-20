@@ -167,7 +167,10 @@ def _require_lane_token(env: dict[str, str], root: str) -> dict[str, str]:
     if os.environ.get("LANE") not in ("1", "2", "3"):
         return env
     slot = _resolved(env.get("GH_CONFIG_DIR"))
-    if slot is None or slot.name == PROJECTS_OWNER:
+    # Any vitalharmony-named slot that is not a grantable lane slot (the bare
+    # slot, the projects slot itself, an unregistered vitalharmony-x) has no
+    # lane token to pin (preclose pass 1, cross-family).
+    if slot is None or (slot.name.startswith(PROJECTS_OWNER) and slot.name not in GRANTABLE_SLOTS):
         raise NoLaneToken(f"lane {os.environ['LANE']}: no lane slot for this gh call "
                           f"(GH_CONFIG_DIR={env.get('GH_CONFIG_DIR') or 'unset'}); refusing to run gh "
                           f"on the shared keyring")

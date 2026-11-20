@@ -312,7 +312,10 @@ def _probe_env() -> dict[str, str] | None:
 
 def _fetch_budget_live() -> tuple[int, float] | None:
     real_gh = _real_gh_path()
-    env = _probe_env()
+    try:
+        env = _probe_env()
+    except (OSError, ValueError):
+        return None  # preclose pass 1: an unreadable token file is an unknown budget
     if env is None:
         return None  # harmonic-forge#1466: no lane token, so no gh call
     try:
@@ -389,7 +392,10 @@ def graphql_budget() -> tuple[int, float] | None:
     (probed live). Uncached: only `bounded_scan.py` asks, once per run, for its
     receipt and its refusal message. None when it cannot be read; callers treat
     that as unknown, never as zero."""
-    env = _probe_env()
+    try:
+        env = _probe_env()
+    except (OSError, ValueError):
+        return None  # preclose pass 1: an unreadable token file is an unknown budget
     if env is None:
         return None  # harmonic-forge#1466: no lane token, so no gh call
     try:

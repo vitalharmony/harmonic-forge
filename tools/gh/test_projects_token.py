@@ -126,8 +126,6 @@ class ProjectsEnvTests(unittest.TestCase):
         """harmonic-forge#1463 AC2."""
         (self.home / "vitalharmony-x").mkdir()
         refused = {
-            "unregistered vitalharmony- slot": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-x")},
-            "the projects slot itself": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-projects")},
             "a lane the process is not in": {"LANE": "2"},
         }
         for name, extra in refused.items():
@@ -136,6 +134,10 @@ class ProjectsEnvTests(unittest.TestCase):
         # harmonic-forge#1466: an allowlisted lane name with no directory has no token to run on.
         with self.assertRaises(pt.NoLaneToken):
             pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(self.home / "vitalharmony-lane3")))
+        # harmonic-forge#1466 preclose pass 1: no other vitalharmony-named slot can run gh in a lane.
+        for name in ("vitalharmony-x", "vitalharmony-projects"):
+            with self.subTest(slot=name), self.assertRaises(pt.NoLaneToken):
+                pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(self.home / name)))
         # The process has no lane; it keeps its accounts root, so the result
         # does not depend on the machine's ~/.config/gh-accounts.
         with mock.patch.dict(os.environ, {"GH_ACCT_HOME": str(self.home)}, clear=True):
@@ -192,6 +194,9 @@ class ProjectsEnvTests(unittest.TestCase):
         (Path(self.lane_slot) / "token").unlink()
         with self.assertRaises(pt.NoLaneToken):
             pt.withhold_projects_token({"GH_CONFIG_DIR": self.lane_slot})
+        for name in ("vitalharmony-projects", "vitalharmony-x"):  # preclose pass 1 (cross-family)
+            with self.subTest(slot=name), self.assertRaises(pt.NoLaneToken):
+                pt.withhold_projects_token({"GH_CONFIG_DIR": str(self.home / name)})
         other = {"GH_CONFIG_DIR": str(self.home / "harmonicarchitect"), "GH_TOKEN": "hatok"}
         self.assertEqual(pt.withhold_projects_token(dict(other))["GH_TOKEN"], "hatok")
         with mock.patch.dict(os.environ, {"LANE": ""}):

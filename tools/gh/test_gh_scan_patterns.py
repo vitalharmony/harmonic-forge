@@ -373,5 +373,22 @@ class ProbeNeverRunsOnTheKeyring(unittest.TestCase):
             self.assertIsNone(gsp._probe_env())
 
 
+class ProbeUnreadableTokenIsUnknown(unittest.TestCase):
+    """harmonic-forge#1466 preclose pass 1: a malformed token file outside a lane
+    is an unknown budget, never an exception."""
+
+    def test_malformed_projects_token_file(self):
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            slot = Path(tmp) / "vitalharmony-projects"
+            slot.mkdir()
+            (slot / "token").write_bytes(b"\xff\xfe\x00bad")
+            env = {"GH_ACCT_HOME": tmp, "GH_TOKEN": "x", "PATH": os.environ.get("PATH", "")}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(gsp.subprocess, "run", side_effect=OSError("stop")):
+                self.assertIsNone(gsp._fetch_budget_live())
+                self.assertIsNone(gsp.graphql_budget())
+
+
 if __name__ == "__main__":
     unittest.main()
