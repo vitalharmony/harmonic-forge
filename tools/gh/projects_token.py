@@ -103,8 +103,11 @@ def projects_env(cmd: list[str], base: dict[str, str] | None = None,
 
 
 #: harmonic-forge#1463 AC2: the base slots that may receive the projects token.
-#: Never the projects slot itself.
-GRANTABLE_SLOTS = frozenset({"vitalharmony", "vitalharmony-lane1", "vitalharmony-lane2", "vitalharmony-lane3"})
+#: Never the projects slot itself, and never the bare `vitalharmony` slot: it
+#: has no token file, so its credential is the shared keyring's admin one, and a
+#: probe that strips the projects token must fall back to a lane's own
+#: credential (sticky-wicket PATCH, preclose pass 2).
+GRANTABLE_SLOTS = frozenset({"vitalharmony-lane1", "vitalharmony-lane2", "vitalharmony-lane3"})
 
 
 def _accounts_root(home: str | None) -> Path:
@@ -132,4 +135,12 @@ def withhold_projects_token(env: dict[str, str]) -> dict[str, str]:
         for key in ("GH_TOKEN", "GITHUB_TOKEN"):
             if env.get(key) == token:
                 env.pop(key)
+        return env
+    # Fail closed (sticky-wicket PATCH, preclose pass 2): when the projects
+    # token cannot be read it cannot be recognized, so a lane-slot env drops
+    # both token variables and gh uses that lane slot's own credential.
+    slot = _resolved(env.get("GH_CONFIG_DIR"))
+    if slot is not None and slot.name in GRANTABLE_SLOTS:
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
     return env

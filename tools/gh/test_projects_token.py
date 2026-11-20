@@ -59,7 +59,27 @@ class ProjectsEnvTests(unittest.TestCase):
     def test_no_lane_or_no_projects_token_changes_nothing(self):
         self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(LANE=""))["GH_TOKEN"], "lanetok")
         (self.home / "vitalharmony-projects" / "token").unlink()
-        self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env())["GH_TOKEN"], "lanetok")
+        # Sticky-wicket PATCH: an unreadable projects token fails closed for a
+        # lane slot; gh then uses that lane slot's own stored credential.
+        env = pt.projects_env(self.VH_PROJECT, self.env())
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+
+    def test_unreadable_projects_token_still_strips_an_inherited_one(self):
+        """Sticky-wicket PATCH, preclose pass 2 (d)."""
+        (self.home / "vitalharmony-projects" / "token").unlink()
+        other_owner = ["gh", "project", "item-list", "1", "--owner", "harmonicarchitect"]
+        env = pt.projects_env(other_owner, self.env(GH_TOKEN="projtok", GITHUB_TOKEN="projtok"))
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+
+    def test_bare_vitalharmony_slot_is_not_grantable(self):
+        """Sticky-wicket PATCH, preclose pass 2 (b): its credential is the shared keyring."""
+        bare = self.home / "vitalharmony"
+        bare.mkdir()
+        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": str(bare)}):
+            env = pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(bare)))
+        self.assertEqual(env["GH_TOKEN"], "lanetok")
 
     def test_inherited_projects_token_is_stripped_when_not_granted(self):
         """harmonic-forge#1463 AC1: GH_TOKEN and GITHUB_TOKEN, every non-granting path."""

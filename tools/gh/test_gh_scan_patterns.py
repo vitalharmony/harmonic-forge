@@ -313,7 +313,7 @@ class GhBasenameNormalization(unittest.TestCase):
 class BudgetProbeWithholdsProjectsToken(unittest.TestCase):
     """harmonic-forge#1463 AC3: the budget probe never inherits the projects token."""
 
-    def test_probe_env_drops_the_projects_token(self):
+    def _probe_seen(self, probe) -> dict:
         from unittest import mock  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
             slot = Path(tmp) / "vitalharmony-projects"
@@ -327,10 +327,21 @@ class BudgetProbeWithholdsProjectsToken(unittest.TestCase):
                 raise OSError("stop")
             with mock.patch.dict(os.environ, env, clear=True), \
                     mock.patch.object(gsp.subprocess, "run", side_effect=fake_run):
-                gsp._fetch_budget_live()
-            self.assertNotIn("GH_TOKEN", seen)
-            self.assertNotIn("GITHUB_TOKEN", seen)
-            self.assertIn("PATH", seen)
+                probe()
+            return seen
+
+    def test_probe_env_drops_the_projects_token(self):
+        seen = self._probe_seen(gsp._fetch_budget_live)
+        self.assertNotIn("GH_TOKEN", seen)
+        self.assertNotIn("GITHUB_TOKEN", seen)
+        self.assertIn("PATH", seen)
+
+    def test_graphql_probe_drops_the_projects_token(self):
+        """Sticky-wicket PATCH, preclose pass 2: the second probe is covered too."""
+        seen = self._probe_seen(gsp.graphql_budget)
+        self.assertNotIn("GH_TOKEN", seen)
+        self.assertNotIn("GITHUB_TOKEN", seen)
+        self.assertIn("PATH", seen)
 
 
 if __name__ == "__main__":
