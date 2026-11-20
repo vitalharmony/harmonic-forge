@@ -162,8 +162,12 @@ HINTED_TARGETS = {
 }
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+def _run(cmd: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+
+
+# harmonic-forge#1456: opt in to item_list_cache's projects-token board read.
+_run.board_base_env = None
 
 
 # harmonic-forge#656 preclose fix 5: a board read with no timeout could hang
@@ -182,6 +186,10 @@ def timed_run(cmd: list[str], timeout: float = _READ_TIMEOUT_SECONDS,
     other than the caller's; None inherits the caller's environment."""
     return subprocess.run(cmd, capture_output=True, text=True, check=False,
                           timeout=timeout, env=env)
+
+
+# harmonic-forge#1456: opt in to item_list_cache's projects-token board read.
+timed_run.board_base_env = None
 
 
 def _allow() -> None:

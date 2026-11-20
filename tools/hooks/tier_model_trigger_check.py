@@ -188,8 +188,13 @@ def _boards() -> dict[str, str]:
                 for repo, number in model_tier_gate.HINTED_TARGETS.values()}
 
 
-def _timed_run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS)
+def _timed_run(cmd: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
+    return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
+
+
+# harmonic-forge#1456: opt in to item_list_cache's projects-token board read,
+# based on this process's environment.
+_timed_run.board_base_env = None
 
 
 class _NoBoard:
@@ -222,11 +227,16 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str], ttl: float = 0):
         env = hook_identity.slot_env(repo)  # the repo's own slot, or None to inherit
     except Exception:  # noqa: BLE001 -- a hook must never fail on identity resolution
         env = None
+    slot_env = env
     if env is None:
         run = _timed_run
     else:
-        def run(cmd):
+        def run(cmd, env=slot_env):
             return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
+
+        # harmonic-forge#1456: the repo's own slot is the base; projects_env
+        # swaps in the projects token only for a vitalharmony slot and board.
+        run.board_base_env = slot_env
     # harmonic-forge#992: the read matches the board owner. Without one from the manifest, only a
     # hinted target's owner is known (its repo's own owner owns its board); any other board's owner
     # is unknown, and guessing the repo's owner is wrong for a #820 cross-owner board.
