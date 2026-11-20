@@ -58,8 +58,11 @@ MONITOR_TIMEOUT_MS = MONITOR_LIFETIME_S * 1000
 
 LOOP_SKILL = "loop"
 LOOP_ARGS = "30m proactively find work to do"
-#: Lane 1's per-tick precheck telemetry read (harmonic-forge#1448 AC4).
-TICK_COMMAND = "python3 ~/harmonic-forge/tools/precheck/gate_report.py --new-cases --mark-seen"
+#: Lane 1's per-tick reads: the precheck telemetry report (harmonic-forge#1448
+#: AC4), then the lane's own task-list entries it owes (harmonic-forge#1477).
+#: Joined with `;` so a report failure never hides the scan.
+TICK_COMMAND = ("python3 ~/harmonic-forge/tools/precheck/gate_report.py --new-cases --mark-seen"
+                " ; python3 ~/harmonic-forge/tools/lane/tick_scan.py")
 
 
 def monitor_command(lane: str, workspace: str, repo: str | None = None) -> str:
