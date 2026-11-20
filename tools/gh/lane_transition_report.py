@@ -126,7 +126,33 @@ def _raw_check_run(repo: str, sha: str, name: str = "verify") -> dict | None:
     if not named:
         return None
     named.sort(key=lambda r: r.get("started_at") or "")
-    return named[-1]
+    return _span_of_run(named[-1], runs)
+
+
+#: harmonic-forge#1413: a job that is not CI work, so it never sets CI's start.
+NON_CI_JOBS = frozenset({"tag-proof"})
+
+
+def _span_of_run(job: dict, jobs: list[dict]) -> dict:
+    """`job` with `started_at` widened to the earliest start among its own
+    run's CI jobs (harmonic-forge#1413): after hrse#2800, `verify` is a fan-in
+    that starts once every work job has finished, so its own start is not
+    CI's. Only jobs of the same run and the same attempt count (AC3, AC6); a
+    job with no start is ignored (AC4), and a `verify` with no start is
+    returned unchanged. `completed_at` stays the fan-in's own end."""
+    if not job.get("started_at"):
+        return job
+    starts = [
+        j["started_at"] for j in jobs
+        if j.get("run_id") == job.get("run_id")
+        and j.get("run_attempt") == job.get("run_attempt")
+        and j.get("name") not in NON_CI_JOBS
+        and j.get("started_at")
+    ]
+    earliest = min(starts, default=job["started_at"])
+    if earliest == job["started_at"]:
+        return job
+    return {**job, "started_at": earliest}
 
 
 def _parse_utc(value: str | None) -> dt.datetime | None:

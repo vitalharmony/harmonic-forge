@@ -222,3 +222,69 @@ class ParseUtcTests(unittest.TestCase):
         parsed = report._parse_utc("2026-01-01T00:00:00+00:00")
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.year, 2026)
+
+
+class SplitVerifySpanTests(unittest.TestCase):
+    """harmonic-forge#1413: CI time spans the split `verify` run's jobs."""
+
+    T0 = "2026-01-01T00:00:00Z"
+
+    def _job(self, name, start, end=None, run_id=1, attempt=1):
+        return {"name": name, "started_at": start, "completed_at": end,
+                "run_id": run_id, "run_attempt": attempt}
+
+    def _raw(self, jobs_by_run):
+        import json  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+
+        def fake(cmd, **kw):
+            path = cmd[3]
+            if "/jobs" in path:
+                rid = int(path.split("/runs/")[1].split("/")[0])
+                out = "\n".join(json.dumps(j) for j in jobs_by_run[rid])
+            else:
+                out = "\n".join(str(r) for r in jobs_by_run)
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        with mock.patch.object(report.subprocess, "run", side_effect=fake):
+            return report._raw_check_run("o/r", "sha")
+
+    def test_ac1_fan_in_spans_from_the_earliest_job(self):
+        got = self._raw({1: [self._job("changes", "2026-01-01T00:00:00Z"),
+                             self._job("backend", "2026-01-01T00:00:05Z"),
+                             self._job("verify", "2026-01-01T00:10:00Z", "2026-01-01T00:10:10Z")]})
+        self.assertEqual(got["started_at"], "2026-01-01T00:00:00Z")
+        self.assertEqual(got["completed_at"], "2026-01-01T00:10:10Z")
+
+    def test_ac2_legacy_layout_unchanged(self):
+        verify = self._job("verify", "2026-01-01T00:01:00Z", "2026-01-01T00:09:00Z")
+        got = self._raw({1: [self._job("tag-proof", "2026-01-01T00:00:00Z"), verify]})
+        self.assertEqual(got, verify)
+
+    def test_ac3_other_runs_never_contribute(self):
+        got = self._raw({1: [self._job("lint", "2025-12-31T23:00:00Z", run_id=1)],
+                         2: [self._job("backend", "2026-01-01T00:00:05Z", run_id=2),
+                             self._job("verify", "2026-01-01T00:10:00Z", "2026-01-01T00:10:10Z", run_id=2)]})
+        self.assertEqual(got["started_at"], "2026-01-01T00:00:05Z")
+
+    def test_ac4_skipped_jobs_ignored_and_startless_verify_unchanged(self):
+        got = self._raw({1: [self._job("skipped", None),
+                             self._job("backend", "2026-01-01T00:00:05Z"),
+                             self._job("verify", "2026-01-01T00:10:00Z", "2026-01-01T00:10:10Z")]})
+        self.assertEqual(got["started_at"], "2026-01-01T00:00:05Z")
+        bare = self._job("verify", None)
+        self.assertEqual(self._raw({1: [self._job("backend", "2026-01-01T00:00:05Z"), bare]}), bare)
+
+    def test_ac6_rerun_ignores_attempt_one_jobs(self):
+        got = self._raw({1: [self._job("changes", "2026-01-01T00:00:00Z", attempt=1),
+                             self._job("backend", "2026-01-01T01:00:00Z", attempt=2),
+                             self._job("verify", "2026-01-01T01:01:00Z", "2026-01-01T01:01:40Z", attempt=2)]})
+        self.assertEqual(got["started_at"], "2026-01-01T01:00:00Z")
+
+    def test_ac5_overlap_reads_from_t0(self):
+        with mock.patch.object(report.gate_ci, "ci_conclusion", return_value=("green", "ok")), \
+             mock.patch.object(report, "_raw_check_run", return_value=report._span_of_run(
+                 self._job("verify", "2026-01-01T00:10:00+00:00", "2026-01-01T00:10:10+00:00"),
+                 [self._job("changes", "2026-01-01T00:00:00+00:00"),
+                  self._job("verify", "2026-01-01T00:10:00+00:00", "2026-01-01T00:10:10+00:00")])):
+            rows = report.marker_overlap([MarkerOverlapTests._comment(MarkerOverlapTests(), state="pending")])
+        self.assertEqual(rows[0]["overlap_seconds"], 300.0)
