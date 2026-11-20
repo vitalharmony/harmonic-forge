@@ -1655,6 +1655,22 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertEqual([l for l in lines if "PRIMED at first arm" in l], [])
         self.assertNotEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
 
+    def test_an_unreadable_watermark_on_a_fresh_belt_still_primes(self):
+        """Reforge preclose pass 2: on a FRESH belt (allow_priming on) an
+        unreadable watermark primes as main did, so a 24 h read never turns
+        a target's whole recent history into live announcements."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        self.wm._path("vitalharmony", self.key).write_text("", encoding="utf-8")
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch, allow_priming=True)
+        self.assertEqual(asked["since"], "2026-09-09T12:00:00Z")
+        self.assertEqual(self._announced(lines), [])
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1, lines)
+        self.assertIn("issuecomment-7029911999", primed[0])
+        self.assertEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
+
     def test_a_watermarked_target_on_a_rearmed_belt_reads_narrow_and_announces_live(self):
         """Required test 4 (the #697 guard): a target with a watermark never
         takes the first-sight branch."""
