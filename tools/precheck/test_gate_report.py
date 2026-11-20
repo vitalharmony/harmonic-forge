@@ -239,7 +239,11 @@ class Report(unittest.TestCase):
         argv[1] = os.path.expanduser(argv[1])
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "protocol-failures.jsonl"
-            result = subprocess.run([*argv, "--path", str(log)], capture_output=True, text=True, check=False)
+            # A live belt tick resolves its session and turn from Claude Code;
+            # the test runner clears the session (harmonic-forge#1076), so pass
+            # both as a non-Claude caller does.
+            result = subprocess.run([*argv, "--path", str(log), "--session", "test-session-1461",
+                                     "--turn", "test-turn-1"], capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(log.exists())
 
