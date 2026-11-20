@@ -266,6 +266,10 @@ def _run(root: Path) -> int:
     # be refused nor write the session's real preflight receipts.
     os.environ["PREFLIGHT_RECEIPT_DIR"] = str(archive_root / "preflight")
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    # harmonic-forge#1466: the lane is session identity too. A lane's local
+    # `mise run check` must judge the suite as CI does (no LANE), or tests that
+    # point GH_CONFIG_DIR at a temp slot hit the lane-token rule.
+    os.environ.pop("LANE", None)
     files = _test_files()
     if not files:
         print("[test] no test files found — refusing to report success", file=sys.stderr)
