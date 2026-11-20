@@ -75,10 +75,11 @@ def _routes(repo: str = "vitalharmony/widget", *, timeline=None) -> dict[str, ob
             {"event": "connected", "created_at": "2026-10-02T09:00:00Z"},
         ],
         f"repos/{repo}/issues/7": {"created_at": "2026-09-30T10:00:00Z", "closed_at": "2026-10-01T10:05:00Z"},
-        f"repos/{repo}/commits/sha11/check-runs": [
-            {"total_count": 1, "check_runs": [{"id": 9001, "name": "verify", "status": "completed",
-                                               "conclusion": "success", "completed_at": "2026-10-01T10:10:00Z"}]}],
-        f"repos/{repo}/commits/sha12/check-runs": [{"total_count": 0, "check_runs": []}],
+        f"repos/{repo}/actions/runs?head_sha=sha11": [{"total_count": 1, "workflow_runs": [{"id": 77}]}],
+        f"repos/{repo}/actions/runs/77/jobs": [
+            {"total_count": 1, "jobs": [{"id": 9001, "name": "verify", "status": "completed",
+                                         "conclusion": "success", "completed_at": "2026-10-01T10:10:00Z"}]}],
+        f"repos/{repo}/actions/runs?head_sha=sha12": [{"total_count": 0, "workflow_runs": []}],
     }
 
 
@@ -163,7 +164,7 @@ class FetchTests(unittest.TestCase):
 
     def test_a_crash_mid_pr_leaves_no_per_pr_ok(self) -> None:
         routes = _routes()
-        routes["repos/vitalharmony/widget/commits/sha11/check-runs"] = RuntimeError("boom")
+        routes["repos/vitalharmony/widget/actions/runs/77/jobs"] = RuntimeError("boom")
         self.run_repo("vitalharmony/widget", FakeGh(routes))
         ok_prs = [s["pr"] for s in self.statuses() if s["status"] == "ok" and s["stage"] == "pr"]
         self.assertNotIn(11, ok_prs)
@@ -205,11 +206,21 @@ class FetchTests(unittest.TestCase):
                          ("vitalharmony/widget", 8))
         self.assertIsNone(cross[0].get("issue"))
 
+    def test_ci_reads_actions_jobs_never_check_runs(self) -> None:
+        """harmonic-forge#1470: a lane token gets 403 on `check-runs` on a
+        private repo, so CI is read through Actions runs and their jobs."""
+        gh = FakeGh(_routes())
+        self.run_repo("vitalharmony/widget", gh)
+        self.assertFalse([c for c in gh.calls if "check-runs" in c])
+        self.assertIn("repos/vitalharmony/widget/actions/runs/77/jobs?per_page=100&filter=latest", gh.calls)
+        ci = self.of("ci.conclusion")
+        self.assertEqual([(e["attrs"]["run_id"], e["attrs"]["conclusion"]) for e in ci], [(9001, "success")])
+
     def test_an_emit_rejection_fails_the_pr_instead_of_ok(self) -> None:
         routes = _routes()
-        routes["repos/vitalharmony/widget/commits/sha11/check-runs"] = [
-            {"total_count": 1, "check_runs": [{"id": 9002, "name": "x" * 300, "status": "completed",
-                                               "conclusion": "success", "completed_at": "2026-10-01T10:10:00Z"}]}]
+        routes["repos/vitalharmony/widget/actions/runs/77/jobs"] = [
+            {"total_count": 1, "jobs": [{"id": 9002, "name": "x" * 300, "status": "completed",
+                                         "conclusion": "success", "completed_at": "2026-10-01T10:10:00Z"}]}]
         self.run_repo("vitalharmony/widget", FakeGh(routes))
         ok_prs = [s["pr"] for s in self.statuses() if s["status"] == "ok" and s["stage"] == "pr"]
         self.assertNotIn(11, ok_prs)
