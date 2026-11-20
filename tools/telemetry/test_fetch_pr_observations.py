@@ -245,6 +245,14 @@ class FetchTests(unittest.TestCase):
         pr11 = [s for s in self.statuses() if s.get("stage") == "pr" and s.get("pr") == 11]
         self.assertEqual([s.get("ci") for s in pr11], ["in-progress"])
 
+    def test_a_rerun_race_never_records_a_false_jobless_conclusion(self) -> None:
+        """Preclose pass 1 (cross-family): a re-run between the runs read and
+        the jobs read reads empty while the run still carries the previous
+        attempt's `failure`; that is not a jobless run and is not recorded."""
+        ci = self._jobless({"id": 557, "name": "CI", "status": "completed",
+                            "conclusion": "failure", "updated_at": "2026-10-01T10:12:00Z"})
+        self.assertFalse([e for e in ci if e["attrs"].get("jobless_run")])
+
     def test_a_run_with_jobs_adds_no_synthetic_record(self) -> None:
         """AC3: only a jobless run gets a synthetic record."""
         self.run_repo("vitalharmony/widget", FakeGh(_routes()))
