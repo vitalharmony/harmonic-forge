@@ -72,19 +72,22 @@ def projects_env(cmd: list[str], base: dict[str, str] | None = None,
     which cannot read a user-owned board, so it fails visibly (AC4, as
     harmonic-forge#1456 left it)."""
     env = dict(os.environ if base is None else base)
-    home = env.get("GH_ACCT_HOME")
-    # harmonic-forge#1463 AC2: the lane is the process's own, not only what the
-    # caller-built base claims.
+    # harmonic-forge#1463 AC2: identity comes from the process, not only from
+    # the caller-built base: the process's own accounts root (preclose pass 1),
+    # lane and slot.
+    home = str(_accounts_root(None))
     lane = env.get("LANE")
     if lane not in ("1", "2", "3") or os.environ.get("LANE") != lane:
         return withhold_projects_token(env)
-    # Account guards, both required: the session's own slot must be an
-    # allowlisted, existing vitalharmony slot (gh-as harmonicarchitect sets
-    # that account's slot), and a command naming its owner must name
-    # vitalharmony. `item-edit` names only a project id, so for it the slot is
-    # the guard.
-    slot = Path(env.get("GH_CONFIG_DIR", "")).name
-    if slot not in GRANTABLE_SLOTS or not (_accounts_root(home) / slot).is_dir():
+    # Account guards, both required: the base's slot must be the process's own
+    # GH_CONFIG_DIR, an allowlisted vitalharmony slot directly under the
+    # process's accounts root (gh-as harmonicarchitect sets that account's
+    # slot), and a command naming its owner must name vitalharmony. `item-edit`
+    # names only a project id, so for it the slot is the guard.
+    slot_dir = _resolved(env.get("GH_CONFIG_DIR"))
+    if (slot_dir is None or slot_dir != _resolved(os.environ.get("GH_CONFIG_DIR"))
+            or slot_dir.name not in GRANTABLE_SLOTS or slot_dir.parent != _resolved(home)
+            or not slot_dir.is_dir()):
         return withhold_projects_token(env)
     # An explicit board owner wins over the command's: an issue-field query
     # names the issue's repo owner, which need not own the board (pass 2).
@@ -105,13 +108,26 @@ GRANTABLE_SLOTS = frozenset({"vitalharmony", "vitalharmony-lane1", "vitalharmony
 
 
 def _accounts_root(home: str | None) -> Path:
-    return Path(home or os.environ.get("GH_ACCT_HOME") or Path.home() / ".config" / "gh-accounts")
+    """The accounts root, `~` expanded (preclose pass 1: a tilde GH_ACCT_HOME
+    must not lose the token)."""
+    return Path(home or os.environ.get("GH_ACCT_HOME") or Path.home() / ".config" / "gh-accounts").expanduser()
+
+
+def _resolved(path: str | Path | None) -> Path | None:
+    if not path:
+        return None
+    try:
+        return Path(path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 def withhold_projects_token(env: dict[str, str]) -> dict[str, str]:
     """`env` without the projects slot's token in GH_TOKEN or GITHUB_TOKEN
-    (harmonic-forge#1463 AC1, AC3). A value comparison: no marker, no state."""
-    token = slot_token(PROJECTS_SLOT, env.get("GH_ACCT_HOME"))
+    (harmonic-forge#1463 AC1, AC3). A value comparison: no marker, no state.
+    The token is read from the process's own accounts root, never the base's
+    (preclose pass 1)."""
+    token = slot_token(PROJECTS_SLOT, str(_accounts_root(None)))
     if token:
         for key in ("GH_TOKEN", "GITHUB_TOKEN"):
             if env.get(key) == token:

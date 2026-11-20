@@ -296,6 +296,11 @@ def _probe_env() -> dict[str, str]:
     try:
         from projects_token import withhold_projects_token  # noqa: PLC0415
     except ImportError:
+        # Fail closed (preclose pass 1): without the helper the probe cannot
+        # tell the projects token from the lane's, so it carries neither and
+        # runs on GH_CONFIG_DIR's own credential.
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
         return env
     return withhold_projects_token(env)
 
@@ -381,6 +386,7 @@ def graphql_budget() -> tuple[int, float] | None:
             [_real_gh_path(), "api", "-i", "graphql", "-f",
              "query={rateLimit{remaining resetAt}}"],
             capture_output=True, text=True, timeout=_REAL_GH_TIMEOUT_SECONDS,
+            env=_probe_env(),  # harmonic-forge#1463 preclose pass 1
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None

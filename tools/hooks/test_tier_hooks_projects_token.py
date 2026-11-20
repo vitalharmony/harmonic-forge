@@ -89,7 +89,10 @@ class TierHooksReadWithProjectsToken(Harness):
         for lane in ("1", "2"):
             with self.subTest(lane=lane):
                 slot = self.lane_env(lane)
-                self.patch_env({"PATH": os.environ.get("PATH", ""), "LANE": lane})  # only the lane is ambient
+                # Only the process identity is ambient (harmonic-forge#1463): lane,
+                # slot and accounts root; no token.
+                self.patch_env({"PATH": os.environ.get("PATH", ""), "LANE": lane,
+                                "GH_CONFIG_DIR": slot["GH_CONFIG_DIR"], "GH_ACCT_HOME": slot["GH_ACCT_HOME"]})
                 with mock.patch.object(hook_identity, "slot_env", return_value=dict(slot)):
                     tier, error = self._lookup()
                 self.assertEqual((tier, error), ("standard", None))

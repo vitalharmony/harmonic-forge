@@ -23,7 +23,9 @@ class ProjectsEnvTests(unittest.TestCase):
         (self.home / "vitalharmony-projects" / "token").write_text("projtok\n")
         self.lane_slot = str(self.home / "vitalharmony-lane1")
         Path(self.lane_slot).mkdir()  # harmonic-forge#1463: the slot must exist
-        patcher = mock.patch.dict(os.environ, {"LANE": "1"})  # the process's own lane
+        # The process's own identity: lane, slot and accounts root (harmonic-forge#1463).
+        patcher = mock.patch.dict(os.environ, {"LANE": "1", "GH_CONFIG_DIR": self.lane_slot,
+                                               "GH_ACCT_HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -87,6 +89,33 @@ class ProjectsEnvTests(unittest.TestCase):
                 self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(**extra))["GH_TOKEN"], "lanetok")
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env())["GH_TOKEN"], "lanetok")
+
+    def test_a_slot_other_than_the_process_own_is_refused(self):
+        """harmonic-forge#1463 AC2, preclose pass 1: another registered slot, or
+        an allowlisted name outside the accounts root, gets no token."""
+        (self.home / "vitalharmony-lane3").mkdir()
+        elsewhere = Path(tempfile.mkdtemp()) / "vitalharmony-lane1"
+        elsewhere.mkdir()
+        self.addCleanup(lambda: elsewhere.rmdir())
+        for name, slot in {"another lane slot": self.home / "vitalharmony-lane3",
+                           "allowlisted name outside the root": elsewhere}.items():
+            with self.subTest(name):
+                self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(slot)))["GH_TOKEN"],
+                                 "lanetok")
+
+    def test_strip_reads_the_process_accounts_root_not_the_base(self):
+        """harmonic-forge#1463 AC1, preclose pass 1: a base pointing GH_ACCT_HOME
+        at an empty directory still loses the inherited token."""
+        empty = tempfile.mkdtemp()
+        other_owner = ["gh", "project", "item-list", "1", "--owner", "harmonicarchitect"]
+        env = pt.projects_env(other_owner, self.env(GH_TOKEN="projtok", GH_ACCT_HOME=empty))
+        self.assertNotEqual(env.get("GH_TOKEN"), "projtok")
+
+    def test_tilde_accounts_root_is_expanded(self):
+        with mock.patch.dict(os.environ, {"HOME": str(self.home.parent)}):
+            tilde = "~/" + self.home.name
+            with mock.patch.dict(os.environ, {"GH_ACCT_HOME": tilde}):
+                self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(GH_ACCT_HOME=tilde))["GH_TOKEN"], "projtok")
 
     def test_repo_hygiene_lane_base_is_still_granted(self):
         """harmonic-forge#1463 AC2: repo_hygiene passes its own slot_env_or_none base."""

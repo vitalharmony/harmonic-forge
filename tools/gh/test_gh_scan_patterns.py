@@ -309,9 +309,6 @@ class GhBasenameNormalization(unittest.TestCase):
         self.assertFalse(gsp.is_gh_invocation("/usr/bin/curl"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class BudgetProbeWithholdsProjectsToken(unittest.TestCase):
     """harmonic-forge#1463 AC3: the budget probe never inherits the projects token."""
@@ -334,3 +331,7 @@ class BudgetProbeWithholdsProjectsToken(unittest.TestCase):
             self.assertNotIn("GH_TOKEN", seen)
             self.assertNotIn("GITHUB_TOKEN", seen)
             self.assertIn("PATH", seen)
+
+
+if __name__ == "__main__":
+    unittest.main()
