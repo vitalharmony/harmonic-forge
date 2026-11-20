@@ -75,12 +75,6 @@ def _flatten(pages: Any, key: str) -> list[dict]:
     return items
 
 
-#: Conclusions a workflow run reaches without ever starting a job
-#: (harmonic-forge#1472): it failed to start, it waits on approval, or it was
-#: cancelled while queued.
-JOBLESS_CONCLUSIONS = frozenset({"startup_failure", "action_required", "cancelled"})
-
-
 def check_runs(gh: GhJson, repo: str, sha: str) -> list[dict]:
     """The commit's CI jobs, read through Actions runs and their jobs, never
     `commits/<sha>/check-runs`: a fine-grained lane token cannot be granted
@@ -100,19 +94,22 @@ def check_runs(gh: GhJson, repo: str, sha: str) -> list[dict]:
         run_jobs = _flatten(gh(f"repos/{repo}/actions/runs/{wf['id']}/jobs?per_page=100&filter=latest"),
                             "jobs")
         if not run_jobs:
-            # Preclose pass 1: an empty latest-attempt read is not proof the run
-            # never had jobs -- a re-run started between the two reads also
-            # reads empty, and the run object then still carries the previous
-            # attempt's conclusion. A completed run is recorded only when its
-            # conclusion is one a run without jobs actually ends in; anything
-            # else stays unrecorded rather than false.
-            completed = wf.get("status") == "completed"
-            if not completed or wf.get("conclusion") in JOBLESS_CONCLUSIONS:
-                record = {"id": wf["id"], "name": wf.get("name"), "status": wf.get("status"),
-                          "conclusion": wf.get("conclusion"), "jobless_run": True}
-                if completed and wf.get("updated_at"):
-                    record["completed_at"] = wf["updated_at"]
-                run_jobs = [record]
+            # Sticky-wicket PATCH (harmonic-forge#1472): an empty latest read
+            # may describe a re-run that started after the runs read, not the
+            # attempt the run object describes. Read that attempt's own jobs; a
+            # finished attempt's jobs cannot change, so an empty read there
+            # means it truly ran none, whatever its conclusion. No
+            # `run_attempt` on the run object: record nothing rather than guess.
+            attempt = wf.get("run_attempt")
+            if attempt is not None:
+                run_jobs = _flatten(gh(f"repos/{repo}/actions/runs/{wf['id']}/attempts/{attempt}/jobs?per_page=100"),
+                                    "jobs")
+                if not run_jobs:
+                    record = {"id": wf["id"], "name": wf.get("name"), "status": wf.get("status"),
+                              "conclusion": wf.get("conclusion"), "jobless_run": True}
+                    if wf.get("status") == "completed" and wf.get("updated_at"):
+                        record["completed_at"] = wf["updated_at"]
+                    run_jobs = [record]
         jobs.extend(run_jobs)
     return jobs
 
