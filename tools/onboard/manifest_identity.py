@@ -245,9 +245,23 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
     """
     account = account_for(repo, path)
     slot = slot_dir(account)
+    lane = os.environ.get("LANE")
+    lane_token = ""
+    if lane in ("1", "2", "3") and account == "vitalharmony":
+        # harmonic-forge#1470: a lane keeps its own least-privilege slot and
+        # token (harmonic-forge#1396); the bare account slot is the shared
+        # keyring credential, which a lane never runs on (harmonic-forge#1466).
+        slot = slot_dir(f"vitalharmony-lane{lane}")  # same slot slot_env uses
+        lane_token = _hosts_file_token(slot)
+        if not lane_token:
+            raise SystemExit(
+                f"identity: lane {lane} has no token in {slot}/hosts.yml; refusing to "
+                f"fall back to the shared {account} slot (harmonic-forge#1470)")
     os.environ["GH_CONFIG_DIR"] = str(slot)
     for var in STRIPPED_TOKEN_VARS:
         os.environ.pop(var, None)
+    if lane_token:
+        os.environ["GH_TOKEN"] = lane_token
 
     login = _VERIFIED.get(str(slot))
     if login is None:
