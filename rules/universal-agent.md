@@ -55,6 +55,13 @@ The write a gate guards (a commit, push or merge) never shares a command with
 that gate either: read the gate's result in its own call first (R-0419).
 <!-- /R-0005 -->
 
+<!-- R-0435 -->
+In a Bash call that changes directory or writes a file, spell every path out
+literally: no path in a shell variable, no `cd "$VAR"`. Where the guard
+(harmonic-forge#529, #1262) applies, it refuses what it cannot resolve, so a
+variable path is a try-fail.
+<!-- /R-0435 -->
+
 <!-- R-0425 -->
 Pass or fail comes from the tool's own summary or exit code, never from a
 grep, a `tail` or a wrapper's exit status.

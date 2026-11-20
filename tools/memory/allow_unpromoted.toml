@@ -93,3 +93,6 @@
 "feedback_verify_posted_comment_after_backgrounded_l1_post.md" = "single-instance batch row (F1336 fold): l1_post already refetches every post it makes"
 "feedback_ci_green_before_force.md" = "single-instance batch row (F1336 fold): ordering of push, CI and the FORCE line, kept as operator context"
 "feedback_scan_secrets_diff_reads_commits_only.md" = "single-instance batch row (F1336 fold): HRSE2 Lane 2 sequencing note, no shared predicate"
+"feedback_marc_backlog_matt_builds.md" = "LeasePAL ownership split (what/why vs how), operator business context, no protocol predicate (F1458 fold)"
+"feedback_one_lane1_session.md" = "operator's session layout (two Lane 1 sessions split by repo), operator configuration, no protocol predicate (F1458 fold)"
+"feedback_problem_led_never_tech_led.md" = "market-research method for LongStrider work, business context, not protocol (F1458 fold)"

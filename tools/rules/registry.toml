@@ -2959,3 +2959,11 @@ anchor = "opted-in-lane3-preflight-checks-each-checkable-lane3-begin-refusal"
 statement = "A repo whose projects.toml protocol table sets lane3_preflight_task owes a task by that name that checks every lane3-begin refusal checkable without side effects before the gate starts, as readiness only and never requiring the sweep or its paired AE to exist; the task run is the one in Lane 3's checkout at sweep time, with the target commit passed only as LANE3_TARGET_SHA; a refusal the task's definition does not check is a repo gap whatever the timing, and only a checked refusal that passed at the sweep counts as a later change; the sweep refuses when the key names a task Lane 3's worktree lacks (harmonic-forge#1391, harmonic-forge#1409)."
 text_sha = "d69d5222c627dfd4"
 hooks = []
+
+[[rule]]
+id = "R-0435"
+file = "rules/universal-agent.md"
+anchor = "verification-gate"
+statement = "In a Bash call that changes directory or writes a file, every path is spelled out literally, never held in a shell variable; where the harmonic-forge#529/#1262 guard applies it refuses what it cannot resolve (harmonic-forge#1458)."
+text_sha = "b58e1275007c75d9"
+hooks = []
