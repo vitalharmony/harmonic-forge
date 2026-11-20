@@ -270,7 +270,7 @@ class LanesClaudeTests(unittest.TestCase):
         text = (LANE_DIR / "lanes-claude").read_text()
         self.assertNotIn("--name 'Lane", text)
         for n in (1, 2, 3):
-            self.assertIn(f'"lane{n} --agent claude; rc=', text)
+            self.assertIn(f'lane{n} --agent claude; rc=', text)  # may follow the LANE_PANE_TITLE prefix
             self.assertNotIn(f'-T "L{n} · Claude"', text)
         self.assertNotIn("--name 'Advisor'", text)
         self.assertEqual(text.count("--name '$advisor_label'"), 2)
