@@ -240,6 +240,26 @@ def cache_file(cache: Path, repo: str, n: int) -> Path:
     return cache / f"{repo.replace('/', '_')}_{n}.json"
 
 
+def settled_page(page) -> tuple[dict, dt.datetime] | None:
+    """A cached page and its fetch time, only when every candidate post on it was
+    already mature when it was fetched: the page then holds each post's whole
+    supersession window, so nothing a later read could add changes the verdict.
+    A page with no fetch time, or with a post immature at fetch, is re-fetched."""
+    if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+        return None
+    try:
+        fetched_at = dt.datetime.fromisoformat(str(page["fetched_at"]))
+    except (KeyError, ValueError):
+        return None
+    if fetched_at.tzinfo is None:
+        return None
+    for comment in page["items"]:
+        post = classify(comment) if isinstance(comment, dict) else None
+        if post is not None and post["t"] > fetched_at - WINDOW:
+            return None
+    return page, fetched_at
+
+
 # --------------------------------------------------------------------------
 # Writing.
 
@@ -329,7 +349,10 @@ def derive(receipts: Path, out: Path, now: dt.datetime | None = None,
     issues = issue_set(Path(receipts).expanduser())
     if dry_run:
         issues = issues[:DRY_RUN_ISSUES]
-    cache = out.parent / CACHE_DIR
+    cache = (out.parent / CACHE_DIR).resolve()
+    refusal = capture_failure.forge_refusal(cache, "cache directory")
+    if refusal:
+        raise Refused(refusal)
     counts = dict.fromkeys(COUNT_KEYS, 0)
     remaining = budget()
     stop = None
@@ -344,7 +367,9 @@ def derive(receipts: Path, out: Path, now: dt.datetime | None = None,
         if cached.is_file():
             with contextlib.suppress(OSError, ValueError):
                 page = json.loads(cached.read_text(encoding="utf-8"))
-        if isinstance(page, dict) and isinstance(page.get("items"), list):
+        hit = settled_page(page)
+        if hit is not None:
+            page, as_of = hit
             counts["cached"] += 1
         else:
             if counts["calls"] >= MAX_CALLS:
@@ -364,13 +389,15 @@ def derive(receipts: Path, out: Path, now: dt.datetime | None = None,
                 continue
             if status != 200 or items is None:
                 raise Failed(f"reading {repo}#{n} returned status {status}")
-            page = {"items": items, "truncated": bounded_scan._has_next(headers.get("link", ""))}
+            as_of = now
+            page = {"items": items, "truncated": bounded_scan._has_next(headers.get("link", "")),
+                    "fetched_at": as_of.isoformat()}
             if not dry_run:
                 cache.mkdir(parents=True, exist_ok=True)
                 cached.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
         counts["issues_read"] += 1
         taken = 0
-        for post in select(page["items"], bool(page.get("truncated")), now, counts):
+        for post in select(page["items"], bool(page.get("truncated")), as_of, counts):
             digest = hashlib.sha256(post["body"].encode("utf-8")).hexdigest()
             if digest in digests:
                 counts["duplicate"] += 1

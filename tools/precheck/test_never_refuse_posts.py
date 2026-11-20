@@ -210,6 +210,90 @@ class OutPath(Base):
         self.assertIn("inside a harmonic-forge checkout", stderr.getvalue())
 
 
+class StaleCache(Base):
+    """A cached page is judged as of its fetch time, never the current clock."""
+
+    def test_a_page_immature_at_fetch_is_refetched_and_a_later_rework_excludes_the_post(self):
+        repo = "vitalharmony/hrse"
+        self.receipt(repo, 1)
+        posted = NOW - dt.timedelta(days=2)
+        handoff = comment("the handoff", "handoff", at=posted)
+        fetch = FakeFetch({(repo, 1): [handoff]})
+        with self.assertRaisesRegex(nrp.Refused, "only 0 posts accepted"):
+            self.derive(fetch)
+        self.assertEqual(fetch.calls, [(repo, 1)])
+        cached = nrp.cache_file(self.out.parent / nrp.CACHE_DIR, repo, 1)
+        self.assertEqual(json.loads(cached.read_text())["fetched_at"], NOW.isoformat())
+
+        later = NOW + dt.timedelta(days=5)
+        rework = comment("rework it", "rework", at=posted + dt.timedelta(days=1))
+        fetch2 = FakeFetch({(repo, 1): [handoff, rework]})
+        with self.assertRaises(nrp.Refused):
+            nrp.derive(self.receipts, self.out, now=later, fetch=fetch2, budget=lambda: 5000,
+                       dry_run=False)
+        self.assertEqual(fetch2.calls, [(repo, 1)])
+        counts = nrp.derive(self.receipts, self.out, now=later, fetch=FakeFetch({(repo, 1): [handoff, rework]}),
+                            budget=lambda: 5000, dry_run=True)
+        self.assertEqual(counts["accepted"], 0)
+        self.assertEqual(counts["superseded"], 1)
+
+    def test_a_page_mature_at_fetch_is_reused_and_judged_at_its_fetch_time(self):
+        repo = "vitalharmony/hrse"
+        self.receipt(repo, 1)
+        cache = self.out.parent / nrp.CACHE_DIR
+        cache.mkdir(parents=True)
+        fetched_at = NOW - dt.timedelta(days=1)
+        page = {"items": [comment("old post", "handoff", at=fetched_at - dt.timedelta(days=8))],
+                "truncated": False, "fetched_at": fetched_at.isoformat()}
+        nrp.cache_file(cache, repo, 1).write_text(json.dumps(page), encoding="utf-8")
+        fetch = FakeFetch({})
+        counts = self.derive(fetch, dry_run=True)
+        self.assertEqual(fetch.calls, [])
+        self.assertEqual((counts["cached"], counts["accepted"]), (1, 1))
+
+    def test_a_cached_page_with_no_fetch_time_is_refetched(self):
+        repo = "vitalharmony/hrse"
+        self.receipt(repo, 1)
+        cache = self.out.parent / nrp.CACHE_DIR
+        cache.mkdir(parents=True)
+        page = {"items": [comment("old post", "handoff", at=OLD)], "truncated": False}
+        nrp.cache_file(cache, repo, 1).write_text(json.dumps(page), encoding="utf-8")
+        fetch = FakeFetch({(repo, 1): [comment("old post", "handoff", at=OLD)]})
+        self.derive(fetch, dry_run=True)
+        self.assertEqual(fetch.calls, [(repo, 1)])
+
+
+class CachePath(Base):
+    def test_a_cache_dir_resolving_inside_forge_refuses_before_any_write(self):
+        forge = self.tmp / "forge"
+        (forge / "tools" / "memory").mkdir(parents=True)
+        (forge / ".git").mkdir()
+        (forge / "tools" / "memory" / "capture_failure.py").write_text("", encoding="utf-8")
+        (forge / "cache").mkdir()
+        self.out.parent.mkdir(parents=True)
+        (self.out.parent / nrp.CACHE_DIR).symlink_to(forge / "cache")
+        self.receipt("vitalharmony/hrse", 1)
+        fetch = FakeFetch({("vitalharmony/hrse", 1): [comment("x", "handoff")]})
+        with self.assertRaisesRegex(nrp.Refused, "cache directory .* inside a harmonic-forge checkout"):
+            self.derive(fetch)
+        self.assertEqual(fetch.calls, [])
+        self.assertEqual(list((forge / "cache").iterdir()), [])
+        self.assertFalse(self.out.exists())
+
+    def test_main_exits_2_for_a_cache_dir_inside_forge(self):
+        forge = self.tmp / "forge"
+        (forge / "tools" / "memory").mkdir(parents=True)
+        (forge / ".git").mkdir()
+        (forge / "tools" / "memory" / "capture_failure.py").write_text("", encoding="utf-8")
+        self.out.parent.mkdir(parents=True)
+        (self.out.parent / nrp.CACHE_DIR).symlink_to(forge)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+            code = nrp.main(["derive", "--receipts", str(self.receipts), "--out", str(self.out)])
+        self.assertEqual(code, 2)
+        self.assertIn("cache directory", stderr.getvalue())
+
+
 # --------------------------------------------------------------------------
 # Test 5 (AC2): stops.
 
