@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -210,8 +211,11 @@ def hermetic_identity_probe():
         if isinstance(argv, (list, tuple)) and list(argv) == probe:
             env = kwargs.get("env") or os.environ
             slot = env.get("GH_CONFIG_DIR", "")
+            # harmonic-forge#1470: a lane slot (`<account>-lane<N>`) authenticates as its
+            # account, and apply_project_identity now probes it inside a lane.
+            login = re.sub(r"-lane[123]$", "", Path(slot).name)
             return subprocess.CompletedProcess(
-                argv, 0, stdout=Path(slot).name + "\n", stderr="")
+                argv, 0, stdout=login + "\n", stderr="")
         return real(argv, *args, **kwargs)
 
     subprocess.run = run

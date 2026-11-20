@@ -35,6 +35,18 @@ class HermeticIdentityProbeGuard(unittest.TestCase):
                     login = mi._probe_login()
         self.assertEqual(login, "someacct")
 
+    def test_a_lane_slot_answers_its_account(self) -> None:
+        """harmonic-forge#1470: in a lane, apply_project_identity probes the lane
+        slot, which authenticates as its account, not as the slot's name."""
+        def trap(argv, *a, **k):
+            raise AssertionError(f"the stub did not intercept the probe argv: {argv!r}")
+
+        with mock.patch("subprocess.run", side_effect=trap):
+            with run_tests.hermetic_identity_probe():
+                with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": "/slots/someacct-lane3"}):
+                    login = mi._probe_login()
+        self.assertEqual(login, "someacct")
+
     def test_other_commands_pass_through_untouched(self) -> None:
         sentinel = subprocess.CompletedProcess(["git", "--version"], 0, stdout="v", stderr="")
         with mock.patch("subprocess.run", return_value=sentinel):
