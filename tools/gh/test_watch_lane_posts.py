@@ -1589,6 +1589,119 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("SUPPRESSED", out)
         self.assertIn("vitalharmony/hrse#1530", out)
 
+    def _thread(self, owed_at: str, size: int = 35):
+        """A >30-comment thread with one owed marker at `owed_at`, served the
+        way the REST `since=` filter does: only comments at or after `since`."""
+        thread = [{"id": str(100 + n), "body": "chatter",
+                   "created_at": f"2026-09-10T0{n % 10}:00:00Z"} for n in range(size)]
+        thread.append({"id": "7029911999", "body": self.HANDOFF, "created_at": owed_at,
+                       "html_url": "https://github.com/vitalharmony/hrse/issues/1530#issuecomment-7029911999"})
+        asked = {}
+
+        def fetch(repo, issue, since):
+            asked["since"] = since
+            return [c for c in thread if c["created_at"] >= since]
+        return fetch, asked
+
+    def test_an_owed_post_from_before_first_arm_is_named_at_first_arm(self):
+        """harmonic-forge#1469 AC2 (hrse#1810's shape): an owed marker posted
+        hours before the belt's first arm, on a thread past one page, must reach
+        the first-arm PRIMED line. The first-arm fetch used to start 15 minutes
+        back, so it was never fetched and nothing named it."""
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")   # NOW - 2 h
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch)
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1, lines)
+        self.assertIn("issuecomment-7029911999", primed[0])
+        self.assertLessEqual(asked["since"], "2026-09-10T10:00:00Z")
+
+    def test_a_rearmed_belt_names_a_new_targets_owed_post_without_announcing_it(self):
+        """harmonic-forge#1469 sticky-wicket REFORGE, required test 2: on a
+        re-armed belt (priming off process-wide) a target seen for the first
+        time is still primed and read back to the horizon, so a 3 h-old owed
+        post is named on the PRIMED line and not announced as live."""
+        fetch, asked = self._thread(owed_at="2026-09-10T09:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertEqual(asked["since"], "2026-09-09T12:00:00Z")
+        self.assertEqual(self._announced(lines), [])
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1, lines)
+        self.assertIn("issuecomment-7029911999", primed[0])
+        self.assertEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
+
+    def test_a_rearmed_belt_never_announces_a_first_sight_marker_as_live(self):
+        """Required test 3 (the pass-1 survivor): on a re-armed belt, a marker
+        from before first sight (here 10 h old, the kind that may already have
+        been acted on) is primed, never announced, even with the wide read."""
+        fetch, _asked = self._thread(owed_at="2026-09-10T02:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertEqual(self._announced(lines), [])
+
+    def test_an_unreadable_watermark_is_not_first_sight(self):
+        """Reforge preclose pass 1: a watermark file that exists but cannot be
+        read means the target WAS read before. On a re-armed belt its owed post
+        is read from the horizon and announced live (the seen-set dedups what
+        was handled), never silently primed."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        self.wm._path("vitalharmony", self.key).write_text("", encoding="utf-8")
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertEqual(asked["since"], "2026-09-09T12:00:00Z")
+        self.assertEqual(len(self._announced(lines)), 1, lines)
+        self.assertEqual([l for l in lines if "PRIMED at first arm" in l], [])
+        self.assertNotEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
+
+    def test_an_unreadable_watermark_on_a_fresh_belt_still_primes(self):
+        """Reforge preclose pass 2: on a FRESH belt (allow_priming on) an
+        unreadable watermark primes as main did, so a 24 h read never turns
+        a target's whole recent history into live announcements."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        self.wm._path("vitalharmony", self.key).write_text("", encoding="utf-8")
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            lines = self._cycle(None, fetch=fetch, allow_priming=True)
+        self.assertEqual(asked["since"], "2026-09-09T12:00:00Z")
+        self.assertEqual(self._announced(lines), [])
+        primed = [l for l in lines if "PRIMED at first arm" in l]
+        self.assertEqual(len(primed), 1, lines)
+        self.assertIn("issuecomment-7029911999", primed[0])
+        self.assertEqual(self.seen.status("7029911999"), SeenSet.PRIMED)
+
+    def test_a_watermarked_target_on_a_rearmed_belt_reads_narrow_and_announces_live(self):
+        """Required test 4 (the #697 guard): a target with a watermark never
+        takes the first-sight branch."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        fetch, asked = self._thread(owed_at="2026-09-10T11:55:00Z")
+        lines = self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertEqual(asked["since"], "2026-09-10T11:45:00Z")
+        self.assertEqual(len(self._announced(lines)), 1, lines)
+
+    def test_a_second_cycle_does_not_reprime_the_target(self):
+        """Required test 5: after first sight the target is primed once; the
+        next cycle reads from its watermark and announces new posts live."""
+        fetch, _asked = self._thread(owed_at="2026-09-10T09:00:00Z")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertIn("vitalharmony/hrse#1530", self.primed)
+        self.assertIsNotNone(self.wm.get("vitalharmony", self.key))
+        lines = self._cycle([{"id": "9", "body": self.HANDOFF, "created_at": "2026-09-10T12:01:00Z"}],
+                            now="2026-09-10T12:05:00Z", allow_priming=False)
+        self.assertEqual(len(self._announced(lines)), 1, lines)
+        self.assertEqual([l for l in lines if "PRIMED at first arm" in l], [])
+
+    def test_a_later_arm_still_reads_from_its_watermark(self):
+        """harmonic-forge#1469: the wider first-arm read is for a target with no
+        watermark only; an armed target keeps the watermark-minus-overlap read."""
+        self.wm.advance("vitalharmony", self.key, watch_lane_posts._parse_iso("2026-09-10T11:50:00Z"))
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        self._cycle(None, fetch=fetch)
+        # min(watermark 11:50, now - 15 min = 11:45): the pre-#1469 read.
+        self.assertEqual(asked["since"], "2026-09-10T11:45:00Z")
+
     def test_suppressed_markers_carry_their_comment_url_and_no_state_edit_advice(self):
         """harmonic-forge#921: the printed recovery used to advise a state edit, which
         replays nothing (the watermark has advanced) or re-primes the same marker.
@@ -2655,7 +2768,10 @@ class CommentWatchOwnershipTests(unittest.TestCase):
         with patch("watch_lane_posts._fetch_comments", return_value=comments):
             lines, _ = watch_lane_posts.comment_watch_cycle(
                 [("vitalharmony/hrse", 851)], set(watch), self.NOW, self.wm, self.seen,
-                set(), allow_priming=False, deferred_advances=[], self_lane=self_lane)
+                # An already-armed target (harmonic-forge#1469: a target seen for
+                # the first time is primed whatever allow_priming says).
+                {"vitalharmony/hrse#851"}, allow_priming=False, deferred_advances=[],
+                self_lane=self_lane)
         return [line.rsplit(" — ", 1)[1] for line in lines]
 
     def test_lane2_belt_suppresses_lane3_channel_kinds(self):

@@ -2062,17 +2062,35 @@ def comment_watch_cycle(
                   f"than {_WATERMARK_STALE_HOURS}h; posts before {horizon:%Y-%m-%dT%H:%M:%SZ} "
                   "are not replayed", file=sys.stderr)
             mark = horizon
-        comments = _fetch_comments(
-            repo, issue,
-            query_since(mark, _OVERLAP_MINUTES, _parse_iso(now)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"))
+        # harmonic-forge#1469 (sticky-wicket REFORGE): a target this belt has
+        # never read (no watermark, not yet primed) is primed on first sight,
+        # whatever the process-wide `allow_priming` says, and its first read
+        # reaches back to the stale horizon. With no record of what was already
+        # handled, the window width cannot decide it: a wide read without
+        # priming replayed settled markers as live work (pass 1), a narrow read
+        # dropped owed work older than 15 minutes (hrse#1810, pass 2). Priming
+        # names every marker on the stdout PRIMED line and announces none, so
+        # both failures are closed. A target with a watermark never takes this
+        # branch (the #697 no-re-priming rule).
+        # Reforge preclose pass 1: a watermark FILE that exists but cannot be
+        # read means this target WAS read before, so it is not first sight.
+        # It still reads back to the horizon (an unreadable mark gives no
+        # floor), but it primes only where main did (`allow_priming`); its
+        # settled markers are already in the seen-set, so an owed post the
+        # seen-set does not hold is announced live, never silently primed.
+        recorded = watermarks.recorded(account, _wm_key(repo, issue))
+        first_sight = mark is None and not recorded and target not in primed_targets
+        unreadable = mark is None and recorded
+        since = query_since(horizon if (first_sight or unreadable) else mark,
+                            _OVERLAP_MINUTES, _parse_iso(now))
+        comments = _fetch_comments(repo, issue, since.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if comments is None:
             print(f"[watch_lane_posts] {target}: comment fetch failed -- "
                   "watermark held, window will be re-read", file=sys.stderr)
             fetch_failed = True
             continue
-        priming = (allow_priming and mark is None
-                   and target not in primed_targets)
+        priming = first_sight or (unreadable and allow_priming
+                                  and target not in primed_targets)
         emitted_here = False
         suppressed: list[str] = []
         for comment in comments:

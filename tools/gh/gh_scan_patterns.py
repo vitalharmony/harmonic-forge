@@ -159,13 +159,43 @@ def _has_head_filter(argv: list[str]) -> bool:
     return bool(head_value and head_value.strip())
 
 
+#: One issue's comment thread (harmonic-forge#1469). A single comment is
+#: `issues/comments/<id>`, which this does not match.
+_ISSUE_THREAD = re.compile(r"^/repos/[^/]+/[^/]+/issues/\d+/comments/?(\?.*)?$")
+_PAGE_PARAM = re.compile(r"(^|[?&])(per_page|page)=")
+
+
+def _pages_explicitly(argv: list[str], path: str) -> bool:
+    """`--paginate`, or `per_page=`/`page=` in the path's query string or as a
+    field (`-f`/`-F`/`--field`/`--raw-field`, separate or glued)."""
+    if "--paginate" in argv:
+        return True
+    query = path.split("?", 1)[1] if "?" in path else ""
+    if _PAGE_PARAM.search(query):
+        return True
+    for index, token in enumerate(argv):
+        value = None
+        if token in ("-f", "-F", "--field", "--raw-field"):
+            value = argv[index + 1] if index + 1 < len(argv) else ""
+        else:
+            for flag in ("--field=", "--raw-field=", "-f", "-F"):
+                if token.startswith(flag) and len(token) > len(flag):
+                    value = token[len(flag):]
+                    break
+        if value is not None and re.match(r"(per_page|page)=", value):
+            return True
+    return False
+
+
 def scan_reason(argv: list[str]) -> str | None:
     """Classify a `gh` argument list (without the leading `gh` token).
 
     Returns a human-readable reason naming the matched pattern when `argv`
     is a full-board/full-thread-list-shaped scan; returns None for
     everything else, in particular single-item reads such as
-    `api repos/o/r/issues/123` or `api repos/o/r/issues/123/comments`, and
+    `api repos/o/r/issues/123` or a paginated or explicit-page
+    `api repos/o/r/issues/123/comments` (an unpaginated one is refused,
+    harmonic-forge#1469), and
     a write against a collection path such as `api repos/o/r/issues -X POST`
     (creating an issue is not a scan, regardless of the path it POSTs to).
     """
@@ -229,6 +259,10 @@ def scan_reason(argv: list[str]) -> str | None:
             return "`gh api repos/O/R/issues` or `/pulls` list (full-issue/PR-list scan)"
         if _ISSUES_COMMENTS_LIST.match(target) or _ISSUES_COMMENTS_LIST.match("/" + path):
             return "`gh api repos/O/R/issues/comments` (repo-wide comment-list scan)"
+        if _ISSUE_THREAD.match("/" + path) and not _pages_explicitly(argv, path):
+            return ("`gh api repos/O/R/issues/N/comments` without --paginate or per_page/page "
+                    "returns only the first 30 comments and reads the rest as absent "
+                    "(hrse#289, harmonic-forge#1469); add --paginate or an explicit page")
         return None
 
     if head == "project" and len(positional) >= 2 and positional[1] == "item-list":

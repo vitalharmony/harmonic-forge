@@ -439,6 +439,12 @@ class Watermarks:
                   "the overlap floor is not recovered.", file=sys.stderr)
             return None
 
+    def recorded(self, account: str, repo: str) -> bool:
+        """True when a watermark file exists for this target, readable or not
+        (harmonic-forge#1469 reforge preclose): an unreadable file means the
+        belt HAS read this target before, which `get`'s `None` cannot say."""
+        return self._path(account, repo).exists()
+
     def advance(self, account: str, repo: str, when: datetime) -> None:
         """Call ONLY after that repo's own call succeeded."""
         self._path(account, repo).write_text(
