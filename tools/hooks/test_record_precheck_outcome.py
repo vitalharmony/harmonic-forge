@@ -64,6 +64,41 @@ class Recorder(unittest.TestCase):
         self.assertEqual((post["tuid"], post["session"], post["fp"]),
                          (decision_row.digest(TUID), decision_row.digest(SESSION), "f" * 12))
 
+    def _malformed_receipt(self, fp) -> None:
+        bad = decision_row.row("allowed-receipt", tool="tools/gh/l1_post.py", mode="post",
+                               klass="github-write", fp="f" * 64, sid=SESSION, tuid=TUID)
+        bad["fp"] = fp
+        decision_row.write_call(self.store, bad)
+
+    def test_malformed_receipt_fp_falls_back_to_call_file(self) -> None:
+        """harmonic-forge#1460 AC1/AC2: an int fp on the receipt does not lose the row."""
+        decision_row.record_gate(self.store, decision_row.row(
+            "precheck", tool="tools/gh/kill_check.py", mode="precheck-form", klass="",
+            fp="e" * 64, sid=SESSION, tuid=TUID))
+        self._malformed_receipt(123)
+        rec.record(self.payload())
+        post = self.rows()[-1]
+        self.assertEqual((post["outcome"], post["tool"], post["fp"]),
+                         ("ran-ok", "tools/gh/kill_check.py", "e" * 12))
+
+    def test_both_files_malformed_records_nothing_and_keeps_files(self) -> None:
+        """harmonic-forge#1460 AC2, in-process: main() swallows exceptions, so a
+        subprocess exit code would prove nothing."""
+        for fp in (123, ["x"]):
+            with self.subTest(fp=fp):
+                self._malformed_receipt(fp)
+                path = decision_row.call_path(self.store, decision_row.digest(SESSION), decision_row.digest(TUID))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                call = decision_row.row("precheck", tool="tools/x.py", mode="m", klass="", fp="e" * 64,
+                                        sid=SESSION, tuid=TUID)
+                call["fp"] = fp
+                path.write_text(json.dumps(call), encoding="utf-8")
+                before = len(self.rows())
+                rec.record(self.payload())  # must not raise
+                self.assertEqual(len(self.rows()), before)
+                self.assertTrue(path.exists())
+                self.assertTrue(decision_row.receipt_path(path).exists())
+
     def test_ran_failed_row_exit_code_from_error_header(self) -> None:
         self.gate_row()
         rec.record(self.payload("PostToolUseFailure", error="Exit code 3\nstderr text"))

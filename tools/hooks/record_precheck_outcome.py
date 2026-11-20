@@ -39,8 +39,11 @@ def exit_code(payload: dict) -> int | None:
 
 
 def _valid(data: dict | None, session: str, tuid: str) -> bool:
+    # harmonic-forge#1460: a non-string fp would raise in decision_row.row's
+    # `fp[:12]` and lose the run's row; reject it so gate_row falls back.
     return isinstance(data, dict) and data.get("tuid") == tuid and data.get("session") == session \
-        and data.get("outcome") in GATE_OUTCOMES
+        and data.get("outcome") in GATE_OUTCOMES \
+        and (data.get("fp") is None or isinstance(data.get("fp"), str))
 
 
 def gate_row(store: Path, session: str, tuid: str) -> dict | None:
