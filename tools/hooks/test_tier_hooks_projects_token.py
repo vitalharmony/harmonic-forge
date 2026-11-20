@@ -40,9 +40,13 @@ class Harness(unittest.TestCase):
         self.home = Path(tmp.name)
         (self.home / "vitalharmony-projects").mkdir()
         (self.home / "vitalharmony-projects" / "token").write_text(PROJECTS_TOKEN)
+        # harmonic-forge#1463: a grantable slot must be allowlisted and exist.
+        for name in ("vitalharmony-lane1", "vitalharmony-lane2", "harmonicarchitect"):
+            (self.home / name).mkdir()
         self.seen: list[dict] = []
 
-    def lane_env(self, lane: str, slot: str = "vitalharmony-lane") -> dict:
+    def lane_env(self, lane: str, slot: str | None = None) -> dict:
+        slot = slot or f"vitalharmony-lane{lane}"
         return {"LANE": lane, "GH_ACCT_HOME": str(self.home),
                 "GH_CONFIG_DIR": str(self.home / slot), "GH_TOKEN": SLOT_TOKEN,
                 "PATH": os.environ.get("PATH", "")}
@@ -85,7 +89,7 @@ class TierHooksReadWithProjectsToken(Harness):
         for lane in ("1", "2"):
             with self.subTest(lane=lane):
                 slot = self.lane_env(lane)
-                self.patch_env({"PATH": os.environ.get("PATH", "")})  # nothing ambient to inherit
+                self.patch_env({"PATH": os.environ.get("PATH", ""), "LANE": lane})  # only the lane is ambient
                 with mock.patch.object(hook_identity, "slot_env", return_value=dict(slot)):
                     tier, error = self._lookup()
                 self.assertEqual((tier, error), ("standard", None))
@@ -109,7 +113,7 @@ class TierHooksReadWithProjectsToken(Harness):
         self.assertEqual(self._lookup()[0], "standard")
 
     def test_kenekted_read_never_carries_the_projects_token(self):
-        env = self.lane_env("1", slot="harmonicarchitect-lane")
+        env = self.lane_env("1", slot="harmonicarchitect")
         self.patch_env(env)
         with mock.patch.object(tier_model_trigger_check, "_board_owners",
                                return_value={"kenekted/kenekted-platform": "harmonicarchitect"}), \
@@ -131,11 +135,11 @@ class TierHooksReadWithProjectsToken(Harness):
 
     def test_owner_guard_alone_withholds_the_token(self):
         """A vitalharmony lane slot reading a board another owner owns."""
-        self.assertNotEqual(self._read_as("vitalharmony-lane", "harmonicarchitect"), PROJECTS_TOKEN)
+        self.assertNotEqual(self._read_as("vitalharmony-lane1", "harmonicarchitect"), PROJECTS_TOKEN)
 
     def test_slot_guard_alone_withholds_the_token(self):
         """A harmonicarchitect slot reading a vitalharmony-owned board."""
-        self.assertNotEqual(self._read_as("harmonicarchitect-lane", "vitalharmony"), PROJECTS_TOKEN)
+        self.assertNotEqual(self._read_as("harmonicarchitect", "vitalharmony"), PROJECTS_TOKEN)
 
     def test_empty_projects_slot_is_lookup_failed(self):
         (self.home / "vitalharmony-projects" / "token").write_text("")

@@ -65,24 +65,55 @@ def projects_env(cmd: list[str], base: dict[str, str] | None = None,
                  owner: str | None = None) -> dict[str, str]:
     """The environment for one board command: in a lane, and only for a board
     `vitalharmony` owns, GH_TOKEN is the projects slot's token; otherwise
-    `base` (default: this process's environment) unchanged."""
+    `base` (default: this process's environment) with any inherited projects
+    token removed (harmonic-forge#1463 AC1).
+
+    An empty projects slot grants nothing: the read then runs as the lane slot,
+    which cannot read a user-owned board, so it fails visibly (AC4, as
+    harmonic-forge#1456 left it)."""
     env = dict(os.environ if base is None else base)
-    if env.get("LANE") not in ("1", "2", "3"):
-        return env
-    # Account guards, both required: the session's own slot must be a
-    # vitalharmony one (gh-as harmonicarchitect sets that account's slot), and
-    # a command naming its owner must name vitalharmony. `item-edit` names only
-    # a project id, so for it the slot is the guard.
+    home = env.get("GH_ACCT_HOME")
+    # harmonic-forge#1463 AC2: the lane is the process's own, not only what the
+    # caller-built base claims.
+    lane = env.get("LANE")
+    if lane not in ("1", "2", "3") or os.environ.get("LANE") != lane:
+        return withhold_projects_token(env)
+    # Account guards, both required: the session's own slot must be an
+    # allowlisted, existing vitalharmony slot (gh-as harmonicarchitect sets
+    # that account's slot), and a command naming its owner must name
+    # vitalharmony. `item-edit` names only a project id, so for it the slot is
+    # the guard.
     slot = Path(env.get("GH_CONFIG_DIR", "")).name
-    if not slot.startswith(PROJECTS_OWNER):
-        return env
+    if slot not in GRANTABLE_SLOTS or not (_accounts_root(home) / slot).is_dir():
+        return withhold_projects_token(env)
     # An explicit board owner wins over the command's: an issue-field query
     # names the issue's repo owner, which need not own the board (pass 2).
     owner = owner if owner is not None else board_owner(cmd)
     if owner is not None and owner != PROJECTS_OWNER:
-        return env
-    token = slot_token(PROJECTS_SLOT, env.get("GH_ACCT_HOME"))
+        return withhold_projects_token(env)
+    token = slot_token(PROJECTS_SLOT, home)
     if token:
         env["GH_TOKEN"] = token
         env.pop("GITHUB_TOKEN", None)
+        return env
+    return withhold_projects_token(env)
+
+
+#: harmonic-forge#1463 AC2: the base slots that may receive the projects token.
+#: Never the projects slot itself.
+GRANTABLE_SLOTS = frozenset({"vitalharmony", "vitalharmony-lane1", "vitalharmony-lane2", "vitalharmony-lane3"})
+
+
+def _accounts_root(home: str | None) -> Path:
+    return Path(home or os.environ.get("GH_ACCT_HOME") or Path.home() / ".config" / "gh-accounts")
+
+
+def withhold_projects_token(env: dict[str, str]) -> dict[str, str]:
+    """`env` without the projects slot's token in GH_TOKEN or GITHUB_TOKEN
+    (harmonic-forge#1463 AC1, AC3). A value comparison: no marker, no state."""
+    token = slot_token(PROJECTS_SLOT, env.get("GH_ACCT_HOME"))
+    if token:
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            if env.get(key) == token:
+                env.pop(key)
     return env

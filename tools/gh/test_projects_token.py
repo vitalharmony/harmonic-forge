@@ -3,10 +3,12 @@
 vitalharmony board carries the projects slot's token; nothing else does."""
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import projects_token as pt  # noqa: E402
@@ -20,6 +22,10 @@ class ProjectsEnvTests(unittest.TestCase):
         (self.home / "vitalharmony-projects").mkdir()
         (self.home / "vitalharmony-projects" / "token").write_text("projtok\n")
         self.lane_slot = str(self.home / "vitalharmony-lane1")
+        Path(self.lane_slot).mkdir()  # harmonic-forge#1463: the slot must exist
+        patcher = mock.patch.dict(os.environ, {"LANE": "1"})  # the process's own lane
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def env(self, **extra) -> dict[str, str]:
         base = {"LANE": "1", "GH_ACCT_HOME": str(self.home), "GH_CONFIG_DIR": self.lane_slot,
@@ -52,6 +58,40 @@ class ProjectsEnvTests(unittest.TestCase):
         self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(LANE=""))["GH_TOKEN"], "lanetok")
         (self.home / "vitalharmony-projects" / "token").unlink()
         self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env())["GH_TOKEN"], "lanetok")
+
+    def test_inherited_projects_token_is_stripped_when_not_granted(self):
+        """harmonic-forge#1463 AC1: GH_TOKEN and GITHUB_TOKEN, every non-granting path."""
+        other_owner = ["gh", "project", "item-list", "1", "--owner", "harmonicarchitect"]
+        paths = {
+            "other owner": (other_owner, {}),
+            "harmonicarchitect slot": (self.ITEM_EDIT, {"GH_CONFIG_DIR": str(self.home / "harmonicarchitect")}),
+            "no lane": (self.VH_PROJECT, {"LANE": ""}),
+        }
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            for name, (cmd, extra) in paths.items():
+                with self.subTest(key=key, path=name):
+                    env = pt.projects_env(cmd, self.env(**{key: "projtok", **extra}))
+                    self.assertNotEqual(env.get(key), "projtok")
+
+    def test_only_an_allowlisted_existing_slot_in_the_process_lane_is_granted(self):
+        """harmonic-forge#1463 AC2."""
+        (self.home / "vitalharmony-x").mkdir()
+        refused = {
+            "unregistered vitalharmony- slot": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-x")},
+            "allowlisted name, no directory": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-lane3")},
+            "the projects slot itself": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-projects")},
+            "a lane the process is not in": {"LANE": "2"},
+        }
+        for name, extra in refused.items():
+            with self.subTest(name):
+                self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(**extra))["GH_TOKEN"], "lanetok")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env())["GH_TOKEN"], "lanetok")
+
+    def test_repo_hygiene_lane_base_is_still_granted(self):
+        """harmonic-forge#1463 AC2: repo_hygiene passes its own slot_env_or_none base."""
+        base = {"LANE": "1", "GH_ACCT_HOME": str(self.home), "GH_CONFIG_DIR": self.lane_slot, "GH_TOKEN": "lanetok"}
+        self.assertEqual(pt.projects_env(self.VH_PROJECT, base)["GH_TOKEN"], "projtok")
 
     def test_board_owner_reads_every_owner_form(self):
         self.assertEqual(pt.board_owner(["gh", "project", "view", "1", "--owner", "a"]), "a")

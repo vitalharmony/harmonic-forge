@@ -288,6 +288,18 @@ def _real_gh_path() -> str:
     return "/usr/bin/gh"
 
 
+def _probe_env() -> dict[str, str]:
+    """This process's environment without an inherited projects token
+    (harmonic-forge#1463 AC3): a board command run with it must not lend it to
+    the budget probe."""
+    env = dict(os.environ)
+    try:
+        from projects_token import withhold_projects_token  # noqa: PLC0415
+    except ImportError:
+        return env
+    return withhold_projects_token(env)
+
+
 def _fetch_budget_live() -> tuple[int, float] | None:
     real_gh = _real_gh_path()
     try:
@@ -296,6 +308,7 @@ def _fetch_budget_live() -> tuple[int, float] | None:
             capture_output=True,
             text=True,
             timeout=_REAL_GH_TIMEOUT_SECONDS,
+            env=_probe_env(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
