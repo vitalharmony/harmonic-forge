@@ -78,7 +78,7 @@ class ScanReason(unittest.TestCase):
         for argv in (["api", "repos/o/r/issues/123/comments"],
                      ["api", "/repos/o/r/issues/123/comments"],
                      ["api", "repos/o/r/issues/123/comments?since=2026-01-01T00:00:00Z"],
-                     ["api", "-X", "GET", "repos/o/r/issues/123/comments", "-f", "since=x"]):
+                     ["api", "-XGET", "repos/o/r/issues/123/comments", "-f", "since=x"]):
             with self.subTest(argv=argv):
                 reason = gsp.scan_reason(argv)
                 self.assertIsNotNone(reason)

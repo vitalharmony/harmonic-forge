@@ -2067,7 +2067,11 @@ def comment_watch_cycle(
         # overlap a post owed to this lane more than 15 minutes older than first
         # arm was never fetched, so it reached neither the PRIMED line nor a
         # queued line (hrse#1810's L2D). `mark` stays None, so priming still applies.
-        since = query_since(mark if mark is not None else horizon, _OVERLAP_MINUTES,
+        # Only when this target will PRIME (preclose pass 1): on a re-armed belt
+        # (priming off) a target with no watermark keeps the overlap read, or
+        # the wider window would replay settled markers as live work.
+        will_prime = allow_priming and mark is None and target not in primed_targets
+        since = query_since(horizon if will_prime else mark, _OVERLAP_MINUTES,
                             _parse_iso(now))
         comments = _fetch_comments(repo, issue, since.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if comments is None:

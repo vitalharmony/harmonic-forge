@@ -1616,6 +1616,15 @@ class CommentWatchCycleTests(unittest.TestCase):
         self.assertIn("issuecomment-7029911999", primed[0])
         self.assertLessEqual(asked["since"], "2026-09-10T10:00:00Z")
 
+    def test_a_rearmed_belt_keeps_the_overlap_read_for_a_new_target(self):
+        """harmonic-forge#1469 preclose pass 1: on a re-arm (priming off) a
+        target with no watermark must not read back 24 h, or settled owed
+        markers replay as live work."""
+        fetch, asked = self._thread(owed_at="2026-09-10T10:00:00Z")
+        lines = self._cycle(None, fetch=fetch, allow_priming=False)
+        self.assertEqual(asked["since"], "2026-09-10T11:45:00Z")
+        self.assertEqual(self._announced(lines), [])
+
     def test_a_later_arm_still_reads_from_its_watermark(self):
         """harmonic-forge#1469: the wider first-arm read is for a target with no
         watermark only; an armed target keeps the watermark-minus-overlap read."""

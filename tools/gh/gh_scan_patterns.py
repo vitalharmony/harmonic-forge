@@ -106,19 +106,12 @@ def _split_argv(args: list[str]) -> tuple[str, list[str]]:
     method: str | None = None
     implies_post = False
     skip_next = False
-    method_next = False
     for token in args:
-        if method_next:
-            # harmonic-forge#1469: the separate-token form `-X GET` was skipped
-            # without being recorded, so `-X GET ... -f x=y` read as a POST.
-            method = token
-            method_next = False
-            continue
         if skip_next:
             skip_next = False
             continue
         if token in ("-X", "--method"):
-            method_next = True
+            skip_next = True
             continue
         if token.startswith("--method="):
             method = token.split("=", 1)[1]
