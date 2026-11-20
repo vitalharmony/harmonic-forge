@@ -253,7 +253,7 @@ class TmuxLanesScopeTests(unittest.TestCase):
                     if command not in argv_for:
                         continue
                     target = match.group("target").strip().strip('"')
-                    target = re.sub(r"\$\{?(advisor_)?session\}?", "wsreal", target)
+                    target = re.sub(r"\$\{?(advisor_|l1b_)?session\}?", "wsreal", target)
                     target = re.sub(r'"\s*\+\s*s\b|^=" \+ s|" \+ s', "wsreal", target)
                     if "$" in target or "+" in target:
                         target = "=wsreal"  # the Python helpers build `"=" + s`; same form

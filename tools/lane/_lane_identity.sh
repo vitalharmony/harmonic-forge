@@ -41,8 +41,15 @@ lane_identity() {
 # lane_pin_title -- under tmux ($TMUX_PANE set), turn the pane's allow-set-title
 # off and set its title to LANE_LABEL, so the agent's own title escapes cannot
 # overwrite it. Both tmux calls are `|| true`: a title must never block a launch.
+#
+# LANE_PANE_TITLE (set by lanes-claude --lane1-name / --second-lane1-name) replaces
+# the pane TITLE only, never LANE_LABEL: the Claude session keeps its `<ws>:laneN`
+# name, which teardown matches by pattern (lane_targets.LABELLED). It is read once
+# and unset here, so the agent and anything it launches never inherit it.
 lane_pin_title() {
-  [ -n "${TMUX_PANE:-}" ] && [ -n "${LANE_LABEL:-}" ] || return 0
+  local title="${LANE_PANE_TITLE:-${LANE_LABEL:-}}"
+  unset LANE_PANE_TITLE
+  [ -n "${TMUX_PANE:-}" ] && [ -n "$title" ] || return 0
   tmux set-option -p -t "$TMUX_PANE" allow-set-title off >/dev/null 2>&1 || true
-  tmux select-pane -t "$TMUX_PANE" -T "$LANE_LABEL" >/dev/null 2>&1 || true
+  tmux select-pane -t "$TMUX_PANE" -T "$title" >/dev/null 2>&1 || true
 }

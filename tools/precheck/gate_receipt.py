@@ -67,8 +67,9 @@ DEADLINE_S = 5.0
 LANES_CLAUDE = "tools/lane/lanes-claude"
 #: lanes-claude's options that consume the next token (`shift 2`, tools/lane/lanes-claude:50-75).
 LANES_CLAUDE_VALUED = ("--session", "--project", "--lane1-dir", "--lane2-dir", "--lane3-dir",
-                       "--advisor-dir")
-LANES_CLAUDE_STOP = ("--stop-lanes", "--stop-advisor", "--record-lanes")
+                       "--advisor-dir", "--lane1-name", "--second-lane1-dir",
+                       "--second-lane1-name")
+LANES_CLAUDE_STOP = ("--stop-lanes", "--stop-advisor", "--stop-second-lane1", "--record-lanes")
 HELP = ("-h", "--help")
 
 

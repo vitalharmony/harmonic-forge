@@ -136,6 +136,16 @@ class ReceiptWriters(Store):
                                      "--session", "x", "--dry-run"]), 0)
         self.assertIsNone(self.gate("lanes-claude --session x"))
 
+    def test_the_second_lane1_flags_are_a_precheck_form(self) -> None:
+        args = ["--lane1-name", "CymaGraph", "--second-lane1-dir", "/x/harmonic-forge",
+                "--second-lane1-name", "Harmonic Forge"]
+        self.assertEqual(R._lanes_claude([*args, "--dry-run"])[0], "dry-run")
+        self.assertEqual(R._lanes_claude(args)[0], "launch")
+        self.assertEqual(R._lanes_claude(["--session", "x", "--stop-second-lane1"])[0], "stop")
+        with mock.patch.dict(os.environ, {"HF_CALLER_CWD": str(self.repo)}):
+            self.assertEqual(R.main(["record", "--tool", "tools/lane/lanes-claude", "--",
+                                     *args, "--dry-run"]), 0)
+
     def _preclose_main(self, argv: list[str], complete) -> None:
         import preclose_check  # noqa: PLC0415
         with mock.patch.object(sys, "argv", [PRECLOSE, *argv]), \

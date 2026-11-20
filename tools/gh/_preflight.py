@@ -79,6 +79,7 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 | `lane3_marker.py` | <marker> | shared-state | gap: appends the same shared audit log |
 | `lanes-claude` | --stop-lanes | shared-state | gap: stops every lane session process |
 | `lanes-claude` | --stop-advisor | shared-state | gap: stops the advisor session and kills its tmux session |
+| `lanes-claude` | --stop-second-lane1 | shared-state | gap: stops the second Lane 1's session and kills its tmux session |
 | `lanes-claude` | --record-lanes | shared-state | gap: writes the session-id state file teardown reads |
 | `lanes-claude` | launch | shared-state | precheck: `--dry-run` |
 | `lanes_reap.py` | reap-belt-locks DIR | shared-state | gap: removes stale belt locks |
