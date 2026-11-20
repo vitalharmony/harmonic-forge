@@ -73,6 +73,32 @@ class ProjectsEnvTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", env)
         self.assertNotIn("GITHUB_TOKEN", env)
 
+    def test_a_stripped_projects_token_is_replaced_by_the_lane_token(self):
+        """Operator ruling 1a (post-verdict): with no GH_TOKEN gh can prefer the
+        shared keyring's admin entry, so a strip pins the lane slot's own token."""
+        (Path(self.lane_slot) / "token").write_text("lanefile\n")
+        other_owner = ["gh", "project", "item-list", "1", "--owner", "harmonicarchitect"]
+        env = pt.projects_env(other_owner, self.env(GH_TOKEN="projtok"))
+        self.assertEqual(env.get("GH_TOKEN"), "lanefile")
+        probe = pt.withhold_projects_token({"GH_CONFIG_DIR": self.lane_slot, "GH_TOKEN": "projtok"})
+        self.assertEqual(probe.get("GH_TOKEN"), "lanefile")
+
+    def test_unreadable_projects_token_pins_the_lane_token(self):
+        (Path(self.lane_slot) / "token").write_text("lanefile\n")
+        (self.home / "vitalharmony-projects" / "token").unlink()
+        env = pt.projects_env(self.VH_PROJECT, self.env())
+        self.assertEqual(env.get("GH_TOKEN"), "lanefile")
+        self.assertNotIn("GITHUB_TOKEN", env)
+
+    def test_a_slot_outside_the_root_is_never_pinned(self):
+        elsewhere = Path(tempfile.mkdtemp()) / "vitalharmony-lane1"
+        elsewhere.mkdir()
+        (elsewhere / "token").write_text("foreign\n")
+        self.addCleanup(lambda: ((elsewhere / "token").unlink(), elsewhere.rmdir()))
+        probe = pt.withhold_projects_token({"GH_CONFIG_DIR": str(elsewhere), "GH_TOKEN": "projtok"})
+        self.assertNotEqual(probe.get("GH_TOKEN"), "foreign")
+        self.assertNotEqual(probe.get("GH_TOKEN"), "projtok")
+
     def test_bare_vitalharmony_slot_is_not_grantable(self):
         """Sticky-wicket PATCH, preclose pass 2 (b): its credential is the shared keyring."""
         bare = self.home / "vitalharmony"

@@ -130,17 +130,36 @@ def withhold_projects_token(env: dict[str, str]) -> dict[str, str]:
     (harmonic-forge#1463 AC1, AC3). A value comparison: no marker, no state.
     The token is read from the process's own accounts root, never the base's
     (preclose pass 1)."""
-    token = slot_token(PROJECTS_SLOT, str(_accounts_root(None)))
+    root = str(_accounts_root(None))
+    token = slot_token(PROJECTS_SLOT, root)
     if token:
+        stripped = False
         for key in ("GH_TOKEN", "GITHUB_TOKEN"):
             if env.get(key) == token:
                 env.pop(key)
+                stripped = True
+        if stripped:
+            _pin_lane_token(env, root)
         return env
     # Fail closed (sticky-wicket PATCH, preclose pass 2): when the projects
-    # token cannot be read it cannot be recognized, so a lane-slot env drops
-    # both token variables and gh uses that lane slot's own credential.
+    # token cannot be read it cannot be recognized, so a lane-slot env carries
+    # only that lane slot's own token.
     slot = _resolved(env.get("GH_CONFIG_DIR"))
     if slot is not None and slot.name in GRANTABLE_SLOTS:
         env.pop("GH_TOKEN", None)
         env.pop("GITHUB_TOKEN", None)
+        _pin_lane_token(env, root)
     return env
+
+
+def _pin_lane_token(env: dict[str, str], root: str) -> None:
+    """Set GH_TOKEN to the env's lane slot's own file token (operator ruling
+    1a on the post-verdict, harmonic-forge#1463): with no GH_TOKEN, gh can
+    prefer the shared keyring's admin entry over the slot's hosts.yml. Only a
+    grantable lane slot under the process's accounts root is pinned."""
+    slot = _resolved(env.get("GH_CONFIG_DIR"))
+    if slot is None or slot.name not in GRANTABLE_SLOTS or slot.parent != _resolved(root):
+        return
+    lane_token = slot_token(slot.name, root)
+    if lane_token:
+        env["GH_TOKEN"] = lane_token
