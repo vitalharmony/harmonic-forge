@@ -642,13 +642,35 @@ def fetch_issue_field(
     # uncached full-board scan on every prompt that names the issue.
     if value is not None or not cross_owner or not blind.get("blind"):
         return value
-    if run is None:
-        import subprocess
+    return _scan_issue_field(repo, issue_number, project_number, owner, field,
+                             lambda args: _board_call(run, args, owner))
 
-        def run(args: list[str]):
-            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
-            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args, owner=owner))
-    return _scan_issue_field(repo, issue_number, project_number, owner, field, run)
+
+def _board_call(run, args: list[str], owner: str | None):
+    """Run one board command (harmonic-forge#1456): the single place a board
+    read's credential is decided.
+
+    - `run is None`: the default runner, under `projects_env` (harmonic-forge#1396).
+    - `run` opts in by carrying `board_base_env` (a dict, or None for this
+      process's environment) and accepting `env=`: it runs under
+      `projects_env(args, base=run.board_base_env, owner=owner)`. The Tier
+      hooks' runners opt in.
+    - any other runner is called as `run(args)`, unchanged (te_queue keeps its
+      own identity, harmonic-forge#1107).
+    """
+    # Opting in means an explicit dict or None; anything else (an unset
+    # attribute, or a test double's auto-attribute) is not an opt-in.
+    base = getattr(run, "board_base_env", _NOT_OPTED_IN) if run is not None else None
+    if run is not None and base is not None and not isinstance(base, dict):
+        return run(args)
+    from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
+    if run is None:
+        import subprocess  # noqa: PLC0415
+        return subprocess.run(args, capture_output=True, text=True, env=projects_env(args, owner=owner))
+    return run(args, env=projects_env(args, base=base, owner=owner))
+
+
+_NOT_OPTED_IN = object()
 
 
 def fetch_issue_tier(
@@ -702,15 +724,13 @@ def _fetch_issue_field_live(
     useful as `"12"` than as a float that has to be re-formatted at every use.
     `None` means "no value on this board", which is a real answer.
     """
-    if run is None:
-        import subprocess
+    # The query names the issue's repo owner; the board's owner decides the
+    # token (harmonic-forge#1396 preclose pass 2), for any opted-in runner too
+    # (harmonic-forge#1456).
+    supplied = run
 
-        def run(args: list[str]):
-            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
-            # The query names the issue's repo owner; the board's owner decides
-            # the token (harmonic-forge#1396 preclose pass 2).
-            return subprocess.run(args, capture_output=True, text=True,
-                                  env=projects_env(args, owner=board_owner))
+    def run(args: list[str]):
+        return _board_call(supplied, args, board_owner)
 
     try:
         owner, name = repo.split("/", 1)
