@@ -216,5 +216,28 @@ class ProjectsEnvTests(unittest.TestCase):
         self.assertIsNone(pt.board_owner(self.ITEM_EDIT))
 
 
+class NoLaneTokenCallerContracts(unittest.TestCase):
+    """harmonic-forge#1466 sticky-wicket PATCH: each projects_env caller turns
+    NoLaneToken into its own visible failure and never runs gh."""
+
+    def test_callers_fail_visibly_without_running_gh(self):
+        import subprocess  # noqa: PLC0415
+        import gh_issue  # noqa: PLC0415
+        import l1_post  # noqa: PLC0415
+        import projects_token  # noqa: PLC0415
+        import repo_hygiene  # noqa: PLC0415
+        boom = projects_token.NoLaneToken("no lane token")
+        cmd = ["gh", "project", "view", "1", "--owner", "vitalharmony"]
+        with mock.patch.object(projects_token, "projects_env", side_effect=boom), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("gh ran")):
+            self.assertEqual(gh_issue._run_board(cmd, check=False).returncode, 1)
+            with self.assertRaises(subprocess.CalledProcessError):
+                gh_issue._run_board(cmd, check=True)
+            self.assertEqual(l1_post.run(*cmd).returncode, 1)
+            self.assertEqual(l1_post.board_run(cmd, "vitalharmony").returncode, 1)
+            with self.assertRaises(repo_hygiene.GhError):
+                repo_hygiene._run(cmd, board=True)
+
+
 if __name__ == "__main__":
     unittest.main()
