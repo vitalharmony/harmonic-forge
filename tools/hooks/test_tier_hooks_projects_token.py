@@ -43,6 +43,8 @@ class Harness(unittest.TestCase):
         # harmonic-forge#1463: a grantable slot must be allowlisted and exist.
         for name in ("vitalharmony-lane1", "vitalharmony-lane2", "harmonicarchitect"):
             (self.home / name).mkdir()
+        for name in ("vitalharmony-lane1", "vitalharmony-lane2"):  # harmonic-forge#1466: a lane slot carries its own token
+            (self.home / name / "token").write_text(SLOT_TOKEN)
         self.seen: list[dict] = []
 
     def lane_env(self, lane: str, slot: str | None = None) -> dict:

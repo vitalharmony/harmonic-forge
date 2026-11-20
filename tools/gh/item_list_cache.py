@@ -232,8 +232,7 @@ def fetch_full_board(
         import subprocess
 
         def run(args: list[str]):
-            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
-            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args))
+            return subprocess.run(args, capture_output=True, text=True, env=_board_env(args))
 
     resolved_cache_dir = cache_dir if cache_dir is not None else _CACHE_DIR
     # The path is computed unconditionally. `ttl <= 0` means "do not READ or
@@ -319,14 +318,18 @@ def _board_currency(owner: str, number: str, run=None) -> dict | None:
         import subprocess
 
         def run(args: list[str]):
-            from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
-            return subprocess.run(args, capture_output=True, text=True, env=projects_env(args))
+            return subprocess.run(args, capture_output=True, text=True, env=_board_env(args))
 
-    result = run([
-        "gh", "api", "graphql",
-        "-f", f"query={_BOARD_CURRENCY_QUERY}",
-        "-F", f"owner={owner}", "-F", f"number={int(number)}",
-    ])
+    try:
+        result = run([
+            "gh", "api", "graphql",
+            "-f", f"query={_BOARD_CURRENCY_QUERY}",
+            "-F", f"owner={owner}", "-F", f"number={int(number)}",
+        ])
+    except GhItemListError:
+        # harmonic-forge#1466 sticky-wicket PATCH: no lane token is a failed
+        # probe, which this contract returns as None, never a raise.
+        return None
     if getattr(result, "returncode", 1) != 0:
         return None
     try:
@@ -663,14 +666,24 @@ def _board_call(run, args: list[str], owner: str | None):
     base = getattr(run, "board_base_env", _NOT_OPTED_IN) if run is not None else None
     if run is not None and base is not None and not isinstance(base, dict):
         return run(args)
-    from projects_token import projects_env  # noqa: PLC0415 -- harmonic-forge#1396
     if run is None:
         import subprocess  # noqa: PLC0415
-        return subprocess.run(args, capture_output=True, text=True, env=projects_env(args, owner=owner))
-    return run(args, env=projects_env(args, base=base, owner=owner))
+        return subprocess.run(args, capture_output=True, text=True, env=_board_env(args, owner=owner))
+    return run(args, env=_board_env(args, base=base, owner=owner))
 
 
 _NOT_OPTED_IN = object()
+
+
+def _board_env(args: list[str], base: dict | None = None, owner: str | None = None) -> dict:
+    """`projects_env` for one board read, with harmonic-forge#1466's
+    `NoLaneToken` turned into this module's `GhItemListError`, which the Tier
+    hooks already report as LOOKUP_FAILED (they never crash on it)."""
+    from projects_token import NoLaneToken, projects_env  # noqa: PLC0415 -- harmonic-forge#1396
+    try:
+        return projects_env(args, base=base, owner=owner)
+    except NoLaneToken as exc:
+        raise GhItemListError(str(exc)) from exc
 
 
 def fetch_issue_tier(

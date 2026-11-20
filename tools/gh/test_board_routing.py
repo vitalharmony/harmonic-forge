@@ -38,6 +38,7 @@ class _Lane(unittest.TestCase):
         (self.home / "vitalharmony-projects").mkdir()
         (self.home / "vitalharmony-projects" / "token").write_text(PROJECTS)
         (self.home / "vitalharmony-lane1").mkdir()  # harmonic-forge#1463: a granted slot must exist
+        (self.home / "vitalharmony-lane1" / "token").write_text(LANE_TOKEN)  # harmonic-forge#1466
         env = mock.patch.dict(os.environ, {"LANE": "1", "GH_ACCT_HOME": str(self.home),
                                            "GH_CONFIG_DIR": str(self.home / "vitalharmony-lane1"),
                                            "GH_TOKEN": LANE_TOKEN})

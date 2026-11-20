@@ -288,32 +288,43 @@ def _real_gh_path() -> str:
     return "/usr/bin/gh"
 
 
-def _probe_env() -> dict[str, str]:
+def _probe_env() -> dict[str, str] | None:
     """This process's environment without an inherited projects token
     (harmonic-forge#1463 AC3): a board command run with it must not lend it to
     the budget probe."""
     env = dict(os.environ)
     try:
-        from projects_token import withhold_projects_token  # noqa: PLC0415
+        from projects_token import NoLaneToken, withhold_projects_token  # noqa: PLC0415
     except ImportError:
-        # Fail closed (preclose pass 1): without the helper the probe cannot
-        # tell the projects token from the lane's, so it carries neither and
-        # runs on GH_CONFIG_DIR's own credential.
+        # Fail closed (preclose pass 1; harmonic-forge#1466): without the
+        # helper the probe cannot pin a lane token, so in a lane it does not
+        # run; outside a lane it carries neither token.
+        if os.environ.get("LANE") in ("1", "2", "3"):
+            return None
         env.pop("GH_TOKEN", None)
         env.pop("GITHUB_TOKEN", None)
         return env
-    return withhold_projects_token(env)
+    try:
+        return withhold_projects_token(env)
+    except NoLaneToken:
+        return None  # harmonic-forge#1466: an unknown budget, never a keyring call
 
 
 def _fetch_budget_live() -> tuple[int, float] | None:
     real_gh = _real_gh_path()
+    try:
+        env = _probe_env()
+    except (OSError, ValueError):
+        return None  # preclose pass 1: an unreadable token file is an unknown budget
+    if env is None:
+        return None  # harmonic-forge#1466: no lane token, so no gh call
     try:
         result = subprocess.run(
             [real_gh, "api", "-i", _REAL_GH_PROBE_TARGET],
             capture_output=True,
             text=True,
             timeout=_REAL_GH_TIMEOUT_SECONDS,
-            env=_probe_env(),
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
@@ -382,11 +393,17 @@ def graphql_budget() -> tuple[int, float] | None:
     receipt and its refusal message. None when it cannot be read; callers treat
     that as unknown, never as zero."""
     try:
+        env = _probe_env()
+    except (OSError, ValueError):
+        return None  # preclose pass 1: an unreadable token file is an unknown budget
+    if env is None:
+        return None  # harmonic-forge#1466: no lane token, so no gh call
+    try:
         result = subprocess.run(
             [_real_gh_path(), "api", "-i", "graphql", "-f",
              "query={rateLimit{remaining resetAt}}"],
             capture_output=True, text=True, timeout=_REAL_GH_TIMEOUT_SECONDS,
-            env=_probe_env(),  # harmonic-forge#1463 preclose pass 1
+            env=env,  # harmonic-forge#1463 preclose pass 1
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None

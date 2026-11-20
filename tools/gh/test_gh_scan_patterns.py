@@ -344,5 +344,57 @@ class BudgetProbeWithholdsProjectsToken(unittest.TestCase):
         self.assertIn("PATH", seen)
 
 
+class ProbeNeverRunsOnTheKeyring(unittest.TestCase):
+    """harmonic-forge#1466: in a lane with no lane token, neither probe runs gh."""
+
+    def test_no_lane_token_means_no_gh_call(self):
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "vitalharmony-lane1").mkdir()  # no token file
+            env = {"LANE": "1", "GH_ACCT_HOME": tmp, "GH_CONFIG_DIR": str(Path(tmp) / "vitalharmony-lane1"),
+                   "PATH": os.environ.get("PATH", "")}
+            ran = []
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(gsp.subprocess, "run", side_effect=lambda *a, **k: ran.append(a)):
+                self.assertIsNone(gsp._fetch_budget_live())
+                self.assertIsNone(gsp.graphql_budget())
+            self.assertEqual(ran, [])
+
+    def test_import_failure_in_a_lane_means_no_gh_call(self):
+        from unittest import mock  # noqa: PLC0415
+        import builtins  # noqa: PLC0415
+        real_import = builtins.__import__
+
+        def no_helper(name, *a, **k):
+            if name == "projects_token":
+                raise ImportError("simulated")
+            return real_import(name, *a, **k)
+        with mock.patch.dict(os.environ, {"LANE": "1"}), mock.patch.object(builtins, "__import__", no_helper):
+            self.assertIsNone(gsp._probe_env())
+
+
+class ProbeUnreadableTokenIsUnknown(unittest.TestCase):
+    """harmonic-forge#1466 preclose pass 1: a malformed token file outside a lane
+    is an unknown budget, never an exception."""
+
+    def test_malformed_projects_token_file(self):
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            slot = Path(tmp) / "vitalharmony-projects"
+            slot.mkdir()
+            (slot / "token").write_bytes(b"\xff\xfe\x00bad")
+            env = {"GH_ACCT_HOME": tmp, "GH_TOKEN": "x", "PATH": os.environ.get("PATH", "")}
+            ran = []
+
+            def record(*a, **k):
+                ran.append(a)
+                raise OSError("stop")
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(gsp.subprocess, "run", side_effect=record):
+                self.assertIsNone(gsp._fetch_budget_live())
+                self.assertIsNone(gsp.graphql_budget())
+            self.assertEqual(ran, [], "an undecodable projects token file outside a lane must not run gh")
+
+
 if __name__ == "__main__":
     unittest.main()

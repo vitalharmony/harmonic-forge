@@ -30,12 +30,21 @@ def slot_token(slot: str, home: str | None = None) -> str:
             return bare
     except OSError:
         pass
+    except ValueError:
+        # harmonic-forge#1466: in a lane an undecodable file is unreadable (fall
+        # back to hosts.yml); outside a lane it raises as before (AC2).
+        if os.environ.get("LANE") not in ("1", "2", "3"):
+            raise
     try:
         for line in (root / slot / "hosts.yml").read_text(encoding="utf-8").splitlines():
             match = re.match(r"\s*oauth_token:\s*(\S+)", line)
             if match:
                 return match.group(1)
     except OSError:
+        return ""
+    except ValueError:
+        if os.environ.get("LANE") not in ("1", "2", "3"):
+            raise
         return ""
     return ""
 
@@ -140,16 +149,50 @@ def withhold_projects_token(env: dict[str, str]) -> dict[str, str]:
                 stripped = True
         if stripped:
             _pin_lane_token(env, root)
+    else:
+        # Fail closed (sticky-wicket PATCH, preclose pass 2): when the projects
+        # token cannot be read it cannot be recognized, so a lane-slot env
+        # carries only that lane slot's own token.
+        slot = _resolved(env.get("GH_CONFIG_DIR"))
+        if slot is not None and slot.name in GRANTABLE_SLOTS:
+            env.pop("GH_TOKEN", None)
+            env.pop("GITHUB_TOKEN", None)
+            _pin_lane_token(env, root)
+    return _require_lane_token(env, root)
+
+
+class NoLaneToken(RuntimeError):
+    """In a lane, no lane slot token could be read, so the gh call must not run
+    (harmonic-forge#1466, operator ruling 1a): gh treats a missing or empty
+    GH_TOKEN as unset and falls back to the shared keyring's admin entry."""
+
+
+def _require_lane_token(env: dict[str, str], root: str) -> dict[str, str]:
+    """harmonic-forge#1466: in a lane (the process's own LANE is 1-3), an env
+    on a grantable lane slot always leaves with that slot's own token; an env
+    on the bare vitalharmony slot, or with no GH_CONFIG_DIR, cannot run gh.
+    Another account's slot (harmonicarchitect, gh-as) is left unchanged, and
+    outside a lane nothing changes (AC2)."""
+    if os.environ.get("LANE") not in ("1", "2", "3"):
         return env
-    # Fail closed (sticky-wicket PATCH, preclose pass 2): when the projects
-    # token cannot be read it cannot be recognized, so a lane-slot env carries
-    # only that lane slot's own token.
     slot = _resolved(env.get("GH_CONFIG_DIR"))
-    if slot is not None and slot.name in GRANTABLE_SLOTS:
-        env.pop("GH_TOKEN", None)
-        env.pop("GITHUB_TOKEN", None)
-        _pin_lane_token(env, root)
-    return env
+    # Any vitalharmony-named slot that is not a grantable lane slot (the bare
+    # slot, the projects slot itself, an unregistered vitalharmony-x) has no
+    # lane token to pin (preclose pass 1, cross-family).
+    if slot is None or (slot.name.startswith(PROJECTS_OWNER) and slot.name not in GRANTABLE_SLOTS):
+        raise NoLaneToken(f"lane {os.environ['LANE']}: no lane slot for this gh call "
+                          f"(GH_CONFIG_DIR={env.get('GH_CONFIG_DIR') or 'unset'}); refusing to run gh "
+                          f"on the shared keyring")
+    if slot.name not in GRANTABLE_SLOTS:
+        return env  # another account's slot keeps its own credential
+    if slot.parent == _resolved(root):
+        lane_token = slot_token(slot.name, root)
+        if lane_token:
+            env["GH_TOKEN"] = lane_token
+            env.pop("GITHUB_TOKEN", None)
+            return env
+    raise NoLaneToken(f"lane {os.environ['LANE']}: no readable token for slot {slot.name}; "
+                      f"refusing to run gh on the shared keyring")
 
 
 def _pin_lane_token(env: dict[str, str], root: str) -> None:

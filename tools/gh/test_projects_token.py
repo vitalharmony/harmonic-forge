@@ -23,6 +23,7 @@ class ProjectsEnvTests(unittest.TestCase):
         (self.home / "vitalharmony-projects" / "token").write_text("projtok\n")
         self.lane_slot = str(self.home / "vitalharmony-lane1")
         Path(self.lane_slot).mkdir()  # harmonic-forge#1463: the slot must exist
+        (Path(self.lane_slot) / "token").write_text("lanetok\n")  # harmonic-forge#1466: a lane slot carries its own token
         # The process's own identity: lane, slot and accounts root (harmonic-forge#1463).
         patcher = mock.patch.dict(os.environ, {"LANE": "1", "GH_CONFIG_DIR": self.lane_slot,
                                                "GH_ACCT_HOME": str(self.home)})
@@ -62,7 +63,7 @@ class ProjectsEnvTests(unittest.TestCase):
         # Sticky-wicket PATCH: an unreadable projects token fails closed for a
         # lane slot; gh then uses that lane slot's own stored credential.
         env = pt.projects_env(self.VH_PROJECT, self.env())
-        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env.get("GH_TOKEN"), "lanetok")  # harmonic-forge#1466: the lane's own token
         self.assertNotIn("GITHUB_TOKEN", env)
 
     def test_unreadable_projects_token_still_strips_an_inherited_one(self):
@@ -70,7 +71,7 @@ class ProjectsEnvTests(unittest.TestCase):
         (self.home / "vitalharmony-projects" / "token").unlink()
         other_owner = ["gh", "project", "item-list", "1", "--owner", "harmonicarchitect"]
         env = pt.projects_env(other_owner, self.env(GH_TOKEN="projtok", GITHUB_TOKEN="projtok"))
-        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env.get("GH_TOKEN"), "lanetok")  # harmonic-forge#1466: the lane's own token
         self.assertNotIn("GITHUB_TOKEN", env)
 
     def test_a_stripped_projects_token_is_replaced_by_the_lane_token(self):
@@ -95,17 +96,17 @@ class ProjectsEnvTests(unittest.TestCase):
         elsewhere.mkdir()
         (elsewhere / "token").write_text("foreign\n")
         self.addCleanup(lambda: ((elsewhere / "token").unlink(), elsewhere.rmdir()))
-        probe = pt.withhold_projects_token({"GH_CONFIG_DIR": str(elsewhere), "GH_TOKEN": "projtok"})
-        self.assertNotEqual(probe.get("GH_TOKEN"), "foreign")
-        self.assertNotEqual(probe.get("GH_TOKEN"), "projtok")
+        # harmonic-forge#1466: in a lane, a lane-slot name outside the root cannot run gh.
+        with self.assertRaises(pt.NoLaneToken):
+            pt.withhold_projects_token({"GH_CONFIG_DIR": str(elsewhere), "GH_TOKEN": "projtok"})
 
     def test_bare_vitalharmony_slot_is_not_grantable(self):
         """Sticky-wicket PATCH, preclose pass 2 (b): its credential is the shared keyring."""
         bare = self.home / "vitalharmony"
         bare.mkdir()
-        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": str(bare)}):
-            env = pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(bare)))
-        self.assertEqual(env["GH_TOKEN"], "lanetok")
+        # harmonic-forge#1466: in a lane, the bare slot (the shared keyring) cannot run gh.
+        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": str(bare)}), self.assertRaises(pt.NoLaneToken):
+            pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(bare)))
 
     def test_inherited_projects_token_is_stripped_when_not_granted(self):
         """harmonic-forge#1463 AC1: GH_TOKEN and GITHUB_TOKEN, every non-granting path."""
@@ -125,14 +126,18 @@ class ProjectsEnvTests(unittest.TestCase):
         """harmonic-forge#1463 AC2."""
         (self.home / "vitalharmony-x").mkdir()
         refused = {
-            "unregistered vitalharmony- slot": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-x")},
-            "allowlisted name, no directory": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-lane3")},
-            "the projects slot itself": {"GH_CONFIG_DIR": str(self.home / "vitalharmony-projects")},
             "a lane the process is not in": {"LANE": "2"},
         }
         for name, extra in refused.items():
             with self.subTest(name):
                 self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(**extra))["GH_TOKEN"], "lanetok")
+        # harmonic-forge#1466: an allowlisted lane name with no directory has no token to run on.
+        with self.assertRaises(pt.NoLaneToken):
+            pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(self.home / "vitalharmony-lane3")))
+        # harmonic-forge#1466 preclose pass 1: no other vitalharmony-named slot can run gh in a lane.
+        for name in ("vitalharmony-x", "vitalharmony-projects"):
+            with self.subTest(slot=name), self.assertRaises(pt.NoLaneToken):
+                pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(self.home / name)))
         # The process has no lane; it keeps its accounts root, so the result
         # does not depend on the machine's ~/.config/gh-accounts.
         with mock.patch.dict(os.environ, {"GH_ACCT_HOME": str(self.home)}, clear=True):
@@ -147,9 +152,9 @@ class ProjectsEnvTests(unittest.TestCase):
         self.addCleanup(lambda: elsewhere.rmdir())
         for name, slot in {"another lane slot": self.home / "vitalharmony-lane3",
                            "allowlisted name outside the root": elsewhere}.items():
-            with self.subTest(name):
-                self.assertEqual(pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(slot)))["GH_TOKEN"],
-                                 "lanetok")
+            with self.subTest(name), self.assertRaises(pt.NoLaneToken):
+                # Not granted (#1463); with no readable token for that slot, gh does not run (#1466).
+                pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(slot)))
 
     def test_a_process_slot_outside_the_accounts_root_is_refused(self):
         """harmonic-forge#1463 AC2: the slot must sit directly under the
@@ -157,9 +162,8 @@ class ProjectsEnvTests(unittest.TestCase):
         elsewhere = Path(tempfile.mkdtemp()) / "vitalharmony-lane1"
         elsewhere.mkdir()
         self.addCleanup(lambda: elsewhere.rmdir())
-        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": str(elsewhere)}):
-            env = pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(elsewhere)))
-        self.assertEqual(env["GH_TOKEN"], "lanetok")
+        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": str(elsewhere)}), self.assertRaises(pt.NoLaneToken):
+            pt.projects_env(self.VH_PROJECT, self.env(GH_CONFIG_DIR=str(elsewhere)))
 
     def test_strip_reads_the_process_accounts_root_not_the_base(self):
         """harmonic-forge#1463 AC1, preclose pass 1: a base pointing GH_ACCT_HOME
@@ -180,11 +184,64 @@ class ProjectsEnvTests(unittest.TestCase):
         base = {"LANE": "1", "GH_ACCT_HOME": str(self.home), "GH_CONFIG_DIR": self.lane_slot, "GH_TOKEN": "lanetok"}
         self.assertEqual(pt.projects_env(self.VH_PROJECT, base)["GH_TOKEN"], "projtok")
 
+    def test_1466_lane_rule(self):
+        """harmonic-forge#1466: in a lane, a lane slot always leaves with its own
+        token; an unset slot cannot run gh; another account's slot is unchanged;
+        outside a lane nothing changes."""
+        self.assertEqual(pt.withhold_projects_token({"GH_CONFIG_DIR": self.lane_slot})["GH_TOKEN"], "lanetok")
+        with self.assertRaises(pt.NoLaneToken):
+            pt.withhold_projects_token({})
+        (Path(self.lane_slot) / "token").unlink()
+        with self.assertRaises(pt.NoLaneToken):
+            pt.withhold_projects_token({"GH_CONFIG_DIR": self.lane_slot})
+        for name in ("vitalharmony-projects", "vitalharmony-x"):  # preclose pass 1 (cross-family)
+            with self.subTest(slot=name), self.assertRaises(pt.NoLaneToken):
+                pt.withhold_projects_token({"GH_CONFIG_DIR": str(self.home / name)})
+        other = {"GH_CONFIG_DIR": str(self.home / "harmonicarchitect"), "GH_TOKEN": "hatok"}
+        self.assertEqual(pt.withhold_projects_token(dict(other))["GH_TOKEN"], "hatok")
+        with mock.patch.dict(os.environ, {"LANE": ""}):
+            self.assertEqual(pt.withhold_projects_token({})  , {})
+
+    def test_undecodable_token_file_falls_back_to_hosts_yml(self):
+        """harmonic-forge#1466 sticky-wicket PATCH (c)."""
+        slot = Path(self.lane_slot)
+        (slot / "token").write_bytes(b"\xff\xfe\x00")
+        (slot / "hosts.yml").write_text("github.com:\n    oauth_token: fromhosts\n")
+        with mock.patch.dict(os.environ, {"LANE": "1"}):
+            self.assertEqual(pt.slot_token("vitalharmony-lane1", str(self.home)), "fromhosts")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LANE", None)
+            with self.assertRaises(UnicodeDecodeError):  # AC2: unchanged outside a lane
+                pt.slot_token("vitalharmony-lane1", str(self.home))
+
     def test_board_owner_reads_every_owner_form(self):
         self.assertEqual(pt.board_owner(["gh", "project", "view", "1", "--owner", "a"]), "a")
         self.assertEqual(pt.board_owner(["gh", "project", "view", "1", "--owner=b"]), "b")
         self.assertEqual(pt.board_owner(["gh", "api", "graphql", "-f", "owner=c"]), "c")
         self.assertIsNone(pt.board_owner(self.ITEM_EDIT))
+
+
+class NoLaneTokenCallerContracts(unittest.TestCase):
+    """harmonic-forge#1466 sticky-wicket PATCH: each projects_env caller turns
+    NoLaneToken into its own visible failure and never runs gh."""
+
+    def test_callers_fail_visibly_without_running_gh(self):
+        import subprocess  # noqa: PLC0415
+        import gh_issue  # noqa: PLC0415
+        import l1_post  # noqa: PLC0415
+        import projects_token  # noqa: PLC0415
+        import repo_hygiene  # noqa: PLC0415
+        boom = projects_token.NoLaneToken("no lane token")
+        cmd = ["gh", "project", "view", "1", "--owner", "vitalharmony"]
+        with mock.patch.object(projects_token, "projects_env", side_effect=boom), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("gh ran")):
+            self.assertEqual(gh_issue._run_board(cmd, check=False).returncode, 1)
+            with self.assertRaises(subprocess.CalledProcessError):
+                gh_issue._run_board(cmd, check=True)
+            self.assertEqual(l1_post.run(*cmd).returncode, 1)
+            self.assertEqual(l1_post.board_run(cmd, "vitalharmony").returncode, 1)
+            with self.assertRaises(repo_hygiene.GhError):
+                repo_hygiene._run(cmd, board=True)
 
 
 if __name__ == "__main__":

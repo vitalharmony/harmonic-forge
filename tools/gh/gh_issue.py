@@ -127,7 +127,16 @@ def _run_board(cmd: list[str], check: bool = True,
     from projects_token import projects_env  # noqa: PLC0415
     # `owner` names the board when the command names another account
     # (the issue repo owner in _find_existing_item; harmonic-forge#1396 post-verdict).
-    return _run(cmd, check=check, env=projects_env(cmd, owner=owner))
+    from projects_token import NoLaneToken  # noqa: PLC0415
+    try:
+        env = projects_env(cmd, owner=owner)
+    except NoLaneToken as exc:  # harmonic-forge#1466: never a keyring call
+        print(f"[GH] {exc}", file=sys.stderr)
+        result = subprocess.CompletedProcess(cmd, 1, "", str(exc))
+        if check:
+            raise subprocess.CalledProcessError(1, cmd, "", str(exc)) from exc
+        return result
+    return _run(cmd, check=check, env=env)
 
 
 #: harmonic-forge#1032 (R-0397). Words too common in issue titles to identify

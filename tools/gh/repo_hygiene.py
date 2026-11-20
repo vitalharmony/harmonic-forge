@@ -64,8 +64,11 @@ def _run(args: list[str], cwd: str | None = None, board: bool = False) -> str:
     if board:
         # harmonic-forge#1396: a vitalharmony board query in a lane carries the
         # projects slot's token (projects_token.projects_env); others keep _ENV.
-        from projects_token import projects_env  # noqa: PLC0415
-        env = projects_env(args, _ENV)
+        from projects_token import NoLaneToken, projects_env  # noqa: PLC0415
+        try:
+            env = projects_env(args, _ENV)
+        except NoLaneToken as exc:  # harmonic-forge#1466: never a keyring call
+            raise GhError(str(exc)) from exc
     result = subprocess.run(args, capture_output=True, text=True, cwd=cwd, env=env)
     if result.returncode != 0:
         raise GhError(f"{' '.join(args[:3])}…: {result.stderr.strip()[:200]}")
