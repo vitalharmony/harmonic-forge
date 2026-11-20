@@ -206,6 +206,7 @@ class ApplyProjectIdentityTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"GH_TOKEN": "t", "GITHUB_TOKEN": "u"})
         env.start()
         self.addCleanup(env.stop)
+        os.environ.pop("LANE", None)  # harmonic-forge#1470: these are outside-lane cases
 
     def test_sets_the_slot_and_clears_both_tokens(self) -> None:
         with mock.patch.object(mi, "_probe_login", return_value="vitalharmony"):
