@@ -432,13 +432,17 @@ class RedirectDescriptorDigit(unittest.TestCase):
                 self.assertEqual(self.argv(self.BASE + suffix), plain)
 
     def test_spaced_or_quoted_digit_stays_an_argument(self) -> None:
-        for suffix, kept in ((" 2 >f", "2"), (" '2'>f", "2"), (" 2 2>f", "2"), (" v2>f", "v2")):
+        for suffix, kept in ((" 2 >f", "2"), (" '2'>f", "2"), (" 2 2>f", "2"), (" v2>f", "v2"),
+                             (" ٢>f", "٢"), (" note\\ 2>f", "note 2")):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.argv(self.BASE + suffix)[-1], kept)
 
     def test_strip_leaves_quoted_text_alone(self) -> None:
         self.assertEqual(gate._strip_fd_digits('a="x 2>y" cmd'), 'a="x 2>y" cmd')
         self.assertEqual(gate._strip_fd_digits("cmd \\2>f"), "cmd \\2>f")
+        # preclose pass 1: a process substitution is an argument, not a descriptor
+        self.assertEqual(gate._strip_fd_digits("cmd 2<(true)"), "cmd 2<(true)")
+        self.assertEqual(gate._strip_fd_digits("cmd 2>(cat)"), "cmd 2>(cat)")
 
 
 if __name__ == "__main__":

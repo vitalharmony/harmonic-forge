@@ -117,6 +117,7 @@ def _strip_fd_digits(command: str) -> str:
     out: list[str] = []
     i, n = 0, len(command)
     quote: str | None = None
+    boundary = True  # the previous character was an unescaped, unquoted word boundary
     while i < n:
         ch = command[i]
         if quote == "'":
@@ -125,8 +126,11 @@ def _strip_fd_digits(command: str) -> str:
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
+            # An escaped character (an escaped space included) is word text,
+            # never a boundary (preclose pass 1).
             out.append(command[i:i + 2])
             i += 2
+            boundary = False
             continue
         if quote == '"':
             out.append(ch)
@@ -137,17 +141,26 @@ def _strip_fd_digits(command: str) -> str:
             quote = ch
             out.append(ch)
             i += 1
+            boundary = False
             continue
-        if ch.isdigit() and (i == 0 or command[i - 1] in _WORD_START):
+        # ASCII digits only: bash descriptors are never other Unicode digits
+        # (preclose pass 1).
+        if ch in _ASCII_DIGITS and boundary:
             j = i
-            while j < n and command[j].isdigit():
+            while j < n and command[j] in _ASCII_DIGITS:
                 j += 1
-            if j < n and command[j] in "<>":
+            # `N<(` / `N>(` is a process-substitution argument, not a
+            # descriptor (preclose pass 1).
+            if j < n and command[j] in "<>" and command[j + 1:j + 2] != "(":
                 i = j  # drop the descriptor digits; the operator follows
                 continue
         out.append(ch)
+        boundary = ch in _WORD_START
         i += 1
     return "".join(out)
+
+
+_ASCII_DIGITS = frozenset("0123456789")
 
 
 def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
