@@ -206,6 +206,7 @@ class ApplyProjectIdentityTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"GH_TOKEN": "t", "GITHUB_TOKEN": "u"})
         env.start()
         self.addCleanup(env.stop)
+        os.environ.pop("LANE", None)  # harmonic-forge#1470: these are outside-lane cases
 
     def test_sets_the_slot_and_clears_both_tokens(self) -> None:
         with mock.patch.object(mi, "_probe_login", return_value="vitalharmony"):
@@ -277,6 +278,48 @@ class ApplyProjectIdentityTests(unittest.TestCase):
             mi.apply_project_identity("vitalharmony/hrse")
         for call in run.call_args_list:
             self.assertNotIn("switch", call.args[0])
+
+
+
+class ApplyProjectIdentityLaneTests(unittest.TestCase):
+    """harmonic-forge#1470: in a lane, apply_project_identity keeps the lane's
+    own slot and token, never the bare vitalharmony slot."""
+
+    def setUp(self) -> None:
+        mi._VERIFIED.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        for name in ("vitalharmony", "vitalharmony-lane1", "harmonicarchitect"):
+            (self.home / name).mkdir()
+        (self.home / "vitalharmony-lane1" / "hosts.yml").write_text(
+            "github.com:\n    oauth_token: lanetok\n")
+
+    def _apply(self, lane: str | None, repo: str = "vitalharmony/hrse", login: str = "vitalharmony"):
+        env = {"GH_ACCT_HOME": str(self.home), "GH_TOKEN": "inherited"}
+        if lane:
+            env["LANE"] = lane
+        with mock.patch.dict(os.environ, env, clear=False):
+            if not lane:
+                os.environ.pop("LANE", None)
+            with mock.patch.object(mi, "_probe_login", return_value=login):
+                mi.apply_project_identity(repo)
+            return os.environ.get("GH_CONFIG_DIR"), os.environ.get("GH_TOKEN")
+
+    def test_lane_keeps_its_own_slot_and_token(self) -> None:
+        cfg, tok = self._apply("1")
+        self.assertEqual(cfg, str(self.home / "vitalharmony-lane1"))
+        self.assertEqual(tok, "lanetok")
+
+    def test_lane_without_a_token_refuses(self) -> None:
+        (self.home / "vitalharmony-lane1" / "hosts.yml").unlink()
+        with self.assertRaises(SystemExit):
+            self._apply("1")
+
+    def test_outside_a_lane_is_unchanged(self) -> None:
+        cfg, tok = self._apply(None)
+        self.assertEqual(cfg, str(self.home / "vitalharmony"))
+        self.assertIsNone(tok)
 
 
 if __name__ == "__main__":

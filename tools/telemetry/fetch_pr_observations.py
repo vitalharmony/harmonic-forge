@@ -66,12 +66,26 @@ def gh_json(path: str) -> Any:
     return items
 
 
-def check_runs(gh: GhJson, repo: str, sha: str) -> list[dict]:
-    pages = gh(f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
-    runs: list[dict] = []
+def _flatten(pages: Any, key: str) -> list[dict]:
+    """Items under `key` across `gh_json`'s flattened pages."""
+    items: list[dict] = []
     for page in pages if isinstance(pages, list) else [pages]:
-        runs.extend(page.get("check_runs", []) if isinstance(page, dict) and "check_runs" in page else [page])
-    return runs
+        items.extend(page.get(key, []) if isinstance(page, dict) and key in page else [page])
+    return items
+
+
+def check_runs(gh: GhJson, repo: str, sha: str) -> list[dict]:
+    """The commit's CI jobs, read through Actions runs and their jobs, never
+    `commits/<sha>/check-runs`: a fine-grained lane token cannot be granted
+    `checks` and gets 403 on a private repo (harmonic-forge#805, #1470). The
+    same read `gate_ci._read_check_runs` uses; `filter=latest` keeps each job's
+    latest attempt. A job's id is its check-run id. Checks from a third-party
+    app are not visible (the #805 limit)."""
+    jobs: list[dict] = []
+    for wf in _flatten(gh(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100"), "workflow_runs"):
+        jobs.extend(_flatten(gh(f"repos/{repo}/actions/runs/{wf['id']}/jobs?per_page=100&filter=latest"),
+                             "jobs"))
+    return jobs
 
 
 def attribute(repo: str, manifest_file: Path | None) -> dict[str, str]:

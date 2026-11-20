@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -187,6 +188,40 @@ def redirected_belt_candidates_dir(tmp_dir: Path):
         belt_candidates.DEFAULT_CANDIDATES_DIR = original
 
 
+#: A placeholder, never a credential: the identity probe is stubbed, so no
+#: test sends it anywhere.
+HERMETIC_LANE_TOKEN = "hermetic-lane-token"
+
+
+@contextlib.contextmanager
+def hermetic_lane_token():
+    """harmonic-forge#1470: a test that sets LANE and drives an entrypoint's
+    `main()` reaches `apply_project_identity`, which in a lane reads the lane
+    slot's hosts.yml token and refuses without one. A developer machine has real
+    `~/.config/gh-accounts/vitalharmony-lane<N>` slots; a CI runner has none, so
+    those tests failed on CI only. Only a lane slot under the DEFAULT slot home
+    with no token gets a placeholder here; a test that builds its own slot home
+    (GH_ACCT_HOME) sees the real lookup, so its refusal cases still refuse."""
+    sys.path.insert(0, str(ROOT / "onboard"))
+    import manifest_identity  # noqa: PLC0415
+
+    real = manifest_identity._hosts_file_token
+    default_home = Path.home() / ".config" / "gh-accounts"
+
+    def token(slot: Path) -> str:
+        found = real(slot)
+        if (not found and Path(slot).parent == default_home
+                and re.fullmatch(r"vitalharmony-lane[123]", Path(slot).name)):
+            return HERMETIC_LANE_TOKEN
+        return found
+
+    manifest_identity._hosts_file_token = token
+    try:
+        yield
+    finally:
+        manifest_identity._hosts_file_token = real
+
+
 @contextlib.contextmanager
 def hermetic_identity_probe():
     """harmonic-forge#804: no test may reach a real GitHub for the identity probe.
@@ -210,8 +245,11 @@ def hermetic_identity_probe():
         if isinstance(argv, (list, tuple)) and list(argv) == probe:
             env = kwargs.get("env") or os.environ
             slot = env.get("GH_CONFIG_DIR", "")
+            # harmonic-forge#1470: a lane slot (`<account>-lane<N>`) authenticates as its
+            # account, and apply_project_identity now probes it inside a lane.
+            login = re.sub(r"-lane[123]$", "", Path(slot).name)
             return subprocess.CompletedProcess(
-                argv, 0, stdout=Path(slot).name + "\n", stderr="")
+                argv, 0, stdout=login + "\n", stderr="")
         return real(argv, *args, **kwargs)
 
     subprocess.run = run
@@ -293,6 +331,7 @@ def _run(root: Path) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"), \
+                hermetic_lane_token(), \
                 hermetic_identity_probe():
             result = unittest.TextTestRunner(verbosity=1).run(suite)
     if not result.wasSuccessful():
