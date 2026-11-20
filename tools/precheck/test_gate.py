@@ -279,7 +279,8 @@ class Decision6Log(GateCase):
         outcomes = [row["outcome"] for row in self.rows()]
         self.assertEqual(outcomes, ["refused", "precheck", "allowed-receipt", "error", "guarded-elsewhere"])
         for row in self.rows():
-            self.assertEqual(set(row), {"ts", "outcome", "tool", "mode", "class", "fp", "session"})
+            self.assertEqual(set(row), {"ts", "outcome", "tool", "mode", "class", "fp", "session",
+                                        "tuid", "exit", "reason"})
 
     def test_log_never_holds_argv(self) -> None:
         self.decide(FORCE_CMD + " --base secret-model-name")

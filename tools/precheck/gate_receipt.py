@@ -54,6 +54,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FORGE_ROOT = HERE.parents[1]
 sys.path.insert(0, str(FORGE_ROOT / "tools" / "registry"))
+if str(HERE) not in sys.path:  # decision_row, when imported from tools/gh
+    sys.path.append(str(HERE))
 for _extra_path in ("gh", "hooks"):  # force_grant, batch_auth: the gate grant
     if str(FORGE_ROOT / "tools" / _extra_path) not in sys.path:
         sys.path.append(str(FORGE_ROOT / "tools" / _extra_path))
@@ -512,6 +514,16 @@ def spend_gate_grant(tool: dict, mode: dict, argv: list[str], fp: str) -> bool:
     return False
 
 
+def _log_backstop(tool: dict, mode: dict | None, fp: str | None, sid: str, reason: str) -> None:
+    """harmonic-forge#1448 AC2: a tool-side refusal is a `refused-backstop`
+    row in `decisions.jsonl`, the gate's row shape. Never raises."""
+    with contextlib.suppress(Exception):
+        import decision_row  # noqa: PLC0415
+        decision_row.append(store_dir() / "decisions.jsonl", decision_row.row(
+            "refused-backstop", tool=tool["path"], mode=mode["name"] if mode else None,
+            klass=mode["class"] if mode else None, fp=fp, sid=sid, reason=reason))
+
+
 def consume(tool_path: str, argv: list[str], preflight_cmd: str | None = None,
             cwd: str | Path | None = None, *, now: float | None = None,
             extra: str | None = None) -> str | None:
@@ -526,13 +538,21 @@ def consume(tool_path: str, argv: list[str], preflight_cmd: str | None = None,
     if found is None or not found[1]:
         return None
     mode = found[0]
-    fp = fingerprint(tool, mode, list(argv), _caller_cwd(cwd))
+    try:
+        fp = fingerprint(tool, mode, list(argv), _caller_cwd(cwd))
+    except Deadline:
+        # harmonic-forge#1448: one `deadline` row for every caller, then re-raise.
+        _log_backstop(tool, mode, None, sid, "deadline")
+        raise
     receipt = live_receipt(sid, fp, now)
+    moved = False
     if receipt is not None and receipt.get("extra") is not None \
             and receipt.get("extra") != _extra_digest(extra):
         receipt = None  # the tool-only state moved since the precheck
+        moved = True
     if receipt is not None or spend_gate_grant(tool, mode, list(argv), fp):
         return None
+    _log_backstop(tool, mode, fp, sid, "extra-moved" if moved else "no-receipt")
     command = preflight_cmd or " ".join(["python3", str(FORGE_ROOT / tool["path"]),
                                          *precheck_argv(tool, mode, list(argv))])
     return (f"no live precheck receipt for this exact call (harmonic-forge#1291): run its "
