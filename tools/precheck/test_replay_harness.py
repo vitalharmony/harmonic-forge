@@ -837,5 +837,105 @@ class LayerReturnContract(Harness):
         self.assertEqual(code, 0)
 
 
+class PostsSample(Harness):
+    """harmonic-forge#1450: the posts sample and the optional `refuses_post`."""
+
+    BOTH = ("def refuses(command, cwd, env_names):\n    return None\n"
+            "def refuses_post(body):\n    return 'no' if body.endswith('2') else None\n")
+
+    def setUp(self) -> None:
+        super().setUp()
+        size = mock.patch.object(rh.never_refuse_posts, "SIZE", 3)
+        size.start()
+        self.addCleanup(size.stop)
+        self.posts = self.store / "never-refuse" / "never-refuse-posts-v1.jsonl"
+        self.write_posts([f"post body {i}" for i in range(3)])
+
+    def write_posts(self, bodies: list[str]) -> None:
+        rows = [{"repo": "o/r", "issue": i, "kind": "handoff",
+                 "body_digest": hashlib.sha256(b.encode()).hexdigest(), "body": b}
+                for i, b in enumerate(bodies, 1)]
+        data = "".join(json.dumps(r) + "\n" for r in rows).encode("utf-8")
+        self.posts.write_bytes(data)
+        self.posts.with_name(self.posts.name + ".manifest.json").write_text(
+            json.dumps({"version": 1, "size": len(rows), "sha256": hashlib.sha256(data).hexdigest()}),
+            encoding="utf-8")
+
+    def posts_layer(self, body: str | None, max_refusals: int | None = 1) -> Path:
+        self.slip("gh-api|args")
+        module = self.module(body) if body is not None else None
+        return self.layer_set([{"name": "gate", "claims": ["*|args"], "module": module,
+                                "bar": {"sample_max_refusals": 0, "posts_max_refusals": max_refusals}}])
+
+    def run_posts(self, layers: Path, *extra: str):
+        return self.run_score(layers, "--posts-sample", str(self.posts), *extra)
+
+    def test_refuses_post_runs_and_the_posts_bar_holds(self):
+        code, out, err = self.run_posts(self.posts_layer(self.BOTH))
+        self.assertIn("posts: 3 rows", out)
+        self.assertIn("gate.posts 1/3 errors 0 holds", out)
+        self.assertEqual(code, 0, err)
+
+    def test_posts_bar_fails_over_its_max(self):
+        code, out, _err = self.run_posts(self.posts_layer(self.BOTH, max_refusals=0))
+        self.assertIn("gate.posts 1/3 errors 0 fails", out)
+        self.assertEqual(code, 4)
+
+    def test_module_without_refuses_post_is_unexecuted_and_not_measurable(self):
+        layers = self.posts_layer("def refuses(command, cwd, env_names):\n    return None\n")
+        code, out, _err = self.run_posts(layers)
+        self.assertIn("gate: unexecuted (no refuses_post)", out)
+        self.assertIn("gate.posts not-measurable", out)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.run_posts(layers, "--strict")[0], 4)
+
+    def test_posts_bar_with_no_module_refuses_at_parse(self):
+        code, _out, err = self.run_posts(self.posts_layer(None))
+        self.assertEqual(code, 2)
+        self.assertIn("needs a module", err)
+
+    def test_bad_posts_bar_value_refuses(self):
+        for bad in (-1, True, "1", 1.5):
+            with self.subTest(value=bad):
+                code, _out, err = self.run_posts(self.posts_layer(self.BOTH, max_refusals=bad))
+                self.assertEqual(code, 2)
+                self.assertIn("posts_max_refusals", err)
+
+    def test_absent_posts_sample_refuses(self):
+        layers = self.posts_layer(self.BOTH)
+        self.posts.unlink()
+        self.posts.with_name(self.posts.name + ".manifest.json").unlink()
+        code, _out, err = self.run_posts(layers)
+        self.assertEqual(code, 2)
+        self.assertIn("never_refuse_posts.py derive", err)
+
+    def test_posts_sample_is_read_with_the_posts_reader(self):
+        # A Bash-reader on the posts file would refuse its row keys.
+        with self.assertRaises(rh.Refused):
+            rh.read_sample(self.posts)
+        self.assertEqual(len(rh.read_posts_sample(self.posts)), 3)
+
+    def test_no_posts_bar_never_reads_the_posts_sample(self):
+        self.slip("gh-api|args")
+        module = self.module(self.BOTH)
+        layers = self.layer_set([{"name": "gate", "claims": ["*|args"], "module": module,
+                                  "bar": {"sample_max_refusals": 0}}])
+        self.posts.write_text("garbage\n", encoding="utf-8")
+        with mock.patch.object(rh, "read_posts_sample", side_effect=AssertionError("read")):
+            code, out, err = self.run_posts(layers)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("posts:", out)
+
+    def test_existing_layer_sets_do_not_change(self):
+        for path in sorted((HERE / "layersets").glob("*.json")):
+            with self.subTest(layer_set=path.name):
+                parsed = rh.load_layer_set(path)
+                self.assertTrue(all(layer["posts_max_refusals"] is None for layer in parsed["layers"]))
+
+    def test_controls_run_on_posts(self):
+        code, out, _err = self.run_posts(self.posts_layer(self.BOTH), "--control")
+        self.assertIn("control all: 3/3 refused", out.split("posts: 3 rows")[1])
+
+
 if __name__ == "__main__":
     unittest.main()

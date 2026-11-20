@@ -19,3 +19,5 @@ failure-overlays/
 # harmonic-forge#1289: the never-refuse sample holds command text; it lives in
 # operator-memory/never-refuse/. Covers the sample, its manifest and temp files.
 never-refuse-sample*
+# harmonic-forge#1450: the never-refuse posts sample holds private-repo comment text.
+never-refuse-posts*

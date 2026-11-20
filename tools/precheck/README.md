@@ -20,6 +20,7 @@ and the never-refuse sample all hold local data, and all of it stays in
 | Failure store (rebuilt from the logs) | `operator-memory/failure-store.sqlite` |
 | Replay overlays | `operator-memory/failure-overlays/*.jsonl` |
 | Never-refuse sample and manifest | `operator-memory/never-refuse/never-refuse-sample-v1.jsonl` (+ `.manifest.json`) |
+| Never-refuse posts sample, manifest and page cache | `operator-memory/never-refuse/never-refuse-posts-v1.jsonl` (+ `.manifest.json`, `posts-cache/`) |
 
 `derive` refuses an `--out` inside a harmonic-forge checkout or worktree, and
 `failure_store.build` refuses a `--db` there. `.gitignore` covers
@@ -29,6 +30,31 @@ only.
 
 Neither tool prints a command, a result text or a stored probe: only counts,
 owners, coarse bucket labels and a layer's own refusal reasons.
+
+## `never_refuse_posts.py derive`
+
+```
+python3 tools/precheck/never_refuse_posts.py derive [--receipts ~/.claude/state/preclose]
+    [--out <operator-memory>/never-refuse/never-refuse-posts-v1.jsonl] [--dry-run]
+```
+
+harmonic-forge#1450. The issue set is the preclose receipts
+(`<owner>_<repo>_<N>.json` only; `.lock`, `.kill.json`, `.enrollment.jsonl`
+and backups are ignored). Each issue costs one `gh api -i
+repos/<repo>/issues/<N>/comments?per_page=100` read, cached under
+`posts-cache/` so a stopped run resumes without a second read. A post is a
+candidate when the last lane-tool footer in its body names a lane and one of
+handoff, ready-for-l3, sweep, ae, ae-and-sweep, rework, carry-forward,
+completion, plan, spec, gate-result or discussion (`blocked`, `finding` and
+unmarked comments never are). It is excluded when a later same-lane candidate
+within 7 days is the same kind or any `rework`; when its own 7 days have not
+passed; when its thread has a next page; when its body is empty without the
+footer; or when its body repeats. At most 3 posts come from one issue. The run
+stops at 200 posts, 300 reads, or before a read would take the REST core
+budget below 1,000 + 25 (an unknown budget refuses). Fewer than 200 writes
+nothing and exits 2. `--dry-run` reads the first 20 issues, prints the counts
+and writes nothing. Rows are `{repo, issue, kind, body_digest, body}`, with
+`body_digest` the sha256 of the stored body.
 
 ## `never_refuse_sample.py derive`
 
@@ -213,6 +239,13 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
   but `None` or a non-empty `str` (`""`, `False`, `0`), is counted as an
   error, and an error fails its sample bar. A module that exits while loading
   is exit 3.
+- A module may also define `refuses_post(body: str) -> str | None`
+  (harmonic-forge#1450), under the same return contract. A layer whose bar
+  sets the optional `posts_max_refusals` runs it over the posts sample
+  (`--posts-sample`), and that bar reports as `<layer>.posts`. A posts bar
+  needs a module; a module without `refuses_post` reports unexecuted and its
+  posts bar is not measurable. The posts sample is read only when some layer
+  sets that bar, so a layer set without one scores exactly as before.
 
 - `claims_basis` (required) is `validated` (each claim is a class the
   layer's check was shown to validate) or `declared` (the layer says it
