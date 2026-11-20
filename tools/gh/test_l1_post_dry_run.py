@@ -71,7 +71,7 @@ class Harness(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def _world(self, repo, issue, sha, branch, *, ack_overlap=None):
+    def _world(self, repo, issue, sha, branch, *, ack_overlap=None, acknowledged_out=None):
         self.order.append("world")
         if self.overlap and ack_overlap is None:
             L.fail(OVERLAP)
