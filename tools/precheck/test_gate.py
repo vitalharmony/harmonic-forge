@@ -432,7 +432,7 @@ class RedirectDescriptorDigit(unittest.TestCase):
                 self.assertEqual(self.argv(self.BASE + suffix), plain)
 
     def test_spaced_or_quoted_digit_stays_an_argument(self) -> None:
-        for suffix, kept in ((" 2 >f", "2"), (" '2'>f", "2"), (" 2 2>f", "2")):
+        for suffix, kept in ((" 2 >f", "2"), (" '2'>f", "2"), (" 2 2>f", "2"), (" v2>f", "v2")):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.argv(self.BASE + suffix)[-1], kept)
 
