@@ -163,10 +163,56 @@ def _strip_fd_digits(command: str) -> str:
 _ASCII_DIGITS = frozenset("0123456789")
 
 
-def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
-    """(gated calls, other argvs, parsed). `parsed` is False when the text does not parse."""
+def _only_drops_digits(raw: list[str], stripped: list[str]) -> bool:
+    """True when `stripped` is `raw` with zero or more all-ASCII-digit tokens
+    removed and nothing else changed (same order, same first word)."""
+    if not raw or not stripped or raw[0] != stripped[0]:
+        return False
+    j = 0
+    for token in raw:
+        if j < len(stripped) and token == stripped[j]:
+            j += 1
+        elif not (token and all(c in _ASCII_DIGITS for c in token)):
+            return False
+    return j == len(stripped)
+
+
+def _fingerprint_items(command: str) -> list:
+    """The parsed simple commands of the RAW text, with each one's argv
+    replaced by the descriptor-stripped argv only where that is provably the
+    same command minus descriptor digits (harmonic-forge#1461 reforge).
+
+    Invariant: the raw parse alone decides whether the text parses and which
+    calls exist, so `_strip_fd_digits` can never turn a refused command into an
+    allowed one. A lexer miss can only leave a digit in the fingerprint, which
+    costs a receipt mismatch (a refusal), never a bypass. Raises like
+    `shell_parse.simple_commands` when the raw text does not parse."""
+    raw_items = shell_parse.simple_commands(command)
     try:
-        items = shell_parse.simple_commands(_strip_fd_digits(command))
+        stripped_items = shell_parse.simple_commands(_strip_fd_digits(command))
+    except (ValueError, shell_parse.NotOrdinary):
+        return raw_items
+    if len(stripped_items) != len(raw_items):
+        return raw_items
+    merged = []
+    for raw, stripped in zip(raw_items, stripped_items):
+        raw_simple = isinstance(raw, shell_parse.SimpleCommand)
+        if raw_simple != isinstance(stripped, shell_parse.SimpleCommand):
+            return raw_items
+        if raw_simple and raw.argv and stripped.argv != raw.argv:
+            if not _only_drops_digits(list(raw.argv), list(stripped.argv)):
+                return raw_items
+            merged.append(stripped)
+        else:
+            merged.append(raw)
+    return merged
+
+
+def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
+    """(gated calls, other argvs, parsed). `parsed` is False when the RAW text
+    does not parse (harmonic-forge#1461: never decided by the stripped text)."""
+    try:
+        items = _fingerprint_items(command)
     except (ValueError, shell_parse.NotOrdinary):
         return [], [], False
     calls: list[_Call] = []

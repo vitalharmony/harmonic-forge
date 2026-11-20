@@ -445,5 +445,60 @@ class RedirectDescriptorDigit(unittest.TestCase):
         self.assertEqual(gate._strip_fd_digits("cmd 2>(cat)"), "cmd 2>(cat)")
 
 
+class RedirectReforgeInvariant(unittest.TestCase):
+    """harmonic-forge#1461 reforge (sticky-wicket): the raw parse alone decides
+    whether a command parses and which gated calls it holds; the stripped text
+    only ever supplies a fingerprint argv. A lexer miss costs a refusal, never
+    an allow."""
+
+    BASE = RedirectDescriptorDigit.BASE
+    CORPUS = (
+        "", " > log 2>&1", " 2>/dev/null", " 2>>err", " 1>out", " 0<in", " &>log",
+        " 2>&1>log", " 2<&0", " 2<>f", " 2>|f", " {fd}>f", " 2>&-", " 1>&2 2>&1",
+        " 2>&1 | tee log", " 2>&1; true", " && true 2>&1", " 2>'q f'", ' 2>"$HOME/x"',
+        " 2<(true)", " 2>(cat)", " 2 >f", " '2'>f", " v2>f", " ٢>f", " note\\ 2>f",
+        " # 2>f", " $((1>2))", " <<EOF\n2>x\nEOF",
+    )
+
+    def raw_only(self, command: str) -> tuple[list[str], bool]:
+        """main's behavior: no descriptor stripping at all."""
+        with mock.patch.object(gate, "_strip_fd_digits", side_effect=lambda text: text):
+            calls, _others, ok = gate._calls_in(command)
+        return [c.tool["path"] for c in calls], ok
+
+    def test_a_stripped_text_that_does_not_parse_still_finds_the_call(self) -> None:
+        command = self.BASE + " 2>&1>log"
+        calls, _others, ok = gate._calls_in(command)
+        self.assertEqual((([c.tool["path"] for c in calls]), ok), self.raw_only(command))
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_raw_text_that_does_not_parse_is_never_parsed_through_the_strip(self) -> None:
+        with mock.patch.object(gate, "_strip_fd_digits", return_value=self.BASE):
+            self.assertFalse(gate._calls_in(self.BASE + " 'unterminated")[2])
+
+    def test_a_strip_that_changes_more_than_digits_falls_back_to_raw_argv(self) -> None:
+        with mock.patch.object(gate, "_strip_fd_digits", side_effect=lambda t: t.replace("handoff", "rework")):
+            calls, _others, ok = gate._calls_in(self.BASE + " 2>f")
+        self.assertTrue(ok)
+        self.assertEqual(calls[0].argv[-2:], ["handoff", "2"])
+
+    def test_the_corpus_finds_exactly_the_calls_main_finds(self) -> None:
+        for suffix in self.CORPUS:
+            command = self.BASE + suffix
+            with self.subTest(suffix=suffix):
+                calls, _others, ok = gate._calls_in(command)
+                self.assertEqual(([c.tool["path"] for c in calls], ok), self.raw_only(command))
+
+    def test_the_corpus_never_allows_what_main_refuses(self) -> None:
+        for suffix in self.CORPUS:
+            command = FORCE_CMD + suffix
+            with self.subTest(suffix=suffix):
+                with mock.patch.object(gate, "_strip_fd_digits", side_effect=lambda text: text):
+                    main_refused = gate.refuses(command, "/tmp", frozenset()) is not None
+                if main_refused:
+                    self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+
+
 if __name__ == "__main__":
     unittest.main()
