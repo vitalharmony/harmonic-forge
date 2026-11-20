@@ -89,8 +89,8 @@ class ScanReason(unittest.TestCase):
                      ["api", "--paginate", "repos/o/r/issues/123/comments"],
                      ["api", "repos/o/r/issues/123/comments?per_page=100"],
                      ["api", "repos/o/r/issues/123/comments?since=x&page=2"],
-                     ["api", "-X", "GET", "repos/o/r/issues/123/comments", "-F", "per_page=100"],
-                     ["api", "-X", "GET", "repos/o/r/issues/123/comments", "-fpage=2"],
+                     ["api", "-XGET", "repos/o/r/issues/123/comments", "-F", "per_page=100"],
+                     ["api", "-XGET", "repos/o/r/issues/123/comments", "-fpage=2"],
                      ["api", "repos/o/r/issues/comments/987"],
                      ["api", "repos/o/r/issues/123/comments", "-X", "POST", "-f", "body=hi"],
                      ["api", "repos/o/r/issues/123/comments", "-f", "body=hi"]):
