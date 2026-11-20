@@ -77,6 +77,21 @@ class TierHooksReadWithProjectsToken(Harness):
                 self.assertEqual((tier, error), ("standard", None))
                 self.assertEqual(self.seen[-1]["GH_TOKEN"], PROJECTS_TOKEN)
 
+    def test_trigger_check_slot_branch_reads_tier(self):
+        """The branch live hooks take: hook_identity.slot_env returns the
+        repo's slot env, so lookup_tier builds the slot closure (preclose
+        pass 1 test-honesty finding)."""
+        import hook_identity  # noqa: PLC0415
+        for lane in ("1", "2"):
+            with self.subTest(lane=lane):
+                slot = self.lane_env(lane)
+                self.patch_env({"PATH": os.environ.get("PATH", "")})  # nothing ambient to inherit
+                with mock.patch.object(hook_identity, "slot_env", return_value=dict(slot)):
+                    tier, error = self._lookup()
+                self.assertEqual((tier, error), ("standard", None))
+                self.assertEqual(self.seen[-1]["GH_TOKEN"], PROJECTS_TOKEN)
+                self.assertEqual(self.seen[-1]["GH_CONFIG_DIR"], slot["GH_CONFIG_DIR"])
+
     def test_edit_gate_reads_tier_in_lane_1_and_2(self):
         for lane in ("1", "2"):
             with self.subTest(lane=lane):

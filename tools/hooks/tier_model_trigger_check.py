@@ -231,7 +231,7 @@ def lookup_tier(repo: str, number: int, boards: dict[str, str], ttl: float = 0):
     if env is None:
         run = _timed_run
     else:
-        def run(cmd, env=None):
+        def run(cmd, env=slot_env):
             return model_tier_gate.timed_run(cmd, timeout=_READ_TIMEOUT_SECONDS, env=env)
 
         # harmonic-forge#1456: the repo's own slot is the base; projects_env
