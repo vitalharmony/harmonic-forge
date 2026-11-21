@@ -260,13 +260,16 @@ def _proven_descriptor(token: str, lexer: shlex.shlex, lexed: str) -> bool:
     one character past the word, so the stream position locates it. Anything
     unprovable (quotes, a backslash, `10>`, `{fd}>`, an unknown position) is
     False: the digit stays an argument."""
-    if len(token) != 1 or token not in "0123456789" or not lexer._pushback_chars:
+    # The caller records only all-digit words. A boundary right before the
+    # character ahead of the operator means the raw word is exactly that one
+    # character, so a quote, a backslash or a second digit cannot be in it.
+    if not lexer._pushback_chars:
         return False
     try:
         end = lexer.instream.tell()
     except (AttributeError, OSError, ValueError):
         return False
-    if end < 2 or end > len(lexed) or lexed[end - 1] not in "<>" or lexed[end - 2] != token:
+    if end < 2 or end > len(lexed) or lexed[end - 1] not in "<>":
         return False
     return end == 2 or lexed[end - 3] in _DESCRIPTOR_BOUNDARY
 

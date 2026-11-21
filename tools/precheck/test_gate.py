@@ -621,6 +621,14 @@ class ShellParseFdCandidates(unittest.TestCase):
         self.assertEqual(item.argv, ["cmd", "2", "x"])
         self.assertEqual(item.fd_candidates, (1,))
 
+    def test_only_a_proven_descriptor_is_a_candidate(self) -> None:
+        for command in ("cmd 10>f", "cmd '2'>f", "cmd \\2>f", "cmd 2''>f", "cmd 7&>f", "cmd 2 >f", "cmd x2>f"):
+            with self.subTest(command=command):
+                self.assertEqual(shell_parse.simple_commands(command)[0].fd_candidates, ())
+        for command in ("cmd 2>f", "x;2>f", "2>f cmd", "cmd 0<in", "cmd 1>>f"):
+            with self.subTest(command=command):
+                self.assertTrue(shell_parse.simple_commands(command)[-1].fd_candidates)
+
     def test_the_field_defaults_to_empty(self) -> None:
         self.assertEqual(shell_parse.SimpleCommand(["a"], [], None, None).fd_candidates, ())
 
