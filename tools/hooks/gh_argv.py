@@ -630,14 +630,27 @@ def _graphql_verdict(parsed: Parsed, ep: Endpoint, fields: list[ApiField]) -> Ve
     return allow("allowlisted non-closing GraphQL mutation")
 
 
+#: The only request headers a `gh api` call may carry (lowercase names).
+#: `accept` and `x-github-api-version` per the sticky-wicket verdict;
+#: `if-none-match` because bounded_scan, _etag_cache and extract_threads send it
+#: for conditional (304) reads.
+API_HEADER_ALLOWLIST = frozenset({"accept", "x-github-api-version", "if-none-match"})
+
+
 def _api_verdict(parsed: Parsed, env: dict) -> Verdict:
     if len(parsed.positionals) != 1:
         return refuse(f"`gh api` needs exactly one endpoint; got {len(parsed.positionals)}")
+    # Sticky-wicket epoch 2, P2(b): the header check runs before the GET/HEAD
+    # return (a `-X GET` with an override header was allowed as a read), and it
+    # is an allowlist, not a deny-list of override spellings.
+    for header in parsed.values("--header"):
+        name = header.split(":", 1)[0].strip().lower()
+        if name not in API_HEADER_ALLOWLIST:
+            return refuse(f"header `{header.split(':', 1)[0].strip()}` on a `gh api` call is not on the "
+                          f"allowlist ({', '.join(sorted(API_HEADER_ALLOWLIST))})")
     method = effective_method(parsed)
     if method in ("GET", "HEAD"):
         return allow("read")
-    if any("method-override" in h.split(":", 1)[0].lower() for h in parsed.values("--header")):
-        return refuse("a method-override header on a `gh api` call")
     ep = normalize_endpoint(parsed.positionals[0], env)
     fields = _api_fields(parsed)
     if ep.graphql:
@@ -672,7 +685,7 @@ def _api_verdict(parsed: Parsed, env: dict) -> Verdict:
 
 def decide(argv: list[str], env: dict, table: dict | None = None) -> Verdict:
     """The verdict for one gh argv whose root is `api`, `issue` or `pr`
-    (aliases already expanded). Any argv the grammar cannot parse refuses."""
+    (argv[0] a builtin root; the gate expands no alias). Any argv the grammar cannot parse refuses."""
     try:
         parsed = parse(argv, table)
     except ArgvError as exc:
@@ -691,37 +704,3 @@ def decide(argv: list[str], env: dict, table: dict | None = None) -> Verdict:
         except ArgvError as exc:
             return refuse(str(exc))
     return allow(f"`gh {' '.join(parsed.path)}` does not close an issue or merge a pull request")
-
-
-# --- aliases ---------------------------------------------------------------
-
-def expand_alias(argv: list[str], alias_list: str) -> list[str] | None:
-    """`argv` with argv[0] expanded the way gh expands an alias once, or None
-    when argv[0] is not an alias. Raises ArgvError for an expansion gh itself
-    would reject and for every `!` (shell) alias."""
-    import shlex  # noqa: PLC0415
-    for line in alias_list.splitlines():
-        name, sep, body = line.partition(":")
-        if not sep or name.strip() != argv[0]:
-            continue
-        body = body.strip()
-        if len(body) >= 2 and body[0] == body[-1] and body[0] in "'\"":
-            body = body[1:-1]
-        if body.startswith("!"):
-            # Preclose pass 1 of the reforge, survivor 3: a shell alias's body
-            # can run gh by absolute path, past the shim. Refused for every root.
-            raise ArgvError(f"`{argv[0]}` is a shell (`!`) alias; its command runs outside the gate "
-                            "and is refused")
-        extra: list[str] = []
-        for i, arg in enumerate(argv[1:]):
-            if "$" not in body:
-                extra.append(arg)
-                continue
-            body = body.replace(f"${i + 1}", arg)
-        if re.search(r"\$\d", body):
-            raise ArgvError(f"not enough arguments for alias {argv[0]!r}")
-        try:
-            return [*shlex.split(body), *extra]
-        except ValueError as exc:
-            raise ArgvError(f"unreadable alias {argv[0]!r}: {exc}") from exc
-    return None

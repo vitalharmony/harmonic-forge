@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -59,14 +58,6 @@ def strict(gh_bin: str | None) -> Iterator[None]:
 PREFIX = "gh-shim: refused (close/merge gate, harmonic-forge#1447): "
 
 
-def _alias_list(real_gh: str) -> str | None:
-    try:
-        done = subprocess.run([real_gh, "alias", "list"], capture_output=True, text=True, timeout=7)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return None if done.returncode else done.stdout
-
-
 def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
     """None to let the shim run `gh argv`; otherwise the refusal it prints.
     Any exception is the caller's to refuse on (fail closed).
@@ -81,23 +72,12 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
     if not argv:
         return None
     if argv[0] not in BUILTINS:
-        aliases = _alias_list(real_gh)
-        if aliases is None:
-            # An alias (`gh c 5`) need not spell close or merge, so an
-            # unreadable alias list refuses every unknown command.
-            return PREFIX + "the gh alias list could not be read to expand this command"
-        try:
-            expanded = gh_argv.expand_alias(argv, aliases)
-        except gh_argv.ArgvError as exc:
-            return PREFIX + str(exc)
-        if expanded is None:
-            return PREFIX + (f"`gh {argv[0]}` is neither a gh builtin (gh {gh_argv.load_table()['gh_version']}) "
-                             "nor an alias; an extension or unknown command is refused")
-        argv = expanded
-        if not argv or (argv[0] in BUILTINS and argv[0] not in gh_argv.GATED_ROOTS):
-            return None
-        if argv[0] not in BUILTINS:
-            return PREFIX + f"alias expands to `{argv[0]}`, which is not a gh builtin"
+        # Sticky-wicket epoch 2: the gate expands no alias. Every root outside the
+        # static, checked-in builtin set (a config alias like `co`, a `!` alias, an
+        # extension) refuses, so what is validated is what gh runs.
+        return PREFIX + (f"`gh {argv[0]}` is not a gh builtin (gh {gh_argv.load_table()['gh_version']}); "
+                         "aliases and extensions are refused through the shim, so spell the builtin "
+                         "command (for example `gh pr checkout`, not `gh co`)")
     if argv[0] not in gh_argv.GATED_ROOTS:
         return None
     verdict = gh_argv.decide(argv, dict(os.environ))

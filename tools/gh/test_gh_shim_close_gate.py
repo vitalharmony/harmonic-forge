@@ -130,25 +130,33 @@ class ShimBashBypass(unittest.TestCase):
                 self.assertEqual(self.closes_sent(), [], done.stderr)
                 self.assertIn("harmonic-forge#1447", done.stderr)
 
-    def test_a_clobbered_co_alias_reaches_the_gate(self):
-        """Reforge pass 1, survivor 1: `co` is a config alias, not a builtin."""
-        fixture = {**UNINSPECTED, "aliases": "co:\tissue close 5 -R o/r\n"}
-        done = self.run_bash("gh co", fixture)
-        self.assertEqual(done.returncode, 4, done.stderr)
-        self.assertEqual(self.closes_sent(), [])
-        self.assertFalse(any(a[:1] == ["co"] for a in self.sent()))
-        self.assertIn("preclose", done.stderr)
-        self.assertIn("harmonic-forge#1447", done.stderr)
-
-    def test_a_shell_alias_is_refused_for_every_root(self):
-        """Reforge pass 1, survivor 3: a `!` alias body can run gh by absolute path."""
-        for aliases in ("c:\t!/usr/bin/gh issue close \"$1\"\n", "c:\t'!echo hi'\n"):
-            with self.subTest(aliases=aliases):
+    def test_every_alias_and_extension_root_is_refused(self):
+        """Sticky-wicket epoch 2: the gate expands no alias. A config alias
+        (`co`), a `!` alias, a `# --help` alias body and an extension name all
+        refuse at the root; gh is never called, not even `gh alias list`."""
+        cases = (("gh co", "co:\tpr checkout\n"),
+                 ("gh co", "co:\tissue close 5 -R o/r\n"),
+                 ("gh c 5", "c:\t!/usr/bin/gh issue close \"$1\"\n"),
+                 ("gh c 5", "c:\t'!echo hi'\n"),
+                 ("gh c 5", "c:\tissue close 5 -R o/r # --help\n"),
+                 ("gh dash", ""),
+                 ("gh poi 5", ""))
+        for script, aliases in cases:
+            with self.subTest(script=script, aliases=aliases):
                 self.log.write_text("")
-                done = self.run_bash("gh c 5", {**INSPECTED, "aliases": aliases})
+                done = self.run_bash(script, {**INSPECTED, "aliases": aliases})
                 self.assertEqual(done.returncode, 4, done.stderr)
-                self.assertEqual([a for a in self.sent() if a[:2] != ["alias", "list"]], [])
-                self.assertIn("shell", done.stderr)
+                self.assertEqual(self.sent(), [])
+                self.assertIn("not a gh builtin", done.stderr)
+                self.assertIn("harmonic-forge#1447", done.stderr)
+
+    def test_a_method_override_header_on_a_get_is_refused(self):
+        """Sticky-wicket epoch 2, P2(b), verbatim survivor."""
+        self.log.write_text("")
+        done = self.run_bash("echo '{}' > body.json; gh api -X GET -H 'X-HTTP-Method-Override: PATCH' "
+                             "--input body.json repos/o/r/issues/5", INSPECTED)
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertEqual(self.sent(), [])
 
     def test_branch_merges_and_ref_writes_are_refused(self):
         """Reforge pass 1, survivor 2: moving a base branch to a PR head merges it."""
@@ -170,16 +178,6 @@ class ShimBashBypass(unittest.TestCase):
                 done = self.run_bash(script, INSPECTED)
                 self.assertEqual(done.returncode, 4, done.stderr)
                 self.assertFalse(any("graphql" in " ".join(a) for a in self.sent()))
-
-    def test_an_unreadable_alias_list_refuses_an_unknown_command(self):
-        fixture = {**UNINSPECTED, "aliases": None}
-        self.fixture.write_text(json.dumps(fixture))
-        fake = self.tmp / "real" / "gh"
-        fake.write_text(FAKE.replace('if argv[:2] == ["alias", "list"]:\n    print(fx.get("aliases", "")); sys.exit(0)',
-                                     'if argv[:2] == ["alias", "list"]:\n    sys.exit(1)'))
-        done = self.run_bash("gh c 5 -R o/r", fixture)
-        self.assertEqual(done.returncode, 4, done.stderr)
-        self.assertEqual(self.closes_sent(), [])
 
     def test_a_comment_post_is_not_a_close(self):
         """AC3 regression: a mutating issues API call that is not a close passes."""
@@ -228,7 +226,7 @@ class ShimBashBypass(unittest.TestCase):
                 self.log.write_text("")
                 done = self.run_bash(script, {**INSPECTED, "aliases": ""})
                 self.assertEqual(done.returncode, 4, done.stderr)
-                self.assertEqual([a for a in self.sent() if a[:2] != ["alias", "list"]], [])
+                self.assertEqual(self.sent(), [])
 
     def test_an_import_failure_refuses_every_gated_root_but_not_identity(self):
         """Required test 6: with no gate to import, api/issue/pr and unknown

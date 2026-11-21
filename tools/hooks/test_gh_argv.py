@@ -33,6 +33,12 @@ BASE_ENV = {"GH_REPO": "", "GH_HOST": ""}
 
 
 def _verdict(argv: list[str], env: dict | None = None) -> gh_argv.Verdict:
+    """A corpus row's verdict as the shim reaches it: a non-builtin root is
+    refused by `close_gate.shim_verdict` before `decide` (no alias expansion)."""
+    if argv and argv[0] not in gh_argv.load_table()["builtins"]:
+        import close_gate  # noqa: PLC0415
+        refusal = close_gate.shim_verdict(argv, cwd=".", real_gh="/nonexistent/gh")
+        return gh_argv.refuse(refusal) if refusal else gh_argv.allow("shim passed a non-builtin root")
     return gh_argv.decide(argv, {**BASE_ENV, **(env or {})})
 
 
@@ -252,15 +258,46 @@ class ParserUnits(unittest.TestCase):
         self.assertEqual(gh_argv.parse(["issue", "ls"]).path, ("issue", "list"))
         self.assertEqual(gh_argv.parse(["pr", "-R", "o/r", "new"]).path, ("pr", "create"))
 
-    def test_alias_expansion_follows_gh(self) -> None:
-        aliases = "c: issue close\nd: 'issue close $1 -R o/r'\ns: '!gh issue close 5'\n"
-        self.assertEqual(gh_argv.expand_alias(["c", "5"], aliases), ["issue", "close", "5"])
-        self.assertEqual(gh_argv.expand_alias(["d", "5", "x"], aliases), ["issue", "close", "5", "-R", "o/r", "x"])
-        with self.assertRaises(gh_argv.ArgvError):
-            gh_argv.expand_alias(["s"], aliases)  # survivor 3: every shell alias refuses
-        self.assertIsNone(gh_argv.expand_alias(["zz"], aliases))
-        with self.assertRaises(gh_argv.ArgvError):
-            gh_argv.expand_alias(["d"], aliases)
+    def test_the_gate_has_no_alias_expansion(self) -> None:
+        """Sticky-wicket epoch 2: alias expansion was deleted, not patched."""
+        import close_gate  # noqa: PLC0415
+        self.assertFalse(hasattr(gh_argv, "expand_alias"))
+        self.assertFalse(hasattr(close_gate, "_alias_list"))
+
+    def test_every_non_builtin_root_is_refused_without_running_gh(self) -> None:
+        import close_gate  # noqa: PLC0415
+        for argv in (["co"], ["co", "5"], ["c", "5"], ["dash"], ["poi", "5"], ["c", "--help"]):
+            with self.subTest(argv=argv):
+                refusal = close_gate.shim_verdict(argv, cwd=".", real_gh="/nonexistent/gh")
+                self.assertIsNotNone(refusal)
+                self.assertIn("not a gh builtin", refusal)
+
+    def test_builtins_are_static_and_exclude_config_aliases(self) -> None:
+        builtins = set(gh_argv.load_table()["builtins"])
+        self.assertNotIn("co", builtins)
+        documented = {"agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace",
+                      "completion", "config", "copilot", "discussion", "extension", "gist", "gpg-key",
+                      "help", "issue", "label", "licenses", "org", "pr", "preview", "project", "release",
+                      "repo", "ruleset", "run", "search", "secret", "skill", "ssh-key", "status",
+                      "variable", "version", "workflow",
+                      "--help", "--version", "-h", "__complete", "__completeNoDesc"}
+        self.assertLessEqual(builtins, documented)
+
+
+class HeaderAllowlist(unittest.TestCase):
+    """Sticky-wicket epoch 2, P2(b): headers are allowlisted before the GET return."""
+
+    def test_allowlist_is_small(self) -> None:
+        self.assertEqual(gh_argv.API_HEADER_ALLOWLIST,
+                         frozenset({"accept", "x-github-api-version", "if-none-match"}))
+
+    def test_override_on_get_refuses_in_every_spelling(self) -> None:
+        for flag in (["-H", "X-HTTP-Method-Override: PATCH"], ["--header", "x-http-method-override:PATCH"],
+                     ["--header=X-HTTP-Method: PUT"], ["-HX-Method-Override: POST"]):
+            for method in ([], ["-X", "GET"], ["-X", "HEAD"]):
+                argv = ["api", *method, *flag, "repos/o/r/issues/5"]
+                with self.subTest(argv=argv):
+                    self.assertEqual(_verdict(argv).action, "refuse")
 
 
 if __name__ == "__main__":
