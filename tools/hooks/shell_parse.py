@@ -265,10 +265,20 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
     # (harmonic-forge#1289 pass 1).
     lexer.commenters = ""
     items: list[tuple[str, str]] = []
-    for token in lexer:
+    #: harmonic-forge#1461: indices into `items` of words that a punctuation
+    #: character followed with no whitespace between. shlex holds that
+    #: character in `_pushback_chars` when it ends a word, so this is the one
+    #: place the `2>f` / `2 >f` distinction survives tokenizing.
+    attached: set[int] = set()
+    while True:
+        token = lexer.get_token()
+        if token == lexer.eof:
+            break
         if token and all(char in _SIMPLE_PUNCTUATION for char in token):
             items.extend(("op", op) for op in _split_operators(token))
         else:
+            if lexer._pushback_chars:
+                attached.add(len(items))
             items.append(("word", token))
 
     out: list[SimpleCommand | GroupMarker] = []
@@ -292,7 +302,10 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
             out.append(SimpleCommand(argv, redirects, sep_before, sep, fd))
         argv, redirects, sep_before, candidates = [], [], sep, []
 
-    for kind, value in items:
+    last_word_attached = False
+    for index, (kind, value) in enumerate(items):
+        if kind == "word" and pending is None:
+            last_word_attached = index in attached
         if pending is not None:
             op, pending = pending, None
             if kind != "word":
@@ -325,12 +338,14 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
             end(value)
             out.append(GroupMarker("open"))
         else:
-            # A digit word before a redirect stays in argv: shlex cannot tell
-            # `2>f` (a descriptor) from `2 >f` (an argument), and dropping it
-            # would hide an argument (harmonic-forge#1289 pass 1). Its index is
-            # recorded instead (harmonic-forge#1461).
+            # A digit word before a redirect stays in argv (harmonic-forge#1289
+            # pass 1). When it is attached to the operator (`2>f`, no space)
+            # bash reads it as a descriptor, so its index is recorded
+            # (harmonic-forge#1461); a spaced digit (`2 >f`) is an argument.
+            # Residual: shlex strips quotes, so a quoted `'2'>f` (an argument
+            # to bash) is also recorded; its fingerprint then drops the digit.
             if argv and argv[-1] and all(c in "0123456789" for c in argv[-1]) \
-                    and (len(argv) - 1) not in candidates:
+                    and last_word_attached and (len(argv) - 1) not in candidates:
                 candidates.append(len(argv) - 1)
             pending = value
     if pending is not None:

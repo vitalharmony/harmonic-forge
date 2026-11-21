@@ -63,19 +63,12 @@ PRECEDENT = ("Precedent: F1279 fold 2: H2529's refusal was right; its cost was a
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PYTHONS = re.compile(r"^python(?:3(?:\.\d+)?)?$")
 REFUSAL_ID = re.compile(r"^[0-9a-f]{12}$")
-AMBIGUOUS = ("precheck gate (harmonic-forge#1461): a digit word before a redirect in this "
-             "command could be a file descriptor or an argument, and the two readings find "
-             "different gated calls. Attach the descriptor (`2>f`, no space) or drop the "
-             "redirect, then run the call again.")
-
 
 class _Call:
     """One gated simple command: the registry tool, its argv, how it was spelled."""
 
     def __init__(self, tool: dict, argv: list[str], spelling: list[str], via_mise: dict | None):
         self.tool, self.argv, self.spelling, self.via_mise = tool, argv, spelling, via_mise
-        #: harmonic-forge#1461: the descriptor-dropped and raw readings disagree.
-        self.ambiguous = False
 
 
 # --------------------------------------------------------------------------
@@ -155,20 +148,17 @@ def _detect(argv: list[str], depth: int) -> tuple[list[_Call], list[list[str]], 
 def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
     """(gated calls, other argvs, parsed).
 
-    harmonic-forge#1461, second sticky-wicket REFORGE: one parse, one reading.
-    `shell_parse` marks each digit word that sits directly before a redirect
-    (`fd_candidates`); the gate drops those words from the raw argv BEFORE
-    invocation-prefix stripping, at any position, and that reading is both the
-    detection and the fingerprint. Bash removes an attached `2>f` before the
-    program sees argv, so this is the executed argv for every attached form.
-
-    A spaced digit argument (`tool x 2 >f`) is dropped too; its fingerprint then
-    matches no receipt and the call is refused (fail closed; FORCE `gate` is the
-    way past). Where candidates exist, detection also runs on the undropped
-    argv (pitch inspection): dropping a digit that is `timeout`'s or `nice -n`'s
-    argument lets the prefix stripper consume the next word, so if the two
-    readings disagree on which gated calls exist, every call either finds is
-    marked ambiguous and refused."""
+    harmonic-forge#1461, second sticky-wicket REFORGE, refined at its pass 1:
+    `shell_parse` marks each digit word ATTACHED to a following redirect
+    operator (`2>f`, no whitespace; `fd_candidates`), which bash always reads
+    as a file descriptor and removes before the program sees argv. The gate
+    drops those words from the raw argv BEFORE invocation-prefix stripping, at
+    any position, and that one reading is both detection and fingerprint. A
+    spaced digit (`--issue 1461 > log`) is an argument and stays. Residual:
+    shlex strips quotes, so a quoted `'2'>f` (an argument to bash) is also
+    dropped; under the good-faith threat model that spelling is deliberate.
+    A part that does not parse never discards a gated call found before it.
+    """
     try:
         items = shell_parse.simple_commands(command)
     except (ValueError, shell_parse.NotOrdinary):
@@ -183,15 +173,6 @@ def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]
         found, rest, ok = _detect(_normalize(dropped), depth)
         if not ok:
             return calls + found, others + rest, False
-        if drop:
-            raw_found, _raw_rest, raw_ok = _detect(_normalize(list(item.argv)), depth)
-            key = sorted((c.tool["path"], tuple(c.spelling)) for c in found)
-            raw_key = sorted((c.tool["path"], tuple(c.spelling)) for c in raw_found)
-            if not raw_ok or key != raw_key:
-                for call in found + raw_found:
-                    call.ambiguous = True
-                found = found + [c for c in raw_found
-                                 if (c.tool["path"], tuple(c.spelling)) not in set(key)]
         calls += found
         others += rest
     return calls, others, True
@@ -351,10 +332,6 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True,
                     current = target
         where = current if len(calls) == 1 else cwd
         for call in calls:
-            if call.ambiguous:
-                if store:
-                    log("refused", tool=call.tool["path"], sid=sid, tuid=tuid, reason="fd-ambiguous")
-                return AMBIGUOUS
             reason = _decide_call(call, sid, where, deadline, store=store, tuid=tuid)
             if reason:
                 return reason

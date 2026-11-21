@@ -432,13 +432,16 @@ class RedirectDescriptorDigit(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.argv(self.BASE + suffix), plain)
 
-    def test_a_spaced_or_quoted_digit_before_a_redirect_is_dropped_and_refused(self) -> None:
-        """The accepted gap of the second reforge: the tokenizer cannot tell
-        `2 >f` from `2>f`, so the digit is dropped and the fingerprint lacks
-        the argument -- no receipt matches, so the call is refused (fail closed)."""
-        for suffix in (" 2 >f", " '2'>f"):
+    def test_a_spaced_digit_before_a_redirect_stays_an_argument(self) -> None:
+        """Reforge #3 pass 1 (four lenses + cross-family): a spaced digit is an
+        argument to bash, so it stays in the fingerprint."""
+        for suffix in (" 2 >f", " 1461 > log 2>&1", " 7 >f"):
             with self.subTest(suffix=suffix):
-                self.assertEqual(self.argv(self.BASE + suffix), self.argv(self.BASE))
+                self.assertEqual(self.argv(self.BASE + suffix)[-1], suffix.split()[0])
+
+    def test_a_quoted_attached_digit_is_the_named_residual(self) -> None:
+        """shlex strips quotes, so `'2'>f` reads as attached and is dropped."""
+        self.assertEqual(self.argv(self.BASE + " '2'>f"), self.argv(self.BASE))
 
     def test_a_digit_not_directly_before_a_redirect_stays_an_argument(self) -> None:
         for suffix, kept in ((" 2 2>f", "2"), (" v2>f", "v2"), (" ٢>f", "٢"), (" note\\ 2>f", "note 2")):
@@ -449,8 +452,8 @@ class RedirectDescriptorDigit(unittest.TestCase):
 class RedirectSingleReading(unittest.TestCase):
     """harmonic-forge#1461, second sticky-wicket REFORGE: shell_parse marks the
     digit words before a redirect; the gate drops them from the raw argv before
-    prefix stripping and reads that one argv. Where dropping changes which
-    calls exist, the command is refused as ambiguous."""
+    prefix stripping and reads that one argv. Only a digit attached to the
+    operator is marked; a spaced digit is an argument."""
 
     BASE = RedirectDescriptorDigit.BASE
     CORPUS = (
@@ -493,11 +496,34 @@ class RedirectSingleReading(unittest.TestCase):
                 self.assertIn("tools/gh/kill_check.py", [c.tool["path"] for c in gate._calls_in(command)[0]])
                 self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
 
-    def test_a_dropped_prefix_argument_is_refused_as_ambiguous(self) -> None:
-        """Pitch inspection: dropping `timeout`'s `5` lets the prefix stripper
-        eat `bash`, so the dropped reading finds no call; the raw one does."""
+    def test_a_spaced_prefix_argument_is_kept_and_the_call_found(self) -> None:
+        """Pitch inspection's case: `timeout 5 >f` keeps its `5`, so the
+        prefix stripper never eats `bash` and the inner call is found."""
         command = "timeout 5 >f bash -c '" + FORCE_CMD + "'"
-        self.assertEqual(gate.refuses(command, "/tmp", frozenset()), gate.AMBIGUOUS)
+        self.assertIn("tools/gh/kill_check.py", self.paths(command))
+        self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+
+    def test_an_attached_descriptor_before_the_program_fingerprints_the_plain_call(self) -> None:
+        """Reforge #3 pass 1 (correctness): these were refused as ambiguous
+        even with a receipt; the executed argv is the plain call's."""
+        plain = gate._calls_in(FORCE_CMD)[0][0].argv
+        for prefix in ("2>f ", "env 2>f ", "x=1 2>f ", "timeout 30 2>f "):
+            with self.subTest(prefix=prefix):
+                calls = gate._calls_in(prefix + FORCE_CMD)[0]
+                self.assertEqual([c.argv for c in calls], [plain])
+
+    def test_a_spaced_digit_never_reuses_a_shorter_receipt(self) -> None:
+        """Reforge #3 pass 1 (silent-bypass): `run 1461 7 >f` runs with `7`;
+        its fingerprint must carry it, never match a receipt for `run 1461`."""
+        calls = gate._calls_in("python3 tools/gh/kill_check.py run 1461 7 >f")[0]
+        self.assertEqual(calls[0].argv, ["run", "1461", "7"])
+
+    def test_a_nested_call_survives_a_later_unparseable_part(self) -> None:
+        """Reforge #3 pass 1 (test-honesty): a call found inside `bash -c`
+        before a part that does not parse is still gated."""
+        command = """bash -c "python3 tools/gh/kill_check.py run --issue 1 ; bash -c 'x \\"'" """
+        self.assertIn("tools/gh/kill_check.py", [c.tool["path"] for c in gate._calls_in(command)[0]])
+        self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
 
     def test_a_redirected_shell_wrapper_is_one_call(self) -> None:
         plain = gate._calls_in("bash -c '" + FORCE_CMD + "'")[0]
@@ -549,7 +575,7 @@ class ShellParseFdCandidates(unittest.TestCase):
     def test_a_digit_before_a_redirect_is_a_candidate_and_argv_is_unchanged(self) -> None:
         (item,) = shell_parse.simple_commands("cmd a 2>f b 7 >g")
         self.assertEqual(item.argv, ["cmd", "a", "2", "b", "7"])
-        self.assertEqual(item.fd_candidates, (2, 4))
+        self.assertEqual(item.fd_candidates, (2,))  # the spaced 7 is an argument
 
     def test_indices_count_from_after_stripped_reserved_words(self) -> None:
         item = shell_parse.simple_commands("if cmd 2>f x; then :; fi")[0]
