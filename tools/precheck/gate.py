@@ -63,6 +63,10 @@ PRECEDENT = ("Precedent: F1279 fold 2: H2529's refusal was right; its cost was a
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PYTHONS = re.compile(r"^python(?:3(?:\.\d+)?)?$")
 REFUSAL_ID = re.compile(r"^[0-9a-f]{12}$")
+AMBIGUOUS = ("precheck gate (harmonic-forge#1461): a digit word before a redirect in this "
+             "command could be a file descriptor or an argument, and the two readings find "
+             "different gated calls. Attach the descriptor (`2>f`, no space) or drop the "
+             "redirect, then run the call again.")
 
 
 class _Call:
@@ -70,6 +74,8 @@ class _Call:
 
     def __init__(self, tool: dict, argv: list[str], spelling: list[str], via_mise: dict | None):
         self.tool, self.argv, self.spelling, self.via_mise = tool, argv, spelling, via_mise
+        #: harmonic-forge#1461: the descriptor-dropped and raw readings disagree.
+        self.ambiguous = False
 
 
 # --------------------------------------------------------------------------
@@ -104,112 +110,6 @@ def _mise_call(argv: list[str]) -> _Call | None:
     return None
 
 
-_WORD_START = frozenset(" \t\n;|&()")
-
-
-def _strip_fd_digits(command: str) -> str:
-    """Drop a redirect's file-descriptor digit before the gate tokenizes
-    (harmonic-forge#1461). shlex keeps no whitespace, so `2>&1` and `2 >&1`
-    tokenize alike and shell_parse keeps the digit as an argument
-    (harmonic-forge#1289); only the raw text tells them apart. A run of digits
-    is removed when it is unquoted and unescaped, starts a word, and is
-    followed immediately by `>` or `<`. Everything else is copied unchanged."""
-    out: list[str] = []
-    i, n = 0, len(command)
-    quote: str | None = None
-    boundary = True  # the previous character was an unescaped, unquoted word boundary
-    while i < n:
-        ch = command[i]
-        if quote == "'":
-            out.append(ch)
-            quote = None if ch == "'" else quote
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < n:
-            # An escaped character (an escaped space included) is word text,
-            # never a boundary (preclose pass 1).
-            out.append(command[i:i + 2])
-            i += 2
-            boundary = False
-            continue
-        if quote == '"':
-            out.append(ch)
-            quote = None if ch == '"' else quote
-            i += 1
-            continue
-        if ch in "'\"":
-            quote = ch
-            out.append(ch)
-            i += 1
-            boundary = False
-            continue
-        # ASCII digits only: bash descriptors are never other Unicode digits
-        # (preclose pass 1).
-        if ch in _ASCII_DIGITS and boundary:
-            j = i
-            while j < n and command[j] in _ASCII_DIGITS:
-                j += 1
-            # `N<(` / `N>(` is a process-substitution argument, not a
-            # descriptor (preclose pass 1).
-            if j < n and command[j] in "<>" and command[j + 1:j + 2] != "(":
-                i = j  # drop the descriptor digits; the operator follows
-                continue
-        out.append(ch)
-        boundary = ch in _WORD_START
-        i += 1
-    return "".join(out)
-
-
-_ASCII_DIGITS = frozenset("0123456789")
-
-
-def _only_drops_digits(raw: list[str], stripped: list[str]) -> bool:
-    """True when `stripped` is `raw` with zero or more all-ASCII-digit tokens
-    removed and nothing else changed (same order, same first word)."""
-    if not raw or not stripped or raw[0] != stripped[0]:
-        return False
-    j = 0
-    for token in raw:
-        if j < len(stripped) and token == stripped[j]:
-            j += 1
-        elif not (token and all(c in _ASCII_DIGITS for c in token)):
-            return False
-    return j == len(stripped)
-
-
-def _fingerprint_argvs(command: str, raw_items: list) -> dict[int, list[str]]:
-    """For each raw simple command whose descriptor-stripped argv provably
-    differs only by removed all-ASCII-digit tokens, that stripped argv, keyed by
-    the item's index (harmonic-forge#1461 reforge). A stripped text that fails
-    to parse or differs in structure returns an empty map; an item whose argv
-    differs by more than digits is left out alone. Either way `_calls_in` adds
-    a detection-only digit-dropped reading for the items left out."""
-    try:
-        stripped_items = shell_parse.simple_commands(_strip_fd_digits(command))
-    except (ValueError, shell_parse.NotOrdinary):
-        return {}
-    if len(stripped_items) != len(raw_items):
-        return {}
-    out: dict[int, list[str]] = {}
-    for i, (raw, stripped) in enumerate(zip(raw_items, stripped_items)):
-        raw_simple = isinstance(raw, shell_parse.SimpleCommand)
-        if raw_simple != isinstance(stripped, shell_parse.SimpleCommand):
-            return {}
-        if raw_simple and raw.argv and stripped.argv != raw.argv:
-            # Reforge pass 1: doubt about one item never drops another's reading.
-            if _only_drops_digits(list(raw.argv), list(stripped.argv)):
-                out[i] = list(stripped.argv)
-    return out
-
-
-def _digit_dropped(argv: list[str]) -> list[str]:
-    """`argv` with every all-ASCII-digit token after the first removed: a
-    detection-only reading (reforge pass 1). It can only find more calls than
-    the raw reading; it never fingerprints, so a call it alone finds is
-    refused unless a receipt matches its raw-derived argv -- fail closed."""
-    return argv[:1] + [t for t in argv[1:] if not (t and all(c in _ASCII_DIGITS for c in t))]
-
-
 def _normalize(argv: list[str]) -> list[str]:
     argv = shell_parse.strip_invocation_prefix(list(argv), unwrap_shells=False)
     # The shell expands a leading `~` before the tool sees it; so does the gate,
@@ -240,72 +140,60 @@ def _direct_call(argv: list[str]) -> "_Call | None":
     return None
 
 
+def _detect(argv: list[str], depth: int) -> tuple[list[_Call], list[list[str]], bool]:
+    """The gated calls one normalized argv makes (directly, or through a
+    `sh -c` text), the non-gated argvs it holds, and whether it parsed."""
+    if not argv:
+        return [], [], True
+    program = Path(argv[0]).name
+    if program in SHELLS and len(argv) > 2 and argv[1] in ("-c", "-lc", "--command") and depth < 3:
+        return _calls_in(argv[2], depth + 1)
+    call = _direct_call(argv)
+    return ([call], [], True) if call is not None else ([], [argv], True)
+
+
 def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
     """(gated calls, other argvs, parsed).
 
-    harmonic-forge#1461 reforge invariant, refined at reforge preclose pass 1:
-    - Parsing is decided by the RAW text alone; a stripped reading (or a
-      recursion into one) that fails to parse never marks the command
-      unparsed, so it can never turn a refusal into an allow.
-    - A call is gated if EITHER reading finds it. Bash removes an attached
-      redirect before the program sees its argv, so `bash -c 2>/dev/null 'x'`
-      runs `x` and `python3 2>f tool` runs `tool`: the stripped reading is the
-      executed argv there, and the raw reading alone (main) misses the call.
-    - Where both readings find the same tool with the same spelling, the
-      stripped argv is the fingerprint (AC1); otherwise each call keeps the
-      argv of the reading that found it."""
+    harmonic-forge#1461, second sticky-wicket REFORGE: one parse, one reading.
+    `shell_parse` marks each digit word that sits directly before a redirect
+    (`fd_candidates`); the gate drops those words from the raw argv BEFORE
+    invocation-prefix stripping, at any position, and that reading is both the
+    detection and the fingerprint. Bash removes an attached `2>f` before the
+    program sees argv, so this is the executed argv for every attached form.
+
+    A spaced digit argument (`tool x 2 >f`) is dropped too; its fingerprint then
+    matches no receipt and the call is refused (fail closed; FORCE `gate` is the
+    way past). Where candidates exist, detection also runs on the undropped
+    argv (pitch inspection): dropping a digit that is `timeout`'s or `nice -n`'s
+    argument lets the prefix stripper consume the next word, so if the two
+    readings disagree on which gated calls exist, every call either finds is
+    marked ambiguous and refused."""
     try:
         items = shell_parse.simple_commands(command)
     except (ValueError, shell_parse.NotOrdinary):
         return [], [], False
-    fingerprints = _fingerprint_argvs(command, items)
     calls: list[_Call] = []
     others: list[list[str]] = []
-    for i, item in enumerate(items):
+    for item in items:
         if not isinstance(item, shell_parse.SimpleCommand) or not item.argv:
             continue
-        raw_argv = _normalize(item.argv)
-        # (argv, may it replace a twin's fingerprint?)
-        readings = [(raw_argv, False)]
-        if i in fingerprints:
-            readings.append((_normalize(fingerprints[i]), True))
-        else:
-            # Reforge pass 1: the proven stripped reading is unavailable, so a
-            # detection-only reading keeps "gated if either reading finds it".
-            dropped = _digit_dropped(raw_argv)
-            if dropped != raw_argv:
-                readings.append((dropped, False))
-        found: list[_Call] = []
-
-        def add(call: _Call, fingerprint: bool) -> None:
-            # Reforge pass 1: both readings of one call are one call, never two.
-            twin = next((c for c in found if c.tool["path"] == call.tool["path"]
-                         and c.spelling == call.spelling), None)
-            if twin is None:
-                found.append(call)
-            elif fingerprint:
-                found[found.index(twin)] = call  # the proven stripped argv fingerprints it
-
-        for n, (argv, fingerprint) in enumerate(readings):
-            if not argv:
-                continue
-            program = Path(argv[0]).name
-            if program in SHELLS and len(argv) > 2 and argv[1] in ("-c", "-lc", "--command") and depth < 3:
-                inner_calls, inner_others, ok = _calls_in(argv[2], depth + 1)
-                if n == 0:
-                    others += inner_others
-                    if not ok:
-                        return calls + found + inner_calls, others, False
-                for inner in inner_calls:
-                    add(inner, fingerprint)
-                continue
-            call = _direct_call(argv)
-            if call is not None:
-                add(call, fingerprint)
-        if found:
-            calls += found
-        elif raw_argv:
-            others.append(raw_argv)
+        drop = set(item.fd_candidates)
+        dropped = [w for i, w in enumerate(item.argv) if i not in drop]
+        found, rest, ok = _detect(_normalize(dropped), depth)
+        if not ok:
+            return calls + found, others + rest, False
+        if drop:
+            raw_found, _raw_rest, raw_ok = _detect(_normalize(list(item.argv)), depth)
+            key = sorted((c.tool["path"], tuple(c.spelling)) for c in found)
+            raw_key = sorted((c.tool["path"], tuple(c.spelling)) for c in raw_found)
+            if not raw_ok or key != raw_key:
+                for call in found + raw_found:
+                    call.ambiguous = True
+                found = found + [c for c in raw_found
+                                 if (c.tool["path"], tuple(c.spelling)) not in set(key)]
+        calls += found
+        others += rest
     return calls, others, True
 
 
@@ -445,7 +333,10 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True,
         if not parsed:
             if store:
                 log("error", sid=sid, tuid=tuid, reason="parse")
-            return None
+            # harmonic-forge#1461: a later part that does not parse never
+            # discards a gated call already found before it.
+            if not calls:
+                return None
         if store:
             import effects  # noqa: PLC0415
             for argv in others:
@@ -460,6 +351,10 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True,
                     current = target
         where = current if len(calls) == 1 else cwd
         for call in calls:
+            if call.ambiguous:
+                if store:
+                    log("refused", tool=call.tool["path"], sid=sid, tuid=tuid, reason="fd-ambiguous")
+                return AMBIGUOUS
             reason = _decide_call(call, sid, where, deadline, store=store, tuid=tuid)
             if reason:
                 return reason

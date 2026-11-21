@@ -22,6 +22,7 @@ sys.path.insert(0, str(FORGE / "tools" / "gh"))
 sys.path.insert(0, str(FORGE / "tools" / "lane"))
 import force_grant  # noqa: E402
 import gate  # noqa: E402
+shell_parse = gate.shell_parse
 import gate_receipt as R  # noqa: E402
 
 SESSION = "sess-1291"
@@ -431,135 +432,132 @@ class RedirectDescriptorDigit(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.argv(self.BASE + suffix), plain)
 
-    def test_spaced_or_quoted_digit_stays_an_argument(self) -> None:
-        for suffix, kept in ((" 2 >f", "2"), (" '2'>f", "2"), (" 2 2>f", "2"), (" v2>f", "v2"),
-                             (" ٢>f", "٢"), (" note\\ 2>f", "note 2")):
+    def test_a_spaced_or_quoted_digit_before_a_redirect_is_dropped_and_refused(self) -> None:
+        """The accepted gap of the second reforge: the tokenizer cannot tell
+        `2 >f` from `2>f`, so the digit is dropped and the fingerprint lacks
+        the argument -- no receipt matches, so the call is refused (fail closed)."""
+        for suffix in (" 2 >f", " '2'>f"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.argv(self.BASE + suffix), self.argv(self.BASE))
+
+    def test_a_digit_not_directly_before_a_redirect_stays_an_argument(self) -> None:
+        for suffix, kept in ((" 2 2>f", "2"), (" v2>f", "v2"), (" ٢>f", "٢"), (" note\\ 2>f", "note 2")):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.argv(self.BASE + suffix)[-1], kept)
 
-    def test_strip_leaves_quoted_text_alone(self) -> None:
-        self.assertEqual(gate._strip_fd_digits('a="x 2>y" cmd'), 'a="x 2>y" cmd')
-        self.assertEqual(gate._strip_fd_digits("cmd \\2>f"), "cmd \\2>f")
-        # preclose pass 1: a process substitution is an argument, not a descriptor
-        self.assertEqual(gate._strip_fd_digits("cmd 2<(true)"), "cmd 2<(true)")
-        self.assertEqual(gate._strip_fd_digits("cmd 2>(cat)"), "cmd 2>(cat)")
 
-
-class RedirectReforgeInvariant(unittest.TestCase):
-    """harmonic-forge#1461 reforge (sticky-wicket): the raw parse alone decides
-    whether a command parses and which gated calls it holds; the stripped text
-    only ever supplies a fingerprint argv. A lexer miss costs a refusal, never
-    an allow."""
+class RedirectSingleReading(unittest.TestCase):
+    """harmonic-forge#1461, second sticky-wicket REFORGE: shell_parse marks the
+    digit words before a redirect; the gate drops them from the raw argv before
+    prefix stripping and reads that one argv. Where dropping changes which
+    calls exist, the command is refused as ambiguous."""
 
     BASE = RedirectDescriptorDigit.BASE
     CORPUS = (
         "", " > log 2>&1", " 2>/dev/null", " 2>>err", " 1>out", " 0<in", " &>log",
         " 2>&1>log", " 2<&0", " 2<>f", " 2>|f", " {fd}>f", " 2>&-", " 1>&2 2>&1",
         " 2>&1 | tee log", " 2>&1; true", " && true 2>&1", " 2>'q f'", ' 2>"$HOME/x"',
-        " 2<(true)", " 2>(cat)", " 2 >f", " '2'>f", " v2>f", " ٢>f", " note\\ 2>f",
+        " 2<(true)", " 2 >f", " '2'>f", " v2>f", " ٢>f", " note\\ 2>f",
         " # 2>f", " $((1>2))", " <<EOF\n2>x\nEOF",
     )
 
-    def raw_only(self, command: str) -> tuple[list[str], bool]:
-        """main's behavior: no descriptor stripping at all."""
-        with mock.patch.object(gate, "_strip_fd_digits", side_effect=lambda text: text):
-            calls, _others, ok = gate._calls_in(command)
-        return [c.tool["path"] for c in calls], ok
+    @staticmethod
+    def main_reading(command: str):
+        """main's behavior: no digit word is ever dropped."""
+        real = shell_parse.simple_commands
 
-    def test_a_stripped_text_that_does_not_parse_still_finds_the_call(self) -> None:
-        command = self.BASE + " 2>&1>log"
-        calls, _others, ok = gate._calls_in(command)
-        self.assertEqual((([c.tool["path"] for c in calls]), ok), self.raw_only(command))
-        self.assertTrue(ok)
-        self.assertEqual(len(calls), 1)
+        def no_candidates(text):
+            return [i._replace(fd_candidates=()) if isinstance(i, shell_parse.SimpleCommand) else i
+                    for i in real(text)]
+        return mock.patch.object(gate.shell_parse, "simple_commands", side_effect=no_candidates)
 
-    def test_a_raw_text_that_does_not_parse_is_never_parsed_through_the_strip(self) -> None:
-        with mock.patch.object(gate, "_strip_fd_digits", return_value=self.BASE):
-            self.assertFalse(gate._calls_in(self.BASE + " 'unterminated")[2])
-
-    def test_a_strip_that_changes_more_than_digits_falls_back_to_raw_argv(self) -> None:
-        with mock.patch.object(gate, "_strip_fd_digits", side_effect=lambda t: t.replace("handoff", "rework")):
-            calls, _others, ok = gate._calls_in(self.BASE + " 2>f")
-        self.assertTrue(ok)
-        self.assertEqual(calls[0].argv[-2:], ["handoff", "2"])
-
-    def test_a_stripped_recursion_that_fails_never_unparses_the_command(self) -> None:
-        """Reforge preclose pass 1 (cross-family, reproduced at 7e5ae58): the
-        digit token `2` shifts which word `-c` takes in the stripped reading;
-        that inner text fails to parse, and the whole command read as unparsed,
-        so the earlier gated call was allowed. Parsing is the raw text's alone."""
-        command = FORCE_CMD + """ ; bash -c 2>/dev/null 'x "'"""
+    def paths(self, command: str) -> list[str]:
         calls, _others, ok = gate._calls_in(command)
         self.assertTrue(ok)
-        self.assertIn("tools/gh/kill_check.py", [c.tool["path"] for c in calls])
-        self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+        return [c.tool["path"] for c in calls]
 
-    def test_an_appended_unparseable_redirect_never_ungates_a_hidden_call(self) -> None:
-        """Reforge2 pass 1 (fail-direction, reproduced at 1441dae): a trailing
-        ` 2>&1>log` made the whole stripped text fail to parse, dropping the
-        stripped reading for every item, so a call only it revealed was allowed."""
-        for command in ("python3 2>f tools/gh/kill_check.py run --issue 1 2>&1>log",
-                        "bash -c 2>/dev/null '" + FORCE_CMD + "' 2>&1>log"):
+    def test_every_reported_bypass_is_found_and_refused(self) -> None:
+        """Epoch-2 survivors and the sticky-wicket's fourth case."""
+        for command in (
+                "python3 2>f tools/gh/kill_check.py run --issue 1 2>&1>log",
+                "bash -c 2>/dev/null '" + FORCE_CMD + "' 2>&1>log",
+                "bash -c 2>/dev/null '" + FORCE_CMD + "'",
+                "env 2>f python3 tools/gh/kill_check.py run --issue 1 2>&1>x",
+                "timeout 30 2>f python3 tools/gh/kill_check.py run --issue 1 2>&1>x",
+                "2>f python3 tools/gh/kill_check.py run --issue 1",
+                "if python3 2>f tools/gh/kill_check.py run --issue 1; then :; fi",
+                FORCE_CMD + """ ; bash -c 2>/dev/null 'x "'"""):
             with self.subTest(command=command):
-                calls, _others, ok = gate._calls_in(command)
-                self.assertTrue(ok)
-                self.assertTrue(calls)
+                # A later part that does not parse may leave ok False; the call
+                # found before it is still gated.
+                self.assertIn("tools/gh/kill_check.py", [c.tool["path"] for c in gate._calls_in(command)[0]])
                 self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
 
-    def test_one_items_doubt_never_drops_another_items_reading(self) -> None:
-        real = gate._strip_fd_digits
+    def test_a_dropped_prefix_argument_is_refused_as_ambiguous(self) -> None:
+        """Pitch inspection: dropping `timeout`'s `5` lets the prefix stripper
+        eat `bash`, so the dropped reading finds no call; the raw one does."""
+        command = "timeout 5 >f bash -c '" + FORCE_CMD + "'"
+        self.assertEqual(gate.refuses(command, "/tmp", frozenset()), gate.AMBIGUOUS)
 
-        def strip(text: str) -> str:
-            return real(text).replace("echo one", "echo two")
-        with mock.patch.object(gate, "_strip_fd_digits", side_effect=strip):
-            calls, _others, ok = gate._calls_in(
-                "echo one 2>f ; python3 tools/gh/kill_check.py run --issue 7 2>f")
-        self.assertTrue(ok)
-        self.assertEqual([c.tool["path"] for c in calls], ["tools/gh/kill_check.py"])
-        # The proven stripped argv keeps the real digit argument `7` and drops
-        # only the descriptor; the other item's doubt does not cost it that.
-        self.assertEqual(calls[0].argv, ["run", "--issue", "7"])
-
-    def test_a_redirected_shell_wrapper_is_one_call_not_two(self) -> None:
-        """Reforge2 pass 1 (correctness): both readings recursed and the inner
-        call was counted twice, dropping the cd target from the fingerprint."""
+    def test_a_redirected_shell_wrapper_is_one_call(self) -> None:
         plain = gate._calls_in("bash -c '" + FORCE_CMD + "'")[0]
         redirected = gate._calls_in("bash -c '" + FORCE_CMD + "' 2>/dev/null")[0]
-        self.assertEqual(len(plain), 1)
         self.assertEqual(len(redirected), 1)
         self.assertEqual(redirected[0].argv, plain[0].argv)
 
-    def test_a_call_only_the_executed_argv_reveals_is_still_gated(self) -> None:
-        """Reforge preclose pass 1: bash removes an attached redirect before the
-        program sees argv, so these run the gated tool; a raw-only reading
-        (main) misses them. Either reading finding a call gates it."""
-        for command in ("bash -c 2>/dev/null '" + FORCE_CMD + "'",
-                        "python3 2>f tools/gh/kill_check.py run --repo vitalharmony/harmonic-forge --issue 1291"):
-            with self.subTest(command=command):
-                calls, _others, ok = gate._calls_in(command)
-                self.assertTrue(ok)
-                self.assertEqual([c.tool["path"] for c in calls], ["tools/gh/kill_check.py"])
-                self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+    def test_an_unparseable_command_is_unparsed_as_on_main(self) -> None:
+        self.assertFalse(gate._calls_in(self.BASE + " 'unterminated")[2])
 
     def test_the_corpus_finds_at_least_the_calls_main_finds(self) -> None:
         for suffix in self.CORPUS:
             command = self.BASE + suffix
             with self.subTest(suffix=suffix):
+                with self.main_reading(command):
+                    main_calls, _o, main_ok = gate._calls_in(command)
                 calls, _others, ok = gate._calls_in(command)
-                main_calls, main_ok = self.raw_only(command)
                 self.assertEqual(ok, main_ok)
-                for path in main_calls:
-                    self.assertIn(path, [c.tool["path"] for c in calls])
+                for call in main_calls:
+                    self.assertIn(call.tool["path"], [c.tool["path"] for c in calls])
 
     def test_the_corpus_never_allows_what_main_refuses(self) -> None:
         for suffix in self.CORPUS:
             command = FORCE_CMD + suffix
             with self.subTest(suffix=suffix):
-                with mock.patch.object(gate, "_strip_fd_digits", side_effect=lambda text: text):
+                with self.main_reading(command):
                     main_refused = gate.refuses(command, "/tmp", frozenset()) is not None
                 if main_refused:
                     self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
 
+    def test_a_redirect_inserted_anywhere_never_ungates_the_call(self) -> None:
+        """Fuzz (sticky-wicket prescription): an attached ` 2>f` or ` 1>&2`
+        inserted between any two words of a gated command, alone or with a
+        trailing ` 2>&1>log`, is always found and refused."""
+        words = shlex.split(FORCE_CMD)
+        prefixes = ([], ["env"], ["timeout", "30"], ["nice", "-n", "5"], ["command"])
+        for prefix in prefixes:
+            base = prefix + words
+            for at in range(len(base) + 1):
+                for redirect in ("2>f", "1>&2", "0<in"):
+                    for tail in ("", " 2>&1>log"):
+                        command = " ".join(shlex.quote(w) for w in base[:at]) + " " + redirect \
+                            + " " + " ".join(shlex.quote(w) for w in base[at:]) + tail
+                        with self.subTest(command=command):
+                            self.assertIsNotNone(gate.refuses(command.strip(), "/tmp", frozenset()))
+
+
+class ShellParseFdCandidates(unittest.TestCase):
+    def test_a_digit_before_a_redirect_is_a_candidate_and_argv_is_unchanged(self) -> None:
+        (item,) = shell_parse.simple_commands("cmd a 2>f b 7 >g")
+        self.assertEqual(item.argv, ["cmd", "a", "2", "b", "7"])
+        self.assertEqual(item.fd_candidates, (2, 4))
+
+    def test_indices_count_from_after_stripped_reserved_words(self) -> None:
+        item = shell_parse.simple_commands("if cmd 2>f x; then :; fi")[0]
+        self.assertEqual(item.argv, ["cmd", "2", "x"])
+        self.assertEqual(item.fd_candidates, (1,))
+
+    def test_the_field_defaults_to_empty(self) -> None:
+        self.assertEqual(shell_parse.SimpleCommand(["a"], [], None, None).fd_candidates, ())
 
 if __name__ == "__main__":
     unittest.main()

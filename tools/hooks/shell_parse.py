@@ -224,6 +224,11 @@ class SimpleCommand(NamedTuple):
     redirects: list[tuple[str, str | None]]
     sep_before: str | None
     sep_after: str | None
+    #: harmonic-forge#1461: argv indices of all-ASCII-digit words that come
+    #: directly before a redirect operator. Each may be a descriptor (`2>f`,
+    #: which bash removes) or an argument (`2 >f`); the tokenizer cannot tell.
+    #: argv itself is unchanged; a consumer chooses how to read them.
+    fd_candidates: tuple[int, ...] = ()
 
 
 class GroupMarker(NamedTuple):
@@ -269,18 +274,23 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
     out: list[SimpleCommand | GroupMarker] = []
     argv: list[str] = []
     redirects: list[tuple[str, str | None]] = []
+    candidates: list[int] = []
     sep_before: str | None = None
     pending: str | None = None
     heredocs: list[str] = []
     closing_delimiter: str | None = None
 
     def end(sep: str | None) -> None:
-        nonlocal argv, redirects, sep_before
+        nonlocal argv, redirects, sep_before, candidates
+        dropped = 0
         while argv and argv[0] in RESERVED_WORDS:
             argv.pop(0)
+            dropped += 1
         if argv or redirects:
-            out.append(SimpleCommand(argv, redirects, sep_before, sep))
-        argv, redirects, sep_before = [], [], sep
+            # Indices were recorded before the reserved words were stripped.
+            fd = tuple(i - dropped for i in candidates if i >= dropped)
+            out.append(SimpleCommand(argv, redirects, sep_before, sep, fd))
+        argv, redirects, sep_before, candidates = [], [], sep, []
 
     for kind, value in items:
         if pending is not None:
@@ -317,7 +327,11 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
         else:
             # A digit word before a redirect stays in argv: shlex cannot tell
             # `2>f` (a descriptor) from `2 >f` (an argument), and dropping it
-            # would hide an argument (harmonic-forge#1289 pass 1).
+            # would hide an argument (harmonic-forge#1289 pass 1). Its index is
+            # recorded instead (harmonic-forge#1461).
+            if argv and argv[-1] and all(c in "0123456789" for c in argv[-1]) \
+                    and (len(argv) - 1) not in candidates:
+                candidates.append(len(argv) - 1)
             pending = value
     if pending is not None:
         raise ValueError(f"redirect {pending} has no target")
