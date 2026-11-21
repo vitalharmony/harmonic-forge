@@ -1,0 +1,1651 @@
+{
+ "builtins": [
+  "--help",
+  "--version",
+  "-h",
+  "__complete",
+  "__completeNoDesc",
+  "agent-task",
+  "alias",
+  "api",
+  "attestation",
+  "auth",
+  "browse",
+  "cache",
+  "co",
+  "codespace",
+  "completion",
+  "config",
+  "copilot",
+  "discussion",
+  "extension",
+  "gist",
+  "gpg-key",
+  "help",
+  "issue",
+  "label",
+  "licenses",
+  "org",
+  "pr",
+  "preview",
+  "project",
+  "release",
+  "repo",
+  "ruleset",
+  "run",
+  "search",
+  "secret",
+  "skill",
+  "ssh-key",
+  "status",
+  "variable",
+  "version",
+  "workflow"
+ ],
+ "commands": {
+  "api": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--allow-escape-sequences": {
+     "short": null,
+     "value": false
+    },
+    "--cache": {
+     "short": null,
+     "value": true
+    },
+    "--field": {
+     "short": "F",
+     "value": true
+    },
+    "--header": {
+     "short": "H",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--hostname": {
+     "short": null,
+     "value": true
+    },
+    "--include": {
+     "short": "i",
+     "value": false
+    },
+    "--input": {
+     "short": null,
+     "value": true
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--method": {
+     "short": "X",
+     "value": true
+    },
+    "--paginate": {
+     "short": null,
+     "value": false
+    },
+    "--preview": {
+     "short": "p",
+     "value": true
+    },
+    "--raw-field": {
+     "short": "f",
+     "value": true
+    },
+    "--silent": {
+     "short": null,
+     "value": false
+    },
+    "--slurp": {
+     "short": null,
+     "value": false
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--verbose": {
+     "short": null,
+     "value": false
+    }
+   }
+  },
+  "issue": {
+   "aliases": [],
+   "children": [
+    "artifact",
+    "close",
+    "comment",
+    "create",
+    "delete",
+    "develop",
+    "edit",
+    "list",
+    "lock",
+    "pin",
+    "reopen",
+    "status",
+    "transfer",
+    "unlock",
+    "unpin",
+    "view"
+   ],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue artifact": {
+   "aliases": [],
+   "children": [
+    "create",
+    "delete",
+    "download",
+    "edit",
+    "list",
+    "view"
+   ],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue artifact create": {
+   "aliases": [
+    "new"
+   ],
+   "children": [],
+   "flags": {
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--name": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--type": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "issue artifact delete": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--yes": {
+     "short": null,
+     "value": false
+    }
+   }
+  },
+  "issue artifact download": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--clobber": {
+     "short": null,
+     "value": false
+    },
+    "--dir": {
+     "short": "D",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--output": {
+     "short": "O",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--skip-existing": {
+     "short": null,
+     "value": false
+    },
+    "--version": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "issue artifact edit": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--name": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--restore-version": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "issue artifact list": {
+   "aliases": [
+    "ls"
+   ],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--limit": {
+     "short": "L",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--type": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "issue artifact view": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--version": {
+     "short": null,
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "issue close": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--comment": {
+     "short": "c",
+     "value": true
+    },
+    "--duplicate-of": {
+     "short": null,
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--reason": {
+     "short": "r",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue comment": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--create-if-none": {
+     "short": null,
+     "value": false
+    },
+    "--delete-last": {
+     "short": null,
+     "value": false
+    },
+    "--edit-last": {
+     "short": null,
+     "value": false
+    },
+    "--editor": {
+     "short": "e",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    },
+    "--yes": {
+     "short": null,
+     "value": false
+    }
+   }
+  },
+  "issue create": {
+   "aliases": [
+    "new"
+   ],
+   "children": [],
+   "flags": {
+    "--assignee": {
+     "short": "a",
+     "value": true
+    },
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--blocked-by": {
+     "short": null,
+     "value": true
+    },
+    "--blocking": {
+     "short": null,
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--editor": {
+     "short": "e",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--label": {
+     "short": "l",
+     "value": true
+    },
+    "--milestone": {
+     "short": "m",
+     "value": true
+    },
+    "--parent": {
+     "short": null,
+     "value": true
+    },
+    "--project": {
+     "short": "p",
+     "value": true
+    },
+    "--recover": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "T",
+     "value": true
+    },
+    "--title": {
+     "short": "t",
+     "value": true
+    },
+    "--type": {
+     "short": null,
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "issue delete": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--yes": {
+     "short": null,
+     "value": false
+    }
+   }
+  },
+  "issue develop": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--base": {
+     "short": "b",
+     "value": true
+    },
+    "--branch-repo": {
+     "short": null,
+     "value": true
+    },
+    "--checkout": {
+     "short": "c",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--list": {
+     "short": "l",
+     "value": false
+    },
+    "--name": {
+     "short": "n",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--worktree": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "issue edit": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--add-assignee": {
+     "short": null,
+     "value": true
+    },
+    "--add-blocked-by": {
+     "short": null,
+     "value": true
+    },
+    "--add-blocking": {
+     "short": null,
+     "value": true
+    },
+    "--add-label": {
+     "short": null,
+     "value": true
+    },
+    "--add-project": {
+     "short": null,
+     "value": true
+    },
+    "--add-sub-issue": {
+     "short": null,
+     "value": true
+    },
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--milestone": {
+     "short": "m",
+     "value": true
+    },
+    "--parent": {
+     "short": null,
+     "value": true
+    },
+    "--remove-assignee": {
+     "short": null,
+     "value": true
+    },
+    "--remove-blocked-by": {
+     "short": null,
+     "value": true
+    },
+    "--remove-blocking": {
+     "short": null,
+     "value": true
+    },
+    "--remove-label": {
+     "short": null,
+     "value": true
+    },
+    "--remove-milestone": {
+     "short": null,
+     "value": false
+    },
+    "--remove-parent": {
+     "short": null,
+     "value": false
+    },
+    "--remove-project": {
+     "short": null,
+     "value": true
+    },
+    "--remove-sub-issue": {
+     "short": null,
+     "value": true
+    },
+    "--remove-type": {
+     "short": null,
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--title": {
+     "short": "t",
+     "value": true
+    },
+    "--type": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "issue list": {
+   "aliases": [
+    "ls"
+   ],
+   "children": [],
+   "flags": {
+    "--app": {
+     "short": null,
+     "value": true
+    },
+    "--assignee": {
+     "short": "a",
+     "value": true
+    },
+    "--author": {
+     "short": "A",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--label": {
+     "short": "l",
+     "value": true
+    },
+    "--limit": {
+     "short": "L",
+     "value": true
+    },
+    "--mention": {
+     "short": null,
+     "value": true
+    },
+    "--milestone": {
+     "short": "m",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--search": {
+     "short": "S",
+     "value": true
+    },
+    "--state": {
+     "short": "s",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--type": {
+     "short": null,
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "issue lock": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--reason": {
+     "short": "r",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue pin": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue reopen": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--comment": {
+     "short": "c",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue status": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    }
+   }
+  },
+  "issue transfer": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue unlock": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue unpin": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "issue view": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--comments": {
+     "short": "c",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "pr": {
+   "aliases": [],
+   "children": [
+    "checkout",
+    "checks",
+    "close",
+    "comment",
+    "create",
+    "diff",
+    "edit",
+    "list",
+    "lock",
+    "merge",
+    "ready",
+    "reopen",
+    "revert",
+    "review",
+    "status",
+    "unlock",
+    "update-branch",
+    "view"
+   ],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "pr checkout": {
+   "aliases": [
+    "co"
+   ],
+   "children": [],
+   "flags": {
+    "--branch": {
+     "short": "b",
+     "value": true
+    },
+    "--detach": {
+     "short": null,
+     "value": false
+    },
+    "--force": {
+     "short": "f",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--recurse-submodules": {
+     "short": null,
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--worktree": {
+     "short": null,
+     "value": true
+    }
+   }
+  },
+  "pr checks": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--fail-fast": {
+     "short": null,
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--interval": {
+     "short": "i",
+     "value": true
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--required": {
+     "short": null,
+     "value": false
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--watch": {
+     "short": null,
+     "value": false
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "pr close": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--comment": {
+     "short": "c",
+     "value": true
+    },
+    "--delete-branch": {
+     "short": "d",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "pr comment": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--create-if-none": {
+     "short": null,
+     "value": false
+    },
+    "--delete-last": {
+     "short": null,
+     "value": false
+    },
+    "--edit-last": {
+     "short": null,
+     "value": false
+    },
+    "--editor": {
+     "short": "e",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    },
+    "--yes": {
+     "short": null,
+     "value": false
+    }
+   }
+  },
+  "pr create": {
+   "aliases": [
+    "new"
+   ],
+   "children": [],
+   "flags": {
+    "--assignee": {
+     "short": "a",
+     "value": true
+    },
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--base": {
+     "short": "B",
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--draft": {
+     "short": "d",
+     "value": false
+    },
+    "--dry-run": {
+     "short": null,
+     "value": false
+    },
+    "--editor": {
+     "short": "e",
+     "value": false
+    },
+    "--fill": {
+     "short": "f",
+     "value": false
+    },
+    "--fill-first": {
+     "short": null,
+     "value": false
+    },
+    "--fill-verbose": {
+     "short": null,
+     "value": false
+    },
+    "--head": {
+     "short": "H",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--label": {
+     "short": "l",
+     "value": true
+    },
+    "--milestone": {
+     "short": "m",
+     "value": true
+    },
+    "--no-maintainer-edit": {
+     "short": null,
+     "value": false
+    },
+    "--project": {
+     "short": "p",
+     "value": true
+    },
+    "--recover": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--reviewer": {
+     "short": "r",
+     "value": true
+    },
+    "--template": {
+     "short": "T",
+     "value": true
+    },
+    "--title": {
+     "short": "t",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "pr diff": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--allow-escape-sequences": {
+     "short": null,
+     "value": false
+    },
+    "--color": {
+     "short": null,
+     "value": true
+    },
+    "--exclude": {
+     "short": "e",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--name-only": {
+     "short": null,
+     "value": false
+    },
+    "--patch": {
+     "short": null,
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "pr edit": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--add-assignee": {
+     "short": null,
+     "value": true
+    },
+    "--add-label": {
+     "short": null,
+     "value": true
+    },
+    "--add-project": {
+     "short": null,
+     "value": true
+    },
+    "--add-reviewer": {
+     "short": null,
+     "value": true
+    },
+    "--attach": {
+     "short": null,
+     "value": true
+    },
+    "--base": {
+     "short": "B",
+     "value": true
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--milestone": {
+     "short": "m",
+     "value": true
+    },
+    "--remove-assignee": {
+     "short": null,
+     "value": true
+    },
+    "--remove-label": {
+     "short": null,
+     "value": true
+    },
+    "--remove-milestone": {
+     "short": null,
+     "value": false
+    },
+    "--remove-project": {
+     "short": null,
+     "value": true
+    },
+    "--remove-reviewer": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--title": {
+     "short": "t",
+     "value": true
+    }
+   }
+  },
+  "pr list": {
+   "aliases": [
+    "ls"
+   ],
+   "children": [],
+   "flags": {
+    "--app": {
+     "short": null,
+     "value": true
+    },
+    "--assignee": {
+     "short": "a",
+     "value": true
+    },
+    "--author": {
+     "short": "A",
+     "value": true
+    },
+    "--base": {
+     "short": "B",
+     "value": true
+    },
+    "--draft": {
+     "short": "d",
+     "value": false
+    },
+    "--head": {
+     "short": "H",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--label": {
+     "short": "l",
+     "value": true
+    },
+    "--limit": {
+     "short": "L",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--search": {
+     "short": "S",
+     "value": true
+    },
+    "--state": {
+     "short": "s",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  },
+  "pr lock": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--reason": {
+     "short": "r",
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "pr merge": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--admin": {
+     "short": null,
+     "value": false
+    },
+    "--author-email": {
+     "short": "A",
+     "value": true
+    },
+    "--auto": {
+     "short": null,
+     "value": false
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--delete-branch": {
+     "short": "d",
+     "value": false
+    },
+    "--disable-auto": {
+     "short": null,
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--match-head-commit": {
+     "short": null,
+     "value": true
+    },
+    "--merge": {
+     "short": "m",
+     "value": false
+    },
+    "--rebase": {
+     "short": "r",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--squash": {
+     "short": "s",
+     "value": false
+    },
+    "--subject": {
+     "short": "t",
+     "value": true
+    }
+   }
+  },
+  "pr ready": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--undo": {
+     "short": null,
+     "value": false
+    }
+   }
+  },
+  "pr reopen": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--comment": {
+     "short": "c",
+     "value": true
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "pr revert": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--draft": {
+     "short": "d",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--title": {
+     "short": "t",
+     "value": true
+    }
+   }
+  },
+  "pr review": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--approve": {
+     "short": "a",
+     "value": false
+    },
+    "--body": {
+     "short": "b",
+     "value": true
+    },
+    "--body-file": {
+     "short": "F",
+     "value": true
+    },
+    "--comment": {
+     "short": "c",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--request-changes": {
+     "short": "r",
+     "value": false
+    }
+   }
+  },
+  "pr status": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--conflict-status": {
+     "short": "c",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    }
+   }
+  },
+  "pr unlock": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "pr update-branch": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--rebase": {
+     "short": null,
+     "value": false
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    }
+   }
+  },
+  "pr view": {
+   "aliases": [],
+   "children": [],
+   "flags": {
+    "--comments": {
+     "short": "c",
+     "value": false
+    },
+    "--help": {
+     "short": "h",
+     "value": false
+    },
+    "--jq": {
+     "short": "q",
+     "value": true
+    },
+    "--json": {
+     "short": null,
+     "value": true
+    },
+    "--repo": {
+     "short": "R",
+     "value": true
+    },
+    "--template": {
+     "short": "t",
+     "value": true
+    },
+    "--web": {
+     "short": "w",
+     "value": false
+    }
+   }
+  }
+ },
+ "gh_version": "2.103.3"
+}

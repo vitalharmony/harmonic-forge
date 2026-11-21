@@ -112,7 +112,12 @@ class ShimBashBypass(unittest.TestCase):
         # pass 1 survivors
         "echo closed > f; gh api -X PATCH repos/o/r/issues/5 -F state=@f",
         "gh api -X PATCH 'repos/{owner}/{repo}/issues/5' -f state=closed",
-        "gh issue close --duplicate-of 6 5 -R o/r",
+        "gh issue close -c x --duplicate-of 6 5 -R o/r",
+        # sticky-wicket reforge: spellings the old substring/prefix classifier let through
+        "gh api -iXPATCH repos/o/r/issues/5 -f state=closed",
+        "gh api repos/o/r/issues/5 -iFstate=closed",
+        "gh issue -R o/r close 5",
+        "gh api -X PATCH repositories/123/issues/5 -f state=closed",
         "gh api -X PUT 'repos/{owner}/{repo}/pulls/7/merge'",
     )
 
@@ -175,6 +180,39 @@ class ShimBashBypass(unittest.TestCase):
         self.assertEqual(self.closes_sent(), [])
         done = self.run_bash("gh auth token", UNINSPECTED, env)
         self.assertNotEqual(done.returncode, 4, done.stderr)
+
+    def test_a_duplicate_close_binds_the_issue_not_the_duplicate_of_value(self):
+        """Pass-1 finding: `--duplicate-of 6` is a value, so the target is #5,
+        and the exact duplicate close is exempt (harmonic-forge#1433)."""
+        done = self.run_bash("gh issue close --duplicate-of 6 5 -R o/r", UNINSPECTED)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(["api", "repos/o/r/issues/5", "--jq", ".labels[].name"], self.sent())
+
+    def test_an_unknown_flag_on_a_gated_root_is_refused(self):
+        """Required test 6: a token the pinned grammar does not know refuses."""
+        for script in ("gh issue close 5 -R o/r --frobnicate", "gh api --frobnicate user",
+                       "gh pr view --frobnicate 7", "gh frobnicate 5"):
+            with self.subTest(script=script):
+                self.log.write_text("")
+                done = self.run_bash(script, {**INSPECTED, "aliases": ""})
+                self.assertEqual(done.returncode, 4, done.stderr)
+                self.assertEqual([a for a in self.sent() if a[:2] != ["alias", "list"]], [])
+
+    def test_an_import_failure_refuses_every_gated_root_but_not_identity(self):
+        """Required test 6: with no gate to import, api/issue/pr and unknown
+        roots refuse; the identity calls and other builtins pass."""
+        lonely = self.tmp / "lonely2"
+        lonely.mkdir()
+        shutil.copy(SHIM, lonely / "gh")
+        (lonely / "gh").chmod(0o755)
+        shutil.copy(HERE / "gh_scan_patterns.py", lonely / "gh_scan_patterns.py")
+        env = {"PATH": f"{lonely}:{self.tmp / 'real'}:/usr/bin:/bin"}
+        for script in ("gh api repos/o/r/issues/5", "gh issue view 5 -R o/r", "gh c 5"):
+            with self.subTest(script=script):
+                self.assertEqual(self.run_bash(script, UNINSPECTED, env).returncode, 4)
+        for script in ("gh api user --jq .login", "gh auth token", "gh repo view o/r"):
+            with self.subTest(script=script):
+                self.assertNotEqual(self.run_bash(script, UNINSPECTED, env).returncode, 4)
 
     def test_an_inspected_close_goes_through(self):
         done = self.run_bash("gh issue close 5 -R o/r", INSPECTED)
@@ -266,25 +304,11 @@ class Layering(unittest.TestCase):
 
 
 class CloseGateUnits(unittest.TestCase):
-    def test_rest_close_shapes(self):
-        rest = close_gate._rest_close_target
-        self.assertEqual(rest(["gh", "api", "-XPATCH", "repos/o/r/issues/5", "-f", "state=CLOSED"]),
-                         ("o/r", "5", "issue"))
-        self.assertEqual(rest(["gh", "api", "repos/o/r/issues/5", "--field=state=closed"]), ("o/r", "5", "issue"))
-        self.assertIsNone(rest(["gh", "api", "-X", "GET", "repos/o/r/issues/5", "-f", "state=closed"]))
-        self.assertIsNone(rest(["gh", "api", "repos/o/r/issues/5"]))
-        self.assertIsNone(rest(["gh", "api", "-X", "PATCH", "repos/o/r/issues/5", "-f", "title=x"]))
-
     def test_paginated_pages_read_as_one_list(self):
         import block_undetermined_phase_close as ph
         from unittest import mock
         with mock.patch.object(ph, "_gh", return_value='[{"a":1}]\n[{"a":2}]'):
             self.assertEqual(ph._gh_json("api", "x", "--paginate"), [{"a": 1}, {"a": 2}])
-
-    def test_cheap_classifier(self):
-        self.assertFalse(close_gate.could_be_close_or_merge(["issue", "view", "5"]))
-        self.assertTrue(close_gate.could_be_close_or_merge(["issue", "close", "5"]))
-        self.assertTrue(close_gate.could_be_close_or_merge(["c", "5"]))
 
     def test_strict_reads_name_the_real_binary_explicitly(self):
         """Kill check 8: in strict mode both hooks run the shim's real gh, never
