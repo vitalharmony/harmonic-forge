@@ -2967,3 +2967,11 @@ anchor = "verification-gate"
 statement = "In a Bash call that changes directory or writes a file, every path is spelled out literally, never held in a shell variable; where the harmonic-forge#529/#1262 guard applies it refuses what it cannot resolve (harmonic-forge#1458)."
 text_sha = "b58e1275007c75d9"
 hooks = []
+
+[[rule]]
+id = "R-0436"
+file = "rules/universal-lane1.md"
+anchor = "current-lane-assignment-harmonic-forge113"
+statement = "Ready own-queue work that existing rules already authorize Lane 1 to do (implementation per R-0392) is done rather than asked about; timing and operator-reserved steps stay with the existing rules (harmonic-forge#1486)."
+text_sha = "0083860b6fdd8f73"
+hooks = []

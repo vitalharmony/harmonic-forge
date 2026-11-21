@@ -37,6 +37,10 @@ implementation. Follow the project rules when an operator explicitly
 assigns a different runtime; never infer a role change from a stale
 document or prior session.
 
+<!-- R-0436 -->
+A ready item in Lane 1's own task list that existing rules already authorize Lane 1 to do (implementation needs R-0392's instruction naming the issue) is done, never offered to the operator as a question; when it starts, and every step a rule reserves to the operator, stay governed by those rules.
+<!-- /R-0436 -->
+
 ## Role boundary — Lane 1 never implements
 
 <!-- R-0089 -->
