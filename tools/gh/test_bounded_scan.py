@@ -507,8 +507,10 @@ class ShimThroughASymlink(unittest.TestCase):
         self.grant()
         path = bs.list_path(REPO, "open-issues", 1)
         done = self.call(path, gh=lone / "gh_shim")
-        self.assertEqual(done.returncode, 3)
-        self.assertIn("could not import its checks", done.stderr)
+        # harmonic-forge#1447 reforge: with no hooks dir the close/merge gate
+        # cannot import either, and it refuses every `gh api` first (exit 4).
+        self.assertEqual(done.returncode, 4)
+        self.assertIn("close/merge gate internal error", done.stderr)
         self.assertFalse(self.reached_real_gh(path))
 
     def test_a_module_beside_the_symlink_never_shadows_the_shims_own(self):

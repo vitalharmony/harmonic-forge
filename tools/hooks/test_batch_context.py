@@ -336,7 +336,10 @@ class AC3WiringTests(unittest.TestCase):
         source = (HERE / "block_missing_preclose_inspection.py").read_text(
             encoding="utf-8")
         self.assertIn("issue_key(repo, issue)", source)
-        self.assertIn("target_key=_acting", source)
+        # harmonic-forge#1447: decide_targets returns (text, acting key) and
+        # main passes the key on to _deny.
+        self.assertIn("), _acting", source)
+        self.assertIn("_deny(verdict[0], target_key=verdict[1])", source)
 
 
 class TopUpRemedyTests(unittest.TestCase):
