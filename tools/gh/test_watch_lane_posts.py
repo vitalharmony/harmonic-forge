@@ -411,6 +411,18 @@ def _fake_conditional(*, count=0, pages=None, state="open", labels=()):
     return conditional_get
 
 
+def _fake_milestones(titles, raise_=None):
+    """A `conditional_get` fake for the open-milestones read (harmonic-forge#1489)."""
+    Response = watch_lane_posts._etag_cache.Response
+
+    def conditional_get(account, path, counter=None):
+        if raise_ is not None:
+            raise raise_
+        assert "milestones" in path, path
+        return Response(200, json.dumps([{"title": t} for t in titles]), False)
+    return conditional_get
+
+
 def _fake_completed(stdout, returncode=0):
     result = subprocess.CompletedProcess(args=[], returncode=returncode)
     result.stdout = stdout
@@ -3232,7 +3244,66 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
 
     def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
         self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
-        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.2", "Platform"}))
+        watch_lane_posts._TICK_RELEASE.clear()
+        with patch("watch_lane_posts._etag_cache.conditional_get", _fake_milestones(["Later", "Platform", "3.3"])):
+            self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.3", "Platform"}))
+        watch_lane_posts._TICK_RELEASE.clear()
+
+    # harmonic-forge#1489: `@current-release` (every read patched, N6).
+    def _token(self, titles=None, raise_=None):
+        watch_lane_posts._TICK_RELEASE.clear()
+        project = [type("P", (), {"repo": "vitalharmony/hrse",
+                                  "active_milestones": ("@current-release", "Platform")})()]
+        fake = _fake_milestones(titles or [], raise_=raise_)
+        calls = []
+
+        def counting(account, path, counter=None):
+            calls.append(path)
+            return fake(account, path, counter)
+        err = io.StringIO()
+        with patch("watch_lane_posts.onboard_manifest.load", return_value=project), \
+             patch("watch_lane_posts._etag_cache.conditional_get", counting), patch("sys.stderr", err):
+            first = watch_lane_posts._active_milestones("vitalharmony/hrse")
+            second = watch_lane_posts._active_milestones("vitalharmony/hrse")
+        watch_lane_posts._TICK_RELEASE.clear()
+        return first, second, calls, err.getvalue()
+
+    def test_token_takes_the_lowest_open_release(self):
+        first, _, _, _ = self._token(["3.10", "Later", "3.9", "Platform"])
+        self.assertEqual(first, frozenset({"3.9", "Platform"}))
+
+    def test_token_follows_the_next_release_when_one_closes(self):
+        first, _, _, _ = self._token(["3.10"])  # 3.9 closed, no file edit
+        self.assertEqual(first, frozenset({"3.10", "Platform"}))
+
+    def test_two_open_releases_scope_only_the_lower(self):
+        first, _, _, _ = self._token(["3.4", "3.3"])
+        self.assertEqual(first, frozenset({"3.3", "Platform"}))
+
+    def test_no_open_release_keeps_only_literals(self):
+        first, _, _, err = self._token(["Later", "Platform"])
+        self.assertEqual(first, frozenset({"Platform"}))
+        self.assertIn("resolves to nothing", err)
+
+    def test_a_failed_read_holds_milestoned_candidates(self):
+        first, second, calls, err = self._token(raise_=RuntimeError("502"))
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(len(calls), 1)  # the failure is cached too (N2)
+        self.assertIn("holding milestoned candidates", err)
+
+    def test_one_read_per_tick(self):
+        _, second, calls, _ = self._token(["3.3"])
+        self.assertEqual(second, frozenset({"3.3", "Platform"}))
+        self.assertEqual(len(calls), 1)  # N1
+
+    def test_a_new_tick_reads_again(self):
+        watch_lane_posts._TICK_RELEASE["vitalharmony/hrse"] = "3.2"
+        watch_lane_posts._reset_tick_reads()
+        try:
+            self.assertNotIn("vitalharmony/hrse", watch_lane_posts._TICK_RELEASE)
+        finally:
+            watch_lane_posts._end_tick_reads()
 
     def test_an_edited_list_takes_effect_without_a_restart(self):
         # Preclose pass 1 survivor: the list was cached for the process's life.
