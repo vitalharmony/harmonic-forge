@@ -23,10 +23,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import tasklist_owed as owed  # noqa: E402
 
-TASKS_DIR = Path.home() / ".claude" / "tasks"
 OPEN = ("pending", "in_progress")
 #: The owners `tools/hooks/tasklist_hold.py` enforces as `metadata.owner`.
-OWNERS = ("lane1", "lane2", "lane3", "operator", "ci", "bg")
+OWNERS = owed.OWNERS
 
 
 def classify(entry: dict, lane: str) -> str:
@@ -40,9 +39,10 @@ def classify(entry: dict, lane: str) -> str:
     scan must agree on scope), so without one it is never named."""
     if entry.get("status") not in OPEN:
         return "other"
-    owner = (entry.get("metadata") or {}).get("owner")
-    if owner not in OWNERS:
+    metadata = entry.get("metadata") or {}
+    if not owed.valid_owner(metadata):
         return "unparsed" if owed.entry_key(entry) else "other"
+    owner = metadata["owner"]
     return "owed" if owner == f"lane{lane}" else "other"
 
 
@@ -71,18 +71,21 @@ def scan(store: Path, lane: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Reforge pass 1 (cross-family): Claude Code stores the list under
-    # CLAUDE_CODE_TASK_LIST_ID when it is set, so the scan reads that list.
-    session = (os.environ.get("CLAUDE_CODE_TASK_LIST_ID", "").strip()
-               or os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip())
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
     lane = os.environ.get("LANE", "").strip()
-    if not session:
-        print("tick-scan: CLAUDE_CODE_SESSION_ID is unset; the task list cannot be read")
+    # One resolver with the hold hook (sticky-wicket PATCH): a shared or team
+    # list is an accepted limit, named on one line and never scanned.
+    store, why = owed.task_store(session)
+    if store is None:
+        if owed.SHARED_LIST_ENV in why:
+            print(f"tick-scan: {why}; not scanned")
+        else:
+            print("tick-scan: CLAUDE_CODE_SESSION_ID is unset; the task list cannot be read")
         return 0
     if not lane:
         print("tick-scan: LANE is unset; no lane owns this task list")
         return 0
-    for line in scan(TASKS_DIR / session, lane):
+    for line in scan(store, lane):
         print(line)
     return 0
 

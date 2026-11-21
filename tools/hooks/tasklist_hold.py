@@ -91,7 +91,7 @@ SHAPE = ("<KEY> — <last action> · waiting on <who> <step>, with metadata.owne
          "(harmonic-forge#1477)")
 #: harmonic-forge#1477: the structured owner every open issue entry carries in a
 #: lane session; the tick reads it, never the subject's prose.
-OWNERS = ("lane1", "lane2", "lane3", "operator", "ci", "bg")
+OWNERS = owed.OWNERS
 OWNER_RULE = ("metadata.owner must be one of " + ", ".join(OWNERS)
               + " (and owner bg needs a non-empty string metadata.bg_ref naming the job)")
 OTHER_ACCOUNT = {"K", "Y", "D"}
@@ -160,9 +160,14 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     task_id = str(tool_input.get("taskId") or "")
     # harmonic-forge#1477: the owner check runs before the taskId guard, so a
     # TaskCreate (which has no taskId) is checked too.
+    store, why = owed.task_store(session)
+    if store is None and owed.SHARED_LIST_ENV in why:
+        # Accepted limit (harmonic-forge#1477): a shared or team list is not enforced.
+        _note(f"{why}; not enforced")
+        return "allow", ""
     if payload.get("tool_name") == "TaskCreate":
         return _owner_decide(dict(tool_input))
-    if not session or not task_id:
+    if store is None or not task_id:
         return "allow", ""
     try:
         entries = owed.read_entries(session)
@@ -239,10 +244,7 @@ def _owner_decide(entry: dict) -> tuple[str, str]:
     status = entry.get("status") or "pending"
     if status not in owed.OPEN_STATUSES or not owed.entry_key(entry):
         return "allow", ""
-    meta = entry.get("metadata") or {}
-    owner = meta.get("owner")
-    bg_ref = meta.get("bg_ref")
-    if owner in OWNERS and (owner != "bg" or (isinstance(bg_ref, str) and bg_ref.strip())):
+    if owed.valid_owner(entry.get("metadata") or {}):
         return "allow", ""
     return "deny", (f"{owed.entry_key(entry)}'s open task-list entry has no valid owner: "
                     f"{OWNER_RULE}. Send it in this call's metadata (harmonic-forge#1477; "

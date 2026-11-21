@@ -117,24 +117,38 @@ class Scan(unittest.TestCase):
                 self.assertEqual(tick_scan.main([]), 0)
         self.assertIn("CLAUDE_CODE_SESSION_ID is unset", out.getvalue())
 
-    def test_main_reads_the_shared_task_list_when_one_is_set(self) -> None:
-        shared = self.store / "shared-list"
-        shared.mkdir()
-        (shared / "1.json").write_text(json.dumps(entry("F8 todo", "lane1")))
+    def test_a_shared_task_list_is_named_unsupported_and_not_scanned(self) -> None:
+        (self.store / "sess-1").mkdir()
+        (self.store / "sess-1" / "1.json").write_text(json.dumps(entry("F8 todo", "lane1")))
         out = io.StringIO()
-        with mock.patch.object(tick_scan, "TASKS_DIR", self.store), \
-                mock.patch.dict(os.environ, {"LANE": "1", "CLAUDE_CODE_SESSION_ID": "sess-x",
+        with mock.patch.object(tick_scan.owed, "TASKS_DIR", self.store), \
+                mock.patch.dict(os.environ, {"LANE": "1", "CLAUDE_CODE_SESSION_ID": "sess-1",
                                              "CLAUDE_CODE_TASK_LIST_ID": "shared-list"}), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(tick_scan.main([]), 0)
-        self.assertEqual(out.getvalue(), "owed-own-queue F8 todo\n")
+        self.assertEqual(out.getvalue(),
+                         "tick-scan: shared task list (CLAUDE_CODE_TASK_LIST_ID) unsupported; not scanned\n")
+
+    def test_the_tick_and_the_hook_agree_on_every_owner_shape(self) -> None:
+        """One validator (sticky-wicket PATCH): owed/other <=> hook allows."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+        import tasklist_hold as hold  # noqa: PLC0415
+        shapes = ({"owner": "lane1"}, {"owner": "lane2"}, {"owner": "bg", "bg_ref": "b1"},
+                  {"owner": "bg"}, {"owner": "bg", "bg_ref": {}}, {"owner": "bg", "bg_ref": "  "},
+                  {}, {"owner": "bogus"})
+        for meta in shapes:
+            with self.subTest(meta=meta):
+                e = {"subject": "F1 — x", "status": "pending", "metadata": meta}
+                tick_ok = tick_scan.classify(e, "1") != "unparsed"
+                hook_ok = hold._owner_decide(e)[0] == "allow"
+                self.assertEqual(tick_ok, hook_ok)
 
     def test_main_reads_the_sessions_store(self) -> None:
         session = self.store / "sess-1"
         session.mkdir()
         (session / "1.json").write_text(json.dumps(entry("F9 todo", "lane1")))
         out = io.StringIO()
-        with mock.patch.object(tick_scan, "TASKS_DIR", self.store), \
+        with mock.patch.object(tick_scan.owed, "TASKS_DIR", self.store), \
                 mock.patch.dict(os.environ, {"LANE": "1", "CLAUDE_CODE_SESSION_ID": "sess-1"}), \
                 mock.patch.dict(os.environ, {"CLAUDE_CODE_TASK_LIST_ID": ""}), \
                 contextlib.redirect_stdout(out):

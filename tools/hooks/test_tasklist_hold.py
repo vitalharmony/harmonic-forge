@@ -944,6 +944,16 @@ class OwnerField(Base):
         update = [h for entry in hooks if entry.get("matcher") == "TaskUpdate" for h in entry["hooks"]]
         self.assertTrue(any("tasklist_hold.py" in h["command"] for h in update))
 
+    def test_nulling_the_owner_is_denied_in_the_supported_store(self):
+        """Pass-2 regression, supported configuration."""
+        self.put(9, "F9 — x", {"owner": "lane1"})
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_TASK_LIST_ID": ""}):
+            self.assertEqual(hold.pretooluse_decide(self.update(9, metadata={"owner": None}))[0], "deny")
+
+    def test_a_shared_task_list_is_allowed_as_the_stated_limit(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_TASK_LIST_ID": "shared"}):
+            self.assertEqual(hold.pretooluse_decide(self.create("F7 — x"))[0], "allow")
+
     def test_a_legacy_entry_can_be_closed_and_owned_in_one_call(self):
         """Pitch inspection named case: an existing open entry with no owner is
         renamed to `<KEY> — closed` and given an owner in a single update."""
