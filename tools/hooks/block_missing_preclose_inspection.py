@@ -195,7 +195,7 @@ TOOLING_EXCEPTION_LABEL = "tooling-exception"
 VALUE_TAKING_FLAGS = frozenset({
     "--repo", "-R", "--comment", "-c", "--reason", "--body", "-b",
     "--body-file", "-F", "--subject", "-t", "--title", "--match-head-commit",
-    "--author-email",
+    "--author-email", "-A", "--duplicate-of",  # harmonic-forge#1447 pass 1
 })
 
 API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:/|$)")
@@ -238,15 +238,21 @@ def _deny(reason: str, target_key: str | None = None) -> None:
 
 
 def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
-    """Return stdout, or None on any failure. Fail-open, see module docstring."""
-    if shutil.which("gh") is None:
-        return None
+    """Return stdout, or None on any failure. Fail-open, see module docstring.
+
+    harmonic-forge#1447: under the gh shim's strict mode (`close_gate.strict`)
+    a failure raises `close_gate.GateReadError` instead, so a close or merge
+    the shim gates fails closed when any read it needs cannot be made."""
+    import close_gate  # noqa: PLC0415
+    gh_bin = close_gate.STATE.gh_bin
+    if (gh_bin is None and shutil.which("gh") is None) or (gh_bin and not os.path.isfile(gh_bin)):
+        return close_gate.unread(args, "no gh binary")
     try:
-        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7)
-    except (OSError, subprocess.SubprocessError):
-        return None
+        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7, gh_bin=gh_bin)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return close_gate.unread(args, f"{type(exc).__name__}: {exc}")
     if result.returncode:
-        return None
+        return close_gate.unread(args, "gh exited non-zero")
     return result.stdout
 
 
@@ -476,6 +482,10 @@ def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
               "--jq", ".headRefName", repo=repo)
     if out is None:
         return None
+    if not out.strip():
+        import close_gate  # noqa: PLC0415
+        # harmonic-forge#1447 pass 1: an empty branch is not an answer.
+        return close_gate.unread(("pr", "view", pr), "empty headRefName")
     match = BRANCH_ISSUE.match(out.strip())
     return [match.group(1)] if match else []
 
@@ -521,8 +531,9 @@ def _receipt(repo: str, issue: str) -> dict | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         from preclose_check import find_receipt  # noqa: PLC0415
         return find_receipt(repo, int(issue))
-    except Exception:
-        return None
+    except Exception as exc:
+        import close_gate  # noqa: PLC0415
+        return close_gate.unread(("receipt", repo, issue), f"{type(exc).__name__}: {exc}")
 
 
 #: harmonic-forge#1077: the whole cache fetch (PR head, main, and any
@@ -758,6 +769,17 @@ def merge_head_commits(command: str, number: str) -> list[str | None]:
     return found or [None]
 
 
+def merge_head_commits_from_tokens(tokens: list[str], number: str) -> list[str | None]:
+    """`merge_head_commits` for one already-split argv (the gh shim's,
+    harmonic-forge#1447)."""
+    cli = _parse_pr_merge(tokens)
+    api = None if cli else _parse_api_merge(tokens)
+    parsed = cli or api
+    if not parsed or parsed[1] != number:
+        return [None]
+    return [_bound_sha(tokens, True) if cli else None]
+
+
 def _match_head_message(repo: str, issue: str, pr: str, head_sha: str) -> str:
     return (f"Blocked: PR #{pr}, which is for {repo}#{issue}, is accepted as reviewed only at "
             f"head {head_sha}, and this merge does not bind to it (harmonic-forge#1077 AC5). "
@@ -826,8 +848,11 @@ def _close_block(repo: str, issue: str) -> str | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         return preclose_passes.close_refusal(_receipt(repo, issue))
-    except Exception:  # noqa: BLE001
-        return None
+    except Exception as exc:  # noqa: BLE001
+        import close_gate  # noqa: PLC0415
+        if isinstance(exc, close_gate.GateReadError):
+            raise
+        return close_gate.unread(("receipt", repo, issue), f"{type(exc).__name__}: {exc}")
 
 
 def _run_pass_text(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
@@ -845,31 +870,17 @@ def _run_pass_text(repo: str, issue: str, via_pr: str, head_sha: str) -> str:
     )
 
 
-def main() -> None:
-    try:
-        data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        _allow()
-        return
-
-    if data.get("tool_name") != "Bash":
-        _allow()
-        return
-
-    command = (data.get("tool_input") or {}).get("command", "")
-    payload_cwd = data.get("cwd") or None
-
-    targets = find_gated_targets_exempt(command)
-    if not targets:
-        _allow()
-        return
-
+def decide_targets(targets, cwd: str | None, heads_for, *, strict_repo: bool = False):
+    """The preclose decision for (repo, number, kind, exempt) targets:
+    `(deny text, batch key)` or None (harmonic-forge#1447: shared with the gh
+    shim). `heads_for(number)` gives the merge's `--match-head-commit` values.
+    `strict_repo` refuses a target whose repo cannot be resolved."""
+    payload_cwd = cwd
     if any(kind == "pr" and not number for _, number, kind, _exempt in targets):
-        _deny("Blocked: `gh pr merge` with no PR number merges the current branch's PR, "
+        return ("Blocked: `gh pr merge` with no PR number merges the current branch's PR, "
               "which this hook cannot bind to a reviewed head (harmonic-forge#1077). Name "
               "the PR explicitly, e.g.:\n"
-              "  gh pr merge <N> --repo <owner/repo> --squash --match-head-commit <sha>")
-        return
+              "  gh pr merge <N> --repo <owner/repo> --squash --match-head-commit <sha>"), None
 
     resolved: dict[str | None, str | None] = {}
     for explicit_repo, number, kind, exempt in targets:
@@ -877,6 +888,9 @@ def main() -> None:
             resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
         repo = resolved[explicit_repo]
         if repo is None:
+            if strict_repo:
+                return (f"could not resolve the repository for {kind} {number} "
+                        f"(no --repo, no GH_REPO, and the checkout is not a registered repo)"), None
             continue
 
         if kind == "pr":
@@ -911,8 +925,7 @@ def main() -> None:
                 # duplicate reason exempts it. Merges are unchanged.
                 if kind == "issue" and exempt:
                     continue
-                _deny(_deny_message(repo, issue, via_pr), target_key=_acting)
-                return
+                return (_deny_message(repo, issue, via_pr)), _acting
 
             # harmonic-forge#778 AC3/AC5: the label alone says a review
             # happened once, never which diff. Binding to the head SHA is
@@ -924,8 +937,7 @@ def main() -> None:
             if kind != "pr":
                 blocked = _close_block(repo, issue)
                 if blocked:
-                    _deny(blocked, target_key=_acting)
-                    return
+                    return (blocked), _acting
             if kind == "pr":
                 head_sha = _pr_head_sha(repo, number)
                 # Preclose finding: this is NOT the same "cannot read GitHub"
@@ -938,27 +950,48 @@ def main() -> None:
                 # same fail-closed precedent the receipt-match check below
                 # already follows.
                 if head_sha is None:
-                    _deny(
+                    return (
                         f"Blocked: PR #{via_pr}, which is for {repo}#{issue}, carries "
                         f"{PRECLOSE_LABEL!r}, but this PR's current head SHA could not "
                         f"be determined (harmonic-forge#778 AC3). A SHA-bound receipt is "
                         f"required once an issue is labelled -- cannot verify and not "
                         f"reviewed are the same fact here. Re-run this once GitHub is "
-                        f"reachable.",
-                        target_key=_acting)
-                    return
+                        f"reachable."), _acting
                 if not _preclose_receipt_ok(repo, issue, head_sha, via_pr):
-                    _deny(_stale_receipt_message(repo, issue, via_pr, head_sha),
-                          target_key=_acting)
-                    return
+                    return (_stale_receipt_message(repo, issue, via_pr, head_sha)), _acting
                 # harmonic-forge#1077 AC5: bind the merge to the accepted
                 # head, so a head that moves after this check fails at GitHub.
-                given = merge_head_commits(command, number)
+                given = heads_for(number)
                 if any((value or "").lower() != head_sha.lower() for value in given):
-                    _deny(_match_head_message(repo, issue, number, head_sha),
-                          target_key=_acting)
-                    return
+                    return (_match_head_message(repo, issue, number, head_sha)), _acting
 
+    return None
+
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        _allow()
+        return
+
+    if data.get("tool_name") != "Bash":
+        _allow()
+        return
+
+    command = (data.get("tool_input") or {}).get("command", "")
+    payload_cwd = data.get("cwd") or None
+
+    targets = find_gated_targets_exempt(command)
+    if not targets:
+        _allow()
+        return
+
+    verdict = decide_targets(targets, payload_cwd,
+                             lambda number: merge_head_commits(command, number))
+    if verdict:
+        _deny(verdict[0], target_key=verdict[1])
+        return
     _allow()
 
 

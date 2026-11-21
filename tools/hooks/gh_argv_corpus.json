@@ -1,0 +1,2080 @@
+{
+ "_doc": "harmonic-forge#1447 reforge corpus: argv (no leading gh) -> expected verdict. target = [repo, number, kind, exempt]. env overrides GH_REPO/GH_HOST (default both empty). A new bypass is added here as a row, not as a new code path.",
+ "rows": [
+  {
+   "argv": [
+    "issue",
+    "close",
+    "--duplicate-of",
+    "6",
+    "5",
+    "-R",
+    "o/r"
+   ],
+   "expect": "gate",
+   "note": "P1: --duplicate-of value is not the target; binds #5, exempt (#1433)",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    true
+   ]
+  },
+  {
+   "argv": [
+    "pr",
+    "merge",
+    "-A",
+    "me@example.com",
+    "7",
+    "-R",
+    "o/r"
+   ],
+   "expect": "gate",
+   "note": "P1: -A value is not the target",
+   "target": [
+    "o/r",
+    "7",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5",
+    "-F",
+    "state=@f"
+   ],
+   "expect": "gate",
+   "note": "P1: -F state=@file",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "--input",
+    "q.json"
+   ],
+   "expect": "refuse",
+   "note": "P1: graphql --input"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "POST",
+    "graphql",
+    "-f",
+    "query=mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }"
+   ],
+   "expect": "refuse",
+   "note": "P1: -X POST graphql"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "POST",
+    "/graphql",
+    "-f",
+    "query=mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }"
+   ],
+   "expect": "refuse",
+   "note": "P1: /graphql"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/{owner}/{repo}/issues/5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "refuse",
+   "note": "P1: placeholder repo, no GH_REPO",
+   "env": {
+    "GH_REPO": ""
+   }
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/{owner}/{repo}/issues/5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "P1: placeholder filled from GH_REPO",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ],
+   "env": {
+    "GH_REPO": "o/r"
+   }
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/{owner}/{repo}/pulls/7/merge"
+   ],
+   "expect": "refuse",
+   "note": "P1: placeholder REST merge",
+   "env": {
+    "GH_REPO": ""
+   }
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r"
+   ],
+   "expect": "gate",
+   "note": "plain close",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-iXPATCH",
+    "repos/o/r/issues/5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "P2: -iXPATCH cluster",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/issues/5",
+    "-iFstate=closed"
+   ],
+   "expect": "gate",
+   "note": "P2: -iF cluster (POST)",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repositories/123/issues/5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "refuse",
+   "note": "P2: repositories/<id> close"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repositories/123/pulls/7/merge"
+   ],
+   "expect": "refuse",
+   "note": "P2: repositories/<id> merge"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/pulls/7/merge",
+    "-f",
+    "sha=8"
+   ],
+   "expect": "gate",
+   "note": "P2: REST merge binds the path number, not a field",
+   "target": [
+    "o/r",
+    "7",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/pulls/7/merge",
+    "8"
+   ],
+   "expect": "refuse",
+   "note": "P2: a stray positional is not bound"
+  },
+  {
+   "argv": [
+    "issue",
+    "list",
+    "--state",
+    "closed",
+    "-R",
+    "ghe.example.com/o/r"
+   ],
+   "expect": "allow",
+   "note": "P2: issue list --state closed on another host"
+  },
+  {
+   "argv": [
+    "issue",
+    "list",
+    "--state",
+    "closed"
+   ],
+   "expect": "allow",
+   "note": "P2: substring 'close' is not a close"
+  },
+  {
+   "argv": [
+    "issue",
+    "-R",
+    "o/r",
+    "close",
+    "5"
+   ],
+   "expect": "gate",
+   "note": "group-level -R before the subcommand",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "--repo=o/r",
+    "#5"
+   ],
+   "expect": "gate",
+   "note": "--repo= and #N",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "https://github.com/o/r/issues/5"
+   ],
+   "expect": "gate",
+   "note": "URL target",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "https://ghe.example.com/o/r/issues/5"
+   ],
+   "expect": "refuse",
+   "note": "URL on another host"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "6",
+    "-R",
+    "o/r"
+   ],
+   "expect": "refuse",
+   "note": "two targets"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "-R",
+    "o/r"
+   ],
+   "expect": "refuse",
+   "note": "no target"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r",
+    "--frobnicate"
+   ],
+   "expect": "refuse",
+   "note": "unknown flag"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r",
+    "-r",
+    "not planned"
+   ],
+   "expect": "gate",
+   "note": "not-planned close is exempt",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    true
+   ]
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r",
+    "-r",
+    "not planned",
+    "-c",
+    "x"
+   ],
+   "expect": "gate",
+   "note": "a comment voids the exemption",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r",
+    "--",
+    "--repo"
+   ],
+   "expect": "refuse",
+   "note": "-- makes --repo a second positional"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "--help"
+   ],
+   "expect": "allow",
+   "note": "help never runs the command"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r",
+    "--help=false"
+   ],
+   "expect": "gate",
+   "note": "--help=false runs it",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r",
+    "--help=maybe"
+   ],
+   "expect": "refuse",
+   "note": "invalid bool"
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5"
+   ],
+   "expect": "gate",
+   "note": "GH_REPO binds the repo",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ],
+   "env": {
+    "GH_REPO": "o/r"
+   }
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r"
+   ],
+   "expect": "refuse",
+   "note": "GH_REPO and --repo disagree",
+   "env": {
+    "GH_REPO": "o/other"
+   }
+  },
+  {
+   "argv": [
+    "issue",
+    "close",
+    "5",
+    "-R",
+    "o/r"
+   ],
+   "expect": "refuse",
+   "note": "GH_HOST elsewhere",
+   "env": {
+    "GH_HOST": "ghe.example.com"
+   }
+  },
+  {
+   "argv": [
+    "pr",
+    "merge",
+    "7",
+    "--repo",
+    "o/r",
+    "--squash",
+    "--match-head-commit",
+    "abc"
+   ],
+   "expect": "gate",
+   "note": "bound merge",
+   "target": [
+    "o/r",
+    "7",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "pr",
+    "merge",
+    "feature-branch",
+    "-R",
+    "o/r"
+   ],
+   "expect": "refuse",
+   "note": "branch target cannot be bound"
+  },
+  {
+   "argv": [
+    "pr",
+    "merge",
+    "https://github.com/o/r/pull/7"
+   ],
+   "expect": "gate",
+   "note": "PR URL",
+   "target": [
+    "o/r",
+    "7",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "pr",
+    "merge",
+    "-R",
+    "o/r"
+   ],
+   "expect": "gate",
+   "note": "no number: decide_targets refuses",
+   "target": [
+    "o/r",
+    "",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "pr",
+    "close",
+    "7",
+    "-R",
+    "o/r"
+   ],
+   "expect": "allow",
+   "note": "pr close does not merge"
+  },
+  {
+   "argv": [
+    "issue",
+    "reopen",
+    "5",
+    "-R",
+    "o/r"
+   ],
+   "expect": "allow",
+   "note": "reopen"
+  },
+  {
+   "argv": [
+    "issue",
+    "bogus",
+    "5"
+   ],
+   "expect": "refuse",
+   "note": "unknown subcommand"
+  },
+  {
+   "argv": [
+    "pr",
+    "view",
+    "--frob",
+    "5"
+   ],
+   "expect": "refuse",
+   "note": "unknown flag on a read still refuses"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "GET",
+    "repos/o/r/issues/5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "allow",
+   "note": "GET with fields is a read"
+  },
+  {
+   "argv": [
+    "api",
+    "--method=patch",
+    "repos/o/r/issues/5",
+    "-F",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "lowercase method",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-X=PUT",
+    "repos/o/r/pulls/7/merge"
+   ],
+   "expect": "gate",
+   "note": "-X=PUT",
+   "target": [
+    "o/r",
+    "7",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "/repos/o/r/issues/5/",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "leading and trailing slash",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "https://api.github.com/repos/o/r/issues/5?x=1",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "full URL and query",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "repos/o/r/issues/5.json",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "format suffix",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "repos/o/r/issues/7/../5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "dot segments",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "repos/o/r/issues%2F5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "percent-encoded slash",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "repos/o/r/issues/5?state=closed",
+    "-f",
+    "title=x"
+   ],
+   "expect": "gate",
+   "note": "state in the query string",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "repos/o/r/issues/5",
+    "-f",
+    "state[]=closed"
+   ],
+   "expect": "gate",
+   "note": "array-spelled state key",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "repos/o/r/issues/5",
+    "-f",
+    "state"
+   ],
+   "expect": "gate",
+   "note": "field with no =",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5",
+    "-f",
+    "state=closed",
+    "-f",
+    "state_reason=not_planned"
+   ],
+   "expect": "gate",
+   "note": "exact REST not-planned close is exempt",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    true
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "--hostname",
+    "ghe.example.com",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "refuse",
+   "note": "--hostname elsewhere"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5",
+    "-H",
+    "X-HTTP-Method-Override: PUT",
+    "-f",
+    "title=x"
+   ],
+   "expect": "refuse",
+   "note": "method override header"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/issues/5/lock"
+   ],
+   "expect": "gate",
+   "note": "other issue sub-endpoints are gated",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/pulls/7",
+    "-f",
+    "state=closed"
+   ],
+   "expect": "gate",
+   "note": "PR state edit is gated",
+   "target": [
+    "o/r",
+    "7",
+    "pr",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "--input",
+    "body.json",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "gate",
+   "note": "body edit via --input is not allowlisted",
+   "target": [
+    "o/r",
+    "5",
+    "issue",
+    false
+   ]
+  },
+  {
+   "argv": [
+    "api",
+    "user",
+    "extra"
+   ],
+   "expect": "refuse",
+   "note": "two endpoints"
+  },
+  {
+   "argv": [
+    "api",
+    "--frob",
+    "user"
+   ],
+   "expect": "refuse",
+   "note": "unknown api flag"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "POST",
+    "repos/o/r/releases",
+    "-f",
+    "tag_name=v1"
+   ],
+   "expect": "allow",
+   "note": "non-issue endpoint"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: any git ref write is refused (was allowed as not the gate's)"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/issues/5/comments",
+    "-f",
+    "body=hi"
+   ],
+   "expect": "allow",
+   "note": "comment POST"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/issues/5/comments",
+    "-F",
+    "body=@body.md"
+   ],
+   "expect": "allow",
+   "note": "comment POST from file"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/comments/9",
+    "-f",
+    "body=x"
+   ],
+   "expect": "allow",
+   "note": "comment edit"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/issues/comments/9"
+   ],
+   "expect": "allow",
+   "note": "comment delete"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/issues/5/labels",
+    "-f",
+    "labels[]=bug"
+   ],
+   "expect": "allow",
+   "note": "label add"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/issues/5/labels/preclose-inspected"
+   ],
+   "expect": "allow",
+   "note": "label remove"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/issues/5/labels",
+    "-f",
+    "labels[]=bug"
+   ],
+   "expect": "allow",
+   "note": "label replace"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/issues/5/assignees",
+    "-f",
+    "assignees[]=me"
+   ],
+   "expect": "allow",
+   "note": "assignee add"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "POST",
+    "repos/o/r/issues/5/dependencies/blocked_by",
+    "-F",
+    "issue_id=1"
+   ],
+   "expect": "allow",
+   "note": "blocked-by edge (gh_issue.py)"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5",
+    "-F",
+    "body=@body.md"
+   ],
+   "expect": "allow",
+   "note": "body edit -F body=@file (post_lane1_issue.py)"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/issues/5",
+    "-f",
+    "title=x",
+    "-f",
+    "milestone=3"
+   ],
+   "expect": "allow",
+   "note": "title/milestone edit"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/pulls/7/comments",
+    "-f",
+    "body=x"
+   ],
+   "expect": "allow",
+   "note": "PR review comment"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/pulls/7/reviews",
+    "-f",
+    "event=APPROVE"
+   ],
+   "expect": "allow",
+   "note": "PR review"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/pulls/7/update-branch"
+   ],
+   "expect": "allow",
+   "note": "update-branch"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/pulls/7/requested_reviewers",
+    "-f",
+    "reviewers[]=x"
+   ],
+   "expect": "allow",
+   "note": "request review"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query{viewer{login}}"
+   ],
+   "expect": "allow",
+   "note": "inline read"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query={ viewer { login } }"
+   ],
+   "expect": "allow",
+   "note": "anonymous read"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query($o:String!){repository(owner:$o,name:\"r\"){id}}",
+    "-F",
+    "o=x"
+   ],
+   "expect": "allow",
+   "note": "read with variables (pitch change 1)"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query{ repository(owner:\"o\",name:\"mutation\"){id} }"
+   ],
+   "expect": "allow",
+   "note": "the word mutation in a string is not a mutation"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-F",
+    "query=@q.graphql"
+   ],
+   "expect": "refuse",
+   "note": "query from a file"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }"
+   ],
+   "expect": "refuse",
+   "note": "closeIssue"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation{ x: mergePullRequest(input:{pullRequestId:\"p\"}){clientMutationId} }"
+   ],
+   "expect": "refuse",
+   "note": "aliased mergePullRequest"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation{ addComment(input:{subjectId:\"x\",body:\"hi\"}){clientMutationId} }"
+   ],
+   "expect": "allow",
+   "note": "allowlisted addComment"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation($b:String!){ addComment(input:{subjectId:\"x\",body:$b}){clientMutationId} }",
+    "-f",
+    "b=x"
+   ],
+   "expect": "refuse",
+   "note": "allowlisted mutation with $var"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation{ updateIssue(input:{id:\"x\",state:CLOSED}){clientMutationId} }"
+   ],
+   "expect": "refuse",
+   "note": "updateIssue with state"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation{ updateIssue(input:{id:\"x\",title:\"t\"}){clientMutationId} }"
+   ],
+   "expect": "allow",
+   "note": "updateIssue title only"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=subscription{ x }"
+   ],
+   "expect": "refuse",
+   "note": "subscription"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query{viewer{login}}",
+    "-f",
+    "query=mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }"
+   ],
+   "expect": "refuse",
+   "note": "two query fields"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query{viewer{login}} mutation{closeIssue(input:{issueId:\"x\"}){clientMutationId}}"
+   ],
+   "expect": "refuse",
+   "note": "mutation as a second operation"
+  },
+  {
+   "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query{ viewer { login }"
+   ],
+   "expect": "refuse",
+   "note": "unbalanced document"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "GET",
+    "graphql",
+    "-f",
+    "query=mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }"
+   ],
+   "expect": "allow",
+   "note": "GET is a read by the decision table"
+  },
+  {
+   "argv": [
+    "api",
+    "https://api.github.com/GraphQL",
+    "-f",
+    "query=mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }"
+   ],
+   "expect": "refuse",
+   "note": "graphql URL spelling"
+  },
+  {
+   "argv": [
+    "issue",
+    "comment",
+    "5",
+    "-R",
+    "o/r",
+    "--body",
+    "x"
+   ],
+   "expect": "allow",
+   "note": "issue comment"
+  },
+  {
+   "argv": [
+    "issue",
+    "edit",
+    "5",
+    "-R",
+    "o/r",
+    "--add-label",
+    "preclose-inspected"
+   ],
+   "expect": "allow",
+   "note": "issue edit --add-label"
+  },
+  {
+   "argv": [
+    "pr",
+    "comment",
+    "7",
+    "-R",
+    "o/r",
+    "-b",
+    "x"
+   ],
+   "expect": "allow",
+   "note": "pr comment"
+  },
+  {
+   "argv": [
+    "pr",
+    "review",
+    "7",
+    "-R",
+    "o/r",
+    "--approve"
+   ],
+   "expect": "allow",
+   "note": "pr review"
+  },
+  {
+   "argv": [
+    "api",
+    "user",
+    "--jq",
+    ".login"
+   ],
+   "expect": "allow",
+   "note": "identity"
+  },
+  {
+   "argv": [
+    "api",
+    "-i",
+    "-H",
+    "If-None-Match: \"e\"",
+    "repos/o/r/issues?state=all&page=1"
+   ],
+   "expect": "allow",
+   "note": "bounded_scan GET shape"
+  },
+  {
+   "argv": [
+    "issue",
+    "view",
+    "5",
+    "-R",
+    "o/r",
+    "--json",
+    "state"
+   ],
+   "expect": "allow",
+   "note": "read"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat/x"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: branch merge via POST merges"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "POST",
+    "repositories/123/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=x"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: branch merge by repository id"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/git/refs/heads/main",
+    "-f",
+    "sha=abc",
+    "-F",
+    "force=true"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: PATCH a ref to a PR head"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: POST a new ref"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/git/refs/heads/feat"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: DELETE a ref"
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "REPOS/o/r/GIT/REFS/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: case-folded ref write"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repositories/123/git/refs/heads/main",
+    "-f",
+    "sha=a"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: ref write by repository id"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges"
+   ],
+   "expect": "allow",
+   "note": "R1 survivor 2: GET merges is a read"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs/heads/main"
+   ],
+   "expect": "allow",
+   "note": "R1 survivor 2: GET a ref is a read"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/merges",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/git/refs/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "/repos/o/r/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling /repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "/repos/o/r/merges",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling /repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "/repos/o/r/git/refs/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling /repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "/repos/o/r/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling /repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "/repos/o/r/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling /repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "https://api.github.com/repos/o/r/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling https://api.github.com/repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "https://api.github.com/repos/o/r/merges",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling https://api.github.com/repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "https://api.github.com/repos/o/r/git/refs/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling https://api.github.com/repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "https://api.github.com/repos/o/r/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling https://api.github.com/repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "https://api.github.com/repos/o/r/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling https://api.github.com/repos/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/{owner}/{repo}/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling repos/{owner}/{repo}/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/{owner}/{repo}/merges",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling repos/{owner}/{repo}/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/{owner}/{repo}/git/refs/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling repos/{owner}/{repo}/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/{owner}/{repo}/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling repos/{owner}/{repo}/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/{owner}/{repo}/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling repos/{owner}/{repo}/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "repositories/123/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling repositories/123/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repositories/123/merges",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling repositories/123/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repositories/123/git/refs/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling repositories/123/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "repositories/123/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling repositories/123/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repositories/123/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling repositories/123/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges?a=b",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling repos/o/r/{P}?a=b"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/merges?a=b",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling repos/o/r/{P}?a=b"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/git/refs/heads/main?a=b",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling repos/o/r/{P}?a=b"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs?a=b",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling repos/o/r/{P}?a=b"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/git/refs/heads/x?a=b"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling repos/o/r/{P}?a=b"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges/",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling repos/o/r/{P}/"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "repos/o/r/merges/",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling repos/o/r/{P}/"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/git/refs/heads/main/",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling repos/o/r/{P}/"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs/",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling repos/o/r/{P}/"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/git/refs/heads/x/"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling repos/o/r/{P}/"
+  },
+  {
+   "argv": [
+    "api",
+    "REPOS/o/r/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST merges, spelling REPOS/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PUT",
+    "REPOS/o/r/merges",
+    "-f",
+    "head=feat"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PUT merges, spelling REPOS/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "REPOS/o/r/git/refs/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): PATCH a ref, spelling REPOS/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "REPOS/o/r/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): POST a ref, spelling REPOS/o/r/{P}"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "REPOS/o/r/git/refs/heads/x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P1(2): DELETE a ref, spelling REPOS/o/r/{P}"
+  },
+  {
+   "argv": [
+    "co"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): config alias `co` (operator's own `co: pr checkout`); refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "co",
+    "5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): config alias `co` with an argument; refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "c",
+    "5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): `!` shell alias `c: !/usr/bin/gh issue close \"$1\"`; refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "c",
+    "5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): `# --help` alias body `c: issue close 5 # --help` (Python shlex vs google/shlex); refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "c",
+    "--help"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): alias root with --help is still not a builtin; refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "copilot-ext-not-real",
+    "x"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): unknown command; refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "dash"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): gh extension name (gh-dash); refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "poi",
+    "5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 alias root (P1(1), P1(3), P2(a), P2(c)): gh extension name with an argument; refused at the root, nothing expanded"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "GET",
+    "-H",
+    "X-HTTP-Method-Override: PATCH",
+    "--input",
+    "body.json",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: survivor verbatim: GET with method-override header and --input"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "GET",
+    "-H",
+    "x-http-method-override:PATCH",
+    "repos/o/r/pulls/7/merge"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: lowercase override on a GET"
+  },
+  {
+   "argv": [
+    "api",
+    "--header=X-HTTP-Method-Override: PUT",
+    "repos/o/r/pulls/7/merge"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: --header= form, implicit GET"
+  },
+  {
+   "argv": [
+    "api",
+    "-H",
+    " X-HTTP-Method : PATCH",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: override spelling not containing method-override"
+  },
+  {
+   "argv": [
+    "api",
+    "-H",
+    "X-Method-Override: PATCH",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: X-Method-Override"
+  },
+  {
+   "argv": [
+    "api",
+    "-H",
+    "Content-Type: application/json",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: any non-allowlisted header"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "HEAD",
+    "-H",
+    "X-HTTP-Method-Override: PATCH",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "refuse",
+   "note": "SW epoch 2 P2(b) header allowlist: HEAD with override"
+  },
+  {
+   "argv": [
+    "api",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "allow",
+   "note": "SW epoch 2 P2(b) header allowlist: Accept is allowlisted"
+  },
+  {
+   "argv": [
+    "api",
+    "-H",
+    "accept:application/vnd.github+json",
+    "-H",
+    "X-GitHub-Api-Version: 2022-11-28",
+    "repos/o/r/issues/5"
+   ],
+   "expect": "allow",
+   "note": "SW epoch 2 P2(b) header allowlist: Accept + X-GitHub-Api-Version, case-insensitive"
+  },
+  {
+   "argv": [
+    "api",
+    "-i",
+    "-H",
+    "If-None-Match: \"abc\"",
+    "repos/o/r/issues?state=open&page=1"
+   ],
+   "expect": "allow",
+   "note": "SW epoch 2 P2(b) header allowlist: If-None-Match (bounded_scan, _etag_cache, extract_threads)"
+  }
+ ]
+}
