@@ -4,82 +4,40 @@
 The belt's tick used to read only precheck telemetry, so a tick with no belt
 event ended in silence even when the lane's own task list held work whose
 blocker had cleared or a filing the lane owed. This scan makes that work part
-of the tick: it prints one `owed-own-queue <subject>` line per entry that
-names this lane as the next actor (or names nobody), and nothing else.
-
-An entry's subject follows the form the task-list hold hook enforces,
-`<KEY> — <last action> · waiting on <who> <step>`. An entry is owed to this
-lane when its status is `pending` or `in_progress` and the text after its last
-`waiting on` clause names this lane as a whole token (`Lane 1`, `L1`; never
-`L10`, `Lane 12` or `Lane 1_x`) or `nothing`, or when it has no clause and is
-neither `<KEY> — closed` nor a `YOU:` item. An own-lane entry whose step is
-marked `(bg)` prints nothing, so a tick never re-works an in-flight step. A
-`<who>` the grammar cannot place prints a `tick-scan: unparsed` line. Every failure to read is named on one
-`tick-scan: …` line; the scan never exits non-zero, because a tick must not
-crash.
+of the tick: one `owed-own-queue <subject>` line per open entry whose
+`metadata.owner` is this lane (`lane<LANE>`), nothing for any other owner, and
+one `tick-scan: unparsed <subject>` line for an open entry with no or an
+unknown owner. Ownership is a structured field the task-list hold hook
+enforces at write (`tools/hooks/tasklist_hold.py`), never parsed from the
+subject (sticky-wicket REFORGE: no subject grammar survived two preclose
+passes). Every failure to read is named on one `tick-scan: …` line; the scan
+never exits non-zero, because a tick must not crash.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
 TASKS_DIR = Path.home() / ".claude" / "tasks"
 OPEN = ("pending", "in_progress")
-#: Owners `tasklist_hold.py` documents for `<who>` that are not this lane.
-_OTHER = re.compile(r"(you|operator|marc|ci|codex)\b", re.IGNORECASE)
-_LANE = re.compile(r"(?:lane[\s_:-]*|l)(\d+)(?=$|[\s,.;:)\]])", re.IGNORECASE)
-_OWN_WORDS = ("nothing", "nobody")
+#: The owners `tools/hooks/tasklist_hold.py` enforces as `metadata.owner`.
+OWNERS = ("lane1", "lane2", "lane3", "operator", "ci", "bg")
 
 
-def _wait_clause(subject: str) -> str | None:
-    """The text after `waiting on` in the subject's last ` · `-separated
-    segment that starts with it (the shape `tasklist_hold.py` enforces:
-    `<KEY> — <last action> · waiting on <who> <step>`), or None. Prose in the
-    last-action part never counts as the clause."""
-    for segment in reversed(subject.split(" · ")):
-        seg = segment.strip()
-        if seg.lower().startswith("waiting on"):
-            return seg[len("waiting on"):].strip()
-    return None
-
-
-def classify(subject: str, status: str, lane: str) -> str:
-    """`owed`, `other` or `unparsed` for one task-list entry.
-
-    Per the hold hook's grammar: `<who>` is this lane (`Lane <N>`, `L<N>`, as a
-    whole token), `nothing`/`nobody` (the next step is this lane's own), `YOU:`
-    (the operator), CI, or another lane. An entry with no wait clause is owed
-    unless it is `<KEY> — closed` or a `YOU:` item. An own-lane entry whose step
-    is marked `(bg)` is in flight and not owed. A `<who>` the grammar does not
-    place is `unparsed`, so the tick names it instead of staying silent."""
-    if status not in OPEN:
+def classify(entry: dict, lane: str) -> str:
+    """`owed`, `other` or `unparsed` for one task-list entry, from its status
+    and `metadata.owner` alone (harmonic-forge#1477 sticky-wicket REFORGE):
+    the subject's prose is never read, because no subject grammar survived
+    two preclose passes. An open entry with no or an unknown owner is
+    `unparsed`, so the tick names it instead of staying silent."""
+    if entry.get("status") not in OPEN:
         return "other"
-    head = subject.split(" · ", 1)[0].strip()
-    if subject.lstrip().upper().startswith("YOU:") or re.search(r"—\s*closed\b", head, re.IGNORECASE):
-        return "other"
-    wait = _wait_clause(subject)
-    if wait is None:
-        return "owed"
-    first = wait.split(None, 1)[0].rstrip(":").lower() if wait.split() else ""
-    in_flight = "(bg)" in wait.lower()
-    lane_match = _LANE.match(wait)
-    if lane_match:
-        if lane_match.group(1) != lane:
-            return "other"
-        return "other" if in_flight else "owed"
-    if first in _OWN_WORDS:
-        return "other" if in_flight else "owed"
-    if in_flight or _OTHER.match(wait):
-        return "other"
-    return "unparsed"
-
-
-def owed(subject: str, status: str, lane: str) -> bool:
-    """True when this lane is the next actor on an open entry."""
-    return classify(subject, status, lane) == "owed"
+    owner = (entry.get("metadata") or {}).get("owner")
+    if owner not in OWNERS:
+        return "unparsed"
+    return "owed" if owner == f"lane{lane}" else "other"
 
 
 def scan(store: Path, lane: str) -> list[str]:
@@ -91,17 +49,18 @@ def scan(store: Path, lane: str) -> list[str]:
     for path in sorted(store.glob("*.json"), key=lambda p: (len(p.stem), p.stem)):
         try:
             entry = json.loads(path.read_text(encoding="utf-8"))
-            subject, status = entry["subject"], entry["status"]
-            if not isinstance(subject, str) or not isinstance(status, str):
-                raise TypeError("subject/status not text")
-        except (OSError, ValueError, KeyError, TypeError):
+            if not isinstance(entry, dict) or not isinstance(entry.get("subject"), str) \
+                    or not isinstance(entry.get("status"), str) \
+                    or not isinstance(entry.get("metadata") or {}, dict):
+                raise TypeError("not a task entry")
+        except (OSError, ValueError, TypeError):
             lines.append(f"tick-scan: unreadable {path.name}")
             continue
-        verdict = classify(subject, status, lane)
+        verdict = classify(entry, lane)
         if verdict == "owed":
-            lines.append(f"owed-own-queue {subject}")
+            lines.append(f"owed-own-queue {entry['subject']}")
         elif verdict == "unparsed":
-            lines.append(f"tick-scan: unparsed waiting-on in {subject}")
+            lines.append(f"tick-scan: unparsed {entry['subject']}")
     return lines
 
 

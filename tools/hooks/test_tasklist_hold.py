@@ -46,10 +46,13 @@ class Base(unittest.TestCase):
         self.tasks = self.tmp / "tasks" / SESSION
         self.tasks.mkdir(parents=True)
 
-    def entry(self, task_id, subject, status="in_progress", mtime=None):
+    def entry(self, task_id, subject, status="in_progress", mtime=None, owner="lane1"):
         path = self.tasks / f"{task_id}.json"
-        path.write_text(json.dumps({"id": str(task_id), "subject": subject, "status": status,
-                                    "blocks": [], "blockedBy": []}))
+        data = {"id": str(task_id), "subject": subject, "status": status,
+                "blocks": [], "blockedBy": []}
+        if owner is not None:  # harmonic-forge#1477: entries carry metadata.owner
+            data["metadata"] = {"owner": owner}
+        path.write_text(json.dumps(data))
         if mtime is not None:
             os.utime(path, (mtime, mtime))
         return path
@@ -863,6 +866,72 @@ class Park(Base):
         self.assertEqual(self.decide("completed")[0], "deny")
         self.grant()
         self.assertEqual(self.decide("completed")[0], "allow")
+
+
+
+class OwnerField(Base):
+    """harmonic-forge#1477: an open issue entry names its owner as metadata."""
+
+    def put(self, task_id, subject, metadata=None, status="pending"):
+        data = {"id": str(task_id), "subject": subject, "status": status, "blocks": [], "blockedBy": []}
+        if metadata is not None:
+            data["metadata"] = metadata
+        (self.tasks / f"{task_id}.json").write_text(json.dumps(data))
+
+    @staticmethod
+    def create(subject, metadata=None):
+        tool_input = {"subject": subject, "description": "d"}
+        if metadata is not None:
+            tool_input["metadata"] = metadata
+        return {"hook_event_name": "PreToolUse", "tool_name": "TaskCreate",
+                "session_id": SESSION, "tool_input": tool_input}
+
+    @staticmethod
+    def update(task_id, **tool_input):
+        tool_input["taskId"] = str(task_id)
+        return {"hook_event_name": "PreToolUse", "tool_name": "TaskUpdate",
+                "session_id": SESSION, "tool_input": tool_input}
+
+    def test_a_task_create_without_an_owner_is_denied(self):
+        verdict, reason = hold.pretooluse_decide(self.create("F7 — filed · waiting on Lane 1 handoff"))
+        self.assertEqual(verdict, "deny")
+        self.assertIn("metadata.owner", reason)
+
+    def test_a_task_create_with_a_valid_owner_is_allowed(self):
+        for owner in hold.OWNERS:
+            meta = {"owner": owner, "bg_ref": "b1"} if owner == "bg" else {"owner": owner}
+            with self.subTest(owner=owner):
+                self.assertEqual(hold.pretooluse_decide(self.create("F7 — x", meta))[0], "allow")
+
+    def test_bg_needs_a_bg_ref_and_an_unknown_owner_is_denied(self):
+        self.assertEqual(hold.pretooluse_decide(self.create("F7 — x", {"owner": "bg"}))[0], "deny")
+        self.assertEqual(hold.pretooluse_decide(self.create("F7 — x", {"owner": "Lane 1"}))[0], "deny")
+
+    def test_an_entry_with_no_issue_key_is_not_checked(self):
+        self.assertEqual(hold.pretooluse_decide(self.create("PROBE scratch"))[0], "allow")
+
+    def test_an_update_that_sends_no_metadata_keeps_the_stored_owner(self):
+        self.put(3, "F3 — x · waiting on Lane 1 review", {"owner": "lane1"})
+        self.assertEqual(hold.pretooluse_decide(self.update(3, subject="F3 — y · waiting on Lane 1 push"))[0],
+                         "allow")
+
+    def test_an_update_that_nulls_the_owner_is_denied(self):
+        self.put(3, "F3 — x", {"owner": "lane1"})
+        self.assertEqual(hold.pretooluse_decide(self.update(3, metadata={"owner": None}))[0], "deny")
+
+    def test_an_ownerless_open_entry_must_gain_an_owner_on_update(self):
+        self.put(4, "F4 — x", None)
+        self.assertEqual(hold.pretooluse_decide(self.update(4, subject="F4 — y"))[0], "deny")
+        self.assertEqual(hold.pretooluse_decide(self.update(4, subject="F4 — y",
+                                                            metadata={"owner": "operator"}))[0], "allow")
+
+    def test_a_legacy_entry_can_be_closed_and_owned_in_one_call(self):
+        """Pitch inspection named case: an existing open entry with no owner is
+        renamed to `<KEY> — closed` and given an owner in a single update."""
+        self.put(5, "F5 — merged · waiting on YOU: close", None)
+        verdict, _reason = hold.pretooluse_decide(self.update(5, subject="F5 — closed",
+                                                              metadata={"owner": "lane1"}))
+        self.assertEqual(verdict, "allow")
 
 
 if __name__ == "__main__":
