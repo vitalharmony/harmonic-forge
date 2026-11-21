@@ -209,16 +209,11 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
               or preclose._parse_api_merge(tokens) or preclose._parse_api_close(tokens)
               or _rest_close_target(tokens))
     if not parsed:
-        import batch_auth  # noqa: PLC0415
-        endpoints = [t for t in tokens[2:] if not t.startswith("-") and "/" in t]
-        unbound = [t for t in endpoints
-                   if re.search(r"(^|/)(issues/[^/\s]+|pulls/[^/\s]+/merge)/?$", t)
-                   and not batch_auth.API_ISSUE_PATH.search(t)]
-        if len(tokens) > 1 and tokens[1] == "api" and _api_mutating(tokens[2:]) and unbound:
-            # harmonic-forge#1447 pass 1 (cross-family): a placeholder or other
-            # spelling the parsers cannot bind to a number is refused.
-            return PREFIX + "a mutating issues/pulls API call whose target the gate cannot read"
         return None
+    if parsed[0] and re.search(r"[{}:]", parsed[0]):
+        # harmonic-forge#1447 pass 1: gh fills `{owner}/{repo}` from the
+        # checkout; the gate cannot bind that, so a placeholder repo refuses.
+        return PREFIX + f"the target repository {parsed[0]!r} is a placeholder the gate cannot bind"
     exempt = (parsed[2] == "issue" and not any(t == "--input" or t.startswith("--input=") for t in tokens)
               and preclose._canonical_not_planned_close(tokens))
     try:

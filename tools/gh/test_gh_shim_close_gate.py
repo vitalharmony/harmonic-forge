@@ -90,7 +90,7 @@ class ShimBashBypass(unittest.TestCase):
     def closes_sent(self) -> list[list[str]]:
         return [a for a in self.sent()
                 if a[:2] == ["issue", "close"] or a[:2] == ["c", "5"]
-                or (a[:1] == ["api"] and any(t.upper() in ("PATCH", "-XPATCH") or "state=closed" in t.lower()
+                or (a[:1] == ["api"] and any(t.upper() in ("PATCH", "-XPATCH", "PUT") or "state=closed" in t.lower()
                                              or t.startswith("--input") for t in a))]
 
     SPELLINGS = (
@@ -113,6 +113,7 @@ class ShimBashBypass(unittest.TestCase):
         "echo closed > f; gh api -X PATCH repos/o/r/issues/5 -F state=@f",
         "gh api -X PATCH 'repos/{owner}/{repo}/issues/5' -f state=closed",
         "gh issue close --duplicate-of 6 5 -R o/r",
+        "gh api -X PUT 'repos/{owner}/{repo}/pulls/7/merge'",
     )
 
     def test_every_spelling_of_an_uninspected_close_is_refused(self):
