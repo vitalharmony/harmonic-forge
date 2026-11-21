@@ -324,16 +324,19 @@ _TICK_RELEASE: dict[str, object] = {}
 def _current_release(repo: str) -> object:
     """The repo's current release title, None when no `X.Y` milestone is open,
     or `_RELEASE_READ_FAILED`. One counted milestones read per repo per tick."""
-    if repo in _TICK_RELEASE:
-        return _TICK_RELEASE[repo]
+    key = (repo or "").lower()  # one read per repo whatever its spelling (pass 1)
+    if key in _TICK_RELEASE:
+        return _TICK_RELEASE[key]
     result: object = _RELEASE_READ_FAILED
     try:
         resp = _etag_cache.conditional_get(_account_of(repo), f"repos/{repo}/milestones?state=open&per_page=100",
                                            _COUNTER)
         if resp.status in (200, 304) and resp.body:
-            titles = [str(m.get("title") or "") for m in json.loads(resp.body)]
-            releases = [t for t in titles if _RELEASE_TITLE.match(t)]
-            result = min(releases, key=lambda t: tuple(int(p) for p in t.split(".")), default=None)
+            body = json.loads(resp.body)
+            if isinstance(body, list):  # any other shape is a failed read (pass 1)
+                titles = [str(m.get("title") or "") for m in body if isinstance(m, dict)]
+                releases = [t for t in titles if _RELEASE_TITLE.match(t)]
+                result = min(releases, key=lambda t: tuple(int(p) for p in t.split(".")), default=None)
     except Exception as exc:  # noqa: BLE001 -- reported; the caller fails closed
         print(f"[watch_lane_posts] {repo} milestones unreadable: {exc}", file=sys.stderr)
     if result is _RELEASE_READ_FAILED:
@@ -342,7 +345,7 @@ def _current_release(repo: str) -> object:
     elif result is None:
         print(f"[watch_lane_posts] {repo}: {CURRENT_RELEASE} resolves to nothing (no open X.Y milestone)",
               file=sys.stderr)
-    _TICK_RELEASE[repo] = result
+    _TICK_RELEASE[key] = result
     return result
 
 
@@ -367,6 +370,10 @@ def _active_milestones(repo: str) -> frozenset[str] | None:
                         return None
                     if release is not None:
                         titles.add(str(release))
+                    elif not titles:
+                        # Nothing resolved and no literal left: an empty set would read
+                        # as "no filtering" at discover_queue, so hold instead (pass 1).
+                        return None
                 return frozenset(titles)
     except Exception as exc:  # noqa: BLE001 -- reported; the caller fails closed
         print(f"[watch_lane_posts] projects.toml unreadable, holding milestoned candidates: {exc}",

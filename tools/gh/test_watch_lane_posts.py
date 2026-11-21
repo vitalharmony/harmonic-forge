@@ -3245,7 +3245,8 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
     def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
         self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
         watch_lane_posts._TICK_RELEASE.clear()
-        with patch("watch_lane_posts._etag_cache.conditional_get", _fake_milestones(["Later", "Platform", "3.3"])):
+        with patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
+             patch("watch_lane_posts._etag_cache.conditional_get", _fake_milestones(["Later", "Platform", "3.3"])):
             self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.3", "Platform"}))
         watch_lane_posts._TICK_RELEASE.clear()
 
@@ -3262,6 +3263,7 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
             return fake(account, path, counter)
         err = io.StringIO()
         with patch("watch_lane_posts.onboard_manifest.load", return_value=project), \
+             patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
              patch("watch_lane_posts._etag_cache.conditional_get", counting), patch("sys.stderr", err):
             first = watch_lane_posts._active_milestones("vitalharmony/hrse")
             second = watch_lane_posts._active_milestones("vitalharmony/hrse")
@@ -3291,6 +3293,42 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
         self.assertIsNone(second)
         self.assertEqual(len(calls), 1)  # the failure is cached too (N2)
         self.assertIn("holding milestoned candidates", err)
+
+    def test_token_alone_with_nothing_open_holds_candidates(self):
+        # Pass 1 survivor: an empty set would read as "no filtering".
+        watch_lane_posts._TICK_RELEASE.clear()
+        project = [type("P", (), {"repo": "vitalharmony/hrse", "active_milestones": ("@current-release",)})()]
+        with patch("watch_lane_posts.onboard_manifest.load", return_value=project), \
+             patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
+             patch("watch_lane_posts._etag_cache.conditional_get", _fake_milestones(["Later"])), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertIsNone(watch_lane_posts._active_milestones("vitalharmony/hrse"))
+        watch_lane_posts._TICK_RELEASE.clear()
+
+    def test_a_non_list_body_is_a_failed_read(self):
+        watch_lane_posts._TICK_RELEASE.clear()
+        Response = watch_lane_posts._etag_cache.Response
+        with patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
+             patch("watch_lane_posts._etag_cache.conditional_get", lambda a, p, c=None: Response(200, "{}", False)), \
+             patch("sys.stderr", io.StringIO()):
+            self.assertIs(watch_lane_posts._current_release("vitalharmony/hrse"),
+                          watch_lane_posts._RELEASE_READ_FAILED)
+        watch_lane_posts._TICK_RELEASE.clear()
+
+    def test_repo_case_shares_one_read(self):
+        watch_lane_posts._TICK_RELEASE.clear()
+        calls = []
+        fake = _fake_milestones(["3.3"])
+
+        def counting(account, path, counter=None):
+            calls.append(path)
+            return fake(account, path, counter)
+        with patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
+             patch("watch_lane_posts._etag_cache.conditional_get", counting), patch("sys.stderr", io.StringIO()):
+            watch_lane_posts._current_release("vitalharmony/hrse")
+            watch_lane_posts._current_release("VitalHarmony/HRSE")
+        self.assertEqual(len(calls), 1)
+        watch_lane_posts._TICK_RELEASE.clear()
 
     def test_one_read_per_tick(self):
         _, second, calls, _ = self._token(["3.3"])
@@ -3679,8 +3717,16 @@ _REAL_ISSUE_META = watch_lane_posts._issue_meta
 _ISSUE_META_PATCHER = patch("watch_lane_posts._issue_meta", return_value=("open", set()))
 
 
+#: harmonic-forge#1489 preclose pass 1: the live manifest names @current-release,
+#: so every unpatched discover_queue test would read GitHub's milestones. The
+#: module stub answers 3.3; the token tests patch the real resolver back in.
+_REAL_CURRENT_RELEASE = watch_lane_posts._current_release
+_CURRENT_RELEASE_PATCHER = patch.object(watch_lane_posts, "_current_release", return_value="3.3")
+
+
 def setUpModule():
     _ISSUE_META_PATCHER.start()
+    _CURRENT_RELEASE_PATCHER.start()
     # harmonic-forge#1393: no test may write the real `~/.claude/state/belt/etag` cache.
     global _ETAG_TMP, _ETAG_ROOT_PATCHER
     _ETAG_TMP = tempfile.TemporaryDirectory()
@@ -3691,6 +3737,7 @@ def setUpModule():
 
 
 def tearDownModule():
+    _CURRENT_RELEASE_PATCHER.stop()
     _ETAG_ROOT_PATCHER.stop()
     _ETAG_TMP.cleanup()
     watch_lane_posts._etag_cache._IDENTITY.clear()
