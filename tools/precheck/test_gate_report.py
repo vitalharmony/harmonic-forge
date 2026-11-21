@@ -236,7 +236,10 @@ class Report(unittest.TestCase):
         self.add("refused-backstop", tuid=None, reason="no-receipt")
         line = self.run_report("--new-cases").strip().splitlines()[0]
         argv = shlex.split(line.split("-> ", 1)[1])
-        argv[1] = os.path.expanduser(argv[1])
+        # The printed path is the deployed checkout (~/harmonic-forge); a CI
+        # runner has none, so run the same file from this checkout.
+        repo = Path(__file__).resolve().parents[2]
+        argv[1] = str(repo / os.path.expanduser(argv[1]).split("harmonic-forge/", 1)[1])
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "protocol-failures.jsonl"
             # A live belt tick resolves its session and turn from Claude Code;
