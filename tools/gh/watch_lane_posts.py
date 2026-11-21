@@ -306,6 +306,49 @@ def _account_of(repo: str) -> str:
     return _REPO_ACCOUNTS.get((repo or "").lower()) or _ACCOUNT
 
 
+#: harmonic-forge#1489: the release entry in `active_milestones`. It names no
+#: milestone: it resolves to the repo's open milestone with the lowest `X.Y`
+#: title (3.10 after 3.9), so a release needs no manifest edit. Literal titles
+#: (`Platform`) are kept as written.
+CURRENT_RELEASE = "@current-release"
+_RELEASE_TITLE = re.compile(r"^\d+\.\d+$")
+#: repo -> the resolved release title (None: no open X.Y milestone), or the
+#: `_RELEASE_READ_FAILED` marker. Failures are kept too (named change N2), so an
+#: outage costs one read per tick, not one per candidate. Cleared at each tick's
+#: start and end; outside the tick loop it lives for the process, so a one-shot
+#: invocation makes at most one read (N1).
+_RELEASE_READ_FAILED = object()
+_TICK_RELEASE: dict[str, object] = {}
+
+
+def _current_release(repo: str) -> object:
+    """The repo's current release title, None when no `X.Y` milestone is open,
+    or `_RELEASE_READ_FAILED`. One counted milestones read per repo per tick."""
+    key = (repo or "").lower()  # one read per repo whatever its spelling (pass 1)
+    if key in _TICK_RELEASE:
+        return _TICK_RELEASE[key]
+    result: object = _RELEASE_READ_FAILED
+    try:
+        resp = _etag_cache.conditional_get(_account_of(repo), f"repos/{repo}/milestones?state=open&per_page=100",
+                                           _COUNTER)
+        if resp.status in (200, 304) and resp.body:
+            body = json.loads(resp.body)
+            if isinstance(body, list):  # any other shape is a failed read (pass 1)
+                titles = [str(m.get("title") or "") for m in body if isinstance(m, dict)]
+                releases = [t for t in titles if _RELEASE_TITLE.match(t)]
+                result = min(releases, key=lambda t: tuple(int(p) for p in t.split(".")), default=None)
+    except Exception as exc:  # noqa: BLE001 -- reported; the caller fails closed
+        print(f"[watch_lane_posts] {repo} milestones unreadable: {exc}", file=sys.stderr)
+    if result is _RELEASE_READ_FAILED:
+        print(f"[watch_lane_posts] {repo}: {CURRENT_RELEASE} unresolved (milestones read failed), "
+              "holding milestoned candidates", file=sys.stderr)
+    elif result is None:
+        print(f"[watch_lane_posts] {repo}: {CURRENT_RELEASE} resolves to nothing (no open X.Y milestone)",
+              file=sys.stderr)
+    _TICK_RELEASE[key] = result
+    return result
+
+
 def _active_milestones(repo: str) -> frozenset[str] | None:
     """The operator's live releases for `repo` from `projects.toml`
     (harmonic-forge#952); empty means no milestone filtering. Read on every
@@ -313,11 +356,25 @@ def _active_milestones(repo: str) -> frozenset[str] | None:
     for hours (preclose finding: a process-lifetime cache kept skipping a
     newly listed milestone). None when the manifest cannot be read: the caller
     then holds back every milestoned candidate for that tick (preclose pass 2:
-    reading "no filtering" there dispatched out-of-release work for one tick)."""
+    reading "no filtering" there dispatched out-of-release work for one tick).
+    `@current-release` (harmonic-forge#1489) resolves through
+    `_current_release`; a failed resolution is None, the same fail-closed path."""
     try:
         for project in onboard_manifest.load():
             if project.repo and project.repo.lower() == (repo or "").lower():
-                return frozenset(project.active_milestones)
+                titles = set(project.active_milestones)
+                if CURRENT_RELEASE in titles:
+                    titles.discard(CURRENT_RELEASE)
+                    release = _current_release(repo)
+                    if release is _RELEASE_READ_FAILED:
+                        return None
+                    if release is not None:
+                        titles.add(str(release))
+                    elif not titles:
+                        # Nothing resolved and no literal left: an empty set would read
+                        # as "no filtering" at discover_queue, so hold instead (pass 1).
+                        return None
+                return frozenset(titles)
     except Exception as exc:  # noqa: BLE001 -- reported; the caller fails closed
         print(f"[watch_lane_posts] projects.toml unreadable, holding milestoned candidates: {exc}",
               file=sys.stderr)
@@ -341,6 +398,7 @@ def _reset_tick_reads() -> None:
     global _TICK_READS_ON
     _TICK_META.clear()
     _TICK_THREADS.clear()
+    _TICK_RELEASE.clear()
     _TICK_READS_ON = True
 
 
@@ -349,6 +407,7 @@ def _end_tick_reads() -> None:
     _TICK_READS_ON = False
     _TICK_META.clear()
     _TICK_THREADS.clear()
+    _TICK_RELEASE.clear()
 
 #: The full marker text, not just its `kind=` field (harmonic-forge#583) --
 #: `posted-by` has to be extracted from the SAME matched span, the same way
