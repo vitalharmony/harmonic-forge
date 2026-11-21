@@ -1331,18 +1331,20 @@ def envelope_unmeasured(path: str | None) -> bool:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return False
-    decoder, index = json.JSONDecoder(), 0
+    decoder, index, last_null = json.JSONDecoder(), 0, False
     while True:
         while index < len(text) and text[index].isspace():
             index += 1
         if index >= len(text):
-            return False
+            return last_null
         try:
             record, index = decoder.raw_decode(text, index)
         except ValueError:
-            return False
-        if isinstance(record, dict) and "duration_ms" in record and record["duration_ms"] is None:
-            return True
+            return last_null
+        # The last record carrying the key decides, as in envelope_duration_ms
+        # (harmonic-forge#1422 post-verdict survivor 1).
+        if isinstance(record, dict) and "duration_ms" in record:
+            last_null = record["duration_ms"] is None
 
 
 def envelope_duration_ms(path: str | None) -> int | None:
@@ -1437,13 +1439,21 @@ def pass_cost(args: argparse.Namespace) -> dict:
 
 def cost_line(cost: dict) -> str:
     view = preclose_passes.pass_cost_view(cost)
-    panel = (f"cost unavailable ({view['unavailable']})" if view["panel"] == "unavailable"
-             else f"{view['tokens']:,} panel tokens, {view['ms']:,} ms")
+    # Only a measured integer is formatted with `,`; anything else a receipt
+    # carries is named, never formatted (harmonic-forge#1422 post-verdict
+    # survivor 2: a string or a pre-#889 entry crashed this line).
+    def measured(value: object) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    if view["panel"] == "unavailable":
+        panel = f"cost unavailable ({view['unavailable']})"
+    elif view["panel"] == "measured" and measured(view["tokens"]) and measured(view["ms"]):
+        panel = f"{view['tokens']:,} panel tokens, {view['ms']:,} ms"
+    else:
+        panel = "cost not recorded"
     codex = ""
-    # A call timed across a backward clock step records no wall-clock
-    # (harmonic-forge#1422 sticky PATCH #1): name it, never format None.
-    wall = ("wall-clock not measured" if view["codex_ms"] is None
-            else f"{view['codex_ms']:,} ms")
+    wall = (f"{view['codex_ms']:,} ms" if measured(view["codex_ms"])
+            else "wall-clock not measured")
     if view["codex"] == "ran":
         codex = f"; cross-family {wall}, tokens unavailable"
     elif view["codex"] == "fallback":

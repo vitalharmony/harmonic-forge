@@ -1452,6 +1452,30 @@ class OwnModelTests(unittest.TestCase):
                 line = preclose.cost_line(cost)
                 self.assertIn("wall-clock not measured", line)
 
+    def test_cost_line_never_formats_a_non_integer(self) -> None:
+        """Post-verdict survivor 2: a string wall-clock and a pre-#889 entry
+        with no panel usage are named, not formatted."""
+        cases = (
+            ({"cost_unavailable": "r", "cross_family_ran": True, "cross_family_ms": "1000",
+              "raised": 0, "dismissed": 0}, "wall-clock not measured"),
+            ({"cost_unavailable": "r", "cross_family_ran": True, "cross_family_fallback": True,
+              "cross_family_ms": "1000", "raised": 0, "dismissed": 0}, "wall-clock not measured"),
+            ({"raised": 0, "dismissed": 0}, "cost not recorded"),
+        )
+        for cost, expected in cases:
+            with self.subTest(cost=cost):
+                self.assertIn(expected, preclose.cost_line(cost))
+
+    def test_readers_agree_when_the_last_duration_is_zero(self) -> None:
+        """Post-verdict survivor 1: an earlier null then a final 0 is neither
+        measured nor unmeasured-by-null; both readers say so."""
+        path = self._envelope('{"duration_ms":null}\n{"status":"ok","duration_ms":0}\n')
+        try:
+            self.assertIsNone(preclose.envelope_duration_ms(path))
+            self.assertFalse(preclose.envelope_unmeasured(path))
+        finally:
+            os.unlink(path)
+
     def test_last_record_wins_when_it_is_null(self) -> None:
         """Sticky PATCH #3: a valid duration then a null one is unmeasured,
         and envelope_duration_ms agrees with envelope_unmeasured."""
