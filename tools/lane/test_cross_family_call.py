@@ -1528,3 +1528,42 @@ class SignalForwardingTests(PromptFileHygieneTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DurationEdges(unittest.TestCase):
+    """harmonic-forge#1422 sticky-wicket half B: the duration branches."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.brief = Path(self.tmp.name) / "brief.md"
+        self.brief.write_text("brief")
+        self.out = Path(self.tmp.name) / "env.jsonl"
+
+    def test_a_backward_clock_step_records_no_duration(self):
+        path = make_stub_path(self.tmp.name)
+        stub_dir = Path(path.split(os.pathsep)[0])
+        counter = Path(self.tmp.name) / "clock"
+        counter.write_text("5000")
+        date = stub_dir / "date"
+        date.write_text(f"""#!/usr/bin/env bash
+if [ "$1" = "+%s%3N" ]; then v=$(cat {counter}); echo "$v"; echo $((v-1000)) > {counter}; exit 0; fi
+exec /usr/bin/date "$@"
+""")
+        date.chmod(0o755)
+        result = run_script("--caller", "claude", "--families", "2", "--posture", "read-only",
+                            "--brief", str(self.brief), "--out", str(self.out), path=path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(parse_envelopes(self.out.read_text())[-1]["duration_ms"])
+
+    def test_a_preflight_error_envelope_records_no_duration(self):
+        """Documented choice: an error before the reviewer runs has measured
+        nothing, so its process-error envelope carries duration_ms null."""
+        result = run_script("--caller", "nobody", "--families", "2", "--posture", "read-only",
+                            "--brief", str(self.brief), "--out", str(self.out),
+                            path=make_stub_path(self.tmp.name))
+        self.assertNotEqual(result.returncode, 0)
+        record = json.loads(self.out.read_text().splitlines()[-1])
+        self.assertEqual(record["status"], "process-error")
+        self.assertIn("duration_ms", record)
+        self.assertIsNone(record["duration_ms"])

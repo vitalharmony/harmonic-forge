@@ -101,29 +101,41 @@ def covered_head(repo: str, issue: int) -> str | None:
 
 
 def reviewed_heads(repo: str, issue: int) -> set[str]:
-    """Every head a preclose pass or post-verdict check reviewed for the issue
-    (harmonic-forge#1422): the current receipt plus every archived one, because
-    `post_verdict_check` is a single slot the next check overwrites and
-    `write_receipt` archives the previous receipt (#826). Read-only. A missing
-    receipt or archive contributes nothing (a reforge line never required a
-    receipt), but one that exists and cannot be read raises: an unread record
-    could hold the reviewed head, so the caller refuses rather than grants."""
+    """Every head the issue's CURRENT receipt records as reviewed: each pass
+    head, the post-verdict check's head and a legacy `reviewed_sha`
+    (harmonic-forge#1422, sticky-wicket REFORGE of half A). The receipt archive
+    is not read (R-0381: it is a best-effort audit trail, not an authorization
+    input). No receipt: no heads, so a reforge line is granted. A receipt that
+    exists and cannot be read raises `UnreadableReceipt` naming its path, so the
+    caller refuses instead of granting on a record it could not see.
+    Residual: a head only an earlier, overwritten post-verdict check reviewed
+    is not refused; it costs one retyped FORCE line (the F1419 incident)."""
     import preclose_check  # noqa: PLC0415  (imports this module; never at top level)
     import preclose_passes  # noqa: PLC0415
-    heads = set(preclose_passes.reviewed_heads_of(preclose_check.find_receipt(repo, issue)))
-    telemetry = str(Path(__file__).resolve().parent.parent / "telemetry")
-    if telemetry not in sys.path:
-        sys.path.insert(0, telemetry)
-    import archive  # noqa: PLC0415
-    origin = archive.origin_for_repo(repo)
-    folder = archive.partition(origin, "preclose-receipts", imc_waiver._now()).parent
-    for path in sorted(folder.glob("*.jsonl.gz")):
-        for envelope in archive.read(path):
-            record = envelope.get("record") if isinstance(envelope, dict) else None
-            if (isinstance(record, dict) and record.get("issue") == issue
-                    and str(record.get("repo", "")).lower() == repo.lower()):
-                heads |= preclose_passes.reviewed_heads_of(record)
-    return heads
+    for path in (preclose_check.receipt_path(repo, issue), _legacy_receipt_path(repo, issue)):
+        if path is None or not path.exists():
+            continue
+        receipt = preclose_check.read_receipt(path)
+        if receipt is None:
+            raise UnreadableReceipt(path)
+        return preclose_passes.reviewed_heads_of(receipt)
+    return set()
+
+
+class UnreadableReceipt(Exception):
+    """The issue's receipt exists and cannot be read (harmonic-forge#1422)."""
+
+    def __init__(self, path):
+        super().__init__(f"the preclose receipt {path} exists but cannot be read")
+        self.path = path
+
+
+def _legacy_receipt_path(repo: str, issue: int):
+    import preclose_check  # noqa: PLC0415
+    try:
+        return preclose_check.legacy_receipt_dir() / f"{preclose_check._repo_key(repo)}_{issue}.json"
+    except SystemExit:
+        return None
 
 
 def reviewed_match(repo: str, issue: int, prefix: str) -> str | None:

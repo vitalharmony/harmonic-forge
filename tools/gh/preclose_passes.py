@@ -652,8 +652,9 @@ POST_VERDICT_REQUIRED = (
     "operator's --force covers this head, one cross-family refuter must read the patch "
     "since pass 2: preclose_check.py --repo {repo} --issue {issue} --post-verdict "
     "--base <pass-2 head> --envelope <path> --findings <file> "
-    "--own-model <your session's model> --cross-family-ms <ms>. It never counts as a pass "
-    "(harmonic-forge#838)."
+    "--own-model <your session's model>. It never counts as a pass "
+    "(harmonic-forge#838). Add --cross-family-ms only for a legacy envelope with no "
+    "duration_ms (harmonic-forge#1422)."
 )
 
 #: Every printed hint that is a runnable preclose_check.py command. Each is

@@ -928,9 +928,9 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
         try:
             reviewed = grants.reviewed_match(repo, number, sha_prefix or "")
         except Exception as exc:  # noqa: BLE001 - an unread receipt may hold the head
-            return (f"FORCE REFUSED for {key}: the preclose receipt or its archive cannot be read "
-                    f"({type(exc).__name__}), so {sha_prefix} cannot be shown unreviewed. "
-                    "No grant written.")
+            # harmonic-forge#1422 sticky-wicket: one read, one file, its path named.
+            return (f"FORCE REFUSED for {key}: {exc}, so {sha_prefix} cannot be shown "
+                    "unreviewed. Repair or remove that file, then retype the line. No grant written.")
         if reviewed:
             return (f"FORCE REFUSED for {key}: {sha_prefix} is {reviewed[:12]}, a head a preclose "
                     "pass or post-verdict check already reviewed; a reforge binds the new head the "

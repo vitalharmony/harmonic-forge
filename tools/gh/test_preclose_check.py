@@ -1358,6 +1358,7 @@ class OwnModelTests(unittest.TestCase):
              patch.object(preclose, "complete", return_value=0), \
              patch.object(preclose, "post_verdict", return_value=0), \
              patch.object(preclose, "cluster_verdict", return_value=0), \
+             patch.object(preclose, "envelope_duration_ms", return_value=1000), \
              patch("sys.stderr", new_callable=io.StringIO), \
              patch("sys.stdout", new_callable=io.StringIO):
             try:
@@ -1397,6 +1398,15 @@ class OwnModelTests(unittest.TestCase):
                 line = next(l for l in out.getvalue().splitlines() if "--complete" in l)
                 self.assertIn("--threat-model", line)
                 self.assertEqual(self._parses(line), 0, line)
+
+    def test_printed_hints_never_require_a_typed_wall_clock(self) -> None:
+        """harmonic-forge#1422 half B: the measured duration is recorded; a
+        printed command names --cross-family-ms only as the legacy fallback."""
+        import preclose_passes
+        text = preclose_passes.POST_VERDICT_REQUIRED.format(repo="o/r", issue=1)
+        command = text[text.index("preclose_check.py --repo"):text.index(". It never")]
+        self.assertNotIn("--cross-family-ms", command)
+        self.assertIn("only for a legacy envelope", text)
 
     def test_post_verdict_hint_parses(self) -> None:
         """Pass-2 survivor 4: the sticky-wicket remediation command must run."""
