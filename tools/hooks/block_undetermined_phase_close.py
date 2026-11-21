@@ -63,6 +63,7 @@ past this hook today is caught only by someone running
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -125,15 +126,21 @@ def _deny(reason: str, target_key: str | None = None) -> None:
 
 
 def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
-    """Return stdout, or None on any failure. Fail-open, see module docstring."""
-    if shutil.which("gh") is None:
-        return None
+    """Return stdout, or None on any failure. Fail-open, see module docstring.
+
+    harmonic-forge#1447: under the gh shim's strict mode (`close_gate.strict`)
+    a failure raises `close_gate.GateReadError` instead, so a close or merge
+    the shim gates fails closed when any read it needs cannot be made."""
+    import close_gate  # noqa: PLC0415
+    gh_bin = close_gate.STATE.gh_bin
+    if (gh_bin is None and shutil.which("gh") is None) or (gh_bin and not os.path.isfile(gh_bin)):
+        return close_gate.unread(args, "no gh binary")
     try:
-        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7)
-    except (OSError, subprocess.SubprocessError):
-        return None
+        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7, gh_bin=gh_bin)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return close_gate.unread(args, f"{type(exc).__name__}: {exc}")
     if result.returncode:
-        return None
+        return close_gate.unread(args, "gh exited non-zero")
     return result.stdout
 
 
@@ -144,7 +151,8 @@ def _gh_json(*args: str, cwd: str | None = None, repo: str | None = None):
     try:
         return json.loads(out)
     except (json.JSONDecodeError, ValueError):
-        return None
+        import close_gate  # noqa: PLC0415
+        return close_gate.unread(args, "unparseable JSON")
 
 
 def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
@@ -413,6 +421,73 @@ def _batch_key(repo: str, issue: str) -> str | None:
         return None
 
 
+def segment_verdict(raw_tokens: list[str], cwd: str | None, resolved: dict,
+                    *, strict_repo: bool = False):
+    """The phase decision for one command segment: `(deny text, batch key)`
+    or None (harmonic-forge#1447: shared with the gh shim). `strict_repo`
+    refuses a target whose repo cannot be resolved."""
+    from batch_auth import AMBIGUOUS, _protected_graphql  # noqa: PLC0415
+    payload_cwd = cwd
+    tokens = strip_invocation_prefix(raw_tokens)
+    if not tokens or Path(tokens[0]).name != "gh":
+        return None
+    if _protected_graphql(raw_tokens):
+        # batch_gate already asks on these; this hook stays silent.
+        return None
+
+    rest = tokens[1:]
+
+    if is_exempt_close(tokens):
+        return None
+
+    targets: list[tuple[str | None, str, str | None]] = []  # (repo, issue, via_pr)
+
+    issue_target = classify_issue_close_target(tokens)
+    pr_target = classify_pr_merge_target(tokens)
+    for target in (issue_target, pr_target):
+        if target and target[0] is AMBIGUOUS:
+            # Fail closed: the target repo is not certain, so no single
+            # repo can be phase-checked, and cwd would check another repo's issue.
+            return ("gh close/merge has an ambiguous target repository: a repo or "
+                  "host flag (-R/--repo/--hostname) is not in the one canonical "
+                  "form, or overrides a `gh api` request path; the phase check "
+                  "cannot tell which repo's issue it closes. Use `--repo OWNER/REPO` "
+                  "in canonical form (or a bare `gh api repos/...` path) and retry."), None
+
+    if issue_target and issue_target[1]:
+        targets.append((issue_target[0], issue_target[1], None))
+
+    if pr_target and pr_target[1]:
+        explicit_repo = pr_target[0]
+        if explicit_repo not in resolved:
+            resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
+        repo = resolved[explicit_repo]
+        if repo is None:
+            if strict_repo:
+                return f"could not resolve the repository for PR {pr_target[1]}", None
+            return None
+        issues = issues_closed_by_pr(repo, pr_target[1], rest, payload_cwd)
+        for issue in issues:
+            targets.append((explicit_repo, issue, pr_target[1]))
+
+    for explicit_repo, issue, via_pr in targets:
+        if explicit_repo not in resolved:
+            resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
+        repo = resolved[explicit_repo]
+        if repo is None:
+            if strict_repo:
+                return f"could not resolve the repository for issue {issue}", None
+            continue
+
+        condition = _decide(repo, issue)
+        if condition is None:
+            continue
+
+        return _deny_message(repo, issue, via_pr, condition), _batch_key(repo, issue)
+
+    return None
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -433,66 +508,11 @@ def main() -> None:
         _allow()
         return
 
-    from batch_auth import AMBIGUOUS, _protected_graphql  # noqa: PLC0415
-
     resolved: dict[str | None, str | None] = {}
-
     for raw_tokens in segments:
-        tokens = strip_invocation_prefix(raw_tokens)
-        if not tokens or Path(tokens[0]).name != "gh":
-            continue
-        if _protected_graphql(raw_tokens):
-            # batch_gate already asks on these; this hook stays silent.
-            continue
-
-        rest = tokens[1:]
-
-        if is_exempt_close(tokens):
-            continue
-
-        targets: list[tuple[str | None, str, str | None]] = []  # (repo, issue, via_pr)
-
-        issue_target = classify_issue_close_target(tokens)
-        pr_target = classify_pr_merge_target(tokens)
-        for target in (issue_target, pr_target):
-            if target and target[0] is AMBIGUOUS:
-                # Fail closed: the target repo is not certain, so no single
-                # repo can be phase-checked, and cwd would check another repo's issue.
-                _deny("gh close/merge has an ambiguous target repository: a repo or "
-                      "host flag (-R/--repo/--hostname) is not in the one canonical "
-                      "form, or overrides a `gh api` request path; the phase check "
-                      "cannot tell which repo's issue it closes. Use `--repo OWNER/REPO` "
-                      "in canonical form (or a bare `gh api repos/...` path) and retry.",
-                      target_key=None)
-                return
-
-        if issue_target and issue_target[1]:
-            targets.append((issue_target[0], issue_target[1], None))
-
-        if pr_target and pr_target[1]:
-            explicit_repo = pr_target[0]
-            if explicit_repo not in resolved:
-                resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
-            repo = resolved[explicit_repo]
-            if repo is None:
-                continue
-            issues = issues_closed_by_pr(repo, pr_target[1], rest, payload_cwd)
-            for issue in issues:
-                targets.append((explicit_repo, issue, pr_target[1]))
-
-        for explicit_repo, issue, via_pr in targets:
-            if explicit_repo not in resolved:
-                resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
-            repo = resolved[explicit_repo]
-            if repo is None:
-                continue
-
-            condition = _decide(repo, issue)
-            if condition is None:
-                continue
-
-            _deny(_deny_message(repo, issue, via_pr, condition),
-                  target_key=_batch_key(repo, issue))
+        verdict = segment_verdict(raw_tokens, payload_cwd, resolved)
+        if verdict:
+            _deny(verdict[0], target_key=verdict[1])
             return
 
     _allow()

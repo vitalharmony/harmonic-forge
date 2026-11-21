@@ -48,7 +48,7 @@ def repo_from_checkout(cwd: str | Path | None) -> str | None:
 
 
 def run_gh(args, *, repo: str | None, cwd: str | None = None,
-           timeout: int = 7) -> subprocess.CompletedProcess:
+           timeout: int = 7, gh_bin: str | None = None) -> subprocess.CompletedProcess:
     """Run `gh` for a hook, as the repo's slot, retrying a transient failure once.
 
     Never falls back to the caller's environment: that would authenticate as another
@@ -63,7 +63,10 @@ def run_gh(args, *, repo: str | None, cwd: str | None = None,
     hook's own budget. A call with no slot to begin with is not retried.
     """
     env = slot_env(repo)
-    argv = ("gh", *args)
+    # harmonic-forge#1447: the gh shim passes the real binary explicitly, so its
+    # own gate reads never re-enter the shim. A parameter, never an env var: the
+    # shim runs in the gated command's environment.
+    argv = (gh_bin or "gh", *args)
     if env is not None and not Path(env["GH_CONFIG_DIR"]).is_dir():
         # No credential exists for this account on this machine. Running `gh` here can only
         # fail unauthenticated, and falling back to the caller would act as another account.
