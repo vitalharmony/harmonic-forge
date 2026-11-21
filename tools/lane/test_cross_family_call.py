@@ -1526,9 +1526,6 @@ class SignalForwardingTests(PromptFileHygieneTests):
         self.assertEqual(record.read_text(), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class DurationEdges(unittest.TestCase):
     """harmonic-forge#1422 sticky-wicket half B: the duration branches."""
@@ -1567,3 +1564,6 @@ exec /usr/bin/date "$@"
         self.assertEqual(record["status"], "process-error")
         self.assertIn("duration_ms", record)
         self.assertIsNone(record["duration_ms"])
+
+if __name__ == "__main__":
+    unittest.main()
