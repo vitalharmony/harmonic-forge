@@ -652,8 +652,9 @@ POST_VERDICT_REQUIRED = (
     "operator's --force covers this head, one cross-family refuter must read the patch "
     "since pass 2: preclose_check.py --repo {repo} --issue {issue} --post-verdict "
     "--base <pass-2 head> --envelope <path> --findings <file> "
-    "--own-model <your session's model> --cross-family-ms <ms>. It never counts as a pass "
-    "(harmonic-forge#838)."
+    "--own-model <your session's model>. It never counts as a pass "
+    "(harmonic-forge#838). Add --cross-family-ms only for a legacy envelope with no "
+    "duration_ms (harmonic-forge#1422)."
 )
 
 #: Every printed hint that is a runnable preclose_check.py command. Each is
@@ -698,6 +699,38 @@ def _check_names_pass(check: dict, last: dict) -> bool:
     check with this writer adds `pass_sha`."""
     sha = last.get("sha")
     return bool(sha) and sha in (check.get("base_sha"), check.get("pass_sha"))
+
+
+def reviewed_fields_well_formed(receipt: dict) -> bool:
+    """The reviewed-head fields have the shapes the writer gives them; any other
+    shape is a corrupt receipt (harmonic-forge#1422 reforge pass 1)."""
+    history = receipt.get("pass_history", [])
+    check = receipt.get("post_verdict_check")
+    head_types = (str, type(None))
+    return (isinstance(history, list)
+            and all(isinstance(entry, dict) and isinstance(entry.get("sha"), head_types)
+                    for entry in history)
+            and (check is None or (isinstance(check, dict)
+                                   and isinstance(check.get("head_sha"), head_types)))
+            and isinstance(receipt.get("reviewed_sha", ""), head_types))
+
+
+def reviewed_heads_of(receipt: dict | None) -> set[str]:
+    """Every head one receipt records as reviewed: each pass head and the
+    post-verdict check's head (harmonic-forge#1422). The one reader of those
+    fields, per the one-reader invariant."""
+    if not isinstance(receipt, dict):
+        return set()
+    heads = {entry.get("sha") for entry in receipt.get("pass_history") or []
+             if isinstance(entry, dict)}
+    if receipt.get("status") != "planned":
+        # A pre-#834 receipt's one pass; a plan writes its TARGET here, which
+        # was never reviewed (harmonic-forge#1422 reforge pass 1).
+        heads.add(receipt.get("reviewed_sha"))
+    check = receipt.get("post_verdict_check")
+    if isinstance(check, dict):
+        heads.add(check.get("head_sha"))
+    return {head for head in heads if isinstance(head, str) and head}
 
 
 def force_head(receipt: dict | None) -> str | None:

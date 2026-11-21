@@ -45,6 +45,8 @@ EOF
 }
 
 caller="" families="" posture="" brief="" cwd="" out="" issue=""
+# harmonic-forge#1422 reforge pass 1: never inherit a duration the caller exported.
+unset duration_ms
 while [ $# -gt 0 ]; do
   case "$1" in
     --caller) caller="${2:-}"; shift 2 ;;
@@ -64,7 +66,7 @@ write_process_error() {
   mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
   local tmp
   tmp="$(mktemp "${out}.tmp.XXXXXX")" || return 0
-  printf '{"status":"process-error","exit_code":2}\n' >"$tmp"
+  printf '{"status":"process-error","exit_code":2,"duration_ms":%s}\n' "${duration_ms:-null}" >"$tmp"
   mv -f "$tmp" "$out"
 }
 
@@ -587,6 +589,9 @@ for family in "${targets[@]}"; do
   prompt_text "$posture" "$brief" "$family" >"$prompt_file"
   exit_code=0
   call_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # harmonic-forge#1422: the call's wall-clock is measured here, around the
+  # reviewer, and written into the envelope, so no caller ever types it.
+  call_started_ms="$(date +%s%3N)"
   # Run in the background and wait, so a trapped signal runs at once and is
   # forwarded (see INV-B above); the call shape of each `invoke_*` is unchanged.
   case "$family" in
@@ -596,6 +601,10 @@ for family in "${targets[@]}"; do
   reviewer_pid=$!
   wait "$reviewer_pid" || exit_code=$?
   reviewer_pid=""
+  duration_ms=$(( $(date +%s%3N) - call_started_ms ))
+  # A wall-clock step backward leaves no honest value: record none (null),
+  # never a synthetic one; preclose then treats it as a legacy envelope.
+  [ "$duration_ms" -ge 1 ] || duration_ms=null
   rm -f "$prompt_file"
   # harmonic-forge#1188 AC8: after a successful Codex call, map its thread id
   # (the first `thread.started` event, live probe 1) to the caller's issue in
@@ -619,8 +628,8 @@ for family in "${targets[@]}"; do
   envelope_err="$(mktemp -p "$scratch")"
   if emit_envelope "$family" "$posture" "$exit_code" "$tmp_out" "$tmp_err" \
        | jq -c --arg caller "$caller" --arg target "$family" \
-           --arg codex_model "$VERIFY_MODEL" \
-           '. + {caller_family:$caller, target_family:$target} +
+           --arg codex_model "$VERIFY_MODEL" --argjson duration_ms "$duration_ms" \
+           '. + {caller_family:$caller, target_family:$target, duration_ms:$duration_ms} +
             (if $target == "claude" and .posture == "verify" then
                # harmonic-forge#939: the model the run itself reports, since
                # --model opus is an alias.
@@ -662,8 +671,8 @@ for family in "${targets[@]}"; do
     # needed, which is this issue's entire complaint one level down. Only two
     # values are interpolated and both are escaped; `family` and `posture` are
     # closed token sets validated long before dispatch.
-    failure_record="$(printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s"}\n' \
-      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")")"
+    failure_record="$(printf '{"family":"%s","posture":"%s","status":"envelope-error","exit_code":%s,"report":null,"native":null,"native_preserved_at":"%s","duration_ms":%s}\n' \
+      "$family" "$posture" "$exit_code" "$(json_escape "$preserved")" "$duration_ms")"
     printf '%s' "$failure_record" >>"$result_tmp"
     printf '%s' "$failure_record"
     # `tmp_out` is deliberately NOT removed when preservation failed: the

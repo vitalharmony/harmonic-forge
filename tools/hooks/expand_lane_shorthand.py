@@ -921,7 +921,21 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
         gate_binding = {"gate_tool": refusal.get("tool"), "gate_mode": refusal.get("mode"),
                         "arg_fp": refusal.get("fp"), "gate_refusal_id": sha_prefix}
         sha_prefix = None
-    elif mode not in ("reforge", "route"):
+    elif mode == "reforge":
+        # harmonic-forge#1422: a reforge binds the new head the reforged code
+        # lands on, never one a pass or post-verdict check already reviewed
+        # (F1419: a line bound to the reviewed 96f53c1 left the new head ungranted).
+        try:
+            reviewed = grants.reviewed_match(repo, number, sha_prefix or "")
+        except Exception as exc:  # noqa: BLE001 - an unread receipt may hold the head
+            # harmonic-forge#1422 sticky-wicket: one read, one file, its path named.
+            return (f"FORCE REFUSED for {key}: {exc}, so {sha_prefix} cannot be shown "
+                    "unreviewed. Repair or remove that file, then retype the line. No grant written.")
+        if reviewed:
+            return (f"FORCE REFUSED for {key}: {sha_prefix} is {reviewed[:12]}, a head a preclose "
+                    "pass or post-verdict check already reviewed; a reforge binds the new head the "
+                    "reforged code lands on. No grant written.")
+    if mode not in ("reforge", "route", "gate"):
         # A reforge or route grant binds the head the operator typed; that
         # head may have no receipt (harmonic-forge#1174, #1244).
         head = grants.covered_head(repo, number)

@@ -825,6 +825,24 @@ class OneReaderInvariantTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class ReviewedFieldShapeTests(unittest.TestCase):
+    """harmonic-forge#1422 sticky PATCH #2: a non-string nested reviewed head
+    is a corrupt receipt, never a silently dropped head."""
+
+    def test_well_formed_receipt_passes(self) -> None:
+        receipt = {"pass_history": [{"sha": "a" * 40}, {"sha": None}],
+                   "post_verdict_check": {"head_sha": "b" * 40}, "reviewed_sha": "a" * 40}
+        self.assertTrue(preclose_passes.reviewed_fields_well_formed(receipt))
+
+    def test_non_string_pass_history_sha_is_corrupt(self) -> None:
+        receipt = {"pass_history": [{"sha": ["a" * 40]}]}
+        self.assertFalse(preclose_passes.reviewed_fields_well_formed(receipt))
+
+    def test_non_string_post_verdict_head_is_corrupt(self) -> None:
+        receipt = {"pass_history": [], "post_verdict_check": {"head_sha": 12345}}
+        self.assertFalse(preclose_passes.reviewed_fields_well_formed(receipt))
+
+
 class ChangeIdentityTests(ScratchRepo):
     """harmonic-forge#1077 AC1-AC4: the shared primitive, against real git.
     `base` plays origin/main; the checked-out `main` branch is the PR."""

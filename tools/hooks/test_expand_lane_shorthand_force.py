@@ -34,6 +34,12 @@ class ForceTrigger(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        # harmonic-forge#1422: tests never touch the operator's archive.
+        archive_root = Path(tempfile.mkdtemp())
+        (archive_root / ".hf-telemetry-test-root").write_text("")
+        env = mock.patch.dict(os.environ, {"HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(archive_root)})
+        env.start()
+        self.addCleanup(env.stop)
 
     def force(self, prompt: str, lane: str | None = "1") -> str:
         return m.authorize_force(prompt, "sess-7", lane)
@@ -114,6 +120,85 @@ class ForceModes(ForceTrigger):
         grant = self.grant()
         self.assertEqual((grant["mode"], grant["sha_prefix"], grant["sha"]),
                          ("reforge", "abcdef123456", None))
+
+    def _receipt(self, content) -> Path:
+        """Point the current and legacy receipt paths at a temp dir; write
+        `content` (a dict as JSON, raw text, or None for no file)."""
+        import preclose_check  # noqa: PLC0415
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        path = root / "receipt.json"
+        if isinstance(content, dict):
+            path.write_text(json.dumps(content))
+        elif isinstance(content, str):
+            path.write_text(content)
+        for target, value in (("receipt_path", mock.MagicMock(return_value=path)),
+                              ("legacy_receipt_dir", mock.MagicMock(return_value=root / "legacy"))):
+            patcher = mock.patch.object(preclose_check, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return path
+
+    def test_a_reforge_on_a_head_the_current_receipt_reviewed_writes_nothing(self) -> None:
+        """harmonic-forge#1422 AC1: a pass head and the post-verdict head both refuse."""
+        self._receipt({"pass_history": [{"sha": "a" * 40}], "post_verdict_check": {"head_sha": "b" * 40}})
+        for sha in ("a" * 12, "B" * 12):
+            with self.subTest(sha):
+                out = self.force(f"FORCE F1166 reforge {sha}: new approach")
+                self.assertIn("already reviewed", out)
+                self.assertIsNone(self.grant())
+
+    def test_a_corrupt_receipt_refuses_and_names_its_path(self) -> None:
+        """Sticky-wicket REFORGE half A: one read, one file, its path named."""
+        path = self._receipt("not json")
+        out = self.force("FORCE F1166 reforge cccccccccccc: new approach")
+        self.assertIn("cannot be read", out)
+        self.assertIn(str(path), out)
+        self.assertIsNone(self.grant())
+
+    def test_an_unreviewed_head_on_a_receipt_is_granted(self) -> None:
+        self._receipt({"pass_history": [{"sha": "a" * 40}]})
+        self.force("FORCE F1166 reforge dddddddddddd: new approach")
+        self.assertEqual(self.grant()["sha_prefix"], "dddddddddddd")
+
+    def test_the_receipt_archive_is_never_read(self) -> None:
+        """R-0381: the archive is not an authorization input."""
+        self._receipt(None)
+        sys.path.insert(0, str(Path(force_grant.__file__).resolve().parent.parent / "telemetry"))
+        import archive  # noqa: PLC0415
+        with mock.patch.object(archive, "read", side_effect=AssertionError("archive read")):
+            self.force("FORCE F1166 reforge cccccccccccc: new approach")
+        self.assertIsNotNone(self.grant())
+
+    def test_a_plan_only_receipt_grants(self) -> None:
+        """Reforge pass 1: --plan writes its target to reviewed_sha; a plan never reviewed it."""
+        self._receipt({"status": "planned", "reviewed_sha": "f" * 40, "pass_history": []})
+        self.force("FORCE F1166 reforge ffffffffffff: new approach")
+        self.assertEqual(self.grant()["sha_prefix"], "ffffffffffff")
+
+    def test_a_wrongly_shaped_receipt_refuses_by_path(self) -> None:
+        for bad in ({"pass_history": {"sha": "a" * 40}}, {"post_verdict_check": ["x"]},
+                    {"pass_history": ["a" * 40]}):
+            with self.subTest(bad=bad):
+                path = self._receipt(bad)
+                out = self.force("FORCE F1166 reforge aaaaaaaaaaaa: new approach")
+                self.assertIn(str(path), out)
+                self.assertIsNone(self.grant())
+
+    def test_a_legacy_receipt_reviewed_sha_refuses(self) -> None:
+        """A pre-#834 receipt records its one pass as reviewed_sha only."""
+        self._receipt({"reviewed_sha": "e" * 40})
+        out = self.force("FORCE F1166 reforge eeeeeeeeeeee: new approach")
+        self.assertIn("already reviewed", out)
+        self.assertIsNone(self.grant())
+
+    def test_a_reforge_with_no_receipt_writes_the_grant(self) -> None:
+        """AC2, and the receipt-absent case: reviewed_heads is empty, never a refusal."""
+        self._receipt(None)
+        self.assertEqual(force_grant.reviewed_heads("vitalharmony/harmonic-forge", 1166), set())
+        out = self.force("FORCE F1166 reforge dddddddddddd: new approach")
+        self.assertIn("pending reforge grant", out)
+        self.assertEqual(self.grant()["sha_prefix"], "dddddddddddd")
 
     def test_reforge_without_sha_refuses(self) -> None:
         self.assertIn("names the head it approves", self.force("FORCE F1166 reforge: new approach"))

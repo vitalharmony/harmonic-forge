@@ -694,13 +694,16 @@ def gate(args: argparse.Namespace) -> int:
     print()
     print("Then record the pass with the same --findings. The label is computed from the")
     print("envelope, never typed:")
-    tail = ("--envelope <envelope path> --cross-family-ms <ms>" if required
+    tail = ("--envelope <envelope path>" if required
             else "--not-triggered") + \
         " --own-model <your session's model> --panel-tokens <sum> --panel-ms <ms>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
-          f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} "
+          f"--repo {repo} --issue {args.issue} --complete --findings {shlex.quote(args.findings)} "
           f"--threat-model <good-faith|hostile-author> {tail}"
           + (" --cross-family" if args.cross_family else ""))
+    if required:
+        print("  (add --cross-family-ms <ms> only for a legacy envelope with no duration_ms;")
+        print("   the measured duration is recorded otherwise, harmonic-forge#1422)")
     print()
     print(NOT_A_GATE)
     return 0
@@ -1317,6 +1320,81 @@ def _count(flag: str, value: object, minimum: int = 0) -> int | None:
     return number
 
 
+def envelope_unmeasured(path: str | None) -> bool:
+    """True when the envelope says it measured its call but recorded no value:
+    a record carries the `duration_ms` key with null (a backward clock step).
+    Not legacy, so a typed wall-clock is refused for it (harmonic-forge#1422
+    reforge pass 1); the pass records no wall-clock instead."""
+    if not path or envelope_duration_ms(path) is not None:
+        return False
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    decoder, index, last_null = json.JSONDecoder(), 0, False
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            return last_null
+        try:
+            record, index = decoder.raw_decode(text, index)
+        except ValueError:
+            return last_null
+        # The last record carrying the key decides, as in envelope_duration_ms
+        # (harmonic-forge#1422 post-verdict survivor 1).
+        if isinstance(record, dict) and "duration_ms" in record:
+            last_null = record["duration_ms"] is None
+
+
+def envelope_duration_ms(path: str | None) -> int | None:
+    """The cross-family call's wall-clock as cross_family_call.sh measured it
+    (harmonic-forge#1422): the `duration_ms` of the envelope's last record that
+    carries one. None for a legacy envelope with none, or an unreadable file."""
+    if not path:
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    decoder, index, found = json.JSONDecoder(), 0, None
+    while True:  # the same raw_decode walk require_recorded_envelope uses
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            record, index = decoder.raw_decode(text, index)
+        except ValueError:
+            break
+        # The last record carrying the key wins, null included, so this
+        # agrees with envelope_unmeasured (harmonic-forge#1422 sticky PATCH #3).
+        if isinstance(record, dict) and "duration_ms" in record:
+            value = record["duration_ms"]
+            found = (value if isinstance(value, int) and not isinstance(value, bool)
+                     and value >= 1 else None)
+    return found
+
+
+def cross_family_ms(args: argparse.Namespace) -> int | None:
+    """The wall-clock a pass or post-verdict check records (harmonic-forge#1422):
+    the envelope's measured `duration_ms`; `--cross-family-ms` only for a legacy
+    envelope that carries none. Both at once refuses: a typed number never
+    overrides the measured one (F1393 recorded a placeholder of 300000 for a
+    95856 ms call)."""
+    typed = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    measured = envelope_duration_ms(getattr(args, "envelope", None))
+    if measured is not None and typed is not None:
+        raise SystemExit(f"preclose-check: --cross-family-ms {typed} with an envelope that measured "
+                         f"its own call ({measured} ms): the envelope's value is recorded, so drop "
+                         "the flag (harmonic-forge#1422). Nothing recorded.")
+    if typed is not None and envelope_unmeasured(getattr(args, "envelope", None)):
+        raise SystemExit(f"preclose-check: --cross-family-ms {typed} with an envelope that timed its "
+                         "call and recorded no value (a clock step): no typed wall-clock stands in "
+                         "for it; drop the flag (harmonic-forge#1422). Nothing recorded.")
+    return measured if measured is not None else typed
+
+
 def pass_cost(args: argparse.Namespace) -> dict:
     """harmonic-forge#889: what this pass cost. Never silent and never zero:
     the panel's tokens and wall-clock are required, unless the runtime reported
@@ -1325,7 +1403,7 @@ def pass_cost(args: argparse.Namespace) -> dict:
     envelope is recorded; Codex reports no tokens, so they are "unavailable"."""
     tokens = _count("--panel-tokens", getattr(args, "panel_tokens", None), minimum=1)
     ms = _count("--panel-ms", getattr(args, "panel_ms", None), minimum=1)
-    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    cross_ms = cross_family_ms(args)
     reason = str(getattr(args, "cost_unavailable", None) or "").strip()
     if getattr(args, "cost_unavailable", None) is not None and not reason:
         raise SystemExit("preclose-check: --cost-unavailable needs the reason the runtime "
@@ -1344,10 +1422,12 @@ def pass_cost(args: argparse.Namespace) -> dict:
                 "refuter's subagent_tokens, and first-spawn-to-last-result wall-clock. When the "
                 "runtime reported no usage, pass --cost-unavailable \"<reason>\" instead. A pass's "
                 "cost is never silent and never zero (harmonic-forge#889).")
-    if getattr(args, "envelope", None) and cross_ms is None:
-        raise SystemExit("preclose-check: --envelope needs --cross-family-ms <ms>: the wall-clock "
-                         "of the cross_family_call.sh run, measured around the call "
-                         "(harmonic-forge#889).")
+    if (getattr(args, "envelope", None) and cross_ms is None
+            and not envelope_unmeasured(getattr(args, "envelope", None))):
+        raise SystemExit("preclose-check: --envelope carries no measured duration_ms (a legacy "
+                         "envelope), so it needs --cross-family-ms <ms>: the wall-clock of the "
+                         "cross_family_call.sh run, measured around the call (harmonic-forge#889, "
+                         "#1422).")
     if cross_ms is not None and not getattr(args, "envelope", None):
         raise SystemExit("preclose-check: --cross-family-ms without --envelope: no cross-family "
                          "call is recorded for this pass.")
@@ -1359,13 +1439,25 @@ def pass_cost(args: argparse.Namespace) -> dict:
 
 def cost_line(cost: dict) -> str:
     view = preclose_passes.pass_cost_view(cost)
-    panel = (f"cost unavailable ({view['unavailable']})" if view["panel"] == "unavailable"
-             else f"{view['tokens']:,} panel tokens, {view['ms']:,} ms")
+    # Only a measured integer is formatted with `,`; anything else a receipt
+    # carries is named, never formatted (harmonic-forge#1422 post-verdict
+    # survivor 2: a string or a pre-#889 entry crashed this line).
+    def measured(value: object) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    if view["panel"] == "unavailable":
+        panel = f"cost unavailable ({view['unavailable']})"
+    elif view["panel"] == "measured" and measured(view["tokens"]) and measured(view["ms"]):
+        panel = f"{view['tokens']:,} panel tokens, {view['ms']:,} ms"
+    else:
+        panel = "cost not recorded"
     codex = ""
+    wall = (f"{view['codex_ms']:,} ms" if measured(view["codex_ms"])
+            else "wall-clock not measured")
     if view["codex"] == "ran":
-        codex = f"; cross-family {view['codex_ms']:,} ms, tokens unavailable"
+        codex = f"; cross-family {wall}, tokens unavailable"
     elif view["codex"] == "fallback":
-        codex = f"; cross-family call {view['codex_ms']:,} ms, fell back (no verdict)"
+        codex = f"; cross-family call {wall}, fell back (no verdict)"
     return f"{panel}{codex}; {cost['raised']} raised, {cost['dismissed']} dismissed"
 
 
@@ -1544,9 +1636,11 @@ def main() -> None:
     if args.post_verdict:
         if not (args.findings and args.envelope):
             parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
-        if args.cross_family_ms is None:
-            parser.error("--post-verdict needs --cross-family-ms <ms>: the cross-family call's "
-                         "wall-clock (harmonic-forge#889)")
+        if (args.cross_family_ms is None and envelope_duration_ms(args.envelope) is None
+                and not envelope_unmeasured(args.envelope)):
+            parser.error("--post-verdict's envelope carries no measured duration_ms (a legacy "
+                         "envelope), so it needs --cross-family-ms <ms>: the cross-family call's "
+                         "wall-clock (harmonic-forge#889, #1422)")
         if args.panel_tokens is not None or args.panel_ms is not None or args.cost_unavailable:
             parser.error("--post-verdict is one cross-family refuter, not a panel: it takes "
                          "--cross-family-ms only")
@@ -1674,7 +1768,7 @@ def post_verdict(args: argparse.Namespace) -> int:
     if loaded is None:
         loaded = load_findings(args.findings)
     surviving = len(surviving_findings(loaded))
-    cross_ms = _count("--cross-family-ms", getattr(args, "cross_family_ms", None), minimum=1)
+    cross_ms = cross_family_ms(args)
     shadow = stop_rule_shadow(args, loaded, prior, head_sha)
     # The vouched-for head and status stay exactly as pass 2 left them: this
     # check is not a pass, and the operator's --force is what covers the final

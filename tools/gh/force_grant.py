@@ -100,6 +100,53 @@ def covered_head(repo: str, issue: int) -> str | None:
     return preclose_passes.force_head(preclose_check.find_receipt(repo, issue))
 
 
+def reviewed_heads(repo: str, issue: int) -> set[str]:
+    """Every head the issue's CURRENT receipt records as reviewed: each pass
+    head, the post-verdict check's head and a legacy `reviewed_sha`
+    (harmonic-forge#1422, sticky-wicket REFORGE of half A). The receipt archive
+    is not read (R-0381: it is a best-effort audit trail, not an authorization
+    input). No receipt: no heads, so a reforge line is granted. A receipt that
+    exists and cannot be read raises `UnreadableReceipt` naming its path, so the
+    caller refuses instead of granting on a record it could not see.
+    Residuals: a head only an earlier, overwritten post-verdict check reviewed
+    is not refused; it costs one retyped FORCE line (the F1419 incident). A
+    pass recorded between this read and the grant's write is not seen (a
+    millisecond window, which the same retyped line covers)."""
+    import preclose_check  # noqa: PLC0415  (imports this module; never at top level)
+    import preclose_passes  # noqa: PLC0415
+    for path in (preclose_check.receipt_path(repo, issue), _legacy_receipt_path(repo, issue)):
+        if path is None or not path.exists():
+            continue
+        receipt = preclose_check.read_receipt(path)
+        if receipt is None or not preclose_passes.reviewed_fields_well_formed(receipt):
+            raise UnreadableReceipt(path)
+        return preclose_passes.reviewed_heads_of(receipt)
+    return set()
+
+
+class UnreadableReceipt(Exception):
+    """The issue's receipt exists and cannot be read (harmonic-forge#1422)."""
+
+    def __init__(self, path):
+        super().__init__(f"the preclose receipt {path} exists but cannot be read")
+        self.path = path
+
+
+def _legacy_receipt_path(repo: str, issue: int):
+    import preclose_check  # noqa: PLC0415
+    try:
+        return preclose_check.legacy_receipt_dir() / f"{preclose_check._repo_key(repo)}_{issue}.json"
+    except SystemExit:
+        return None
+
+
+def reviewed_match(repo: str, issue: int, prefix: str) -> str | None:
+    """The reviewed head `prefix` names, or None."""
+    prefix = prefix.lower()
+    return next((head for head in sorted(reviewed_heads(repo, issue))
+                 if head.lower().startswith(prefix)), None)
+
+
 def read_grant(key: str) -> dict | None:
     """The current grant file for the key, or None."""
     return imc_waiver.read_json(grant_path(key))
