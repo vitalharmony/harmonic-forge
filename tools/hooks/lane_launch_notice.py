@@ -37,6 +37,21 @@ def _changed_paths(from_sha: str, to_sha: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def _has_restart_task() -> bool:
+    """Best-effort; never raises (harmonic-forge#1483). True only when the
+    launched checkout defines a `restart` mise task. Any failure -- no mise,
+    an untrusted config, a slow probe -- drops the reminder: a missing
+    reminder costs less than a wrong one. 3 s, inside the hook's 10 s budget."""
+    try:
+        result = subprocess.run(
+            ["mise", "tasks", "info", "restart"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def build_notice(env: dict) -> str | None:
     lane = env.get("LANE", "")
     if not lane:
@@ -83,7 +98,8 @@ def build_notice(env: dict) -> str | None:
         lines.append("backend/.env is a real file but this project declares no Lane 3 env task -- the launch refused and left it untouched; do not run a gate until `lane3-provision` succeeds.")
 
     if lane == "1":
-        lines.append("Run `mise run restart --no-bump --no-git` yourself in your first turn and report its result in one line (R-0428); the operator never runs it.")
+        if _has_restart_task():
+            lines.append("Run `mise run restart --no-bump --no-git` yourself in your first turn and report its result in one line (R-0428); the operator never runs it.")
         changed = _changed_paths(from_sha, to_sha)
         if any(p.startswith("backend/") or p.startswith("frontend/") for p in changed):
             lines.append("backend/frontend code changed in this update.")
