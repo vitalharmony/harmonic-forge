@@ -149,6 +149,22 @@ class Lane1BranchMode(unittest.TestCase):
                     self.assertTrue(cell["launched"], cell.get("stderr"))
                     self.assertNotIn("mise run restart", cell["stderr"])
 
+    def test_a_hung_probe_does_not_block_the_launch(self):
+        """F1483 preclose pass 1 survivor 2: a probe that never returns is cut
+        off, the launch proceeds, and no reminder is printed."""
+        import time
+        with _FixtureTree() as tree:
+            stub = tree.stub_bin / "mise"
+            stub.write_text("#!/usr/bin/env bash\n"
+                            '[ "$1 $2 $3" = "tasks info restart" ] && exec sleep 30\n'
+                            "exit 0\n")
+            stub.chmod(0o755)
+            started = time.monotonic()
+            cell = _run(tree, "1")
+            self.assertLess(time.monotonic() - started, 20)
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertNotIn("mise run restart", cell["stderr"])
+
 
 class Lane2DetachedMode(unittest.TestCase):
     def test_behind_is_updated_and_logged(self):
@@ -333,7 +349,50 @@ class LaunchNotice(unittest.TestCase):
                               return_value=MagicMock(returncode=code)) as run:
                 self.assertIs(notice._has_restart_task(), expected)
                 self.assertEqual(run.call_args.args[0], ["mise", "tasks", "info", "restart"])
-                self.assertLessEqual(run.call_args.kwargs["timeout"], 3)
+                self.assertEqual(run.call_args.kwargs["timeout"], notice.PROBE_TIMEOUT_S)
+                # Survivor 3: output is discarded, never decoded.
+                self.assertIs(run.call_args.kwargs["stdout"], notice.subprocess.DEVNULL)
+                self.assertIs(run.call_args.kwargs["stderr"], notice.subprocess.DEVNULL)
+                self.assertNotIn("text", run.call_args.kwargs)
+
+    def test_both_subprocess_timeouts_fit_the_registered_hook_budget(self):
+        """F1483 preclose pass 1 survivor 1: probe then git diff, one after the
+        other, stays under the timeout lane_hooks.json registers for this hook."""
+        import json as _json
+        hooks = Path(__file__).resolve().parent / "lane_hooks.json"
+        text = hooks.read_text(encoding="utf-8")
+        data = _json.loads(text)
+        found = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if "lane_launch_notice.py" in str(node.get("command", "")):
+                    found.append(node.get("timeout"))
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+        walk(data)
+        self.assertEqual(found, [notice.HOOK_BUDGET_S])
+        self.assertLess(notice.PROBE_TIMEOUT_S + notice.DIFF_TIMEOUT_S, notice.HOOK_BUDGET_S)
+
+    def test_undecodable_probe_output_never_reaches_the_hook(self):
+        """Survivor 3, end to end: a probe printing invalid UTF-8 and failing
+        leaves the rest of the notice intact."""
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as bindir:
+            stub = Path(bindir) / "mise"
+            stub.write_text("#!/usr/bin/env bash\nprintf '\\xff\\xfe' ; printf '\\xff' >&2 ; exit 1\n")
+            stub.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("LANE")}
+            env.update({"LANE": "1", "LANE_REFRESH_STATUS": "current",
+                        "PATH": f"{bindir}{os.pathsep}{env['PATH']}"})
+            out = subprocess.run([sys.executable, str(HOOK)], env=env,
+                                 capture_output=True, text=True, check=True).stdout
+        self.assertIn("Lane launcher: checkout is current", out)
+        self.assertNotIn("mise run restart", out)
 
     def _repo_with_change(self, path: str) -> tuple[str, str, str]:
         import tempfile

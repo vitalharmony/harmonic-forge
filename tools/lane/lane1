@@ -51,8 +51,9 @@ export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
 # can move code out from under them. Printed for every --agent (Codex
 # has no SessionStart hook, so this terminal line is its only carrier).
 # harmonic-forge#1483: only where the checkout defines the task; any probe
-# failure drops the reminder.
-if mise tasks info restart >/dev/null 2>&1; then
+# failure drops the reminder, and `timeout` bounds a probe that never returns
+# (preclose pass 1 survivor 2).
+if timeout 3 mise tasks info restart >/dev/null 2>&1; then
   echo "lane1: after the session starts, run \`mise run restart --no-bump --no-git\` ($LANE_REFRESH_STATUS: $LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
 fi
 
