@@ -109,6 +109,10 @@ class ShimBashBypass(unittest.TestCase):
         "gh api repos/o/r/issues/5 -f state=closed",
         "echo '{}' | gh api -X PATCH repos/o/r/issues/5 --input -",
         "gh c 5 -R o/r",
+        # pass 1 survivors
+        "echo closed > f; gh api -X PATCH repos/o/r/issues/5 -F state=@f",
+        "gh api -X PATCH 'repos/{owner}/{repo}/issues/5' -f state=closed",
+        "gh issue close --duplicate-of 6 5 -R o/r",
     )
 
     def test_every_spelling_of_an_uninspected_close_is_refused(self):
@@ -119,6 +123,57 @@ class ShimBashBypass(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0, done.stderr)
                 self.assertEqual(self.closes_sent(), [], done.stderr)
                 self.assertIn("harmonic-forge#1447", done.stderr)
+
+    def test_graphql_spellings_are_refused(self):
+        for script in ("gh api -X POST /graphql -f query='mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }'",
+                       "echo '{}' > q.json; gh api graphql --input q.json"):
+            with self.subTest(script=script):
+                self.log.write_text("")
+                done = self.run_bash(script, INSPECTED)
+                self.assertEqual(done.returncode, 4, done.stderr)
+                self.assertFalse(any("graphql" in " ".join(a) for a in self.sent()))
+
+    def test_an_unreadable_alias_list_refuses_an_unknown_command(self):
+        fixture = {**UNINSPECTED, "aliases": None}
+        self.fixture.write_text(json.dumps(fixture))
+        fake = self.tmp / "real" / "gh"
+        fake.write_text(FAKE.replace('if argv[:2] == ["alias", "list"]:\n    print(fx.get("aliases", "")); sys.exit(0)',
+                                     'if argv[:2] == ["alias", "list"]:\n    sys.exit(1)'))
+        done = self.run_bash("gh c 5 -R o/r", fixture)
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertEqual(self.closes_sent(), [])
+
+    def test_a_comment_post_is_not_a_close(self):
+        """AC3 regression: a mutating issues API call that is not a close passes."""
+        done = self.run_bash("gh api repos/o/r/issues/5/comments -f body=hi", UNINSPECTED)
+        self.assertNotEqual(done.returncode, 4, done.stderr)
+        self.assertIn(["api", "repos/o/r/issues/5/comments", "-f", "body=hi"], self.sent())
+
+    def test_a_fresh_override_never_unlocks_an_uninspected_close(self):
+        """The gate runs before consume_override, and the override is not spent."""
+        override = self.tmp / ".cache" / "harmonic-forge" / "gh_scan_override"
+        override.parent.mkdir(parents=True)
+        override.write_text("")
+        done = self.run_bash("gh issue close 5 -R o/r", UNINSPECTED)
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertEqual(self.closes_sent(), [])
+        self.assertTrue(override.exists())
+
+    def test_an_import_failure_refuses_a_close_and_never_touches_auth(self):
+        """AC4 and the plan's no-import test: a shim copy with no hooks dir."""
+        lonely = self.tmp / "lonely"
+        lonely.mkdir()
+        shutil.copy(SHIM, lonely / "gh")
+        (lonely / "gh").chmod(0o755)
+        for name in ("gh_scan_patterns.py",):
+            shutil.copy(HERE / name, lonely / name)
+        env = {"PATH": f"{lonely}:{self.tmp / 'real'}:/usr/bin:/bin"}
+        done = self.run_bash("gh issue close 5 -R o/r", UNINSPECTED, env)
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertIn("internal error", done.stderr)
+        self.assertEqual(self.closes_sent(), [])
+        done = self.run_bash("gh auth token", UNINSPECTED, env)
+        self.assertNotEqual(done.returncode, 4, done.stderr)
 
     def test_an_inspected_close_goes_through(self):
         done = self.run_bash("gh issue close 5 -R o/r", INSPECTED)
@@ -159,6 +214,46 @@ class ShimBashBypass(unittest.TestCase):
         self.assertTrue(any(a[:2] == ["api", "repos/o/r/issues/5"] for a in self.sent()))
 
 
+class MergeGate(unittest.TestCase):
+    """AC2: the shim's merge decision is the hook's own (shared code)."""
+
+    def setUp(self):
+        import block_missing_preclose_inspection as pre
+        import block_undetermined_phase_close as ph
+        self.pre, self.ph = pre, ph
+        from unittest import mock
+        self.mock = mock
+        env = mock.patch.dict(os.environ, {"GH_REPO": "", "GH_HOST": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        for target, name, value in ((pre, "issues_closed_by_pr", ["5"]), (pre, "_pr_head_sha", "a" * 40),
+                                    (pre, "_preclose_receipt_ok", True), (ph, "segment_verdict", None)):
+            patcher = mock.patch.object(target, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def verdict(self, argv, labels):
+        with self.mock.patch.object(self.pre, "labels_for", return_value=set(labels)):
+            return close_gate.shim_verdict(argv, cwd="/tmp", real_gh="/bin/true")
+
+    def test_an_uninspected_merge_is_refused_with_the_hooks_own_text(self):
+        text = self.verdict(["pr", "merge", "7", "--repo", "o/r"], ["tooling-exception"])
+        self.assertIn(self.pre._deny_message("o/r", "5", "7"), text)
+
+    def test_an_inspected_bound_merge_goes_through(self):
+        self.assertIsNone(self.verdict(["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "a" * 40],
+                                       ["tooling-exception", "preclose-inspected"]))
+
+    def test_a_merge_with_no_number_is_refused(self):
+        self.assertIsNotNone(self.verdict(["pr", "merge", "--repo", "o/r"], ["tooling-exception"]))
+
+    def test_shim_makes_no_batch_decision(self):
+        import batch_auth
+        with self.mock.patch.object(batch_auth, "decide", side_effect=AssertionError("BATCH decided")):
+            self.assertIsNone(self.verdict(["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "a" * 40],
+                                           ["tooling-exception", "preclose-inspected"]))
+
+
 class Layering(unittest.TestCase):
     """AC5: a real gh reached by absolute path still meets the PreToolUse
     hook's target finder (program basename `gh`)."""
@@ -178,6 +273,12 @@ class CloseGateUnits(unittest.TestCase):
         self.assertIsNone(rest(["gh", "api", "-X", "GET", "repos/o/r/issues/5", "-f", "state=closed"]))
         self.assertIsNone(rest(["gh", "api", "repos/o/r/issues/5"]))
         self.assertIsNone(rest(["gh", "api", "-X", "PATCH", "repos/o/r/issues/5", "-f", "title=x"]))
+
+    def test_paginated_pages_read_as_one_list(self):
+        import block_undetermined_phase_close as ph
+        from unittest import mock
+        with mock.patch.object(ph, "_gh", return_value='[{"a":1}]\n[{"a":2}]'):
+            self.assertEqual(ph._gh_json("api", "x", "--paginate"), [{"a": 1}, {"a": 2}])
 
     def test_cheap_classifier(self):
         self.assertFalse(close_gate.could_be_close_or_merge(["issue", "view", "5"]))

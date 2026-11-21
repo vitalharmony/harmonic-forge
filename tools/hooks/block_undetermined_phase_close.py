@@ -151,8 +151,24 @@ def _gh_json(*args: str, cwd: str | None = None, repo: str | None = None):
     try:
         return json.loads(out)
     except (json.JSONDecodeError, ValueError):
-        import close_gate  # noqa: PLC0415
-        return close_gate.unread(args, "unparseable JSON")
+        pass
+    # harmonic-forge#1447 pass 1: `--paginate` prints one JSON array per page,
+    # back to back; read them as one list.
+    pages, decoder, index = [], json.JSONDecoder(), 0
+    try:
+        while index < len(out):
+            while index < len(out) and out[index].isspace():
+                index += 1
+            if index >= len(out):
+                break
+            page, index = decoder.raw_decode(out, index)
+            pages.append(page)
+    except (json.JSONDecodeError, ValueError):
+        pages = []
+    if pages and all(isinstance(page, list) for page in pages):
+        return [item for page in pages for item in page]
+    import close_gate  # noqa: PLC0415
+    return close_gate.unread(args, "unparseable JSON")
 
 
 def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
@@ -390,13 +406,16 @@ def _decide(repo: str, issue: str) -> str | None:
     if shipped and inert:
         return "carries BOTH `shipped` and `shipped-inert` -- exactly one is required"
 
+    import close_gate  # noqa: PLC0415
     if shipped:
         since = _latest_label_event_time(repo, issue, "shipped")
         if since is None:
-            return None  # fail open -- events unreadable
+            # harmonic-forge#1447 pass 1: strict mode never allows on a
+            # missing answer (a null response, no labeled event).
+            return close_gate.unread(("events", repo, issue), "no `shipped` label event")
         has_evidence = _has_evidence_comment(repo, issue, since)
         if has_evidence is None:
-            return None  # fail open
+            return close_gate.unread(("comments", repo, issue), "no answer")
         if not has_evidence:
             return ("is labelled `shipped` but no comment posted after that "
                     "label contains a fenced block of real-data output")
@@ -405,7 +424,7 @@ def _decide(repo: str, issue: str) -> str | None:
     # inert
     has_blocker = _has_open_blocker(repo, issue)
     if has_blocker is None:
-        return None  # fail open
+        return close_gate.unread(("blocked_by", repo, issue), "no answer")
     if not has_blocker:
         return ("is labelled `shipped-inert` but has no OPEN `blocked_by` "
                 "supply issue")

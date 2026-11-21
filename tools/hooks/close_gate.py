@@ -63,7 +63,8 @@ BUILTINS = frozenset({
     "org", "pr", "project", "release", "repo", "ruleset", "run", "search", "secret",
     "ssh-key", "status", "variable", "workflow", "--version", "--help", "-h", "version",
 })
-_MAYBE = ("close", "merge", "api", "graphql", "--input")
+_MAYBE = ("close", "merge", "graphql", "--input")
+_API_MUTATING = ("-X", "--method", "-f", "-F", "--field", "--raw-field", "--input")
 _GRAPHQL_MUTATION = re.compile(
     r"\b(closeIssue|mergePullRequest|enablePullRequestAutoMerge|updateIssue|updatePullRequest)\b")
 
@@ -74,7 +75,17 @@ def could_be_close_or_merge(argv: list[str]) -> bool:
         return False
     if argv[0] not in BUILTINS:
         return True  # an alias could expand to anything
-    return any(any(m in token for m in _MAYBE) for token in argv)
+    if any(any(m in token for m in _MAYBE) for token in argv):
+        return True
+    # harmonic-forge#1447 pass 1: a plain `gh api` read (`api user --jq .login`)
+    # is never a close; only a mutating api call can be.
+    return argv[0] == "api" and _api_mutating(argv[1:])
+
+
+def _api_mutating(rest: list[str]) -> bool:
+    return any(t in _API_MUTATING or t.startswith(("-X", "--method=", "--field=", "--raw-field=",
+                                                    "--input=", "-f", "-F"))
+               for t in rest)
 
 
 def _expand_alias(argv: list[str], real_gh: str) -> list[str] | None:
@@ -132,8 +143,9 @@ def _rest_close_target(tokens: list[str]) -> tuple[str | None, str, str] | None:
         if field is not None:
             has_field = True
             key, _, value = field.partition("=")
-            if key.strip() == "state" and value.strip().strip("'\"").lower() == "closed":
-                closes = True
+            value = value.strip().strip("'\"")
+            if key.strip() == "state" and (value.lower() == "closed" or value.startswith("@")):
+                closes = True  # `-F state=@file` reads the value from a file the gate cannot see
         if t == "--input" or t.startswith("--input="):
             has_input = True
         i += 1
@@ -145,10 +157,16 @@ def _rest_close_target(tokens: list[str]) -> tuple[str | None, str, str] | None:
 
 
 def _graphql_refusal(tokens: list[str]) -> str | None:
-    if len(tokens) < 3 or tokens[1] != "api" or tokens[2] != "graphql":
+    """Any `gh api` call whose endpoint is graphql, in any spelling or
+    position (`graphql`, `/graphql`, after `-X POST`), carrying a close/merge
+    mutation or a body the gate cannot read (`@file`, `$var`, `--input`)."""
+    if len(tokens) < 3 or tokens[1] != "api":
         return None
-    text = " ".join(tokens[3:])
-    if "@" in text or "$" in text or _GRAPHQL_MUTATION.search(text):
+    if not any(t.rstrip("/").endswith("graphql") and not t.startswith("-") for t in tokens[2:]):
+        return None
+    text = " ".join(tokens[2:])
+    if ("@" in text or "$" in text or "--input" in text
+            or _GRAPHQL_MUTATION.search(text) or "mutation" in text.lower()):
         return ("a `gh api graphql` close or merge mutation, or a query the gate cannot "
                 "read, is refused outright: its target cannot be bound without another read")
     return None
@@ -176,9 +194,9 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
     Any exception is the caller's to refuse on (fail closed)."""
     expanded = _expand_alias(list(argv), real_gh)
     if expanded is None:
-        if any(m in token for token in argv for m in ("close", "merge", "api")):
-            return PREFIX + "the gh alias list could not be read to expand this command"
-        return None
+        # harmonic-forge#1447 pass 1: an alias (`gh c 5`) need not spell close
+        # or merge, so an unreadable alias list refuses every unknown command.
+        return PREFIX + "the gh alias list could not be read to expand this command"
     tokens, conflict = _apply_repo_env(["gh", *expanded])
     if conflict:
         return PREFIX + conflict
@@ -191,6 +209,15 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
               or preclose._parse_api_merge(tokens) or preclose._parse_api_close(tokens)
               or _rest_close_target(tokens))
     if not parsed:
+        import batch_auth  # noqa: PLC0415
+        endpoints = [t for t in tokens[2:] if not t.startswith("-") and "/" in t]
+        unbound = [t for t in endpoints
+                   if re.search(r"(^|/)(issues/[^/\s]+|pulls/[^/\s]+/merge)/?$", t)
+                   and not batch_auth.API_ISSUE_PATH.search(t)]
+        if len(tokens) > 1 and tokens[1] == "api" and _api_mutating(tokens[2:]) and unbound:
+            # harmonic-forge#1447 pass 1 (cross-family): a placeholder or other
+            # spelling the parsers cannot bind to a number is refused.
+            return PREFIX + "a mutating issues/pulls API call whose target the gate cannot read"
         return None
     exempt = (parsed[2] == "issue" and not any(t == "--input" or t.startswith("--input=") for t in tokens)
               and preclose._canonical_not_planned_close(tokens))

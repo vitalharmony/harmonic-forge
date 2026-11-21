@@ -195,7 +195,7 @@ TOOLING_EXCEPTION_LABEL = "tooling-exception"
 VALUE_TAKING_FLAGS = frozenset({
     "--repo", "-R", "--comment", "-c", "--reason", "--body", "-b",
     "--body-file", "-F", "--subject", "-t", "--title", "--match-head-commit",
-    "--author-email",
+    "--author-email", "-A", "--duplicate-of",  # harmonic-forge#1447 pass 1
 })
 
 API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:/|$)")
@@ -482,6 +482,10 @@ def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
               "--jq", ".headRefName", repo=repo)
     if out is None:
         return None
+    if not out.strip():
+        import close_gate  # noqa: PLC0415
+        # harmonic-forge#1447 pass 1: an empty branch is not an answer.
+        return close_gate.unread(("pr", "view", pr), "empty headRefName")
     match = BRANCH_ISSUE.match(out.strip())
     return [match.group(1)] if match else []
 
@@ -527,8 +531,9 @@ def _receipt(repo: str, issue: str) -> dict | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         from preclose_check import find_receipt  # noqa: PLC0415
         return find_receipt(repo, int(issue))
-    except Exception:
-        return None
+    except Exception as exc:
+        import close_gate  # noqa: PLC0415
+        return close_gate.unread(("receipt", repo, issue), f"{type(exc).__name__}: {exc}")
 
 
 #: harmonic-forge#1077: the whole cache fetch (PR head, main, and any
@@ -843,8 +848,11 @@ def _close_block(repo: str, issue: str) -> str | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
         import preclose_passes  # noqa: PLC0415
         return preclose_passes.close_refusal(_receipt(repo, issue))
-    except Exception:  # noqa: BLE001
-        return None
+    except Exception as exc:  # noqa: BLE001
+        import close_gate  # noqa: PLC0415
+        if isinstance(exc, close_gate.GateReadError):
+            raise
+        return close_gate.unread(("receipt", repo, issue), f"{type(exc).__name__}: {exc}")
 
 
 def _run_pass_text(repo: str, issue: str, via_pr: str, head_sha: str) -> str:

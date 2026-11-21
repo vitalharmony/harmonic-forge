@@ -147,18 +147,18 @@ def _could_be_close_or_merge(argv: list[str]) -> bool:
 def _close_merge_gate(argv: list[str], real_gh: str) -> None:
     """Refuse (exit 4) a close or merge the gates deny, or one they cannot
     evaluate; return for every other call (harmonic-forge#1447)."""
+    # Import-free first: a call that cannot be a close or merge (`auth token`,
+    # `api user`, a read) never imports the gate (harmonic-forge#1447 plan).
+    if not _could_be_close_or_merge(argv):
+        return
     try:
         here = os.path.dirname(_self_realpath())
         hooks = os.path.join(here, "..", "hooks")
         if hooks not in sys.path:
             sys.path.insert(0, hooks)
         import close_gate  # noqa: PLC0415
-        if not close_gate.could_be_close_or_merge(argv):
-            return
         verdict = close_gate.shim_verdict(argv, cwd=os.getcwd(), real_gh=real_gh)
     except Exception as exc:  # noqa: BLE001 - fail closed for a possible close/merge
-        if not _could_be_close_or_merge(argv):
-            return
         print(f"gh-shim: refused (close/merge gate internal error: {type(exc).__name__}: {exc}); "
               "nothing was sent.", file=sys.stderr)
         sys.exit(4)
