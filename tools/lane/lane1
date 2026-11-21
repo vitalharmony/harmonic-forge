@@ -50,7 +50,12 @@ export LANE_REFRESH_STATUS LANE_REFRESH_FROM LANE_REFRESH_TO
 # and frontend (:5173) run from this main checkout, and a fast-forward here
 # can move code out from under them. Printed for every --agent (Codex
 # has no SessionStart hook, so this terminal line is its only carrier).
-echo "lane1: after the session starts, run \`mise run restart --no-bump --no-git\` ($LANE_REFRESH_STATUS: $LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
+# harmonic-forge#1483: only where the checkout defines the task; any probe
+# failure drops the reminder, and `timeout` bounds a probe that never returns
+# (preclose pass 1 survivor 2).
+if timeout 3 mise tasks info restart >/dev/null 2>&1; then
+  echo "lane1: after the session starts, run \`mise run restart --no-bump --no-git\` ($LANE_REFRESH_STATUS: $LANE_REFRESH_FROM -> $LANE_REFRESH_TO)" >&2
+fi
 
 # harmonic-forge#1014: the session name and pinned pane title, from the repo.
 # shellcheck source=_lane_identity.sh

@@ -19,6 +19,13 @@ import os
 import subprocess
 import sys
 
+# The hook's whole budget is 10 s (lane_hooks.json). Its two subprocesses run
+# one after the other, so their timeouts together stay under it
+# (harmonic-forge#1483 preclose pass 1 survivor 1).
+HOOK_BUDGET_S = 10
+PROBE_TIMEOUT_S = 2
+DIFF_TIMEOUT_S = 7
+
 
 def _changed_paths(from_sha: str, to_sha: str) -> list[str]:
     """Best-effort; never raises. Empty on any git failure (e.g. FROM/TO
@@ -28,13 +35,30 @@ def _changed_paths(from_sha: str, to_sha: str) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", from_sha, to_sha],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=DIFF_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
         return []
     if result.returncode != 0:
         return []
     return [line for line in result.stdout.splitlines() if line]
+
+
+def _has_restart_task() -> bool:
+    """Best-effort; never raises (harmonic-forge#1483). True only when the
+    launched checkout defines a `restart` mise task. Any failure -- no mise,
+    an untrusted config, a slow probe -- drops the reminder: a missing
+    reminder costs less than a wrong one. Its output is discarded, never
+    decoded (preclose pass 1 survivor 3: invalid UTF-8 crashed the hook)."""
+    try:
+        result = subprocess.run(
+            ["mise", "tasks", "info", "restart"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=PROBE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def build_notice(env: dict) -> str | None:
@@ -83,7 +107,8 @@ def build_notice(env: dict) -> str | None:
         lines.append("backend/.env is a real file but this project declares no Lane 3 env task -- the launch refused and left it untouched; do not run a gate until `lane3-provision` succeeds.")
 
     if lane == "1":
-        lines.append("Run `mise run restart --no-bump --no-git` yourself in your first turn and report its result in one line (R-0428); the operator never runs it.")
+        if _has_restart_task():
+            lines.append("Run `mise run restart --no-bump --no-git` yourself in your first turn and report its result in one line (R-0428); the operator never runs it.")
         changed = _changed_paths(from_sha, to_sha)
         if any(p.startswith("backend/") or p.startswith("frontend/") for p in changed):
             lines.append("backend/frontend code changed in this update.")
