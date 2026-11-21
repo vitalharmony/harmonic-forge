@@ -42,6 +42,28 @@ def _verdict(argv: list[str], env: dict | None = None) -> gh_argv.Verdict:
     return gh_argv.decide(argv, {**BASE_ENV, **(env or {})})
 
 
+class HelpLastValueWins(unittest.TestCase):
+    """harmonic-forge#1447 post-verdict survivor: gh (pflag) honors the last
+    --help value, so `--help --help=false` runs the command and must be gated
+    like any other call, never allowed as help."""
+
+    def test_a_later_false_help_is_not_a_help_call(self) -> None:
+        cases = (
+            ["issue", "close", "5", "--repo", "o/r", "--help", "--help=false"],
+            ["pr", "merge", "7", "--repo", "o/r", "--help=true", "--help=false"],
+            ["api", "-X", "GET", "-H", "X-HTTP-Method-Override: PATCH",
+             "repos/o/r/issues/5", "--help", "--help=false"],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv):
+                self.assertNotEqual(gh_argv.decide(argv, dict(BASE_ENV)).reason, "help")
+                self.assertNotEqual(gh_argv.decide(argv, dict(BASE_ENV)).action, "allow")
+
+    def test_a_final_true_help_is_still_help(self) -> None:
+        argv = ["issue", "close", "5", "--repo", "o/r", "--help=false", "--help"]
+        self.assertEqual(gh_argv.decide(argv, dict(BASE_ENV)).action, "allow")
+
+
 class Corpus(unittest.TestCase):
     """Required test 1 (and 7: the pass-1 fixes are rows)."""
 

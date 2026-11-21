@@ -88,7 +88,11 @@ class Parsed:
 
     @property
     def help(self) -> bool:
-        return any(flag == "--help" and _BOOL_VALUES[value] for flag, value in self.flags)
+        # pflag semantics: the last --help value wins, so `--help --help=false`
+        # runs the command and is never a help call (harmonic-forge#1447
+        # post-verdict survivor).
+        values = [_BOOL_VALUES[value] for flag, value in self.flags if flag == "--help"]
+        return bool(values) and values[-1]
 
 
 def _bool(flag: str, value: str) -> str:
