@@ -512,10 +512,13 @@ class RedirectReforgeInvariant(unittest.TestCase):
         def strip(text: str) -> str:
             return real(text).replace("echo one", "echo two")
         with mock.patch.object(gate, "_strip_fd_digits", side_effect=strip):
-            calls, _others, ok = gate._calls_in("echo one ; python3 2>f tools/gh/kill_check.py run")
+            calls, _others, ok = gate._calls_in(
+                "echo one 2>f ; python3 tools/gh/kill_check.py run --issue 7 2>f")
         self.assertTrue(ok)
         self.assertEqual([c.tool["path"] for c in calls], ["tools/gh/kill_check.py"])
-        self.assertEqual(calls[0].argv, ["run"])
+        # The proven stripped argv keeps the real digit argument `7` and drops
+        # only the descriptor; the other item's doubt does not cost it that.
+        self.assertEqual(calls[0].argv, ["run", "--issue", "7"])
 
     def test_a_redirected_shell_wrapper_is_one_call_not_two(self) -> None:
         """Reforge2 pass 1 (correctness): both readings recursed and the inner
