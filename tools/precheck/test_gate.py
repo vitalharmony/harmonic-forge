@@ -494,6 +494,38 @@ class RedirectReforgeInvariant(unittest.TestCase):
         self.assertIn("tools/gh/kill_check.py", [c.tool["path"] for c in calls])
         self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
 
+    def test_an_appended_unparseable_redirect_never_ungates_a_hidden_call(self) -> None:
+        """Reforge2 pass 1 (fail-direction, reproduced at 1441dae): a trailing
+        ` 2>&1>log` made the whole stripped text fail to parse, dropping the
+        stripped reading for every item, so a call only it revealed was allowed."""
+        for command in ("python3 2>f tools/gh/kill_check.py run --issue 1 2>&1>log",
+                        "bash -c 2>/dev/null '" + FORCE_CMD + "' 2>&1>log"):
+            with self.subTest(command=command):
+                calls, _others, ok = gate._calls_in(command)
+                self.assertTrue(ok)
+                self.assertTrue(calls)
+                self.assertIsNotNone(gate.refuses(command, "/tmp", frozenset()))
+
+    def test_one_items_doubt_never_drops_another_items_reading(self) -> None:
+        real = gate._strip_fd_digits
+
+        def strip(text: str) -> str:
+            return real(text).replace("echo one", "echo two")
+        with mock.patch.object(gate, "_strip_fd_digits", side_effect=strip):
+            calls, _others, ok = gate._calls_in("echo one ; python3 2>f tools/gh/kill_check.py run")
+        self.assertTrue(ok)
+        self.assertEqual([c.tool["path"] for c in calls], ["tools/gh/kill_check.py"])
+        self.assertEqual(calls[0].argv, ["run"])
+
+    def test_a_redirected_shell_wrapper_is_one_call_not_two(self) -> None:
+        """Reforge2 pass 1 (correctness): both readings recursed and the inner
+        call was counted twice, dropping the cd target from the fingerprint."""
+        plain = gate._calls_in("bash -c '" + FORCE_CMD + "'")[0]
+        redirected = gate._calls_in("bash -c '" + FORCE_CMD + "' 2>/dev/null")[0]
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(len(redirected), 1)
+        self.assertEqual(redirected[0].argv, plain[0].argv)
+
     def test_a_call_only_the_executed_argv_reveals_is_still_gated(self) -> None:
         """Reforge preclose pass 1: bash removes an attached redirect before the
         program sees argv, so these run the gated tool; a raw-only reading

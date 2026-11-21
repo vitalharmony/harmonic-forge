@@ -180,9 +180,10 @@ def _only_drops_digits(raw: list[str], stripped: list[str]) -> bool:
 def _fingerprint_argvs(command: str, raw_items: list) -> dict[int, list[str]]:
     """For each raw simple command whose descriptor-stripped argv provably
     differs only by removed all-ASCII-digit tokens, that stripped argv, keyed by
-    the item's index (harmonic-forge#1461 reforge). Any doubt -- the stripped
-    text fails to parse, or its structure differs from the raw parse -- returns
-    an empty map, so the raw argv is used."""
+    the item's index (harmonic-forge#1461 reforge). A stripped text that fails
+    to parse or differs in structure returns an empty map; an item whose argv
+    differs by more than digits is left out alone. Either way `_calls_in` adds
+    a detection-only digit-dropped reading for the items left out."""
     try:
         stripped_items = shell_parse.simple_commands(_strip_fd_digits(command))
     except (ValueError, shell_parse.NotOrdinary):
@@ -195,10 +196,18 @@ def _fingerprint_argvs(command: str, raw_items: list) -> dict[int, list[str]]:
         if raw_simple != isinstance(stripped, shell_parse.SimpleCommand):
             return {}
         if raw_simple and raw.argv and stripped.argv != raw.argv:
-            if not _only_drops_digits(list(raw.argv), list(stripped.argv)):
-                return {}
-            out[i] = list(stripped.argv)
+            # Reforge pass 1: doubt about one item never drops another's reading.
+            if _only_drops_digits(list(raw.argv), list(stripped.argv)):
+                out[i] = list(stripped.argv)
     return out
+
+
+def _digit_dropped(argv: list[str]) -> list[str]:
+    """`argv` with every all-ASCII-digit token after the first removed: a
+    detection-only reading (reforge pass 1). It can only find more calls than
+    the raw reading; it never fingerprints, so a call it alone finds is
+    refused unless a receipt matches its raw-derived argv -- fail closed."""
+    return argv[:1] + [t for t in argv[1:] if not (t and all(c in _ASCII_DIGITS for c in t))]
 
 
 def _normalize(argv: list[str]) -> list[str]:
@@ -255,11 +264,29 @@ def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]
     for i, item in enumerate(items):
         if not isinstance(item, shell_parse.SimpleCommand) or not item.argv:
             continue
-        readings = [_normalize(item.argv)]
+        raw_argv = _normalize(item.argv)
+        # (argv, may it replace a twin's fingerprint?)
+        readings = [(raw_argv, False)]
         if i in fingerprints:
-            readings.append(_normalize(fingerprints[i]))
+            readings.append((_normalize(fingerprints[i]), True))
+        else:
+            # Reforge pass 1: the proven stripped reading is unavailable, so a
+            # detection-only reading keeps "gated if either reading finds it".
+            dropped = _digit_dropped(raw_argv)
+            if dropped != raw_argv:
+                readings.append((dropped, False))
         found: list[_Call] = []
-        for n, argv in enumerate(readings):
+
+        def add(call: _Call, fingerprint: bool) -> None:
+            # Reforge pass 1: both readings of one call are one call, never two.
+            twin = next((c for c in found if c.tool["path"] == call.tool["path"]
+                         and c.spelling == call.spelling), None)
+            if twin is None:
+                found.append(call)
+            elif fingerprint:
+                found[found.index(twin)] = call  # the proven stripped argv fingerprints it
+
+        for n, (argv, fingerprint) in enumerate(readings):
             if not argv:
                 continue
             program = Path(argv[0]).name
@@ -269,21 +296,16 @@ def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]
                     others += inner_others
                     if not ok:
                         return calls + found + inner_calls, others, False
-                found += inner_calls
+                for inner in inner_calls:
+                    add(inner, fingerprint)
                 continue
             call = _direct_call(argv)
-            if call is None:
-                continue
-            twin = next((c for c in found if c.tool["path"] == call.tool["path"]
-                         and c.spelling == call.spelling), None)
-            if twin is not None:
-                found[found.index(twin)] = call  # same call: the stripped argv fingerprints it
-            else:
-                found.append(call)
+            if call is not None:
+                add(call, fingerprint)
         if found:
             calls += found
-        elif readings[0]:
-            others.append(readings[0])
+        elif raw_argv:
+            others.append(raw_argv)
     return calls, others, True
 
 
