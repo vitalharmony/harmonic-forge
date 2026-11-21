@@ -135,8 +135,13 @@ def _could_be_close_or_merge(argv: list[str]) -> bool:
         return False
     if argv[0] not in _GH_BUILTINS:
         return True
-    return any(word in token for token in argv
-               for word in ("close", "merge", "api", "graphql", "--input"))
+    if any(word in token for token in argv for word in ("close", "merge", "graphql", "--input")):
+        return True
+    # A plain `gh api` read is not a close; only a mutating form could be.
+    return argv[0] == "api" and any(
+        token in ("-X", "--method", "-f", "-F", "--field", "--raw-field")
+        or token.startswith(("-X", "--method=", "--field=", "--raw-field=", "-f", "-F"))
+        for token in argv[1:])
 
 
 def _close_merge_gate(argv: list[str], real_gh: str) -> None:
