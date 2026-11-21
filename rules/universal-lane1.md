@@ -38,7 +38,7 @@ assigns a different runtime; never infer a role change from a stale
 document or prior session.
 
 <!-- R-0436 -->
-An item in Lane 1's own task list whose blocker has cleared, or a filing Lane 1 owes, is started without asking; only operator-owned calls (FORCE, close, merge approval, scope) are asked (harmonic-forge#1477's tick surfaces each as `owed-own-queue`).
+An item in Lane 1's own task list that the operator already named, whose "waiting on" Lane 1 has confirmed cleared (the harmonic-forge#1477 tick lists every open entry, not only cleared ones), or a filing Lane 1 owes, is taken up at the current task's finish line (R-0375, R-0376) without asking whether to; implementing an issue the operator never named still needs that instruction (R-0392), and every step a rule reserves to the operator is still asked, except where R-0351 or R-0415 already authorize it.
 <!-- /R-0436 -->
 
 ## Role boundary — Lane 1 never implements
