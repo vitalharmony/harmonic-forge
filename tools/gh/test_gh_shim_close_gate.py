@@ -174,6 +174,25 @@ class CloseGateUnits(unittest.TestCase):
         self.assertTrue(close_gate.could_be_close_or_merge(["issue", "close", "5"]))
         self.assertTrue(close_gate.could_be_close_or_merge(["c", "5"]))
 
+    def test_strict_reads_name_the_real_binary_explicitly(self):
+        """Kill check 8: in strict mode both hooks run the shim's real gh, never
+        `gh` through PATH (which would re-enter the shim)."""
+        import subprocess as sp
+        from unittest import mock
+        import block_missing_preclose_inspection as pre
+        import block_undetermined_phase_close as ph
+        with tempfile.NamedTemporaryFile() as real:
+            for hook in (pre, ph):
+                seen = {}
+
+                def fake_run(args, **kw):
+                    seen.update(kw)
+                    return sp.CompletedProcess(args, 0, stdout="ok", stderr="")
+                with mock.patch.object(hook, "_run_gh", side_effect=fake_run), close_gate.strict(real.name):
+                    self.assertEqual(hook._gh("api", "x"), "ok")
+                with self.subTest(hook=hook.__name__):
+                    self.assertEqual(seen.get("gh_bin"), real.name)
+
     def test_strict_mode_raises_only_inside_the_context(self):
         self.assertIsNone(close_gate.unread(["api"], "x"))
         with close_gate.strict("/bin/true"):
