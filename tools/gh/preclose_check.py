@@ -1365,9 +1365,12 @@ def envelope_duration_ms(path: str | None) -> int | None:
             record, index = decoder.raw_decode(text, index)
         except ValueError:
             break
-        value = record.get("duration_ms") if isinstance(record, dict) else None
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-            found = value
+        # The last record carrying the key wins, null included, so this
+        # agrees with envelope_unmeasured (harmonic-forge#1422 sticky PATCH #3).
+        if isinstance(record, dict) and "duration_ms" in record:
+            value = record["duration_ms"]
+            found = (value if isinstance(value, int) and not isinstance(value, bool)
+                     and value >= 1 else None)
     return found
 
 
@@ -1437,10 +1440,14 @@ def cost_line(cost: dict) -> str:
     panel = (f"cost unavailable ({view['unavailable']})" if view["panel"] == "unavailable"
              else f"{view['tokens']:,} panel tokens, {view['ms']:,} ms")
     codex = ""
+    # A call timed across a backward clock step records no wall-clock
+    # (harmonic-forge#1422 sticky PATCH #1): name it, never format None.
+    wall = ("wall-clock not measured" if view["codex_ms"] is None
+            else f"{view['codex_ms']:,} ms")
     if view["codex"] == "ran":
-        codex = f"; cross-family {view['codex_ms']:,} ms, tokens unavailable"
+        codex = f"; cross-family {wall}, tokens unavailable"
     elif view["codex"] == "fallback":
-        codex = f"; cross-family call {view['codex_ms']:,} ms, fell back (no verdict)"
+        codex = f"; cross-family call {wall}, fell back (no verdict)"
     return f"{panel}{codex}; {cost['raised']} raised, {cost['dismissed']} dismissed"
 
 

@@ -706,9 +706,13 @@ def reviewed_fields_well_formed(receipt: dict) -> bool:
     shape is a corrupt receipt (harmonic-forge#1422 reforge pass 1)."""
     history = receipt.get("pass_history", [])
     check = receipt.get("post_verdict_check")
-    return (isinstance(history, list) and all(isinstance(entry, dict) for entry in history)
-            and (check is None or isinstance(check, dict))
-            and isinstance(receipt.get("reviewed_sha", ""), (str, type(None))))
+    head_types = (str, type(None))
+    return (isinstance(history, list)
+            and all(isinstance(entry, dict) and isinstance(entry.get("sha"), head_types)
+                    for entry in history)
+            and (check is None or (isinstance(check, dict)
+                                   and isinstance(check.get("head_sha"), head_types)))
+            and isinstance(receipt.get("reviewed_sha", ""), head_types))
 
 
 def reviewed_heads_of(receipt: dict | None) -> set[str]:

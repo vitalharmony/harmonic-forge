@@ -1435,6 +1435,68 @@ class OwnModelTests(unittest.TestCase):
         self.assertTrue(preclose.envelope_unmeasured(handle.name))
         os.unlink(handle.name)
 
+    @staticmethod
+    def _envelope(text: str) -> str:
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write(text)
+        return handle.name
+
+    def test_cost_line_names_an_unmeasured_cross_family_call(self) -> None:
+        """Sticky PATCH #1: a ran or fell-back call with no wall-clock prints
+        that, never a TypeError on None."""
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback):
+                cost = {"cost_unavailable": "r", "cross_family_ran": True,
+                        "cross_family_fallback": fallback, "raised": 1, "dismissed": 0}
+                line = preclose.cost_line(cost)
+                self.assertIn("wall-clock not measured", line)
+
+    def test_last_record_wins_when_it_is_null(self) -> None:
+        """Sticky PATCH #3: a valid duration then a null one is unmeasured,
+        and envelope_duration_ms agrees with envelope_unmeasured."""
+        path = self._envelope('{"duration_ms":5000}\n{"status":"ok","duration_ms":null}\n')
+        try:
+            self.assertIsNone(preclose.envelope_duration_ms(path))
+            self.assertTrue(preclose.envelope_unmeasured(path))
+        finally:
+            os.unlink(path)
+
+    def test_complete_records_no_wall_clock_for_a_null_envelope(self) -> None:
+        """Sticky PATCH #4: --complete with a null-duration envelope and no
+        typed wall-clock records the pass with no cross_family_ms. Fails if the
+        `and not envelope_unmeasured(...)` clause in pass_cost is removed."""
+        path = self._envelope('{"status":"ok","duration_ms":null}\n')
+        try:
+            args = argparse.Namespace(envelope=path, cross_family_ms=None, panel_tokens=None,
+                                      panel_ms=None, cost_unavailable="no usage reported")
+            cost = preclose.pass_cost(args)
+            self.assertNotIn("cross_family_ms", cost)
+        finally:
+            os.unlink(path)
+
+    def test_post_verdict_accepts_a_null_envelope_without_a_typed_wall_clock(self) -> None:
+        """Sticky PATCH #5: main() --post-verdict's own argument check admits a
+        null-duration envelope with no --cross-family-ms. Fails if its
+        `and not envelope_unmeasured(...)` clause is removed."""
+        path = self._envelope('{"status":"ok","duration_ms":null}\n')
+        argv = ["preclose_check.py", "--repo", "vitalharmony/harmonic-forge", "--issue", "1422",
+                "--post-verdict", "--base", "X", "--envelope", path, "--findings", "f.json",
+                "--own-model", "m"]
+        try:
+            with patch.object(sys, "argv", argv), \
+                 patch.object(preclose, "post_verdict", return_value=0), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err, \
+                 patch("sys.stdout", new_callable=io.StringIO):
+                try:
+                    preclose.main()
+                    code = 0
+                except SystemExit as done:
+                    code = done.code or 0
+            self.assertEqual(code, 0, err.getvalue())
+        finally:
+            os.unlink(path)
+
     def test_post_verdict_hint_parses(self) -> None:
         """Pass-2 survivor 4: the sticky-wicket remediation command must run."""
         import preclose_passes
