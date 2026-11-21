@@ -415,6 +415,21 @@ def classify_endpoint(ep: Endpoint) -> EndpointClass:
     return EndpointClass("other", None)
 
 
+def _moves_a_ref(ep: Endpoint) -> bool:
+    """A non-GET branch merge (`repos/o/r/merges`, `repositories/<id>/merges`)
+    or any git ref write (`.../git/refs...`): either can move a base branch to
+    a pull request's head, which GitHub marks merged (preclose pass 1 of the
+    reforge, survivor 2). Refused outright, never bound."""
+    low = [s.lower() for s in ep.segments]
+    if low[:1] == ["repos"] and len(low) >= 4:
+        rest = low[3:]
+    elif low[:1] == ["repositories"] and len(low) >= 3:
+        rest = low[2:]
+    else:
+        return False
+    return rest[:1] == ["merges"] or rest[:2] == ["git", "refs"]
+
+
 def effective_method(parsed: Parsed) -> str:
     """gh's rule: -X/--method if passed (last wins); else POST when any field
     or --input is present; else GET."""
@@ -629,6 +644,9 @@ def _api_verdict(parsed: Parsed, env: dict) -> Verdict:
         return _graphql_verdict(parsed, ep, fields)
     cls = classify_endpoint(ep)
     if cls.kind == "other":
+        if _moves_a_ref(ep):
+            return refuse(f"`{method} {'/'.join(ep.segments)}` can move a branch to a pull request's "
+                          "head, which GitHub records as a merge; no target can be bound")
         return allow("not an issue or pull request endpoint")
     if _allowlisted(cls, method, parsed, ep, fields):
         return allow("allowlisted non-closing issue/PR mutation")
@@ -678,9 +696,9 @@ def decide(argv: list[str], env: dict, table: dict | None = None) -> Verdict:
 # --- aliases ---------------------------------------------------------------
 
 def expand_alias(argv: list[str], alias_list: str) -> list[str] | None:
-    """`argv` with argv[0] expanded the way gh expands an alias once, `argv`
-    unchanged for a `!` (shell) alias, or None when argv[0] is not an alias.
-    Raises ArgvError for an expansion gh itself would reject."""
+    """`argv` with argv[0] expanded the way gh expands an alias once, or None
+    when argv[0] is not an alias. Raises ArgvError for an expansion gh itself
+    would reject and for every `!` (shell) alias."""
     import shlex  # noqa: PLC0415
     for line in alias_list.splitlines():
         name, sep, body = line.partition(":")
@@ -690,7 +708,10 @@ def expand_alias(argv: list[str], alias_list: str) -> list[str] | None:
         if len(body) >= 2 and body[0] == body[-1] and body[0] in "'\"":
             body = body[1:-1]
         if body.startswith("!"):
-            return list(argv)
+            # Preclose pass 1 of the reforge, survivor 3: a shell alias's body
+            # can run gh by absolute path, past the shim. Refused for every root.
+            raise ArgvError(f"`{argv[0]}` is a shell (`!`) alias; its command runs outside the gate "
+                            "and is refused")
         extra: list[str] = []
         for i, arg in enumerate(argv[1:]):
             if "$" not in body:

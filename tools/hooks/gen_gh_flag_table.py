@@ -105,9 +105,32 @@ def _aliases(sections: dict[str, list[str]]) -> list[str]:
     return [line.split()[-1] for line in sections.get("ALIASES", []) if line.strip().startswith("gh ")]
 
 
+def config_aliases(gh: str) -> set[str]:
+    """Every alias name in the local gh config (`gh alias list`). Unreadable
+    is an error: a builtin list that might hold an alias is never written."""
+    done = subprocess.run([gh, "alias", "list"], capture_output=True, text=True, timeout=30,
+                          env={**os.environ, "NO_COLOR": "1", "GH_PAGER": "cat"})
+    if done.returncode:
+        raise RuntimeError(f"`gh alias list` exited {done.returncode}: {done.stderr}")
+    return {line.partition(":")[0].strip() for line in done.stdout.splitlines() if ":" in line}
+
+
+def leaked_aliases(builtins: list[str], aliases: set[str]) -> list[str]:
+    """Builtins that are alias names (preclose pass 1 of the reforge,
+    survivor 1): `gh --help` lists config aliases among its commands, and a
+    clobbered alias read as a builtin skips the gate."""
+    return sorted(set(builtins) & aliases)
+
+
 def build(gh: str) -> dict:
     root = _sections(_help(gh, []))
-    builtins = sorted({*_commands(root, skip=("EXTENSION COMMANDS",)), *HIDDEN_BUILTINS, *ROOT_EXTRAS})
+    aliases = config_aliases(gh)
+    # ALIAS COMMANDS are the local config's aliases, never builtins; any other
+    # section that lists an alias name loses it too.
+    builtins = sorted({*_commands(root, skip=("EXTENSION COMMANDS", "ALIAS COMMANDS")),
+                       *HIDDEN_BUILTINS, *ROOT_EXTRAS} - aliases)
+    if leaked_aliases(builtins, aliases):
+        raise RuntimeError(f"alias names leaked into builtins: {leaked_aliases(builtins, aliases)}")
     commands: dict[str, dict] = {}
 
     def walk(path: list[str]) -> None:
@@ -147,6 +170,12 @@ def main() -> int:
     rendered = json.dumps(table, indent=1, sort_keys=True) + "\n"
     shim_text = SHIM.read_text()
     new_shim = render_shim(shim_text, table)
+    leaked = leaked_aliases(table["builtins"], config_aliases(real_gh()))
+    if TABLE.exists():
+        leaked += leaked_aliases(json.loads(TABLE.read_text()).get("builtins", []), config_aliases(real_gh()))
+    if args.check and leaked:
+        sys.stderr.write(f"gh alias name(s) {sorted(set(leaked))} are listed as builtins; regenerate\n")
+        return 1
     if args.check:
         stale = (not TABLE.exists() or TABLE.read_text() != rendered) or new_shim != shim_text
         if stale:

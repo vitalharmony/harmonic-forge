@@ -911,8 +911,8 @@
     "DELETE",
     "repos/o/r/git/refs/heads/x"
    ],
-   "expect": "allow",
-   "note": "git refs are not the gate's"
+   "expect": "refuse",
+   "note": "R1 survivor 2: any git ref write is refused (was allowed as not the gate's)"
   },
   {
    "argv": [
@@ -1338,6 +1338,107 @@
    ],
    "expect": "allow",
    "note": "read"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=feat/x"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: branch merge via POST merges"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "POST",
+    "repositories/123/merges",
+    "-f",
+    "base=main",
+    "-f",
+    "head=x"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: branch merge by repository id"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/o/r/git/refs/heads/main",
+    "-f",
+    "sha=abc",
+    "-F",
+    "force=true"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: PATCH a ref to a PR head"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs",
+    "-f",
+    "ref=refs/heads/x",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: POST a new ref"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/git/refs/heads/feat"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: DELETE a ref"
+  },
+  {
+   "argv": [
+    "api",
+    "-XPATCH",
+    "REPOS/o/r/GIT/REFS/heads/main",
+    "-f",
+    "sha=abc"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: case-folded ref write"
+  },
+  {
+   "argv": [
+    "api",
+    "-X",
+    "PATCH",
+    "repositories/123/git/refs/heads/main",
+    "-f",
+    "sha=a"
+   ],
+   "expect": "refuse",
+   "note": "R1 survivor 2: ref write by repository id"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/merges"
+   ],
+   "expect": "allow",
+   "note": "R1 survivor 2: GET merges is a read"
+  },
+  {
+   "argv": [
+    "api",
+    "repos/o/r/git/refs/heads/main"
+   ],
+   "expect": "allow",
+   "note": "R1 survivor 2: GET a ref is a read"
   }
  ]
 }

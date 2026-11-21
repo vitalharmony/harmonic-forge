@@ -93,8 +93,6 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
         if expanded is None:
             return PREFIX + (f"`gh {argv[0]}` is neither a gh builtin (gh {gh_argv.load_table()['gh_version']}) "
                              "nor an alias; an extension or unknown command is refused")
-        if expanded is argv or expanded == argv:
-            return None  # a `!` shell alias: its inner gh meets the shim again
         argv = expanded
         if not argv or (argv[0] in BUILTINS and argv[0] not in gh_argv.GATED_ROOTS):
             return None

@@ -130,6 +130,38 @@ class ShimBashBypass(unittest.TestCase):
                 self.assertEqual(self.closes_sent(), [], done.stderr)
                 self.assertIn("harmonic-forge#1447", done.stderr)
 
+    def test_a_clobbered_co_alias_reaches_the_gate(self):
+        """Reforge pass 1, survivor 1: `co` is a config alias, not a builtin."""
+        fixture = {**UNINSPECTED, "aliases": "co:\tissue close 5 -R o/r\n"}
+        done = self.run_bash("gh co", fixture)
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertEqual(self.closes_sent(), [])
+        self.assertFalse(any(a[:1] == ["co"] for a in self.sent()))
+        self.assertIn("preclose", done.stderr)
+        self.assertIn("harmonic-forge#1447", done.stderr)
+
+    def test_a_shell_alias_is_refused_for_every_root(self):
+        """Reforge pass 1, survivor 3: a `!` alias body can run gh by absolute path."""
+        for aliases in ("c:\t!/usr/bin/gh issue close \"$1\"\n", "c:\t'!echo hi'\n"):
+            with self.subTest(aliases=aliases):
+                self.log.write_text("")
+                done = self.run_bash("gh c 5", {**INSPECTED, "aliases": aliases})
+                self.assertEqual(done.returncode, 4, done.stderr)
+                self.assertEqual([a for a in self.sent() if a[:2] != ["alias", "list"]], [])
+                self.assertIn("shell", done.stderr)
+
+    def test_branch_merges_and_ref_writes_are_refused(self):
+        """Reforge pass 1, survivor 2: moving a base branch to a PR head merges it."""
+        for script in ("gh api repos/o/r/merges -f base=main -f head=feat",
+                       "gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc",
+                       "gh api -X POST repositories/1/merges -f base=main -f head=x",
+                       "gh api -X DELETE repos/o/r/git/refs/heads/x"):
+            with self.subTest(script=script):
+                self.log.write_text("")
+                done = self.run_bash(script, INSPECTED)
+                self.assertEqual(done.returncode, 4, done.stderr)
+                self.assertEqual(self.sent(), [])
+
     def test_graphql_spellings_are_refused(self):
         for script in ("gh api -X POST /graphql -f query='mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }'",
                        "echo '{}' > q.json; gh api graphql --input q.json"):

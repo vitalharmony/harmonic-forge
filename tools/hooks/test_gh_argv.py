@@ -77,6 +77,13 @@ def generated(kind: str) -> list[list[str]]:
     elif kind == "merge":
         endpoints, methods, fields = REST_ENDPOINTS, ("PUT", "put", "POST"), [*_fields("sha", "a"), []]
         path = "pulls/7/merge"
+    elif kind == "branch-merge":
+        endpoints, methods, fields = REST_ENDPOINTS, ("POST", "post", "PUT", "PATCH"), [*_fields("head", "x"), []]
+        path = "merges"
+    elif kind == "ref-write":
+        endpoints, methods, fields = (REST_ENDPOINTS, ("PATCH", "patch", "POST", "DELETE", "PUT"),
+                                      [*_fields("sha", "a"), []])
+        path = "git/refs/heads/main"
     else:
         name = "closeIssue" if kind == "graphql-close" else "mergePullRequest"
         doc = f'mutation {{ {name}(input:{{id:"x"}}) {{ clientMutationId }} }}'
@@ -97,7 +104,7 @@ class GeneratedSpellings(unittest.TestCase):
     """Required test 2: no spelling of a closing call is allowed."""
 
     def test_no_closing_spelling_is_allowed(self) -> None:
-        for kind in ("close", "merge", "graphql-close", "graphql-merge"):
+        for kind in ("close", "merge", "graphql-close", "graphql-merge", "branch-merge", "ref-write"):
             argvs = generated(kind)
             self.assertGreater(len(argvs), 100)
             for env in (BASE_ENV, {"GH_REPO": "o/r", "GH_HOST": ""}):
@@ -174,6 +181,21 @@ class FlagTableFreshness(unittest.TestCase):
         self.assertEqual(gen_gh_flag_table.build(gh), gh_argv.load_table(),
                          "the installed gh's grammar changed; run tools/hooks/gen_gh_flag_table.py")
 
+    def test_no_builtin_is_an_alias_name(self) -> None:
+        """Preclose pass 1 of the reforge, survivor 1: `gh --help` lists
+        config aliases (`co: pr checkout`); none may be a builtin."""
+        builtins = gh_argv.load_table()["builtins"]
+        self.assertNotIn("co", builtins)
+        gh = _real_gh()
+        if gh is not None:
+            self.assertEqual(gen_gh_flag_table.leaked_aliases(builtins, gen_gh_flag_table.config_aliases(gh)), [])
+
+    def test_the_generator_drops_and_flags_a_leaked_alias(self) -> None:
+        self.assertEqual(gen_gh_flag_table.leaked_aliases(["co", "pr"], {"co"}), ["co"])
+        sections = gen_gh_flag_table._sections("ALIAS COMMANDS\n  co:   Alias for \"pr checkout\"\n"
+                                               "CORE COMMANDS\n  pr:   Pull requests\n")
+        self.assertEqual(gen_gh_flag_table._commands(sections, skip=("ALIAS COMMANDS",)), ["pr"])
+
 
 class NormalTraffic(unittest.TestCase):
     """Required test 5: every gh argv shape the lane tools emit is allowed
@@ -234,7 +256,8 @@ class ParserUnits(unittest.TestCase):
         aliases = "c: issue close\nd: 'issue close $1 -R o/r'\ns: '!gh issue close 5'\n"
         self.assertEqual(gh_argv.expand_alias(["c", "5"], aliases), ["issue", "close", "5"])
         self.assertEqual(gh_argv.expand_alias(["d", "5", "x"], aliases), ["issue", "close", "5", "-R", "o/r", "x"])
-        self.assertEqual(gh_argv.expand_alias(["s"], aliases), ["s"])
+        with self.assertRaises(gh_argv.ArgvError):
+            gh_argv.expand_alias(["s"], aliases)  # survivor 3: every shell alias refuses
         self.assertIsNone(gh_argv.expand_alias(["zz"], aliases))
         with self.assertRaises(gh_argv.ArgvError):
             gh_argv.expand_alias(["d"], aliases)
