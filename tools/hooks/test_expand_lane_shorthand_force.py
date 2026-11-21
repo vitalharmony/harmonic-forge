@@ -170,6 +170,21 @@ class ForceModes(ForceTrigger):
             self.force("FORCE F1166 reforge cccccccccccc: new approach")
         self.assertIsNotNone(self.grant())
 
+    def test_a_plan_only_receipt_grants(self) -> None:
+        """Reforge pass 1: --plan writes its target to reviewed_sha; a plan never reviewed it."""
+        self._receipt({"status": "planned", "reviewed_sha": "f" * 40, "pass_history": []})
+        self.force("FORCE F1166 reforge ffffffffffff: new approach")
+        self.assertEqual(self.grant()["sha_prefix"], "ffffffffffff")
+
+    def test_a_wrongly_shaped_receipt_refuses_by_path(self) -> None:
+        for bad in ({"pass_history": {"sha": "a" * 40}}, {"post_verdict_check": ["x"]},
+                    {"pass_history": ["a" * 40]}):
+            with self.subTest(bad=bad):
+                path = self._receipt(bad)
+                out = self.force("FORCE F1166 reforge aaaaaaaaaaaa: new approach")
+                self.assertIn(str(path), out)
+                self.assertIsNone(self.grant())
+
     def test_a_legacy_receipt_reviewed_sha_refuses(self) -> None:
         """A pre-#834 receipt records its one pass as reviewed_sha only."""
         self._receipt({"reviewed_sha": "e" * 40})

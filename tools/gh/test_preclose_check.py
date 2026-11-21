@@ -1383,6 +1383,21 @@ class OwnModelTests(unittest.TestCase):
                 self.assertIn("--own-model", line)
                 self.assertEqual(self._parses(line), 0, line)
 
+    def test_gate_hint_never_requires_a_typed_wall_clock(self) -> None:
+        """harmonic-forge#1422 reforge pass 1: the required branch's printed
+        command names no --cross-family-ms, and quotes a findings path with a space."""
+        out = io.StringIO()
+        with patch.object(preclose, "require_writable"), \
+             patch.object(preclose, "registered_repo", return_value="vitalharmony/harmonic-forge"), \
+             patch.object(preclose, "gate_decision", return_value=(True, "why", 1, [])), \
+             patch("sys.stdout", out):
+            preclose.gate(_Args(repo="vitalharmony/harmonic-forge", issue=1422,
+                                findings="my findings.json", cross_family=False))
+        line = next(l for l in out.getvalue().splitlines() if "--complete" in l)
+        self.assertNotIn("--cross-family-ms", line)
+        self.assertIn("'my findings.json'", line)
+        self.assertEqual(self._parses(line), 0, line)
+
     def test_gate_hint_carries_threat_model(self) -> None:
         """harmonic-forge#1330 TC 1i: the printed --complete names the
         now-required --threat-model, and still parses as printed."""
@@ -1407,6 +1422,18 @@ class OwnModelTests(unittest.TestCase):
         command = text[text.index("preclose_check.py --repo"):text.index(". It never")]
         self.assertNotIn("--cross-family-ms", command)
         self.assertIn("only for a legacy envelope", text)
+
+    def test_an_explicit_null_duration_refuses_a_typed_wall_clock(self) -> None:
+        """Reforge pass 1: a timed call that recorded null is not legacy."""
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write('{"status":"ok","duration_ms":null}\n')
+        args = argparse.Namespace(envelope=handle.name, cross_family_ms=5000)
+        with self.assertRaises(SystemExit) as raised:
+            preclose.cross_family_ms(args)
+        self.assertIn("clock step", str(raised.exception))
+        self.assertTrue(preclose.envelope_unmeasured(handle.name))
+        os.unlink(handle.name)
 
     def test_post_verdict_hint_parses(self) -> None:
         """Pass-2 survivor 4: the sticky-wicket remediation command must run."""

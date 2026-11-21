@@ -698,7 +698,7 @@ def gate(args: argparse.Namespace) -> int:
             else "--not-triggered") + \
         " --own-model <your session's model> --panel-tokens <sum> --panel-ms <ms>"
     print(f'  python3 "${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/preclose_check.py" '
-          f"--repo {repo} --issue {args.issue} --complete --findings {args.findings} "
+          f"--repo {repo} --issue {args.issue} --complete --findings {shlex.quote(args.findings)} "
           f"--threat-model <good-faith|hostile-author> {tail}"
           + (" --cross-family" if args.cross_family else ""))
     if required:
@@ -1320,6 +1320,31 @@ def _count(flag: str, value: object, minimum: int = 0) -> int | None:
     return number
 
 
+def envelope_unmeasured(path: str | None) -> bool:
+    """True when the envelope says it measured its call but recorded no value:
+    a record carries the `duration_ms` key with null (a backward clock step).
+    Not legacy, so a typed wall-clock is refused for it (harmonic-forge#1422
+    reforge pass 1); the pass records no wall-clock instead."""
+    if not path or envelope_duration_ms(path) is not None:
+        return False
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    decoder, index = json.JSONDecoder(), 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            return False
+        try:
+            record, index = decoder.raw_decode(text, index)
+        except ValueError:
+            return False
+        if isinstance(record, dict) and "duration_ms" in record and record["duration_ms"] is None:
+            return True
+
+
 def envelope_duration_ms(path: str | None) -> int | None:
     """The cross-family call's wall-clock as cross_family_call.sh measured it
     (harmonic-forge#1422): the `duration_ms` of the envelope's last record that
@@ -1358,6 +1383,10 @@ def cross_family_ms(args: argparse.Namespace) -> int | None:
         raise SystemExit(f"preclose-check: --cross-family-ms {typed} with an envelope that measured "
                          f"its own call ({measured} ms): the envelope's value is recorded, so drop "
                          "the flag (harmonic-forge#1422). Nothing recorded.")
+    if typed is not None and envelope_unmeasured(getattr(args, "envelope", None)):
+        raise SystemExit(f"preclose-check: --cross-family-ms {typed} with an envelope that timed its "
+                         "call and recorded no value (a clock step): no typed wall-clock stands in "
+                         "for it; drop the flag (harmonic-forge#1422). Nothing recorded.")
     return measured if measured is not None else typed
 
 
@@ -1388,7 +1417,8 @@ def pass_cost(args: argparse.Namespace) -> dict:
                 "refuter's subagent_tokens, and first-spawn-to-last-result wall-clock. When the "
                 "runtime reported no usage, pass --cost-unavailable \"<reason>\" instead. A pass's "
                 "cost is never silent and never zero (harmonic-forge#889).")
-    if getattr(args, "envelope", None) and cross_ms is None:
+    if (getattr(args, "envelope", None) and cross_ms is None
+            and not envelope_unmeasured(getattr(args, "envelope", None))):
         raise SystemExit("preclose-check: --envelope carries no measured duration_ms (a legacy "
                          "envelope), so it needs --cross-family-ms <ms>: the wall-clock of the "
                          "cross_family_call.sh run, measured around the call (harmonic-forge#889, "
@@ -1589,7 +1619,8 @@ def main() -> None:
     if args.post_verdict:
         if not (args.findings and args.envelope):
             parser.error("--post-verdict needs --findings and --envelope (a cross-family call)")
-        if args.cross_family_ms is None and envelope_duration_ms(args.envelope) is None:
+        if (args.cross_family_ms is None and envelope_duration_ms(args.envelope) is None
+                and not envelope_unmeasured(args.envelope)):
             parser.error("--post-verdict's envelope carries no measured duration_ms (a legacy "
                          "envelope), so it needs --cross-family-ms <ms>: the cross-family call's "
                          "wall-clock (harmonic-forge#889, #1422)")

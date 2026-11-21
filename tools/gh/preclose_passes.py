@@ -701,6 +701,16 @@ def _check_names_pass(check: dict, last: dict) -> bool:
     return bool(sha) and sha in (check.get("base_sha"), check.get("pass_sha"))
 
 
+def reviewed_fields_well_formed(receipt: dict) -> bool:
+    """The reviewed-head fields have the shapes the writer gives them; any other
+    shape is a corrupt receipt (harmonic-forge#1422 reforge pass 1)."""
+    history = receipt.get("pass_history", [])
+    check = receipt.get("post_verdict_check")
+    return (isinstance(history, list) and all(isinstance(entry, dict) for entry in history)
+            and (check is None or isinstance(check, dict))
+            and isinstance(receipt.get("reviewed_sha", ""), (str, type(None))))
+
+
 def reviewed_heads_of(receipt: dict | None) -> set[str]:
     """Every head one receipt records as reviewed: each pass head and the
     post-verdict check's head (harmonic-forge#1422). The one reader of those
@@ -709,7 +719,10 @@ def reviewed_heads_of(receipt: dict | None) -> set[str]:
         return set()
     heads = {entry.get("sha") for entry in receipt.get("pass_history") or []
              if isinstance(entry, dict)}
-    heads.add(receipt.get("reviewed_sha"))  # a pre-#834 receipt's one pass
+    if receipt.get("status") != "planned":
+        # A pre-#834 receipt's one pass; a plan writes its TARGET here, which
+        # was never reviewed (harmonic-forge#1422 reforge pass 1).
+        heads.add(receipt.get("reviewed_sha"))
     check = receipt.get("post_verdict_check")
     if isinstance(check, dict):
         heads.add(check.get("head_sha"))

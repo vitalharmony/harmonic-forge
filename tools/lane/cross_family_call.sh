@@ -45,6 +45,8 @@ EOF
 }
 
 caller="" families="" posture="" brief="" cwd="" out="" issue=""
+# harmonic-forge#1422 reforge pass 1: never inherit a duration the caller exported.
+unset duration_ms
 while [ $# -gt 0 ]; do
   case "$1" in
     --caller) caller="${2:-}"; shift 2 ;;

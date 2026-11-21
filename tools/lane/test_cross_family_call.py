@@ -1553,6 +1553,16 @@ exec /usr/bin/date "$@"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(parse_envelopes(self.out.read_text())[-1]["duration_ms"])
 
+    def test_an_inherited_duration_never_reaches_the_envelope(self):
+        env_path = make_stub_path(self.tmp.name)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--caller", "nobody", "--families", "2", "--posture", "read-only",
+             "--brief", str(self.brief), "--out", str(self.out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            env=dict(os.environ, PATH=env_path, duration_ms="999999"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(json.loads(self.out.read_text().splitlines()[-1])["duration_ms"])
+
     def test_a_preflight_error_envelope_records_no_duration(self):
         """Documented choice: an error before the reviewer runs has measured
         nothing, so its process-error envelope carries duration_ms null."""

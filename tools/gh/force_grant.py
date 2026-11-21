@@ -108,15 +108,17 @@ def reviewed_heads(repo: str, issue: int) -> set[str]:
     input). No receipt: no heads, so a reforge line is granted. A receipt that
     exists and cannot be read raises `UnreadableReceipt` naming its path, so the
     caller refuses instead of granting on a record it could not see.
-    Residual: a head only an earlier, overwritten post-verdict check reviewed
-    is not refused; it costs one retyped FORCE line (the F1419 incident)."""
+    Residuals: a head only an earlier, overwritten post-verdict check reviewed
+    is not refused; it costs one retyped FORCE line (the F1419 incident). A
+    pass recorded between this read and the grant's write is not seen (a
+    millisecond window, which the same retyped line covers)."""
     import preclose_check  # noqa: PLC0415  (imports this module; never at top level)
     import preclose_passes  # noqa: PLC0415
     for path in (preclose_check.receipt_path(repo, issue), _legacy_receipt_path(repo, issue)):
         if path is None or not path.exists():
             continue
         receipt = preclose_check.read_receipt(path)
-        if receipt is None:
+        if receipt is None or not preclose_passes.reviewed_fields_well_formed(receipt):
             raise UnreadableReceipt(path)
         return preclose_passes.reviewed_heads_of(receipt)
     return set()
