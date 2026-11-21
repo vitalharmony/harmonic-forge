@@ -137,6 +137,11 @@ def _needs_gate(argv: list[str]) -> bool:
     """False only for a builtin root that is not `api`, `issue` or `pr`."""
     if not argv:
         return False
+    # A root flag (`--help`, `--version`, `-h`) is fast-pathed only alone: gh
+    # dispatches the words after it (`gh --help issue close 5 --help=false`
+    # closes), so anything longer goes to the gate (harmonic-forge#1447).
+    if argv[0].startswith("-") and len(argv) > 1:
+        return True
     return argv[0] in _GATED_ROOTS or argv[0] not in _GH_BUILTINS
 
 

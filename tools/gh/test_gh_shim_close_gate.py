@@ -334,6 +334,29 @@ class Layering(unittest.TestCase):
 
 
 class CloseGateUnits(unittest.TestCase):
+    def test_a_root_flag_followed_by_words_is_refused(self):
+        """harmonic-forge#1447 post-verdict: gh dispatches the words after a
+        root flag, so `gh --help issue close 5 --help=false` would close.
+        A root flag is allowed only alone."""
+        for argv in (["--help", "issue", "close", "5", "--help=false"],
+                     ["-h", "pr", "merge", "7"], ["--version", "api", "-X", "PATCH", "x"],
+                     ["--help", "version"]):
+            with self.subTest(argv=argv):
+                self.assertIsNotNone(close_gate.shim_verdict(argv, cwd=".", real_gh="/nonexistent/gh"))
+        for argv in (["--help"], ["--version"], ["-h"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(close_gate.shim_verdict(argv, cwd=".", real_gh="/nonexistent/gh"))
+
+    def test_the_shim_sends_a_root_flag_with_words_to_the_gate(self):
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("gh_shim_mod", str(SHIM))
+        spec = importlib.util.spec_from_loader("gh_shim_mod", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        self.assertTrue(mod._needs_gate(["--help", "issue", "close", "5"]))
+        self.assertFalse(mod._needs_gate(["--help"]))
+
     def test_paginated_pages_read_as_one_list(self):
         import block_undetermined_phase_close as ph
         from unittest import mock

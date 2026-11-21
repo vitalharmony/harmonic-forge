@@ -71,6 +71,12 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
     argv = list(argv)
     if not argv:
         return None
+    if argv[0].startswith("-") and len(argv) > 1:
+        # gh dispatches the words after a root flag, so `gh --help issue close 5
+        # --help=false` runs the close: a root flag is allowed only alone
+        # (harmonic-forge#1447 post-verdict).
+        return PREFIX + (f"`gh {argv[0]}` followed by more arguments runs them as a command; "
+                         "put the subcommand first")
     if argv[0] not in BUILTINS:
         # Sticky-wicket epoch 2: the gate expands no alias. Every root outside the
         # static, checked-in builtin set (a config alias like `co`, a `!` alias, an
