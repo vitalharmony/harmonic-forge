@@ -224,6 +224,11 @@ class SimpleCommand(NamedTuple):
     redirects: list[tuple[str, str | None]]
     sep_before: str | None
     sep_after: str | None
+    #: harmonic-forge#1461: argv indices of all-ASCII-digit words that come
+    #: directly before a redirect operator. Each may be a descriptor (`2>f`,
+    #: which bash removes) or an argument (`2 >f`); the tokenizer cannot tell.
+    #: argv itself is unchanged; a consumer chooses how to read them.
+    fd_candidates: tuple[int, ...] = ()
 
 
 class GroupMarker(NamedTuple):
@@ -244,14 +249,39 @@ def _split_operators(token: str) -> list[str]:
     return out
 
 
+_DESCRIPTOR_BOUNDARY = frozenset(" \t\n;|&()")
+
+
+def _proven_descriptor(token: str, lexer: shlex.shlex, lexed: str) -> bool:
+    """True only when the raw text proves `token` is a descriptor bash strips:
+    one unquoted, unescaped ASCII digit, at a word boundary, attached to an
+    operator that starts with `<` or `>` (never `&>`/`&>>`, which take none).
+    When shlex ends a word on a punctuation character it has read exactly that
+    one character past the word, so the stream position locates it. Anything
+    unprovable (quotes, a backslash, `10>`, `{fd}>`, an unknown position) is
+    False: the digit stays an argument."""
+    # The caller records only all-digit words. A boundary right before the
+    # character ahead of the operator means the raw word is exactly that one
+    # character, so a quote, a backslash or a second digit cannot be in it.
+    if not lexer._pushback_chars:
+        return False
+    try:
+        end = lexer.instream.tell()
+    except (AttributeError, OSError, ValueError):
+        return False
+    if end < 2 or end > len(lexed) or lexed[end - 1] not in "<>":
+        return False
+    return end == 2 or lexed[end - 3] in _DESCRIPTOR_BOUNDARY
+
+
 def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
     """The simple commands of `command`, in order, with grouping markers.
 
     Raises `ValueError` when the text does not parse (an unbalanced quote, an
     unknown operator, a redirect with no target) and `NotOrdinary` on an
     output process substitution `>(`."""
-    lexer = shlex.shlex(mask_heredoc_bodies(command), posix=True,
-                        punctuation_chars=_SIMPLE_PUNCTUATION)
+    lexed = mask_heredoc_bodies(command)
+    lexer = shlex.shlex(lexed, posix=True, punctuation_chars=_SIMPLE_PUNCTUATION)
     lexer.whitespace_split = True
     lexer.whitespace = lexer.whitespace.replace("\n", "")
     # shlex starts a comment at `#` even mid-word and swallows the newline
@@ -260,29 +290,46 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
     # (harmonic-forge#1289 pass 1).
     lexer.commenters = ""
     items: list[tuple[str, str]] = []
-    for token in lexer:
+    #: harmonic-forge#1461 (sticky-wicket PATCH, epoch 3): indices into `items`
+    #: of words the RAW text proves bash reads as a file descriptor. Default is
+    #: "an argument" (kept, so a gated call is refused, never allowed).
+    attached: set[int] = set()
+    while True:
+        token = lexer.get_token()
+        if token == lexer.eof:
+            break
         if token and all(char in _SIMPLE_PUNCTUATION for char in token):
             items.extend(("op", op) for op in _split_operators(token))
         else:
+            if _proven_descriptor(token, lexer, lexed):
+                attached.add(len(items))
             items.append(("word", token))
 
     out: list[SimpleCommand | GroupMarker] = []
     argv: list[str] = []
     redirects: list[tuple[str, str | None]] = []
+    candidates: list[int] = []
     sep_before: str | None = None
     pending: str | None = None
     heredocs: list[str] = []
     closing_delimiter: str | None = None
 
     def end(sep: str | None) -> None:
-        nonlocal argv, redirects, sep_before
+        nonlocal argv, redirects, sep_before, candidates
+        dropped = 0
         while argv and argv[0] in RESERVED_WORDS:
             argv.pop(0)
+            dropped += 1
         if argv or redirects:
-            out.append(SimpleCommand(argv, redirects, sep_before, sep))
-        argv, redirects, sep_before = [], [], sep
+            # Indices were recorded before the reserved words were stripped.
+            fd = tuple(i - dropped for i in candidates if i >= dropped)
+            out.append(SimpleCommand(argv, redirects, sep_before, sep, fd))
+        argv, redirects, sep_before, candidates = [], [], sep, []
 
-    for kind, value in items:
+    last_word_attached = False
+    for index, (kind, value) in enumerate(items):
+        if kind == "word" and pending is None:
+            last_word_attached = index in attached
         if pending is not None:
             op, pending = pending, None
             if kind != "word":
@@ -315,9 +362,15 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
             end(value)
             out.append(GroupMarker("open"))
         else:
-            # A digit word before a redirect stays in argv: shlex cannot tell
-            # `2>f` (a descriptor) from `2 >f` (an argument), and dropping it
-            # would hide an argument (harmonic-forge#1289 pass 1).
+            # A digit word before a redirect stays in argv (harmonic-forge#1289
+            # pass 1). When it is attached to the operator (`2>f`, no space)
+            # bash reads it as a descriptor, so its index is recorded
+            # (harmonic-forge#1461); a spaced digit (`2 >f`) is an argument.
+            # Only a digit the raw text proves is a descriptor is recorded
+            # (`_proven_descriptor`); `'2'>f`, `\\2>f`, `10>f`, `7&>f` stay arguments.
+            if argv and argv[-1] and all(c in "0123456789" for c in argv[-1]) \
+                    and last_word_attached and (len(argv) - 1) not in candidates:
+                candidates.append(len(argv) - 1)
             pending = value
     if pending is not None:
         raise ValueError(f"redirect {pending} has no target")

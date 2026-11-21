@@ -64,7 +64,6 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PYTHONS = re.compile(r"^python(?:3(?:\.\d+)?)?$")
 REFUSAL_ID = re.compile(r"^[0-9a-f]{12}$")
 
-
 class _Call:
     """One gated simple command: the registry tool, its argv, how it was spelled."""
 
@@ -104,8 +103,62 @@ def _mise_call(argv: list[str]) -> _Call | None:
     return None
 
 
+def _normalize(argv: list[str]) -> list[str]:
+    argv = shell_parse.strip_invocation_prefix(list(argv), unwrap_shells=False)
+    # The shell expands a leading `~` before the tool sees it; so does the gate,
+    # or the two would fingerprint different argv.
+    return [os.path.expanduser(t) if t == "~" or t.startswith("~/") else t for t in argv]
+
+
+def _direct_call(argv: list[str]) -> "_Call | None":
+    """The gated call `argv` invokes directly (mise task, python script, or the
+    tool itself), or None. Never a shell wrapper: that is recursion, below."""
+    if not argv:
+        return None
+    mise = _mise_call(argv)
+    if mise is not None:
+        return mise
+    program = Path(argv[0]).name
+    if PYTHONS.match(program):
+        index = 1
+        while index < len(argv) and argv[index].startswith("-"):
+            index += 1
+        if index < len(argv):
+            tool = _tool_for_program(argv[index])
+            if tool is not None:
+                return _Call(tool, argv[index + 1:], argv[:index + 1], None)
+    tool = _tool_for_program(argv[0])
+    if tool is not None:
+        return _Call(tool, argv[1:], argv[:1], None)
+    return None
+
+
+def _detect(argv: list[str], depth: int) -> tuple[list[_Call], list[list[str]], bool]:
+    """The gated calls one normalized argv makes (directly, or through a
+    `sh -c` text), the non-gated argvs it holds, and whether it parsed."""
+    if not argv:
+        return [], [], True
+    program = Path(argv[0]).name
+    if program in SHELLS and len(argv) > 2 and argv[1] in ("-c", "-lc", "--command") and depth < 3:
+        return _calls_in(argv[2], depth + 1)
+    call = _direct_call(argv)
+    return ([call], [], True) if call is not None else ([], [argv], True)
+
+
 def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]], bool]:
-    """(gated calls, other argvs, parsed). `parsed` is False when the text does not parse."""
+    """(gated calls, other argvs, parsed).
+
+    harmonic-forge#1461, second sticky-wicket REFORGE, refined at its pass 1:
+    `shell_parse` marks each digit word ATTACHED to a following redirect
+    operator (`2>f`, no whitespace; `fd_candidates`), which bash always reads
+    as a file descriptor and removes before the program sees argv. The gate
+    drops those words from the raw argv BEFORE invocation-prefix stripping, at
+    any position, and that one reading is both detection and fingerprint. A
+    spaced digit (`--issue 1461 > log`) is an argument and stays. Residual:
+    shlex strips quotes, so a quoted `'2'>f` (an argument to bash) is also
+    dropped; under the good-faith threat model that spelling is deliberate.
+    A part that does not parse never discards a gated call found before it.
+    """
     try:
         items = shell_parse.simple_commands(command)
     except (ValueError, shell_parse.NotOrdinary):
@@ -115,38 +168,13 @@ def _calls_in(command: str, depth: int = 0) -> tuple[list[_Call], list[list[str]
     for item in items:
         if not isinstance(item, shell_parse.SimpleCommand) or not item.argv:
             continue
-        argv = shell_parse.strip_invocation_prefix(list(item.argv), unwrap_shells=False)
-        # The shell expands a leading `~` before the tool sees it; so does the gate,
-        # or the two would fingerprint different argv.
-        argv = [os.path.expanduser(t) if t == "~" or t.startswith("~/") else t for t in argv]
-        if not argv:
-            continue
-        program = Path(argv[0]).name
-        if program in SHELLS and len(argv) > 2 and argv[1] in ("-c", "-lc", "--command") and depth < 3:
-            inner_calls, inner_others, ok = _calls_in(argv[2], depth + 1)
-            calls += inner_calls
-            others += inner_others
-            if not ok:
-                return calls, others, False
-            continue
-        mise = _mise_call(argv)
-        if mise is not None:
-            calls.append(mise)
-            continue
-        if PYTHONS.match(program):
-            index = 1
-            while index < len(argv) and argv[index].startswith("-"):
-                index += 1
-            if index < len(argv):
-                tool = _tool_for_program(argv[index])
-                if tool is not None:
-                    calls.append(_Call(tool, argv[index + 1:], argv[:index + 1], None))
-                    continue
-        tool = _tool_for_program(argv[0])
-        if tool is not None:
-            calls.append(_Call(tool, argv[1:], argv[:1], None))
-            continue
-        others.append(argv)
+        drop = set(item.fd_candidates)
+        dropped = [w for i, w in enumerate(item.argv) if i not in drop]
+        found, rest, ok = _detect(_normalize(dropped), depth)
+        if not ok:
+            return calls + found, others + rest, False
+        calls += found
+        others += rest
     return calls, others, True
 
 
@@ -286,7 +314,10 @@ def decide_command(command: str, sid: str, cwd: str, *, store: bool = True,
         if not parsed:
             if store:
                 log("error", sid=sid, tuid=tuid, reason="parse")
-            return None
+            # harmonic-forge#1461: a later part that does not parse never
+            # discards a gated call already found before it.
+            if not calls:
+                return None
         if store:
             import effects  # noqa: PLC0415
             for argv in others:
