@@ -137,9 +137,11 @@ class PlanOutput(unittest.TestCase):
         self.assertIn("loop job id", report)
 
     def test_belt_plan_tick_lane1_only(self):
-        """harmonic-forge#1448 AC4: Lane 1's tick runs the precheck report."""
+        """harmonic-forge#1448 AC4 and #1477 AC2: Lane 1's tick runs the
+        precheck report, then the lane's own task-list scan."""
         self.assertEqual(json.loads(_run_vh("1").stdout)["tick"],
-                         "python3 ~/harmonic-forge/tools/precheck/gate_report.py --new-cases --mark-seen")
+                         "python3 ~/harmonic-forge/tools/precheck/gate_report.py --new-cases --mark-seen"
+                         " ; python3 ~/harmonic-forge/tools/lane/tick_scan.py")
         for lane in ("2", "3"):
             self.assertNotIn("tick", json.loads(_run_vh(lane).stdout))
 

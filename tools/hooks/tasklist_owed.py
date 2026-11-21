@@ -93,6 +93,37 @@ def read_entries(session: str, tasks_dir: Path | None = None) -> list[dict]:
     return entries
 
 
+#: harmonic-forge#1477: the owners an open issue entry may name as
+#: `metadata.owner`. One definition, read by the hold hook and the lane tick.
+OWNERS = ("lane1", "lane2", "lane3", "operator", "ci", "bg")
+SHARED_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID"
+
+
+def valid_owner(metadata) -> bool:
+    """True when `metadata` names a valid owner (and, for `bg`, a non-empty
+    string `bg_ref`). The hook's write check and the tick's scan both call
+    this, so they cannot disagree (sticky-wicket PATCH, harmonic-forge#1477)."""
+    if not isinstance(metadata, dict):
+        return False
+    owner, bg_ref = metadata.get("owner"), metadata.get("bg_ref")
+    return owner in OWNERS and (owner != "bg" or (isinstance(bg_ref, str) and bool(bg_ref.strip())))
+
+
+def task_store(session: str) -> tuple[Path | None, str]:
+    """The one resolver for a session's task store (harmonic-forge#1477).
+
+    `(TASKS_DIR/<session>, "")`, or `(None, reason)` when the store cannot be
+    named: no session, or a shared or team task list. Accepted limit (operator,
+    2026-11-21): when CLAUDE_CODE_TASK_LIST_ID is set the list lives in a
+    folder this repo cannot reliably name, so shared and team task lists are
+    neither enforced by the hold hook nor scanned by the tick; each says so."""
+    if os.environ.get(SHARED_LIST_ENV, "").strip():
+        return None, f"shared task list ({SHARED_LIST_ENV}) unsupported"
+    if not session:
+        return None, "no session id"
+    return TASKS_DIR / session, ""
+
+
 def entry_key(entry: dict) -> str | None:
     match = KEY_RE.match(str(entry.get("subject") or ""))
     return f"{match.group(1)}{match.group(2)}" if match else None

@@ -953,6 +953,14 @@ path = "tools/lane/queue_resume_args.sh"
   class = "read"
   cite = ["tools/lane/queue_resume_args.sh:4-6"]
 
+[[tool]]
+path = "tools/lane/tick_scan.py"
+  [[tool.mode]]
+  name = "scan"
+  match = []
+  class = "read"
+  cite = ["tools/lane/tick_scan.py:64-73"]
+
 # --------------------------------------------------------------------------
 # Libraries: imported or sourced only, no process entry point.
 

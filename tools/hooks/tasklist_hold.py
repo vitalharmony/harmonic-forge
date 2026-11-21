@@ -8,7 +8,14 @@ is a pointer here, and the hooks below quote this shape in every refusal.
 
 One entry per held issue, keyed by the issue token at the start of the subject:
 
-    <KEY> — <last action> · waiting on <who> <step>
+    <KEY> — <last action> · waiting on <who> <step>, with metadata.owner set (harmonic-forge#1477)
+
+`metadata.owner` is the entry's owner as a field (harmonic-forge#1477): one of
+`lane1`, `lane2`, `lane3`, `operator`, `ci`, `bg` (a `bg` entry also carries
+`metadata.bg_ref`, the background job). In a lane session PreToolUse denies a
+TaskCreate or TaskUpdate whose resulting open issue entry lacks it; a
+TaskUpdate that sends no metadata keeps the stored metadata. The lane tick
+(`tools/lane/tick_scan.py`) reads the owner, never the subject's prose.
 
 - `H2463 — L2D posted (a1b2c3d) · waiting on Lane 1 review`
 - `F1112 — merged 5a1b2c3, deployed · waiting on YOU: close`
@@ -80,7 +87,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tasklist_owed as owed  # noqa: E402
 from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
-SHAPE = "<KEY> — <last action> · waiting on <who> <step>"
+SHAPE = ("<KEY> — <last action> · waiting on <who> <step>, with metadata.owner set "
+         "(harmonic-forge#1477)")
+#: harmonic-forge#1477: the structured owner every open issue entry carries in a
+#: lane session; the tick reads it, never the subject's prose.
+OWNERS = owed.OWNERS
+OWNER_RULE = ("metadata.owner must be one of " + ", ".join(OWNERS)
+              + " (and owner bg needs a non-empty string metadata.bg_ref naming the job)")
 OTHER_ACCOUNT = {"K", "Y", "D"}
 # Well under the hooks' 10 s timeout (preclose pass 2, F): a read Claude Code
 # kills prints nothing, which would let the update through; a timeout here
@@ -145,7 +158,16 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     tool_input = payload.get("tool_input") or {}
     session = payload.get("session_id") or ""
     task_id = str(tool_input.get("taskId") or "")
-    if not session or not task_id:
+    # harmonic-forge#1477: the owner check runs before the taskId guard, so a
+    # TaskCreate (which has no taskId) is checked too.
+    store, why = owed.task_store(session)
+    if store is None and owed.SHARED_LIST_ENV in why:
+        # Accepted limit (harmonic-forge#1477): a shared or team list is not enforced.
+        _note(f"{why}; not enforced")
+        return "allow", ""
+    if payload.get("tool_name") == "TaskCreate":
+        return _owner_decide(dict(tool_input))
+    if store is None or not task_id:
         return "allow", ""
     try:
         entries = owed.read_entries(session)
@@ -153,6 +175,10 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
         return "deny", (f"a task file could not be read ({exc}), so this update cannot be "
                         "checked; retry it (epoch 3: an unreadable task file denies).")
     target = next((e for e in entries if str(e.get("id")) == task_id), None)
+    if target is not None:
+        verdict = _owner_decide(_applied(target, tool_input))
+        if verdict[0] == "deny":
+            return verdict
     if target is None:
         _note(f"task {task_id} not readable, allowing")
         return "allow", ""
@@ -185,13 +211,44 @@ def pretooluse_decide(payload: dict) -> tuple[str, str]:
     if closed and _closed_subject(key, stored):
         return "allow", ""
     if closed:
-        return "deny", (f"{key} is closed. Update this entry to \"{key} — closed\" (with the "
+        return "deny", (f"{key} is closed. Update this entry to \"{key} — closed\" (keeping metadata.owner; with the "
                         "merge SHA when there is one) first, so the close is shown, then "
                         "complete it.")
     return "deny", (f"{key} is still open, and this is its only entry: an issue's entry leaves "
                     f"the list only when the issue closes, and it cannot be renamed away from "
                     f"its key. Update this entry to \"{SHAPE}\" instead "
                     "(tools/hooks/tasklist_hold.py).")
+
+
+def _applied(target: dict, tool_input: dict) -> dict:
+    """The entry this TaskUpdate leaves: status and subject as sent, metadata
+    merged over the stored metadata with a null value removing its key (the
+    runtime's own merge, probed live 2026-11-20)."""
+    applied = dict(target)
+    if tool_input.get("status") is not None:
+        applied["status"] = tool_input["status"]
+    if tool_input.get("subject") is not None:
+        applied["subject"] = tool_input["subject"]
+    merged = dict(target.get("metadata") or {})
+    for name, value in (tool_input.get("metadata") or {}).items():
+        if value is None:
+            merged.pop(name, None)
+        else:
+            merged[name] = value
+    applied["metadata"] = merged
+    return applied
+
+
+def _owner_decide(entry: dict) -> tuple[str, str]:
+    """harmonic-forge#1477: an open issue entry must name its owner as a field."""
+    status = entry.get("status") or "pending"
+    if status not in owed.OPEN_STATUSES or not owed.entry_key(entry):
+        return "allow", ""
+    if owed.valid_owner(entry.get("metadata") or {}):
+        return "allow", ""
+    return "deny", (f"{owed.entry_key(entry)}'s open task-list entry has no valid owner: "
+                    f"{OWNER_RULE}. Send it in this call's metadata (harmonic-forge#1477; "
+                    "the lane tick reads the owner, never the subject).")
 
 
 def _park_decide(session: str, key: str, status) -> tuple[str, str] | None:

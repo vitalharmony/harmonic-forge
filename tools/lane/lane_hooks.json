@@ -204,6 +204,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "TaskCreate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
