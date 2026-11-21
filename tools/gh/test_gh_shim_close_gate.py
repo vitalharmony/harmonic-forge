@@ -159,6 +159,16 @@ class ShimBashBypass(unittest.TestCase):
         self.assertTrue(any(a[:2] == ["api", "repos/o/r/issues/5"] for a in self.sent()))
 
 
+class Layering(unittest.TestCase):
+    """AC5: a real gh reached by absolute path still meets the PreToolUse
+    hook's target finder (program basename `gh`)."""
+
+    def test_absolute_path_gh_is_still_a_target(self):
+        import block_missing_preclose_inspection as pre
+        self.assertEqual(pre.find_gated_targets("/usr/bin/gh issue close 5 -R o/r"),
+                         [("o/r", "5", "issue")])
+
+
 class CloseGateUnits(unittest.TestCase):
     def test_rest_close_shapes(self):
         rest = close_gate._rest_close_target
