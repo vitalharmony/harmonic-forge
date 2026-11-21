@@ -93,7 +93,7 @@ SHAPE = ("<KEY> — <last action> · waiting on <who> <step>, with metadata.owne
 #: lane session; the tick reads it, never the subject's prose.
 OWNERS = ("lane1", "lane2", "lane3", "operator", "ci", "bg")
 OWNER_RULE = ("metadata.owner must be one of " + ", ".join(OWNERS)
-              + " (and owner bg needs a non-empty metadata.bg_ref naming the job)")
+              + " (and owner bg needs a non-empty string metadata.bg_ref naming the job)")
 OTHER_ACCOUNT = {"K", "Y", "D"}
 # Well under the hooks' 10 s timeout (preclose pass 2, F): a read Claude Code
 # kills prints nothing, which would let the update through; a timeout here
@@ -241,7 +241,8 @@ def _owner_decide(entry: dict) -> tuple[str, str]:
         return "allow", ""
     meta = entry.get("metadata") or {}
     owner = meta.get("owner")
-    if owner in OWNERS and (owner != "bg" or str(meta.get("bg_ref") or "").strip()):
+    bg_ref = meta.get("bg_ref")
+    if owner in OWNERS and (owner != "bg" or (isinstance(bg_ref, str) and bg_ref.strip())):
         return "allow", ""
     return "deny", (f"{owed.entry_key(entry)}'s open task-list entry has no valid owner: "
                     f"{OWNER_RULE}. Send it in this call's metadata (harmonic-forge#1477; "

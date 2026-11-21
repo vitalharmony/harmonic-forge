@@ -20,6 +20,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import tasklist_owed as owed  # noqa: E402
+
 TASKS_DIR = Path.home() / ".claude" / "tasks"
 OPEN = ("pending", "in_progress")
 #: The owners `tools/hooks/tasklist_hold.py` enforces as `metadata.owner`.
@@ -30,13 +33,16 @@ def classify(entry: dict, lane: str) -> str:
     """`owed`, `other` or `unparsed` for one task-list entry, from its status
     and `metadata.owner` alone (harmonic-forge#1477 sticky-wicket REFORGE):
     the subject's prose is never read, because no subject grammar survived
-    two preclose passes. An open entry with no or an unknown owner is
-    `unparsed`, so the tick names it instead of staying silent."""
+    two preclose passes. An open issue entry (one whose subject carries an
+    issue key, the hold hook's own test) with no or an unknown owner is
+    `unparsed`, so the tick names it instead of staying silent. An entry with
+    no issue key needs no owner at write (reforge pass 1: the hook and the
+    scan must agree on scope), so without one it is never named."""
     if entry.get("status") not in OPEN:
         return "other"
     owner = (entry.get("metadata") or {}).get("owner")
     if owner not in OWNERS:
-        return "unparsed"
+        return "unparsed" if owed.entry_key(entry) else "other"
     return "owed" if owner == f"lane{lane}" else "other"
 
 
@@ -65,7 +71,10 @@ def scan(store: Path, lane: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    # Reforge pass 1 (cross-family): Claude Code stores the list under
+    # CLAUDE_CODE_TASK_LIST_ID when it is set, so the scan reads that list.
+    session = (os.environ.get("CLAUDE_CODE_TASK_LIST_ID", "").strip()
+               or os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip())
     lane = os.environ.get("LANE", "").strip()
     if not session:
         print("tick-scan: CLAUDE_CODE_SESSION_ID is unset; the task list cannot be read")

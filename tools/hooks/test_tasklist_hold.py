@@ -925,6 +925,25 @@ class OwnerField(Base):
         self.assertEqual(hold.pretooluse_decide(self.update(4, subject="F4 — y",
                                                             metadata={"owner": "operator"}))[0], "allow")
 
+    def test_completing_an_ownerless_entry_is_allowed(self):
+        """Reforge pass 1 (test-honesty): the sent status must reach the owner
+        check, or completing a legacy ownerless entry is denied."""
+        self.put(6, "F6 — x", None)
+        self.assertEqual(hold._owner_decide(hold._applied(
+            json.loads((self.tasks / "6.json").read_text()), {"status": "completed"}))[0], "allow")
+
+    def test_bg_ref_must_be_a_string(self):
+        self.assertEqual(hold.pretooluse_decide(self.create("F7 — x", {"owner": "bg", "bg_ref": {"x": "y"}}))[0],
+                         "deny")
+
+    def test_lane_hooks_run_the_hold_hook_on_task_create(self):
+        """Reforge pass 1 (test-honesty): the wiring itself, not a count."""
+        hooks = json.loads((ROOT / "tools" / "lane" / "lane_hooks.json").read_text())["hooks"]["PreToolUse"]
+        create = [h for entry in hooks if entry.get("matcher") == "TaskCreate" for h in entry["hooks"]]
+        self.assertTrue(any("tasklist_hold.py" in h["command"] for h in create))
+        update = [h for entry in hooks if entry.get("matcher") == "TaskUpdate" for h in entry["hooks"]]
+        self.assertTrue(any("tasklist_hold.py" in h["command"] for h in update))
+
     def test_a_legacy_entry_can_be_closed_and_owned_in_one_call(self):
         """Pitch inspection named case: an existing open entry with no owner is
         renamed to `<KEY> — closed` and given an owner in a single update."""

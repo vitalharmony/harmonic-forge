@@ -57,6 +57,13 @@ class Classification(unittest.TestCase):
         self.assertEqual(tick_scan.classify(entry("F1 — x", "lane2"), "2"), "owed")
         self.assertEqual(tick_scan.classify(entry("F1 — x", "lane1"), "2"), "other")
 
+    def test_an_entry_with_no_issue_key_needs_no_owner(self) -> None:
+        """Reforge pass 1: the hook exempts a keyless entry, so the scan must
+        not name it every tick; an owner it does carry still counts."""
+        self.assertEqual(tick_scan.classify(entry("YOU: run the red-team sessions", None), "1"), "other")
+        self.assertEqual(tick_scan.classify(entry("Re-arm belt after expiry", None), "1"), "other")
+        self.assertEqual(tick_scan.classify(entry("Re-arm belt after expiry", "lane1"), "1"), "owed")
+
     def test_no_or_an_unknown_owner_is_unparsed(self) -> None:
         self.assertEqual(tick_scan.classify(entry("F1 — x", None), "1"), "unparsed")
         self.assertEqual(tick_scan.classify(entry("F1 — x", "lane10"), "1"), "unparsed")
@@ -110,6 +117,18 @@ class Scan(unittest.TestCase):
                 self.assertEqual(tick_scan.main([]), 0)
         self.assertIn("CLAUDE_CODE_SESSION_ID is unset", out.getvalue())
 
+    def test_main_reads_the_shared_task_list_when_one_is_set(self) -> None:
+        shared = self.store / "shared-list"
+        shared.mkdir()
+        (shared / "1.json").write_text(json.dumps(entry("F8 todo", "lane1")))
+        out = io.StringIO()
+        with mock.patch.object(tick_scan, "TASKS_DIR", self.store), \
+                mock.patch.dict(os.environ, {"LANE": "1", "CLAUDE_CODE_SESSION_ID": "sess-x",
+                                             "CLAUDE_CODE_TASK_LIST_ID": "shared-list"}), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(tick_scan.main([]), 0)
+        self.assertEqual(out.getvalue(), "owed-own-queue F8 todo\n")
+
     def test_main_reads_the_sessions_store(self) -> None:
         session = self.store / "sess-1"
         session.mkdir()
@@ -117,6 +136,7 @@ class Scan(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(tick_scan, "TASKS_DIR", self.store), \
                 mock.patch.dict(os.environ, {"LANE": "1", "CLAUDE_CODE_SESSION_ID": "sess-1"}), \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_TASK_LIST_ID": ""}), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(tick_scan.main([]), 0)
         self.assertEqual(out.getvalue(), "owed-own-queue F9 todo\n")
