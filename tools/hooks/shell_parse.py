@@ -249,14 +249,36 @@ def _split_operators(token: str) -> list[str]:
     return out
 
 
+_DESCRIPTOR_BOUNDARY = frozenset(" \t\n;|&()")
+
+
+def _proven_descriptor(token: str, lexer: shlex.shlex, lexed: str) -> bool:
+    """True only when the raw text proves `token` is a descriptor bash strips:
+    one unquoted, unescaped ASCII digit, at a word boundary, attached to an
+    operator that starts with `<` or `>` (never `&>`/`&>>`, which take none).
+    When shlex ends a word on a punctuation character it has read exactly that
+    one character past the word, so the stream position locates it. Anything
+    unprovable (quotes, a backslash, `10>`, `{fd}>`, an unknown position) is
+    False: the digit stays an argument."""
+    if len(token) != 1 or token not in "0123456789" or not lexer._pushback_chars:
+        return False
+    try:
+        end = lexer.instream.tell()
+    except (AttributeError, OSError, ValueError):
+        return False
+    if end < 2 or end > len(lexed) or lexed[end - 1] not in "<>" or lexed[end - 2] != token:
+        return False
+    return end == 2 or lexed[end - 3] in _DESCRIPTOR_BOUNDARY
+
+
 def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
     """The simple commands of `command`, in order, with grouping markers.
 
     Raises `ValueError` when the text does not parse (an unbalanced quote, an
     unknown operator, a redirect with no target) and `NotOrdinary` on an
     output process substitution `>(`."""
-    lexer = shlex.shlex(mask_heredoc_bodies(command), posix=True,
-                        punctuation_chars=_SIMPLE_PUNCTUATION)
+    lexed = mask_heredoc_bodies(command)
+    lexer = shlex.shlex(lexed, posix=True, punctuation_chars=_SIMPLE_PUNCTUATION)
     lexer.whitespace_split = True
     lexer.whitespace = lexer.whitespace.replace("\n", "")
     # shlex starts a comment at `#` even mid-word and swallows the newline
@@ -265,10 +287,9 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
     # (harmonic-forge#1289 pass 1).
     lexer.commenters = ""
     items: list[tuple[str, str]] = []
-    #: harmonic-forge#1461: indices into `items` of words that a punctuation
-    #: character followed with no whitespace between. shlex holds that
-    #: character in `_pushback_chars` when it ends a word, so this is the one
-    #: place the `2>f` / `2 >f` distinction survives tokenizing.
+    #: harmonic-forge#1461 (sticky-wicket PATCH, epoch 3): indices into `items`
+    #: of words the RAW text proves bash reads as a file descriptor. Default is
+    #: "an argument" (kept, so a gated call is refused, never allowed).
     attached: set[int] = set()
     while True:
         token = lexer.get_token()
@@ -277,7 +298,7 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
         if token and all(char in _SIMPLE_PUNCTUATION for char in token):
             items.extend(("op", op) for op in _split_operators(token))
         else:
-            if lexer._pushback_chars:
+            if _proven_descriptor(token, lexer, lexed):
                 attached.add(len(items))
             items.append(("word", token))
 
@@ -342,8 +363,8 @@ def simple_commands(command: str) -> list[SimpleCommand | GroupMarker]:
             # pass 1). When it is attached to the operator (`2>f`, no space)
             # bash reads it as a descriptor, so its index is recorded
             # (harmonic-forge#1461); a spaced digit (`2 >f`) is an argument.
-            # Residual: shlex strips quotes, so a quoted `'2'>f` (an argument
-            # to bash) is also recorded; its fingerprint then drops the digit.
+            # Only a digit the raw text proves is a descriptor is recorded
+            # (`_proven_descriptor`); `'2'>f`, `\\2>f`, `10>f`, `7&>f` stay arguments.
             if argv and argv[-1] and all(c in "0123456789" for c in argv[-1]) \
                     and last_word_attached and (len(argv) - 1) not in candidates:
                 candidates.append(len(argv) - 1)

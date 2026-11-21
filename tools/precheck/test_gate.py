@@ -439,9 +439,11 @@ class RedirectDescriptorDigit(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.argv(self.BASE + suffix)[-1], suffix.split()[0])
 
-    def test_a_quoted_attached_digit_is_the_named_residual(self) -> None:
-        """shlex strips quotes, so `'2'>f` reads as attached and is dropped."""
-        self.assertEqual(self.argv(self.BASE + " '2'>f"), self.argv(self.BASE))
+    def test_quoted_escaped_and_ampersand_digits_stay_arguments(self) -> None:
+        """Epoch 3 pass 2 + cross-family: bash keeps these digits."""
+        for suffix in (" '2'>f", " \\2>f", " 2''>f", " 7&>f", " 7&>>f", " 10>f"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(len(self.argv(self.BASE + suffix)), len(self.argv(self.BASE)) + 1)
 
     def test_a_digit_not_directly_before_a_redirect_stays_an_argument(self) -> None:
         for suffix, kept in ((" 2 2>f", "2"), (" v2>f", "v2"), (" ٢>f", "٢"), (" note\\ 2>f", "note 2")):
@@ -569,6 +571,43 @@ class RedirectSingleReading(unittest.TestCase):
                             + " " + " ".join(shlex.quote(w) for w in base[at:]) + tail
                         with self.subTest(command=command):
                             self.assertIsNotNone(gate.refuses(command.strip(), "/tmp", frozenset()))
+
+
+class BashOracle(unittest.TestCase):
+    """Sticky-wicket PATCH, epoch 3: real bash is the judge. For every spelling
+    the gate's argv equals the argv bash passes, or keeps MORE words than bash
+    (so no receipt matches and the call is refused). Dropping a word bash keeps
+    is the only divergence that can reuse a receipt, and it fails here."""
+
+    DIGITS = ("2", "7", "0", "10", "'2'", "\\2", "2''")
+    OPERATORS = (">f", ">>f", ">|f", ">&2", "<in", "<>f", "&>f", "&>>f")
+
+    def corpus(self):
+        for digit in self.DIGITS:
+            for op in self.OPERATORS:
+                yield f"{digit}{op}"
+                yield f"{digit} {op}"
+        yield from ("2>&1", "1>f 2>&1", "{fd}>f", "2\\\n>f", "x;2>f", "2>f 7")
+
+    def bash_argv(self, tail: str, tmp: str) -> list[str]:
+        out = Path(tmp) / "argv"
+        script = f'f(){{ printf "%s\\0" "$@" > {shlex.quote(str(out))}; }}; f run 1461 {tail}'
+        subprocess.run(["bash", "-c", script], cwd=tmp, capture_output=True, timeout=10,
+                       input="")
+        return out.read_text().split("\0")[:-1] if out.exists() else []
+
+    def test_the_gate_never_drops_a_word_bash_keeps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "in").write_text("")
+            for tail in self.corpus():
+                with self.subTest(tail=tail):
+                    expected = self.bash_argv(tail, tmp)
+                    calls, _others, ok = gate._calls_in(f"python3 tools/gh/kill_check.py run 1461 {tail}")
+                    if not ok or not calls or not expected:
+                        continue  # unparsed or no call: main's behavior, never a new allow
+                    got = calls[0].argv
+                    self.assertTrue(got == expected or len(got) > len(expected),
+                                    f"gate {got} vs bash {expected}")
 
 
 class ShellParseFdCandidates(unittest.TestCase):
