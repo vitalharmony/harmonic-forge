@@ -762,10 +762,6 @@ class RankerAndSummaryAgreeTests(__import__("unittest").TestCase):
             "forge#97 absent from the rendered section entirely")
 
 
-if __name__ == "__main__":
-    __import__("unittest").main()
-
-
 class SuppliedBoardFieldsTests(unittest.TestCase):
     def test_summary_groups_use_supplied_fields_without_another_board_credential(self):
         issue = {"number": 1396, "title": "Credentials", "body": "", "labels": []}
@@ -784,3 +780,7 @@ class SuppliedBoardFieldsTests(unittest.TestCase):
                 patch.object(fpt, "fetch_forge_theme_venture", return_value={}) as fetch:
             self.assertEqual(fpt.run_triage(milestone="3.3"), [])
         fetch.assert_called_once()
+
+
+if __name__ == "__main__":
+    __import__("unittest").main()
