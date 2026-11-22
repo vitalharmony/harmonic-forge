@@ -548,7 +548,19 @@ def run_triage(cache_dir: str | None = None,
                ) -> list[TriageEntry]:
     forge_issues = fetch_open_issues(FORGE_REPO)
     forge_open = {i["number"] for i in forge_issues}
-    forge_meta = fetch_forge_theme_venture(cache_dir)
+    # The summary already read both boards with its scoped Projects credential.
+    # Reuse that complete result: item_list_cache deliberately strips an
+    # inherited Projects token outside a lane, so a second read breaks the
+    # unattended publisher and discards the pipeline groups.
+    if board_fields is None:
+        forge_meta = fetch_forge_theme_venture(cache_dir)
+    else:
+        forge_meta = {
+            i["number"]: {"theme": board_fields.get((FORGE_REPO, i["number"]), {}).get("Theme"),
+                          "venture": board_fields.get((FORGE_REPO, i["number"]), {}).get("Venture"),
+                          "title": i["title"]}
+            for i in forge_issues
+        }
 
     # NC3: reuse `milestone_summary_source`. It fails CLOSED on every
     # ambiguous case (SystemExit), orders `2.10` above `2.8` via
