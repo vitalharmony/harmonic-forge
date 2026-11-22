@@ -762,5 +762,25 @@ class RankerAndSummaryAgreeTests(__import__("unittest").TestCase):
             "forge#97 absent from the rendered section entirely")
 
 
+class SuppliedBoardFieldsTests(unittest.TestCase):
+    def test_summary_groups_use_supplied_fields_without_another_board_credential(self):
+        issue = {"number": 1396, "title": "Credentials", "body": "", "labels": []}
+        fields = {(fpt.FORGE_REPO, 1396): {"Theme": "Platform", "Venture": "CymaGraph", "Tier": "deep"}}
+        with patch.object(fpt, "fetch_open_issues", side_effect=lambda repo: [issue] if repo == fpt.FORGE_REPO else []), \
+                patch.object(fpt, "fetch_issues", return_value=[]), \
+                patch.object(fpt, "fetch_forge_theme_venture", side_effect=RuntimeError("Projects token stripped")) as fetch:
+            entries = fpt.run_triage(milestone="3.3", board_fields=fields)
+        fetch.assert_not_called()
+        row = next(e for e in entries if e.repo == "forge" and e.issue == 1396)
+        self.assertEqual((row.theme, row.venture, row.board_tier), ("Platform", "CymaGraph", "deep"))
+
+    def test_standalone_triage_still_fetches_its_own_board_metadata(self):
+        with patch.object(fpt, "fetch_open_issues", return_value=[]), \
+                patch.object(fpt, "fetch_issues", return_value=[]), \
+                patch.object(fpt, "fetch_forge_theme_venture", return_value={}) as fetch:
+            self.assertEqual(fpt.run_triage(milestone="3.3"), [])
+        fetch.assert_called_once()
+
+
 if __name__ == "__main__":
     __import__("unittest").main()
