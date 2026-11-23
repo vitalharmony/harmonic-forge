@@ -713,5 +713,139 @@ class Lane3NextAsDiscussionTests(unittest.TestCase):
         self._post("3")
 
 
+class PostMergeReadonlyClaimTests(unittest.TestCase):
+    """harmonic-forge#1495: `require_green_ci` lifts the one "CI has not completed"
+    refusal for a Tier R PASS at a merged-main SHA, and only on the round's own
+    AE: read through `resolve_gate_authority` (harmonic-forge#791), carrying
+    F1494's `**Post-merge read-only:**` line, with the verified sweep at tier R."""
+
+    FULL = "21e587db" + "0" * 32
+    PASS = ("## Lane 3 Gate Results — H2101 — PASS\n\n**Verdict:** PASS\n"
+            "**Head-SHA:** 21e587db\n**Finding:** none.\n**Next:** merge.\n")
+    REASON = "hrse#2855 TC1: read-only against main"
+    CLAIM_LINE = f"**Post-merge read-only:** {REASON}\n"
+    REFUSAL = (False, "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n  21e587db: absent")
+
+    @staticmethod
+    def _c(cid, kind, sha=None, tier="R", extra=""):
+        sha = sha or PostMergeReadonlyClaimTests.FULL
+        prefix = f"Write tier {tier} throughout.\n\n" if kind == "sweep" else ""
+        return {"id": cid, "html_url": f"https://x/issues/1#issuecomment-{cid}",
+                "body": f"{prefix}{kind} text\n{extra}\n<!-- l1-post v1; kind={kind}; sha={sha} -->"}
+
+    def _drive(self, comments, *, issue=2101, ack=None, first=REFUSAL, body=None):
+        """Run `require_green_ci`; returns (result_or_SystemExit, check calls, fetches)."""
+        calls, fetches = [], []
+
+        def fake_check(repo, text, run=None, *, ack_no_pr_required=None, post_merge_readonly=None):
+            calls.append({"ack": ack_no_pr_required, "claim": post_merge_readonly})
+            if post_merge_readonly is not None:
+                return True, f"[GATE] post-merge-read-only: 21e587db is on main. Claim: {post_merge_readonly}"
+            return first
+
+        def fake_fetch(repo, number):
+            fetches.append((repo, number))
+            return comments
+
+        with mock.patch.object(P, "check_gate_result", fake_check), \
+             mock.patch.object(P.check_lane3_ready, "fetch_comments", fake_fetch):
+            try:
+                result = P.require_green_ci("gate-result", "o/r", body or self.PASS, ack, issue)
+            except SystemExit as exc:
+                result = exc
+        return result, calls, fetches
+
+    def _admitted(self, comments, **kw):
+        result, calls, fetches = self._drive(comments, **kw)
+        self.assertIs(result, False, "an admitted claim is never recorded as the no-PR acknowledgment")
+        self.assertEqual([c["claim"] for c in calls], [None, self.REASON])
+        return calls, fetches
+
+    def _refused(self, comments, **kw):
+        result, calls, fetches = self._drive(comments, **kw)
+        self.assertIsInstance(result, SystemExit)
+        self.assertEqual([c["claim"] for c in calls], [None], "the claim must never reach check_gate_result")
+        return fetches
+
+    def test_a_tier_r_ae_with_the_claim_admits_it(self):
+        """TC1's posting half; the AE footer carries the full SHA and the gate
+        report an abbreviated one (TC8's first half)."""
+        calls, fetches = self._admitted([self._c(1, "ae", extra=self.CLAIM_LINE), self._c(2, "sweep")])
+        self.assertEqual(fetches, [("o/r", 2101)], "the thread is read once")
+
+    def test_no_claim_on_the_ae_refuses(self):
+        self._refused([self._c(1, "ae"), self._c(2, "sweep")])
+
+    def test_a_tier_w_sweep_refuses(self):
+        """TC3: the sweep's tier, not the AE, is the gate-side authority."""
+        self._refused([self._c(1, "ae", extra=self.CLAIM_LINE), self._c(2, "sweep", tier="W")])
+
+    def test_a_tier_r_sweep_with_no_ae_refuses(self):
+        """TC7: the sweep alone is a valid tier-R authority, and its own text is
+        no AE: even a claim line on it is not the AE's claim."""
+        self._refused([self._c(1, "sweep")])
+        self._refused([self._c(1, "sweep", extra=self.CLAIM_LINE)])
+
+    def test_a_carry_forward_authority_refuses(self):
+        """TC7: an AE at an earlier SHA, carried to this one by a ready-for-l3.
+        The carried-to SHA was never named by an AE with the claim, so even a
+        claim line on the ready-for-l3 itself is not an AE's claim."""
+        earlier = "b" * 40
+        comments = [self._c(1, "ae", sha=earlier, extra=self.CLAIM_LINE), self._c(2, "sweep", sha=earlier),
+                    self._c(3, "ready-for-l3", extra=self.CLAIM_LINE)]
+        self.assertEqual(authority_kind(comments), "ready-for-l3", "the fixture must be a carry")
+        self._refused(comments)
+
+    def test_a_newer_ae_at_a_different_sha_refuses(self):
+        """TC8's second half."""
+        self._refused([self._c(1, "ae", extra=self.CLAIM_LINE), self._c(2, "sweep"),
+                       self._c(3, "ae", sha="c" * 40, extra=self.CLAIM_LINE), self._c(4, "sweep", sha="c" * 40)])
+
+    def test_two_claim_lines_or_a_fenced_one_refuse(self):
+        self._refused([self._c(1, "ae", extra=self.CLAIM_LINE + self.CLAIM_LINE), self._c(2, "sweep")])
+        self._refused([self._c(1, "ae", extra="```\n" + self.CLAIM_LINE + "```\n"), self._c(2, "sweep")])
+
+    def test_an_edited_sweep_refuses(self):
+        """`resolve_gate_authority` verifies the sweep's body-sha256; an edited
+        one is no authority."""
+        sweep = self._c(2, "sweep")
+        sweep["body"] = sweep["body"].replace("-->", "; body-sha256=" + "0" * 64 + " -->")
+        self._refused([self._c(1, "ae", extra=self.CLAIM_LINE), sweep])
+
+    def test_no_thread_read_without_an_issue_or_with_an_acknowledgment(self):
+        """TC9 and TC6: the existing 3- and 4-argument calls fetch nothing."""
+        comments = [self._c(1, "ae", extra=self.CLAIM_LINE), self._c(2, "sweep")]
+        self.assertEqual(self._refused(comments, issue=None), [])
+        self.assertEqual(self._refused(comments, ack="migration on main"), [])
+
+    def test_only_the_not_completed_refusal_is_ever_lifted(self):
+        """A red CI or an unreadable required set never reaches the thread."""
+        comments = [self._c(1, "ae", extra=self.CLAIM_LINE), self._c(2, "sweep")]
+        for message in ("[GATE] REFUSED: CI is RED for the SHA this PASS names.",
+                        "[GATE] REFUSED: cannot read o/r's required checks; retry"):
+            with self.subTest(message):
+                self.assertEqual(self._refused(comments, first=(False, message)), [])
+
+    def test_a_pass_that_already_posted_fetches_nothing_extra(self):
+        comments = [self._c(1, "ae", extra=self.CLAIM_LINE), self._c(2, "sweep")]
+        result, calls, fetches = self._drive(comments, first=(True, "[GATE] CI green for 21e587db"))
+        self.assertIs(result, False)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(fetches, [])
+
+    def test_main_passes_the_issue_to_require_green_ci(self):
+        """Wiring: deleting the argument at the call site must fail a test."""
+        source = (Path(__file__).resolve().parent / "post_lane_discussion.py").read_text()
+        self.assertIn("require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required, args.issue)", source)
+
+
+def authority_kind(comments):
+    """The `kind` of the comment `resolve_gate_authority` returns for the gated SHA."""
+    import re
+    authority, _ = P.check_lane3_ready.resolve_gate_authority(comments, PostMergeReadonlyClaimTests.FULL)
+    match = re.search(r"kind=([\w-]+)", authority["body"]) if authority else None
+    return match.group(1) if match else None
+
+
 if __name__ == "__main__":
     unittest.main()

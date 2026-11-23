@@ -41,7 +41,7 @@ _FORGE = _FORGE_ROOT / "tools" / "gh"
 if _FORGE.is_dir():
     sys.path.insert(0, str(_FORGE))
 
-from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_gate_report, may_be_a_gate_report, verdict_of
+from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_gate_report, may_be_a_gate_report, merged_readonly_lines, verdict_of
 
 # harmonic-forge#791: the one definition of "this round is approved", shared
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
@@ -606,8 +606,42 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
             f"body-sha256={digest}{override}{extra} -->\n")
 
 
+def post_merge_readonly_claim(repo: str, issue: int, body: str) -> str | None:
+    """harmonic-forge#1495: the reason the round's AE gave for a post-merge
+    read-only PASS, or None when this PASS has no such claim.
+
+    A claim exists only when `resolve_gate_authority` -- the one definition of
+    the round's AE and verified sweep (harmonic-forge#791), never a separate
+    `latest_by_kind` pair -- returns an `ae` comment whose footer SHA is the
+    gated one, that AE carries exactly one `**Post-merge read-only:**` line, and
+    the verified sweep's `Write tier` is R. A carry-forward authority (a
+    ready-for-l3), a tier-R sweep with no AE, or any refusal from
+    `resolve_gate_authority` carries no claim.
+    """
+    sha = gated_sha(body)
+    if sha is None:
+        return None
+    comments = check_lane3_ready.fetch_comments(repo, issue)
+    authority, _message = check_lane3_ready.resolve_gate_authority(comments, sha)
+    if authority is None:
+        return None
+    kind = check_lane3_ready.FOOTER_KIND.search(authority.get("body", ""))
+    if not kind or kind.group(1).lower() != "ae":
+        return None
+    if not check_lane3_ready.same_sha(check_lane3_ready.footer_sha(authority), sha):
+        return None
+    lines = merged_readonly_lines(authority.get("body", ""))
+    if len(lines) != 1:
+        return None
+    sweep = check_lane3_ready.latest_by_kind(comments, "sweep")
+    if sweep is None or check_lane3_ready.parse_write_tier(sweep.get("body", "")) != "R":
+        return None
+    return lines[0]
+
+
 def require_green_ci(
     kind: str, repo: str, body: str, ack_no_pr_required: str | None = None,
+    issue: int | None = None,
 ) -> bool:
     """Returns whether the no-PR override was the reason this passed.
 
@@ -657,8 +691,19 @@ def require_green_ci(
     # asking it every time means the two can never disagree about what a gate
     # report IS.
     ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
+    # harmonic-forge#1495: only a refusal that says CI has not completed can be
+    # lifted, only when `issue` is known and no acknowledgment was given (the
+    # tip-plus-ack route decides alone then), and the AE is read once, on this
+    # path only: every other post fetches nothing extra.
+    if (not ok and issue is not None and ack_no_pr_required is None
+            and "CI has not completed" in message):
+        claim = post_merge_readonly_claim(repo, issue, body)
+        if claim is not None:
+            ok, message = check_gate_result(repo, body, post_merge_readonly=claim)
     if not ok:
         fail(message)
+    # Only the acknowledged override is recorded as one in the footer: the
+    # post-merge-read-only message carries its own prefix.
     return ok and message.startswith("[GATE] no-pr-override:")
 
 
@@ -805,7 +850,7 @@ def main() -> None:
         print("[post-comment] WARNING: --tc-results/--tc-classes given, but this post is not a "
               "Lane 3 spec or gate report (a Lane 1/2 relay never is); the map was not recorded",
               file=sys.stderr)
-    override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required)
+    override_used = require_green_ci(args.kind, args.repo, body, args.ack_no_pr_required, args.issue)
     # harmonic-forge#1103: computed BEFORE the post, recorded after it.
     record_kind = candidate_kind(args.kind, body)
     require_round_approval(args.repo, args.issue, body)
