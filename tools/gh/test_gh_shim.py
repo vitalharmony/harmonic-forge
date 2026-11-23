@@ -179,6 +179,102 @@ class Refusal(unittest.TestCase):
         fake_execv.assert_called_once()
 
 
+class LaneSlotToken(unittest.TestCase):
+    """harmonic-forge#1511: a lane slot named by GH_CONFIG_DIR with no token runs
+    on that slot's own token, or is refused; everything else is unchanged.
+
+    Every case builds its own environment (a lane shell exports GH_CONFIG_DIR and
+    GH_TOKEN, and must not decide these results)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "accounts"
+        self.root.mkdir()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _slot(self, name, token=None, root=None):
+        d = (root or self.root) / name
+        d.mkdir(parents=True)
+        if token is not None:
+            (d / "hosts.yml").write_text(
+                f"github.com:\n    user: vitalharmony\n    oauth_token: {token}\n", encoding="utf-8")
+        return d
+
+    def _exec(self, argv, env):
+        shim = _load_shim()
+        base = {k: v for k, v in os.environ.items()
+                if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_ACCT_HOME")}
+        base["GH_ACCT_HOME"] = str(self.root)
+        base.update(env)
+        with mock.patch.dict(os.environ, base, clear=True), \
+             mock.patch("os.execv") as execv, mock.patch("os.execve") as execve:
+            try:
+                shim._exec_real_gh("/usr/bin/gh", argv)
+            except SystemExit as exc:
+                return exc.code, execv, execve
+            return None, execv, execve
+
+    def test_a_lane_slot_with_no_token_runs_on_the_slots_own_token(self):
+        d = self._slot("vitalharmony-lane1", token="T1")
+        code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d)})
+        self.assertIsNone(code)
+        execv.assert_not_called()
+        execve.assert_called_once()
+        self.assertEqual(execve.call_args.args[2]["GH_TOKEN"], "T1")
+        self.assertEqual(execve.call_args.args[1], ["/usr/bin/gh", "api", "user"])
+
+    def test_a_lane_slot_with_no_readable_token_is_refused(self):
+        d = self._slot("vitalharmony-lane2")
+        with mock.patch("sys.stderr") as err:
+            code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d)})
+        self.assertEqual(code, 4)
+        execv.assert_not_called()
+        execve.assert_not_called()
+        self.assertIn("vitalharmony-lane2", "".join(str(c) for c in err.write.call_args_list))
+
+    def test_a_token_already_set_is_left_alone(self):
+        d = self._slot("vitalharmony-lane1", token="T1")
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d), key: "X"})
+            self.assertIsNone(code, key)
+            execv.assert_called_once_with("/usr/bin/gh", ["/usr/bin/gh", "api", "user"])
+            execve.assert_not_called()
+
+    def test_auth_is_never_modified(self):
+        d = self._slot("vitalharmony-lane1", token="T1")
+        for argv in (["auth", "login", "--with-token"], ["auth", "token"]):
+            code, execv, execve = self._exec(argv, {"GH_CONFIG_DIR": str(d)})
+            self.assertIsNone(code, argv)
+            execv.assert_called_once()
+            execve.assert_not_called()
+
+    def test_other_slots_and_outside_dirs_are_unchanged(self):
+        dirs = [self._slot(n, token="T") for n in
+                ("vitalharmony", "harmonicarchitect", "vitalharmony-projects")]
+        other_root = Path(self._tmp.name) / "elsewhere"
+        dirs.append(self._slot("vitalharmony-lane1", token="T", root=other_root))
+        for d in dirs:
+            code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d)})
+            self.assertIsNone(code, d)
+            execv.assert_called_once()
+            execve.assert_not_called()
+
+    def test_no_config_dir_is_unchanged(self):
+        code, execv, execve = self._exec(["pr", "view", "5"], {})
+        self.assertIsNone(code)
+        execv.assert_called_once()
+        execve.assert_not_called()
+
+    def test_every_real_gh_exec_goes_through_the_helper(self):
+        source = _SHIM_PATH.read_text(encoding="utf-8")
+        helper = source.index("def _exec_real_gh(")
+        end = source.index("\ndef ", helper + 1)
+        outside = source[:helper] + source[end:]
+        self.assertNotIn("os.execv(real_gh", outside)
+        self.assertNotIn("os.execve(real_gh", outside)
+        self.assertGreaterEqual(outside.count("_exec_real_gh(real_gh, argv)"), 3)
+
+
 class Installer(unittest.TestCase):
     """Exercises install_gh_shim.sh's idempotent-link logic against a
     throwaway temp HOME/PATH -- never the real operator environment."""
