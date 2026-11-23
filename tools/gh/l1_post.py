@@ -1056,13 +1056,11 @@ def grant_on_main(body: str, sha: str) -> bool:
 
 
 #: harmonic-forge#1494: the stated claim a post-merge read-only AE carries.
-_MERGED_READONLY = re.compile(r"(?im)^[^\S\n]*\*\*Post-merge read-only:\*\*[^\S\n]*(\S[^\n]*)$")
-
-
-def _merged_readonly_lines(body: str) -> list[str]:
-    """The `**Post-merge read-only:** <reason>` lines outside any fenced block."""
-    import _standing_grant  # noqa: PLC0415
-    return [m.group(1).strip() for m in _MERGED_READONLY.finditer(_standing_grant._unquoted(body))]
+#: harmonic-forge#1495 moved the one definition into `gate_ci` (the gate-side
+#: reader of the same claim cannot import this module back); these are the
+#: same objects under the names every use and test here already has.
+_MERGED_READONLY = gate_ci.MERGED_READONLY
+_merged_readonly_lines = gate_ci.merged_readonly_lines
 
 
 def merged_readonly_refusal(body: str, sha: str, spec_body: str | None,

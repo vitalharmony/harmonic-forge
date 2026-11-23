@@ -894,6 +894,35 @@ def sha_is_current_main_tip(repo: str, sha: str, run=None) -> bool | None:
     return bool(tip) and (tip == sha or tip.startswith(sha) or sha.startswith(tip))
 
 
+def sha_is_on_main(repo: str, sha: str, run=None) -> bool | None:
+    """Is `sha` an ancestor of GitHub's `main` (the tip itself included)?
+    `None` if the lookup itself failed.
+
+    harmonic-forge#1495: the compare API answers from GitHub's `main`, which a
+    local `git merge-base --is-ancestor` cannot: this module reads GitHub
+    through `gh api` only and runs from Lane 3's checkout, whose `origin/main`
+    may be stale. `main...sha` reports `ahead` or `identical` for an ancestor
+    and any other status (`behind`, `diverged`) for a commit that is not on it.
+    """
+    run = run or _run
+    code, out = run(["gh", "api", f"repos/{repo}/compare/{sha}...main", "--jq", ".status"])
+    if code != 0:
+        return None
+    return out.strip() in ("ahead", "identical")
+
+
+#: harmonic-forge#1494: the stated claim a post-merge read-only AE carries.
+#: Defined here, not in `l1_post.py` (harmonic-forge#1495): `l1_post` imports
+#: this module, so the gate-side reader cannot import `l1_post` back.
+MERGED_READONLY = re.compile(r"(?im)^[^\S\n]*\*\*Post-merge read-only:\*\*[^\S\n]*(\S[^\n]*)$")
+
+
+def merged_readonly_lines(body: str) -> list[str]:
+    """The `**Post-merge read-only:** <reason>` lines outside any fenced block."""
+    import _standing_grant  # noqa: PLC0415 -- it imports this module at load
+    return [m.group(1).strip() for m in MERGED_READONLY.finditer(_standing_grant._unquoted(body))]
+
+
 def open_prs_containing(repo: str, sha: str, run=None) -> list[dict] | None:
     """OPEN PRs associated with `sha`; `None` if the lookup failed."""
     run = run or _run
@@ -911,6 +940,7 @@ def open_prs_containing(repo: str, sha: str, run=None) -> list[dict] | None:
 
 def check_gate_result(
     repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
+    post_merge_readonly: str | None = None,
 ) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
@@ -937,6 +967,17 @@ def check_gate_result(
     attempt is judged, any unfinished workflow run vetoes, and a possibly
     truncated run list refuses. A red, pending, unrecognised or mixed set
     still refuses.
+
+    harmonic-forge#1495: `post_merge_readonly` is the reason a Lane 1 AE stated
+    on its `**Post-merge read-only:**` line (harmonic-forge#1494), for a Tier R
+    case gated at an ANCESTOR of `main` once main has moved past it. The caller
+    supplies it only after reading that AE and its verified Tier R sweep
+    (`post_lane_discussion.require_green_ci`); this function still checks the
+    SHA is on GitHub's `main`, no open PR contains it, and the required check
+    is `absent` or all-skipped. It is a second route past the same final
+    refusal, never a relaxation of the first: with `ack_no_pr_required` given
+    the tip-plus-ack branch alone decides, and red, pending and an unread
+    state are refused here exactly as before.
     """
     global _SLOT_ENV
     _SLOT_ENV = _slot_env_for(repo)
@@ -1032,6 +1073,24 @@ def check_gate_result(
         # Otherwise -- main moved past this SHA, an open PR contains it, or
         # either lookup failed (None) -- fall through to the normal refusal.
         # A failed lookup is never read as "confirmed no PR".
+    elif post_merge_readonly is not None and (
+            state == "absent"
+            or (state == "unknown"
+                and _required_checks_all_skipped(repo, sha, required, run=run))):
+        # harmonic-forge#1495: the claim stands in for the acknowledgment AND
+        # for the main-tip condition, so the SHA need only be on `main`. This is
+        # an `elif` of the acknowledgment branch above: with `ack_no_pr_required`
+        # given and CI absent or all-skipped that branch decides alone, so the
+        # tip-plus-ack route is never widened by a claim.
+        on_main = sha_is_on_main(repo, sha, run=run)
+        prs = open_prs_containing(repo, sha, run=run)
+        if on_main is True and prs == []:
+            return True, (
+                f"[GATE] post-merge-read-only: {sha[:8]} is on main and no PR "
+                f"is open for it, so CI structurally cannot run for it (its "
+                f"required check never ran or was skipped). Claim: "
+                f"{post_merge_readonly}")
+        # Not on main (False), a failed lookup (None) or an open PR: refuse.
     return False, (
         f"[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
         f"  {sha[:8]}: {state} — {detail}\n"

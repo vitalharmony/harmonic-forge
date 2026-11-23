@@ -29,8 +29,12 @@ _READABLE = object()
 def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bare_runs=(),
             message="ordinary commit\n", attempts=(), run_status="completed",
             extra_runs=(), total_count=None, runs_listed=None, jobs_by_id=None,
-            statuses=()):
+            statuses=(), compare_status=None):
     """A `run` stand-in that ROUTES BY ENDPOINT.
+
+    `compare_status` (harmonic-forge#1495): what `/compare/<sha>...main` reports
+    as `.status` (`ahead`, `identical`, `behind`, `diverged`), for
+    `sha_is_on_main`. `None` means the endpoint fails, like `main_tip`.
 
     The first version returned one payload for every command, which worked only
     while there was one call. Once the check consulted branch protection and
@@ -66,6 +70,10 @@ def fake_gh(checks=(), pulls=(), required=_READABLE, fail=(), main_tip=None, bar
         for marker in fail:
             if marker in url:
                 return 1, "gh: simulated failure"
+        if "/compare/" in url:
+            if compare_status is None:
+                return 1, "gh: simulated failure"
+            return 0, compare_status
         if url.endswith("/branches/main"):
             # Exact suffix, not a substring: `/branches/main/protection` (the
             # required-checks lookup, checked next) contains "/branches/main"
@@ -1476,6 +1484,109 @@ class LaneTokenRequiredChecksTests(unittest.TestCase):
                         return 1, self.FORBIDDEN
                     return 0, body
                 self.assertIsNone(gate_ci.required_checks("o/r", run=run))
+
+
+class PostMergeReadonlyTests(unittest.TestCase):
+    """harmonic-forge#1495: a Tier R PASS at an ancestor of `main` whose AE carried
+    F1494's claim. `check_gate_result` takes the claim as a keyword; the AE-and-
+    sweep read that produces it is `post_lane_discussion`'s and is tested there."""
+
+    SHA = PASS_BODY.split("Head-SHA:** ")[1].split("\n")[0].strip()
+    CLAIM = "hrse#2855 TC1: read-only against main, nothing to build"
+
+    def gate(self, claim=CLAIM, ack=None, **fixture):
+        fixture.setdefault("compare_status", "ahead")
+        return gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(**fixture),
+            ack_no_pr_required=ack, post_merge_readonly=claim)
+
+    def test_an_ancestor_that_is_not_the_tip_posts_with_the_claim(self):
+        """TC1: main has moved on (`main_tip` is another SHA); the claim stands in
+        for the acknowledgment and the main-tip condition."""
+        ok, msg = self.gate(main_tip="a" * 40)
+        self.assertTrue(ok, msg)
+        self.assertIn("post-merge-read-only", msg)
+        self.assertIn(self.CLAIM, msg)
+        self.assertNotIn("no-pr-override", msg)
+
+    def test_the_tip_itself_is_on_main(self):
+        ok, msg = self.gate(compare_status="identical")
+        self.assertTrue(ok, msg)
+
+    def test_a_closed_merge_pr_does_not_block_it(self):
+        ok, msg = self.gate(pulls=[{"number": 2106, "state": "closed", "head": "b" * 40}])
+        self.assertTrue(ok, msg)
+
+    def test_a_skipped_required_check_counts_as_cannot_run(self):
+        ok, msg = self.gate(checks=[check("verify", "skipped")], required={"verify"})
+        self.assertTrue(ok, msg)
+
+    def test_no_claim_refuses_with_the_unchanged_message(self):
+        """TC2."""
+        ok, msg = self.gate(claim=None)
+        self.assertFalse(ok)
+        self.assertIn("CI has not completed", msg)
+
+    def test_an_open_pr_containing_the_sha_refuses(self):
+        """TC4."""
+        ok, msg = self.gate(pulls=[{"number": 7, "state": "open", "head": self.SHA}])
+        self.assertFalse(ok)
+        self.assertNotIn("post-merge-read-only", msg)
+
+    def test_a_sha_not_on_main_or_an_unreadable_compare_refuses(self):
+        """TC5: `behind` and `diverged` are not ancestors, and a failed call is
+        never read as 'on main'."""
+        for status in ("behind", "diverged", "", None):
+            with self.subTest(status=status):
+                ok, msg = self.gate(compare_status=status)
+                self.assertFalse(ok)
+                self.assertIn("CI has not completed", msg)
+
+    def test_an_unreadable_open_pr_lookup_refuses(self):
+        ok, msg = self.gate(fail=("/pulls",))
+        self.assertFalse(ok)
+
+    def test_red_pending_and_unread_ci_still_refuse(self):
+        for label, fixture in (
+                ("red", dict(checks=[check("verify", "failure")], required={"verify"})),
+                ("pending", dict(checks=[check("verify", None, "in_progress")], required={"verify"})),
+                ("unread", dict(fail=("/actions/runs",)))):
+            with self.subTest(label):
+                ok, msg = self.gate(**fixture)
+                self.assertFalse(ok)
+                self.assertNotIn("post-merge-read-only", msg)
+
+    def test_an_acknowledgment_alongside_the_claim_leaves_the_tip_route_in_charge(self):
+        """TC6: with `ack_no_pr_required` the existing tip-plus-ack branch alone
+        decides. At the tip it posts as a no-pr-override; past the tip it refuses
+        even though the claim and the ancestry would have admitted it."""
+        ok, msg = self.gate(ack="migration on main", main_tip=self.SHA)
+        self.assertTrue(ok, msg)
+        self.assertIn("no-pr-override", msg)
+        ok, msg = self.gate(ack="migration on main", main_tip="a" * 40)
+        self.assertFalse(ok)
+        self.assertNotIn("post-merge-read-only", msg)
+
+    def test_the_tip_plus_ack_route_is_unchanged_without_the_claim(self):
+        """TC10's gate_ci half."""
+        ok, msg = gate_ci.check_gate_result(
+            "o/r", PASS_BODY, run=fake_gh(main_tip=self.SHA),
+            ack_no_pr_required="hrse#2095 production backfill, no PR")
+        self.assertTrue(ok, msg)
+        self.assertIn("no-pr-override", msg)
+
+    def test_sha_is_on_main_reads_only_ahead_and_identical(self):
+        for status, expected in (("ahead", True), ("identical", True), ("behind", False),
+                                 ("diverged", False), ("", False)):
+            with self.subTest(status):
+                self.assertIs(gate_ci.sha_is_on_main("o/r", self.SHA, run=fake_gh(compare_status=status)), expected)
+        self.assertIsNone(gate_ci.sha_is_on_main("o/r", self.SHA, run=fake_gh()))
+
+    def test_the_claim_reader_ignores_a_fenced_line_and_an_empty_reason(self):
+        line = "**Post-merge read-only:** why\n"
+        self.assertEqual(gate_ci.merged_readonly_lines("AE\n" + line), ["why"])
+        self.assertEqual(gate_ci.merged_readonly_lines("AE\n```\n" + line + "```\n"), [])
+        self.assertEqual(gate_ci.merged_readonly_lines("AE\n**Post-merge read-only:**   \n"), [])
 
 
 if __name__ == "__main__":
