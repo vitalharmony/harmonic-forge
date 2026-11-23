@@ -100,6 +100,17 @@ class PassTwoFixes(unittest.TestCase):
         entries[0]["owner"] = "tools/hooks/gh_argv.py: parse, no_such_symbol"
         self.assertTrue(any("no_such_symbol" in p for p in C.problems(entries)))
 
+    def test_a_symbol_defined_only_inside_a_docstring_does_not_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.py").write_text('"""\ndef ghost():\n    pass\n"""\nx = 1\n', encoding="utf-8")
+            self.assertIn("ghost", C.link_problem("m.py: ghost", Path(tmp), "file") or "")
+            self.assertIsNone(C.link_problem("m.py: x", Path(tmp), "file"))
+
+    def test_a_list_field_of_the_wrong_type_is_a_problem_not_a_crash(self):
+        entries = _entries()
+        entries[0]["modules"] = 3
+        self.assertTrue(any("`modules`" in p for p in C.problems(entries)))
+
     def test_the_checked_in_owner_symbols_are_all_defined(self):
         self.assertEqual(C.link_problem(_entries()[0]["owner"], C.FORGE_ROOT, "file"), None)
 

@@ -22,6 +22,7 @@ reports `unmeasured` otherwise, never green.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 import tomllib
@@ -83,10 +84,10 @@ def link_problem(ref: str, root: Path, want: str) -> str | None:
     if want == "file" and not target.is_file():
         return f"`{path}` is not a file in the repository"
     if want == "file" and suffix and not suffix.isdigit():
-        text = target.read_text(encoding="utf-8", errors="replace")
-        missing = [name for name in re.split(r"[,\s]+", suffix) if name and not re.search(
-            rf"^\s*(?:async\s+)?(?:def|class)\s+{re.escape(name)}\b|^\s*{re.escape(name)}\s*(?::[^=\n]*)?=",
-            text, re.M)]
+        defined = _defined_names(target)
+        if defined is None:
+            return f"`{ref}` names symbols, but `{path}` is not Python this index can parse"
+        missing = [name for name in re.split(r"[,\s]+", suffix) if name and name not in defined]
         if missing:
             return f"`{ref}` names {', '.join(missing)}, not defined in `{path}`"
     if want == "file" and suffix.isdigit():
@@ -94,6 +95,30 @@ def link_problem(ref: str, root: Path, want: str) -> str | None:
         if not 1 <= int(suffix) <= lines:
             return f"`{ref}` names line {suffix}, but the file has {lines} lines"
     return None
+
+
+def _defined_names(path: Path) -> set[str] | None:
+    """Module-level def, class and assignment names in a Python file, read with
+    `ast` so text in a docstring or comment never counts; None when unparseable."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _string_list(value) -> list:
+    """The list a list field holds, or [] when it is some other type (its type
+    error is already reported by the schema check)."""
+    return value if isinstance(value, list) else []
 
 
 def problems(entries: list[dict], root: Path = FORGE_ROOT, project: str = OWN_PROJECT) -> list[str]:
@@ -127,8 +152,8 @@ def problems(entries: list[dict], root: Path = FORGE_ROOT, project: str = OWN_PR
         if entry.get("status") not in STATUSES:
             found.append(f"{label}: `status` must be one of {', '.join(STATUSES)}")
         files = [entry.get("owner"), entry.get("authority"), entry.get("example_caller"),
-                 *(entry.get("modules") or []), *(entry.get("guard") or [])]
-        links = [(ref, "file") for ref in files] + [(ref, "dir") for ref in entry.get("scan_roots") or []]
+                 *_string_list(entry.get("modules")), *_string_list(entry.get("guard"))]
+        links = [(ref, "file") for ref in files] + [(ref, "dir") for ref in _string_list(entry.get("scan_roots"))]
         for ref, want in links:
             if isinstance(ref, str) and ref.strip():
                 problem = link_problem(ref, root, want)
