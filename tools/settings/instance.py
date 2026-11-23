@@ -26,7 +26,7 @@ FILE_NAME = "instance.toml"
 def _inside_a_checkout(path: Path) -> bool:
     """True when any resolved ancestor holds a `.git` entry (file or directory),
     so the main worktree and every linked worktree count, not just this one."""
-    return any((parent / ".git").exists() for parent in path.resolve().parents)
+    return any(os.path.lexists(parent / ".git") for parent in path.resolve().parents)
 
 
 def config_path() -> Path:

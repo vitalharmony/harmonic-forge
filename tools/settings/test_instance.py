@@ -79,6 +79,13 @@ class PathSafety(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     I.config_path()
 
+    def test_a_dangling_git_symlink_still_marks_a_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").symlink_to(Path(tmp) / "gone")
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(tmp) / "cfg")}):
+                with self.assertRaises(ValueError):
+                    I.config_path()
+
     def test_a_dangling_symlink_is_an_error_not_a_default(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
             path = Path(tmp) / "harmonic-forge" / "instance.toml"
@@ -143,6 +150,10 @@ class ZoneLiteralCheck(unittest.TestCase):
 
     def test_a_tree_of_only_exempt_files_parses_zero_and_fails(self):
         self.assertEqual(C.main(["--root", str(self._tree({"tools/settings/instance.py": "x = 1\n"}))]), 1)
+
+    def test_a_none_fallback_is_not_a_literal_zone(self):
+        source = "from zoneinfo import ZoneInfo\ndef f(z):\n    return ZoneInfo(z or None)\n"
+        self.assertEqual(C.main(["--root", str(self._tree({"tools/x/y.py": source}))]), 0)
 
     def test_documented_blind_spot_a_zone_held_in_a_constant_is_not_caught(self):
         # Pinned on purpose: the docstring names this as out of scope (a tripwire, not dataflow).

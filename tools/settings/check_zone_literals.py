@@ -10,8 +10,8 @@ EXCEPTIONS are exempt, and only files actually parsed count toward the scan, so
 a tree of exempt files, like an empty one, never reads green.
 
 A tripwire, not a proof. Caught: a direct call, `zoneinfo.ZoneInfo`, an import
-alias of either, `no_cache`, and any string literal, concatenation or f-string
-inside the call's zone argument. Not caught, by design: a zone held in a
+alias of either, `no_cache`, and a zone argument containing a string literal or
+an f-string (so a concatenation that includes a literal). Not caught, by design: a zone held in a
 variable or constant first (`TZ = "Europe/Paris"; ZoneInfo(TZ)`), an assignment
 alias (`Z = ZoneInfo`), `**kwargs`, `from_file`, and a string built before the
 call. Closing those needs dataflow analysis; review catches them.
@@ -62,7 +62,7 @@ def _is_zone_call(func: ast.AST, classes: set[str], modules: set[str]) -> bool:
 
 def _has_literal(call: ast.Call) -> bool:
     args = list(call.args[:1]) + [kw.value for kw in call.keywords if kw.arg == "key"]
-    return any(isinstance(n, (ast.Constant, ast.JoinedStr)) and not isinstance(getattr(n, "value", ""), (int, float))
+    return any(isinstance(n, ast.JoinedStr) or (isinstance(n, ast.Constant) and isinstance(n.value, str))
                for arg in args for n in ast.walk(arg))
 
 
