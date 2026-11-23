@@ -559,6 +559,7 @@ CHECK_STEPS: tuple[tuple[str, str], ...] = (
     ("py_compile_sync_rules", "python3 -m py_compile sync_rules.py"),
     ("syntax_banner", 'echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"'),
     ("run_tests", "python3 tools/run_tests.py"),
+    ("contracts_check", "python3 tools/registry/contracts.py --check"),
     ("memory_lint_clean",
      "python3 tools/memory/memory_lint.py --store tools/memory/testdata/clean --gate "
      "--today 2026-09-06"),
