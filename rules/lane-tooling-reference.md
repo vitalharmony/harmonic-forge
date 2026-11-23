@@ -108,3 +108,7 @@ The trigger it renders is `Fix H<N>`: re-read the issue and do the work on
 the branch. A gate FAIL renders no trigger, because Lane 2 takes work only
 from Lane 1 (R-0207); the key stays `l1.rework`, distinct from `gate.fail`.
 <!-- /R-0337 -->
+
+## `l1_post.py`'s open-PR exemptions
+
+An `ae` needs an open PR for its branch, with two exemptions: a grant AE citing R-0374 at the `origin/main` tip (harmonic-forge#858), and a **post-merge read-only** AE (harmonic-forge#1494) carrying one `**Post-merge read-only:** <reason>` line for a Tier R spec (`--spec-comment`) at a SHA on `origin/main`, with no `--prod-run` and no `--ack-no-pr-required`; it records `merged-to-main (read-only)`, and a claim that does not qualify is refused naming why.
