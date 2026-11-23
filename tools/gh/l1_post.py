@@ -556,6 +556,21 @@ def reject_reserved_marker(body: str) -> None:
         fail("body may not contain the reserved l1-post attestation namespace")
 
 
+#: harmonic-forge#1504: an issue-number placeholder a template left unfilled
+#: (hrse#2860's handoff posted with `#ISSUE` in it).
+ISSUE_PLACEHOLDER = re.compile(r"#ISSUE\b|\{ISSUE\}|\bISSUE_[A-Z]+\b")
+
+
+def reject_unfilled_issue_placeholder(body: str) -> None:
+    """Refuse `#ISSUE`, `{ISSUE}` or an all-caps `ISSUE_<WORD>` outside fenced
+    blocks, naming the first token; a fenced block may quote one as evidence."""
+    import _standing_grant  # noqa: PLC0415
+    match = ISSUE_PLACEHOLDER.search(_standing_grant._unquoted(body))
+    if match:
+        fail(f"body carries an unfilled issue-number placeholder `{match.group(0)}` (harmonic-forge#1504): "
+             "fill it with the issue number, or quote it inside a fenced block")
+
+
 def _describe_repo(cwd: Path | None) -> str:
     """Which repo `cwd` (or the actual process cwd, if None) is standing in
     -- harmonic-forge#568 AC1. `resolve_sha`'s only diagnostic used to be
@@ -3876,6 +3891,8 @@ def main() -> None:
             # Collected, so a reserved marker never hides the other refusals (F1115 AC1).
             lambda: reject_reserved_marker(ae_body),
             lambda: reject_reserved_marker(sweep_body),
+            lambda: reject_unfilled_issue_placeholder(ae_body),  # harmonic-forge#1504
+            lambda: reject_unfilled_issue_placeholder(sweep_body),
             lambda: validate_sticky_wicket(repo, args.issue, kind=args.kind, sha=sha,
                                        rework_kind=args.rework_kind),  # harmonic-forge#997
             lambda: validate_ae(ae_body, repo, args.issue),
@@ -3959,7 +3976,8 @@ def main() -> None:
     # harmonic-forge#1017: the same validators in the same order, every one run,
     # one refusal naming all of them. The reserved-marker check is collected
     # too, so it never hides the others (harmonic-forge#1115 AC1).
-    steps = [lambda: reject_reserved_marker(body)]
+    steps = [lambda: reject_reserved_marker(body),
+             lambda: reject_unfilled_issue_placeholder(body)]  # harmonic-forge#1504
     labels_once = _once(lambda: issue_labels(repo, args.issue))
     if args.kind == "handoff":
         steps += [

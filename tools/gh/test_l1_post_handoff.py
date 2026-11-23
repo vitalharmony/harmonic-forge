@@ -292,5 +292,63 @@ class HandoffTests(unittest.TestCase):
             post.validate_handoff(body, requires_preflight=True)
 
 
+class UnfilledIssuePlaceholderTests(unittest.TestCase):
+    """harmonic-forge#1504: a body carrying an unfilled issue-number placeholder
+    is refused, naming the token; a fenced block may quote one."""
+
+    def refused(self, body: str) -> str:
+        with self.assertRaises(SystemExit) as ctx:
+            post.reject_unfilled_issue_placeholder(body)
+        return str(ctx.exception)
+
+    def test_hash_issue_is_refused_naming_it(self) -> None:  # TC1
+        self.assertIn("`#ISSUE`", self.refused("## Handoff\n\nsee #ISSUE for the details\n"))
+
+    def test_issue_word_and_braced_issue_are_refused(self) -> None:  # TC2
+        self.assertIn("`ISSUE_NUMBER`", self.refused("Fixes ISSUE_NUMBER here\n"))
+        self.assertIn("`{ISSUE}`", self.refused("https://github.com/o/r/issues/{ISSUE}\n"))
+
+    def test_a_fenced_placeholder_passes(self) -> None:  # TC3
+        post.reject_unfilled_issue_placeholder("Evidence:\n```\nsee #ISSUE\n```\n")
+
+    def test_real_issue_references_pass(self) -> None:
+        post.reject_unfilled_issue_placeholder("see #2860, hrse#2860, H2860 and ISSUE alone\n")
+
+    def test_every_kind_runs_it_beside_the_reserved_marker_check(self) -> None:  # AC3
+        source = (ROOT / "l1_post.py").read_text()
+        self.assertEqual(source.count("reject_unfilled_issue_placeholder(ae_body)"), 1)
+        self.assertEqual(source.count("reject_unfilled_issue_placeholder(sweep_body)"), 1)
+        self.assertEqual(source.count("lambda: reject_unfilled_issue_placeholder(body)"), 1)
+
+
+class UnfilledIssuePlaceholderDryRunTests(unittest.TestCase):
+    """TC4 through main(): an ae-and-sweep whose sweep carries `#ISSUE` refuses
+    at its dry run, so the precheck receipt a real post needs is never written
+    and neither half can post."""
+
+    def test_ae_and_sweep_refuses_before_either_half_posts(self) -> None:
+        import sys  # noqa: PLC0415
+        sys.path.insert(0, str(ROOT))
+        import test_l1_post_dry_run as dry  # noqa: PLC0415
+
+        class Run(dry.Harness):
+            def runTest(self) -> None:  # noqa: N802
+                pass
+
+        run = Run()
+        run.setUp()
+        try:
+            sweep = ("## Gate-readiness sweep — F1504\n\n**Readiness:** ready\n**Blockers:** none\n"
+                     "**Next:** Lane 3 to run #ISSUE\n")
+            code, _, _ = run.run_main(
+                "--repo", dry.REPO, "--issue", dry.ISSUE, "--kind", "ae-and-sweep", "--sha", dry.SHA_A,
+                "--branch", "fix/1504-x", "--ae-file", run.body(dry.AE, "ae.md"),
+                "--sweep-file", run.body(sweep, "sweep.md"), "--spec-comment", "5", "--dry-run")
+            self.assertIn("`#ISSUE`", code or "")
+            run.posted.assert_not_called()
+        finally:
+            run.doCleanups()
+
+
 if __name__ == "__main__":
     unittest.main()
