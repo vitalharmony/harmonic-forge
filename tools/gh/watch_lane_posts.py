@@ -1177,6 +1177,63 @@ def read_queue_candidates(
     )
 
 
+def read_watched_discussion_candidates(
+    repos: Iterable[str],
+    watch: Iterable[str],
+    *,
+    now: "dt.datetime | None" = None,
+    base_dir: Path | None = None,
+) -> "dict[tuple[str, int], dt.datetime]":
+    """`(repo, issue)` -> `posted_at` for recorded candidates whose newest entry
+    is a `discussion` posted by a lane this belt watches, no older than the
+    replay horizon (harmonic-forge#1516).
+
+    A Plan-First ratification is a Lane 1 `discussion` (R-0375 names it Lane 2's
+    owed comment-watch work), and Lane 2 usually has no branch on the issue yet,
+    so `discovered` never holds it and `comment_watch_cycle` never read it. The
+    store already knows the issue because the posting tool recorded it. This
+    reads that store through the one shared reader (`belt_candidates.
+    read_candidates`), so there is no second reader of the file format and no
+    GitHub call. `queue_cycle` still takes only `QUEUE_KINDS`: a `discussion`
+    is deliberately not queue-eligible (harmonic-forge#618), and the comment
+    watch is where it is read.
+
+    The window is the replay horizon (`_WATERMARK_STALE_HOURS`), the age past
+    which nothing replays anywhere else in this file. `prune` stays off: the
+    queue reader owns the store's pruning."""
+    posted_at: "dict[tuple[str, int], dt.datetime]" = {}
+    belt_candidates.read_candidates(
+        repos, "watch",
+        queue_kinds={"watch": ("discussion",)},
+        queue_posters={"watch": tuple(sorted(watch))},
+        max_age_days=_WATERMARK_STALE_HOURS / 24,
+        now=now, base_dir=base_dir, prune=False, posted_at_out=posted_at,
+    )
+    return posted_at
+
+
+def split_live_discussion_candidates(
+    candidates: "dict[tuple[str, int], dt.datetime]",
+    arm_pairs: "set[tuple[str, int]] | None",
+    allow_priming: bool,
+) -> "tuple[dict[tuple[str, int], dt.datetime], set[tuple[str, int]]]":
+    """`(live, arm_pairs)`: which recorded discussion candidates `comment_watch_cycle`
+    reads from their recorded post instead of priming (harmonic-forge#1516).
+
+    A target this belt has never read is primed on first sight, and that would
+    swallow the very post a recorded candidate exists to announce. What priming
+    protects against is history already on the thread at ARM time, so only the
+    candidates present at a genuine first arm (`arm_pairs is None` and
+    `allow_priming`) are left to prime like any worktree target. Every candidate
+    that appears later, and every candidate on a re-arm over an existing
+    seen-set (`allow_priming` False: the posts that landed between two
+    monitors, harmonic-forge#697), is live."""
+    if arm_pairs is None:
+        arm_pairs = set(candidates) if allow_priming else set()
+    live = {pair: at for pair, at in candidates.items() if pair not in arm_pairs}
+    return live, arm_pairs
+
+
 #: `_search_candidates` was here. It ran `gh api -X GET search/issues`
 #: once per repo per kind per cycle -- an issue-number-free, account-wide
 #: scan -- and was the last caller of the search API in this file.
@@ -2058,8 +2115,16 @@ def comment_watch_cycle(
     allow_priming: bool = True,
     deferred_advances: "list[tuple[str, str, dt.datetime]] | None" = None,
     self_lane: str | None = None,
+    live_candidates: "dict[tuple[str, int], dt.datetime] | None" = None,
 ) -> tuple[list[str], bool]:
     """One comment-watch poll over `targets`, returning `(lines, fetch_failed)`.
+
+    `live_candidates` (harmonic-forge#1516) maps a target to the `posted_at` of
+    its recorded `discussion` (`split_live_discussion_candidates`). A live
+    target with no watermark is read from that recorded time and is NOT primed:
+    priming exists for history already on the thread at arm time, and this post
+    arrived after it. Its watermark then advances as for any target, so the
+    discussion is emitted once.
 
     `self_lane` (harmonic-forge#851) is the belt's own `--queue-for` lane. A
     comment whose kind another lane owes (`KIND_OWNER`) is treated exactly like
@@ -2138,6 +2203,11 @@ def comment_watch_cycle(
         # settled markers are already in the seen-set, so an owed post the
         # seen-set does not hold is announced live, never silently primed.
         recorded = watermarks.recorded(account, _wm_key(repo, issue))
+        live_since = (live_candidates or {}).get((repo, issue))
+        if mark is None and not recorded and live_since is not None:
+            # harmonic-forge#1516: a recorded discussion newer than arm. Read from
+            # its own post time, so it is neither primed away nor replayed.
+            mark = live_since
         first_sight = mark is None and not recorded and target not in primed_targets
         unreadable = mark is None and recorded
         since = query_since(horizon if (first_sight or unreadable) else mark,
@@ -3444,6 +3514,10 @@ def _main() -> int:
     # every 30-minute re-arm re-primed and swallowed the gap between monitors.
     # `allow_priming` is what enforces it now.
     allow_priming = priming_allowed(seen)
+    #: harmonic-forge#1516: the recorded discussion candidates present at a
+    #: genuine first arm (primed like any arm-time target); None until the first
+    #: cycle reads them.
+    arm_discussion_pairs: "set[tuple[str, int]] | None" = None
     if seen._state:
         print(f"[watch_lane_posts] resuming: {len(seen._state)} comment(s) "
               f"already recorded in {seen.path.name}", file=sys.stderr)
@@ -3591,11 +3665,16 @@ def _main() -> int:
         # exists to prevent, in the file that documents it as mandatory.
         #
         deferred_advances: list[tuple[str, str, dt.datetime]] = []
+        #: harmonic-forge#1516: recorded no-worktree discussions (a Plan-First
+        #: ratification) join the comment watch. A local store read, no scan.
+        discussion_candidates = read_watched_discussion_candidates(repos, watch)
+        live_candidates, arm_discussion_pairs = split_live_discussion_candidates(
+            discussion_candidates, arm_discussion_pairs, allow_priming)
         comment_lines, comment_fetch_failed = comment_watch_cycle(
-            sorted(discovered | static_pairs), watch,
+            sorted(discovered | static_pairs | set(discussion_candidates)), watch,
             now, watermarks, seen, primed_targets, tick,
             allow_priming=allow_priming, deferred_advances=deferred_advances,
-            self_lane=args.queue_for)
+            self_lane=args.queue_for, live_candidates=live_candidates)
         # harmonic-forge#697: flush, then promote, then advance -- in that
         # order, inside one tested function.
         deliver_comment_lines(comment_lines, seen, watermarks, deferred_advances)

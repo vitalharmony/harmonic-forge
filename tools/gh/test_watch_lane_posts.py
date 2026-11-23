@@ -4912,5 +4912,132 @@ class TokenSinksT2Tests(unittest.TestCase):
         self.assertIn("vitalharmony/hrse#1530 left-queue-for-l3", lines)
 
 
+class DiscussionCandidateWatchTests(unittest.TestCase):
+    """harmonic-forge#1516: a Plan-First ratification is a Lane 1 `discussion` posted
+    while Lane 2 has no branch on the issue. The recorded candidate must reach the
+    comment watch, be announced once, and not be primed away."""
+
+    REPO = "vitalharmony/harmonic-forge"
+    ISSUE = 1512
+    PAIR = (REPO, ISSUE)
+    NOW = "2026-11-23T21:00:00Z"
+    POSTED = dt.datetime(2026, 11, 23, 20, 43, 52, tzinfo=dt.timezone.utc)
+    DISCUSSION = {
+        "id": 7113473035, "created_at": "2026-11-23T20:43:41Z",
+        "html_url": "https://github.com/vitalharmony/harmonic-forge/issues/1512#issuecomment-7113473035",
+        "body": "## Verdict: PROCEED\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1 -->",
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.wm = Watermarks(root / "wm")
+        self.seen = SeenSet(root / "seen.tsv")
+        self.primed: set = set()
+        self.store = root / "candidates"
+
+    def _cycle(self, targets, live, comments=None, now=None, allow_priming=True):
+        deferred: list = []
+        with patch("watch_lane_posts._fetch_comments",
+                   return_value=[self.DISCUSSION] if comments is None else comments):
+            lines, _failed = watch_lane_posts.comment_watch_cycle(
+                targets, {"l1"}, now or self.NOW, self.wm, self.seen, self.primed,
+                allow_priming=allow_priming, deferred_advances=deferred, self_lane="l2",
+                live_candidates=live)
+        watch_lane_posts.deliver_comment_lines(lines, self.seen, self.wm, deferred, out=io.StringIO())
+        return lines
+
+    # -- the reader ------------------------------------------------------------
+    def test_only_a_watched_lanes_recent_discussion_in_the_belts_repos_is_read(self):
+        base = self.store
+        belt_candidates.record_candidate(self.REPO, 1, "discussion", "l1", base_dir=base)   # read
+        belt_candidates.record_candidate(self.REPO, 2, "finding", "l1", base_dir=base)      # not a discussion
+        belt_candidates.record_candidate(self.REPO, 3, "gate-result", "l1", base_dir=base)  # not a discussion
+        belt_candidates.record_candidate(self.REPO, 4, "discussion", "l2", base_dir=base)   # lane not watched
+        belt_candidates.record_candidate("vitalharmony/hrse", 5, "discussion", "l1", base_dir=base)  # other repo
+        belt_candidates.record_candidate(self.REPO, 6, "handoff", "l1", base_dir=base)      # a queue kind
+        belt_candidates._candidate_path(base, self.REPO, 7).write_text("{not json")          # malformed
+        read = watch_lane_posts.read_watched_discussion_candidates([self.REPO], {"l1"}, base_dir=base)
+        self.assertEqual(set(read), {(self.REPO, 1)})
+        self.assertIsInstance(read[(self.REPO, 1)], dt.datetime)
+
+    def test_a_discussion_older_than_the_replay_horizon_is_not_read(self):
+        belt_candidates.record_candidate(self.REPO, 1, "discussion", "l1", base_dir=self.store)
+        later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+            hours=watch_lane_posts._WATERMARK_STALE_HOURS + 1)
+        self.assertEqual(watch_lane_posts.read_watched_discussion_candidates(
+            [self.REPO], {"l1"}, now=later, base_dir=self.store), {})
+
+    def test_a_closed_marked_candidate_is_not_read(self):
+        belt_candidates.record_candidate(self.REPO, 1, "discussion", "l1", base_dir=self.store)
+        path = belt_candidates._candidate_path(self.store, self.REPO, 1)
+        entry = json.loads(path.read_text())
+        entry["closed_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        path.write_text(json.dumps(entry))
+        self.assertEqual(watch_lane_posts.read_watched_discussion_candidates(
+            [self.REPO], {"l1"}, base_dir=self.store), {})
+
+    # -- the cycle: TC1 --------------------------------------------------------
+    def test_a_live_candidate_with_no_worktree_is_announced_once_then_not_again(self):
+        first = self._cycle([self.PAIR], {self.PAIR: self.POSTED})
+        self.assertEqual(first, ["vitalharmony/harmonic-forge#1512 l1 — discussion"])
+        second = self._cycle([self.PAIR], {self.PAIR: self.POSTED}, now="2026-11-23T21:05:00Z")
+        self.assertEqual(second, [], "the watermark and the seen-set must stop a repeat")
+
+    def test_without_the_live_seed_the_post_is_primed_away_which_is_why_the_seed_exists(self):
+        """The handoff's step 2 said priming applies unchanged. It does not survive
+        contact with the cycle: a never-read target is primed on first sight, and
+        the discussion the candidate exists to announce is suppressed."""
+        lines = self._cycle([self.PAIR], None)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("PRIMED at first arm, not announced", lines[0])
+        self.assertNotEqual(lines[0], "vitalharmony/harmonic-forge#1512 l1 — discussion",
+                            "the plain announcement is what the lane acts on; this is the suppression notice")
+        self.assertEqual(self._cycle([self.PAIR], None, now="2026-11-23T21:05:00Z"), [],
+                         "and it is never announced afterwards")
+
+    def test_a_candidate_gets_no_live_seed_once_it_has_a_watermark(self):
+        self.wm.advance("vitalharmony", watch_lane_posts._wm_key(self.REPO, self.ISSUE),
+                        dt.datetime(2026, 11, 23, 20, 59, tzinfo=dt.timezone.utc))
+        lines = self._cycle([self.PAIR], {self.PAIR: self.POSTED}, comments=[])
+        self.assertEqual(lines, [])
+
+    # -- TC3: a worktree-resolved pair is unchanged ----------------------------
+    def test_a_worktree_pair_behaves_the_same_with_or_without_another_live_candidate(self):
+        other = (self.REPO, 9999)
+        def run(live):
+            self.setUp()
+            self.wm.advance("vitalharmony", watch_lane_posts._wm_key(self.REPO, self.ISSUE),
+                            dt.datetime(2026, 11, 23, 20, 40, tzinfo=dt.timezone.utc))
+            return self._cycle([self.PAIR], live)
+        self.assertEqual(run(None), run({other: self.POSTED}))
+        self.assertEqual(run(None), ["vitalharmony/harmonic-forge#1512 l1 — discussion"])
+
+    # -- the arm-time split ----------------------------------------------------
+    def test_a_genuine_first_arm_primes_the_candidates_it_finds_and_announces_later_ones(self):
+        split = watch_lane_posts.split_live_discussion_candidates
+        early, late = (self.REPO, 1), (self.REPO, 2)
+        live, arm = split({early: self.POSTED}, None, allow_priming=True)
+        self.assertEqual((live, arm), ({}, {early}))
+        live, arm = split({early: self.POSTED, late: self.POSTED}, arm, allow_priming=True)
+        self.assertEqual(set(live), {late})
+        self.assertEqual(arm, {early}, "the arm-time set is fixed at the first cycle")
+
+    def test_a_re_arm_over_an_existing_seen_set_announces_every_candidate(self):
+        split = watch_lane_posts.split_live_discussion_candidates
+        live, arm = split({(self.REPO, 1): self.POSTED}, None, allow_priming=False)
+        self.assertEqual(set(live), {(self.REPO, 1)})
+        self.assertEqual(arm, set())
+
+    # -- the wiring ------------------------------------------------------------
+    def test_main_adds_the_recorded_discussions_to_the_comment_watch_targets(self):
+        source = Path(watch_lane_posts.__file__).read_text()
+        self.assertIn("read_watched_discussion_candidates(repos, watch)", source)
+        self.assertIn("sorted(discovered | static_pairs | set(discussion_candidates))", source)
+        self.assertIn("live_candidates=live_candidates", source)
+        self.assertIn("split_live_discussion_candidates(", source)
+
+
 if __name__ == "__main__":
     unittest.main()
