@@ -47,6 +47,8 @@ echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
 # exists yet)" while 336 passing tests sat in the repo unrun. Running them
 # here means `mise run check` means what a reader assumes it means.
 python3 tools/run_tests.py
+# harmonic-forge#1501: the contract index is valid and docs/CONTRACTS.md is a fresh render.
+test ! -f tools/registry/contracts.py || python3 tools/registry/contracts.py --check
 # harmonic-forge#494: memory-store lint. Gated against the frozen CLEAN fixture,
 # never the live store — the live store is grown by the harness, not by any
 # branch, so a live-pinned exit-1 check is one no commit could turn green.
@@ -494,6 +496,15 @@ arg "args" var=#true help="tools/registry/effects.py arguments verbatim, e.g. va
 '''
 run = '''
 eval python3 tools/registry/effects.py $usage_args
+'''
+
+[tasks.contracts]
+description = "The contract index (harmonic-forge#1501): tools/registry/contracts.toml's shared behaviors and their owners. `validate` checks the schema, unique ids and that every path resolves; `render` writes docs/CONTRACTS.md; `--check` fails when that file is not a fresh render (run by ci-check). Reads local files only."
+usage = '''
+arg "args" var=#true help="tools/registry/contracts.py arguments verbatim: validate, render or --check"
+'''
+run = '''
+eval python3 tools/registry/contracts.py $usage_args
 '''
 
 [tasks.preclose-check]
