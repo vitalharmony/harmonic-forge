@@ -43,11 +43,23 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$")
 RESOLVED, UNRESOLVED, UNMEASURED = "resolved", "unresolved", "unmeasured"
 
 
+def _contract_list(data: dict) -> list[dict] | None:
+    """The `[[contract]]` entries, or None when `contract` is not a list of tables
+    (a single `[contract]` table, say)."""
+    entries = data.get("contract", [])
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        return None
+    return entries
+
+
 def load(path: Path = TOML_PATH) -> list[dict]:
     try:
-        return list(tomllib.loads(path.read_text(encoding="utf-8")).get("contract", []))
+        entries = _contract_list(tomllib.loads(path.read_text(encoding="utf-8")))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SystemExit(f"contracts: cannot read {path}: {exc}") from exc
+    if entries is None:
+        raise SystemExit(f"contracts: {path}: `contract` must be an array of tables ([[contract]])")
+    return entries
 
 
 def _path_part(ref: str) -> str:
@@ -70,6 +82,13 @@ def link_problem(ref: str, root: Path, want: str) -> str | None:
         return f"`{path}` is not a directory in the repository"
     if want == "file" and not target.is_file():
         return f"`{path}` is not a file in the repository"
+    if want == "file" and suffix and not suffix.isdigit():
+        text = target.read_text(encoding="utf-8", errors="replace")
+        missing = [name for name in re.split(r"[,\s]+", suffix) if name and not re.search(
+            rf"^\s*(?:async\s+)?(?:def|class)\s+{re.escape(name)}\b|^\s*{re.escape(name)}\s*(?::[^=\n]*)?=",
+            text, re.M)]
+        if missing:
+            return f"`{ref}` names {', '.join(missing)}, not defined in `{path}`"
     if want == "file" and suffix.isdigit():
         lines = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
         if not 1 <= int(suffix) <= lines:
@@ -148,8 +167,11 @@ def resolve(contract_id: str, own: list[dict], project: str = OWN_PROJECT,
         index = base / name
         if index.is_file():
             try:
-                entries = tomllib.loads(index.read_text(encoding="utf-8")).get("contract", [])
+                entries = _contract_list(tomllib.loads(index.read_text(encoding="utf-8")))
             except (OSError, tomllib.TOMLDecodeError):
+                return UNMEASURED
+            # A malformed or invalid foreign index cannot vouch for an id.
+            if entries is None or problems(entries, base, namespace):
                 return UNMEASURED
             return RESOLVED if any(e.get("id") == contract_id for e in entries) else UNRESOLVED
     return UNMEASURED
@@ -185,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--doc", type=Path, default=DOC_PATH)
     parser.add_argument("--root", type=Path, default=FORGE_ROOT)
     args = parser.parse_args(argv)
+    if args.check and args.command:
+        parser.error("--check runs alone; it does not combine with a command")
     entries = load(args.index)
     errors = problems(entries, args.root)
     if errors:

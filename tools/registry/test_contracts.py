@@ -86,6 +86,40 @@ class Links(unittest.TestCase):
         self.assertTrue(self._problems_with(scan_roots=["tools/hooks/gh_argv.py"]))
 
 
+class PassTwoFixes(unittest.TestCase):
+    def test_a_single_contract_table_is_refused_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "contracts.toml"
+            index.write_text('[contract]\nid = "harmonic-forge.x"\n', encoding="utf-8")
+            with self.assertRaises(SystemExit) as raised:
+                C.load(index)
+            self.assertIn("array of tables", str(raised.exception))
+
+    def test_an_owner_symbol_that_is_not_defined_fails(self):
+        entries = _entries()
+        entries[0]["owner"] = "tools/hooks/gh_argv.py: parse, no_such_symbol"
+        self.assertTrue(any("no_such_symbol" in p for p in C.problems(entries)))
+
+    def test_the_checked_in_owner_symbols_are_all_defined(self):
+        self.assertEqual(C.link_problem(_entries()[0]["owner"], C.FORGE_ROOT, "file"), None)
+
+    def test_a_malformed_or_invalid_foreign_index_is_unmeasured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "contracts.toml"
+            for text in ('[contract]\nid = "hrse.x"\n', '[[contract]]\nid = "hrse.x"\n'):
+                with self.subTest(text=text):
+                    index.write_text(text, encoding="utf-8")
+                    self.assertEqual(C.resolve("hrse.x", _entries(), checkout=lambda name: Path(tmp)), C.UNMEASURED)
+
+    def test_resolve_with_check_is_refused(self):
+        with self.assertRaises(SystemExit) as raised:
+            C.main(["resolve", "harmonic-forge.gh-argv-parser", "--check"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_the_first_entry_owner_is_gh_argv(self):
+        self.assertEqual(C._path_part(_entries()[0]["owner"]), "tools/hooks/gh_argv.py")
+
+
 class ResolveCommand(unittest.TestCase):
     def _run(self, ids, checkout):
         with mock.patch.object(C, "project_checkout", checkout):
@@ -139,7 +173,11 @@ class CrossRepo(unittest.TestCase):
 
     def test_an_id_in_another_checkout_resolves_from_its_index(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "contracts.toml").write_text('[[contract]]\nid = "hrse.date-contract"\n', encoding="utf-8")
+            (Path(tmp) / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+            (Path(tmp) / "contracts.toml").write_text(
+                '[[contract]]\nid = "hrse.date-contract"\nscope = "s"\nowner = "a.py: f"\nmodules = ["a.py"]\n'
+                'authority = "a.py"\nexample_caller = "a.py:1"\nguard = ["a.py"]\nexceptions = "none"\n'
+                'scan_roots = ["."]\nblind_spots = "none"\nstatus = "canonical"\n', encoding="utf-8")
             resolve = lambda cid: C.resolve(cid, _entries(), checkout=lambda name: Path(tmp))  # noqa: E731
             self.assertEqual(resolve("hrse.date-contract"), C.RESOLVED)
             self.assertEqual(resolve("hrse.other"), C.UNRESOLVED)

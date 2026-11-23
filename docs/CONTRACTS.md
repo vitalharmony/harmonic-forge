@@ -15,4 +15,4 @@ The pflag-faithful parse and decision of one gh close, merge or api call, agains
 - **Guard and tests:** `tools/hooks/test_gh_argv.py`
 - **Exceptions:** none yet; batch_auth, block_data_migration_close and block_missing_preclose_inspection still keep private recognizers (harmonic-forge#1496 to #1500)
 - **Scan roots:** `tools/hooks`
-- **Blind spots:** text hooks tokenize a command string with shell_parse, which this contract does not cover
+- **Blind spots:** text hooks tokenize a command string with shell_parse, which this contract does not cover; the index checks that example_caller's line exists, not that it still holds a call
