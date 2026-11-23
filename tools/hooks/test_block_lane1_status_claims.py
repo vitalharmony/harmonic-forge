@@ -69,8 +69,33 @@ class TestExistingRegressions(unittest.TestCase):
     def test_gate_checkout_denied_without_lane3(self):
         import os
         os.environ.pop("LANE", None)
-        result = m.decision("mise run gate-checkout main", Path.cwd())
+        # harmonic-forge#1513: a scratch directory, never `Path.cwd()`. With no
+        # LANE set the hook looks for `LANE3_ACTIVE` in the git dir of the
+        # directory it is given, and `lane3-begin` writes that marker into the
+        # checkout a Lane 3 gate runs `mise run check` in, so the real checkout
+        # let the gate-checkout through and this denial never happened.
+        with tempfile.TemporaryDirectory() as scratch:
+            result = m.decision("mise run gate-checkout main", Path(scratch))
         self.assertTrue(_is_denied(result))
+
+    def test_gate_checkout_allowed_with_the_lane3_marker_and_no_lane(self):
+        """harmonic-forge#1513: the marker path itself stays covered. In a
+        scratch git repo the same command is denied without `LANE3_ACTIVE` and
+        allowed with a fresh one, so this fails if the hook stops reading it."""
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as scratch, \
+                unittest.mock.patch.dict(os.environ):
+            os.environ.pop("LANE", None)
+            repo = Path(scratch)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            self.assertTrue(_is_denied(m.decision("mise run gate-checkout main", repo)))
+            git_dir = subprocess.run(
+                ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, text=True,
+                capture_output=True, check=True,
+            ).stdout.strip()
+            (Path(git_dir) / "LANE3_ACTIVE").touch()
+            self.assertEqual(m.decision("mise run gate-checkout main", repo), {})
 
     def test_autoclose_keyword_in_body_file_denied(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
