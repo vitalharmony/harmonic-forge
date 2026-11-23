@@ -14,16 +14,18 @@ fail-closed) without re-deriving grammar:
     unbound     a close or merge whose target cannot be named (no argument, a
                 branch name, `$N`, a second argument, a URL on another host)
     unparseable `gh_argv.parse` raised `ArgvError` for the call
-    unprovable  a call that cannot be proved not to close or merge: a `gh api`
-                call `gh_argv` refuses (GraphQL by node id, an unreadable
-                `--input` body, a `{owner}/{repo}` placeholder), a flag before
-                the command, an alias or extension, or a help flag on a close or
-                merge path
+    unprovable  a call that cannot be proved not to close or merge: gh in a shape
+                `gh_segment` does not allow, a `gh api` call `gh_argv` refuses
+                (GraphQL by node id, an unreadable `--input` body, a
+                `{owner}/{repo}` placeholder), a flag before the command, an
+                alias or extension, or a help flag on a close or merge path
     allowed     a gated root whose call does not close or merge
     not_gated   not `gh`, or a builtin root outside `gh_argv.GATED_ROOTS`
 
-Inline `NAME=value` assignments before `gh` are the command's own environment and
-override the one passed in (gh reads `GH_REPO`). `close_target`/`merge_target`
+Whether a shell segment is a gh call at all is `gh_segment`'s strict allowlist
+(shell grammar); this module reads only gh argv. Inline `NAME=value` assignments
+before `gh` are the command's own environment and override the one passed in
+(gh reads `GH_REPO`). `close_target`/`merge_target`
 return the result for an unparseable or unprovable call too: None means the call
 is provably not that kind.
 
@@ -34,12 +36,10 @@ adopter must choose per consumer rather than inherit the shim's answer.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
-from pathlib import Path
 
 import gh_argv
-from shell_parse import strip_invocation_prefix
+import gh_segment
 
 BOUND = "bound"
 UNBOUND = "unbound"
@@ -61,6 +61,7 @@ class Result:
     number: str | None = None
     heads: tuple[str | None, ...] = (None,)
     reason: str = ""
+    exempt: bool = False  # gh_argv's not-planned/duplicate close exemption
 
     @property
     def gated(self) -> bool:
@@ -68,75 +69,23 @@ class Result:
         return self.outcome in (BOUND, UNBOUND)
 
 
-#: The house account wrappers `shell_parse.strip_invocation_prefix` unwraps
-#: (`gh-as <account> gh ...`, `gha <account> ...`); they set a token, never a repo.
-_ACCOUNT_WRAPPERS = ("gh-as", "gha")
-#: gh named as a command word inside a script token (`bash -c 'x && gh issue close 5'`).
-_SCRIPT_GH = re.compile(r"(?:^|[\s;&|(`$])(?:\S*/)?(?:gh|gh-as|gha)(?:\s|$)")
-_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
-
-
-def _inline_env(tokens: list[str]) -> dict[str, str]:
-    """`NAME=value` assignments before the program (after an optional `env`):
-    the command's own environment, which gh reads (`GH_REPO=a/b gh issue close 12`
-    closes a/b#12) and which overrides the hook process's."""
-    found: dict[str, str] = {}
-    for token in tokens:
-        if token == "env":
-            continue
-        match = _ASSIGNMENT.match(token)
-        if not match:
-            break
-        found[match.group(1)] = match.group(2)
-    return found
-
-
-def _plain_prefix(tokens: list[str]) -> bool:
-    """True when everything before the first `gh` token is an optional bare
-    `env` and `NAME=value` assignments: the one prefix whose environment this
-    module models. Anything else (an `env` option, `sudo`, `xargs`, a
-    redirection, a shell wrapper) can change what gh runs or where."""
-    skip = False
-    for token in tokens:
-        if skip:  # the account argument of an account wrapper
-            skip = False
-            continue
-        if Path(token).name == "gh":
-            return True
-        if Path(token).name in _ACCOUNT_WRAPPERS:
-            skip = True
-            continue
-        if token != "env" and not _ASSIGNMENT.match(token):
-            return False
-    return True
-
-
-def _mentions_gh(tokens: list[str]) -> bool:
-    """A `gh` word, an account wrapper, or a shell `-c` script that names gh,
-    among the tokens. A script is never parsed here: gh inside one is unprovable."""
-    return any(Path(token).name in ("gh", *_ACCOUNT_WRAPPERS) or _SCRIPT_GH.search(token)
-               for token in tokens)
-
-
 def classify(tokens: list[str], env: dict | None = None) -> Result:
-    """Classify one command segment (the tokens a hook holds after shell splitting).
-    `env` is the environment the command inherits (the hook process's when None);
-    inline assignments in the segment override it.
+    """Classify one shell command segment. Whether the segment is a gh call at
+    all, and with what environment, is `gh_segment`'s decision (shell grammar);
+    this module reads only the gh argv it is handed. `env` is the environment the
+    command inherits (the hook process's when None)."""
+    segment = gh_segment.gh_segment(tokens)
+    if segment.kind == gh_segment.NOT_GH:
+        return Result(NOT_GATED, reason=segment.reason)
+    if segment.kind == gh_segment.UNPROVABLE:
+        return Result(UNPROVABLE, reason=segment.reason)
+    merged = dict(os.environ if env is None else env)
+    merged.update(segment.env)
+    return classify_argv(list(segment.argv), merged)
 
-    The safe answer is the default: a segment that mentions gh behind anything
-    but a plain prefix is unprovable, and only a segment with no gh at all is
-    not gated."""
-    raw = list(tokens)
-    env = dict(os.environ if env is None else env)
-    env.update(_inline_env(raw))
-    tokens = strip_invocation_prefix(raw)
-    if not tokens or Path(tokens[0]).name != "gh":
-        if _mentions_gh(raw):
-            return Result(UNPROVABLE, reason="gh behind a prefix this module does not model")
-        return Result(NOT_GATED, reason="not a gh invocation")
-    if _mentions_gh(raw) and not _plain_prefix(raw):
-        return Result(UNPROVABLE, reason="gh behind a prefix this module does not model")
-    argv = tokens[1:]
+
+def classify_argv(argv: list[str], env: dict) -> Result:
+    """Classify one gh argv (the words after `gh`) against the pinned grammar."""
     if not argv:
         return Result(NOT_GATED, reason="bare gh")
     if argv[0] not in gh_argv.load_table()["builtins"]:
@@ -158,7 +107,7 @@ def classify(tokens: list[str], env: dict | None = None) -> Result:
         target = verdict.target
         if target.number:
             return Result(BOUND, kind=target.kind, repo=target.repo, number=target.number,
-                          heads=target.heads, reason=verdict.reason)
+                          heads=target.heads, reason=verdict.reason, exempt=target.exempt)
         # `gh pr merge` with no argument yields a gate verdict with an empty number.
         return Result(UNBOUND, kind=target.kind, repo=target.repo, heads=target.heads,
                       reason="no number the gate can bind")

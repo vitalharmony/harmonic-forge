@@ -32,16 +32,6 @@
     []
    ]
   ],
-  "echo 'gh issue close 395' '>' notes.md": [
-   "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
-  ],
   "env -i gh issue close 700 --repo vitalharmony/hrse": [
    "intended",
    "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
@@ -964,70 +954,6 @@
     ]
    ]
   ],
-  "gha vh issue close 395 --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gha vh issue close 999999 --repo vitalharmony/harmonic-forge": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "999999"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gha vh pr merge 1202 --repo vitalharmony/hrse --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gha vitalharmony pr merge 993 --repo vitalharmony/hrse --squash": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "993"
-     ]
-    ],
-    []
-   ]
-  ],
   "nice gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": [
    "intended",
    "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
@@ -1126,7 +1052,8 @@
      [
       "issue",
       "vitalharmony/hrse",
-      "1476"
+      "1476",
+      false
      ]
     ],
     []
@@ -1142,7 +1069,8 @@
      [
       "issue",
       "vitalharmony/hrse",
-      "1476"
+      "1476",
+      false
      ]
     ],
     []
@@ -1158,7 +1086,8 @@
      [
       "pr",
       "vitalharmony/hrse",
-      "1486"
+      "1486",
+      false
      ]
     ],
     []
@@ -1174,7 +1103,8 @@
      [
       "issue",
       "vitalharmony/hrse",
-      "1476"
+      "1476",
+      false
      ]
     ],
     []
@@ -1200,10 +1130,35 @@
      [
       "issue",
       "vitalharmony/hrse",
-      "1476"
+      "1476",
+      false
      ]
     ],
     []
+   ]
+  ],
+  "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -F state=closed -F state_reason=not_planned": [
+   "intended",
+   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
    ]
   ],
   "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -H state_reason=not_planned": [
@@ -1216,10 +1171,59 @@
      [
       "issue",
       "vitalharmony/harmonic-forge",
-      "1433"
+      "1433",
+      false
      ]
     ],
     []
+   ]
+  ],
+  "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=duplicate": [
+   "intended",
+   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
+   ]
+  ],
+  "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=not_planned": [
+   "intended",
+   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
    ]
   ],
   "gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=open": [
@@ -1252,10 +1256,131 @@
      [
       "pr",
       "vitalharmony/hrse",
-      "1486"
+      "1486",
+      false
      ]
     ],
     []
+   ]
+  ],
+  "gh issue close 1269 --repo vitalharmony/hrse --reason 'not planned'": [
+   "intended",
+   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/hrse",
+      "1269",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/hrse",
+      "1269",
+      true
+     ]
+    ]
+   ]
+  ],
+  "gh issue close 1433 --repo vitalharmony/harmonic-forge --duplicate-of 1400": [
+   "intended",
+   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
+   ]
+  ],
+  "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason 'not planned'": [
+   "intended",
+   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
+   ]
+  ],
+  "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason='not planned'": [
+   "intended",
+   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
+   ]
+  ],
+  "gh issue close 1433 --repo vitalharmony/harmonic-forge -r duplicate": [
+   "intended",
+   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/harmonic-forge",
+      "1433",
+      true
+     ]
+    ]
    ]
   ],
   "gh pr merge 1486 -R vitalharmony/hrse --squash -- --match-head-commit=abc123": [
@@ -1268,14 +1393,16 @@
      [
       "pr",
       "vitalharmony/hrse",
-      "1486"
+      "1486",
+      false
      ]
     ],
     [
      [
       "pr",
       null,
-      null
+      null,
+      false
      ]
     ]
    ]
@@ -1290,14 +1417,16 @@
      [
       "pr",
       "vitalharmony/hrse",
-      "1486"
+      "1486",
+      false
      ]
     ],
     [
      [
       "pr",
       null,
-      null
+      null,
+      false
      ]
     ]
    ]
@@ -1312,7 +1441,8 @@
      [
       "pr",
       "vitalharmony/hrse",
-      "1486"
+      "1486",
+      false
      ]
     ],
     []
@@ -1328,7 +1458,8 @@
      [
       "issue",
       "vitalharmony/hrse",
-      "1476"
+      "1476",
+      false
      ]
     ],
     []

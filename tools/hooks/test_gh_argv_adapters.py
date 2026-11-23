@@ -120,6 +120,14 @@ class OutcomeTable(unittest.TestCase):
     def test_no_outcome_passes_unconditionally(self):
         self.assertNotIn(PASS, {cell for cells in VERDICT.values() for cell in cells.values()})
 
+    def test_the_adapter_reports_gh_argv_exemption_but_the_preclose_column_never_trusts_it(self):
+        # gh_argv's not-planned exemption is wider than the preclose hook's
+        # canonical shape (`--reason='not planned'`, a REST `-F state_reason`),
+        # so the adopter keeps the hook's own exemption check (F1499).
+        exempt = A.classify(["gh", "issue", "close", "5", "--repo", "o/r", "--reason=not planned"], {})
+        self.assertTrue(exempt.exempt)
+        self.assertEqual(verdict("preclose", exempt), REFUSE)
+
     def test_bound_merge_carries_the_head_commit(self):
         self.assertEqual(A.classify(ROWS["bound_merge"], {}).heads, ("123456",))
 
