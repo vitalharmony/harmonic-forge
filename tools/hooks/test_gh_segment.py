@@ -91,7 +91,9 @@ class Containment(unittest.TestCase):
     def test_string_runners_and_assignments_are_unprovable(self):
         for command in ("fish -c 'gh issue close 5'", "ssh host 'gh issue close 5'",
                         "env -S 'gh issue close 5'", 'X="$(gh issue close 5)" gh issue view 1',
-                        "X=gh sudo $X pr merge 5", 'echo "$($c pr merge 5)"'):
+                        "X=gh sudo $X pr merge 5", 'echo "$($c pr merge 5)"',
+                        'gh-as "$(gh issue close 5)" gh issue view 1', "gha $(gh pr merge 2) issue view 1",
+                        "gh=1 true"):
             self.assertEqual(S.gh_segment(shlex.split(command)).kind, S.UNPROVABLE, command)
 
     def test_the_bounding_keeps_ordinary_words_out(self):

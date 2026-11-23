@@ -239,12 +239,22 @@ class FlagTableDrift(unittest.TestCase):
         """harmonic-forge#1496 re-scope: a drifted table that makes `--jq` take a
         value swallows `-X PUT`; the merge must not read as a GET."""
         table = copy.deepcopy(gh_argv.load_table())
-        table["commands"]["api"]["flags"]["--jq"].update(value=True)
-        argv = ["gh", "api", "--jq", "-X", "PUT", "repos/o/r/pulls/9/merge"]
+        self.assertFalse(table["commands"]["api"]["flags"]["--include"].get("value"))
+        table["commands"]["api"]["flags"]["--include"].update(value=True)  # the drift
+        argv = ["gh", "api", "--include", "-X", "PUT", "repos/o/r/pulls/9/merge"]
+        self.assertEqual(A.classify(argv, {}).outcome, A.BOUND)  # the pinned table binds it
         with mock.patch.object(gh_argv, "load_table", return_value=table):
             self.assertEqual(A.classify(argv, {}).outcome, A.UNPROVABLE)
             self.assertIsNotNone(A.merge_target(argv, {}))
         self.assertEqual(A.classify(["gh", "api", "-X", "GET", "repos/o/r/pulls/9"], {}).outcome, A.ALLOWED)
+
+    def test_a_swallowed_method_after_an_earlier_one_or_in_a_cluster_is_unprovable(self):
+        table = copy.deepcopy(gh_argv.load_table())
+        table["commands"]["api"]["flags"]["--include"].update(value=True)
+        with mock.patch.object(gh_argv, "load_table", return_value=table):
+            for argv in (["gh", "api", "-X", "GET", "--include", "-X", "PUT", "repos/o/r/pulls/9/merge"],
+                         ["gh", "api", "--include", "-iX", "PUT", "repos/o/r/pulls/9/merge"]):
+                self.assertNotIn(A.classify(argv, {}).outcome, (A.ALLOWED, A.NOT_GATED), argv)
 
 
 if __name__ == "__main__":

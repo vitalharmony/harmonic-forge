@@ -84,6 +84,21 @@ def classify(tokens: list[str], env: dict | None = None) -> Result:
     return classify_argv(list(segment.argv), merged)
 
 
+def _raw_method_flags(tokens: list[str]) -> int:
+    """How many method flags the raw argv carries: `-X`, `--method`,
+    `--method=V`, and `X` inside a short-flag cluster (`-iX`). A count above what
+    the parse recorded means one was swallowed as another flag's value."""
+    count = 0
+    for token in tokens:
+        if token == "--":
+            break
+        if token in ("--method",) or token.startswith("--method="):
+            count += 1
+        elif token.startswith("-") and not token.startswith("--") and "X" in token[1:]:
+            count += 1
+    return count
+
+
 def classify_argv(argv: list[str], env: dict) -> Result:
     """Classify one gh argv (the words after `gh`) against the pinned grammar."""
     if not argv:
@@ -98,9 +113,8 @@ def classify_argv(argv: list[str], env: dict) -> Result:
         parsed = gh_argv.parse(argv)
     except gh_argv.ArgvError as exc:
         return Result(UNPARSEABLE, reason=str(exc))
-    if tuple(parsed.path[:1]) == ("api",) and parsed.last("--method") is None and any(
-            token in ("-X", "--method") or token.startswith("--method=")
-            or (token.startswith("-X") and len(token) > 2) for token in argv[1:]):
+    if tuple(parsed.path[:1]) == ("api",) and _raw_method_flags(argv[1:]) > sum(
+            1 for name, _ in parsed.flags if name == "--method"):
         # A method flag the parse did not record was consumed as another flag's
         # value (a drifted API flag table): a merge must not read as a GET
         # (harmonic-forge#1496 re-scope).

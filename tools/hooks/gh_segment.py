@@ -37,12 +37,14 @@ _GH_NAMES = ("gh", "gh-as", "gha")
 #: A gh word anywhere in a token: bounded by start, end, whitespace, shell
 #: punctuation or a quote, optionally path-qualified. Containment, not
 #: recognition (harmonic-forge#1496 re-scope): no runner is modelled.
-_GH_WORD = re.compile(r"(?:^|[\s;&|(){}`$'\"<>=])(?:[^\s;&|(){}`$'\"<>=]*/)?(?:gh|gh-as|gha)(?=$|[\s;&|(){}`'\"<>])")
+_GH_WORD = re.compile(r"(?:^|[\s;&|(){}`$'\"<>=])(?:[^\s;&|(){}`$'\"<>=]*/)?(?:gh|gh-as|gha)(?=$|[\s;&|(){}`'\"<>=])")
 #: A command word whose text the shell rewrites before running it: an expansion,
 #: a substitution, a glob or a quote splice.
 _DYNAMIC_WORD = re.compile(r"[$`*?\[\]'\"\\]")
 #: The test builtins: a literal `[` or `[[` command word is not a glob.
 _TEST_BUILTINS = ("[", "[[")
+#: A plain account name for the gh-as and gha wrappers.
+_ACCOUNT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,10 @@ def gh_segment(tokens: list[str]) -> Segment:
             return Segment(UNPROVABLE, env=env, reason="gh inside an inline assignment")
         if name == "gh" and not _mentions_gh(rest):
             return Segment(GH, tuple(rest), env)
+        if name in ("gh-as", "gha") and rest and not _ACCOUNT.fullmatch(rest[0]):
+            # The account slot must be a plain literal: a substitution or a gh
+            # word there runs before the wrapper (harmonic-forge#1496 re-scope).
+            return Segment(UNPROVABLE, env=env, reason="the account slot is not a plain literal")
         if name == "gh-as" and len(rest) >= 2 and Path(rest[1]).name == "gh" and not _mentions_gh(rest[2:]):
             return Segment(GH, tuple(rest[2:]), env)
         if name == "gha" and len(rest) >= 1 and not _mentions_gh(rest[1:]):
