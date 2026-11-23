@@ -131,6 +131,32 @@ class PassTwoFixes(unittest.TestCase):
         self.assertEqual(C._path_part(_entries()[0]["owner"]), "tools/hooks/gh_argv.py")
 
 
+class PostVerdictFixes(unittest.TestCase):
+    def test_an_annotation_with_no_value_is_not_a_definition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.py").write_text("ghost: int\nx: int = 1\n", encoding="utf-8")
+            self.assertIn("ghost", C.link_problem("m.py: ghost", Path(tmp), "file") or "")
+            self.assertIsNone(C.link_problem("m.py: x", Path(tmp), "file"))
+
+    def test_a_suffix_naming_no_symbol_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.py").write_text("x = 1\n", encoding="utf-8")
+            self.assertIn("names no symbol", C.link_problem("m.py: ,", Path(tmp), "file") or "")
+
+    def test_a_superscript_digit_line_is_a_problem_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.py").write_text("x = 1\n", encoding="utf-8")
+            self.assertIsNotNone(C.link_problem("m.py:²", Path(tmp), "file"))
+
+    def test_invalid_utf8_in_an_index_is_refused_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "contracts.toml"
+            index.write_bytes(b'[[contract]]\nid = "\xff"\n')
+            with self.assertRaises(SystemExit):
+                C.load(index)
+            self.assertEqual(C.resolve("hrse.x", _entries(), checkout=lambda name: Path(tmp)), C.UNMEASURED)
+
+
 class ResolveCommand(unittest.TestCase):
     def _run(self, ids, checkout):
         with mock.patch.object(C, "project_checkout", checkout):

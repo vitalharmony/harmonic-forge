@@ -56,7 +56,7 @@ def _contract_list(data: dict) -> list[dict] | None:
 def load(path: Path = TOML_PATH) -> list[dict]:
     try:
         entries = _contract_list(tomllib.loads(path.read_text(encoding="utf-8")))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise SystemExit(f"contracts: cannot read {path}: {exc}") from exc
     if entries is None:
         raise SystemExit(f"contracts: {path}: `contract` must be an array of tables ([[contract]])")
@@ -83,14 +83,18 @@ def link_problem(ref: str, root: Path, want: str) -> str | None:
         return f"`{path}` is not a directory in the repository"
     if want == "file" and not target.is_file():
         return f"`{path}` is not a file in the repository"
-    if want == "file" and suffix and not suffix.isdigit():
+    is_line = re.fullmatch(r"[0-9]+", suffix) is not None
+    if want == "file" and suffix and not is_line:
         defined = _defined_names(target)
         if defined is None:
             return f"`{ref}` names symbols, but `{path}` is not Python this index can parse"
-        missing = [name for name in re.split(r"[,\s]+", suffix) if name and name not in defined]
+        names = [name for name in re.split(r"[,\s]+", suffix) if name]
+        if not names:
+            return f"`{ref}` has a symbol suffix that names no symbol"
+        missing = [name for name in names if name not in defined]
         if missing:
             return f"`{ref}` names {', '.join(missing)}, not defined in `{path}`"
-    if want == "file" and suffix.isdigit():
+    if want == "file" and is_line:
         lines = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
         if not 1 <= int(suffix) <= lines:
             return f"`{ref}` names line {suffix}, but the file has {lines} lines"
@@ -110,7 +114,8 @@ def _defined_names(path: Path) -> set[str] | None:
             names.add(node.name)
         elif isinstance(node, ast.Assign):
             names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            # An annotation with no value binds nothing at runtime.
             names.add(node.target.id)
     return names
 
@@ -193,7 +198,7 @@ def resolve(contract_id: str, own: list[dict], project: str = OWN_PROJECT,
         if index.is_file():
             try:
                 entries = _contract_list(tomllib.loads(index.read_text(encoding="utf-8")))
-            except (OSError, tomllib.TOMLDecodeError):
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
                 return UNMEASURED
             # A malformed or invalid foreign index cannot vouch for an id.
             if entries is None or problems(entries, base, namespace):
