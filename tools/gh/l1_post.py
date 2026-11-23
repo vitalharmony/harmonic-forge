@@ -1040,6 +1040,84 @@ def grant_on_main(body: str, sha: str) -> bool:
     return tip.returncode == 0 and tip.stdout.strip() == sha
 
 
+#: harmonic-forge#1494: the stated claim a post-merge read-only AE carries.
+_MERGED_READONLY = re.compile(r"(?im)^[^\S\n]*\*\*Post-merge read-only:\*\*[^\S\n]*(\S[^\n]*)$")
+
+
+def _merged_readonly_lines(body: str) -> list[str]:
+    """The `**Post-merge read-only:** <reason>` lines outside any fenced block."""
+    import _standing_grant  # noqa: PLC0415
+    return [m.group(1).strip() for m in _MERGED_READONLY.finditer(_standing_grant._unquoted(body))]
+
+
+def merged_readonly_refusal(body: str, sha: str, spec_body: str | None,
+                            prod_run: object, ack_no_pr_required: str | None) -> str | None:
+    """harmonic-forge#1494: why an AE claiming `**Post-merge read-only:**` does
+    not qualify to skip the open-PR check, or None when it does. Every reason
+    is checked, so a mistaken claim is refused naming what is wrong instead of
+    falling through to the open-PR refusal's unrelated message.
+
+    Qualifies only when: exactly one such line with a reason, outside a fenced
+    block; a Lane 3 spec whose write tier is R (the ceiling, so a stray W or P
+    mention fails closed); `sha` an ancestor of a freshly fetched origin/main;
+    no `--prod-run`; no `--ack-no-pr-required`; no R-0374 citation (a grant AE
+    keeps its own path)."""
+    import _standing_grant  # noqa: PLC0415
+    lines = _merged_readonly_lines(body)
+    reasons: list[str] = []
+    if len(lines) != 1:
+        reasons.append(f"it needs exactly one `**Post-merge read-only:** <reason>` line outside a "
+                       f"fenced block (found {len(lines)})")
+    if spec_body is None:
+        reasons.append("it needs --spec-comment naming the Lane 3 spec, whose write tier must be R")
+    elif parse_write_tier(spec_body) != "R":
+        reasons.append(f"the spec's write tier is {parse_write_tier(spec_body) or 'undeclared'}, not R; "
+                       "a Tier W or P case keeps the open-PR requirement")
+    if prod_run:
+        reasons.append("it declares --prod-run; a production step is R-0374's grant path, not this one")
+    if ack_no_pr_required is not None:
+        reasons.append("it also passes --ack-no-pr-required; the line replaces that acknowledgment, "
+                       "never adds to it")
+    if _standing_grant.cites_grant(body):
+        reasons.append("it also cites R-0374; a grant AE uses the grant path")
+    if not reasons:
+        try:
+            refresh_main()
+        except SystemExit as exc:
+            reasons.append(f"origin/main could not be fetched ({exc})")
+        else:
+            if not _sha_on_origin_main(sha):
+                reasons.append(f"{sha[:12]} is not on origin/main; before the merge, open a PR instead")
+    return "; ".join(reasons) or None
+
+
+def _sha_on_origin_main(sha: str) -> bool:
+    """`sha` is an ancestor of (or equal to) the just-fetched origin/main."""
+    return run("git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
+
+
+def merged_readonly_ae(body: str, sha: str, spec, prod_run: object,
+                       ack_no_pr_required: str | None) -> bool:
+    """harmonic-forge#1494: an AE for a read-only case deferred to merged main
+    (no earlier gate, so R-0374 does not fit) skips the open-PR check.
+
+    `spec` is a zero-argument callable returning the spec body (or None), read
+    only when the AE carries the line, so an ordinary AE fetches nothing extra."""
+    return bool(_merged_readonly_lines(body)) and merged_readonly_refusal(
+        body, sha, spec(), prod_run, ack_no_pr_required) is None
+
+
+def validate_merged_readonly_ae(body: str, sha: str, spec, prod_run: object,
+                                ack_no_pr_required: str | None) -> None:
+    """Refuse an AE that carries the line but does not qualify (spec step 4).
+    `spec` as in `merged_readonly_ae`."""
+    if not _merged_readonly_lines(body):
+        return
+    reason = merged_readonly_refusal(body, sha, spec(), prod_run, ack_no_pr_required)
+    if reason:
+        fail(f"post-merge read-only AE (harmonic-forge#1494) refused: {reason}.")
+
+
 def validate_grant_ae(body: str, repo: str, issue: int, sha: str,
                       ack_no_pr_required: str | None) -> None:
     """harmonic-forge#858: an AE claiming the operator's standing grant
@@ -3236,7 +3314,8 @@ def _post_kind(
     repo: str, issue: int, kind: str, body: str, sha: str, branch: str,
     *, ack_overlap: str | None = None, is_handoff_extra_checks: bool = False,
     plan_first: bool | None = None, ack_no_pr_required: str | None = None,
-    grant_on_main: bool = False, prod_run: dict | None = None, attempt: dict | None = None,
+    grant_on_main: bool = False, merged_readonly: bool = False,
+    prod_run: dict | None = None, attempt: dict | None = None,
     milestone_ack: str | None = None, carry_forward: tuple[str, int] | None = None,
     labels=None, rework_kind: str | None = None, amendment: str | None = None,
 ) -> tuple[str, int]:
@@ -3300,6 +3379,10 @@ def _post_kind(
         # merge runs at a commit already on origin/main, where CI runs on push;
         # validate_grant_ae has already shown it tree-identical to the gated SHA.
         checks.append("merged-to-main")
+    elif kind == "ae" and merged_readonly:
+        # harmonic-forge#1494: a read-only case deferred to merged main;
+        # merged_readonly_refusal has shown a Tier R spec and the SHA on origin/main.
+        checks.append("merged-to-main (read-only)")
     elif kind in ("ready-for-l3", "ae"):
         pr_check_names, pr_warnings, pr_opened = require_open_pr(
             repo, branch, ack_no_pr_required=ack_no_pr_required,
@@ -3590,7 +3673,7 @@ def _dry_run_command() -> str:
 
 def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
                     ack_overlap: str | None, ack_no_pr_required: str | None,
-                    grant_on_main: bool) -> list:
+                    grant_on_main: bool, merged_readonly: bool = False) -> list:
     """harmonic-forge#1115: `_post_kind`'s refusals as side-effect-free steps
     for `--dry-run`. Posts nothing, opens no PR, emits no attempt; the only
     local write is `refresh_main`'s fetch, which the real post makes too.
@@ -3602,7 +3685,7 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
     steps = [world]
     if kind == "ready-for-l3":
         steps.append(lambda: _refuse_if_ci_red(repo, issue, sha, None, note_unconcluded=True))
-    if kind in ("ready-for-l3", "ae") and not (kind == "ae" and grant_on_main):
+    if kind in ("ready-for-l3", "ae") and not (kind == "ae" and (grant_on_main or merged_readonly)):
         def pr() -> None:
             try:
                 require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
@@ -3787,6 +3870,8 @@ def main() -> None:
         # atomic-pair guarantee above is exactly why a lead check on only one
         # of them would be worse than none — a sweep refused after the AE
         # landed leaves the bare AE this branch exists to prevent.
+        merged_readonly_once = _once(lambda: merged_readonly_ae(
+            ae_body, sha, spec_once, prod_run, args.ack_no_pr_required))
         _collect([
             # Collected, so a reserved marker never hides the other refusals (F1115 AC1).
             lambda: reject_reserved_marker(ae_body),
@@ -3795,6 +3880,8 @@ def main() -> None:
                                        rework_kind=args.rework_kind),  # harmonic-forge#997
             lambda: validate_ae(ae_body, repo, args.issue),
             lambda: validate_grant_ae(ae_body, repo, args.issue, sha, args.ack_no_pr_required),
+            # harmonic-forge#1494: a claimed post-merge read-only AE that does not qualify.
+            lambda: validate_merged_readonly_ae(ae_body, sha, spec_once, prod_run, args.ack_no_pr_required),
             lambda: validate_auto_ae(ae_body, sweep_body, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
             lambda: validate_lead("ae", ae_body),
@@ -3807,7 +3894,8 @@ def main() -> None:
                                               spec_is_tier_p(spec_once()))),
             *(_publish_checks(repo, args.issue, "ae", sha, args.branch, ack_overlap=args.ack_overlap,
                               ack_no_pr_required=args.ack_no_pr_required,
-                              grant_on_main=grant_on_main(ae_body, sha))
+                              grant_on_main=grant_on_main(ae_body, sha),
+                              merged_readonly=merged_readonly_once())
               if args.dry_run else []),
         ])
         if args.dry_run:
@@ -3818,7 +3906,8 @@ def main() -> None:
 
         ae_url, _ = post_kind(repo, args.issue, "ae", ae_body, sha, args.branch,
                               ack_overlap=args.ack_overlap, ack_no_pr_required=args.ack_no_pr_required,
-                              grant_on_main=grant_on_main(ae_body, sha), prod_run=prod_run)
+                              grant_on_main=grant_on_main(ae_body, sha),
+                              merged_readonly=merged_readonly_once(), prod_run=prod_run)
         print(f"[l1-post] AE posted {ae_url}")
         record_queue_candidate(repo, args.issue, "ae")
         try:
@@ -3909,10 +3998,15 @@ def main() -> None:
         # posted without --spec-comment cannot skip the by-name check here.
         steps.append(lambda: validate_ae_by_name(
             spec_once(), _newest_on_sha(repo, args.issue, sha, "ae") or "", body))
+    # harmonic-forge#1494: a standalone AE has the spec only with --spec-comment.
+    ae_spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue) if args.spec_comment else None)
+    merged_readonly_once = _once(lambda: args.kind == "ae" and merged_readonly_ae(
+        body, sha, ae_spec_once, prod_run, args.ack_no_pr_required))
     if args.kind == "ae":
         steps += [
             lambda: validate_ae(body, repo, args.issue),
             lambda: validate_grant_ae(body, repo, args.issue, sha, args.ack_no_pr_required),
+            lambda: validate_merged_readonly_ae(body, sha, ae_spec_once, prod_run, args.ack_no_pr_required),
             lambda: validate_auto_ae(body, None, repo, args.issue, sha, args.spec_comment,
                                      bool(prod_run), args.ack_no_pr_required),
             # harmonic-forge#1179 AC3: a standalone AE after a sweep on this SHA
@@ -3932,7 +4026,8 @@ def main() -> None:
         steps += _publish_checks(
             repo, args.issue, args.kind, sha, args.branch, ack_overlap=args.ack_overlap,
             ack_no_pr_required=args.ack_no_pr_required,
-            grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)))
+            grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)),
+            merged_readonly=merged_readonly_once())
         if args.kind == "ready-for-l3":
             # harmonic-forge#1134 AC3: the dry run runs (or reuses) the check
             # the real post runs, so a clean dry run predicts the real post.
@@ -3950,7 +4045,8 @@ def main() -> None:
         repo, args.issue, args.kind, body, sha, args.branch,
         ack_overlap=args.ack_overlap, is_handoff_extra_checks=(args.kind == "handoff"),
         plan_first=(args.plan_first == "true"), ack_no_pr_required=args.ack_no_pr_required,
-        grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)), prod_run=prod_run,
+        grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)),
+        merged_readonly=merged_readonly_once(), prod_run=prod_run,
         milestone_ack=args.milestone_ack, carry_forward=(
             (args.from_sha, args.pass_comment) if args.kind == "carry-forward" else None),
         labels=(labels_once() if args.kind == "handoff" else None),

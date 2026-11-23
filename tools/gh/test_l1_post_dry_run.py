@@ -496,5 +496,130 @@ class ReceiptDigestFieldTests(Harness):
                 code = self.run_main(*base_argv)[0]
                 self.assertNotIn(NEEDLE, code or "", f"{name}: the unchanged post must still match")
 
+
+
+# --- harmonic-forge#1494: a post-merge read-only AE --------------------------
+
+READONLY_LINE = "**Post-merge read-only:** TC1 reads the merged tree; deferred to main by the sweep.\n"
+SPEC_R = "## Lane 3 Test Spec — F1494\n\nWrite tier R throughout.\n\n| TC1 | read | x | y | z |\n"
+SPEC_W = "## Lane 3 Test Spec — F1494\n\nWrite tier W for TC1.\n\n| TC1 | write | x | y | z |\n"
+
+
+class MergedReadonlyAE(Harness):
+    """The dry-run cases of the issue's Acceptance and Lane 3's TC1-TC4."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.pr_open = False  # the point: after the squash merge there is no PR
+        self.on_main = True
+        on_main = mock.patch.object(L, "_sha_on_origin_main", side_effect=lambda sha: self.on_main)
+        on_main.start()
+        self.addCleanup(on_main.stop)
+
+    def _readonly_ae(self, *extra, line=READONLY_LINE):
+        return ("--repo", REPO, "--issue", ISSUE, "--kind", "ae", "--sha", SHA_A, "--branch", "main",
+                "--file", self.body(AE + line, "ae.md"), "--spec-comment", "5", *extra)
+
+    def test_tier_r_at_main_with_the_line_passes_the_pr_check(self):  # TC1 / AC1
+        self.spec = SPEC_R
+        code, out, _ = self.run_main(*self._readonly_ae("--dry-run"))
+        self.assertIsNone(code)
+        self.assertNotIn(NO_PR, out)
+        self.assertIn("dry run clean", out)
+
+    def test_tier_w_still_needs_a_pr_and_names_why(self):  # TC2 / AC3
+        self.spec = SPEC_W
+        code, _, _ = self.run_main(*self._readonly_ae("--dry-run"))
+        self.assertIn(NO_PR, code)
+        self.assertIn("write tier is W, not R", code)
+
+    def test_a_sha_not_on_main_refuses(self):  # TC3 / AC3
+        self.spec, self.on_main = SPEC_R, False
+        code, _, _ = self.run_main(*self._readonly_ae("--dry-run"))
+        self.assertIn("is not on origin/main", code)
+        self.assertIn(NO_PR, code)
+
+    def test_ack_no_pr_required_with_the_line_refuses(self):  # TC4 / AC4
+        self.spec = SPEC_R
+        code, _, _ = self.run_main(*self._readonly_ae("--ack-no-pr-required", "operator said so", "--dry-run"))
+        self.assertIn("also passes --ack-no-pr-required", code)
+
+    def test_without_the_line_nothing_changes(self):
+        self.spec = SPEC_R
+        code, _, _ = self.run_main(*self._readonly_ae("--dry-run", line=""))
+        self.assertIn(NO_PR, code)
+        self.assertNotIn("post-merge read-only", code)
+
+    def test_a_grant_ae_keeps_its_own_path(self):  # TC5
+        self.grant = True
+        self.assertIsNone(self.run_main(*self._readonly_ae("--dry-run", line=""))[0])
+
+    def test_ae_and_sweep_takes_the_same_exemption(self):
+        self.spec = SPEC_R
+        sweep = ("## Gate-readiness sweep — F1494\n\n**Readiness:** ready\n**Blockers:** none\n"
+                 "**Next:** Lane 3 to run\n\nWrite tier: R\n")
+        with mock.patch.object(L, "validate_sweep"), mock.patch.object(L, "validate_ae_by_name"), \
+                mock.patch.object(L, "validate_ae_external_calls"), mock.patch.object(L, "validate_lane3_env"), \
+                mock.patch.object(L, "sweep_external_calls", return_value=set()), \
+                mock.patch.object(L, "spec_live_ids", return_value=set()), \
+                mock.patch.object(L, "spec_is_tier_p", return_value=False):
+            code, out, _ = self.run_main(
+                "--repo", REPO, "--issue", ISSUE, "--kind", "ae-and-sweep", "--sha", SHA_A, "--branch", "main",
+                "--ae-file", self.body(AE + READONLY_LINE, "ae.md"),
+                "--sweep-file", self.body(sweep, "sweep.md"), "--spec-comment", "5", "--dry-run")
+        self.assertIsNone(code)
+        self.assertNotIn(NO_PR, out)
+
+
+class MergedReadonlyRefusal(unittest.TestCase):
+    """`merged_readonly_refusal` itself, with fetch and ancestry stubbed."""
+
+    def setUp(self) -> None:
+        for name, value in (("refresh_main", "f" * 40), ("_sha_on_origin_main", True)):
+            patch = mock.patch.object(L, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def refusal(self, body=AE + READONLY_LINE, spec=SPEC_R, prod_run=None, ack=None):
+        return L.merged_readonly_refusal(body, SHA_A, spec, prod_run, ack)
+
+    def test_qualifies(self):
+        self.assertIsNone(self.refusal())
+        self.assertTrue(L.merged_readonly_ae(AE + READONLY_LINE, SHA_A, lambda: SPEC_R, None, None))
+
+    def test_prod_run_refuses(self):
+        self.assertIn("declares --prod-run", self.refusal(prod_run={"kind": "script"}))
+
+    def test_tier_p_and_an_undeclared_tier_refuse(self):
+        self.assertIn("is P, not R", self.refusal(spec="Write tier R for TC1; write tier P for TC2."))
+        self.assertIn("is undeclared, not R", self.refusal(spec="no tier here"))
+
+    def test_no_spec_refuses(self):
+        self.assertIn("needs --spec-comment", self.refusal(spec=None))
+
+    def test_a_fenced_line_does_not_count_and_two_lines_refuse(self):
+        fenced = AE + "```\n" + READONLY_LINE + "```\n"
+        self.assertFalse(L._merged_readonly_lines(fenced))
+        self.assertIn("found 2", self.refusal(body=AE + READONLY_LINE + READONLY_LINE))
+
+    def test_an_empty_reason_is_not_the_line(self):
+        self.assertFalse(L._merged_readonly_lines(AE + "**Post-merge read-only:**   \n"))
+
+    def test_citing_r_0374_refuses(self):
+        grant = AE.replace("the approved Lane 3 spec at this SHA", "R-0374 standing grant") + READONLY_LINE
+        self.assertIn("also cites R-0374", self.refusal(body=grant))
+
+    def test_an_ordinary_ae_never_reads_the_spec(self):
+        spec = mock.Mock(return_value=SPEC_R)
+        self.assertFalse(L.merged_readonly_ae(AE, SHA_A, spec, None, None))
+        L.validate_merged_readonly_ae(AE, SHA_A, spec, None, None)
+        spec.assert_not_called()
+
+    def test_the_post_checks_label_the_exemption(self):
+        steps = L._publish_checks(REPO, ISSUE, "ae", SHA_A, "main", ack_overlap=None,
+                                  ack_no_pr_required=None, grant_on_main=False, merged_readonly=True)
+        self.assertEqual(len(steps), 1)  # world checks only; no open-PR step
+
+
 if __name__ == "__main__":
     unittest.main()
