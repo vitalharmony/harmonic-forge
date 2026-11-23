@@ -17,6 +17,11 @@ FAIL OPEN, except a close or merge: fail closed (harmonic-forge#1447), ALWAYS
 A bug in this shim must never brick `gh` entirely -- see the broad
 try/except around all pattern-module usage below. Anything unexpected
 degrades to "run the real gh", never to a hang or a crash.
+
+One more fail-closed case (harmonic-forge#1511): a `GH_CONFIG_DIR` naming a
+lane slot (`vitalharmony-lane1|2|3` under the accounts root) with no
+`GH_TOKEN`/`GITHUB_TOKEN` runs on that slot's own token, or is refused when
+the slot has none -- gh would otherwise use the shared keyring token.
 """
 
 from __future__ import annotations
@@ -175,8 +180,74 @@ def _close_merge_gate(argv: list[str], real_gh: str) -> None:
         sys.exit(4)
 
 
+#: harmonic-forge#1511: the lane slot names whose own token the shim supplies.
+_LANE_SLOT_NAMES = frozenset({"vitalharmony-lane1", "vitalharmony-lane2", "vitalharmony-lane3"})
+
+
+def _lane_slot(env: dict[str, str]) -> tuple[str, str] | None:
+    """`(slot name, accounts root)` when `env` names a lane slot directly under
+    the accounts root and carries no token; None otherwise. `gh auth ...` is
+    handled by the caller, never here."""
+    if env.get("GH_TOKEN") or env.get("GITHUB_TOKEN"):
+        return None
+    config_dir = env.get("GH_CONFIG_DIR")
+    if not config_dir:
+        return None
+    try:
+        slot = os.path.realpath(os.path.expanduser(config_dir))
+        root = os.path.realpath(os.path.expanduser(
+            env.get("GH_ACCT_HOME") or os.path.join("~", ".config", "gh-accounts")))
+    except (OSError, ValueError):
+        return None
+    name = os.path.basename(slot)
+    if name not in _LANE_SLOT_NAMES or os.path.dirname(slot) != root:
+        return None
+    return name, root
+
+
+def _apply_lane_slot_token(argv: list[str]) -> None:
+    """harmonic-forge#1511: run once, first in `main()`, so every subprocess the
+    shim starts (the close/merge gate, the budget probe) and the final exec all
+    inherit it. A lane slot named by GH_CONFIG_DIR with no token gets
+    `os.environ["GH_TOKEN"]` set to that slot's own token, or is refused (exit 4)
+    when it has none. `gh auth ...` (a token login into a slot, gh-as's `auth
+    token` fingerprint read) is never touched (AC4). Only a named lane slot can
+    refuse; any error after the slot is named refuses, never falls through."""
+    if argv[:1] == ["auth"]:
+        return
+    try:
+        slot = _lane_slot(dict(os.environ))
+    except Exception:  # noqa: BLE001 - identifying a slot fails open; only a named one refuses
+        return
+    if slot is None:
+        return
+    name, root = slot
+    token = ""
+    try:
+        here = os.path.dirname(_self_realpath())
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import projects_token  # noqa: PLC0415
+        token = projects_token.slot_token(name, root)
+    except Exception:  # noqa: BLE001 - fail closed: the slot was named
+        token = ""
+    if not token:
+        print(f"gh-shim: refused (lane slot {name} has no readable token; GH_CONFIG_DIR names it "
+              "but gh would use the shared keyring token) (harmonic-forge#1511).", file=sys.stderr)
+        sys.exit(4)
+    os.environ["GH_TOKEN"] = token
+
+
+def _exec_real_gh(real_gh: str, argv: list[str]) -> None:
+    """The only exec of the real gh (harmonic-forge#1511): plain `os.execv`, on
+    the environment `_apply_lane_slot_token` already settled."""
+    os.execv(real_gh, [real_gh, *argv])
+
+
 def main() -> None:
     argv = sys.argv[1:]
+    # harmonic-forge#1511: before anything below can start a real-gh subprocess.
+    _apply_lane_slot_token(argv)
     real_gh = _resolve_real_gh()
 
     # harmonic-forge#1447: the close and merge gates, on the real argv, ahead of
@@ -200,7 +271,7 @@ def main() -> None:
         # harmonic-forge#957 AC6: gh-as's token-fingerprint read is local (no
         # API call) and must never spend the override either.
         if argv == ["api", "user", "--jq", ".login"] or argv == ["auth", "token"]:
-            os.execv(real_gh, [real_gh, *argv])
+            _exec_real_gh(real_gh, argv)
             return  # pragma: no cover -- see the execv note below
 
         # The override, when fresh, is spent here -- the single place this
@@ -211,7 +282,7 @@ def main() -> None:
         # finding: an override that only bypassed the scan check was still
         # spent and lost when the budget floor then refused the same call).
         if gh_scan_patterns.consume_override():
-            os.execv(real_gh, [real_gh, *argv])
+            _exec_real_gh(real_gh, argv)
             return  # pragma: no cover -- execv never returns for real; the
             # return exists so tests that mock it out see the intended
             # control flow (fall through to the final execv is a bug, not
@@ -267,7 +338,7 @@ def main() -> None:
     except Exception as exc:  # pragma: no cover - fail-open is the point
         print(f"gh-shim: internal error ({exc!r}), passing through to real gh", file=sys.stderr)
 
-    os.execv(real_gh, [real_gh, *argv])
+    _exec_real_gh(real_gh, argv)
 
 
 if __name__ == "__main__":
