@@ -16,7 +16,7 @@ argument is not a constant is counted unmeasured, never as agreeing.
 """
 from __future__ import annotations
 
-import ast
+import json
 import shlex
 import sys
 import unittest
@@ -39,35 +39,47 @@ CLASSES = {"old-defect", "adapter-defect", "intended"}
 DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
     ('batch', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
         (ASK, ASK, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
-    ('batch', 'unparseable_flag'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('batch', 'unparseable_flag'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
         (ASK, ASK, frozenset({('issue', None, '12')}), frozenset())),
-    ('batch', 'unprovable_alias'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('batch', 'unprovable_alias'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
-    ('batch', 'unprovable_flag_before_root'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('batch', 'unprovable_env_unset'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+        (ASK, ASK, frozenset({('issue', None, '12')}), frozenset())),
+    ('batch', 'unprovable_flag_before_root'): ('old-defect', 'a real close the old reader does not recognize passes',
         (ASK, ASK, frozenset({('issue', 'o/r', '12')}), frozenset())),
-    ('batch', 'unprovable_graphql_input'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('batch', 'unprovable_graphql_input'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
-    ('batch', 'unprovable_placeholder_close'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('batch', 'unprovable_placeholder_close'): ('old-defect', 'a real close the old reader does not recognize passes',
         (ASK, ASK, frozenset({('issue', '{owner}/{repo}', '5')}), frozenset())),
-    ('batch', 'unprovable_placeholder_merge'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('batch', 'unprovable_placeholder_merge'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
         (ASK, ASK, frozenset({('pr', '{owner}/{repo}', '5')}), frozenset())),
+    ('batch', 'unprovable_sudo'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
+    ('batch', 'unprovable_xargs'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
     ('migration', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
         (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
     ('migration', 'unbound_issue_no_arg'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('migration', 'unbound_variable'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('migration', 'unparseable_flag'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('migration', 'unparseable_flag'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
         (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset())),
-    ('migration', 'unprovable_alias'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('migration', 'unprovable_alias'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_env_unset'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('migration', 'unprovable_flag_before_root'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('migration', 'unprovable_graphql_input'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('migration', 'unprovable_graphql_input'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('migration', 'unprovable_placeholder_close'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('migration', 'unprovable_placeholder_merge'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('migration', 'unprovable_placeholder_merge'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_sudo'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_xargs'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
         (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
@@ -75,18 +87,24 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unbound_variable'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unparseable_flag'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('preclose', 'unparseable_flag'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
         (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset())),
-    ('preclose', 'unprovable_alias'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('preclose', 'unprovable_alias'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('preclose', 'unprovable_env_unset'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+        (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset())),
     ('preclose', 'unprovable_flag_before_root'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unprovable_graphql_input'): ('intended', 'tightening: a call that may close or merge is no longer passed',
+    ('preclose', 'unprovable_graphql_input'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unprovable_placeholder_close'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unprovable_placeholder_merge'): ('intended', 'verdict unchanged; the adapter withholds a target it cannot prove',
+    ('preclose', 'unprovable_placeholder_merge'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
         (REFUSE, REFUSE, frozenset({('pr', '{owner}/{repo}', '5')}), frozenset())),
+    ('preclose', 'unprovable_sudo'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('preclose', 'unprovable_xargs'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
 }
 
 
@@ -171,94 +189,101 @@ class DifferentialRun(unittest.TestCase):
         self.assertIn(("batch", "planted"), found)
 
 
-def _constant(node: ast.AST):
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.List) and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts):
-        return [e.value for e in node.elts]
-    return None
+def recorded(test_module: str, hooks: list[tuple[object, str]]) -> list:
+    """Every argument the old recognizers receive while the consumer's own test
+    module runs: the corpus as executed, so f-string and helper-built commands
+    count. The recognizers are wrapped, not replaced, so the tests see the same
+    behavior; the run's own pass or fail does not matter here."""
+    import io  # noqa: PLC0415
+    seen: list = []
+    saved = [(module, name, getattr(module, name)) for module, name in hooks]
+    for module, name, original in saved:
+        def wrapper(arg, *args, _original=original, **kwargs):
+            seen.append(list(arg) if isinstance(arg, list) else arg)
+            return _original(arg, *args, **kwargs)
+        setattr(module, name, wrapper)
+    try:
+        suite = unittest.defaultTestLoader.loadTestsFromName(test_module)
+        unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+    finally:
+        for module, name, original in saved:
+            setattr(module, name, original)
+    unique = []
+    for arg in seen:
+        if arg not in unique:
+            unique.append(arg)
+    return unique
 
 
-def corpus(test_file: str, functions: tuple[str, ...]) -> tuple[list, int]:
-    """(entries, unmeasured) for the first argument of every call to `functions`."""
-    tree = ast.parse((HERE / test_file).read_text(encoding="utf-8"))
-    entries, unmeasured = [], 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+CORPUS_FIXTURE = HERE / "testdata" / "gh_argv_adapters_corpus.json"
+
+
+def _load_corpus_classified() -> dict:
+    """Corpus entries whose observation differs, consumer -> command -> (class,
+    reason, observation); the fixture stores each target set as a sorted list."""
+    raw = json.loads(CORPUS_FIXTURE.read_text(encoding="utf-8"))
+    return {consumer: {cmd: (klass, reason, (obs[0], obs[1], frozenset(map(tuple, obs[2])),
+                                             frozenset(map(tuple, obs[3]))))
+                       for cmd, (klass, reason, obs) in entries.items()}
+            for consumer, entries in raw.items()}
+
+
+CORPUS_CLASSIFIED = _load_corpus_classified()
+
+
+def corpus_differences(consumer: str, entries: list) -> dict:
+    mismatched = {}
+    for entry in entries:
+        if isinstance(entry, list):
+            seen = observe(consumer, [entry], _old_targets(consumer, entry))
+            key = shlex.join(entry)
+        elif isinstance(entry, str):
+            old = _old_targets(consumer, None, entry)
+            try:
+                segments = command_segments(entry)
+            except ValueError:
+                segments = None
+            if old is None or segments is None:
+                if (old is None) != (segments is None):  # both must agree it cannot be tokenized
+                    mismatched[entry] = ("untokenizable", old is None, segments is None)
+                continue
+            seen, key = observe(consumer, segments, old), entry
+        else:
+            mismatched[repr(entry)] = ("unmeasured", type(entry).__name__)
             continue
-        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-        if name in functions:
-            value = _constant(node.args[0])
-            if value is None:
-                unmeasured += 1
-            else:
-                entries.append(value)
-    return entries, unmeasured
-
-
-def argv_lists(test_file: str) -> list[list[str]]:
-    """Every list literal of constant strings holding a `gh` token (BATCH's argv fixtures)."""
-    tree = ast.parse((HERE / test_file).read_text(encoding="utf-8"))
-    return [[e.value for e in node.elts] for node in ast.walk(tree)
-            if isinstance(node, ast.List) and node.elts
-            and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
-            and "gh" in [e.value for e in node.elts][:4]]
-
-
-#: Corpus entries whose observation differs: command -> (class, reason, observation).
-CORPUS_CLASSIFIED: dict[str, dict[str, tuple[str, str, tuple]]] = {"batch": {}, "migration": {}, "preclose": {
-    "gh api -X PUT repos/o/r/pulls/7": (
-        "intended", "gh_argv gates any PUT on a pull request (fail-closed); the preclose test pins it as not a"
-        " merge. The adopter (F1499) keeps the old answer with a path-suffix check or accepts the stricter one",
-        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-}}
+        if seen[0] != seen[1] or seen[2] != seen[3]:
+            mismatched[key] = seen
+    return mismatched
 
 
 class CorpusReplay(unittest.TestCase):
-    def _check(self, consumer, mismatched):
+    """Each consumer's existing tests are run with its recognizers wrapped; every
+    argument they received is replayed against the adapter. An argument that
+    cannot be replayed is listed as unmeasured, which fails like a difference."""
+
+    def _check(self, consumer, test_module, hooks):
+        entries = recorded(test_module, hooks)
+        self.assertGreater(len(entries), 0, f"{test_module}: its tests reached no recognizer")
+        mismatched = corpus_differences(consumer, entries)
         classified = CORPUS_CLASSIFIED[consumer]
         wrong = {c: v for c, v in mismatched.items() if c not in classified or classified[c][2] != v}
-        self.assertEqual(wrong, {}, "unclassified, or changed since classified")
+        self.assertEqual(wrong, {}, "unclassified, unmeasured, or changed since classified")
         self.assertEqual(set(classified), set(mismatched), "a stale classification")
         for klass, reason, _ in classified.values():
             self.assertIn(klass, CLASSES)
             self.assertTrue(reason.strip())
 
-    def _text_hook(self, consumer, test_file, functions):
-        entries, unmeasured = corpus(test_file, functions)
-        self.assertGreater(len(entries), 0, f"{test_file}: no replayable call (a moved or empty corpus)")
-        mismatched = {}
-        for command in entries:
-            old = _old_targets(consumer, None, command)
-            try:
-                segments = command_segments(command)
-            except ValueError:
-                segments = None
-            if old is None or segments is None:
-                if (old is None) != (segments is None):  # both must agree it cannot be tokenized
-                    mismatched[command] = ("untokenizable", old is None, segments is None)
-                continue
-            seen = observe(consumer, segments, old)
-            if seen[0] != seen[1] or seen[2] != seen[3]:
-                mismatched[command] = seen
-        self._check(consumer, mismatched)
-        return unmeasured
-
     def test_migration_hook_corpus(self):
-        self._text_hook("migration", "test_block_data_migration_close.py", ("find_close_targets", "assert_target"))
+        self._check("migration", "test_block_data_migration_close",
+                    [(block_data_migration_close, "find_close_targets")])
 
     def test_preclose_hook_corpus(self):
-        self._text_hook("preclose", "test_block_missing_preclose_inspection.py", ("find_gated_targets", "assert_target"))
+        self._check("preclose", "test_block_missing_preclose_inspection",
+                    [(block_missing_preclose_inspection, "find_gated_targets")])
 
-    def test_batch_argv_corpus(self):
-        entries = argv_lists("test_batch_auth.py")
-        self.assertGreater(len(entries), 0, "test_batch_auth.py: no replayable argv list")
-        mismatched = {}
-        for tokens in entries:
-            seen = observe("batch", [tokens], _old_targets("batch", tokens))
-            if seen[0] != seen[1] or seen[2] != seen[3]:
-                mismatched[" ".join(tokens)] = seen
-        self._check("batch", mismatched)
+    def test_batch_corpus(self):
+        self._check("batch", "test_batch_auth",
+                    [(batch_auth, "classify_issue_close"), (batch_auth, "classify_pr_merge")])
 
 
 if __name__ == "__main__":

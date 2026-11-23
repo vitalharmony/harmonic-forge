@@ -37,6 +37,10 @@ ROWS: dict[str, list[str]] = {
     "unprovable_placeholder_close": ["gh", "api", "-X", "PATCH", "repos/{owner}/{repo}/issues/5", "-f", "state=closed"],
     "unprovable_flag_before_root": ["gh", "-R", "o/r", "issue", "close", "12"],
     "unprovable_alias": ["gh", "triage-done", "12", "--repo", "o/r"],
+    "unprovable_env_unset": ["env", "-u", "GH_REPO", "gh", "issue", "close", "12"],
+    "unprovable_sudo": ["sudo", "gh", "pr", "merge", "5"],
+    "unprovable_xargs": ["xargs", "-n1", "gh", "issue", "close"],
+    "account_wrapper_merge": ["gh-as", "vitalharmony", "gh", "pr", "merge", "5", "--repo", "o/r"],
     "allowed_view": ["gh", "issue", "view", "12"],
     "not_gated_root": ["gh", "repo", "view"],
     "not_gh": ["git", "status"],
@@ -49,7 +53,8 @@ ADAPTER_OUTCOME = {
     "unparseable_flag": A.UNPARSEABLE, "unprovable_graphql_input": A.UNPROVABLE,
     "unprovable_placeholder_merge": A.UNPROVABLE, "unprovable_placeholder_close": A.UNPROVABLE,
     "unprovable_flag_before_root": A.UNPROVABLE,
-    "unprovable_alias": A.UNPROVABLE, "allowed_view": A.ALLOWED, "not_gated_root": A.NOT_GATED,
+    "unprovable_alias": A.UNPROVABLE, "unprovable_env_unset": A.UNPROVABLE, "unprovable_sudo": A.UNPROVABLE,
+    "unprovable_xargs": A.UNPROVABLE, "account_wrapper_merge": A.BOUND, "allowed_view": A.ALLOWED, "not_gated_root": A.NOT_GATED,
     "not_gh": A.NOT_GATED,
 }
 
@@ -136,6 +141,32 @@ class OutcomeTable(unittest.TestCase):
     def test_a_non_repo_assignment_does_not_change_the_target(self):
         result = A.classify(["env", "FOO=1", "gh", "issue", "close", "12", "--repo", "o/r"], {})
         self.assertEqual((result.outcome, result.repo, result.number), (A.BOUND, "o/r", "12"))
+
+
+class UnmodeledPrefixes(unittest.TestCase):
+    """The default is the safe answer: gh behind any prefix this module does not
+    model is never not-a-close and never bound to a repo the prefix may change."""
+
+    PREFIXES = (["sudo"], ["xargs", "-n1"], ["nohup"], ["timeout", "5"], ["<f"], ["env", "-u", "X"],
+                ["env", "-i"], ["env", "--"], ["command"], ["exec"])
+
+    def test_gh_behind_an_unmodeled_prefix_is_never_not_a_close_or_bound(self):
+        for prefix in self.PREFIXES:
+            for tail in (["gh", "issue", "close", "12"], ["gh", "pr", "merge", "5"]):
+                with self.subTest(argv=prefix + tail):
+                    result = A.classify(prefix + tail, {"GH_REPO": "x/y"})
+                    self.assertNotIn(result.outcome, (A.NOT_GATED, A.ALLOWED, A.BOUND), result)
+
+    def test_a_shell_c_script_is_classified_by_its_own_segments(self):
+        script = "echo ok && gh issue close 12 --repo o/r"
+        bound = A.classify(["bash", "-lc", script], {})
+        self.assertEqual((bound.outcome, bound.repo, bound.number), (A.BOUND, "o/r", "12"))
+        self.assertEqual(A.classify(["nohup", "bash", "-c", script], {}).outcome, A.UNPROVABLE)
+        self.assertEqual(A.classify(["bash", "-c", "echo 'unclosed"], {}).outcome, A.UNPROVABLE)
+        self.assertEqual(A.classify(["bash", "-c", "ls -la"], {}).outcome, A.NOT_GATED)
+
+    def test_a_segment_with_no_gh_at_all_is_not_gated(self):
+        self.assertEqual(A.classify(["sudo", "ls"], {}).outcome, A.NOT_GATED)
 
 
 class FlagTableDrift(unittest.TestCase):
