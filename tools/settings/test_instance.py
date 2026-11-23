@@ -110,7 +110,9 @@ class ZoneLiteralCheck(unittest.TestCase):
 
     def test_a_test_file_is_not_exempt_unless_named(self):
         source = 'from zoneinfo import ZoneInfo\nZoneInfo("Europe/Paris")\n'
-        self.assertEqual(C.main(["--root", str(self._tree({"tools/x/test_b.py": source}))]), 1)
+        # A clean sibling keeps the parsed-file count above zero, so only the hit can fail this.
+        tree = self._tree({"tools/x/test_b.py": source, "tools/x/clean.py": "x = 1\n"})
+        self.assertEqual(C.scan(tree)[1], ["tools/x/test_b.py:2"])
 
     def test_a_scan_of_zero_files_fails(self):
         self.assertEqual(C.main(["--root", str(self._tree({"README.md": "x\n"}))]), 1)
