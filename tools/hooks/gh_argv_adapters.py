@@ -98,11 +98,10 @@ def classify(tokens: list[str], env: dict | None = None) -> Result:
     argv = tokens[1:]
     if not argv:
         return Result(NOT_GATED, reason="bare gh")
-    if argv[0].startswith("-"):
-        # cobra resolves the command after leading flags (`gh -R o/r issue close 5`).
-        return Result(UNPROVABLE, reason=f"a flag ({argv[0]}) before the command; cannot prove it is not a close")
     if argv[0] not in gh_argv.load_table()["builtins"]:
-        return Result(UNPROVABLE, reason=f"`gh {argv[0]}` is an alias or extension the gate does not expand")
+        # An alias or extension the gate does not expand, or a flag before the
+        # command (cobra resolves `gh -R o/r issue close 5` to issue close).
+        return Result(UNPROVABLE, reason=f"`gh {argv[0]}` is not a builtin command; cannot prove it is not a close")
     if argv[0] not in gh_argv.GATED_ROOTS:
         return Result(NOT_GATED, reason="a gh builtin root outside the gated roots")
     try:
