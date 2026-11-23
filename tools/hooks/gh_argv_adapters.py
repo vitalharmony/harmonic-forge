@@ -98,6 +98,13 @@ def classify_argv(argv: list[str], env: dict) -> Result:
         parsed = gh_argv.parse(argv)
     except gh_argv.ArgvError as exc:
         return Result(UNPARSEABLE, reason=str(exc))
+    if tuple(parsed.path[:1]) == ("api",) and parsed.last("--method") is None and any(
+            token in ("-X", "--method") or token.startswith("--method=")
+            or (token.startswith("-X") and len(token) > 2) for token in argv[1:]):
+        # A method flag the parse did not record was consumed as another flag's
+        # value (a drifted API flag table): a merge must not read as a GET
+        # (harmonic-forge#1496 re-scope).
+        return Result(UNPROVABLE, reason="a gh api method flag the pinned table did not record")
     verdict = gh_argv.decide(argv, env)
     if verdict.action == "allow" and parsed.help and (
             parsed.path in _CLI_TARGET_PATHS or tuple(parsed.path[:1]) == ("api",)):

@@ -83,15 +83,37 @@ class DynamicShapes(unittest.TestCase):
         for command in ("echo $(date)", "echo $HOME", 'printf "%s" "$(uname)"'):
             self.assertEqual(S.gh_segment(shlex.split(command)).kind, S.NOT_GH, command)
 
+
+class Containment(unittest.TestCase):
+    """harmonic-forge#1496 re-scope: no runner is modelled; a gh word anywhere is
+    contained, and a gh call hidden from every token is the F1447 shim's."""
+
+    def test_string_runners_and_assignments_are_unprovable(self):
+        for command in ("fish -c 'gh issue close 5'", "ssh host 'gh issue close 5'",
+                        "env -S 'gh issue close 5'", 'X="$(gh issue close 5)" gh issue view 1',
+                        "X=gh sudo $X pr merge 5", 'echo "$($c pr merge 5)"'):
+            self.assertEqual(S.gh_segment(shlex.split(command)).kind, S.UNPROVABLE, command)
+
+    def test_the_bounding_keeps_ordinary_words_out(self):
+        for command in ("[ -f x ]", "[[ -n y ]]", "ls /usr/bin/ghostscript", "echo ghost",
+                        "git checkout gh-pages", "curl https://x.org/gh/y/z"):
+            self.assertEqual(S.gh_segment(shlex.split(command)).kind, S.NOT_GH, command)
+
+    def test_a_path_ending_in_gh_is_contained(self):
+        # Intended: `tools/gh` ends in a bounded gh word, so it is unprovable.
+        self.assertEqual(S.gh_segment(["ls", "tools/gh"]).kind, S.UNPROVABLE)
+
 class NotGh(unittest.TestCase):
     def test_a_segment_with_no_gh_word_is_not_gh(self):
         for tokens in (["ls", "-la"], ["sudo", "ls"], ["bash", "-c", "ls -la"], ["git", "status"]):
             with self.subTest(tokens=tokens):
                 self.assertEqual(S.gh_segment(tokens).kind, S.NOT_GH)
 
-    def test_prose_that_mentions_gh_outside_a_script_is_not_gh(self):
-        # A commit message names gh but runs nothing: refusing it would be over-refusal.
-        self.assertEqual(S.gh_segment(["git", "commit", "-m", "close via gh issue close 5"]).kind, S.NOT_GH)
+    def test_prose_that_names_a_gh_word_is_unprovable(self):
+        # harmonic-forge#1496 re-scope, intended: containment, not recognition. A
+        # token naming gh is unprovable outside the allowed shapes, commit
+        # messages included; the adopting gate decides ask or refuse.
+        self.assertEqual(S.gh_segment(["git", "commit", "-m", "close via gh issue close 5"]).kind, S.UNPROVABLE)
 
     def test_a_gh_named_file_or_word_inside_another_word_is_not_gh(self):
         for tokens in (["cat", "ghost.txt"], ["echo", "high"], ["bash", "-c", "echo ghost"]):

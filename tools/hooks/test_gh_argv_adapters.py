@@ -235,6 +235,17 @@ class FlagTableDrift(unittest.TestCase):
             self.assertIsNotNone(A.merge_target(argv, {}))
             self.assertNotIn(A.classify(argv, {}).outcome, (A.ALLOWED, A.NOT_GATED))
 
+    def test_a_method_flag_swallowed_by_a_drifted_api_flag_is_unprovable(self):
+        """harmonic-forge#1496 re-scope: a drifted table that makes `--jq` take a
+        value swallows `-X PUT`; the merge must not read as a GET."""
+        table = copy.deepcopy(gh_argv.load_table())
+        table["commands"]["api"]["flags"]["--jq"].update(value=True)
+        argv = ["gh", "api", "--jq", "-X", "PUT", "repos/o/r/pulls/9/merge"]
+        with mock.patch.object(gh_argv, "load_table", return_value=table):
+            self.assertEqual(A.classify(argv, {}).outcome, A.UNPROVABLE)
+            self.assertIsNotNone(A.merge_target(argv, {}))
+        self.assertEqual(A.classify(["gh", "api", "-X", "GET", "repos/o/r/pulls/9"], {}).outcome, A.ALLOWED)
+
 
 if __name__ == "__main__":
     unittest.main()

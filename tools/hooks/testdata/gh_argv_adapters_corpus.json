@@ -1017,6 +1017,16 @@
     ],
     []
    ]
+  ],
+  "echo 'gh issue close 395' '>' notes.md": [
+   "intended",
+   "tightening (harmonic-forge#1496 containment): a segment with a gh word outside the allowed shapes is unprovable, so BATCH asks where the old reader passed",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
   ]
  },
  "migration": {
