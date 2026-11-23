@@ -12,7 +12,8 @@ consuming repo has no forge checkout. The field list below is the shared part.
 
     contracts.py validate    schema, unique ids, resolving paths
     contracts.py render      write docs/CONTRACTS.md from the TOML
-    contracts.py --check     fail when docs/CONTRACTS.md differs from a fresh render
+    contracts.py --check     fail when docs/CONTRACTS.md differs (byte for byte) from a fresh render
+    contracts.py resolve ID… resolved / unresolved / unmeasured per id; exit 0 only when all resolve
 
 A contract id is `<project>.<name>`, `<project>` being a `name` in projects.toml.
 An id in another project's namespace resolves where that checkout exists and
@@ -54,6 +55,28 @@ def _path_part(ref: str) -> str:
     return ref.split(":", 1)[0].strip()
 
 
+def link_problem(ref: str, root: Path, want: str) -> str | None:
+    """Why one link does not resolve, or None. A link is a repo-relative path,
+    optionally `:line` (that line must exist) or `:symbol`; `want` is "file" or
+    "dir". An empty, absolute or escaping path never resolves."""
+    path, _, suffix = ref.partition(":")
+    path, suffix = path.strip(), suffix.strip()
+    if not path or Path(path).is_absolute():
+        return f"`{ref}` is not a repo-relative path"
+    target = (root / path).resolve()
+    if not target.is_relative_to(root.resolve()):
+        return f"`{ref}` resolves outside the repository"
+    if want == "dir" and not target.is_dir():
+        return f"`{path}` is not a directory in the repository"
+    if want == "file" and not target.is_file():
+        return f"`{path}` is not a file in the repository"
+    if want == "file" and suffix.isdigit():
+        lines = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
+        if not 1 <= int(suffix) <= lines:
+            return f"`{ref}` names line {suffix}, but the file has {lines} lines"
+    return None
+
+
 def problems(entries: list[dict], root: Path = FORGE_ROOT, project: str = OWN_PROJECT) -> list[str]:
     """Every reason the index is not valid; empty when it is."""
     if not entries:
@@ -84,11 +107,14 @@ def problems(entries: list[dict], root: Path = FORGE_ROOT, project: str = OWN_PR
         seen.add(contract_id)
         if entry.get("status") not in STATUSES:
             found.append(f"{label}: `status` must be one of {', '.join(STATUSES)}")
-        refs = [entry.get("authority"), entry.get("example_caller"), *entry.get("modules", []),
-                *entry.get("guard", []), *entry.get("scan_roots", [])]
-        for ref in refs:
-            if isinstance(ref, str) and ref.strip() and not (root / _path_part(ref)).exists():
-                found.append(f"{label}: `{_path_part(ref)}` does not exist")
+        files = [entry.get("owner"), entry.get("authority"), entry.get("example_caller"),
+                 *(entry.get("modules") or []), *(entry.get("guard") or [])]
+        links = [(ref, "file") for ref in files] + [(ref, "dir") for ref in entry.get("scan_roots") or []]
+        for ref, want in links:
+            if isinstance(ref, str) and ref.strip():
+                problem = link_problem(ref, root, want)
+                if problem:
+                    found.append(f"{label}: {problem}")
     return found
 
 
@@ -108,14 +134,14 @@ def project_checkout(project: str, manifest: Path | None = None) -> Path | None:
 
 
 def resolve(contract_id: str, own: list[dict], project: str = OWN_PROJECT,
-            checkout=project_checkout) -> str:
+            checkout=None) -> str:
     """`resolved`, `unresolved` or `unmeasured` for one contract id. Another
     project's id is read from its checkout's contracts.toml, and `unmeasured`
     when that checkout (or its index) cannot be read: it never reads as green."""
     namespace = contract_id.split(".", 1)[0]
     if namespace == project:
         return RESOLVED if any(e.get("id") == contract_id for e in own) else UNRESOLVED
-    base = checkout(namespace)
+    base = (checkout or project_checkout)(namespace)
     if base is None:
         return UNMEASURED
     for name in ("contracts.toml", "tools/registry/contracts.toml"):
@@ -152,7 +178,8 @@ def render(entries: list[dict]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", nargs="?", choices=("validate", "render"))
+    parser.add_argument("command", nargs="?", choices=("validate", "render", "resolve"))
+    parser.add_argument("ids", nargs="*", help="resolve: contract ids to look up")
     parser.add_argument("--check", action="store_true", help="fail when docs/CONTRACTS.md is not a fresh render")
     parser.add_argument("--index", type=Path, default=TOML_PATH)
     parser.add_argument("--doc", type=Path, default=DOC_PATH)
@@ -163,15 +190,24 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         print("\n".join(f"contracts: {e}" for e in errors), file=sys.stderr)
         return 1
+    if args.command == "resolve":
+        # Exit 0 only when every id resolves; 1 when one is unresolved; 3 when
+        # the rest resolve but one is unmeasured, so unmeasured is never green.
+        states = {cid: resolve(cid, entries) for cid in args.ids}
+        for cid, state in states.items():
+            print(f"{cid}: {state}")
+        if not states or UNRESOLVED in states.values():
+            return 1
+        return 3 if UNMEASURED in states.values() else 0
     if args.check:
-        current = args.doc.read_text(encoding="utf-8") if args.doc.is_file() else None
-        if current != render(entries):
+        current = args.doc.read_bytes() if args.doc.is_file() else None
+        if current != render(entries).encode("utf-8"):
             print(f"contracts: {args.doc} differs from a fresh render; run `contracts.py render`", file=sys.stderr)
             return 1
         print(f"contracts: {len(entries)} entries valid; {args.doc.name} is fresh")
         return 0
     if args.command == "render":
-        args.doc.write_text(render(entries), encoding="utf-8")
+        args.doc.write_bytes(render(entries).encode("utf-8"))
         print(f"contracts: wrote {args.doc} ({len(entries)} entries)")
         return 0
     if args.command == "validate":

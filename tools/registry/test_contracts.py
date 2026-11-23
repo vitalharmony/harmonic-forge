@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -55,7 +56,52 @@ class Validate(unittest.TestCase):
         self.assertTrue((C.FORGE_ROOT / "tools/hooks/gh_argv.py").is_file())
 
 
+class Links(unittest.TestCase):
+    def _problems_with(self, **fields):
+        entries = _entries()
+        entries[0].update(fields)
+        return C.problems(entries)
+
+    def test_a_missing_owner_file_fails(self):
+        self.assertTrue(self._problems_with(owner="tools/hooks/nope.py: x"))
+
+    def test_an_empty_absolute_or_escaping_path_fails(self):
+        for ref in (":89", "/etc/hostname", "../outside.py"):
+            with self.subTest(ref=ref):
+                self.assertTrue(self._problems_with(example_caller=ref))
+
+    def test_a_line_past_the_end_of_the_file_fails(self):
+        self.assertTrue(any("names line 9999" in p
+                            for p in self._problems_with(example_caller="tools/hooks/close_gate.py:9999")))
+
+    def test_a_directory_in_a_file_field_and_a_file_in_scan_roots_fail(self):
+        self.assertTrue(self._problems_with(guard=["tools/hooks"]))
+        self.assertTrue(self._problems_with(scan_roots=["tools/hooks/gh_argv.py"]))
+
+
+class ResolveCommand(unittest.TestCase):
+    def _run(self, ids, checkout):
+        with mock.patch.object(C, "project_checkout", checkout):
+            return C.main(["resolve", *ids])
+
+    def test_an_id_with_a_missing_checkout_exits_unmeasured_not_green(self):
+        self.assertEqual(self._run(["hrse.date-contract"], lambda name: None), 3)
+
+    def test_an_own_id_resolves_and_an_unknown_one_fails(self):
+        self.assertEqual(self._run(["harmonic-forge.gh-argv-parser"], lambda name: None), 0)
+        self.assertEqual(self._run(["harmonic-forge.no-such"], lambda name: None), 1)
+
+    def test_no_ids_is_never_green(self):
+        self.assertEqual(self._run([], lambda name: None), 1)
+
+
 class Freshness(unittest.TestCase):
+    def test_a_crlf_doc_fails_the_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "CONTRACTS.md"
+            doc.write_bytes(C.render(_entries()).replace("\n", "\r\n").encode("utf-8"))
+            self.assertEqual(C.main(["--check", "--doc", str(doc)]), 1)
+
     def test_the_checked_in_doc_is_a_fresh_render(self):
         self.assertEqual(C.main(["--check"]), 0)
 
