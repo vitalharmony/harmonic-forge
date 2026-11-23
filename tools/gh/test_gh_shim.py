@@ -29,6 +29,13 @@ def _load_shim():
     return module
 
 
+def _pinned_env() -> dict:
+    """harmonic-forge#1511: os.environ without the gh auth variables, so a lane
+    shell's GH_CONFIG_DIR or GH_TOKEN never decides an in-process main() test."""
+    return {k: v for k, v in os.environ.items()
+            if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_ACCT_HOME")}
+
+
 class RealGhResolution(unittest.TestCase):
     def test_skips_itself_when_shim_is_first_on_path(self):
         """Simulate PATH listing a directory containing a copy of this same
@@ -62,7 +69,11 @@ class Refusal(unittest.TestCase):
         fake_patterns.scan_reason.return_value = scan_reason
         fake_patterns.consume_override.return_value = override
         fake_patterns.budget.return_value = budget_result
-        with mock.patch.object(sys, "argv", ["gh", *argv]), \
+        # harmonic-forge#1511: pinned, so a lane shell's GH_CONFIG_DIR never decides it.
+        pinned = {k: v for k, v in os.environ.items()
+                  if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_ACCT_HOME")}
+        with mock.patch.dict(os.environ, pinned, clear=True), \
+             mock.patch.object(sys, "argv", ["gh", *argv]), \
              mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
              mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
              mock.patch("os.execv") as fake_execv:
@@ -124,7 +135,8 @@ class Refusal(unittest.TestCase):
         fake_patterns = mock.Mock()
         fake_patterns.scan_reason.return_value = None
         fake_patterns.consume_override.return_value = False
-        with mock.patch.object(sys, "argv", ["gh", "auth", "status"]), \
+        with mock.patch.dict(os.environ, _pinned_env(), clear=True), \
+             mock.patch.object(sys, "argv", ["gh", "auth", "status"]), \
              mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
              mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
              mock.patch("os.execv") as fake_execv:
@@ -149,7 +161,8 @@ class Refusal(unittest.TestCase):
         fake_patterns = mock.Mock()
         fake_patterns.scan_reason.return_value = None
         fake_patterns.consume_override.return_value = True
-        with mock.patch.object(sys, "argv", ["gh", "api", "user", "--jq", ".login"]), \
+        with mock.patch.dict(os.environ, _pinned_env(), clear=True), \
+             mock.patch.object(sys, "argv", ["gh", "api", "user", "--jq", ".login"]), \
              mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
              mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
              mock.patch("os.execv") as fake_execv:
@@ -171,7 +184,8 @@ class Refusal(unittest.TestCase):
         fake_patterns = mock.Mock()
         fake_patterns.consume_override.return_value = False
         fake_patterns.scan_reason.side_effect = RuntimeError("boom")
-        with mock.patch.object(sys, "argv", ["gh", "pr", "view", "5"]), \
+        with mock.patch.dict(os.environ, _pinned_env(), clear=True), \
+             mock.patch.object(sys, "argv", ["gh", "pr", "view", "5"]), \
              mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
              mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
              mock.patch("os.execv") as fake_execv:
@@ -184,7 +198,8 @@ class LaneSlotToken(unittest.TestCase):
     on that slot's own token, or is refused; everything else is unchanged.
 
     Every case builds its own environment (a lane shell exports GH_CONFIG_DIR and
-    GH_TOKEN, and must not decide these results)."""
+    GH_TOKEN, and must not decide these results). The token is applied first in
+    main(), so the close/merge gate and the budget probe inherit it too."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -200,79 +215,113 @@ class LaneSlotToken(unittest.TestCase):
                 f"github.com:\n    user: vitalharmony\n    oauth_token: {token}\n", encoding="utf-8")
         return d
 
-    def _exec(self, argv, env):
-        shim = _load_shim()
+    def _env(self, env):
         base = {k: v for k, v in os.environ.items()
-                if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_ACCT_HOME")}
+                if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_ACCT_HOME",
+                             "GH_SHIM_CALLER")}
         base["GH_ACCT_HOME"] = str(self.root)
         base.update(env)
-        with mock.patch.dict(os.environ, base, clear=True), \
-             mock.patch("os.execv") as execv, mock.patch("os.execve") as execve:
+        return base
+
+    def _main(self, argv, env):
+        """Run main() with the gate and the budget probe recorded: what GH_TOKEN
+        each saw, and what the final exec saw."""
+        shim = _load_shim()
+        seen = {}
+        fake_patterns = mock.Mock()
+        fake_patterns.scan_reason.return_value = None
+        fake_patterns.consume_override.return_value = False
+
+        def budget():
+            seen["budget"] = os.environ.get("GH_TOKEN")
+            return (4000, 1.0)
+
+        def gate(_argv, _real_gh):
+            seen["gate"] = os.environ.get("GH_TOKEN")
+
+        def execv(_path, _args):
+            seen["exec"] = os.environ.get("GH_TOKEN")
+
+        fake_patterns.budget.side_effect = budget
+        with mock.patch.dict(os.environ, self._env(env), clear=True), \
+             mock.patch.object(sys, "argv", ["gh", *argv]), \
+             mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
+             mock.patch.object(shim, "_close_merge_gate", side_effect=gate), \
+             mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
+             mock.patch("os.execv", side_effect=execv) as fake_execv:
             try:
-                shim._exec_real_gh("/usr/bin/gh", argv)
+                shim.main()
             except SystemExit as exc:
-                return exc.code, execv, execve
-            return None, execv, execve
+                return exc.code, seen, fake_execv
+            return None, seen, fake_execv
 
     def test_a_lane_slot_with_no_token_runs_on_the_slots_own_token(self):
         d = self._slot("vitalharmony-lane1", token="T1")
-        code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d)})
+        code, seen, execv = self._main(["pr", "view", "5"], {"GH_CONFIG_DIR": str(d)})
         self.assertIsNone(code)
-        execv.assert_not_called()
-        execve.assert_called_once()
-        self.assertEqual(execve.call_args.args[2]["GH_TOKEN"], "T1")
-        self.assertEqual(execve.call_args.args[1], ["/usr/bin/gh", "api", "user"])
+        execv.assert_called_once_with("/usr/bin/gh", ["/usr/bin/gh", "pr", "view", "5"])
+        self.assertEqual(seen, {"gate": "T1", "budget": "T1", "exec": "T1"})
 
-    def test_a_lane_slot_with_no_readable_token_is_refused(self):
+    def test_a_lane_slot_with_no_readable_token_is_refused_before_the_gate(self):
         d = self._slot("vitalharmony-lane2")
         with mock.patch("sys.stderr") as err:
-            code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d)})
+            code, seen, execv = self._main(["pr", "view", "5"], {"GH_CONFIG_DIR": str(d)})
         self.assertEqual(code, 4)
+        self.assertEqual(seen, {})
         execv.assert_not_called()
-        execve.assert_not_called()
         self.assertIn("vitalharmony-lane2", "".join(str(c) for c in err.write.call_args_list))
 
     def test_a_token_already_set_is_left_alone(self):
         d = self._slot("vitalharmony-lane1", token="T1")
         for key in ("GH_TOKEN", "GITHUB_TOKEN"):
-            code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d), key: "X"})
+            code, seen, execv = self._main(["pr", "view", "5"], {"GH_CONFIG_DIR": str(d), key: "X"})
             self.assertIsNone(code, key)
-            execv.assert_called_once_with("/usr/bin/gh", ["/usr/bin/gh", "api", "user"])
-            execve.assert_not_called()
+            execv.assert_called_once()
+            self.assertEqual(seen["exec"], "X" if key == "GH_TOKEN" else None, key)
 
     def test_auth_is_never_modified(self):
         d = self._slot("vitalharmony-lane1", token="T1")
         for argv in (["auth", "login", "--with-token"], ["auth", "token"]):
-            code, execv, execve = self._exec(argv, {"GH_CONFIG_DIR": str(d)})
+            code, seen, execv = self._main(argv, {"GH_CONFIG_DIR": str(d)})
             self.assertIsNone(code, argv)
             execv.assert_called_once()
-            execve.assert_not_called()
+            self.assertIsNone(seen["exec"], argv)
 
     def test_other_slots_and_outside_dirs_are_unchanged(self):
         dirs = [self._slot(n, token="T") for n in
                 ("vitalharmony", "harmonicarchitect", "vitalharmony-projects")]
-        other_root = Path(self._tmp.name) / "elsewhere"
-        dirs.append(self._slot("vitalharmony-lane1", token="T", root=other_root))
+        dirs.append(self._slot("vitalharmony-lane1", token="T",
+                               root=Path(self._tmp.name) / "elsewhere"))
         for d in dirs:
-            code, execv, execve = self._exec(["api", "user"], {"GH_CONFIG_DIR": str(d)})
+            code, seen, execv = self._main(["pr", "view", "5"], {"GH_CONFIG_DIR": str(d)})
             self.assertIsNone(code, d)
             execv.assert_called_once()
-            execve.assert_not_called()
+            self.assertIsNone(seen["exec"], d)
+
+    def test_an_error_identifying_the_slot_fails_open(self):
+        shim = _load_shim()
+        with mock.patch.dict(os.environ, self._env({}), clear=True), \
+             mock.patch.object(shim, "_lane_slot", side_effect=TypeError("boom")):
+            shim._apply_lane_slot_token(["pr", "view", "5"])
+            self.assertNotIn("GH_TOKEN", os.environ)
 
     def test_no_config_dir_is_unchanged(self):
-        code, execv, execve = self._exec(["pr", "view", "5"], {})
+        code, seen, execv = self._main(["pr", "view", "5"], {})
         self.assertIsNone(code)
         execv.assert_called_once()
-        execve.assert_not_called()
+        self.assertIsNone(seen["exec"])
 
     def test_every_real_gh_exec_goes_through_the_helper(self):
         source = _SHIM_PATH.read_text(encoding="utf-8")
         helper = source.index("def _exec_real_gh(")
         end = source.index("\ndef ", helper + 1)
         outside = source[:helper] + source[end:]
-        self.assertNotIn("os.execv(real_gh", outside)
-        self.assertNotIn("os.execve(real_gh", outside)
+        self.assertNotIn("os.execv(", outside)
+        self.assertNotIn("os.execve(", source)
         self.assertGreaterEqual(outside.count("_exec_real_gh(real_gh, argv)"), 3)
+        main_src = source[source.index("def main()"):]
+        self.assertLess(main_src.index("_apply_lane_slot_token(argv)"),
+                        main_src.index("_close_merge_gate(argv"))
 
 
 class Installer(unittest.TestCase):

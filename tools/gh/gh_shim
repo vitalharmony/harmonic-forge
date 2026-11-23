@@ -205,14 +205,22 @@ def _lane_slot(env: dict[str, str]) -> tuple[str, str] | None:
     return name, root
 
 
-def _exec_real_gh(real_gh: str, argv: list[str]) -> None:
-    """The only exec of the real gh (harmonic-forge#1511). The unchanged path
-    keeps `os.execv` exactly; only a lane slot with no token gets `os.execve`
-    with that slot's own token, or is refused (exit 4) when it has none."""
-    slot = None if argv[:1] == ["auth"] else _lane_slot(dict(os.environ))
+def _apply_lane_slot_token(argv: list[str]) -> None:
+    """harmonic-forge#1511: run once, first in `main()`, so every subprocess the
+    shim starts (the close/merge gate, the budget probe) and the final exec all
+    inherit it. A lane slot named by GH_CONFIG_DIR with no token gets
+    `os.environ["GH_TOKEN"]` set to that slot's own token, or is refused (exit 4)
+    when it has none. `gh auth ...` (a token login into a slot, gh-as's `auth
+    token` fingerprint read) is never touched (AC4). Only a named lane slot can
+    refuse; any error after the slot is named refuses, never falls through."""
+    if argv[:1] == ["auth"]:
+        return
+    try:
+        slot = _lane_slot(dict(os.environ))
+    except Exception:  # noqa: BLE001 - identifying a slot fails open; only a named one refuses
+        return
     if slot is None:
-        os.execv(real_gh, [real_gh, *argv])
-        return  # pragma: no cover -- execv never returns for real
+        return
     name, root = slot
     token = ""
     try:
@@ -227,13 +235,19 @@ def _exec_real_gh(real_gh: str, argv: list[str]) -> None:
         print(f"gh-shim: refused (lane slot {name} has no readable token; GH_CONFIG_DIR names it "
               "but gh would use the shared keyring token) (harmonic-forge#1511).", file=sys.stderr)
         sys.exit(4)
-    env = dict(os.environ)
-    env["GH_TOKEN"] = token
-    os.execve(real_gh, [real_gh, *argv], env)
+    os.environ["GH_TOKEN"] = token
+
+
+def _exec_real_gh(real_gh: str, argv: list[str]) -> None:
+    """The only exec of the real gh (harmonic-forge#1511): plain `os.execv`, on
+    the environment `_apply_lane_slot_token` already settled."""
+    os.execv(real_gh, [real_gh, *argv])
 
 
 def main() -> None:
     argv = sys.argv[1:]
+    # harmonic-forge#1511: before anything below can start a real-gh subprocess.
+    _apply_lane_slot_token(argv)
     real_gh = _resolve_real_gh()
 
     # harmonic-forge#1447: the close and merge gates, on the real argv, ahead of

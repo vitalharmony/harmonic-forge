@@ -337,7 +337,10 @@ class Shim(Base):
         with mock.patch.object(self.shim.os, "execv", side_effect=lambda p, a: execs.append(a)), \
                 mock.patch.object(sys, "argv", ["gh", "api", "-i",
                                                 "repos/vitalharmony/hrse/issues?state=all"]), \
-                mock.patch.dict(os.environ, {"GH_SHIM_CALLER": "bounded_scan"}), \
+                mock.patch.dict(os.environ, {**{k: v for k, v in os.environ.items()
+                                                 if k not in ("GH_TOKEN", "GITHUB_TOKEN",
+                                                              "GH_CONFIG_DIR", "GH_ACCT_HOME")},
+                                              "GH_SHIM_CALLER": "bounded_scan"}, clear=True), \
                 mock.patch("gh_scan_patterns.consume_override", return_value=True):
             self.shim.main()
         self.assertEqual(len(execs), 1)
