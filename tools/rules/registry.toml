@@ -2980,6 +2980,6 @@ hooks = []
 id = "R-0437"
 file = "rules/universal-agent.md"
 anchor = "report-discipline"
-statement = "Work in flight is read first from the live checkouts; a lane queue adds only its owed belt events and task-list entries; gh enriches those; an unnamed or unreadable entry is listed unresolved, never dropped; never a board scan, PRIORITIES.md or SCAN (harmonic-forge#1506)."
+statement = "Work in flight is read first from the live checkouts, a closed issue's checkout excluded; a lane queue adds only its owed belt events, its own task-list entries and operator instructions queued in the session; gh enriches those; an entry with no issue, an unreadable issue, or a missing or unknown task owner is listed unresolved, never dropped; never a board scan, PRIORITIES.md or SCAN (harmonic-forge#1506)."
 text_sha = "9e2561463912faec"
 hooks = []
