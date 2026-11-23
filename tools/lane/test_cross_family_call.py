@@ -836,7 +836,45 @@ class TestEnvelopeFailureIsLoud(unittest.TestCase):
                                                      "#!/usr/bin/env bash\nsleep 0.4\n", 1))
         result = self._run(path=slow)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertGreaterEqual(parse_envelopes(result.stdout)[-1]["duration_ms"], 350)
+        envelope = parse_envelopes(result.stdout)[-1]
+        # harmonic-forge#1512: also the envelope's own status, so a short run caused
+        # by anything but the clock fails with a reason instead of a bare number.
+        self.assertEqual(envelope["status"], "ok")
+        self.assertGreaterEqual(envelope["duration_ms"], 350)
+
+    def test_a_backward_wall_clock_step_inside_the_span_does_not_change_duration_ms(self):
+        """harmonic-forge#1512: the two CI failures. A wall-clock step back inside
+        the span measured 232 ms around a 400 ms reviewer (a 170 ms step) and null
+        (a step of 400 ms or more) while `duration_ms` was read off `date +%s%3N`.
+        The shim steps every second `+%s%3N` read back; the duration must not move.
+        Against the wall-clock script this gives 239 and null."""
+        for step_ms in (170, 500):
+            with self.subTest(step_ms=step_ms):
+                slow = make_stub_path(self.tmp.name)
+                stub_dir = Path(slow.split(os.pathsep)[0])
+                for name in ("codex", "claude"):
+                    stub = stub_dir / name
+                    stub.write_text(stub.read_text().replace(
+                        "#!/usr/bin/env bash\n", "#!/usr/bin/env bash\nsleep 0.4\n", 1))
+                counter = Path(self.tmp.name) / f"reads-{step_ms}"
+                shim = stub_dir / "date"
+                shim.write_text(f"""#!/usr/bin/env bash
+if [ "$1" = "+%s%3N" ]; then
+  n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > {counter}
+  now=$({shutil.which("date")} +%s%3N)
+  if [ $((n % 2)) -eq 0 ]; then now=$((now - {step_ms})); fi
+  echo "$now"
+else
+  exec {shutil.which("date")} "$@"
+fi
+""")
+                shim.chmod(0o755)
+                result = self._run(path=slow)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                envelope = parse_envelopes(result.stdout)[-1]
+                self.assertEqual(envelope["status"], "ok")
+                self.assertIsNotNone(envelope["duration_ms"])
+                self.assertGreaterEqual(envelope["duration_ms"], 350)
 
 
 class TestCodexGitRepoCheck(unittest.TestCase):
@@ -1537,21 +1575,78 @@ class DurationEdges(unittest.TestCase):
         self.brief.write_text("brief")
         self.out = Path(self.tmp.name) / "env.jsonl"
 
-    def test_a_backward_clock_step_records_no_duration(self):
+    def _script_reading(self, uptime: Path) -> Path:
+        """A copy of the script whose monotonic source is `uptime`, not /proc/uptime,
+        so a test controls both readings of `now_ms` (the stub rewrites the file)."""
+        text = SCRIPT.read_text()
+        self.assertIn("</proc/uptime", text)
+        copy = Path(self.tmp.name) / "cross_family_call_fake_uptime.sh"
+        copy.write_text(text.replace("/proc/uptime", str(uptime)))
+        return copy
+
+    def _duration_with_uptime(self, before: str, after: str | None) -> object:
+        """`duration_ms` for a run whose first uptime reading is `before` and whose
+        second is `after` (the stub writes it mid-call; None = leave the file alone)."""
         path = make_stub_path(self.tmp.name)
         stub_dir = Path(path.split(os.pathsep)[0])
-        counter = Path(self.tmp.name) / "clock"
-        counter.write_text("5000")
-        date = stub_dir / "date"
-        date.write_text(f"""#!/usr/bin/env bash
-if [ "$1" = "+%s%3N" ]; then v=$(cat {counter}); echo "$v"; echo $((v-1000)) > {counter}; exit 0; fi
-exec /usr/bin/date "$@"
-""")
-        date.chmod(0o755)
-        result = run_script("--caller", "claude", "--families", "2", "--posture", "read-only",
-                            "--brief", str(self.brief), "--out", str(self.out), path=path)
+        uptime = Path(self.tmp.name) / "uptime"
+        uptime.write_text(before)
+        if after is not None:
+            for name in ("codex", "claude"):
+                stub = stub_dir / name
+                stub.write_text(stub.read_text().replace(
+                    "#!/usr/bin/env bash\n", f"#!/usr/bin/env bash\necho '{after}' > {uptime}\n", 1))
+        script = self._script_reading(uptime)
+        result = subprocess.run(
+            ["bash", str(script), "--caller", "claude", "--families", "2", "--posture", "read-only",
+             "--brief", str(self.brief), "--out", str(self.out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            env=dict(os.environ, PATH=path))
         self.assertEqual(result.returncode, 0, result.stderr)
+        return parse_envelopes(self.out.read_text())[-1]["duration_ms"]
+
+    def test_the_duration_is_the_difference_of_two_monotonic_readings(self):
+        """harmonic-forge#1512: 100.00 s then 100.40 s of uptime is exactly 400 ms."""
+        self.assertEqual(self._duration_with_uptime("100.00 50.00\n", "100.40 50.00"), 400)
+
+    def test_a_call_inside_one_tick_records_the_one_ms_floor_not_null(self):
+        """Both readings in one 10 ms tick: under 10 ms, so 1 is a true floor. An
+        instant stub lands here in most runs, and null would read as a clock fault."""
+        self.assertEqual(self._duration_with_uptime("100.00 50.00\n", None), 1)
+
+    def test_a_monotonic_source_that_goes_backward_records_no_duration(self):
+        """The F1422 edge, moved to the clock the script now reads: a reading that
+        is earlier than the start is dishonest, so null, never a synthetic value."""
+        self.assertIsNone(self._duration_with_uptime("100.00 50.00\n", "50.00 50.00"))
+
+    def test_no_readable_monotonic_source_records_null_not_a_wall_clock_guess(self):
+        """Where procfs is absent (macOS, BSD) there is no monotonic millisecond
+        source, so the envelope says so with null rather than reading `date`."""
+        for content in ("", "garbage\n", "100\n", "-5.00 0\n"):
+            with self.subTest(content=content):
+                self.assertIsNone(self._duration_with_uptime(content, None))
+        path = make_stub_path(self.tmp.name)
+        copy = Path(self.tmp.name) / "cross_family_call_no_procfs.sh"
+        copy.write_text(SCRIPT.read_text().replace("/proc/uptime", str(Path(self.tmp.name) / "absent")))
+        subprocess.run(
+            ["bash", str(copy), "--caller", "claude", "--families", "2", "--posture", "read-only",
+             "--brief", str(self.brief), "--out", str(self.out)],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, PATH=path),
+            check=True)
         self.assertIsNone(parse_envelopes(self.out.read_text())[-1]["duration_ms"])
+
+    @unittest.skipUnless(Path("/proc/uptime").exists(), "needs procfs")
+    def test_now_ms_reads_proc_uptime(self):
+        """harmonic-forge#1512: two real readings around `sleep 0.2` differ by at
+        least 190 ms, and each is a bare integer."""
+        match = re.search(r"^now_ms\(\) \{\n.*?^\}\n", SCRIPT.read_text(), re.S | re.M)
+        self.assertIsNotNone(match, "now_ms() not found in cross_family_call.sh")
+        result = subprocess.run(
+            ["bash", "-c", match.group(0) + 'a="$(now_ms)"; sleep 0.2; b="$(now_ms)"; echo "$a $b"'],
+            capture_output=True, text=True, check=True)
+        before, after = result.stdout.split()
+        self.assertTrue(before.isdigit() and after.isdigit(), result.stdout)
+        self.assertGreaterEqual(int(after) - int(before), 190)
 
     def test_an_inherited_duration_never_reaches_the_envelope(self):
         env_path = make_stub_path(self.tmp.name)
