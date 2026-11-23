@@ -1710,6 +1710,15 @@ class CheckSteps(unittest.TestCase):
         run = subprocess.run(["/bin/sh", "-c", "set -e\n" + script], env={"PATH": empty}, capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
 
+    def test_the_contracts_step_passes_on_a_base_without_the_tool(self):
+        """harmonic-forge#1501 post-verdict: a base revision older than contracts.py
+        has no tool to run, so the step passes there instead of exiting 2."""
+        script = dict(te_run.CHECK_STEPS)["contracts_check"]
+        empty = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        run = subprocess.run(["/bin/sh", "-c", "set -e\n" + script], cwd=empty, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_check_steps_match_the_mise_check_task(self):
         import tomllib
         tasks = tomllib.loads((te_run.SOURCE / "mise.toml").read_text(encoding="utf-8"))["tasks"]

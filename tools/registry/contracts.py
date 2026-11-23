@@ -72,8 +72,10 @@ def link_problem(ref: str, root: Path, want: str) -> str | None:
     """Why one link does not resolve, or None. A link is a repo-relative path,
     optionally `:line` (that line must exist) or `:symbol`; `want` is "file" or
     "dir". An empty, absolute or escaping path never resolves."""
-    path, _, suffix = ref.partition(":")
+    path, sep, suffix = ref.partition(":")
     path, suffix = path.strip(), suffix.strip()
+    if sep and not suffix:
+        return f"`{ref}` has an empty suffix after `:`"
     if not path or Path(path).is_absolute():
         return f"`{ref}` is not a repo-relative path"
     target = (root / path).resolve()
@@ -113,11 +115,24 @@ def _defined_names(path: Path) -> set[str] | None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            for target in node.targets:
+                names.update(_bound_names(target))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
             # An annotation with no value binds nothing at runtime.
             names.add(node.target.id)
     return names
+
+
+def _bound_names(target: ast.expr) -> set[str]:
+    """Names an assignment target binds: a plain name, or each name inside a
+    tuple or list target (`a, b = ...`), recursively; starred names included."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {name for elt in target.elts for name in _bound_names(elt)}
+    return set()
 
 
 def _string_list(value) -> list:

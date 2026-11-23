@@ -157,6 +157,22 @@ class PostVerdictFixes(unittest.TestCase):
             self.assertEqual(C.resolve("hrse.x", _entries(), checkout=lambda name: Path(tmp)), C.UNMEASURED)
 
 
+
+class PostVerdictTwoFixes(unittest.TestCase):
+    """The post-verdict check's survivors at 697278a (harmonic-forge#1501)."""
+
+    def test_an_empty_suffix_after_the_colon_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.py").write_text("x = 1\n", encoding="utf-8")
+            for ref in ("m.py:", "m.py:   "):
+                self.assertIn("empty suffix", C.link_problem(ref, Path(tmp), "file") or "", ref)
+
+    def test_names_bound_by_unpacking_are_definitions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.py").write_text("a, b = (1, 2)\n[c, *d] = [3, 4]\n", encoding="utf-8")
+            for name in ("a", "b", "c", "d"):
+                self.assertIsNone(C.link_problem(f"m.py: {name}", Path(tmp), "file"), name)
+
 class ResolveCommand(unittest.TestCase):
     def _run(self, ids, checkout):
         with mock.patch.object(C, "project_checkout", checkout):

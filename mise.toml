@@ -48,7 +48,7 @@ echo "[CHECK] Syntax-clean: tools/*.py, sync_rules.py"
 # here means `mise run check` means what a reader assumes it means.
 python3 tools/run_tests.py
 # harmonic-forge#1501: the contract index is valid and docs/CONTRACTS.md is a fresh render.
-python3 tools/registry/contracts.py --check
+test ! -f tools/registry/contracts.py || python3 tools/registry/contracts.py --check
 # harmonic-forge#494: memory-store lint. Gated against the frozen CLEAN fixture,
 # never the live store — the live store is grown by the harness, not by any
 # branch, so a live-pinned exit-1 check is one no commit could turn green.
