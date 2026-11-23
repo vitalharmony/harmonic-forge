@@ -70,6 +70,13 @@ class Links(unittest.TestCase):
             with self.subTest(ref=ref):
                 self.assertTrue(self._problems_with(example_caller=ref))
 
+    def test_an_existing_file_outside_the_root_is_refused_as_outside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            (Path(tmp) / "outside.py").write_text("x = 1\n", encoding="utf-8")
+            self.assertIn("resolves outside the repository", C.link_problem("../outside.py", root, "file"))
+
     def test_a_line_past_the_end_of_the_file_fails(self):
         self.assertTrue(any("names line 9999" in p
                             for p in self._problems_with(example_caller="tools/hooks/close_gate.py:9999")))
