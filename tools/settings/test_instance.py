@@ -72,6 +72,27 @@ class PathSafety(unittest.TestCase):
             with self.assertRaises(ValueError):
                 I.config_path()
 
+    def test_a_settings_path_inside_another_checkout_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(tmp) / "cfg")}):
+                with self.assertRaises(ValueError):
+                    I.config_path()
+
+    def test_a_dangling_symlink_is_an_error_not_a_default(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+            path = Path(tmp) / "harmonic-forge" / "instance.toml"
+            path.parent.mkdir(parents=True)
+            path.symlink_to(Path(tmp) / "gone.toml")
+            with self.assertRaises(ValueError):
+                I.timezone()
+
+    def test_a_file_where_the_config_directory_should_be_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+            (Path(tmp) / "harmonic-forge").write_text("not a directory\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                I.timezone()
+
     def test_a_relative_xdg_config_home_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "tools", "HOME": tmp}):
             self.assertEqual(I.config_path(), Path(tmp) / ".config" / "harmonic-forge" / "instance.toml")
@@ -106,7 +127,10 @@ class ZoneLiteralCheck(unittest.TestCase):
                        'from zoneinfo import ZoneInfo\nZoneInfo("Europe/" + "Paris")\n',
                        'from zoneinfo import ZoneInfo\nc = "Paris"\nZoneInfo(f"Europe/{c}")\n'):
             with self.subTest(source=source):
-                self.assertEqual(C.main(["--root", str(self._tree({"tools/x/y.py": source}))]), 1)
+                files, hits = C.scan(self._tree({"tools/x/y.py": source}))
+                self.assertEqual(files, 1)
+                self.assertEqual(len(hits), 1)
+                self.assertTrue(hits[0].startswith("tools/x/y.py:"))
 
     def test_a_test_file_is_not_exempt_unless_named(self):
         source = 'from zoneinfo import ZoneInfo\nZoneInfo("Europe/Paris")\n'
@@ -120,8 +144,9 @@ class ZoneLiteralCheck(unittest.TestCase):
     def test_a_tree_of_only_exempt_files_parses_zero_and_fails(self):
         self.assertEqual(C.main(["--root", str(self._tree({"tools/settings/instance.py": "x = 1\n"}))]), 1)
 
-    def test_a_non_literal_zone_passes(self):
-        source = "from zoneinfo import ZoneInfo\nname = 'x'\nZoneInfo(name)\n"
+    def test_documented_blind_spot_a_zone_held_in_a_constant_is_not_caught(self):
+        # Pinned on purpose: the docstring names this as out of scope (a tripwire, not dataflow).
+        source = "from zoneinfo import ZoneInfo\nTZ = 'Europe/Paris'\nZoneInfo(TZ)\n"
         self.assertEqual(C.main(["--root", str(self._tree({"tools/x/y.py": source}))]), 0)
 
     def test_the_real_tree_has_no_hardcoded_zone(self):

@@ -23,26 +23,35 @@ DEFAULT_TIMEZONE = "America/Los_Angeles"
 FILE_NAME = "instance.toml"
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _inside_a_checkout(path: Path) -> bool:
+    """True when any resolved ancestor holds a `.git` entry (file or directory),
+    so the main worktree and every linked worktree count, not just this one."""
+    return any((parent / ".git").exists() for parent in path.resolve().parents)
 
 
 def config_path() -> Path:
     """The per-user settings file. A relative XDG_CONFIG_HOME is ignored, as the
-    XDG spec requires; a path inside the repository raises ValueError."""
+    XDG spec requires; a path inside any git checkout raises ValueError."""
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
     path = base / "harmonic-forge" / FILE_NAME
-    if path.resolve().is_relative_to(REPO_ROOT):
-        raise ValueError(f"{path}: the instance settings file must live outside the repository")
+    if _inside_a_checkout(path):
+        raise ValueError(f"{path}: the instance settings file must live outside any git checkout")
     return path
 
 
 def timezone() -> tuple[ZoneInfo, bool]:
-    """(zone, defaulted). `defaulted` is True when the file or its `timezone`
-    key is missing. Anything at the path that is not a readable file, and an
+    """(zone, defaulted). `defaulted` is True only when nothing is at the path
+    (not even a broken symlink) and every existing ancestor is a directory, or
+    when the file has no `timezone` key. Anything else at the path, and an
     invalid zone, raise ValueError."""
     path = config_path()
-    if not path.exists():
+    if not os.path.lexists(path):
+        for parent in path.parents:
+            if os.path.lexists(parent):
+                if not parent.is_dir():
+                    raise ValueError(f"{parent}: an ancestor of the instance settings path is not a directory")
+                break
         return ZoneInfo(DEFAULT_TIMEZONE), True
     if not path.is_file():
         raise ValueError(f"{path}: the instance settings path exists but is not a file")

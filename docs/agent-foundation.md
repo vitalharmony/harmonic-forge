@@ -90,3 +90,6 @@ Read it only through `tools/settings/instance.py` `timezone()`. A missing file o
 key returns `America/Los_Angeles`, reported as defaulted; an invalid zone is an
 error. Every current timestamp stays UTC. `tools/settings/check_zone_literals.py`
 refuses a hardcoded `ZoneInfo("...")` anywhere else in `tools/` or `skills/`.
+It is a tripwire, not a proof: a zone held in a variable first, an assignment
+alias, `**kwargs` and `from_file` pass it by design (its docstring lists them),
+so review still owns those.

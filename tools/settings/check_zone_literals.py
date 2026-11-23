@@ -9,6 +9,13 @@ import alias of either, and the `no_cache` constructor. Only the files named in
 EXCEPTIONS are exempt, and only files actually parsed count toward the scan, so
 a tree of exempt files, like an empty one, never reads green.
 
+A tripwire, not a proof. Caught: a direct call, `zoneinfo.ZoneInfo`, an import
+alias of either, `no_cache`, and any string literal, concatenation or f-string
+inside the call's zone argument. Not caught, by design: a zone held in a
+variable or constant first (`TZ = "Europe/Paris"; ZoneInfo(TZ)`), an assignment
+alias (`Z = ZoneInfo`), `**kwargs`, `from_file`, and a string built before the
+call. Closing those needs dataflow analysis; review catches them.
+
     check_zone_literals.py [--root DIR]
 """
 from __future__ import annotations
