@@ -60,6 +60,32 @@ class Accessor(unittest.TestCase):
         self.assertEqual(sorted(p for p in Path(self.tmp.name).rglob("*")), before)
 
 
+class PathSafety(unittest.TestCase):
+    def test_a_directory_at_the_settings_path_is_an_error_not_a_default(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+            (Path(tmp) / "harmonic-forge" / "instance.toml").mkdir(parents=True)
+            with self.assertRaises(ValueError):
+                I.timezone()
+
+    def test_a_settings_path_inside_the_repo_is_refused(self):
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(REPO / "tools")}):
+            with self.assertRaises(ValueError):
+                I.config_path()
+
+    def test_a_relative_xdg_config_home_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "tools", "HOME": tmp}):
+            self.assertEqual(I.config_path(), Path(tmp) / ".config" / "harmonic-forge" / "instance.toml")
+
+    def test_reading_an_existing_file_leaves_it_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+            path = Path(tmp) / "harmonic-forge" / "instance.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text('timezone = "Europe/Berlin"\n', encoding="utf-8")
+            before = path.read_bytes()
+            I.timezone()
+            self.assertEqual(path.read_bytes(), before)
+
+
 class ZoneLiteralCheck(unittest.TestCase):
     def _tree(self, files: dict[str, str]) -> Path:
         tmp = tempfile.TemporaryDirectory()
@@ -73,12 +99,24 @@ class ZoneLiteralCheck(unittest.TestCase):
     def test_a_planted_literal_fails_in_every_spelling(self):
         for source in ('from zoneinfo import ZoneInfo\nZoneInfo("Europe/Paris")\n',
                        'from zoneinfo import ZoneInfo\nZoneInfo(key="Europe/Paris")\n',
-                       'import zoneinfo\nzoneinfo.ZoneInfo("Europe/Paris")\n'):
+                       'import zoneinfo\nzoneinfo.ZoneInfo("Europe/Paris")\n',
+                       'from zoneinfo import ZoneInfo as Z\nZ("Europe/Paris")\n',
+                       'import zoneinfo as zi\nzi.ZoneInfo("Europe/Paris")\n',
+                       'from zoneinfo import ZoneInfo\nZoneInfo.no_cache("Europe/Paris")\n',
+                       'from zoneinfo import ZoneInfo\nZoneInfo("Europe/" + "Paris")\n',
+                       'from zoneinfo import ZoneInfo\nc = "Paris"\nZoneInfo(f"Europe/{c}")\n'):
             with self.subTest(source=source):
                 self.assertEqual(C.main(["--root", str(self._tree({"tools/x/y.py": source}))]), 1)
 
+    def test_a_test_file_is_not_exempt_unless_named(self):
+        source = 'from zoneinfo import ZoneInfo\nZoneInfo("Europe/Paris")\n'
+        self.assertEqual(C.main(["--root", str(self._tree({"tools/x/test_b.py": source}))]), 1)
+
     def test_a_scan_of_zero_files_fails(self):
         self.assertEqual(C.main(["--root", str(self._tree({"README.md": "x\n"}))]), 1)
+
+    def test_a_tree_of_only_exempt_files_parses_zero_and_fails(self):
+        self.assertEqual(C.main(["--root", str(self._tree({"tools/settings/instance.py": "x = 1\n"}))]), 1)
 
     def test_a_non_literal_zone_passes(self):
         source = "from zoneinfo import ZoneInfo\nname = 'x'\nZoneInfo(name)\n"

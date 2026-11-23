@@ -23,18 +23,29 @@ DEFAULT_TIMEZONE = "America/Los_Angeles"
 FILE_NAME = "instance.toml"
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def config_path() -> Path:
-    """The per-user settings file, which is never inside the repository."""
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "harmonic-forge" / FILE_NAME
+    """The per-user settings file. A relative XDG_CONFIG_HOME is ignored, as the
+    XDG spec requires; a path inside the repository raises ValueError."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
+    path = base / "harmonic-forge" / FILE_NAME
+    if path.resolve().is_relative_to(REPO_ROOT):
+        raise ValueError(f"{path}: the instance settings file must live outside the repository")
+    return path
 
 
 def timezone() -> tuple[ZoneInfo, bool]:
     """(zone, defaulted). `defaulted` is True when the file or its `timezone`
-    key is missing. An unreadable file or an invalid zone raises ValueError."""
+    key is missing. Anything at the path that is not a readable file, and an
+    invalid zone, raise ValueError."""
     path = config_path()
-    if not path.is_file():
+    if not path.exists():
         return ZoneInfo(DEFAULT_TIMEZONE), True
+    if not path.is_file():
+        raise ValueError(f"{path}: the instance settings path exists but is not a file")
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
