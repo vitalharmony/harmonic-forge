@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import gh_argv
-from shell_parse import command_segments, strip_invocation_prefix
+from shell_parse import strip_invocation_prefix
 
 BOUND = "bound"
 UNBOUND = "unbound"
@@ -71,6 +71,8 @@ class Result:
 #: The house account wrappers `shell_parse.strip_invocation_prefix` unwraps
 #: (`gh-as <account> gh ...`, `gha <account> ...`); they set a token, never a repo.
 _ACCOUNT_WRAPPERS = ("gh-as", "gha")
+#: gh named as a command word inside a script token (`bash -c 'x && gh issue close 5'`).
+_SCRIPT_GH = re.compile(r"(?:^|[\s;&|(`$])(?:\S*/)?(?:gh|gh-as|gha)(?:\s|$)")
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 
 
@@ -109,48 +111,11 @@ def _plain_prefix(tokens: list[str]) -> bool:
     return True
 
 
-_SHELLS = ("bash", "sh", "zsh", "dash")
-_C_FLAG = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
-_SEVERITY = (BOUND, UNBOUND, UNPARSEABLE, UNPROVABLE)
-
-
-def _shell_body(tokens: list[str]) -> tuple[list[str], str] | None:
-    """(the tokens before the shell, the `-c` script) for `[prefix] bash -c '...'`,
-    else None."""
-    for index, token in enumerate(tokens):
-        if Path(token).name in _SHELLS:
-            for flag in range(index + 1, len(tokens) - 1):
-                if _C_FLAG.match(tokens[flag]):
-                    return tokens[:index], tokens[flag + 1]
-            return None
-    return None
-
-
-def _classify_shell_body(outer: list[str], body: str, env: dict) -> Result:
-    """A `-c` script is classified segment by segment; the first close, merge or
-    undecided segment is the answer. A bound target behind an outer prefix that
-    is not plain (`nohup`, `env -u X`) is unprovable, since that prefix may
-    change what the script's gh sees."""
-    try:
-        segments = command_segments(body)
-    except ValueError:
-        return Result(UNPROVABLE, reason="a shell -c script that cannot be tokenized")
-    plain = all(token == "env" or _ASSIGNMENT.match(token) for token in outer)
-    inner_env = dict(env)
-    if plain:
-        inner_env.update(_inline_env(outer))
-    for segment in segments:
-        result = classify(segment, inner_env)
-        if result.outcome in _SEVERITY:
-            if result.outcome == BOUND and not plain:
-                return Result(UNPROVABLE, reason="gh inside a shell -c script behind a prefix this module does not model")
-            return result
-    return Result(NOT_GATED, reason="a shell -c script with no close or merge")
-
-
 def _mentions_gh(tokens: list[str]) -> bool:
-    """A `gh` word among the tokens (not prose that merely contains "gh")."""
-    return any(Path(token).name == "gh" for token in tokens)
+    """A `gh` word, an account wrapper, or a shell `-c` script that names gh,
+    among the tokens. A script is never parsed here: gh inside one is unprovable."""
+    return any(Path(token).name in ("gh", *_ACCOUNT_WRAPPERS) or _SCRIPT_GH.search(token)
+               for token in tokens)
 
 
 def classify(tokens: list[str], env: dict | None = None) -> Result:
@@ -163,9 +128,6 @@ def classify(tokens: list[str], env: dict | None = None) -> Result:
     not gated."""
     raw = list(tokens)
     env = dict(os.environ if env is None else env)
-    wrapped = _shell_body(raw)
-    if wrapped is not None:
-        return _classify_shell_body(*wrapped, env)
     env.update(_inline_env(raw))
     tokens = strip_invocation_prefix(raw)
     if not tokens or Path(tokens[0]).name != "gh":

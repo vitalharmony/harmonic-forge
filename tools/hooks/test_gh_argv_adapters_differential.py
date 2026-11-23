@@ -279,7 +279,8 @@ class CorpusReplay(unittest.TestCase):
 
     def test_preclose_hook_corpus(self):
         self._check("preclose", "test_block_missing_preclose_inspection",
-                    [(block_missing_preclose_inspection, "find_gated_targets")])
+                    [(block_missing_preclose_inspection, "find_gated_targets"),
+                     (block_missing_preclose_inspection, "find_gated_targets_exempt")])
 
     def test_batch_corpus(self):
         self._check("batch", "test_batch_auth",

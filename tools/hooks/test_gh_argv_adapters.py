@@ -157,13 +157,23 @@ class UnmodeledPrefixes(unittest.TestCase):
                     result = A.classify(prefix + tail, {"GH_REPO": "x/y"})
                     self.assertNotIn(result.outcome, (A.NOT_GATED, A.ALLOWED, A.BOUND), result)
 
-    def test_a_shell_c_script_is_classified_by_its_own_segments(self):
-        script = "echo ok && gh issue close 12 --repo o/r"
-        bound = A.classify(["bash", "-lc", script], {})
-        self.assertEqual((bound.outcome, bound.repo, bound.number), (A.BOUND, "o/r", "12"))
-        self.assertEqual(A.classify(["nohup", "bash", "-c", script], {}).outcome, A.UNPROVABLE)
-        self.assertEqual(A.classify(["bash", "-c", "echo 'unclosed"], {}).outcome, A.UNPROVABLE)
+    def test_gh_inside_a_shell_c_script_is_unprovable_never_parsed(self):
+        for script in ("echo ok && gh issue close 12 --repo o/r", "GH_REPO=a/b gh issue close 12",
+                       "gh-as vitalharmony gh pr merge 5", "x; gha vh issue close 5"):
+            for shell in (["bash", "-lc"], ["nohup", "bash", "-c"], ["env", "-u", "X", "sh", "-c"]):
+                with self.subTest(argv=shell + [script]):
+                    self.assertEqual(A.classify(shell + [script], {}).outcome, A.UNPROVABLE)
         self.assertEqual(A.classify(["bash", "-c", "ls -la"], {}).outcome, A.NOT_GATED)
+
+    def test_a_shell_word_as_a_flag_value_does_not_hide_a_close(self):
+        result = A.classify(["gh", "issue", "close", "12", "--repo", "o/r", "--comment", "bash"], {})
+        self.assertEqual((result.outcome, result.number), (A.BOUND, "12"))
+
+    def test_an_account_wrapper_behind_an_unmodeled_prefix_is_unprovable(self):
+        for argv in (["sudo", "gha", "vh", "issue", "close", "5"],
+                     ["env", "-u", "GH_REPO", "gha", "vh", "issue", "close", "5"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(A.classify(argv, {"GH_REPO": "x/y"}).outcome, A.UNPROVABLE)
 
     def test_a_segment_with_no_gh_at_all_is_not_gated(self):
         self.assertEqual(A.classify(["sudo", "ls"], {}).outcome, A.NOT_GATED)
