@@ -241,7 +241,9 @@ class FlagTableDrift(unittest.TestCase):
         table = copy.deepcopy(gh_argv.load_table())
         self.assertFalse(table["commands"]["api"]["flags"]["--include"].get("value"))
         table["commands"]["api"]["flags"]["--include"].update(value=True)  # the drift
-        argv = ["gh", "api", "--include", "-X", "PUT", "repos/o/r/pulls/9/merge"]
+        # Attached value: nothing is left over for the one-endpoint rule to refuse,
+        # so only the swallowed-method guard stands between drift and a GET.
+        argv = ["gh", "api", "--include", "--method=PUT", "repos/o/r/pulls/9/merge"]
         self.assertEqual(A.classify(argv, {}).outcome, A.BOUND)  # the pinned table binds it
         with mock.patch.object(gh_argv, "load_table", return_value=table):
             self.assertEqual(A.classify(argv, {}).outcome, A.UNPROVABLE)
@@ -252,8 +254,8 @@ class FlagTableDrift(unittest.TestCase):
         table = copy.deepcopy(gh_argv.load_table())
         table["commands"]["api"]["flags"]["--include"].update(value=True)
         with mock.patch.object(gh_argv, "load_table", return_value=table):
-            for argv in (["gh", "api", "-X", "GET", "--include", "-X", "PUT", "repos/o/r/pulls/9/merge"],
-                         ["gh", "api", "--include", "-iX", "PUT", "repos/o/r/pulls/9/merge"]):
+            for argv in (["gh", "api", "-X", "GET", "--include", "--method=PUT", "repos/o/r/pulls/9/merge"],
+                         ["gh", "api", "--include", "-XPUT", "repos/o/r/pulls/9/merge"]):
                 self.assertNotIn(A.classify(argv, {}).outcome, (A.ALLOWED, A.NOT_GATED), argv)
 
 
