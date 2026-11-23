@@ -225,6 +225,16 @@ class FlagTableDrift(unittest.TestCase):
         argv = ["gh", "issue", "close", "--comment", "--help", "12", "--repo", "o/r"]
         self._assert_never_permissive_or_misbound(self._classify_with(table, argv))
 
+    def test_a_drifted_api_value_that_reads_as_help_is_never_not_a_merge(self):
+        """harmonic-forge#1496 reforge pass 1 (cross-family): the help safeguard
+        covers `gh api`, which can merge, not only issue close and pr merge."""
+        table = copy.deepcopy(gh_argv.load_table())
+        table["commands"]["api"]["flags"]["--jq"].update(value=False)
+        argv = ["gh", "api", "-X", "PUT", "repos/o/r/pulls/9/merge", "--jq", "--help"]
+        with mock.patch.object(gh_argv, "load_table", return_value=table):
+            self.assertIsNotNone(A.merge_target(argv, {}))
+            self.assertNotIn(A.classify(argv, {}).outcome, (A.ALLOWED, A.NOT_GATED))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,9 +99,11 @@ def classify_argv(argv: list[str], env: dict) -> Result:
     except gh_argv.ArgvError as exc:
         return Result(UNPARSEABLE, reason=str(exc))
     verdict = gh_argv.decide(argv, env)
-    if verdict.action == "allow" and parsed.help and parsed.path in _CLI_TARGET_PATHS:
-        # A help call on a close or merge path: a drifted flag table can read a
-        # value as `--help`, so this cannot prove the call is not a close.
+    if verdict.action == "allow" and parsed.help and (
+            parsed.path in _CLI_TARGET_PATHS or tuple(parsed.path[:1]) == ("api",)):
+        # A help call on a close or merge path, or on `gh api` (which can close
+        # or merge): a drifted flag table can read a value as `--help`, so this
+        # cannot prove the call is not a close (harmonic-forge#1496 reforge pass 1).
         return Result(UNPROVABLE, reason="a help flag on a close or merge path")
     if verdict.action == "gate" and verdict.target is not None:
         target = verdict.target

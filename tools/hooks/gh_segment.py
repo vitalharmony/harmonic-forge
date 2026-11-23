@@ -14,7 +14,9 @@ It is a strict allowlist. A segment is a gh call only in these shapes:
 Any other appearance of `gh`, `gh-as` or `gha` makes the segment `unprovable`: as
 a token behind another prefix (`sudo`, `xargs`, `nohup`, `env -u X`, a redirection,
 `command`, `exec`, `timeout`), inside a script handed to a shell's `-c` or to
-`eval`, or quoted. Only a segment with no gh word at all is `not_gh`. Nothing here
+`eval`, quoted, or inside a command substitution. A command word that is itself an
+expansion, substitution or glob is `unprovable` too. Only a segment with no gh word
+at all, and a literal command word, is `not_gh`. Nothing here
 parses a script: modelling a shell inside a shell is the defect class this module
 exists to avoid. The account wrappers set a token, never a repo.
 """
@@ -61,8 +63,27 @@ def _script_tokens(tokens: list[str]) -> list[str]:
     return found
 
 
+#: A command substitution whose body starts with an expansion: its command word is
+#: dynamic, so what it runs cannot be read (harmonic-forge#1496 reforge pass 1).
+_DYNAMIC_SUBSTITUTION = re.compile(r"(?:\$\(|`)\s*[$`]")
+#: A command word whose text the shell rewrites before running it: an expansion,
+#: a substitution, a glob or a quote splice.
+_DYNAMIC_WORD = re.compile(r"[$`*?\[\]'\"\\]")
+
+
+def _substitution_runs_gh(token: str) -> bool:
+    """A `$(...)` or backtick inside `token` (quoted or not) whose body names gh,
+    or whose own command word is dynamic. A plain `$VAR` runs nothing and is not
+    one (harmonic-forge#1496 reforge pass 1)."""
+    if "$(" not in token and "`" not in token:
+        return False
+    return bool(_GH_WORD.search(token) or _DYNAMIC_SUBSTITUTION.search(token))
+
+
 def _mentions_gh(tokens: list[str]) -> bool:
     if any(Path(token).name in _GH_NAMES for token in tokens):
+        return True
+    if any(_substitution_runs_gh(token) for token in tokens):
         return True
     return any(_GH_WORD.search(script) for script in _script_tokens(tokens))
 
@@ -76,6 +97,10 @@ def gh_segment(tokens: list[str]) -> Segment:
     while index < len(tokens) and (match := _ASSIGNMENT.match(tokens[index])):
         env[match.group(1)] = match.group(2)
         index += 1
+    if index < len(tokens) and _DYNAMIC_WORD.search(tokens[index]):
+        # Fail closed (harmonic-forge#1496 reforge pass 1): `$GH`, `$(echo gh)`,
+        # a backtick, `g${x}h` or a glob in command position can run gh.
+        return Segment(UNPROVABLE, env=env, reason="the command word is an expansion, substitution or glob")
     if index < len(tokens):
         name = Path(tokens[index]).name
         rest = tokens[index + 1:]

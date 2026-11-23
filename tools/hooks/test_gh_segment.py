@@ -7,6 +7,7 @@ one without parsing a script.
 """
 from __future__ import annotations
 
+import shlex
 import sys
 import unittest
 from pathlib import Path
@@ -57,6 +58,30 @@ class UnprovableShapes(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(S.gh_segment(tokens).kind, S.UNPROVABLE)
 
+
+
+class DynamicShapes(unittest.TestCase):
+    """harmonic-forge#1496 reforge pass 1: the gate fails closed on a dynamic
+    command word and on a substitution that runs gh, and still lets a plain
+    expansion or a non-gh substitution through."""
+
+    UNPROVABLE = (
+        "$(echo gh) issue close 5",
+        "`echo gh` issue close 5",
+        "$GH issue close 5",
+        "g${x}h issue close 5",
+        'gh issue comment 5 --body "$(gh issue close 7)"',
+        'echo "$(gh issue close 7)"',
+        'gh issue view 3 --comments "`gh pr merge 9`"',
+    )
+
+    def test_each_reproduced_shape_is_unprovable(self):
+        for command in self.UNPROVABLE:
+            self.assertEqual(S.gh_segment(shlex.split(command)).kind, S.UNPROVABLE, command)
+
+    def test_a_non_gh_substitution_or_plain_expansion_is_not_gh(self):
+        for command in ("echo $(date)", "echo $HOME", 'printf "%s" "$(uname)"'):
+            self.assertEqual(S.gh_segment(shlex.split(command)).kind, S.NOT_GH, command)
 
 class NotGh(unittest.TestCase):
     def test_a_segment_with_no_gh_word_is_not_gh(self):
