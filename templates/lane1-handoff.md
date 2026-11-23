@@ -123,7 +123,10 @@ found it, e.g. `git grep -n HANDOFF_HEADINGS`} — "none" is valid only with
 the search that returned nothing (harmonic-forge#838). `l1_post.py` checks
 only that the section is filled in; pitch-inspection checks the searches. Load-Bearing Assumptions verifies what this handoff
 states; this field finds what it forgot to state, which is where most
-handoff-origin defects came from.
+handoff-origin defects came from. Before adding or reimplementing a shared
+behavior, consult its contract entry (`docs/CONTRACTS.md`, harmonic-forge#1501)
+and search consumers; reuse or extend the owner; record any semantic
+difference in Consumers and Equivalents.
 
 ### Live Probe
 {none | for each external call this handoff adds or changes (a network

@@ -1,0 +1,32 @@
+# The contract index (harmonic-forge#1501): one [[contract]] per shared behavior.
+#
+# Fields (the shared field list every repo's index follows):
+#   id              <project>.<name>, unique; <project> is a name in projects.toml
+#   scope           one sentence
+#   owner           owning repo path and public symbols
+#   modules         the module set the contract composes
+#   authority       the authoritative source (data or code)
+#   example_caller  one real caller, path:line
+#   guard           guard and test references
+#   exceptions      where named exceptions live, or "none"
+#   scan_roots      what its guard scans
+#   blind_spots     what the guard cannot see
+#   status          canonical | pending-adopter
+#
+# `tools/registry/contracts.py validate` checks the schema and that every path
+# resolves; `render` writes docs/CONTRACTS.md; `--check` is the freshness check
+# that `mise run ci-check` runs. The effect registry (effects.toml) is linked,
+# never duplicated.
+
+[[contract]]
+id = "harmonic-forge.gh-argv-parser"
+scope = "The pflag-faithful parse and decision of one gh close, merge or api call, against a pinned flag table."
+owner = "tools/hooks/gh_argv.py: parse, decide, GATED_ROOTS, ArgvError"
+modules = ["tools/hooks/gh_argv.py", "tools/hooks/gh_flag_table.json", "tools/hooks/gen_gh_flag_table.py"]
+authority = "tools/hooks/gh_flag_table.json"
+example_caller = "tools/hooks/close_gate.py:89"
+guard = ["tools/hooks/test_gh_argv.py"]
+exceptions = "none yet; batch_auth, block_data_migration_close and block_missing_preclose_inspection still keep private recognizers (harmonic-forge#1496 to #1500)"
+scan_roots = ["tools/hooks"]
+blind_spots = "text hooks tokenize a command string with shell_parse, which this contract does not cover"
+status = "canonical"
