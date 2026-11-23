@@ -806,6 +806,9 @@ cases the test does not decide, resolved here rather than left open:
 <!-- R-0395 -->
 A session reports its own work only. It never surveys, tracks, relays or reminds about another lane's owed work unless the operator asks in that message. The lanes monitor each other.
 <!-- /R-0395 -->
+<!-- R-0437 -->
+Work in flight, and any lane's queue, is read from the live lane worktrees (`~/Harmonic_Projects/.worktrees/`: branch, head, dirty), dropping any whose issue is closed; `gh` only enriches the issues those name. Never a board scan, PRIORITIES.md, or a SCAN to find more.
+<!-- /R-0437 -->
 <!-- R-0396 -->
 Status and advice are re-derived from live state when they are given, never carried forward from earlier in the session. Where the lane cannot see the source, the line says "not visible" or is left out, and an absence claim names the range it searched.
 <!-- /R-0396 -->

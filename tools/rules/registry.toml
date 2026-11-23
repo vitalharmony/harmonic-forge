@@ -2975,3 +2975,11 @@ anchor = "current-lane-assignment-harmonic-forge113"
 statement = "Ready own-queue work that existing rules already authorize Lane 1 to do (implementation per R-0392) is done rather than asked about; timing and operator-reserved steps stay with the existing rules (harmonic-forge#1486)."
 text_sha = "0083860b6fdd8f73"
 hooks = []
+
+[[rule]]
+id = "R-0437"
+file = "rules/universal-agent.md"
+anchor = "report-discipline"
+statement = "Work in flight, and any lane's queue, is read from the live lane worktrees, dropping any whose issue is closed; gh only enriches the issues those name. Never a board scan, PRIORITIES.md, or a SCAN to find more (harmonic-forge#1506)."
+text_sha = "0f8b3bb7c9ccb97e"
+hooks = []
