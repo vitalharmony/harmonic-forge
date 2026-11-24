@@ -111,6 +111,15 @@ class ReceiptContentTests(unittest.TestCase):
                 self.assertEqual(C.forge_unusable_reason(), "forge tree dirty: tools/hooks/a.py")
 
 
+    def test_lookup_none_for_missing_empty_and_unparseable(self):
+        self.assertIsNone(C.lookup(SLUG, SHA))
+        path = C.receipt_path(SLUG, SHA)
+        path.parent.mkdir(parents=True)
+        path.touch()
+        self.assertIsNone(C.lookup(SLUG, SHA))
+        path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(C.lookup(SLUG, SHA))
+
 _REAL_FORGE_SHA = C.forge_sha
 
 
