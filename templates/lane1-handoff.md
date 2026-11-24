@@ -116,12 +116,18 @@ on it; naming it here is what makes it checkable instead of silently
 inherited.
 
 ### Consumers and Equivalents
-{none | for each contract this handoff changes (a function, query, file
-format, heading list, receipt field, CLI flag): every existing reader, and
-any existing implementation of the same behavior, each with the search that
-found it, e.g. `git grep -n HANDOFF_HEADINGS`} — "none" is valid only with
-the search that returned nothing (harmonic-forge#838). `l1_post.py` checks
-only that the section is filled in; pitch-inspection checks the searches. Load-Bearing Assumptions verifies what this handoff
+{for each contract this handoff changes (a function, query, file format,
+heading list, receipt field, CLI flag): every existing reader, and any
+existing implementation of the same behavior, each with the search that
+found it, e.g. `git grep -n HANDOFF_HEADINGS`.}
+Then one of two labeled forms, each label on a line of its own
+(harmonic-forge#1502; `l1_post.py` refuses a field with neither):
+Contract: {<project>.<name>, one line per id in docs/CONTRACTS.md}
+— or —
+No index entry applies: {why}
+Search: {the command that found no entry}
+`l1_post.py` checks only the form; pitch-inspection checks the searches
+(harmonic-forge#838). Load-Bearing Assumptions verifies what this handoff
 states; this field finds what it forgot to state, which is where most
 handoff-origin defects came from. Before adding or reimplementing a shared
 behavior, consult its contract entry (`docs/CONTRACTS.md`, harmonic-forge#1501)

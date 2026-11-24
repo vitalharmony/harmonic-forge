@@ -165,7 +165,9 @@ class WiredIntoMain(unittest.TestCase):
 
     # a private-repo incident: the lead region needs Scope/Next now too.
     HANDOFF = "**Scope:** plan-first wiring test.\n**Next:** n/a.\n\n" + "\n".join(
-        f"### {heading}\nreal content for {heading}, per `git grep -n x` (l1_post.py:94), verified-live\n" for heading in L.HANDOFF_HEADINGS
+        (f"### {heading}\nNo index entry applies.\nSearch: `git grep -n x`\n" if heading == "Consumers and Equivalents"
+         else f"### {heading}\nreal content for {heading}, per `git grep -n x` (l1_post.py:94), verified-live\n")
+        for heading in L.HANDOFF_HEADINGS
         if heading != "Implementation Spec"
     ) + "\n### Implementation Spec\n1. Do the thing.\n2. Then the other.\n"
 

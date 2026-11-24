@@ -110,6 +110,7 @@ import sticky_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
+import _consumers_field  # noqa: E402  (harmonic-forge#1502)
 import _scratch, _dry_run_failures  # noqa: E402  (harmonic-forge#949, harmonic-forge#1544)
 import _manifest_compare  # noqa: E402  (harmonic-forge#1539)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
@@ -756,12 +757,15 @@ def validate_handoff(body: str, requires_preflight: bool) -> None:
     refusal = _scenario_trace.trace_refusal(section_content(body, "Scenario Trace"))
     if refusal:
         fail(refusal)
-    # harmonic-forge#838 AC4: `Consumers and Equivalents` is enforced by
-    # STRUCTURE only -- present and not a placeholder, like every heading
-    # above. Whether each reader came with the search that found it is a
-    # question about what was run, which is not in the text; two preclose
-    # passes showed a regex fails both ways (sticky-wicket PATCH), so that
-    # check is pitch-inspection's (agents/pitch-inspection.md, check 6).
+    # harmonic-forge#1502: `Consumers and Equivalents` must carry one of two
+    # labeled forms (`Contract: <id>` lines resolving in the contract index, or
+    # `No index entry applies` plus `Search:`). Only the FORM is checked here.
+    # Whether each reader came with the search that found it is still a
+    # question about what was run, which is not in the text (harmonic-forge#838
+    # AC4: a regex fails both ways), so that stays pitch-inspection's check 6.
+    refusal = _consumers_field.consumers_refusal(section_content(body, "Consumers and Equivalents"))
+    if refusal:
+        fail(refusal)
     # harmonic-forge#994: `Live Probe` is structure-only for the same reason,
     # and a bare "none" passes `is_substantive` (as it does for `Delegated
     # Judgment Calls`), so "none only with the search" is likewise checked by
