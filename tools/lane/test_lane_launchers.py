@@ -79,7 +79,9 @@ def _lane_dir_in_forge(root: Path) -> Path:
     shutil.copytree(LANE_DIR.parent / "onboard", forge / "tools" / "onboard",
                     ignore=shutil.ignore_patterns("__pycache__"))
     for sibling in LANE_DIR.parent.iterdir():
-        if sibling.is_dir() and sibling.name not in ("lane", "onboard"):
+        # routing is never linked: _place_route_mod writes the mod at
+        # lane_dir/../routing, and a link would write through into the checkout.
+        if sibling.is_dir() and sibling.name not in ("lane", "onboard", "routing"):
             (forge / "tools" / sibling.name).symlink_to(sibling)
     (forge / "projects.toml").write_text(
         "[[project]]\n"
@@ -2197,7 +2199,6 @@ class RouteFloorModWiring(unittest.TestCase):
         self.assertIn('[ -f "$_lane_dir/../routing/mod/.claude-plugin/plugin.json" ]', source)
         with _FixtureTree() as tree:
             lane_dir = _lane_dir_in_forge(tree.root)
-            (lane_dir.parent / "routing").unlink()  # the mod this test proves missing
             for path in LANE_DIR.iterdir():
                 if path.is_file() and (path.name.startswith("_") or path.name in ("lane1", "lane2", "lane3")):
                     (lane_dir / path.name).write_text(path.read_text())
