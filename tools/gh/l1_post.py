@@ -2698,7 +2698,7 @@ def _manifest_differences(owner: Path, scratch_dir: Path, names: tuple[str, ...]
             fail(f"cannot read {path}: {exc}")
             raise AssertionError("unreachable") from exc  # fail() exits
     return [name for name in names if not _manifest_compare.manifests_equal(
-        name, read(owner / name), read(scratch_dir / name))]
+        name, read(owner / name), read(scratch_dir / name), _manifest_compare.has_gyp(name, owner, scratch_dir))]
 
 
 def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess[str]:
