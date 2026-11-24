@@ -56,24 +56,17 @@ class FormTests(unittest.TestCase):
     def test_a_backtick_only_search_refuses(self) -> None:
         self.assertIn("Search:", self.check("No index entry applies.\nSearch: ``"))
 
-    def test_fenced_and_commented_labels_are_not_declarations(self) -> None:
-        fenced = "No index entry applies.\nSearch: `rg x`\n```\nContract: harmonic-forge.example\n```"
-        self.assertIsNone(self.check(fenced))
-        self.assertIsNotNone(self.check("<!-- Contract: harmonic-forge.gh-argv-parser -->"))
-        self.assertIsNotNone(self.check("```\nNo index entry applies\nSearch: x"))
-
     def test_a_present_checkout_without_an_index_refuses(self) -> None:
         other = self.tmp / "hrse"
         other.mkdir()
         msg = self.check("Contract: hrse.anything", checkout=lambda _project: other)
         self.assertIn("no contract index yet", msg)
 
-    def test_a_multiline_comment_declaration_is_not_read(self) -> None:
-        self.assertIsNotNone(self.check(f"<!--\nContract: {REAL_ID}\n-->"))
-        self.assertIsNotNone(self.check(f"<!--\nContract: {REAL_ID}"))
+    def test_backticks_inside_an_id_are_not_stripped(self) -> None:
+        self.assertIn("not a contract id", self.check("Contract: harmonic-forge.gh`-argv-parser"))
 
-    def test_a_fence_inside_a_list_item_hides_its_contents(self) -> None:
-        self.assertIsNotNone(self.check(f"- example:\n    ```\n    Contract: {REAL_ID}\n    ```"))
+    def test_crlf_lines_are_read(self) -> None:
+        self.assertIsNone(self.check("No index entry applies.\r\nSearch: `rg x`\r\n"))
 
     def test_backticked_labels_are_read(self) -> None:
         self.assertIsNone(self.check(f"`Contract: {REAL_ID}`"))

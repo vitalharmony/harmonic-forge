@@ -27,13 +27,11 @@ _FORGE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_FORGE / "tools" / "registry"))
 import contracts  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _scenario_trace  # noqa: E402
 
 #: A list bullet or number, surrounding whitespace and Markdown emphasis, stripped
 #: before a label is read (`**Contract:** x` reads as `Contract: x`).
 _LEAD = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*")
-_EMPHASIS = re.compile(r"(\*\*|__|`)")
+_EMPHASIS = re.compile(r"(\*\*|__)")
 _CONTRACT = re.compile(r"^contract:\s*(.*)$", re.IGNORECASE)
 _NO_ENTRY = re.compile(r"^no index entry applies\b", re.IGNORECASE)
 _SEARCH = re.compile(r"^search:\s*(.*)$", re.IGNORECASE)
@@ -44,14 +42,18 @@ FORMS = ("one or more `Contract: <id>` lines naming ids in the contract index "
 
 
 def _lines(section: str) -> list[str]:
-    """The section's label-bearing lines. Examples are removed with `_scenario_trace`'s own
-    refusal-leaning helpers (harmonic-forge#920's ruling: shrink the parsing, never grow
-    it): comments first, an unclosed `<!--` hiding the rest; then fences, matched at any
-    indentation so a fence inside a list item counts, an unclosed fence hiding the rest.
-    Then bullets, emphasis and inline-code backticks are stripped."""
-    text = _scenario_trace.strip_comments(section)
-    text = _scenario_trace.strip_fences("\n".join(line.lstrip() for line in text.split("\n")))
-    return [_LEAD.sub("", _EMPHASIS.sub("", line), count=1).strip() for line in text.split("\n")]
+    """The section's lines, each with a list bullet, `**`/`__` emphasis and one pair of
+    backticks wrapping the whole line removed. No fence or comment parsing: two preclose
+    passes and a post-verdict read kept finding Markdown-lexing edge cases, so per the
+    sticky-wicket ruling (as harmonic-forge#920's) the example-stripping is dropped. A
+    label line inside a fenced example therefore counts like any other line."""
+    out = []
+    for line in section.splitlines():
+        line = _LEAD.sub("", _EMPHASIS.sub("", line), count=1).strip()
+        if len(line) > 1 and line.startswith("`") and line.endswith("`") and line.count("`") == 2:
+            line = line[1:-1].strip()
+        out.append(line)
+    return out
 
 
 def _known_projects(manifest: Path) -> set[str]:
@@ -60,6 +62,7 @@ def _known_projects(manifest: Path) -> set[str]:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return set()
     return {item.get("name") for item in projects if isinstance(item, dict) and item.get("name")}
+
 
 
 def _present_without_index(project: str, checkout) -> bool:
@@ -99,7 +102,7 @@ def consumers_refusal(section: str, *, index: Path | None = None,
         return None
     no_entry = any(_NO_ENTRY.match(line) for line in lines)
     searches = [m.group(1).strip() for line in lines if (m := _SEARCH.match(line))]
-    if no_entry and any(searches):
+    if no_entry and any(v.strip("`").strip() for v in searches):
         return None
     if no_entry:
         return ("Consumers and Equivalents: `No index entry applies` needs a non-empty "
