@@ -97,6 +97,18 @@ class InstallStepsFailClosed(unittest.TestCase):
         self.assertFalse(eq(json.dumps({**BASE, "scripts": "x"}).encode(),
                             json.dumps({**BASE, "scripts": "x", "version": "9"}).encode()))
 
+    def test_a_local_dependency_spec_withdraws_the_exemption(self) -> None:
+        for block in ("dependencies", "devDependencies", "optionalDependencies", "overrides"):
+            for spec in ("file:.", "link:../x", "./pkg", "../pkg", "/abs/pkg", "~/pkg", "."):
+                with self.subTest(block=block, spec=spec):
+                    self.assertFalse(eq(pkg(**{block: {"self": spec}}),
+                                        pkg(version="3.2.1", **{block: {"self": spec}})))
+
+    def test_a_non_string_version_differs(self) -> None:
+        for bad in ({"x": 1}, 3, None, ["1"]):
+            with self.subTest(bad=bad):
+                self.assertFalse(eq(pkg(), pkg(version=bad)))
+
     def test_binding_gyp_differs(self) -> None:
         self.assertFalse(manifests_equal(PKG, pkg(), pkg(version="3.2.1"), gyp=True))
 

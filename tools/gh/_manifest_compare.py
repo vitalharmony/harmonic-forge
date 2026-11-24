@@ -87,6 +87,33 @@ def _runs_install_step(pairs: _Object) -> bool:
     return False
 
 
+_DEPENDENCY_BLOCKS = frozenset(("dependencies", "devDependencies", "optionalDependencies",
+                                "peerDependencies", "overrides", "resolutions"))
+_LOCAL_SPEC = ("file:", "link:", "./", "../", "/", "~/")
+
+
+def _has_local_spec(value: object) -> bool:
+    if isinstance(value, str):
+        return value.startswith(_LOCAL_SPEC) or value in (".", "..")
+    if isinstance(value, _Object):
+        return any(_has_local_spec(item) for _, item in value)
+    if isinstance(value, list):
+        return any(_has_local_spec(item) for item in value)
+    return False
+
+
+def _exposes_root(pairs: _Object) -> bool:
+    """A local (file:/link:/path) dependency can link the root package itself,
+    so its version would reach node_modules with no script (epoch-2 pass 2)."""
+    return any(key in _DEPENDENCY_BLOCKS and _has_local_spec(value) for key, value in pairs)
+
+
+def _version_is_a_string(pairs: _Object) -> bool:
+    """npm ci rejects a non-string version (epoch-2 pass 2), so only a string
+    one may be ignored."""
+    return all(isinstance(value, str) for key, value in pairs if key in IGNORED_KEYS)
+
+
 def has_gyp(name: str, *roots: Path) -> bool:
     """Whether a `binding.gyp` sits beside manifest `name` under any root."""
     parent = PurePosixPath(name).parent
@@ -104,8 +131,9 @@ def manifests_equal(name: str, ours: bytes | None, theirs: bytes | None,
     ours_pairs, theirs_pairs = _pairs(ours), _pairs(theirs)
     if ours_pairs is None or theirs_pairs is None:
         return False
-    if _runs_install_step(ours_pairs) or _runs_install_step(theirs_pairs):
-        return False
+    for pairs in (ours_pairs, theirs_pairs):
+        if _runs_install_step(pairs) or _exposes_root(pairs) or not _version_is_a_string(pairs):
+            return False
 
     def kept(pairs: _Object) -> list:
         return [(key, _typed(value)) for key, value in pairs if key not in IGNORED_KEYS]
