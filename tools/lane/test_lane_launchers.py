@@ -170,7 +170,8 @@ class _FixtureTree:
         # account (vitalharmony/harmonic-forge, bc.build_fixture_tree) through
         # THIS manifest, so it registers that repo -- at a path that is not
         # the fixture checkout, so the session label stays bare.
-        raw += ("\n[[project]]\n"
+        if 'repo = "vitalharmony/harmonic-forge"' not in raw:  # a re-read manifest has it
+          raw += ("\n[[project]]\n"
                 'name = "origin-fixture"\nprefix = "Q"\nrepo = "vitalharmony/harmonic-forge"\n'
                 f'account = "vitalharmony"\npath = "{self.root / "unregistered-path"}"\n'
                 'onboarded = false\nworkspace = "vh"\n')
