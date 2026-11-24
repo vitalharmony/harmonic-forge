@@ -27,6 +27,7 @@ the slot has none -- gh would otherwise use the shared keyring token.
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import sys
 from datetime import datetime, timezone
@@ -238,6 +239,30 @@ def _apply_lane_slot_token(argv: list[str]) -> None:
     os.environ["GH_TOKEN"] = token
 
 
+def _apply_state_dir() -> None:
+    """harmonic-forge#1521: a gh call with neither HOME nor XDG_STATE_HOME must not write
+    its state into the working directory.
+
+    The real gh keeps `device-id` under `$XDG_STATE_HOME/gh/`, which with HOME set is
+    `$HOME/.local/state/gh/`. With neither set it falls back to the RELATIVE path
+    `.local/state/gh/`, so any caller that scrubs its environment and runs gh from a checkout
+    leaves an untracked `.local/` there (harmonic-forge#1518: one test cleared os.environ).
+    The shim is the one place every lane's gh call passes, so it supplies the state dir gh
+    would have used: `<passwd home>/.local/state`. A set, non-empty HOME or XDG_STATE_HOME
+    changes nothing, and a failed or unusable lookup (no passwd entry, an empty or relative
+    home, which would only recreate the relative path) leaves the environment as it was.
+    Run first in `main()`, so every subprocess and the final exec inherit it."""
+    if os.environ.get("HOME") or os.environ.get("XDG_STATE_HOME"):
+        return
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:  # noqa: BLE001 - KeyError (no passwd entry), OSError: gh behaves as today
+        return
+    if not isinstance(home, str) or not os.path.isabs(home):
+        return
+    os.environ["XDG_STATE_HOME"] = os.path.join(home, ".local", "state")
+
+
 def _exec_real_gh(real_gh: str, argv: list[str]) -> None:
     """The only exec of the real gh (harmonic-forge#1511): plain `os.execv`, on
     the environment `_apply_lane_slot_token` already settled."""
@@ -246,6 +271,9 @@ def _exec_real_gh(real_gh: str, argv: list[str]) -> None:
 
 def main() -> None:
     argv = sys.argv[1:]
+    # harmonic-forge#1521: first, so the slot-token step, the close/merge gate, the budget
+    # probe and the final exec all inherit a state dir that is not the working directory.
+    _apply_state_dir()
     # harmonic-forge#1511: before anything below can start a real-gh subprocess.
     _apply_lane_slot_token(argv)
     real_gh = _resolve_real_gh()

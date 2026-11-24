@@ -7,6 +7,7 @@ actually exec'ing a real `gh`.
 import importlib.machinery
 import importlib.util
 import os
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -322,6 +323,124 @@ class LaneSlotToken(unittest.TestCase):
         main_src = source[source.index("def main()"):]
         self.assertLess(main_src.index("_apply_lane_slot_token(argv)"),
                         main_src.index("_close_merge_gate(argv"))
+
+
+class StateDirStep(unittest.TestCase):
+    """harmonic-forge#1521: a gh call with neither HOME nor XDG_STATE_HOME must not write its
+    state into the working directory, because the real gh then uses the relative path
+    `.local/state/gh/device-id`. The shim supplies the state dir gh would have used."""
+
+    PASSWD_HOME = "/home/someone"
+
+    def _env_at_exec(self, env: dict, argv=("--version",), getpwuid=None) -> dict:
+        """`main()` on a pinned environment with exactly `env`'s HOME and XDG_STATE_HOME; the
+        environment as the real gh would receive it at the (mocked) exec."""
+        shim = _load_shim()
+        fake_patterns = mock.Mock()
+        fake_patterns.scan_reason.return_value = None
+        fake_patterns.consume_override.return_value = False
+        fake_patterns.budget.return_value = (5000, 1.0)
+        base = {k: v for k, v in _pinned_env().items() if k not in ("HOME", "XDG_STATE_HOME")}
+        seen = {}
+        fake_pw = getpwuid or mock.Mock(return_value=mock.Mock(pw_dir=self.PASSWD_HOME))
+        with mock.patch.dict(os.environ, {**base, **env}, clear=True), \
+             mock.patch.object(sys, "argv", ["gh", *argv]), \
+             mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
+             mock.patch.object(shim.pwd, "getpwuid", fake_pw), \
+             mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
+             mock.patch("os.execv", side_effect=lambda *a: seen.update(dict(os.environ))):
+            shim.main()
+        return seen
+
+    def test_neither_variable_set_gives_an_absolute_state_dir_outside_the_cwd(self):
+        env = self._env_at_exec({})
+        self.assertEqual(env["XDG_STATE_HOME"], f"{self.PASSWD_HOME}/.local/state")
+        self.assertTrue(os.path.isabs(env["XDG_STATE_HOME"]))
+        self.assertFalse(Path(env["XDG_STATE_HOME"]).is_relative_to(Path.cwd()))
+
+    def test_the_real_passwd_home_is_used_when_nothing_is_mocked(self):
+        shim = _load_shim()
+        fake_patterns = mock.Mock()
+        fake_patterns.scan_reason.return_value = None
+        fake_patterns.consume_override.return_value = False
+        base = {k: v for k, v in _pinned_env().items() if k not in ("HOME", "XDG_STATE_HOME")}
+        seen = {}
+        with mock.patch.dict(os.environ, base, clear=True), \
+             mock.patch.object(sys, "argv", ["gh", "--version"]), \
+             mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
+             mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
+             mock.patch("os.execv", side_effect=lambda *a: seen.update(dict(os.environ))):
+            shim.main()
+        self.assertEqual(seen["XDG_STATE_HOME"],
+                         os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".local", "state"))
+
+    def test_an_empty_variable_counts_as_unset(self):
+        for env in ({"HOME": ""}, {"XDG_STATE_HOME": ""}, {"HOME": "", "XDG_STATE_HOME": ""}):
+            with self.subTest(env=env):
+                self.assertEqual(self._env_at_exec(env)["XDG_STATE_HOME"], f"{self.PASSWD_HOME}/.local/state")
+
+    def test_a_set_home_leaves_the_environment_unchanged(self):
+        env = self._env_at_exec({"HOME": "/home/other"})
+        self.assertEqual(env["HOME"], "/home/other")
+        self.assertNotIn("XDG_STATE_HOME", env)
+
+    def test_a_set_xdg_state_home_is_kept_as_it_is(self):
+        env = self._env_at_exec({"XDG_STATE_HOME": "/var/tmp/custom-state"})
+        self.assertEqual(env["XDG_STATE_HOME"], "/var/tmp/custom-state")
+        self.assertNotIn("HOME", env)
+        both = self._env_at_exec({"HOME": "/home/other", "XDG_STATE_HOME": "/var/tmp/custom-state"})
+        self.assertEqual((both["HOME"], both["XDG_STATE_HOME"]), ("/home/other", "/var/tmp/custom-state"))
+
+    def test_a_failed_passwd_lookup_leaves_the_environment_unchanged(self):
+        for error in (KeyError("getpwuid(): uid not found"), OSError("passwd unreadable")):
+            with self.subTest(error=type(error).__name__):
+                env = self._env_at_exec({}, getpwuid=mock.Mock(side_effect=error))
+                self.assertNotIn("XDG_STATE_HOME", env)
+                self.assertNotIn("HOME", env)
+
+    def test_an_unusable_passwd_home_is_not_turned_into_a_relative_path(self):
+        """An empty or relative home would only recreate the relative `.local/state`."""
+        for home in ("", "relative/home", None):
+            with self.subTest(home=home):
+                env = self._env_at_exec({}, getpwuid=mock.Mock(return_value=mock.Mock(pw_dir=home)))
+                self.assertNotIn("XDG_STATE_HOME", env)
+
+    def test_it_runs_for_every_kind_of_call_including_the_identity_probe_and_auth(self):
+        for argv in (["--version"], ["auth", "token"], ["api", "user", "--jq", ".login"], ["issue", "view", "1"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self._env_at_exec({}, argv=tuple(argv))["XDG_STATE_HOME"],
+                                 f"{self.PASSWD_HOME}/.local/state")
+
+    def test_it_runs_before_the_lane_slot_token_step_so_every_subprocess_inherits_it(self):
+        shim = _load_shim()
+        order = []
+        fake_patterns = mock.Mock()
+        fake_patterns.scan_reason.return_value = None
+        fake_patterns.consume_override.return_value = False
+        base = {k: v for k, v in _pinned_env().items() if k not in ("HOME", "XDG_STATE_HOME")}
+        with mock.patch.dict(os.environ, base, clear=True), \
+             mock.patch.object(sys, "argv", ["gh", "--version"]), \
+             mock.patch.object(shim, "_resolve_real_gh", return_value="/usr/bin/gh"), \
+             mock.patch.object(shim.pwd, "getpwuid", return_value=mock.Mock(pw_dir=self.PASSWD_HOME)), \
+             mock.patch.object(shim, "_apply_lane_slot_token",
+                               side_effect=lambda argv: order.append(os.environ.get("XDG_STATE_HOME"))), \
+             mock.patch.dict(sys.modules, {"gh_scan_patterns": fake_patterns}), \
+             mock.patch("os.execv"):
+            shim.main()
+        self.assertEqual(order, [f"{self.PASSWD_HOME}/.local/state"])
+
+    @unittest.skipUnless(os.path.exists("/usr/bin/gh"), "needs the real gh at /usr/bin/gh")
+    def test_a_scrubbed_environment_through_the_real_shim_leaves_nothing_in_the_cwd(self):
+        """The case the issue names, end to end: `gh --version` through the shim with `env -i`,
+        run from a scratch directory, leaves no `.local/` there. Without the step the real gh
+        creates `<cwd>/.local/state/gh/device-id`."""
+        with tempfile.TemporaryDirectory() as scratch:
+            result = subprocess.run(
+                [sys.executable, str(_SHIM_PATH), "--version"], cwd=scratch, capture_output=True,
+                text=True, env={"PATH": "/usr/bin:/bin"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gh version", result.stdout)
+            self.assertEqual(os.listdir(scratch), [], "the real gh wrote into its working directory")
 
 
 class Installer(unittest.TestCase):
