@@ -61,6 +61,25 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# harmonic-forge#1512: the call's duration is read off a MONOTONIC clock. The
+# wall clock (`date +%s%3N`, CLOCK_REALTIME) can be stepped by a time-sync
+# correction inside the span: a 170 ms backward step measured 232 ms around a
+# 400 ms reviewer and a step of 400 ms or more measured null, both seen in CI
+# (the test `test_duration_ms_measures_the_reviewer_call`). `/proc/uptime`
+# (CLOCK_BOOTTIME) is not affected by a realtime step, and `read` is a builtin,
+# so there is no fork inside the span. It has a 10 ms tick, which is far below
+# the seconds-to-minutes a real review takes. Prints milliseconds, or nothing
+# where procfs is absent (macOS, BSD): there is no monotonic millisecond source
+# there, and `date +%s%3N` fails on BSD already.
+now_ms() {
+  local up="" rest=""
+  read -r up rest </proc/uptime 2>/dev/null || return 0
+  # "12345.67" -> centiseconds with the dot stripped, then milliseconds: integer
+  # arithmetic only, `10#` so a leading zero never reads as octal.
+  [[ "$up" =~ ^[0-9]+\.[0-9]{2}$ ]] || return 0
+  echo $(( 10#${up/./} * 10 ))
+}
+
 write_process_error() {
   [ -n "$out" ] || return 0
   mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
@@ -591,7 +610,7 @@ for family in "${targets[@]}"; do
   call_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # harmonic-forge#1422: the call's wall-clock is measured here, around the
   # reviewer, and written into the envelope, so no caller ever types it.
-  call_started_ms="$(date +%s%3N)"
+  call_started_ms="$(now_ms)"
   # Run in the background and wait, so a trapped signal runs at once and is
   # forwarded (see INV-B above); the call shape of each `invoke_*` is unchanged.
   case "$family" in
@@ -601,10 +620,24 @@ for family in "${targets[@]}"; do
   reviewer_pid=$!
   wait "$reviewer_pid" || exit_code=$?
   reviewer_pid=""
-  duration_ms=$(( $(date +%s%3N) - call_started_ms ))
-  # A wall-clock step backward leaves no honest value: record none (null),
-  # never a synthetic one; preclose then treats it as a legacy envelope.
-  [ "$duration_ms" -ge 1 ] || duration_ms=null
+  call_ended_ms="$(now_ms)"
+  if [ -n "$call_started_ms" ] && [ -n "$call_ended_ms" ]; then
+    duration_ms=$(( call_ended_ms - call_started_ms ))
+    if [ "$duration_ms" -lt 0 ]; then
+      # A monotonic source never goes back, so this reading is dishonest: record
+      # none (null), never a synthetic one; preclose then treats it as a legacy
+      # envelope.
+      duration_ms=null
+    elif [ "$duration_ms" -eq 0 ]; then
+      # Both readings fell in one 10 ms tick: the call took under 10 ms, so 1 is
+      # a true floor, not a guess. null here would read as a clock fault, and an
+      # instant stub does land here (26 of 40 runs measured).
+      duration_ms=1
+    fi
+  else
+    # No monotonic millisecond source on this platform: say so with null.
+    duration_ms=null
+  fi
   rm -f "$prompt_file"
   # harmonic-forge#1188 AC8: after a successful Codex call, map its thread id
   # (the first `thread.started` event, live probe 1) to the caller's issue in
