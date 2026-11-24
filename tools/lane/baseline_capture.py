@@ -226,6 +226,12 @@ def build_fixture_tree(
     _run(["git", "init", "-b", "main", str(main)])
     _run(["git", "config", "user.email", "lane@example.invalid"], cwd=main)
     _run(["git", "config", "user.name", "Lane Fixture"], cwd=main)
+    # harmonic-forge#1549: a commit or fetch can start background auto-gc /
+    # maintenance, whose `worktree prune` removed the half-built
+    # .git/worktrees/<name> mid `git worktree add` ("could not open
+    # '.git/worktrees/proj-lane2/locked' for writing", 1/200 under load).
+    _run(["git", "config", "gc.auto", "0"], cwd=main)
+    _run(["git", "config", "maintenance.auto", "false"], cwd=main)
     (main / "README.md").write_text("fixture\n")
     _run(["git", "add", "README.md"], cwd=main)
     _run(["git", "commit", "-q", "-m", "fixture"], cwd=main)
