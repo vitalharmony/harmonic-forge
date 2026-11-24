@@ -2595,5 +2595,34 @@ class LaneHookSet(unittest.TestCase):
                       'CLAUDE_CODE_ENABLE_TODO_TOOLS"\n  [codex]=""', source)
 
 
+
+class InheritedGhRepoTests(unittest.TestCase):
+    """harmonic-forge#1540: the slot script unsets an inherited GH_REPO."""
+
+    def _source(self, origin: str, acct_home: str | None = None) -> str:
+        import subprocess, tempfile
+        script = Path(__file__).resolve().parent / "_gh_config_dir.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            subprocess.run(["git", "-C", tmp, "remote", "add", "origin", origin], check=True)
+            env = {"PATH": os.environ["PATH"], "HOME": tmp, "GH_REPO": "vitalharmony/hrse",
+                   "GH_ACCT_HOME": acct_home if acct_home is not None else tmp}
+            out = subprocess.run(
+                ["bash", "-c", f'target="{tmp}"; source "{script}" 2>/dev/null; echo "GH_REPO=[${{GH_REPO-unset}}]"'],
+                env=env, capture_output=True, text=True)
+            return out.stdout
+
+    def test_an_inherited_gh_repo_is_unset_before_the_first_refusal(self):
+        """A relative GH_ACCT_HOME refuses first of all; GH_REPO is already gone."""
+        self.assertIn("GH_REPO=[unset]", self._source("https://github.com/vitalharmony/hrse.git",
+                                                      acct_home="relative/slots"))
+
+    def test_an_inherited_gh_repo_is_unset_for_a_non_github_origin(self):
+        self.assertIn("GH_REPO=[unset]", self._source("https://example.invalid/o/r.git"))
+
+    def test_an_inherited_gh_repo_is_unset_for_a_harmonicarchitect_origin(self):
+        self.assertIn("GH_REPO=[unset]", self._source("git@github.com:harmonicarchitect/x.git"))
+
+
 if __name__ == "__main__":
     unittest.main()

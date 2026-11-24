@@ -28,6 +28,13 @@
 # shadow the stdlib; and the slot root must be an absolute path, so a relative
 # GH_ACCT_HOME cannot resolve through the checkout.
 
+# harmonic-forge#1540: a lane never inherits GH_REPO from its launch shell. The gh
+# shim's gate (tools/hooks/gh_argv.py) refuses any --repo that disagrees with a set
+# GH_REPO, and a Lane 1 session works issues in more than one repo; unset, bare gh
+# resolves from the checkout's origin and mise tasks set their own. First, before
+# any refusal below, so a refused launch never leaves it set either.
+unset GH_REPO
+
 _gh_slots="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
 case "$_gh_slots" in
   /*) ;;
