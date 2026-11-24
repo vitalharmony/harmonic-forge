@@ -3248,7 +3248,9 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
         self.assertEqual(queue, {1: "handoff owes=plan"})
 
     def test_harmonic_forge_is_unaffected_by_the_shipped_manifest(self):
-        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset())
+        # harmonic-forge#1382: forge lists its 0.y release; an unmilestoned
+        # issue is never skipped, so this is inert until the milestones exist.
+        self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/harmonic-forge"), frozenset({"0.3"}))
         watch_lane_posts._TICK_RELEASE.clear()
         with patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
              patch("watch_lane_posts._etag_cache.conditional_get", _fake_milestones(["Later", "Platform", "3.3"])):

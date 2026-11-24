@@ -43,11 +43,14 @@ elsewhere. There is no `transaction-log.md` (harmonic-forge#883).
 
 ## Conventions specific to this repo
 
-**No release milestones — by rule, not by oversight.** `harmonic-forge`'s
-work is pulled by multiple ventures and belongs to no single venture's
-release, so it carries no milestone field. `hrse` requires `--milestone` on
-every new issue; **do not infer that convention applies here, and do not
-"fix" the gap.** Full rule: HRSE2's `docs/ROADMAP.md`.
+**Its own release series.** `harmonic-forge`'s work is pulled by multiple
+ventures and belongs to no single venture's release, so it carries its own
+SemVer `0.y` milestones plus `Later`, independent of CymaGraph's series
+(operator decision 184, harmonic-forge#1382). Once those milestones exist,
+`--milestone` is required on every new issue, as in `hrse`. Filing into
+`Later` (any open milestone that is not the current release) owes no handoff
+and requires `--deferral-trigger` and `--deferral-owner`, posted as the R-0352
+deferral comment. Release theses: [`docs/ROADMAP.md`](ROADMAP.md).
 
 **Board:** Projects v2 board #3, "ai-platform Backlog", owner `vitalharmony`.
 `tools/gh/gh_issue.py` needs `--project-owner`/`--project-number` passed

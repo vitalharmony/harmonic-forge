@@ -540,11 +540,16 @@ def _stale_closed_mentions_block_scoped(
 
 
 ROADMAP_PATH = _DOCS / "ROADMAP.md"
+# harmonic-forge#1382: forge carries its own `0.y` series, explained by its own
+# docs/ROADMAP.md in this checkout. Checked the same way as the home repo's.
+FORGE_REPO = "vitalharmony/harmonic-forge"
+FORGE_ROADMAP_PATH = Path(__file__).resolve().parents[3] / "docs" / "ROADMAP.md"
 
 # harmonic-forge#283: milestones that deliberately describe no release, so
 # they are exempt from needing a ROADMAP section. `Later` is the sentinel for
-# "real work, not yet placed in a numbered release" (it carries 33 issues);
-# `Platform` is cross-project tooling that never ships in a CymaGraph release.
+# "real work, not yet placed in a numbered release" in every milestone-carrying
+# repo, forge included (harmonic-forge#1382); `Platform` is cross-project
+# tooling that never ships in a CymaGraph release.
 # Required, not optional: ROADMAP's headings are exactly 2.7/2.8/2.9/3.0/
 # "Beyond 3.0"/"Keeping this honest", so without this both would FAIL on a
 # clean repo.
@@ -979,22 +984,25 @@ def main() -> int:
     # harmonic-forge#283: milestones own release membership; ROADMAP.md owns
     # what each release means. Asymmetric on purpose — see
     # milestone_roadmap_drift's docstring.
-    missing_sections, unmilestoned_sections = milestone_roadmap_drift(
-        "vitalharmony/hrse", ROADMAP_PATH
-    )
-    if missing_sections:
-        any_drift = True
-        print(f"\nMILESTONE WITHOUT A ROADMAP SECTION: {len(missing_sections)} — "
-              "a release nobody defined:")
-        for title in missing_sections:
-            print(f"  {title} — add a `## {title} — ...` section to docs/ROADMAP.md")
-    else:
-        print("Every release milestone has a ROADMAP.md section.")
-    if unmilestoned_sections:
-        # Report-only, never a failure: future releases legitimately have a
-        # section and no milestone yet.
-        print(f"\n(report-only) ROADMAP section with no milestone yet: "
-              f"{', '.join(unmilestoned_sections)} — expected for future releases.")
+    # harmonic-forge#1382: forge is a milestone-carrying repo with its own doc.
+    for roadmap_repo, roadmap_path in (("vitalharmony/hrse", ROADMAP_PATH),
+                                       (FORGE_REPO, FORGE_ROADMAP_PATH)):
+        missing_sections, unmilestoned_sections = milestone_roadmap_drift(
+            roadmap_repo, roadmap_path
+        )
+        if missing_sections:
+            any_drift = True
+            print(f"\nMILESTONE WITHOUT A ROADMAP SECTION ({roadmap_repo}): "
+                  f"{len(missing_sections)} — a release nobody defined:")
+            for title in missing_sections:
+                print(f"  {title} — add a `## {title} — ...` section to {roadmap_path}")
+        else:
+            print(f"Every {roadmap_repo} release milestone has a ROADMAP.md section.")
+        if unmilestoned_sections:
+            # Report-only, never a failure: future releases legitimately have a
+            # section and no milestone yet.
+            print(f"\n(report-only) {roadmap_repo} ROADMAP section with no milestone "
+                  f"yet: {', '.join(unmilestoned_sections)} — expected for future releases.")
 
     stranded_open, stranded_closed = stranded_work(open_by_repo, closed_by_repo)
     if stranded_open:

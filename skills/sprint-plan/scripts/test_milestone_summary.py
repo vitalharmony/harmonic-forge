@@ -464,10 +464,10 @@ class IntersectionTests(unittest.TestCase):
         self.assertNotIn("BATCH", text)
 
     def test_a_forge_record_reaches_the_batch(self) -> None:
-        """Forge is milestone-less by rule, not by omission (hrse#1217)."""
-        text = self.out([self.record("F1", scope=["a.py"], repo=summary.NO_MILESTONE_REPO)])
+        """Forge is listed in its own section: its 0.y series is independent (hrse#1217, harmonic-forge#1382)."""
+        text = self.out([self.record("F1", scope=["a.py"], repo=summary.FORGE_REPO)])
         self.assertIn("BATCH F1", text)
-        self.assertIn("no milestone by rule", text)
+        self.assertIn("its own 0.y series", text)
 
     def test_the_heading_names_the_actual_scope(self) -> None:
         """Heading and content must agree -- the defect the original finding named."""
@@ -546,7 +546,7 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("H9", text.split("## Ready to batch")[1])
 
     def test_forge_section_is_always_shown(self) -> None:
-        self.assertIn("no milestones by rule", self.render([self.record("H1")]))
+        self.assertIn("its own 0.y series", self.render([self.record("H1")]))
 
     def test_tooling_rollup_distinguishes_label_from_inference(self) -> None:
         text = self.render([self.record("H1", tooling="label", scope=["a.py"]),
@@ -613,7 +613,7 @@ class PipelineSectionPlacementTests(__import__("unittest").TestCase):
     def test_tc2_section_precedes_the_forge_no_milestone_section(self):
         out = self._render(["", "## Pipeline relevance — 2.9 — Tier 1 (1)"])
         section = out.find("Pipeline relevance")
-        forge = out.find("no milestones by rule")
+        forge = out.find("its own 0.y series")
         self.assertNotEqual(forge, -1)
         self.assertLess(section, forge)
 

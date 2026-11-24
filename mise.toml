@@ -3,9 +3,9 @@
 # This is the docs/tooling-repo SUBSET of the golden-path pattern
 # (templates/golden-path/mise.toml) — check + commit + gh tasks only.
 # Deliberately NOT included, by design, not oversight:
-#   - bump: no running artifact exists to stamp. Consumers get this repo
-#     via `sync_rules.py --pull`, so the git SHA already IS the version —
-#     a per-commit VERSION file would gate nothing the SHA doesn't.
+#   - bump: no running artifact exists to stamp. The release tag IS the
+#     version (`v0.y.z`, harmonic-forge#1382) — a per-commit VERSION file
+#     would gate nothing the tag doesn't.
 #   - restart: no service exists. This is a docs/rules/tooling repo.
 # harmonic-forge.md's "Draft v0.2" header is a hand-maintained spec-status
 # marker, bumped deliberately at real milestones — not automated here,

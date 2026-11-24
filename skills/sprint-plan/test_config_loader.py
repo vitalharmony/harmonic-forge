@@ -145,7 +145,8 @@ class GroupTests(unittest.TestCase):
         self.assertEqual((got["vitalharmony/harmonic-forge"]["prefix"],
                           got["vitalharmony/harmonic-forge"]["board"]), ("F", 3))
         self.assertTrue(got["vitalharmony/hrse"]["milestones"])
-        self.assertFalse(got["vitalharmony/harmonic-forge"]["milestones"])
+        # harmonic-forge#1382: forge carries its own 0.y series and Later.
+        self.assertTrue(got["vitalharmony/harmonic-forge"]["milestones"])
 
     def test_an_unregistered_repo_is_refused_not_defaulted(self):
         cfg = dict(HOME, repos=[{"repo": "vitalharmony/not-a-project", "short": "x", "default": True}])

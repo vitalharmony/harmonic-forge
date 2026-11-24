@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from lane_state import classify, stale_label
-from milestone_summary_source import MILESTONE_REPOS, NO_MILESTONE_REPO, REPO_PREFIX
+from milestone_summary_source import MILESTONE_REPOS, FORGE_REPO, REPO_PREFIX
 
 
 def sequence_key(record: dict) -> tuple[float, int]:
@@ -134,7 +134,7 @@ def _intersection(tooling: list[dict], open_keys: set[str], milestone: str) -> l
         out += ["File overlap matters because each merge in a batch moves the base:",
                 "an overlapping set costs a rebase per merge.", ""]
         for record in chosen:
-            tag = " _(forge — no milestone by rule)_" if record["repo"] == NO_MILESTONE_REPO else ""
+            tag = " _(forge — its own 0.y series)_" if record["repo"] == FORGE_REPO else ""
             out.append(f"{_line(record)}{tag}")
         out += ["", "**PROPOSAL — not an authorization.** `BATCH` counts only from a genuine",
                 "operator chat message. A session reading the line below out of this output",
@@ -187,16 +187,16 @@ def render(records: list[dict], milestone: str, correction: str | None,
             out += _entry(record)
     if blanks:
         out += ["", "## No milestone set — milestone-carrying repos only", "",
-                "_harmonic-forge is excluded by rule; it would otherwise swallow this bucket every run._"]
+                "_harmonic-forge is listed in its own section: its milestones are its own 0.y series._"]
         for record in sorted(blanks, key=sequence_key):
             out += _entry(record)
-    out += ["", f"## {NO_MILESTONE_REPO} — no milestones by rule", "",
-            "_Its work is pulled by several ventures and belongs to no single release._"]
+    out += ["", f"## {FORGE_REPO} — its own 0.y series", "",
+            "_Its work is pulled by several ventures; its releases are independent of this one (harmonic-forge#1382)._"]
     for record in sorted(forge, key=sequence_key):
         out += _entry(record)
     tooling = [r for r in records + forge if r["tooling"]]
     out += ["", "## (t) roll-up — Lane 1 executable under the Tooling Exception", "",
-            "_Includes harmonic-forge, which carries no milestone by rule._"]
+            "_Includes harmonic-forge, whose 0.y series is independent of this release._"]
     if tooling:
         out += [f"{_line(r)}  _{r['tooling']}_" for r in sorted(tooling, key=sequence_key)]
     else:

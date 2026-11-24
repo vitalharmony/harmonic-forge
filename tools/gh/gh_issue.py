@@ -394,6 +394,46 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     return True
 
 
+def is_parking_milestone(repo: str, milestone: str, titles) -> bool:
+    """harmonic-forge#1382: a parking milestone is an open one that is neither
+    the current release nor exempt for `repo` -- R-0404 refuses a handoff for
+    it, so a filing into it may not owe one. Only called inside the
+    `if milestones:` branch: a repo with no open milestones has no parking one.
+    Lazy import: l1_post owns the current-release and exemption definitions."""
+    from l1_post import EXEMPT_MILESTONES, current_release_milestone
+    if milestone in EXEMPT_MILESTONES.get(repo.lower(), frozenset()):
+        return False
+    return milestone != current_release_milestone(list(titles))
+
+
+def _post_deferral(args, issue: int, issue_url: str) -> bool:
+    """harmonic-forge#1382: a filing into a parking milestone posts the R-0352
+    deferral comment (trigger, owner, record) and only then clears the
+    handoff obligation -- `_discharge_exception`'s order, so a comment that
+    fails to post leaves the obligation standing. True on OK."""
+    comment = (
+        f"## R-0352 deferral: parked in `{args.milestone}`\n\n"
+        f"Filed into a parking milestone, so no Lane 1 handoff accompanies "
+        f"this filing (R-0404 posts a handoff only for current-release work). "
+        f"This comment is the deferral record.\n\n"
+        f"**Trigger:** {args.deferral_trigger.strip()}\n"
+        f"**Owner:** {args.deferral_owner.strip()}\n"
+        f"**Record:** this comment.\n"
+    )
+    result = _run(["gh", "api", f"repos/{args.repo}/issues/{issue}/comments",
+                   "-X", "POST", "-f", f"body={comment}"], check=False)
+    if result.returncode != 0:
+        print(f"[GH] ERROR: the R-0352 deferral could not be posted to "
+              f"{issue_url}:\n{result.stderr}\n[GH] The handoff obligation "
+              f"therefore STANDS. Post the deferral comment, or the handoff.",
+              file=sys.stderr)
+        return False
+    handoff_owed.discharge(args.repo, issue)
+    print(f"[GH] R-0352 deferral recorded on {issue_url} (parked in "
+          f"{args.milestone}); no handoff owed.")
+    return True
+
+
 def create_issue(repo: str, title: str, body: str, labels: list[str],
                  milestone_number: int | None = None) -> str | None:
     create_cmd = [
@@ -892,6 +932,19 @@ def main() -> int:
              "identically to a deliberate 'in no release'.",
     )
     parser.add_argument(
+        "--deferral-trigger", default=None, metavar="TEXT",
+        help="harmonic-forge#1382: REQUIRED when --milestone names a parking "
+             "milestone (open, not the current release, not exempt, e.g. "
+             "'Later'): the observable event that ends the deferral. Posted "
+             "with --deferral-owner as the R-0352 deferral comment, which "
+             "replaces the handoff obligation. Refused with --handoff-exception.",
+    )
+    parser.add_argument(
+        "--deferral-owner", default=None, metavar="TEXT",
+        help="harmonic-forge#1382: the named lane or the operator who owns the "
+             "deferral (R-0352). Required with --deferral-trigger.",
+    )
+    parser.add_argument(
         "--no-prior-owner", default=None, metavar="REASON",
         help="R-0397 (harmonic-forge#1032): file even though the pre-create "
              "title search printed candidate prior owners. The reason says "
@@ -939,6 +992,16 @@ def main() -> int:
                      f"{BLOCKED_ON_PREREQUISITE}.")
     if args.blocked_by and _parse_blocker(args.blocked_by) is None:
         parser.error(f"--blocked-by {args.blocked_by!r} is not OWNER/REPO#N.")
+    # harmonic-forge#1382: the deferral pair is all-or-nothing, and is one
+    # discharge route: a filing claims a deferral or an exception, never both.
+    deferral_given = [bool((v or "").strip()) for v in
+                      (args.deferral_trigger, args.deferral_owner)]
+    if any(deferral_given) and not all(deferral_given):
+        parser.error("--deferral-trigger and --deferral-owner are required "
+                     "together (R-0352: a deferral names its trigger and owner).")
+    if any(deferral_given) and args.handoff_exception:
+        parser.error("--deferral-trigger/--deferral-owner and "
+                     "--handoff-exception are two discharge routes; pass one.")
 
     # harmonic-forge#266: --body-file is the safe path for prose. --body still
     # works for short bodies, but anything with backticks, apostrophes or
@@ -963,7 +1026,7 @@ def main() -> int:
 
     # harmonic-forge#283: requiredness is derived from live state — does this
     # repo use milestones at all? — rather than a hardcoded per-repo list.
-    # A repo with none (harmonic-forge, openclaw-projects) is never gated;
+    # A repo with none (openclaw-projects) is never gated;
     # nothing invents a per-issue milestone concept for a repo that decided
     # against having one.
     # harmonic-forge#804: act as the repo's own account. Deliberately AFTER the flag
@@ -971,6 +1034,7 @@ def main() -> int:
     apply_project_identity(args.repo)
     milestones = fetch_milestones(args.repo)
     milestone_number: int | None = None
+    parking = False
     if milestones:
         if args.milestone is None:
             parser.error(
@@ -984,9 +1048,27 @@ def main() -> int:
                 f"{args.repo}. Valid: {', '.join(sorted(milestones))}."
             )
         milestone_number = milestones[args.milestone]
+        # harmonic-forge#1382: a parking milestone owes no handoff (R-0404
+        # would refuse it) but requires an R-0352 deferral, refused here,
+        # before anything is created.
+        parking = is_parking_milestone(args.repo, args.milestone, milestones)
+        if parking and args.handoff_exception:
+            parser.error(
+                f"--milestone {args.milestone!r} is a parking milestone on "
+                f"{args.repo}: file it with --deferral-trigger and "
+                f"--deferral-owner, not --handoff-exception.")
+        if parking and not all(deferral_given):
+            parser.error(
+                f"--milestone {args.milestone!r} is a parking milestone on "
+                f"{args.repo} (not the current release): --deferral-trigger "
+                f"and --deferral-owner are required (R-0352), and replace the "
+                f"handoff obligation (harmonic-forge#1382).")
     elif args.milestone is not None:
         print(f"[GH] {args.repo} has no milestones — ignoring --milestone "
               f"{args.milestone!r}.", file=sys.stderr)
+    if any(deferral_given) and not parking:
+        parser.error("--deferral-trigger/--deferral-owner apply only to a "
+                     "filing into a parking milestone (harmonic-forge#1382).")
 
     # harmonic-forge#329: a half-override is a mistake, not a partial
     # instruction -- and unlike an unmapped repo (below, deliberately still
@@ -1093,7 +1175,10 @@ def main() -> int:
         route_path = _route_at_filing(args.repo, body, labels, issue_number)
         if args.escape_of is not None:
             _record_escape(args.repo, issue_number, args.escape_of)
-        if not _discharge_exception(args, issue_number, issue_url):
+        if parking:
+            if not _post_deferral(args, issue_number, issue_url):
+                return 1
+        elif not _discharge_exception(args, issue_number, issue_url):
             return 1
 
     # harmonic-forge#107: derive from --repo. An explicit override still wins.

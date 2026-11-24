@@ -1909,7 +1909,7 @@ def validate_milestone_set(repo: str, issue: int) -> None:
     indistinguishable from a deliberate "not in any release."
 
     Structurally mirrors validate_board_fields_set() above, including its graceful
-    no-op: a repo with no milestones at all (harmonic-forge, openclaw-projects)
+    no-op: a repo with no open milestones at all (openclaw-projects)
     is not gated, because there is nothing to enforce against. Requiredness is
     derived from live state rather than a hardcoded per-repo list.
 

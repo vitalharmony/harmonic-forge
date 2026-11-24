@@ -339,10 +339,10 @@ class TestMilestoneCliGate(unittest.TestCase):
         self.assertNotEqual(exc.code, 0)
 
     def test_milestone_not_required_on_a_repo_with_none(self):
-        # AC5 / LBA3: harmonic-forge has zero milestones and is decided never
-        # to carry release ones — it must never be gated.
+        # AC5 / LBA3: a repo with no open milestones (openclaw-projects) is
+        # never gated. harmonic-forge#1382: forge carries `0.y` and `Later`.
         exc, created = self._main(
-            ["gh_issue.py", "--repo", "vitalharmony/harmonic-forge", "--title", "t"], {},
+            ["gh_issue.py", "--repo", "vitalharmony/openclaw-projects", "--title", "t"], {},
         )
         created.assert_called_once()
         self.assertIsNone(created.call_args[0][4])
@@ -368,10 +368,131 @@ class TestMilestoneCliGate(unittest.TestCase):
     def test_later_sentinel_is_accepted(self):
         _, created = self._main(
             ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
-             "--milestone", "Later"],
+             "--milestone", "Later", "--deferral-trigger", "3.3 planning",
+             "--deferral-owner", "operator"],
             {"2.7": 1, "Later": 5},
         )
         self.assertEqual(created.call_args[0][4], 5)
+
+
+FORGE = "vitalharmony/harmonic-forge"
+FORGE_MILESTONES = {"0.3": 1, "Later": 2}
+DEFER = ["--deferral-trigger", "0.4 planning", "--deferral-owner", "operator"]
+
+
+class TestParkingMilestoneDeferral(unittest.TestCase):
+    """harmonic-forge#1382: a filing into a parking milestone owes no handoff
+    and requires an R-0352 deferral, posted before the obligation clears."""
+
+    def _main(self, argv, milestones, post_rc=0):
+        posts: list[list[str]] = []
+
+        def run(cmd, check=False):
+            posts.append(cmd)
+            return _completed("", returncode=post_rc)
+
+        with patch.object(sys, "argv", ["gh_issue.py", "--title", "t"] + argv), \
+             patch("gh_issue.fetch_milestones", return_value=milestones), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue",
+                   return_value="https://github.com/o/r/issues/42") as created, \
+             patch("gh_issue._route_at_filing", return_value=None), \
+             patch("gh_issue.resolve_board_for_repo", return_value=(None, None)), \
+             patch("gh_issue._run", side_effect=run), \
+             patch("gh_issue.handoff_owed.record") as record, \
+             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                code = gh_issue.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, created, record, discharge, posts, err.getvalue()
+
+    def _comments(self, posts):
+        return [c for c in posts if "comments" in " ".join(c)]
+
+    def test_later_with_deferral_posts_it_then_clears_the_obligation(self):
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", FORGE, "--milestone", "Later"] + DEFER, FORGE_MILESTONES)
+        self.assertEqual(code, 0)
+        created.assert_called_once()
+        record.assert_called_once()
+        discharge.assert_called_once_with(FORGE, 42)
+        comment = " ".join(self._comments(posts)[0])
+        self.assertIn("R-0352 deferral", comment)
+        self.assertIn("**Trigger:** 0.4 planning", comment)
+        self.assertIn("**Owner:** operator", comment)
+
+    def test_later_without_deferral_is_refused_naming_the_flag(self):
+        code, created, *_rest, err = self._main(
+            ["--repo", FORGE, "--milestone", "Later"], FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+        self.assertIn("--deferral-trigger", err)
+
+    def test_a_half_deferral_is_refused(self):
+        code, created, *_rest = self._main(
+            ["--repo", FORGE, "--milestone", "Later",
+             "--deferral-trigger", "x"], FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+
+    def test_parking_with_handoff_exception_is_refused(self):
+        code, created, *_rest = self._main(
+            ["--repo", FORGE, "--milestone", "Later", "--handoff-exception",
+             "parent-epic", "--handoff-exception-reason", "r"], FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+
+    def test_a_failed_deferral_post_leaves_the_obligation_standing(self):
+        code, _created, record, discharge, *_ = self._main(
+            ["--repo", FORGE, "--milestone", "Later"] + DEFER,
+            FORGE_MILESTONES, post_rc=1)
+        self.assertEqual(code, 1)
+        record.assert_called_once()
+        discharge.assert_not_called()
+
+    def test_current_release_filing_still_records_an_obligation(self):
+        """AC3: `0.3` is the current release, so it owes a handoff as today."""
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", FORGE, "--milestone", "0.3"], FORGE_MILESTONES)
+        self.assertEqual(code, 0)
+        record.assert_called_once()
+        discharge.assert_not_called()
+        self.assertEqual(self._comments(posts), [])
+
+    def test_a_deferral_on_the_current_release_is_refused(self):
+        code, created, *_rest = self._main(
+            ["--repo", FORGE, "--milestone", "0.3"] + DEFER, FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+
+    def test_no_milestone_repo_is_inert(self):
+        """AC1: with no open milestone, a filing records the obligation and
+        posts nothing, whatever --milestone says."""
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", FORGE, "--milestone", "Later"], {})
+        self.assertEqual(code, 0)
+        record.assert_called_once()
+        discharge.assert_not_called()
+        self.assertEqual(self._comments(posts), [])
+
+    def test_hrse_platform_is_exempt_not_parking(self):
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", "vitalharmony/hrse", "--milestone", "Platform"],
+            {"3.2": 1, "Platform": 3, "Later": 4})
+        self.assertEqual(code, 0)
+        record.assert_called_once()
+        discharge.assert_not_called()
+
+    def test_hrse_later_needs_a_deferral_too(self):
+        """Operator ruling: the rule applies to every milestone-carrying repo."""
+        code, created, *_rest = self._main(
+            ["--repo", "vitalharmony/hrse", "--milestone", "Later"],
+            {"3.2": 1, "Later": 4})
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
 
 
 class TestTierWriteFailureIsLoud(unittest.TestCase):

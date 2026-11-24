@@ -21,7 +21,7 @@ from forge_pipeline_triage import (
 from milestone_summary_analysis import dependencies, file_scope, tooling_marker
 from milestone_summary_render import _intersection, render
 from milestone_summary_source import (
-    FETCH_LIMIT, MILESTONE_REPOS, NO_MILESTONE_REPO, REPO_PREFIX, board_fields,
+    FETCH_LIMIT, MILESTONE_REPOS, FORGE_REPO, REPO_PREFIX, board_fields,
     cache_dir, gh_json, known_milestones, milestone_counts, read_anchor,
     resolve_milestone, rewrite_anchor, working_tree_dirty,
 )
@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
                 records.append(record)
             elif record["milestone"] is None:
                 blanks.append(record)
-    forge = collect(NO_MILESTONE_REPO, cache, fields)
+    forge = collect(FORGE_REPO, cache, fields)
 
     # hrse#1477. `run_triage()` is called independently rather than reusing
     # `collect()`'s records: `collect()` discards bodies and labels (which the

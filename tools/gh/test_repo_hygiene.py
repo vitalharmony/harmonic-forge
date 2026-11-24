@@ -1107,8 +1107,8 @@ class AuditUnboardedTests(unittest.TestCase):
         self.assertIn("no board mapped", report.unboarded[0].detail)
 
     def test_milestones_are_not_checked(self):
-        """Scope item 4: harmonic-forge carries no release milestones by
-        decision, so milestone coverage must never be reported here."""
+        """Scope item 4: milestone membership is enforced live at filing and
+        handoff (harmonic-forge#1382), never as a board field reported here."""
         self.assertNotIn("Milestone", rh._REQUIRED_BOARD_FIELDS)
         self.assertNotIn("milestone", rh._BOARD_ITEMS_QUERY.lower())
 

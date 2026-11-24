@@ -2746,8 +2746,8 @@ hooks = []
 id = "R-0404"
 file = "rules/universal-lane1.md"
 anchor = "lane-1-handoff-artifact"
-statement = "A handoff or rework is posted only for an issue in the current release milestone (a repo with no milestones, such as harmonic-forge, is exempt), because the belt ignores milestones. A Later issue never appears as a next action or as \"waiting on\"."
-text_sha = "a4ac0ef3f88f964a"
+statement = "A handoff or rework is posted only for an issue in the current release milestone (a repo with no milestones, such as openclaw-projects, is exempt), because the belt ignores milestones. A Later issue never appears as a next action or as \"waiting on\"."
+text_sha = "98c14cebfa9d5c97"
 hooks = []
 
 [[rule]]

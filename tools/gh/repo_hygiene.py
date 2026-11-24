@@ -806,9 +806,10 @@ def _load_repo_boards() -> dict[str, tuple[str, str]]:
 _REPO_BOARDS: dict[str, tuple[str, str]] = _load_repo_boards()
 
 # Board fields every open issue is expected to carry (hrse#966). Milestone is
-# deliberately NOT here: a repo carries release milestones only when its work
-# ships inside one venture's release, so harmonic-forge having none is a
-# recorded decision, not a gap (hrse#979 scope item 4).
+# deliberately NOT here: it is not a board field, and it is enforced where it
+# is live -- `gh_issue.py` at filing and `l1_post.py` at handoff, both reading
+# the repo's open milestones, so a repo with none is never gated
+# (hrse#979 scope item 4; harmonic-forge#1382 gave forge a 0.y series).
 _REQUIRED_BOARD_FIELDS = ("Theme", "Venture")
 
 # GraphQL's `projectV2` owner is not polymorphic -- `user` and `organization`
