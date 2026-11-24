@@ -12,14 +12,34 @@
 # GH_TOKEN/GITHUB_TOKEN is cleared alongside: `gh` ranks a token above GH_CONFIG_DIR, so a
 # leftover one would authenticate bare `gh` calls as the wrong account.
 #
-# Falls through with no override (today's behavior, a shared global
-# ~/.config/gh) when the remote matches neither known account -- never a
-# hard failure, since an unrecognized project is not this script's problem.
+# The account comes from the manifest, never from URL text (harmonic-forge#1507):
+# the origin's exact owner/repo is looked up with manifest_identity.account_for
+# in the projects.toml of the forge checkout this file lives in
+# (FORGE_PROJECTS_MANIFEST is unset for the lookup, as _lane_refresh.sh does).
+# An origin that is missing, unparseable or unregistered, or any lookup
+# failure, REFUSES the launch rather than falling through to the global gh
+# login; so does a registered repo whose account has no lane slot here.
 
 _gh_slots="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
 _gh_remote="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
-case "$_gh_remote" in
-  *github.com*vitalharmony*)
+_gh_forge="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+_gh_rc=0
+_gh_account="$(env -u FORGE_PROJECTS_MANIFEST python3 -c '
+import re, sys
+sys.path.insert(0, sys.argv[1] + "/tools/onboard")
+import manifest_identity
+m = re.search(r"github\.com[:/]+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/*$", sys.argv[2])
+if m is None:
+    sys.exit(2)
+print(manifest_identity.account_for(m.group(1) + "/" + m.group(2)))
+' "$_gh_forge" "$_gh_remote" 2>/dev/null)" || _gh_rc=$?
+if [ "$_gh_rc" -ne 0 ] || [ -z "$_gh_account" ]; then
+  echo "lane${LANE:-?}: origin '${_gh_remote:-none}' is not registered in projects.toml or .claude/forge.toml -- refusing to launch on the global gh login (harmonic-forge#1507)." >&2
+  unset _gh_remote _gh_slots _gh_forge _gh_rc _gh_account
+  return 1 2>/dev/null || exit 1
+fi
+case "$_gh_account" in
+  vitalharmony)
     unset GH_TOKEN GITHUB_TOKEN
     case "${LANE:-}" in
       1|2|3)
@@ -46,9 +66,14 @@ case "$_gh_remote" in
         ;;
     esac
     ;;
-  *github.com*harmonicarchitect*)
+  harmonicarchitect)
     export GH_CONFIG_DIR="$_gh_slots/harmonicarchitect"
     unset GH_TOKEN GITHUB_TOKEN
     ;;
+  *)
+    echo "lane${LANE:-?}: ${_gh_remote} is registered to account '${_gh_account}', which has no lane slot -- refusing to launch (harmonic-forge#1507)." >&2
+    unset _gh_remote _gh_slots _gh_forge _gh_rc _gh_account
+    return 1 2>/dev/null || exit 1
+    ;;
 esac
-unset _gh_remote _gh_slots
+unset _gh_remote _gh_slots _gh_forge _gh_rc _gh_account

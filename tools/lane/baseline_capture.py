@@ -190,13 +190,16 @@ def build_fixture_tree(
     is how AC9's floor is exercised from below without downgrading a real CLI.
     """
     versions = {**STUB_VERSIONS, **(versions or {})}
-    # The bare repo's own path is shaped to match _gh_config_dir.sh's
-    # `*github.com*vitalharmony*` glob, so GH_CONFIG_DIR resolution is
-    # exercised by a remote URL that is nonetheless a local path and never
-    # touches the network. Simpler and more honest than a url.insteadOf
-    # rewrite -- `git remote get-url` applies insteadOf, so a rewrite would
-    # have hidden the github-shaped URL from the very check under test.
-    origin = root / "github.com" / "vitalharmony" / "lane-fixture.git"
+    # The bare repo's own path ends in `github.com/<owner>/<repo>.git` for a
+    # repo projects.toml registers (harmonic-forge#1507: _gh_config_dir.sh
+    # resolves the account through the manifest and refuses an unregistered
+    # origin), so GH_CONFIG_DIR resolution is exercised by a remote URL that
+    # is nonetheless a local path and never touches the network. Simpler and
+    # more honest than a url.insteadOf rewrite -- `git remote get-url` applies
+    # insteadOf, so a rewrite would have hidden the github-shaped URL from the
+    # very check under test. The session label still resolves bare: it is
+    # looked up by checkout PATH, and this tree's path is registered nowhere.
+    origin = root / "github.com" / "vitalharmony" / "harmonic-forge.git"
     origin.parent.mkdir(parents=True)
     _run(["git", "init", "--bare", "-b", "main", str(origin)])
 

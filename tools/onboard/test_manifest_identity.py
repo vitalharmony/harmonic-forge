@@ -44,7 +44,7 @@ class AccountForTests(unittest.TestCase):
     def test_a_mixed_case_repo_resolves(self) -> None:
         """harmonic-forge#800: LeasePAL-ML is the first mixed-case owner."""
         self.assertEqual(mi.account_for("LeasePAL-ML/LeasePAL-App-Prototype"),
-                         "vitalharmony")
+                         "leasepal")  # harmonic-forge#1507: own login, no lane slot
 
     def test_an_unknown_repo_raises_and_never_falls_back(self) -> None:
         with self.assertRaises(mf.ManifestError) as caught:
