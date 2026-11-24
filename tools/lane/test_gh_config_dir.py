@@ -101,6 +101,36 @@ class GhConfigDir(unittest.TestCase):
         self.assertIn("dir=UNSET", out)
         self.assertNotIn("rc=0", out)
 
+    def test_another_host_naming_a_registered_repo_refuses(self) -> None:
+        for origin in ("https://notgithub.com/vitalharmony/hrse",
+                       "https://evil.example/github.com/vitalharmony/hrse.git",
+                       "https://github.com/vitalharmony/hrse.git.git"):
+            with self.subTest(origin=origin):
+                _, out, _ = self.launch(origin)
+                self.assertIn("dir=UNSET", out)
+                self.assertNotIn("rc=0", out)
+
+    def test_a_module_planted_in_the_checkout_cannot_choose_the_account(self) -> None:
+        repo = self.root / "planted"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                        "https://github.com/some-unregistered-owner/x.git"], check=True)
+        (repo / "re.py").write_text("import os\nprint('harmonicarchitect')\nos._exit(0)\n")
+        proc = subprocess.run(
+            ["bash", "-c", f'cd "{repo}"; target="{repo}"; source "{self.script}"; rc=$?; '
+                           'echo "rc=$rc dir=${GH_CONFIG_DIR:-UNSET}"'],
+            capture_output=True, text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "GH_ACCT_HOME": str(self.slots)})
+        self.assertIn("dir=UNSET", proc.stdout)
+        self.assertNotIn("rc=0", proc.stdout)
+
+    def test_a_relative_slot_root_refuses(self) -> None:
+        _, out, err = self.launch("https://github.com/kenekted/kenekted-ai.git",
+                                  {"GH_ACCT_HOME": "slots"})
+        self.assertIn("dir=UNSET", out)
+        self.assertNotIn("rc=0", out)
+        self.assertIn("not an absolute path", err)
+
     # AC2
     def test_a_registered_repo_whose_owner_is_not_the_account_resolves(self) -> None:
         for origin in ("https://github.com/kenekted/kenekted-ai.git",
