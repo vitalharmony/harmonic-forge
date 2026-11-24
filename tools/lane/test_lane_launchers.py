@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -308,17 +309,33 @@ class FixtureCommandErrors(unittest.TestCase):
 
     def test_the_fixture_repo_runs_no_background_gc(self):
         # The flake's cause: background auto-gc's `worktree prune` raced
-        # `git worktree add`. Pinned by config, since a stress run is too
-        # slow and too probabilistic to guard it. Read --local, so a value
-        # inherited from global or GIT_CONFIG_COUNT config cannot stand in
-        # for the fixture's own write (preclose pass 1 survivor).
+        # `git worktree add`. Pinned by what git actually does, read from its
+        # trace2 event log, not by config values (preclose rounds 1 and 2:
+        # a config read can be satisfied by inherited config, or by writes
+        # that land after the commit and fetch that start maintenance).
+        # Inherited config is shut out, so only the fixture's own writes count.
         with tempfile.TemporaryDirectory() as tmp:
-            main, _ = bc.build_fixture_tree(Path(tmp).resolve())
-            def cfg(key):
-                return subprocess.run(["git", "config", "--local", "--get", key], cwd=main,
-                                      capture_output=True, text=True).stdout.strip()
-            self.assertEqual(cfg("gc.auto"), "0")
-            self.assertEqual(cfg("maintenance.auto"), "false")
+            trace = Path(tmp) / "trace2.json"
+            env = {"GIT_TRACE2_EVENT": str(trace), "GIT_CONFIG_GLOBAL": os.devnull,
+                   "GIT_CONFIG_NOSYSTEM": "1"}
+            with unittest.mock.patch.dict(os.environ, env):
+                for key in [k for k in os.environ if k.startswith("GIT_CONFIG_")
+                            and k not in env]:
+                    os.environ.pop(key)
+                bc.build_fixture_tree((Path(tmp) / "tree").resolve())
+            events = [json.loads(line) for line in trace.read_text().splitlines()]
+            argv = {e["sid"]: e.get("argv", []) for e in events if e.get("event") == "start"}
+            # Non-vacuity: the trace saw the commands that start maintenance.
+            started = {a[1] for a in argv.values() if len(a) > 1}
+            self.assertTrue({"commit", "fetch"} <= started, started)
+            spawns = [(argv.get(e["sid"], []), e.get("argv", [])) for e in events
+                      if e.get("event") == "child_start"
+                      and {"maintenance", "gc"} & set(e.get("argv", []))]
+            # The one allowed spawn: receive-pack in the bare origin, which has
+            # no worktrees to prune.
+            in_fixture = [(parent, child) for parent, child in spawns
+                          if not any("receive-pack" in part for part in parent)]
+            self.assertEqual(in_fixture, [])
 
 
 # ---------------------------------------------------------------------------
