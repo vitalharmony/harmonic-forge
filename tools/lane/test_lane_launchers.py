@@ -293,8 +293,10 @@ class FixtureCommandErrors(unittest.TestCase):
 
     def test_a_failing_command_carries_its_stderr(self):
         with self.assertRaises(subprocess.CalledProcessError) as caught:
+            # Built at run time, so the expected text never appears in the
+            # command line that CalledProcessError's base message echoes.
             bc._run([sys.executable, "-c",
-                     "import sys; sys.stderr.write('fatal: the cause'); sys.exit(128)"])
+                     "import sys; sys.stderr.write('fatal: ' + 'the ' + 'cause'); sys.exit(128)"])
         self.assertEqual(caught.exception.returncode, 128)
         self.assertIn("fatal: the cause", str(caught.exception))
 
