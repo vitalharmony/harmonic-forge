@@ -69,6 +69,9 @@ test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1
 # harmonic-forge#1072: a test file's __main__ block is last, so running it as
 # a script runs the whole suite.
 python3 tools/rules/check_test_main_last.py
+# harmonic-forge#1524: no new operator hardcode or core-to-operator import
+# beyond the shrink-only hardcode.baseline.toml.
+python3 tools/rules/hardcode_scan.py --check
 """
 
 [tasks.check]
