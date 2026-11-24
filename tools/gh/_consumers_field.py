@@ -27,12 +27,13 @@ _FORGE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_FORGE / "tools" / "registry"))
 import contracts  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _scenario_trace  # noqa: E402
+
 #: A list bullet or number, surrounding whitespace and Markdown emphasis, stripped
 #: before a label is read (`**Contract:** x` reads as `Contract: x`).
 _LEAD = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*")
-_EMPHASIS = re.compile(r"(\*\*|__)")
-_COMMENT = re.compile(r"(?s)<!--.*?-->")
-_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_EMPHASIS = re.compile(r"(\*\*|__|`)")
 _CONTRACT = re.compile(r"^contract:\s*(.*)$", re.IGNORECASE)
 _NO_ENTRY = re.compile(r"^no index entry applies\b", re.IGNORECASE)
 _SEARCH = re.compile(r"^search:\s*(.*)$", re.IGNORECASE)
@@ -43,21 +44,14 @@ FORMS = ("one or more `Contract: <id>` lines naming ids in the contract index "
 
 
 def _lines(section: str) -> list[str]:
-    """The section's label-bearing lines: HTML comments and fenced blocks removed (an
-    example there is not a declaration; an unclosed fence hides the rest, so the field
-    fails toward refusal), then bullets and emphasis stripped."""
-    out, fence = [], None
-    for line in _COMMENT.sub("", section).splitlines():
-        m = _FENCE.match(line)
-        if fence is None and m:
-            fence = m.group(1)[0]
-            continue
-        if fence is not None:
-            if m and m.group(1)[0] == fence:
-                fence = None
-            continue
-        out.append(_LEAD.sub("", _EMPHASIS.sub("", line), count=1).strip())
-    return out
+    """The section's label-bearing lines. Examples are removed with `_scenario_trace`'s own
+    refusal-leaning helpers (harmonic-forge#920's ruling: shrink the parsing, never grow
+    it): comments first, an unclosed `<!--` hiding the rest; then fences, matched at any
+    indentation so a fence inside a list item counts, an unclosed fence hiding the rest.
+    Then bullets, emphasis and inline-code backticks are stripped."""
+    text = _scenario_trace.strip_comments(section)
+    text = _scenario_trace.strip_fences("\n".join(line.lstrip() for line in text.split("\n")))
+    return [_LEAD.sub("", _EMPHASIS.sub("", line), count=1).strip() for line in text.split("\n")]
 
 
 def _known_projects(manifest: Path) -> set[str]:
@@ -66,6 +60,14 @@ def _known_projects(manifest: Path) -> set[str]:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return set()
     return {item.get("name") for item in projects if isinstance(item, dict) and item.get("name")}
+
+
+def _present_without_index(project: str, checkout) -> bool:
+    if project == contracts.OWN_PROJECT:
+        return False
+    base = (checkout or contracts.project_checkout)(project)
+    return base is not None and not any(
+        (base / name).is_file() for name in ("contracts.toml", "tools/registry/contracts.toml"))
 
 
 def consumers_refusal(section: str, *, index: Path | None = None,
@@ -88,11 +90,15 @@ def consumers_refusal(section: str, *, index: Path | None = None,
                 bad.append(f"`{cid}` names no known project")
             elif contracts.resolve(cid, own, checkout=checkout) == contracts.UNRESOLVED:
                 bad.append(f"`{cid}` is not in the contract index")
+            elif _present_without_index(cid.split(".", 1)[0], checkout):
+                # AC5 lets only an ABSENT checkout pass unmeasured; a present one with
+                # no index cannot vouch for any id (sticky-wicket PATCH).
+                bad.append(f"`{cid}`: that project's checkout has no contract index yet")
         if bad:
             return "Consumers and Equivalents: " + "; ".join(bad)
         return None
     no_entry = any(_NO_ENTRY.match(line) for line in lines)
-    searches = [m.group(1).strip().strip("`").strip() for line in lines if (m := _SEARCH.match(line))]
+    searches = [m.group(1).strip() for line in lines if (m := _SEARCH.match(line))]
     if no_entry and any(searches):
         return None
     if no_entry:

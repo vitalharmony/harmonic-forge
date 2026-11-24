@@ -62,6 +62,23 @@ class FormTests(unittest.TestCase):
         self.assertIsNotNone(self.check("<!-- Contract: harmonic-forge.gh-argv-parser -->"))
         self.assertIsNotNone(self.check("```\nNo index entry applies\nSearch: x"))
 
+    def test_a_present_checkout_without_an_index_refuses(self) -> None:
+        other = self.tmp / "hrse"
+        other.mkdir()
+        msg = self.check("Contract: hrse.anything", checkout=lambda _project: other)
+        self.assertIn("no contract index yet", msg)
+
+    def test_a_multiline_comment_declaration_is_not_read(self) -> None:
+        self.assertIsNotNone(self.check(f"<!--\nContract: {REAL_ID}\n-->"))
+        self.assertIsNotNone(self.check(f"<!--\nContract: {REAL_ID}"))
+
+    def test_a_fence_inside_a_list_item_hides_its_contents(self) -> None:
+        self.assertIsNotNone(self.check(f"- example:\n    ```\n    Contract: {REAL_ID}\n    ```"))
+
+    def test_backticked_labels_are_read(self) -> None:
+        self.assertIsNone(self.check(f"`Contract: {REAL_ID}`"))
+        self.assertIsNone(self.check("`No index entry applies`\n`Search: git grep x`"))
+
     def test_bold_labels_are_read(self) -> None:
         self.assertIsNone(self.check(f"**Contract:** {REAL_ID}"))
         self.assertIn("names no known project",
