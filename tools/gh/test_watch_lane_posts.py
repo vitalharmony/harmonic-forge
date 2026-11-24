@@ -2351,7 +2351,12 @@ class CanonicalBeltEnforcementTests(unittest.TestCase):
         """harmonic-forge#917: belt_id carries the workspace, so two workspaces'
         Lane 2 belts never share watermarks, seen-sets or tick logs."""
         logs = {}
-        for entry in [e for e in watch_lane_posts.CANONICAL_BELTS["2"] if not e.get("repo")]:
+        # harmonic-forge#1507: the leasepal workspace's one repo moved to the
+        # `leasepal` account (operator ruling 2026-11-23, P work deferred), so
+        # its vitalharmony/harmonicarchitect belt correctly watches nothing and
+        # refuses; the per-workspace state property is checked on the rest.
+        for entry in [e for e in watch_lane_posts.CANONICAL_BELTS["2"]
+                      if not e.get("repo") and e.get("workspace") != "leasepal"]:
             outcome, err = self._run(list(entry["argv"]), {"LANE": "2"})
             self.assertEqual(outcome, "looped", err)
             line = next(l for l in err.splitlines() if "tick log:" in l)

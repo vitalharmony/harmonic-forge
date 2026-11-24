@@ -67,6 +67,30 @@ def _place_hook_set(lane_dir: Path) -> None:
     (lane_dir / "lane_hookset.py").symlink_to(LANE_DIR / "lane_hookset.py")
 
 
+def _lane_dir_in_forge(root: Path) -> Path:
+    """An empty lane dir inside a minimal fixture forge root (harmonic-forge#1507).
+    _gh_config_dir.sh resolves the origin's account through the projects.toml
+    two levels above its own directory, so a copied lane dir needs tools/onboard
+    beside it and a manifest registering the fixture origin -- at a path that
+    is not the fixture checkout, so the session label stays bare."""
+    forge = root / "lanedir-forge"
+    lane_dir = forge / "tools" / "lane"
+    lane_dir.mkdir(parents=True)
+    shutil.copytree(LANE_DIR.parent / "onboard", forge / "tools" / "onboard",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for sibling in LANE_DIR.parent.iterdir():
+        # routing is never linked: _place_route_mod writes the mod at
+        # lane_dir/../routing, and a link would write through into the checkout.
+        if sibling.is_dir() and sibling.name not in ("lane", "onboard", "routing"):
+            (forge / "tools" / sibling.name).symlink_to(sibling)
+    (forge / "projects.toml").write_text(
+        "[[project]]\n"
+        'name = "origin-fixture"\nprefix = "Q"\nrepo = "vitalharmony/harmonic-forge"\n'
+        f'account = "vitalharmony"\npath = "{root / "unregistered-path"}"\n'
+        'onboarded = false\nworkspace = "vh"\n')
+    return lane_dir
+
+
 class _FixtureTree:
     """A disposable project tree with stubbed CLIs, as a context manager."""
 
@@ -142,6 +166,15 @@ class _FixtureTree:
                 'l1_post_task = "l1-post"\nlane_comment_task = "lane-comment"\n'
                 'gate_checkout_task = "gate-checkout"\nlane3_begin_task = "lane3-begin"\n'
                 'lane3_end_task = "lane3-end"\ngate_task = "check"\nruns_lane3 = true\n' + task_line)
+        # harmonic-forge#1507: the launcher resolves the fixture origin's
+        # account (vitalharmony/harmonic-forge, bc.build_fixture_tree) through
+        # THIS manifest, so it registers that repo -- at a path that is not
+        # the fixture checkout, so the session label stays bare.
+        if 'repo = "vitalharmony/harmonic-forge"' not in raw:  # a re-read manifest has it
+          raw += ("\n[[project]]\n"
+                'name = "origin-fixture"\nprefix = "Q"\nrepo = "vitalharmony/harmonic-forge"\n'
+                f'account = "vitalharmony"\npath = "{self.root / "unregistered-path"}"\n'
+                'onboarded = false\nworkspace = "vh"\n')
         (at or self.manifest).write_text(raw)
 
     @staticmethod
@@ -428,8 +461,8 @@ class RegistryIntegrity(unittest.TestCase):
     partially-defined registry, no error, even under `set -euo pipefail`.  That
     is a launcher that reads as protected and is not."""
 
-    def _copy_lane_dir(self, dest: Path) -> Path:
-        dest.mkdir()
+    def _copy_lane_dir(self, root: Path) -> Path:
+        dest = _lane_dir_in_forge(root)
         _place_route_mod(dest)
         _place_hook_set(dest)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
@@ -443,7 +476,7 @@ class RegistryIntegrity(unittest.TestCase):
 
     def _run_with_broken_registry(self, mutate) -> dict:
         with _FixtureTree() as tree:
-            lane_dir = self._copy_lane_dir(tree.root / "lanedir")
+            lane_dir = self._copy_lane_dir(tree.root)
             mutate(lane_dir / "_agent_registry.sh")
             return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
                                    env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
@@ -541,7 +574,7 @@ class RegistryIntegrity(unittest.TestCase):
             path.write_text(text)
 
         with _FixtureTree() as tree:
-            lane_dir = self._copy_lane_dir(tree.root / "lanedir")
+            lane_dir = self._copy_lane_dir(tree.root)
             registry = lane_dir / "_agent_registry.sh"
             drop_from_required_and_entry(registry)
             self.assertNotIn("AGENT_LAUNCH_REFUSED_ENV\n)", registry.read_text())
@@ -888,8 +921,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         """A copied lane dir whose registry declares a `toml`-checked policy
         for codex at LANE -- the shape the retired agent rows used
         (harmonic-forge#1113), now exercised through an agent that exists."""
-        lane_dir = tree.root / "lanedir"
-        lane_dir.mkdir()
+        lane_dir = _lane_dir_in_forge(tree.root)
         _place_route_mod(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh",
@@ -971,8 +1003,7 @@ class ClaudeLane3Settings(unittest.TestCase):
         """A lane dir whose registry points the Claude Lane 3 policy at
         `policy_path` and requires `owner` -- the only way a test can exercise
         an "installed" policy without root."""
-        lane_dir = tree.root / "lanedir"
-        lane_dir.mkdir()
+        lane_dir = _lane_dir_in_forge(tree.root)
         _place_route_mod(lane_dir)
         _place_hook_set(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
@@ -1151,7 +1182,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
         exists for: `git cat-file -e` on a tip we have never fetched is
         unambiguous staleness, with no ancestry math available.
         """
-        origin = tree.root / "github.com" / "vitalharmony" / "lane-fixture.git"
+        origin = tree.root / "github.com" / "vitalharmony" / "harmonic-forge.git"
         other = tree.root / "other-clone"
         subprocess.run(["git", "clone", "-q", str(origin), str(other)],
                        check=True, capture_output=True)
@@ -1281,7 +1312,7 @@ class Lane3RefreshesAtLaunch(unittest.TestCase):
         its absence."""
         with _FixtureTree() as tree:
             subprocess.run(["git", "remote", "set-url", "origin",
-                            str(tree.root / "does-not-exist.git")],
+                            str(tree.root / "gone" / "github.com" / "vitalharmony" / "harmonic-forge.git")],
                            cwd=tree.main, check=True, capture_output=True)
             cell = self._run3(tree)
             self.assertFalse(cell["launched"])
@@ -2168,8 +2199,7 @@ class RouteFloorModWiring(unittest.TestCase):
         source = (LANE_DIR / "_cli_launch.sh").read_text()
         self.assertIn('[ -f "$_lane_dir/../routing/mod/.claude-plugin/plugin.json" ]', source)
         with _FixtureTree() as tree:
-            lane_dir = tree.root / "lanedir"
-            lane_dir.mkdir()
+            lane_dir = _lane_dir_in_forge(tree.root)
             for path in LANE_DIR.iterdir():
                 if path.is_file() and (path.name.startswith("_") or path.name in ("lane1", "lane2", "lane3")):
                     (lane_dir / path.name).write_text(path.read_text())
@@ -2213,8 +2243,11 @@ def _copied_forge_tools(tree: _FixtureTree) -> Path:
     (onboard for lane_hookset's import, routing for the mod, hooks for Codex),
     so a test can change the copy's lane_hooks.json without touching the
     checkout. Returns the copied lane dir."""
-    tools = tree.root / "ftools"
-    tools.mkdir()
+    # harmonic-forge#1507: inside a `<root>/tools/` so _gh_config_dir.sh finds
+    # tools/onboard two levels above the copy (the symlink resolves to the
+    # real manifest, which registers the fixture origin).
+    tools = tree.root / "fforge" / "tools"
+    tools.mkdir(parents=True)
     shutil.copytree(LANE_DIR, tools / "lane",
                     ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     for sibling in ("onboard", "routing", "hooks"):

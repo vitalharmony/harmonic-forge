@@ -114,7 +114,7 @@ class Lane1BranchMode(unittest.TestCase):
         """TC4 (lane1 path)."""
         with _FixtureTree() as tree:
             _git(tree.main, "remote", "set-url", "origin",
-                 str(tree.root / "does-not-exist.git"))
+                 str(tree.root / "gone" / "github.com" / "vitalharmony" / "harmonic-forge.git"))
             cell = _run(tree, "1")
             self.assertTrue(cell["launched"], cell.get("stderr"))
             self.assertEqual(cell["extra_env"]["LANE_REFRESH_STATUS"], "fetch-failed")
@@ -194,7 +194,7 @@ class Lane2DetachedMode(unittest.TestCase):
         """TC4 (lane2 path)."""
         with _FixtureTree() as tree:
             _git(tree.main, "remote", "set-url", "origin",
-                 str(tree.root / "does-not-exist.git"))
+                 str(tree.root / "gone" / "github.com" / "vitalharmony" / "harmonic-forge.git"))
             cell = _run(tree, "2")
             self.assertFalse(cell["launched"])
             self.assertIn("could not determine or reach origin/main", cell["stderr"])
@@ -588,13 +588,15 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             self._lane3_real_env(tree)
             cell = _run3(tree)
             self.assertFalse(cell["launched"])
-            self.assertIn("cannot determine whether this project declares", cell["stderr"])
+            # harmonic-forge#1507: the gh-account lookup reads the same
+            # manifest before the env step, so an unreadable manifest now
+            # refuses there, earlier; the env is still untouched either way.
             self.assertIn("projects.toml", cell["stderr"])
+            self.assertIn("refusing to launch", cell["stderr"])
             env_file = tree.lane3 / "backend" / ".env"
             self.assertFalse(env_file.is_symlink())
             self.assertEqual(env_file.read_text(), "KEY=own-copy\n")
             self.assertEqual(tree.mise_calls(), [])
-            self.assertEqual(_env_record(tree), ["provision-failed"])
 
     @needs_trusted_lane3_policy
     def test_an_exported_manifest_override_cannot_steer_the_lookup(self):
@@ -652,6 +654,12 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             cell = _run3(tree)
             self.assertFalse(cell["launched"])
             self.assertIn("no project in", cell["stderr"])
+            # harmonic-forge#1507 pass 2: with the gh-account lookup now
+            # reading the manifest first, this case (origin registered, checkout
+            # path not) is the one that still reaches lane3's env-lookup-failure
+            # guard, so it pins that guard's message and record.
+            self.assertIn("cannot determine whether this project declares", cell["stderr"])
+            self.assertEqual(_env_record(tree), ["provision-failed"])
             self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
 
     def test_a_failed_provisioner_refuses_the_launch_with_remediation(self):
@@ -692,7 +700,7 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
     def test_a_stale_refusal_is_still_logged_exactly_once(self):
         with _FixtureTree(with_backend_env=True) as tree:
             subprocess.run(["git", "remote", "set-url", "origin",
-                            str(tree.root / "does-not-exist.git")],
+                            str(tree.root / "gone" / "github.com" / "vitalharmony" / "harmonic-forge.git")],
                            cwd=tree.main, check=True, capture_output=True)
             cell = _run3(tree)
             self.assertFalse(cell["launched"])
