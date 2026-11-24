@@ -288,6 +288,23 @@ def _code_only(path: Path) -> str:
     return "\n".join(lines)
 
 
+class FixtureCommandErrors(unittest.TestCase):
+    """harmonic-forge#1549: a failed fixture setup command names its stderr."""
+
+    def test_a_failing_command_carries_its_stderr(self):
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            bc._run([sys.executable, "-c",
+                     "import sys; sys.stderr.write('fatal: the cause'); sys.exit(128)"])
+        self.assertEqual(caught.exception.returncode, 128)
+        self.assertIn("fatal: the cause", str(caught.exception))
+
+    def test_non_utf8_stderr_is_decoded_not_raised(self):
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            bc._run([sys.executable, "-c",
+                     "import sys; sys.stderr.buffer.write(b'bad \\xff byte'); sys.exit(1)"])
+        self.assertIn("bad � byte", str(caught.exception))
+
+
 # ---------------------------------------------------------------------------
 # TC1 / TC9 -- all 9 lane x agent combinations
 # ---------------------------------------------------------------------------

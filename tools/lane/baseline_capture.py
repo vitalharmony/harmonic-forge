@@ -115,8 +115,27 @@ STUB_VERSIONS = {
 }
 
 
+class FixtureCommandError(subprocess.CalledProcessError):
+    """A CalledProcessError whose message carries the command's stderr and
+    stdout, decoded with errors="replace" (harmonic-forge#1549)."""
+
+    def __str__(self) -> str:
+        def text(data: bytes | str | None) -> str:
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", errors="replace")
+            return (data or "").strip()
+        return (f"{super().__str__()}\nstderr: {text(self.stderr)}\n"
+                f"stdout: {text(self.output)}")
+
+
 def _run(args: list[str], cwd: Path | None = None) -> None:
-    subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+    """Run a fixture setup command; a failure raises FixtureCommandError
+    (harmonic-forge#1549: an intermittent exit 128 from `git worktree add` was
+    undiagnosable because its stderr was captured and dropped)."""
+    result = subprocess.run(args, cwd=cwd, capture_output=True)
+    if result.returncode != 0:
+        raise FixtureCommandError(result.returncode, args,
+                                  output=result.stdout, stderr=result.stderr)
 
 
 def write_codex_hooks(checkout: Path) -> None:
