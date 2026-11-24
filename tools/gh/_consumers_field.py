@@ -27,8 +27,12 @@ _FORGE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_FORGE / "tools" / "registry"))
 import contracts  # noqa: E402
 
-#: A list bullet or number and surrounding whitespace, stripped before a label is read.
+#: A list bullet or number, surrounding whitespace and Markdown emphasis, stripped
+#: before a label is read (`**Contract:** x` reads as `Contract: x`).
 _LEAD = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*")
+_EMPHASIS = re.compile(r"(\*\*|__)")
+_COMMENT = re.compile(r"(?s)<!--.*?-->")
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _CONTRACT = re.compile(r"^contract:\s*(.*)$", re.IGNORECASE)
 _NO_ENTRY = re.compile(r"^no index entry applies\b", re.IGNORECASE)
 _SEARCH = re.compile(r"^search:\s*(.*)$", re.IGNORECASE)
@@ -39,7 +43,21 @@ FORMS = ("one or more `Contract: <id>` lines naming ids in the contract index "
 
 
 def _lines(section: str) -> list[str]:
-    return [_LEAD.sub("", line, count=1).strip() for line in section.splitlines()]
+    """The section's label-bearing lines: HTML comments and fenced blocks removed (an
+    example there is not a declaration; an unclosed fence hides the rest, so the field
+    fails toward refusal), then bullets and emphasis stripped."""
+    out, fence = [], None
+    for line in _COMMENT.sub("", section).splitlines():
+        m = _FENCE.match(line)
+        if fence is None and m:
+            fence = m.group(1)[0]
+            continue
+        if fence is not None:
+            if m and m.group(1)[0] == fence:
+                fence = None
+            continue
+        out.append(_LEAD.sub("", _EMPHASIS.sub("", line), count=1).strip())
+    return out
 
 
 def _known_projects(manifest: Path) -> set[str]:
@@ -74,7 +92,7 @@ def consumers_refusal(section: str, *, index: Path | None = None,
             return "Consumers and Equivalents: " + "; ".join(bad)
         return None
     no_entry = any(_NO_ENTRY.match(line) for line in lines)
-    searches = [m.group(1).strip() for line in lines if (m := _SEARCH.match(line))]
+    searches = [m.group(1).strip().strip("`").strip() for line in lines if (m := _SEARCH.match(line))]
     if no_entry and any(searches):
         return None
     if no_entry:

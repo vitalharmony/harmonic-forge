@@ -50,7 +50,22 @@ class FormTests(unittest.TestCase):
 
     # AC5
     def test_a_known_project_without_a_checkout_is_unmeasured_and_passes(self) -> None:
-        self.assertIsNone(self.check("Contract: hrse.anything"))
+        # checkout injected: the real HRSE2 checkout must not decide this case.
+        self.assertIsNone(self.check("Contract: hrse.anything", checkout=lambda _project: None))
+
+    def test_a_backtick_only_search_refuses(self) -> None:
+        self.assertIn("Search:", self.check("No index entry applies.\nSearch: ``"))
+
+    def test_fenced_and_commented_labels_are_not_declarations(self) -> None:
+        fenced = "No index entry applies.\nSearch: `rg x`\n```\nContract: harmonic-forge.example\n```"
+        self.assertIsNone(self.check(fenced))
+        self.assertIsNotNone(self.check("<!-- Contract: harmonic-forge.gh-argv-parser -->"))
+        self.assertIsNotNone(self.check("```\nNo index entry applies\nSearch: x"))
+
+    def test_bold_labels_are_read(self) -> None:
+        self.assertIsNone(self.check(f"**Contract:** {REAL_ID}"))
+        self.assertIn("names no known project",
+                      self.check(f"Contract: {REAL_ID}\n**Contract:** forge.x"))
 
     def test_an_unknown_namespace_refuses(self) -> None:
         msg = self.check("Contract: forge.gh-argv-parser")
