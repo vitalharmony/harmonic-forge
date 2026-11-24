@@ -216,6 +216,66 @@ class TestImports(ScratchRepo):
         self.assertIn("core_hook", out)
 
 
+class TestReviewFixes(ScratchRepo):
+    """harmonic-forge#1524 preclose pass 1."""
+
+    def test_package_qualified_imports_resolve(self):
+        self.write("tools/memory/memory_lint.py", "X = 1\n")
+        self.track()
+        self.baseline_now()
+        for i, stmt in enumerate(("from telemetry import emit\n",
+                                  "import telemetry.emit\n",
+                                  "import memory.memory_lint\n")):
+            self.write(f"tools/gh/user{i}.py", stmt)
+        self.write("tools/gh/user3.py", "import telemetry\n")
+        self.track()
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1)
+        self.assertIn("tools/gh/user0.py imports operator file tools/telemetry/emit.py", out)
+        self.assertIn("tools/gh/user1.py imports operator file tools/telemetry/emit.py", out)
+        self.assertIn("tools/gh/user2.py imports operator file tools/memory/memory_lint.py", out)
+        self.assertIn("tools/gh/user3.py imports operator file tools/telemetry/", out)
+
+    def test_non_utf8_file_scanned_or_fails(self):
+        self.baseline_now()
+        p = self.root / "tools/hooks/latin.py"
+        p.write_bytes(b'S = "caf\xe9"\n' + PLANT.encode())
+        self.track()
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1)
+        self.assertIn("[projects-root] tools/hooks/latin.py", out)
+        self.baseline_now()
+        p.write_bytes(b"# -*- coding: no-such-codec -*-\nS = '\xe9'\n")
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1)
+        self.assertIn("tools/hooks/latin.py: unreadable", out)
+        self.assertNotIn("stale", out)
+
+    def test_typescript_scanned(self):
+        self.baseline_now()
+        self.write("tools/routing/mod/a.ts",
+                   "// ~/Harmonic_Projects in a comment\n"
+                   "const r = `${home}/Harmonic_Projects`;\n")
+        self.track()
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1)
+        self.assertIn("[projects-root] tools/routing/mod/a.ts: const r", out)
+        self.assertNotIn("in a comment", out)
+
+    def test_shell_source_after_operator_found(self):
+        self.write("tools/telemetry/env.sh", "X=1\n")
+        self.track()
+        self.baseline_now()
+        self.write("tools/lane/a.sh", '#!/bin/sh\ncd "$D" && . ../telemetry/env.sh\n')
+        self.write("tools/lane/b.sh", '#!/bin/sh\ntrue; source "$D/env.sh"\n')
+        self.write("tools/lane/c.sh", '#!/bin/sh\nfalse || source env.sh\n')
+        self.track()
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1)
+        for f in "abc":
+            self.assertIn(f"tools/lane/{f}.sh imports operator file tools/telemetry/env.sh", out)
+
+
 class TestWiring(unittest.TestCase):
     def test_ci_check_runs_scan(self):
         mise = (HERE.parents[1] / "mise.toml").read_text(encoding="utf-8")

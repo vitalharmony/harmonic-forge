@@ -15,7 +15,8 @@ and refuses while the scan holds a row the baseline lacks: a new row is a hand
 edit review sees. `--print` renders the whole scan to stdout and writes nothing.
 
 Scope: tracked files under `tools/`, `scripts/` and `sync_rules.py` (Python,
-shell, TOML, JSON, and extensionless files with a python or shell shebang),
+shell, TypeScript (hardcode rules only, no import edges), TOML, JSON, and
+extensionless files with a python or shell shebang),
 minus test files (`test_*`, `*.test.ts`, `testdata/`, `fixtures/`) and minus
 the globs in `tools/rules/operator_paths.toml`. Operator files are never
 scanned and never baselined.
@@ -25,9 +26,15 @@ root and the projects root are built at scan time from `projects.toml`
 through `tools/onboard/manifest.py`. The fixed patterns below are spelled so
 that their own source text does not match them.
 
+A file is read as UTF-8, else by its PEP 263 coding declaration, else as
+latin-1; a file that cannot be read fails the scan by name, never a skip.
+
 Imports resolve by basename across tracked non-test files, with no `sys.path`
 evaluation; the scan refuses when two such Python files share a basename,
-which keeps that resolution exact. A module loaded by `spec_from_file_location`
+which keeps that resolution exact. A dotted import resolves its last
+component; `from pkg import name` also resolves each imported name when `pkg`
+is a tracked directory, and an import of a package directory under `tools/`
+whose files are operator-side is an edge to that directory. A module loaded by `spec_from_file_location`
 resolves from a literal path argument; a computed path is out of scope and
 counted in the output (`--list-dynamic` names each one).
 """
@@ -147,6 +154,8 @@ def kind(root: Path, path: str) -> str | None:
         return "python"
     if suffix in (".sh", ".bash"):
         return "shell"
+    if suffix == ".ts":
+        return "ts"
     if suffix == ".toml":
         return "hash"
     if suffix == ".json":
@@ -155,8 +164,8 @@ def kind(root: Path, path: str) -> str | None:
         try:
             with open(root / path, "rb") as fh:
                 first = fh.readline(200)
-        except OSError:
-            return None
+        except OSError as exc:
+            raise ScanError(f"{path}: unreadable ({exc})") from exc
         if first.startswith(b"#!"):
             if b"python" in first:
                 return "python"
@@ -187,11 +196,55 @@ def _strip_hash(line: str) -> str:
     return line
 
 
+def _strip_ts(source: str) -> list[str]:
+    """Blank `//` and `/* */` comments outside string and template literals."""
+    out: list[str] = []
+    quote = None
+    block = False
+    i, n = 0, len(source)
+    while i < n:
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < n else ""
+        if block:
+            if ch == "*" and nxt == "/":
+                block = False
+                out.append("  ")
+                i += 2
+                continue
+            out.append("\n" if ch == "\n" else " ")
+        elif quote:
+            out.append(ch)
+            if ch == "\\" and nxt:
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == quote or (ch == "\n" and quote != "`"):
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+            out.append(ch)
+        elif ch == "/" and nxt == "/":
+            while i < n and source[i] != "\n":
+                i += 1
+            continue
+        elif ch == "/" and nxt == "*":
+            block = True
+            out.append("  ")
+            i += 2
+            continue
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out).splitlines()
+
+
 def code_lines(source: str, file_kind: str) -> list[str]:
     """The file's lines with comments (and Python docstrings) blanked."""
     lines = source.splitlines()
     if file_kind == "plain":
         return lines
+    if file_kind == "ts":
+        return _strip_ts(source)
     if file_kind != "python":
         return [_strip_hash(l) for l in lines]
     try:
@@ -232,23 +285,29 @@ def normalize(line: str) -> str:
 
 # --- import edges ------------------------------------------------------------
 
-def python_targets(source: str) -> tuple[list[str], int, list[str]]:
-    """(imported names or file basenames, count of computed path loads, the
-    computed-load line descriptions)."""
+def python_targets(source: str, dirs: frozenset[str] = frozenset()
+                   ) -> tuple[list[list[str]], int, list[str]]:
+    """(one candidate group per import: module names, `file:` basenames or
+    `pkg:` package names; count of computed path loads; the computed-load
+    line descriptions). `dirs` names the tracked directories, so that
+    `from pkg import name` resolves `name` only when `pkg` is one."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return [], 0, []
-    found: list[str] = []
+    found: list[list[str]] = []
     dynamic: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found.extend(a.name.split(".")[0] for a in node.names)
+            for a in node.names:
+                parts = a.name.split(".")
+                found.append([parts[-1], "pkg:" + parts[0]])
         elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                found.append(node.module.split(".")[0])
-            if node.level:
-                found.extend(a.name for a in node.names)
+            parts = node.module.split(".") if node.module else []
+            if parts:
+                found.append([parts[-1], "pkg:" + parts[0]])
+            if node.level or (parts and parts[-1] in dirs):
+                found.extend([a.name] for a in node.names)
         elif isinstance(node, ast.Call):
             fn = node.func
             name = fn.attr if isinstance(fn, ast.Attribute) else (
@@ -256,23 +315,47 @@ def python_targets(source: str) -> tuple[list[str], int, list[str]]:
             if name in ("import_module", "__import__") and node.args:
                 arg = node.args[0]
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    found.append(arg.value.split(".")[-1])
+                    found.append([arg.value.split(".")[-1]])
             elif name == "spec_from_file_location":
                 arg = node.args[1] if len(node.args) > 1 else next(
                     (k.value for k in node.keywords if k.arg == "location"), None)
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    found.append("file:" + arg.value.rsplit("/", 1)[-1])
+                    found.append(["file:" + arg.value.rsplit("/", 1)[-1]])
                 else:
                     dynamic.append(f"line {node.lineno}")
     return found, len(dynamic), dynamic
 
 
-SOURCE_RE = re.compile(r"^\s*(?:source|\.)\s+[\"']?([^\s\"';]+)")
+SOURCE_RE = re.compile(
+    r"(?:^|&&|\|\||;)\s*(?:source|\.)\s+[\"']?([^\s\"';&|]+)")
 
 
-def shell_targets(lines: list[str]) -> list[str]:
-    return ["file:" + m.group(1).rsplit("/", 1)[-1]
-            for m in (SOURCE_RE.match(l) for l in lines) if m]
+def shell_targets(lines: list[str]) -> list[list[str]]:
+    return [["file:" + m.group(1).rsplit("/", 1)[-1]]
+            for l in lines for m in SOURCE_RE.finditer(l)]
+
+
+def read_source(root: Path, path: str) -> str:
+    """UTF-8, else the PEP 263 declared coding, else latin-1; an unreadable
+    file raises ScanError naming it."""
+    try:
+        data = (root / path).read_bytes()
+    except OSError as exc:
+        raise ScanError(f"{path}: unreadable ({exc})") from exc
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    for line in data.splitlines()[:2]:
+        m = re.match(rb"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)", line)
+        if m:
+            codec = m.group(1).decode("ascii")
+            try:
+                return data.decode(codec)
+            except (LookupError, UnicodeDecodeError) as exc:
+                raise ScanError(f"{path}: unreadable as declared coding "
+                                f"{codec} ({exc})") from exc
+    return data.decode("latin-1")
 
 
 # --- scan --------------------------------------------------------------------
@@ -292,6 +375,13 @@ def scan(root: Path, manifest: Path | None = None) -> tuple[Counter, list[str]]:
         by_file.setdefault(base, []).append(p)
         if p.endswith(".py"):
             by_module.setdefault(base[:-3], []).append(p)
+    dirs = frozenset(d for p in files for d in p.split("/")[:-1])
+    pkg_dirs: dict[str, str] = {}
+    for p in files:
+        parts = p.split("/")
+        if (len(parts) > 2 and parts[0] == "tools"
+                and is_operator(f"tools/{parts[1]}/__init__.py", globs)):
+            pkg_dirs.setdefault(parts[1], f"tools/{parts[1]}/")
     dupes = {m: ps for m, ps in by_module.items() if len(ps) > 1}
     if dupes:
         raise ScanError("duplicate Python basename(s), import resolution is "
@@ -305,10 +395,7 @@ def scan(root: Path, manifest: Path | None = None) -> tuple[Counter, list[str]]:
         k = kind(root, p)
         if k is None:
             continue
-        try:
-            source = (root / p).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
+        source = read_source(root, p)
         lines = code_lines(source, k)
         for line in lines:
             text = normalize(line)
@@ -318,17 +405,24 @@ def scan(root: Path, manifest: Path | None = None) -> tuple[Counter, list[str]]:
                 if rx.search(text):
                     rows[(name, p, text)] += 1
         if k == "python":
-            targets, _, dyn = python_targets(source)
+            targets, _, dyn = python_targets(source, dirs)
             dynamic.extend(f"{p} {d}" for d in dyn)
         elif k == "shell":
             targets = shell_targets(lines)
         else:
             targets = []
-        for t in targets:
-            hits = by_file.get(t[5:], []) if t.startswith("file:") else by_module.get(t, [])
-            for target in hits:
-                if target != p and is_operator(target, globs):
-                    rows[("import", p, target)] += 1
+        for group in targets:
+            edges = []
+            for t in group:
+                if t.startswith("pkg:"):
+                    continue
+                hits = by_file.get(t[5:], []) if t.startswith("file:") else by_module.get(t, [])
+                edges += [h for h in hits if h != p and is_operator(h, globs)]
+            if not edges:
+                edges = [pkg_dirs[t[4:]] for t in group
+                         if t.startswith("pkg:") and t[4:] in pkg_dirs]
+            for target in dict.fromkeys(edges):
+                rows[("import", p, target)] += 1
     return rows, dynamic
 
 

@@ -2656,6 +2656,12 @@ count = 1
 
 [[finding]]
 rule = "project-name"
+path = "tools/routing/mod/hooks/register.ts"
+text = "if (await $.fs.exists(`${home}/.cache/harmonic-forge/route_floor/${id}`)) {"
+count = 1
+
+[[finding]]
+rule = "project-name"
 path = "tools/rules/query_rules.py"
 text = "\"forge\": _HOME / \"harmonic-forge\" / \".claude\" / \"settings.json\","
 count = 1
