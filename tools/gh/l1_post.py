@@ -111,6 +111,7 @@ import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a pos
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
 import _scratch  # noqa: E402  (harmonic-forge#949)
+import _dry_run_failures  # noqa: E402  (harmonic-forge#1544)
 import _manifest_compare  # noqa: E402  (harmonic-forge#1539)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 import _lane3_env  # noqa: E402  (harmonic-forge#1218)
@@ -4070,4 +4071,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    _dry_run_failures.run(main)

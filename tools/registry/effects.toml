@@ -969,6 +969,8 @@ path = "tools/gh/_auto_ae.py"
 [[library]]
 path = "tools/gh/_caller_path.py"
 [[library]]
+path = "tools/gh/_dry_run_failures.py"
+[[library]]
 path = "tools/gh/_etag_cache.py"
 [[library]]
 path = "tools/gh/_exempt_conflict.py"
