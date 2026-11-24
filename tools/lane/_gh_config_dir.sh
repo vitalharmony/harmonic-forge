@@ -20,12 +20,13 @@
 # failure, REFUSES the launch rather than falling through to the global gh
 # login; so does a registered repo whose account has no lane slot here.
 #
-# Preclose pass 1 (harmonic-forge#1507): the origin is parsed by
-# tools/onboard/origin_parse.py, which accepts only a github.com host (or an
-# absolute local fixture path) and refuses a key the manifest would rewrite;
-# the lookup runs as `python3 -I`, so a module planted in the target checkout
-# (which is the cwd) can never shadow the stdlib; and the slot root must be an
-# absolute path, so a relative GH_ACCT_HOME cannot resolve through the checkout.
+# Reforge (harmonic-forge#1507): the whole origin-to-account decision is one
+# tested call, manifest_identity.account_for_origin -- a github.com host (or an
+# absolute local fixture path) only, one normalization, one exact refusal rule
+# for any key the manifest would rewrite, one direct lookup. It runs as
+# `python3 -I`, so a module planted in the target checkout (the cwd) can never
+# shadow the stdlib; and the slot root must be an absolute path, so a relative
+# GH_ACCT_HOME cannot resolve through the checkout.
 
 _gh_slots="${GH_ACCT_HOME:-$HOME/.config/gh-accounts}"
 case "$_gh_slots" in
@@ -42,11 +43,8 @@ _gh_rc=0
 _gh_account="$(env -u FORGE_PROJECTS_MANIFEST python3 -I -c '
 import sys
 sys.path.insert(0, sys.argv[1] + "/tools/onboard")
-import manifest_identity, origin_parse
-key = origin_parse.parse_origin(sys.argv[2])
-if key is None:
-    sys.exit(2)
-print(manifest_identity.account_for(key))
+import manifest_identity
+print(manifest_identity.account_for_origin(sys.argv[2]))
 ' "$_gh_forge" "$_gh_remote" 2>/dev/null)" || _gh_rc=$?
 if [ "$_gh_rc" -ne 0 ] || [ -z "$_gh_account" ]; then
   echo "lane${LANE:-?}: origin '${_gh_remote:-none}' is not registered in projects.toml or .claude/forge.toml -- refusing to launch on the global gh login (harmonic-forge#1507)." >&2

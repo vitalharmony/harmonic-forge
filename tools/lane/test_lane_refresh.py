@@ -654,6 +654,12 @@ class Lane3DeclaredEnvProvisioner(unittest.TestCase):
             cell = _run3(tree)
             self.assertFalse(cell["launched"])
             self.assertIn("no project in", cell["stderr"])
+            # harmonic-forge#1507 pass 2: with the gh-account lookup now
+            # reading the manifest first, this case (origin registered, checkout
+            # path not) is the one that still reaches lane3's env-lookup-failure
+            # guard, so it pins that guard's message and record.
+            self.assertIn("cannot determine whether this project declares", cell["stderr"])
+            self.assertEqual(_env_record(tree), ["provision-failed"])
             self.assertFalse((tree.lane3 / "backend" / ".env").is_symlink())
 
     def test_a_failed_provisioner_refuses_the_launch_with_remediation(self):

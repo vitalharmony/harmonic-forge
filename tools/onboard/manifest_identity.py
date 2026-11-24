@@ -65,6 +65,42 @@ def account_for(repo: str, path: Path | None = None) -> str:
     return project.account
 
 
+_PART = r"[A-Za-z0-9_.-]+"
+#: The origin shapes a lane may launch from (harmonic-forge#1507): a github.com
+#: host only, or an absolute local path ending in github.com/<o>/<r>.git (the
+#: offline bare repos the launcher tests use; a path has no host to spoof).
+_ORIGIN_SHAPES = (
+    re.compile(rf"https://github\.com/({_PART}/{_PART})/?"),
+    re.compile(rf"git@github\.com:({_PART}/{_PART})/?"),
+    re.compile(rf"ssh://git@github\.com/({_PART}/{_PART})/?"),
+    re.compile(rf"/(?:[^\0]*/)?github\.com/({_PART}/{_PART}\.git)"),
+)
+
+
+def account_for_origin(url: str, path: Path | None = None) -> str:
+    """The account a lane checkout whose origin is `url` acts as
+    (harmonic-forge#1507 reforge). One normalization, one exact refusal rule,
+    one direct lookup: the raw `owner/repo` is normalized exactly once; it is
+    accepted only when that equals the raw text with one trailing `.git`
+    (any case) removed and lowercased; the key is looked up directly, never
+    through `account_for`, which would normalize again."""
+    raw = next((m.group(1) for shape in _ORIGIN_SHAPES if (m := shape.fullmatch(url))), None)
+    if raw is None:
+        raise ManifestError(f"origin {url!r} is not a github.com repo URL")
+    stripped = raw[:-4] if raw.lower().endswith(".git") else raw
+    key = normalize_repo(raw)
+    if key != stripped.lower():
+        raise ManifestError(f"origin {url!r} names {raw!r}, which normalizes to {key!r}; "
+                            "refusing an ambiguous repo key")
+    project = by_repo(path).get(key)
+    if project is None:
+        raise ManifestError(f"no [[project]] entry for {key}; refusing to fall back to the "
+                            "global gh login")
+    if not project.account:
+        raise ManifestError(f"{key} is registered but declares no `account`")
+    return project.account
+
+
 def project_for_path(path: str | Path, manifest: Path | None = None) -> Project:
     """The project whose checkout or lane worktree contains `path`.
 
