@@ -4,7 +4,8 @@
 A local-time zone comes from `tools/settings/instance.py` `timezone()`, never
 from a literal. This check parses every `*.py` under `tools/` and `skills/` with
 `ast` and flags a call that constructs a `ZoneInfo` with a string literal
-anywhere in its zone argument: `ZoneInfo(...)`, `zoneinfo.ZoneInfo(...)`, an
+anywhere in ANY of its arguments, starred and keyword ones included:
+`ZoneInfo(...)`, `zoneinfo.ZoneInfo(...)`, an
 import alias of either, and the `no_cache` constructor. Only the files named in
 EXCEPTIONS are exempt, and only files actually parsed count toward the scan, so
 a tree of exempt files, like an empty one, never reads green.
@@ -61,7 +62,9 @@ def _is_zone_call(func: ast.AST, classes: set[str], modules: set[str]) -> bool:
 
 
 def _has_literal(call: ast.Call) -> bool:
-    args = list(call.args[:1]) + [kw.value for kw in call.keywords if kw.arg == "key"]
+    # Every argument, starred ones included (post-verdict survivor: an empty
+    # `*[]` first shifted the zone out of a first-argument-only scan).
+    args = list(call.args) + [kw.value for kw in call.keywords]
     return any(isinstance(n, ast.JoinedStr) or (isinstance(n, ast.Constant) and isinstance(n.value, str))
                for arg in args for n in ast.walk(arg))
 

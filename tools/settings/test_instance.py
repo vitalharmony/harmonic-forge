@@ -132,7 +132,9 @@ class ZoneLiteralCheck(unittest.TestCase):
                        'import zoneinfo as zi\nzi.ZoneInfo("Europe/Paris")\n',
                        'from zoneinfo import ZoneInfo\nZoneInfo.no_cache("Europe/Paris")\n',
                        'from zoneinfo import ZoneInfo\nZoneInfo("Europe/" + "Paris")\n',
-                       'from zoneinfo import ZoneInfo\nc = "Paris"\nZoneInfo(f"Europe/{c}")\n'):
+                       'from zoneinfo import ZoneInfo\nc = "Paris"\nZoneInfo(f"Europe/{c}")\n',
+                       'from zoneinfo import ZoneInfo\nZoneInfo(*[], "Europe/Paris")\n',
+                       'from zoneinfo import ZoneInfo\nZoneInfo(*["Europe/Paris"])\n'):
             with self.subTest(source=source):
                 files, hits = C.scan(self._tree({"tools/x/y.py": source}))
                 self.assertEqual(files, 1)
@@ -159,6 +161,11 @@ class ZoneLiteralCheck(unittest.TestCase):
         # Pinned on purpose: the docstring names this as out of scope (a tripwire, not dataflow).
         source = "from zoneinfo import ZoneInfo\nTZ = 'Europe/Paris'\nZoneInfo(TZ)\n"
         self.assertEqual(C.main(["--root", str(self._tree({"tools/x/y.py": source}))]), 0)
+
+    def test_the_docstring_states_the_rule_the_scan_enforces(self):
+        # Post-verdict survivor: the stated rule must not drift from the code.
+        doc = " ".join(C.__doc__.split())
+        self.assertIn("anywhere in ANY of its arguments, starred and keyword ones included", doc)
 
     def test_the_real_tree_has_no_hardcoded_zone(self):
         self.assertEqual(C.main(["--root", str(REPO)]), 0)
