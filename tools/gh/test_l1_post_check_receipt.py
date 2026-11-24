@@ -81,12 +81,35 @@ class ReceiptContentTests(unittest.TestCase):
         self.assertEqual(data["forge_sha"], FORGE)
 
     def test_a_dirty_forge_tree_has_no_identity(self):
-        outputs = {("status", "--porcelain"): " M tools/x.py", ("rev-parse", "HEAD"): FORGE}
+        outputs = {C._FORGE_STATUS: "M tools/x.py", ("rev-parse", "HEAD"): FORGE}
         with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
             self.assertIsNone(C.forge_sha())
-        outputs[("status", "--porcelain")] = ""
+            self.assertEqual(C.forge_unusable_reason(), "forge tree dirty: tools/x.py")
+        outputs[C._FORGE_STATUS] = ""
         with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
             self.assertEqual(C.forge_sha(), FORGE)
+            self.assertIsNone(C.forge_unusable_reason())
+
+    def test_untracked_forge_files_do_not_void_the_identity(self):
+        """harmonic-forge#1538: a real git repo with an untracked file inside tools/hooks."""
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+            run("init", "-q"); run("config", "user.email", "t@example.invalid"); run("config", "user.name", "t")
+            (root / "tools" / "hooks").mkdir(parents=True)
+            (root / "tools" / "hooks" / "a.py").write_text("x = 1\n")
+            run("add", "."); run("commit", "-qm", "init")
+            (root / "tools" / "hooks" / "stray.json").write_text("{}")
+            with mock.patch.object(C, "FORGE_ROOT", root):
+                head = C.forge_sha()
+                self.assertIsNotNone(head)
+                self.assertIsNone(C.forge_unusable_reason())
+                (root / "tools" / "hooks" / "a.py").write_text("x = 2\n")
+                self.assertIsNone(C.forge_sha())
+                self.assertEqual(C.forge_unusable_reason(), "forge tree dirty: tools/hooks/a.py")
+
 
     def test_lookup_none_for_missing_empty_and_unparseable(self):
         self.assertIsNone(C.lookup(SLUG, SHA))
@@ -96,6 +119,8 @@ class ReceiptContentTests(unittest.TestCase):
         self.assertIsNone(C.lookup(SLUG, SHA))
         path.write_text("{not json", encoding="utf-8")
         self.assertIsNone(C.lookup(SLUG, SHA))
+
+_REAL_FORGE_SHA = C.forge_sha
 
 
 class ReuseTests(unittest.TestCase):
@@ -161,6 +186,44 @@ class ReuseTests(unittest.TestCase):
             L.static_checks(SHA, "fix/1134-x", dry_run=True)
         self.assertIn(f"dry run: check receipt found for {SHA[:12]}; the real post reuses it",
                       out.getvalue())
+
+    def test_a_legacy_null_receipt_is_never_reused(self):
+        """harmonic-forge#1538 AC3: a forge_sha: null receipt never matches, even when the
+        forge identity is also unreadable now (None must not equal None)."""
+        self.write(forge_sha=None)
+        with mock.patch.object(C, "forge_sha", return_value=None):
+            self.assertTrue(self.static()[1])
+
+    def test_an_unusable_forge_prints_why_before_the_check(self):
+        """harmonic-forge#1538: the not-reusable reason is printed, never silent."""
+        out = io.StringIO()
+        with mock.patch.object(C, "forge_sha", return_value=None), \
+                mock.patch.object(C, "forge_unusable_reason", return_value="forge tree dirty: tools/x.py"), \
+                contextlib.redirect_stdout(out):
+            self.static()
+        self.assertIn("[l1-post] receipt will not be reusable: forge tree dirty: tools/x.py", out.getvalue())
+
+    def test_an_untracked_forge_file_still_reuses_end_to_end(self):
+        """harmonic-forge#1538 AC1: a real forge repo with an untracked file inside tools/hooks;
+        the receipt recorded at its HEAD is reused and no not-reusable line is printed."""
+        with TemporaryDirectory() as forge:
+            root = Path(forge)
+            git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+            git("init", "-q"); git("config", "user.email", "t@example.invalid"); git("config", "user.name", "t")
+            (root / "tools" / "hooks").mkdir(parents=True)
+            (root / "tools" / "hooks" / "a.py").write_text("x = 1\n")
+            git("add", "."); git("commit", "-qm", "init")
+            (root / "tools" / "hooks" / "stray.py").write_text("y = 2\n")
+            head = git("rev-parse", "HEAD").stdout.decode().strip()
+            self.write(forge_sha=head)
+            out = io.StringIO()
+            with mock.patch.object(C, "FORGE_ROOT", root), \
+                    mock.patch.object(C, "forge_sha", _REAL_FORGE_SHA), \
+                    contextlib.redirect_stdout(out):
+                result, ran_check = self.static()
+            self.assertFalse(ran_check)
+            self.assertEqual(result[2], {"result": "reused"})
+            self.assertNotIn("will not be reusable", out.getvalue())
 
     def test_a_lane_worktree_receipt_still_runs_the_check(self):
         self.write(source="check")
