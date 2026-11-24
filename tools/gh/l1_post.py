@@ -3055,6 +3055,8 @@ def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[st
               if dry_run else f"[l1-post] check receipt found for {sha[:12]}; reusing it")
         return (["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"],
                 None, {"result": "reused"})
+    if (why := check_receipt.forge_unusable_reason()):  # harmonic-forge#1538: never silent
+        print(f"[l1-post] receipt will not be reusable: {why}")
     # harmonic-forge#949: the scratch copy and its install live under the
     # disk-backed, locked, reaped root, never the /tmp tmpfs.
     holder_cm = _scratch.scratch_dir(f"l1-post {branch}@{sha[:8]}", prefix="l1-post-")

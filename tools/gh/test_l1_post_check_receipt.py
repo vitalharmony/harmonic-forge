@@ -81,12 +81,38 @@ class ReceiptContentTests(unittest.TestCase):
         self.assertEqual(data["forge_sha"], FORGE)
 
     def test_a_dirty_forge_tree_has_no_identity(self):
-        outputs = {("status", "--porcelain"): " M tools/x.py", ("rev-parse", "HEAD"): FORGE}
+        outputs = {C._FORGE_STATUS: "M tools/x.py", ("rev-parse", "HEAD"): FORGE}
         with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
             self.assertIsNone(C.forge_sha())
-        outputs[("status", "--porcelain")] = ""
+            self.assertEqual(C.forge_unusable_reason(), "forge tree dirty: tools/x.py")
+        outputs[C._FORGE_STATUS] = ""
         with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
             self.assertEqual(C.forge_sha(), FORGE)
+            self.assertIsNone(C.forge_unusable_reason())
+
+    def test_untracked_forge_files_do_not_void_the_identity(self):
+        """harmonic-forge#1538: a real git repo with an untracked file inside tools/hooks."""
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+            run("init", "-q"); run("config", "user.email", "t@example.invalid"); run("config", "user.name", "t")
+            (root / "tools" / "hooks").mkdir(parents=True)
+            (root / "tools" / "hooks" / "a.py").write_text("x = 1\n")
+            run("add", "."); run("commit", "-qm", "init")
+            (root / "tools" / "hooks" / "stray.json").write_text("{}")
+            with mock.patch.object(C, "FORGE_ROOT", root):
+                head = C.forge_sha()
+                self.assertIsNotNone(head)
+                self.assertIsNone(C.forge_unusable_reason())
+                (root / "tools" / "hooks" / "a.py").write_text("x = 2\n")
+                self.assertIsNone(C.forge_sha())
+                self.assertEqual(C.forge_unusable_reason(), "forge tree dirty: tools/hooks/a.py")
+
+    def test_a_legacy_null_receipt_is_never_reused(self):
+        with mock.patch.object(C, "forge_sha", return_value=None):
+            self.assertIsNone(C.forge_sha())
 
     def test_lookup_none_for_missing_empty_and_unparseable(self):
         self.assertIsNone(C.lookup(SLUG, SHA))

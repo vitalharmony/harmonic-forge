@@ -66,12 +66,30 @@ def forge_sha() -> str | None:
     """The `~/harmonic-forge` HEAD a check ran against: a consumer repo's check
     runs forge scripts, so a forge change can change its result. None when it
     cannot be read or the forge tree is dirty: then HEAD does not name the code."""
+    # harmonic-forge#1538: untracked files are not code a check ran, so they do
+    # not void the identity; a modified or staged tracked file still does.
     try:
-        if _git("status", "--porcelain", cwd=str(FORGE_ROOT)):
+        if _git(*_FORGE_STATUS, cwd=str(FORGE_ROOT)):
             return None
         return _git("rev-parse", "HEAD", cwd=str(FORGE_ROOT))
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+_FORGE_STATUS = ("status", "--porcelain", "--untracked-files=no")
+
+
+def forge_unusable_reason() -> str | None:
+    """Why no receipt written now could be reused (harmonic-forge#1538), or None
+    when the forge identity is readable: `forge tree dirty: <path>` or
+    `forge HEAD unreadable`."""
+    if forge_sha():
+        return None
+    try:
+        lines = _git(*_FORGE_STATUS, cwd=str(FORGE_ROOT)).splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        lines = []
+    return f"forge tree dirty: {lines[0].split(maxsplit=1)[-1]}" if lines else "forge HEAD unreadable"
 
 
 def _recorded_forge_sha() -> str | None:
