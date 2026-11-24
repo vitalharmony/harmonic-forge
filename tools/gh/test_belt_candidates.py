@@ -266,5 +266,40 @@ def tearDownModule():
         )
 
 
+class PostedAtOutTests(unittest.TestCase):
+    """harmonic-forge#1516: `posted_at_out` hands the comment watch each returned
+    pair's recorded `posted_at` from the one shared reader."""
+
+    def test_each_returned_pair_is_recorded_with_its_posted_at_and_the_set_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            bc.record_candidate("vitalharmony/hrse", 1, "discussion", "l1", base_dir=base)
+            bc.record_candidate("vitalharmony/hrse", 2, "handoff", "l1", base_dir=base)
+            out: dict = {}
+            kinds, posters = {"w": ("discussion",)}, {"w": ("l1",)}
+            result = bc.read_candidates(["vitalharmony/hrse"], "w", queue_kinds=kinds,
+                                        queue_posters=posters, base_dir=base, posted_at_out=out)
+            plain = bc.read_candidates(["vitalharmony/hrse"], "w", queue_kinds=kinds,
+                                       queue_posters=posters, base_dir=base)
+            self.assertEqual(result, {("vitalharmony/hrse", 1)})
+            self.assertEqual(plain, result)
+            self.assertEqual(set(out), result, "an excluded entry must not appear in the output")
+            self.assertAlmostEqual(out[("vitalharmony/hrse", 1)].timestamp(),
+                                   datetime.now(UTC).timestamp(), delta=60)
+
+    def test_a_float_age_window_is_honored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            bc.record_candidate("vitalharmony/hrse", 1, "discussion", "l1", base_dir=base)
+            kinds, posters = {"w": ("discussion",)}, {"w": ("l1",)}
+            later = datetime.now(UTC) + timedelta(hours=30)
+            self.assertEqual(bc.read_candidates(["vitalharmony/hrse"], "w", queue_kinds=kinds,
+                                                queue_posters=posters, base_dir=base, now=later,
+                                                max_age_days=1.0), set())
+            self.assertEqual(bc.read_candidates(["vitalharmony/hrse"], "w", queue_kinds=kinds,
+                                                queue_posters=posters, base_dir=base, now=later,
+                                                max_age_days=1.5), {("vitalharmony/hrse", 1)})
+
+
 if __name__ == "__main__":
     unittest.main()

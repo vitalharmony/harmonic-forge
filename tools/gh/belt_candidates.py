@@ -211,10 +211,11 @@ def read_candidates(
     queue_kinds: dict[str, tuple[str, ...]],
     queue_posters: dict[str, tuple[str, ...]],
     any_poster_kinds: dict[str, tuple[str, ...]] | None = None,
-    max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+    max_age_days: float = DEFAULT_MAX_AGE_DAYS,
     now: datetime | None = None,
     base_dir: Path | None = None,
     prune: bool = False,
+    posted_at_out: dict[tuple[str, int], datetime] | None = None,
 ) -> set[tuple[str, int]]:
     """`(repo, issue)` pairs recorded recently whose newest entry is
     queue-eligible FOR `lane` (AC2') -- `kind` is one of `queue_kinds[lane]`
@@ -242,7 +243,12 @@ def read_candidates(
     place) must never have it happen as a side effect of merely reading.
     `watch_lane_posts.py`'s
     own `read_queue_candidates` wrapper, the one caller that runs against
-    the real directory in production, opts in explicitly."""
+    the real directory in production, opts in explicitly.
+
+    `posted_at_out` (harmonic-forge#1516): when given, each returned pair is also
+    recorded in it with its entry's `posted_at`, so a caller that must read from
+    the recorded post (the comment watch) needs no second reader of the file
+    format. The returned set is unchanged."""
     base = base_dir or DEFAULT_CANDIDATES_DIR
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(days=max_age_days)
@@ -282,6 +288,8 @@ def read_candidates(
         if kind not in kinds or (posted_by not in posters and kind not in any_poster):
             continue
         candidates.add((repo, issue))
+        if posted_at_out is not None:
+            posted_at_out[(repo, issue)] = posted_at
     return candidates
 
 
