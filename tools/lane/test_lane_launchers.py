@@ -304,6 +304,18 @@ class FixtureCommandErrors(unittest.TestCase):
                      "import sys; sys.stderr.buffer.write(b'bad \\xff byte'); sys.exit(1)"])
         self.assertIn("bad � byte", str(caught.exception))
 
+    def test_the_fixture_repo_runs_no_background_gc(self):
+        # The flake's cause: background auto-gc's `worktree prune` raced
+        # `git worktree add`. Pinned by config, since a stress run is too
+        # slow and too probabilistic to guard it.
+        with tempfile.TemporaryDirectory() as tmp:
+            main, _ = bc.build_fixture_tree(Path(tmp).resolve())
+            def cfg(key):
+                return subprocess.run(["git", "config", "--get", key], cwd=main,
+                                      capture_output=True, text=True).stdout.strip()
+            self.assertEqual(cfg("gc.auto"), "0")
+            self.assertEqual(cfg("maintenance.auto"), "false")
+
 
 # ---------------------------------------------------------------------------
 # TC1 / TC9 -- all 9 lane x agent combinations
