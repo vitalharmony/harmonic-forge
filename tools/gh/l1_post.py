@@ -110,8 +110,7 @@ import sticky_receipt  # noqa: E402
 import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a post)
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
-import _scratch  # noqa: E402  (harmonic-forge#949)
-import _dry_run_failures  # noqa: E402  (harmonic-forge#1544)
+import _scratch, _dry_run_failures  # noqa: E402  (harmonic-forge#949, harmonic-forge#1544)
 import _manifest_compare  # noqa: E402  (harmonic-forge#1539)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 import _lane3_env  # noqa: E402  (harmonic-forge#1218)
@@ -3711,7 +3710,7 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
 
 
 def _dry_run_clean(kind: str, repo: str, issue: int, sha: str) -> None:
-    print(f"[l1-post] dry run clean: {kind} {repo}#{issue} @ {sha[:12]}")
+    _dry_run_failures.clean(kind, repo, issue, sha)  # prints the clean line (harmonic-forge#1544)
     # harmonic-forge#1291: gate_receipt's state-bound receipt for this exact
     # call (argv, --sha resolved, every body file by content), the one the
     # PreToolUse gate and the require() below both read.
@@ -3809,7 +3808,7 @@ def main() -> None:
     # harmonic-forge#1115: --help is no longer this tool's preflight form (it
     # checked nothing about the post). The gate is a clean --dry-run of the same
     # post, enforced below once the repo and SHA are resolved.
-    args = parser.parse_args()
+    args = _dry_run_failures.bind(parser.parse_args())  # harmonic-forge#1544
     _caller_path.resolve_args(args, 'file', 'ae_file', 'sweep_file')  # harmonic-forge#1117 AC2
     validate_carry_forward_args(args)
     prod_run = None
@@ -3856,7 +3855,7 @@ def main() -> None:
     # first `gh` call, so a client account's repo is reachable and a wrong
     # login refuses before anything is written.
     apply_project_identity(repo)
-    sha = resolve_sha(args.sha)
+    sha = args.sha = resolve_sha(args.sha)
     if prod_run and "script" in prod_run:
         _refuse_script_contract(prod_run["script"], sha)
     if not args.dry_run:
@@ -4071,4 +4070,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    _dry_run_failures.run(main)
+    _dry_run_failures.run(main, resolve_repo)

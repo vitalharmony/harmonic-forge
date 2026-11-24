@@ -1,20 +1,32 @@
-"""A failed background `l1_post --dry-run` is recorded so the next prompt shows
-it (harmonic-forge#1544).
+"""A failed background `l1_post --dry-run` is recorded so the session that ran
+it sees the failure on its next prompt (harmonic-forge#1544, reforged after the
+pass-1 sticky-wicket verdict, issuecomment-7147532424, and the design amendment,
+issuecomment-7147756741).
 
-`run(main)` wraps `l1_post`'s entry point. Only under `--dry-run`, any non-zero
-exit is recorded once to `~/.claude/state/l1post/dry-run-failed/
-<owner_repo>#<issue>-<kind>.json` as `{text, sha, at, shown}`, then re-raised
-unchanged; a zero exit records nothing. `clear()` (called on the clean-dry-run
-line) removes the entry for that issue and kind. `SystemExit(WAIT_EXIT)` is a
-wait for CI, not a refusal, so it records nothing.
+Identity comes from l1_post, never from argv: `main()` hands its parsed
+Namespace to `bind()` on the `parse_args()` line, and `resolve_repo` /
+`resolve_sha` write the resolved values back onto it. `run(main, resolve_repo)`
+wraps the entry point; on a non-zero exit of a parsed `--dry-run` it records one
+entry keyed by `(repo, issue, kind)`, the repo always passed through
+`resolve_repo` (idempotent, and its own failure leaves the given value and the
+original exit untouched). An exit before parsing (argparse, exit 2) has no
+Namespace, so it records one `unparsed` entry with the stderr tail, dry run or
+not: nothing was posted, so surfacing it is harmless. `SystemExit(WAIT_EXIT)` is
+a wait for CI, not a refusal, and records nothing.
 
-The text: a `fail()` exit carries it in the exception; an int-code exit
-(argparse, rc=2) has printed it to stderr, so `run()` keeps the last 2 KB of
-stderr through a tee and records that. A state error never changes the exit.
+Audience is the session: entries live under
+`state_dir()/<sha256(session)[:32]>/`, the session being `CLAUDE_CODE_SESSION_ID`
+exactly as the precheck receipt reads it (`gate_receipt.session`). The
+`no-session` bucket (CI, tests, the operator's shell) is never surfaced, so
+nothing is written for it. Each record is its own file, so a newer failure is
+never overwritten by a stale read; the hook deletes exactly the file it showed,
+and `clean()` (called by l1_post's `_dry_run_clean`, the one clear site) deletes
+every file for its key in its own session. A state error never changes an exit.
 """
 from __future__ import annotations
 
-import argparse
+import glob
+import hashlib
 import io
 import json
 import os
@@ -23,38 +35,76 @@ import time
 from pathlib import Path
 
 WAIT_EXIT = 3  # _carry_forward.WAIT_EXIT: a wait for CI, not a refusal
+NO_SESSION = "no-session"  # gate_receipt.NO_SESSION
+UNPARSED = "unparsed"
 _TAIL_BYTES = 2048
+
+_bound = None
 
 
 def state_dir() -> Path:
     return Path(os.environ.get("HOME", str(Path.home()))) / ".claude" / "state" / "l1post" / "dry-run-failed"
 
 
-def _entry(repo: str, issue: str, kind: str) -> Path:
-    return state_dir() / f"{repo.replace('/', '_')}#{issue}-{kind}.json"
+def session() -> str:
+    """The same value `gate_receipt.session()` reads."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or NO_SESSION
 
 
-def record(repo: str, issue: str, kind: str, sha: str, text: str) -> None:
-    path = _entry(repo, issue, kind)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"repo": repo, "issue": issue, "kind": kind, "sha": sha,
-                               "text": text, "at": int(time.time()), "shown": False}))
+def session_dir(sid: str) -> Path:
+    return state_dir() / hashlib.sha256(sid.encode()).hexdigest()[:32]
+
+
+def _slug(repo: str, issue, kind: str) -> str:
+    return f"{repo.replace('/', '_')}#{issue}-{kind}"
+
+
+def bind(args):
+    """Keep l1_post's parsed Namespace; return it unchanged."""
+    global _bound
+    _bound = args
+    return args
+
+
+def record(repo: str, issue, kind: str, sha: str, text: str, sid: str | None = None) -> None:
+    _write(_slug(repo, issue, kind), {"repo": repo, "issue": str(issue), "kind": kind,
+                                       "sha": sha, "text": text}, sid)
+
+
+def _write(slug: str, data: dict, sid: str | None) -> None:
+    sid = sid or session()
+    if sid == NO_SESSION:
+        return
+    folder = session_dir(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{slug}.{time.time_ns()}.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({**data, "at": int(time.time())}))
     os.replace(tmp, path)
 
 
-def clear(repo: str, issue: str | int, kind: str) -> None:
+def _files(folder: Path, slug: str) -> list[Path]:
+    return sorted(folder.glob(f"{glob.escape(slug)}.*.json"))
+
+
+def clean(kind: str, repo: str, issue, sha: str) -> None:
+    """l1_post's clean-dry-run line, then clear this session's entries for the key."""
+    print(f"[l1-post] dry run clean: {kind} {repo}#{issue} @ {sha[:12]}")
     try:
-        _entry(repo, str(issue), kind).unlink(missing_ok=True)
-    except OSError:
+        sid = session()
+        if sid == NO_SESSION:
+            return
+        for path in _files(session_dir(sid), _slug(repo, issue, kind)):
+            path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001 - clearing never changes the post
         pass
 
 
-def pending() -> list[tuple[Path, dict]]:
-    """Unshown entries, oldest first; a malformed entry is skipped."""
-    out = []
+def pending(sid: str) -> list[tuple[Path, dict]]:
+    """This session's entries, oldest first; a malformed entry is skipped."""
+    out: list[tuple[Path, dict]] = []
     try:
-        paths = sorted(state_dir().glob("*.json"))
+        paths = sorted(session_dir(sid).glob("*.json"))
     except OSError:
         return out
     for path in paths:
@@ -62,16 +112,13 @@ def pending() -> list[tuple[Path, dict]]:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and not data.get("shown") and data.get("text"):
+        if isinstance(data, dict) and data.get("text"):
             out.append((path, data))
     return out
 
 
-def mark_shown(path: Path, data: dict) -> None:
-    data = {**data, "shown": True}
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data))
-    os.replace(tmp, path)
+def consume(path: Path) -> None:
+    path.unlink(missing_ok=True)
 
 
 class _Tee(io.TextIOBase):
@@ -92,59 +139,42 @@ class _Tee(io.TextIOBase):
         return self._buf
 
 
-def _target(argv: list[str]) -> tuple[str, str, str, str] | None:
-    parser = argparse.ArgumentParser(add_help=False)
-    for flag in ("--repo", "--issue", "--kind", "--sha"):
-        parser.add_argument(flag, default="")
-    try:
-        ns, _ = parser.parse_known_args(argv)
-    except SystemExit:
-        return None
-    if not (ns.repo and ns.issue and ns.kind):
-        return None
-    return ns.repo, ns.issue, ns.kind, ns.sha
-
-
-def run(main, argv: list[str] | None = None) -> None:
-    """Call `main()`; under `--dry-run`, record a non-zero exit, then re-raise."""
-    argv = sys.argv[1:] if argv is None else argv
-    if "--dry-run" not in argv:
-        main()
-        return
+def run(main, resolve_repo=None) -> None:
+    """Call `main()`; record a failed parsed dry run or a pre-parse exit, then re-raise."""
+    global _bound
+    _bound = None  # a stale binding from an earlier in-process call is never this run's
     tee = _Tee(sys.stderr)
     sys.stderr = tee
     try:
         main()
-        _safe_clear(argv)  # a dry run that returns is a clean one
     except SystemExit as exc:
-        if exc.code in (None, 0):
-            _safe_clear(argv)
         code = exc.code
         if code not in (None, 0, WAIT_EXIT):
             text = code if isinstance(code, str) else (tee.tail.strip() or f"exit {code}")
-            _safe_record(argv, str(text))
+            _safe_record(str(text), resolve_repo)
         raise
-    except BaseException as exc:  # a traceback is a failed dry run too
-        _safe_record(argv, f"{type(exc).__name__}: {exc}")
+    except BaseException as exc:  # a traceback is a failed run too
+        _safe_record(f"{type(exc).__name__}: {exc}", resolve_repo)
         raise
     finally:
         sys.stderr = tee._real
 
 
-def _safe_clear(argv: list[str]) -> None:
+def _safe_record(text: str, resolve_repo) -> None:
     try:
-        target = _target(argv)
-        if target:
-            clear(target[0], target[1], target[2])
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _safe_record(argv: list[str], text: str) -> None:
-    try:
-        target = _target(argv)
-        if target:
-            repo, issue, kind, sha = target
-            record(repo, issue, kind, sha, text.strip())
+        args = _bound
+        if args is None:
+            _write(UNPARSED, {"repo": "", "issue": "", "kind": UNPARSED, "sha": "",
+                              "text": text.strip()}, None)
+            return
+        if not getattr(args, "dry_run", False):
+            return
+        repo = args.repo
+        if resolve_repo is not None:
+            try:
+                repo = resolve_repo(args.repo)
+            except BaseException:  # noqa: BLE001 - fail() raises SystemExit; keep the given value
+                pass
+        record(repo or "", args.issue, args.kind, str(args.sha or ""), text.strip())
     except Exception:  # noqa: BLE001 - recording never changes the exit
         pass
