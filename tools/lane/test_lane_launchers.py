@@ -309,11 +309,13 @@ class FixtureCommandErrors(unittest.TestCase):
     def test_the_fixture_repo_runs_no_background_gc(self):
         # The flake's cause: background auto-gc's `worktree prune` raced
         # `git worktree add`. Pinned by config, since a stress run is too
-        # slow and too probabilistic to guard it.
+        # slow and too probabilistic to guard it. Read --local, so a value
+        # inherited from global or GIT_CONFIG_COUNT config cannot stand in
+        # for the fixture's own write (preclose pass 1 survivor).
         with tempfile.TemporaryDirectory() as tmp:
             main, _ = bc.build_fixture_tree(Path(tmp).resolve())
             def cfg(key):
-                return subprocess.run(["git", "config", "--get", key], cwd=main,
+                return subprocess.run(["git", "config", "--local", "--get", key], cwd=main,
                                       capture_output=True, text=True).stdout.strip()
             self.assertEqual(cfg("gc.auto"), "0")
             self.assertEqual(cfg("maintenance.auto"), "false")
