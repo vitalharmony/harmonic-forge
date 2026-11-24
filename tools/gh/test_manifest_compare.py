@@ -87,7 +87,7 @@ class AnythingElseDiffers(unittest.TestCase):
 class InstallStepsFailClosed(unittest.TestCase):
     def test_version_bump_with_any_install_script_differs(self) -> None:
         for script in ("preinstall", "install", "postinstall", "prepare", "preprepare",
-                       "postprepare", "dependencies"):
+                       "postprepare", "prepublish", "dependencies"):
             with self.subTest(script=script):
                 ours = pkg(scripts={script: "node gen.js"})
                 theirs = pkg(version="3.2.1", scripts={script: "node gen.js"})
@@ -121,6 +121,20 @@ class BytesAndParsing(unittest.TestCase):
     def test_invalid_json_differs(self) -> None:
         self.assertFalse(eq(pkg(), b"{broken"))
         self.assertFalse(eq(b"{broken", b"{broken2"))
+
+    def test_json_type_is_exact(self) -> None:
+        for ours, theirs in (("true", "1"), ("false", "0"), ("1", "1.0"),
+                             ("{}", "[]"), ('{"a": 1}', '[["a", 1]]')):
+            with self.subTest(ours=ours, theirs=theirs):
+                a = f'{{"version": "1", "bundleDependencies": {ours}}}'.encode()
+                b = f'{{"version": "2", "bundleDependencies": {theirs}}}'.encode()
+                self.assertFalse(eq(a, b))
+
+    def test_non_strict_json_differs(self) -> None:
+        self.assertFalse(eq(b'{"version": "1", "x": NaN}', b'{"version": "2", "x": NaN}'))
+        self.assertFalse(eq(b'{"version": "1", "x": Infinity}', b'{"version": "2", "x": Infinity}'))
+        utf16 = '{"version": "1"}'.encode("utf-16")
+        self.assertFalse(eq(utf16, '{"version": "2"}'.encode("utf-16")))
 
     def test_non_object_differs(self) -> None:
         self.assertFalse(eq(b"[]", b"[ ]"))

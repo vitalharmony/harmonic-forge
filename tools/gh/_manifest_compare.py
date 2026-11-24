@@ -18,8 +18,17 @@ dependency change and forced a full `npm ci`.
   either side has a root install-time script or a `binding.gyp` sits beside
   it (`gyp`): npm exports `npm_package_version` to those steps, so a version
   bump can change what they build;
-- a missing side, invalid JSON or a non-object top level is unequal;
+- a missing side, invalid JSON or a non-object top level is unequal; parsing
+  is strict UTF-8 with no NaN/Infinity, and values compare by exact JSON type
+  (`true` is not `1`, `{}` is not `[]`), so nothing npm would read
+  differently can compare equal through Python's looser equality;
 - every other name (the lockfile, requirements files) compares bytes.
+
+Accepted residual (operator, 2026-11-24, epoch-2 sticky-wicket): a
+DEPENDENCY's install script can read the root `version` (through INIT_CWD or
+the root package.json), so a version-only bump could in principle change what
+it writes. No comparator can rule that out; the lockfile stays byte-compared,
+so the installed package set cannot change.
 """
 from __future__ import annotations
 
@@ -28,7 +37,7 @@ from pathlib import Path, PurePosixPath
 
 INSTALL_SCRIPTS = frozenset(
     ("preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare",
-     "dependencies"))
+     "prepublish", "dependencies"))
 IGNORED_KEYS = frozenset(("version",))
 
 
@@ -36,13 +45,35 @@ class _Object(list):
     """A JSON object as its key/value pairs, in file order, duplicates kept."""
 
 
+def _no_constant(name: str) -> None:
+    raise ValueError(f"non-JSON constant {name}")
+
+
 def _pairs(raw: bytes) -> _Object | None:
-    """The top-level object's pairs; None when the file is not a JSON object."""
+    """The top-level object's pairs; None when the file is not a strict-UTF-8
+    JSON object (npm rejects UTF-16 and NaN/Infinity; so does this)."""
     try:
-        data = json.loads(raw, object_pairs_hook=_Object)
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_Object,
+                          parse_constant=_no_constant)
     except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     return data if isinstance(data, _Object) else None
+
+
+def _typed(value: object) -> object:
+    """A value tagged by its exact JSON type, so `true`/`1`/`1.0` and `{}`/`[]`
+    stay distinct under ==."""
+    if isinstance(value, _Object):
+        return ("object", tuple((key, _typed(item)) for key, item in value))
+    if isinstance(value, list):
+        return ("array", tuple(_typed(item) for item in value))
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, float):
+        return ("float", repr(value))
+    return (type(value).__name__, value)
 
 
 def _runs_install_step(pairs: _Object) -> bool:
@@ -77,5 +108,5 @@ def manifests_equal(name: str, ours: bytes | None, theirs: bytes | None,
         return False
 
     def kept(pairs: _Object) -> list:
-        return [pair for pair in pairs if pair[0] not in IGNORED_KEYS]
+        return [(key, _typed(value)) for key, value in pairs if key not in IGNORED_KEYS]
     return kept(ours_pairs) == kept(theirs_pairs)

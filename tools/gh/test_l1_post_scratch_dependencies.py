@@ -88,6 +88,19 @@ class ScratchDependencies(unittest.TestCase):
         self.assertEqual(self.provision("frontend/node_modules"), "linked")
         self.assertEqual(self.calls, [])
 
+    def test_binding_gyp_beside_the_manifest_installs_on_a_version_bump(self) -> None:
+        # Epoch-2 preclose pass 1: the gyp flag must reach the compare
+        # through _manifest_differences, not only through manifests_equal.
+        for base in (self.main, self.scratch):
+            with self.subTest(gyp_in=base.name):
+                (self.scratch / "frontend/node_modules").unlink(missing_ok=True)
+                for other in (self.main, self.scratch):
+                    (other / "frontend/binding.gyp").unlink(missing_ok=True)
+                (base / "frontend/binding.gyp").write_text("{}\n")
+                self._package(self.main, "3.2.0")
+                self._package(self.scratch, "3.2.1")
+                self.assertEqual(self.provision("frontend/node_modules"), "installed")
+
     def test_dependency_change_in_package_json_installs(self) -> None:
         self._package(self.main, "3.2.0")
         self._package(self.scratch, "3.2.0", react="^19.0.0")
