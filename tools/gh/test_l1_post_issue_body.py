@@ -270,7 +270,12 @@ Update `scripts/post_lane1_issue.py` with structural validation.
         self.assertIn("repos/vitalharmony/hrse/issues/483", mocked.call_args_list[0].args)
 
     def test_l1_comment_uses_explicit_repo(self) -> None:
+        # harmonic-forge#1518: `apply_project_identity` is stubbed in the three tests that
+        # call `discussion.main()`. Unstubbed it runs the real `gh api user` probe, which
+        # outside `run_tests.py` (plain pytest, `unittest discover`) is a real authenticated
+        # call, and with `os.environ` cleared it writes `.local/state/gh/device-id` into the cwd.
         with patch.object(discussion, "regular_body", return_value="Discussion."), \
+             patch.object(discussion, "apply_project_identity") as identity, \
              patch.object(discussion, "issue_labels", return_value=set()), \
              patch.object(discussion, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.object(sys, "argv", [
@@ -278,10 +283,12 @@ Update `scripts/post_lane1_issue.py` with structural validation.
              ]):
             discussion.main()
 
+        identity.assert_called_once_with("vitalharmony/harmonic-forge")
         self.assertEqual(comment.call_args.args[:2], ("vitalharmony/harmonic-forge", 123))
 
     def test_marker_records_posting_lane(self) -> None:
         with patch.object(discussion, "regular_body", return_value="Discussion."), \
+             patch.object(discussion, "apply_project_identity") as identity, \
              patch.object(discussion, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.dict("os.environ", {"LANE": "3"}), \
              patch.object(sys, "argv", [
@@ -289,10 +296,12 @@ Update `scripts/post_lane1_issue.py` with structural validation.
              ]):
             discussion.main()
 
+        identity.assert_called_once_with("vitalharmony/harmonic-forge")
         self.assertIn("posted-by=LANE3", comment.call_args.args[2])
 
     def test_marker_records_unset_lane(self) -> None:
         with patch.object(discussion, "regular_body", return_value="Discussion."), \
+             patch.object(discussion, "apply_project_identity") as identity, \
              patch.object(discussion, "comment_body", return_value=("https://example.test/comment", 1)) as comment, \
              patch.dict("os.environ", {}, clear=True), \
              patch.object(discussion, "issue_labels", return_value=set()), \
@@ -301,6 +310,7 @@ Update `scripts/post_lane1_issue.py` with structural validation.
              ]):
             discussion.main()
 
+        identity.assert_called_once_with("vitalharmony/harmonic-forge")
         self.assertIn("posted-by=LANE-unset", comment.call_args.args[2])
 
 

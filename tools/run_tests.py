@@ -59,6 +59,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import untracked_snapshot  # harmonic-forge#1518: the untracked-file check, kept out of this over-cap file
+
 ROOT = Path(__file__).resolve().parent
 # `rules` was missing until harmonic-forge#447's second pass: the registry
 # suite had been shipped and reported as passing while `mise run check` never
@@ -329,15 +331,17 @@ def _run(root: Path) -> int:
         )
         return 2
 
+    # harmonic-forge#1518: the checkout must come out of the run as it went in.
+    untracked_before = untracked_snapshot.snapshot(ROOT.parent)
     with tempfile.TemporaryDirectory() as tmp:
         with redirected_belt_candidates_dir(Path(tmp) / "belt-candidates"), \
                 hermetic_lane_token(), \
                 hermetic_identity_probe():
             result = unittest.TextTestRunner(verbosity=1).run(suite)
-    if not result.wasSuccessful():
-        return 1
-    print(f"[test] OK — {result.testsRun} tests across {len(files)} files")
-    return 0
+    code = untracked_snapshot.verdict(untracked_before, ROOT.parent, 0 if result.wasSuccessful() else 1)
+    if code == 0:
+        print(f"[test] OK — {result.testsRun} tests across {len(files)} files")
+    return code
 
 
 if __name__ == "__main__":
