@@ -115,7 +115,13 @@ class GhConfigDir(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
                         "https://github.com/some-unregistered-owner/x.git"], check=True)
-        (repo / "re.py").write_text("import os\nprint('harmonicarchitect')\nos._exit(0)\n")
+        # `re` is often already imported at interpreter start; tomllib is
+        # imported only when the manifest is read, so it proves isolation.
+        for module in ("re.py", "tomllib.py"):
+            # flush=True: os._exit skips stdio flushing, and an unflushed
+            # payload would be refused as empty output, hiding the real test.
+            (repo / module).write_text(
+                "import os\nprint('harmonicarchitect', flush=True)\nos._exit(0)\n")
         proc = subprocess.run(
             ["bash", "-c", f'cd "{repo}"; target="{repo}"; source "{self.script}"; rc=$?; '
                            'echo "rc=$rc dir=${GH_CONFIG_DIR:-UNSET}"'],
