@@ -111,6 +111,7 @@ import orphan_report  # noqa: E402  (hrse#2218: report-only, never changes a pos
 import _prod_run  # noqa: E402
 import _scenario_trace  # noqa: E402
 import _scratch  # noqa: E402  (harmonic-forge#949)
+import _manifest_compare  # noqa: E402  (harmonic-forge#1539)
 import _carry_forward  # noqa: E402  (harmonic-forge#1036)
 import _lane3_env  # noqa: E402  (harmonic-forge#1218)
 import ui_grant  # noqa: E402  (harmonic-forge#1274)
@@ -2686,24 +2687,18 @@ DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 900
 
 
 def _manifest_differences(owner: Path, scratch_dir: Path, names: tuple[str, ...]) -> list[str]:
-    """Names of the manifests that differ (or exist on one side only)."""
-    differ = []
-    for name in names:
+    """Names of the manifests that differ (or exist on one side only), by
+    _manifest_compare (harmonic-forge#1539: a version-only bump is equal)."""
+    def read(path: Path) -> bytes | None:
         try:
-            ours = (owner / name).read_bytes()
+            return path.read_bytes()
         except FileNotFoundError:
-            ours = None
+            return None
         except OSError as exc:  # preclose pass 1: a directory or unreadable file
-            fail(f"cannot read {owner / name}: {exc}")
-        try:
-            theirs = (scratch_dir / name).read_bytes()
-        except FileNotFoundError:
-            theirs = None
-        except OSError as exc:
-            fail(f"cannot read {scratch_dir / name}: {exc}")
-        if ours != theirs:
-            differ.append(name)
-    return differ
+            fail(f"cannot read {path}: {exc}")
+            raise AssertionError("unreachable") from exc  # fail() exits
+    return [name for name in names if not _manifest_compare.manifests_equal(
+        name, read(owner / name), read(scratch_dir / name), _manifest_compare.has_gyp(name, owner, scratch_dir))]
 
 
 def _install(command: tuple[str, ...], cwd: Path) -> subprocess.CompletedProcess[str]:

@@ -77,6 +77,40 @@ class ScratchDependencies(unittest.TestCase):
         (self.scratch / "frontend/node_modules").unlink()
         self.assertEqual(self.provision("frontend/node_modules"), "installed")
 
+    # harmonic-forge#1539
+    def _package(self, base: Path, version: str, react: str = "^18.3.1") -> None:
+        (base / "frontend/package.json").write_text(
+            f'{{"version": "{version}", "dependencies": {{"react": "{react}"}}}}\n')
+
+    def test_version_only_package_json_change_stays_linked(self) -> None:
+        self._package(self.main, "3.2.0")
+        self._package(self.scratch, "3.2.1")
+        self.assertEqual(self.provision("frontend/node_modules"), "linked")
+        self.assertEqual(self.calls, [])
+
+    def test_binding_gyp_beside_the_manifest_installs_on_a_version_bump(self) -> None:
+        # Epoch-2 preclose pass 1: the gyp flag must reach the compare
+        # through _manifest_differences, not only through manifests_equal.
+        for base in (self.main, self.scratch):
+            with self.subTest(gyp_in=base.name):
+                (self.scratch / "frontend/node_modules").unlink(missing_ok=True)
+                for other in (self.main, self.scratch):
+                    (other / "frontend/binding.gyp").unlink(missing_ok=True)
+                (base / "frontend/binding.gyp").write_text("{}\n")
+                self._package(self.main, "3.2.0")
+                self._package(self.scratch, "3.2.1")
+                self.assertEqual(self.provision("frontend/node_modules"), "installed")
+
+    def test_dependency_change_in_package_json_installs(self) -> None:
+        self._package(self.main, "3.2.0")
+        self._package(self.scratch, "3.2.0", react="^19.0.0")
+        self.assertEqual(self.provision("frontend/node_modules"), "installed")
+
+    def test_invalid_package_json_installs(self) -> None:
+        self._package(self.main, "3.2.0")
+        (self.scratch / "frontend/package.json").write_text("{broken\n")
+        self.assertEqual(self.provision("frontend/node_modules"), "installed")
+
     # AC2
     def test_a_changed_lockfile_is_installed_with_npm_ci_in_the_scratch(self) -> None:
         (self.scratch / "frontend/package-lock.json").write_text("branch lock\n")
