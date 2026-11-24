@@ -439,11 +439,12 @@ class TestParkingMilestoneDeferral(unittest.TestCase):
         created.assert_not_called()
 
     def test_parking_with_handoff_exception_is_refused(self):
-        code, created, *_rest = self._main(
+        code, created, *_rest, err = self._main(
             ["--repo", FORGE, "--milestone", "Later", "--handoff-exception",
              "parent-epic", "--handoff-exception-reason", "r"], FORGE_MILESTONES)
         self.assertNotEqual(code, 0)
         created.assert_not_called()
+        self.assertIn("not --handoff-exception", err)
 
     def test_a_failed_deferral_post_leaves_the_obligation_standing(self):
         code, _created, record, discharge, *_ = self._main(
