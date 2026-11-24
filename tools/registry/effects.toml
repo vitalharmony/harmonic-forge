@@ -975,6 +975,8 @@ path = "tools/gh/_exempt_conflict.py"
 [[library]]
 path = "tools/gh/_lane3_env.py"
 [[library]]
+path = "tools/gh/_manifest_compare.py"
+[[library]]
 path = "tools/gh/_preflight.py"
 [[library]]
 path = "tools/gh/_prod_run.py"
