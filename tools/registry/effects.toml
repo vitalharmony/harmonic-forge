@@ -39,6 +39,7 @@ data = [
   "tools/lane/heavy_slot.toml",
   "tools/lane/lane3_safety_additions.txt",
   "tools/lane/lane_hooks.json",
+  "tools/lane/lane_hooks.operator.json",
   "tools/lane/policies/claude-lane3.json",
   "tools/lane/systemd/forge-cli-update.service",
   "tools/lane/systemd/forge-cli-update.timer",
@@ -852,7 +853,7 @@ path = "tools/lane/lane_hookset.py"
   match = []
   class = "read"
   note = "every subcommand prints to stdout; git calls are reads"
-  cite = ["tools/lane/lane_hookset.py:258-260", "tools/lane/lane_hookset.py:398-430"]
+  cite = ["tools/lane/lane_hookset.py:379-381", "tools/lane/lane_hookset.py:519-560"]
 
 [[tool]]
 path = "tools/lane/probe_hook_merge.py"

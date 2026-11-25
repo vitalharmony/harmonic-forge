@@ -697,9 +697,9 @@ class Registration(unittest.TestCase):
                       '[ -f "$f" ] && python3 "$f" || true', commands)
 
     def test_the_lane_hook_set_registers_the_guarded_hook(self):
-        """harmonic-forge#1307: every lane launch carries it, in any project."""
-        hooks = json.loads((HERE.parent.parent / "tools" / "lane" / "lane_hooks.json")
-                           .read_text(encoding="utf-8"))["hooks"]
+        """harmonic-forge#1307: every lane launch carries it, in any project
+        whose instance declares the operator overlay (harmonic-forge#1525)."""
+        hooks = _effective_operator_set()["hooks"]
         for event, matcher in (("PreToolUse", "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit"),
                                ("PostToolUse", "CronCreate|CronDelete")):
             commands = [h["command"] for e in hooks[event] if e.get("matcher") == matcher
@@ -720,15 +720,26 @@ class Registration(unittest.TestCase):
 
     def test_forge_settings_register_the_grant_hook_after_expansion(self):
         # harmonic-forge#1307: grant_loop_override.py is lane-only (class A), so
-        # its order after expand_lane_shorthand.py is pinned in the lane hook set.
-        settings = json.loads((HERE.parent.parent / "tools" / "lane" / "lane_hooks.json")
-                              .read_text(encoding="utf-8"))
+        # its order after expand_lane_shorthand.py is pinned in the lane hook set,
+        # as the operator overlay appends it (harmonic-forge#1525).
+        settings = _effective_operator_set()
         commands = [h["command"] for e in settings["hooks"]["UserPromptSubmit"]
                     for h in e["hooks"]]
         expand = next(i for i, c in enumerate(commands) if "expand_lane_shorthand.py" in c)
         grant = commands.index('f="${HOME}/harmonic-forge/tools/hooks/grant_loop_override.py"; '
                                '[ -f "$f" ] && python3 "$f" || true')
         self.assertGreater(grant, expand)
+
+
+def _effective_operator_set() -> dict:
+    """The lane hook set with the operator overlay merged, validated against
+    this checkout (`tools/lane/lane_hookset.py`, loaded by path)."""
+    import importlib.util
+    root = HERE.parent.parent
+    spec = importlib.util.spec_from_file_location("lane_hookset", root / "tools" / "lane" / "lane_hookset.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load_effective(root / "tools" / "lane" / "lane_hooks.json", "operator", forge_root=root)
 
 
 def _write_grant_file(arming, session_id, age_seconds=0.0, **extra):

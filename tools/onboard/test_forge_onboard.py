@@ -58,8 +58,13 @@ class Base(unittest.TestCase):
         self.store = self.root / "store"
         (self.store / ".git").mkdir(parents=True)
         self.set_settings({"autoMemoryDirectory": str(self.store)})
+        # harmonic-forge#1525: the hooks check loads the lane set for the
+        # declared overlay; the declaration read is this fixture's, never the
+        # operator's instance.toml.
+        _declare_overlay(self.home, "operator")
         self._env = mock.patch.dict(
-            os.environ, {"CLAUDE_CONFIG_DIR": str(self.home / ".claude")})
+            os.environ, {"CLAUDE_CONFIG_DIR": str(self.home / ".claude"),
+                         "XDG_CONFIG_HOME": str(self.home / ".config")})
         self._env.start()
         self.addCleanup(self._env.stop)
         self.addCleanup(self._tmp.cleanup)
@@ -635,14 +640,30 @@ def _hermetic_home(case: unittest.TestCase, root: Path) -> Path:
     `${HOME}/harmonic-forge/...` against the host's HOME, which is right in
     production and wrong in a test: on a CI runner there is no
     `~/harmonic-forge`, and locally it is the canonical checkout, not this one.
-    Same pattern as `test_home_expansion_is_handled`."""
+    Same pattern as `test_home_expansion_is_handled`.
+
+    harmonic-forge#1525: XDG_CONFIG_HOME is pinned to `<home>/.config`, which
+    declares `lane_hook_overlay = "operator"`, so `_lane_set` reads the
+    fixture's declaration, never the operator's `instance.toml`."""
     home = root / "home"
     home.mkdir()
     (home / "harmonic-forge").symlink_to(fo._THIS_CHECKOUT)
-    patcher = mock.patch.dict(os.environ, {"HOME": str(home)})
+    _declare_overlay(home, "operator")
+    patcher = mock.patch.dict(os.environ, {"HOME": str(home),
+                                           "XDG_CONFIG_HOME": str(home / ".config")})
     patcher.start()
     case.addCleanup(patcher.stop)
     return home
+
+
+def _declare_overlay(home: Path, value: str | None) -> None:
+    """Write (None: remove) `<home>/.config/harmonic-forge/instance.toml`."""
+    path = home / ".config" / "harmonic-forge" / "instance.toml"
+    if value is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'lane_hook_overlay = "{value}"\n', encoding="utf-8")
 
 
 class LaneHookSetCheckTests(unittest.TestCase):
@@ -650,6 +671,7 @@ class LaneHookSetCheckTests(unittest.TestCase):
     Forge lane hook set plus the project's own hooks."""
 
     SET = Path(__file__).resolve().parents[1] / "lane" / "lane_hooks.json"
+    OVERLAY = Path(__file__).resolve().parents[1] / "lane" / "lane_hooks.operator.json"
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -664,12 +686,13 @@ class LaneHookSetCheckTests(unittest.TestCase):
         return mf.Project(name=name, prefix="Z", path=str(checkout))
 
     def _set_entry(self, script: str) -> tuple[str, dict]:
-        data = json.loads(self.SET.read_text(encoding="utf-8"))
-        for event, blocks in data["hooks"].items():
-            for block in blocks:
-                for handler in block["hooks"]:
-                    if script in handler["command"]:
-                        return event, {"matcher": block.get("matcher"), "hooks": [dict(handler)]}
+        for path in (self.SET, self.OVERLAY):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for event, blocks in data["hooks"].items():
+                for block in blocks:
+                    for handler in block["hooks"]:
+                        if script in handler["command"]:
+                            return event, {"matcher": block.get("matcher"), "hooks": [dict(handler)]}
         raise AssertionError(script)
 
     #: A project-only hook, so a hooks block is present but carries no set entry.
@@ -728,6 +751,23 @@ class LaneHookSetCheckTests(unittest.TestCase):
         data, error = fo._lane_set()
         self.assertIsNone(error)
         self.assertTrue(data["hooks"])
+
+    def test_the_declared_overlay_is_the_set_check_hooks_judges(self) -> None:
+        """Test Case 7 (harmonic-forge#1525): with "operator" declared, a
+        project entry for an overlay hook whose command string differs from
+        the set's is DOUBLED; with no declaration the set does not load."""
+        event, block = self._set_entry("enforce_belt_arming.py")
+        self.assertEqual((event, block["matcher"]),
+                         ("PreToolUse", "Monitor|CronCreate|Skill|Bash|Write|Edit|MultiEdit|NotebookEdit"))
+        block["hooks"][0]["command"] = 'python3 "${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py"'
+        check = fo.check_hooks(self._project("belt", {"hooks": {event: [block]}}))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("enforce_belt_arming.py runs twice", check.detail)
+        _declare_overlay(self.home, None)
+        check = fo.check_hooks(self._project("undeclared", {"hooks": self.OWN}))
+        self.assertEqual(check.status, fo.FAIL)
+        self.assertIn("the Forge lane hook set does not load", check.detail)
+        self.assertIn("not declared", check.detail)
 
     def test_a_worktree_with_a_doubled_entry_is_reported(self) -> None:
         repo = self.root / "wtrepo"
