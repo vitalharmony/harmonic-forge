@@ -127,6 +127,25 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     return result.stdout
 
 
+def _literal_gh_after_prefix(raw_tokens: list[str]) -> tuple[int, dict[str, str]] | None:
+    """(index of the command word, inline env) when the segment is a literal gh
+    command word behind only bare `env` words and NAME=value assignments; None
+    otherwise. Reforged pass 1 survivor 1 (harmonic-forge#1498): a gh word in an
+    assignment value (`GH_CONFIG_DIR=~/.config/gh gh issue close N`) or a second
+    `env` must not hide a literal gh call, which main's prefix strip read."""
+    env: dict[str, str] = {}
+    for index, token in enumerate(raw_tokens):
+        if token == "env":
+            continue
+        if match := gh_segment._ASSIGNMENT.match(token):
+            env[match.group(1)] = match.group(2)
+            continue
+        if Path(token).name == "gh" and "$" not in token and "`" not in token:
+            return index, env
+        return None
+    return None
+
+
 def _close_result(raw_tokens: list[str]) -> A.Result | None:
     """The adapter's result for one segment that is a literal gh call and is,
     or cannot be proved not to be, an issue close; None otherwise.
@@ -147,9 +166,17 @@ def _close_result(raw_tokens: list[str]) -> A.Result | None:
         return A.close_target(raw_tokens, {})
     word = next((i for i, token in enumerate(raw_tokens) if Path(token).name == "gh"), None)
     head = None if word is None else gh_segment.gh_segment(raw_tokens[:word + 1])
-    if head is None or head.kind != gh_segment.GH:
-        return None
-    result = A.classify_argv(list(raw_tokens[word + 1:]), dict(head.env))
+    if head is not None and head.kind == gh_segment.GH:
+        env = dict(head.env)
+    else:
+        literal = _literal_gh_after_prefix(raw_tokens)
+        if literal is None:
+            return None
+        word, env = literal
+        if any("$(" in value or "`" in value for value in env.values()):
+            # A substitution in the prefix runs before gh: fail closed.
+            return A.Result(A.UNPROVABLE, reason="a substitution in the inline assignment prefix")
+    result = A.classify_argv(list(raw_tokens[word + 1:]), env)
     if (result.gated and result.kind == "issue") or result.outcome in (A.UNPARSEABLE, A.UNPROVABLE):
         return result
     return None

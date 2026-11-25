@@ -341,6 +341,21 @@ class AdapterAdoptionTests(unittest.TestCase):
         self.assertEqual(hook.find_close_targets(
             f"gh issue close 849 -R {REPO} --comment 'checked with gh api'"), [(REPO, "849")])
 
+    def test_a_literal_gh_close_behind_a_gh_mentioning_prefix_is_still_a_close(self) -> None:
+        """Reforged pass 1 survivor 1: main stripped `NAME=value` and `env`
+        before reading gh, so a gh word in an assignment value or a second
+        `env` must not turn a literal gh close into not-a-close."""
+        for command, want in (
+                ("GH_CONFIG_DIR=/home/u/.config/gh gh issue close 849", [(None, "849")]),
+                (f"TOOL=gh gh issue close 849 -R {REPO}", [(REPO, "849")]),
+                (f"env env gh issue close 849 -R {REPO}", [(REPO, "849")]),
+                ("FOO=bar env gh issue close 849", [(None, "849")]),
+                (f"GH_CONFIG_DIR=~/.config/gh gh api -X PATCH repos/{REPO}/issues/849 -f state=closed",
+                 [(REPO, "849")]),
+                ("PAGER=gh gh issue view 849", [])):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), want)
+
     def test_a_bound_pr_merge_is_not_a_close(self) -> None:
         self.assertEqual(hook.find_close_targets(f"gh pr merge 5 --repo {REPO} --squash"), [])
 

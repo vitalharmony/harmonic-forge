@@ -57,23 +57,23 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
         (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
     ('batch', 'unprovable_xargs'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
-    ('migration', 'unparseable_flag'): ('intended', 'verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none',
-        (REFUSE, REFUSE, frozenset({('issue', None, None)}), frozenset())),
-    ('migration', 'unprovable_alias'): ('intended', 'verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none',
-        (REFUSE, REFUSE, frozenset({('issue', None, None)}), frozenset())),
-    ('migration', 'unprovable_env_unset'): ('intended', 'unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py',
+    ('migration', 'bound_inline_repo'): ('old-defect', 'main ignored the inline GH_REPO and named no repo; gh reads GH_REPO, and the hook binds it',
+        (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
+    ('migration', 'unbound_issue_no_arg'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('migration', 'unprovable_flag_before_root'): ('intended', 'verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none',
-        (REFUSE, REFUSE, frozenset({('issue', None, None)}), frozenset())),
-    ('migration', 'unprovable_graphql_input'): ('intended', 'verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none',
-        (REFUSE, REFUSE, frozenset({('issue', None, None)}), frozenset())),
-    ('migration', 'unprovable_placeholder_close'): ('intended', 'verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none',
-        (REFUSE, REFUSE, frozenset({('issue', None, None)}), frozenset())),
-    ('migration', 'unprovable_placeholder_merge'): ('intended', 'verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none',
-        (REFUSE, REFUSE, frozenset({('issue', None, None)}), frozenset())),
-    ('migration', 'unprovable_sudo'): ('intended', 'unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py',
+    ('migration', 'unbound_variable'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('migration', 'unprovable_xargs'): ('intended', 'unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py',
+    ('migration', 'unparseable_flag'): ('intended', 'verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named the number',
+        (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset({('issue', None, None)}))),
+    ('migration', 'unprovable_alias'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_flag_before_root'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_graphql_input'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_placeholder_close'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
+        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('migration', 'unprovable_placeholder_merge'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
         (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset({('issue', 'a/b', '12', False)}))),
@@ -102,6 +102,12 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
 }
 
 
+PLANTED = ["gh", "issue", "close", "99", "--repo", "x/y"]
+MIGRATION_MAIN_FIXTURE = HERE / "testdata" / "migration_main_178ba5f.json"
+MIGRATION_MAIN = (json.loads(MIGRATION_MAIN_FIXTURE.read_text(encoding="utf-8"))
+                  if MIGRATION_MAIN_FIXTURE.exists() else {})
+
+
 def _norm(kind: str, repo, number) -> tuple:
     return (kind, repo or None, str(number) if number not in (None, "") else None)
 
@@ -118,7 +124,12 @@ def _old_targets(consumer: str, tokens: list[str] | None, command: str | None = 
             found.add(_norm("pr", *merge))
         return frozenset(found)
     if consumer == "migration":
-        found = block_data_migration_close.find_close_targets(command)
+        # Main's recognizer, frozen (reforged pass 1 survivor 3): the hook under
+        # test cannot be its own baseline, or no loosening against main shows.
+        if command not in MIGRATION_MAIN:
+            raise AssertionError(f"{command!r} is not in {MIGRATION_MAIN_FIXTURE.name}; "
+                                 "regenerate it: python3 tools/hooks/testdata/migration_main_table.py")
+        found = MIGRATION_MAIN[command]
         return None if found is None else frozenset(_norm("issue", r, n) for r, n in found)
     # The preclose hook decides on find_gated_targets_exempt: the exemption bit is
     # part of what it acts on, so it is part of the observation.
@@ -141,11 +152,18 @@ def _strictest(verdicts: list[str]) -> str:
     return NOT_A_CLOSE
 
 
-def observe(consumer: str, segments: list[list[str]], old: frozenset) -> tuple:
-    results = [A.classify(tokens, {}) for tokens in segments]
-    new_verdict = _strictest([verdict(consumer, r) for r in results])
-    new = frozenset(_norm(r.kind, r.repo, r.number) + ((r.exempt,) if consumer == "preclose" else ())
-                    for r in results if r.gated and r.kind in SCOPE[consumer])
+def observe(consumer: str, segments: list[list[str]], old: frozenset, command: str | None = None) -> tuple:
+    if consumer == "migration" and command is not None:
+        # The hook's own reading, so its text-side fallback is measured against
+        # main (reforged pass 1 survivor 3), not the bare adapter.
+        found = block_data_migration_close.find_close_targets(command) or []
+        new_verdict = REFUSE if found else NOT_A_CLOSE
+        new = frozenset(_norm("issue", r, n) for r, n in found)
+    else:
+        results = [A.classify(tokens, {}) for tokens in segments]
+        new_verdict = _strictest([verdict(consumer, r) for r in results])
+        new = frozenset(_norm(r.kind, r.repo, r.number) + ((r.exempt,) if consumer == "preclose" else ())
+                        for r in results if r.gated and r.kind in SCOPE[consumer])
     old_verdict = _old_verdict(consumer, old)
     seen = old_verdict != NOT_A_CLOSE and new_verdict != NOT_A_CLOSE
     return (old_verdict, new_verdict, old if seen else frozenset(), new if seen else frozenset())
@@ -155,7 +173,7 @@ def differences(rows: dict[str, list[str]]) -> dict[tuple[str, str], tuple]:
     found = {}
     for name, tokens in rows.items():
         for consumer in CONSUMERS:
-            seen = observe(consumer, [tokens], _old_targets(consumer, tokens))
+            seen = observe(consumer, [tokens], _old_targets(consumer, tokens), shlex.join(tokens))
             if seen[0] != seen[1] or seen[2] != seen[3]:
                 found[(consumer, name)] = seen
     return found
@@ -177,7 +195,7 @@ class DifferentialRun(unittest.TestCase):
                 self.assertTrue(reason.strip())
 
     def test_a_planted_difference_is_reported(self):
-        planted = {"planted": ["gh", "issue", "close", "99", "--repo", "x/y"]}
+        planted = {"planted": PLANTED}
         original = batch_auth.classify_issue_close
         batch_auth.classify_issue_close = lambda tokens: None
         try:
@@ -238,7 +256,7 @@ def corpus_differences(consumer: str, entries: list) -> dict:
     mismatched = {}
     for entry in entries:
         if isinstance(entry, list):
-            seen = observe(consumer, [entry], _old_targets(consumer, entry))
+            seen = observe(consumer, [entry], _old_targets(consumer, entry), shlex.join(entry))
             key = shlex.join(entry)
         elif isinstance(entry, str):
             old = _old_targets(consumer, None, entry)
@@ -250,7 +268,7 @@ def corpus_differences(consumer: str, entries: list) -> dict:
                 if (old is None) != (segments is None):  # both must agree it cannot be tokenized
                     mismatched[entry] = ("untokenizable", old is None, segments is None)
                 continue
-            seen, key = observe(consumer, segments, old), entry
+            seen, key = observe(consumer, segments, old, entry), entry
         else:
             mismatched[repr(entry)] = ("unmeasured", type(entry).__name__)
             continue

@@ -32,6 +32,16 @@
     []
    ]
   ],
+  "echo 'gh issue close 395' '>' notes.md": [
+   "intended",
+   "tightening (harmonic-forge#1496 containment): a segment with a gh word outside the allowed shapes is unprovable, so BATCH asks where the old reader passed",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
   "env -i gh issue close 700 --repo vitalharmony/hrse": [
    "intended",
    "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
@@ -1017,22 +1027,34 @@
     ],
     []
    ]
-  ],
-  "echo 'gh issue close 395' '>' notes.md": [
-   "intended",
-   "tightening (harmonic-forge#1496 containment): a segment with a gh word outside the allowed shapes is unprovable, so BATCH asks where the old reader passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
   ]
  },
  "migration": {
-  "echo gh issue close 1": [
+  "GH_REPO=a/b gh issue close 12": [
+   "old-defect",
+   "main ignored the inline GH_REPO and named no repo; gh reads GH_REPO, and the hook binds it",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "12"
+     ]
+    ],
+    [
+     [
+      "issue",
+      "a/b",
+      "12"
+     ]
+    ]
+   ]
+  ],
+  "gh -R vitalharmony/hrse issue close 849": [
    "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
    [
     "not-a-close",
     "refuse",
@@ -1040,9 +1062,9 @@
     []
    ]
   ],
-  "grep -rn 'gh issue close' tools/": [
+  "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=open": [
    "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
    [
     "not-a-close",
     "refuse",
@@ -1050,9 +1072,9 @@
     []
    ]
   ],
-  "git commit -m 'route gh api reads'": [
+  "gh issue close": [
    "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
    [
     "not-a-close",
     "refuse",
@@ -1060,49 +1082,9 @@
     []
    ]
   ],
-  "git grep -n 'gh api'": [
+  "gh issue close \"$N\"": [
    "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "which gh": [
-   "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "$PYTHON -m pytest": [
-   "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "bash -c 'gh issue close 849'": [
-   "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "G=gh; $G issue close 849": [
-   "intended",
-   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
    [
     "not-a-close",
     "refuse",
@@ -1112,7 +1094,7 @@
   ],
   "gh issue close 849 --bogus": [
    "intended",
-   "verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named the number",
    [
     "refuse",
     "refuse",
@@ -1120,42 +1102,16 @@
      [
       "issue",
       null,
-      null
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh -R vitalharmony/hrse issue close 849": [
-   "intended",
-   "verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      null,
-      null
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh issue close 849 -R vitalharmony/hrse --comment 'checked with gh api'": [
-   "intended",
-   "verdict unchanged; the text hook binds a literal gh call whose own arguments mention gh, as the old reader did, where gh_segment's containment names no target (never looser than main)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
       "849"
      ]
     ],
-    []
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
    ]
   ]
  },

@@ -36,6 +36,18 @@ FAKE = textwrap.dedent('''\
         print(fx.get("aliases", "")); sys.exit(0)
     if fx.get("fail_reads") and argv[:1] == ["api"]:
         sys.exit(1)
+    if argv[:1] == ["api"] and ".labels[].name" in argv and "fail_label_read_at" in fx:
+        # Fail only the Nth label read, so a test can fail ONE gate's read
+        # (harmonic-forge#1498 reforged pass 1 survivor 2).
+        with open(os.environ["FAKE_GH_LOG"]) as log:
+            nth = sum(1 for line in log if ".labels[].name" in line)
+        if nth == fx["fail_label_read_at"]:
+            sys.exit(1)
+    if argv[:2] == ["repo", "view"] and "fail_repo_view_at" in fx:
+        with open(os.environ["FAKE_GH_LOG"]) as log:
+            nth = sum(1 for line in log if line.startswith('["repo", "view"'))
+        if nth == fx["fail_repo_view_at"]:
+            sys.exit(1)
     if argv[:1] == ["api"] and len(argv) > 1 and "--jq" in argv:
         path, jq = argv[1], argv[argv.index("--jq") + 1]
         if jq == ".labels[].name":
@@ -344,16 +356,34 @@ class DataMigrationGate(unittest.TestCase):
         done = self.run_bash("cd ../safe && gh issue close 849", self.fixture_for(["data-migration"]))
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def _last_call_index(self, script: str, needle: str) -> int:
+        """How many `needle` calls a refused close makes; the migration gate
+        runs last, so its call is the final one."""
+        self.log.write_text("")
+        done = self.run_bash(script, self.fixture_for(["data-migration"]))
+        self.assertEqual(done.returncode, 4, done.stderr)
+        calls = [line for line in self.log.read_text().splitlines() if needle in line]
+        self.assertTrue(calls, needle)
+        return len(calls)
+
     def test_a_failed_label_read_refuses(self):
-        done = self.run_bash("gh issue close 849 -R o/mig", {**self.fixture_for(["data-migration"]),
-                                                             "fail_reads": True})
+        """Reforged pass 1 survivor 2: only the MIGRATION gate's label read
+        fails; every earlier gate reads normally, so the refusal is its own."""
+        script = "gh issue close 849 -R o/mig"
+        nth = self._last_call_index(script, ".labels[].name")
+        self.log.write_text("")
+        done = self.run_bash(script, {**self.fixture_for(["data-migration"]), "fail_label_read_at": nth})
         self.assertEqual(done.returncode, 4, done.stderr)
         self.assertIn("could not read", done.stderr)
         self.assertEqual(self.migration_closes(), [])
 
     def test_an_unresolvable_repo_refuses(self):
-        fixture = {**self.fixture_for(["data-migration"]), "repos": {}}
-        done = self.run_bash("G=gh; $G issue close 849", fixture)
+        """Reforged pass 1 survivor 2: only the migration gate's repo lookup
+        fails; the earlier gates resolve the repo normally."""
+        script = "G=gh; $G issue close 849"
+        nth = self._last_call_index(script, '["repo", "view"')
+        self.log.write_text("")
+        done = self.run_bash(script, {**self.fixture_for(["data-migration"]), "fail_repo_view_at": nth})
         self.assertEqual(done.returncode, 4, done.stderr)
         self.assertEqual(self.migration_closes(), [])
 
