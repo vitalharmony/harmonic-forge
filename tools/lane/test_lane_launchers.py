@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -286,6 +287,55 @@ def _code_only(path: Path) -> str:
             in_heredoc = True
         lines.append(line)
     return "\n".join(lines)
+
+
+class FixtureCommandErrors(unittest.TestCase):
+    """harmonic-forge#1549: a failed fixture setup command names its stderr."""
+
+    def test_a_failing_command_carries_its_stderr(self):
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            # Built at run time, so the expected text never appears in the
+            # command line that CalledProcessError's base message echoes.
+            bc._run([sys.executable, "-c",
+                     "import sys; sys.stderr.write('fatal: ' + 'the ' + 'cause'); sys.exit(128)"])
+        self.assertEqual(caught.exception.returncode, 128)
+        self.assertIn("fatal: the cause", str(caught.exception))
+
+    def test_non_utf8_stderr_is_decoded_not_raised(self):
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            bc._run([sys.executable, "-c",
+                     "import sys; sys.stderr.buffer.write(b'bad \\xff byte'); sys.exit(1)"])
+        self.assertIn("bad � byte", str(caught.exception))
+
+    def test_the_fixture_repo_runs_no_background_gc(self):
+        # The flake's cause: background auto-gc's `worktree prune` raced
+        # `git worktree add`. Pinned by what git actually does, read from its
+        # trace2 event log, not by config values (preclose rounds 1 and 2:
+        # a config read can be satisfied by inherited config, or by writes
+        # that land after the commit and fetch that start maintenance).
+        # Inherited config is shut out, so only the fixture's own writes count.
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / "trace2.json"
+            env = {"GIT_TRACE2_EVENT": str(trace), "GIT_CONFIG_GLOBAL": os.devnull,
+                   "GIT_CONFIG_NOSYSTEM": "1"}
+            with unittest.mock.patch.dict(os.environ, env):
+                for key in [k for k in os.environ if k.startswith("GIT_CONFIG_")
+                            and k not in env]:
+                    os.environ.pop(key)
+                bc.build_fixture_tree((Path(tmp) / "tree").resolve())
+            events = [json.loads(line) for line in trace.read_text().splitlines()]
+            argv = {e["sid"]: e.get("argv", []) for e in events if e.get("event") == "start"}
+            # Non-vacuity: the trace saw the commands that start maintenance.
+            started = {a[1] for a in argv.values() if len(a) > 1}
+            self.assertTrue({"commit", "fetch"} <= started, started)
+            spawns = [(argv.get(e["sid"], []), e.get("argv", [])) for e in events
+                      if e.get("event") == "child_start"
+                      and {"maintenance", "gc"} & set(e.get("argv", []))]
+            # The one allowed spawn: receive-pack in the bare origin, which has
+            # no worktrees to prune.
+            in_fixture = [(parent, child) for parent, child in spawns
+                          if not any("receive-pack" in part for part in parent)]
+            self.assertEqual(in_fixture, [])
 
 
 # ---------------------------------------------------------------------------

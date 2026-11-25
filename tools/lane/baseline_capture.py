@@ -115,8 +115,27 @@ STUB_VERSIONS = {
 }
 
 
+class FixtureCommandError(subprocess.CalledProcessError):
+    """A CalledProcessError whose message carries the command's stderr and
+    stdout, decoded with errors="replace" (harmonic-forge#1549)."""
+
+    def __str__(self) -> str:
+        def text(data: bytes | str | None) -> str:
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", errors="replace")
+            return (data or "").strip()
+        return (f"{super().__str__()}\nstderr: {text(self.stderr)}\n"
+                f"stdout: {text(self.output)}")
+
+
 def _run(args: list[str], cwd: Path | None = None) -> None:
-    subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+    """Run a fixture setup command; a failure raises FixtureCommandError
+    (harmonic-forge#1549: an intermittent exit 128 from `git worktree add` was
+    undiagnosable because its stderr was captured and dropped)."""
+    result = subprocess.run(args, cwd=cwd, capture_output=True)
+    if result.returncode != 0:
+        raise FixtureCommandError(result.returncode, args,
+                                  output=result.stdout, stderr=result.stderr)
 
 
 def write_codex_hooks(checkout: Path) -> None:
@@ -207,6 +226,12 @@ def build_fixture_tree(
     _run(["git", "init", "-b", "main", str(main)])
     _run(["git", "config", "user.email", "lane@example.invalid"], cwd=main)
     _run(["git", "config", "user.name", "Lane Fixture"], cwd=main)
+    # harmonic-forge#1549: a commit or fetch can start background auto-gc /
+    # maintenance, whose `worktree prune` removed the half-built
+    # .git/worktrees/<name> mid `git worktree add` ("could not open
+    # '.git/worktrees/proj-lane2/locked' for writing", 1/200 under load).
+    _run(["git", "config", "gc.auto", "0"], cwd=main)
+    _run(["git", "config", "maintenance.auto", "false"], cwd=main)
     (main / "README.md").write_text("fixture\n")
     _run(["git", "add", "README.md"], cwd=main)
     _run(["git", "commit", "-q", "-m", "fixture"], cwd=main)
