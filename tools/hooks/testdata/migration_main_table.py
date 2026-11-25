@@ -45,10 +45,15 @@ json.dump(out, sys.stdout)
 def commands() -> list[str]:
     sys.path.insert(0, str(HOOKS))
     import block_data_migration_close  # noqa: PLC0415
+    import test_block_data_migration_close as tests  # noqa: PLC0415
+    # K1's grid first: its test fails, and so stops the recording run, until the
+    # table holds main's output for every grid command.
+    _write({**json.loads(OUT.read_text(encoding="utf-8")), **main_outputs(tests.grid())})
     import test_gh_argv_adapters_differential as differential  # noqa: PLC0415
     recorded = differential.recorded(
         "test_block_data_migration_close", [(block_data_migration_close, "find_close_targets")])
     found = [entry for entry in recorded if isinstance(entry, str)]
+    found += tests.grid()
     found += [shlex.join(tokens) for tokens in [*differential.ROWS.values(), differential.PLANTED]]
     return sorted(set(found))
 
@@ -65,7 +70,11 @@ def main_outputs(cmds: list[str]) -> dict:
     return json.loads(done.stdout)
 
 
+def _write(table: dict) -> None:
+    OUT.write_text(json.dumps(table, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+
+
 if __name__ == "__main__":
     table = main_outputs(commands())
-    OUT.write_text(json.dumps(table, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    _write(table)
     print(f"{OUT.name}: {len(table)} commands from {BASE[:7]}")

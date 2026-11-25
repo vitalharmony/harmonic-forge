@@ -401,5 +401,82 @@ class DecideTargetStrictTests(unittest.TestCase):
             self.assertIsNone(hook.decide_target("o/r", "849", "/x"))
 
 
+MAIN_TABLE = Path(__file__).resolve().parent / "testdata" / "migration_main_178ba5f.json"
+#: sha256 of main's `_strip_invocation_prefix` source at 178ba5f (K7); the git
+#: comparison below runs too wherever the commit is present (CI clones shallow).
+MAIN_STRIP_SHA256 = "1d85e3f90910881a944c7053c662eee57721c96d79a600318464243e5e141a6b"
+GRID_PREFIXES = ("", "env ", "env env ", "1=x ", "env 1=x ", "A=gh ", "GH_CONFIG_DIR=~/.config/gh ",
+                 "X=$(true) ")
+GRID_WORDS = ("gh", "/usr/bin/gh", "${B:-/usr/bin}/gh", '"$HOME/.local/bin/gh"', '"$BIN/gh"')
+GRID_BODIES = ("issue close 849 -R o/r", "api -X PATCH repos/o/r/issues/849 -f state=closed")
+
+
+def grid() -> list[str]:
+    """K1's generated commands; migration_main_table.py freezes main's output for each."""
+    return [p + w + " " + b for p in GRID_PREFIXES for w in GRID_WORDS for b in GRID_BODIES]
+
+
+class StickyWicketTripwireTests(unittest.TestCase):
+    """harmonic-forge#1498 sticky-wicket PATCH: recognition is main's predicate
+    verbatim (K1, K5, K6, K7); an inline GH_REPO/GH_HOST expansion is undecided
+    (K2, K3); an undecided call on the restored path is denied (K4)."""
+
+    def test_k1_recognition_is_never_narrower_than_frozen_main(self) -> None:
+        """Generated grid, compared with main's own output (migration_main_table.py
+        runs 178ba5f from `git archive`; the commands reach it by being recorded here)."""
+        table = json.loads(MAIN_TABLE.read_text(encoding="utf-8"))
+        for command in grid():
+            with self.subTest(command=command):
+                got = hook.find_close_targets(command)
+                self.assertIn(command, table, "regenerate: python3 tools/hooks/testdata/migration_main_table.py")
+                self.assertTrue(table[command], "the grid row must be a close on main")
+                self.assertTrue(got, "main named a target; the hook must not read not-a-close")
+
+    def test_k2_an_inline_gh_repo_expansion_is_denied_before_any_read(self) -> None:
+        for command in ("GH_REPO=$OWNER/hrse gh issue close 849", 'GH_REPO="o/$NAME" gh issue close 849',
+                        "GH_REPO=`x` gh issue close 849", "GH_HOST=$H gh issue close 849 -R o/r"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+                reason = AdapterAdoptionTests._main(command, reads=_no_read)["hookSpecificOutput"]
+                self.assertEqual(reason["permissionDecision"], "deny")
+
+    def test_k3_the_expansion_guard_names_every_env_var_gh_argv_reads(self) -> None:
+        import re
+        source = (Path(__file__).resolve().parent / "gh_argv.py").read_text(encoding="utf-8")
+        read = set(re.findall(r"""env\.get\(\s*["']([^"']+)["']""", source))
+        self.assertEqual(read, {"GH_REPO", "GH_HOST"})
+        self.assertEqual(set(hook._GH_ENV), read)
+
+    def test_k4_an_undecided_call_on_the_restored_path_is_denied(self) -> None:
+        for command in ("env 1=x gh issue close 849 --bogus", '"$BIN/gh" issue close 849 --bogus'):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+                reason = AdapterAdoptionTests._main(command, reads=_no_read)["hookSpecificOutput"]
+                self.assertEqual(reason["permissionDecision"], "deny")
+
+    def test_k5_a_gha_wrapper_close_is_bound(self) -> None:
+        self.assertEqual(hook.find_close_targets("gha vh issue close 849 -R o/r"), [("o/r", "849")])
+        self.assertEqual(hook.find_close_targets("gh-as vh gh issue close 849 -R o/r"), [("o/r", "849")])
+
+    def test_k6_r0423_rows_are_allowed(self) -> None:
+        for command in ("grep -rn 'gh issue close' tools/", "git commit -m 'gh issue close 849'",
+                        "git grep -n 'gh api'", "which gh", "$PYTHON -m pytest", "echo gh issue close 1"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [])
+
+    def test_k7_the_recognizer_is_main_verbatim(self) -> None:
+        import hashlib
+        import inspect
+        source = inspect.getsource(hook._strip_invocation_prefix)
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), MAIN_STRIP_SHA256)
+        self.assertEqual(hook.ENV_ASSIGNMENT.pattern, r"^\w+=")
+        main = subprocess.run(["git", "-C", str(HOOK.parent), "show",
+                               "178ba5f:tools/hooks/block_data_migration_close.py"],
+                              capture_output=True, text=True)
+        if main.returncode == 0:
+            self.assertIn(source, main.stdout)
+            self.assertIn('ENV_ASSIGNMENT = re.compile(r"^\\w+=")', main.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

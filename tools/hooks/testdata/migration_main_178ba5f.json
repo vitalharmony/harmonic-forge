@@ -1,5 +1,179 @@
 {
+ "\"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "\"$BIN/gh\" issue close 849 --bogus": [
+  [
+   null,
+   "849"
+  ]
+ ],
+ "\"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "\"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "\"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "$PYTHON -m pytest": [],
+ "${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "/usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "/usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "1=x gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "A=gh gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "FOO=bar env gh issue close 849": [
   [
    null,
@@ -13,9 +187,93 @@
    "849"
   ]
  ],
+ "GH_CONFIG_DIR=~/.config/gh \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "GH_CONFIG_DIR=~/.config/gh gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=closed": [
   [
    "vitalharmony/hrse",
+   "849"
+  ]
+ ],
+ "GH_CONFIG_DIR=~/.config/gh gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_HOST=$H gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "GH_REPO=\"o/$NAME\" gh issue close 849": [
+  [
+   null,
+   "849"
+  ]
+ ],
+ "GH_REPO=$OWNER/hrse gh issue close 849": [
+  [
+   null,
+   "849"
+  ]
+ ],
+ "GH_REPO=`x` gh issue close 849": [
+  [
+   null,
    "849"
   ]
  ],
@@ -38,12 +296,258 @@
    "849"
   ]
  ],
+ "X=$(true) \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "X=$(true) gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "bash -c 'gh issue close 849'": [],
  "echo gh issue close 1": [],
+ "env \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "env -u GH_REPO gh issue close 12": [],
+ "env /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env 1=x gh issue close 849 --bogus": [
+  [
+   null,
+   "849"
+  ]
+ ],
+ "env 1=x gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env \"$BIN/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env \"$BIN/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env \"$HOME/.local/bin/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env \"$HOME/.local/bin/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env ${B:-/usr/bin}/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env ${B:-/usr/bin}/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env env gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "env env gh issue close 849 -R vitalharmony/hrse": [
   [
    "vitalharmony/hrse",
+   "849"
+  ]
+ ],
+ "env gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
+ "env gh issue close 849 -R o/r": [
+  [
+   "o/r",
    "849"
   ]
  ],
@@ -66,6 +570,12 @@
   [
    "o/r",
    "5"
+  ]
+ ],
+ "gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849"
   ]
  ],
  "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state='closed'": [
@@ -168,6 +678,12 @@
    "849"
   ]
  ],
+ "gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849"
+  ]
+ ],
  "gh issue close 849 -R vitalharmony/hrse": [
   [
    "vitalharmony/hrse",
@@ -218,7 +734,10 @@
  "gh pr merge 5 --repo vitalharmony/hrse --squash": [],
  "gh repo view": [],
  "gh triage-done 12 --repo o/r": [],
+ "gh-as vh gh issue close 849 -R o/r": [],
  "gh-as vitalharmony gh pr merge 5 --repo o/r": [],
+ "gha vh issue close 849 -R o/r": [],
+ "git commit -m 'gh issue close 849'": [],
  "git commit -m 'route gh api reads'": [],
  "git grep -n 'gh api'": [],
  "git status": [],
