@@ -650,6 +650,12 @@
   ]
  ],
  "gh issue close 849 --comment 'x": null,
+ "gh issue close 849 --repo https://[bad": [
+  [
+   "https://[bad",
+   "849"
+  ]
+ ],
  "gh issue close 849 --repo vitalharmony/hrse": [
   [
    "vitalharmony/hrse",
@@ -720,6 +726,7 @@
    "99"
   ]
  ],
+ "gh issue close https://[::1/o/r/issues/849": [],
  "gh issue close https://github.com/vitalharmony/hrse/issues/849": [
   [
    "vitalharmony/hrse",

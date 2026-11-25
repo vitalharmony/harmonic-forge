@@ -341,6 +341,14 @@ class AdapterAdoptionTests(unittest.TestCase):
         self.assertEqual(hook.find_close_targets(
             f"gh issue close 849 -R {REPO} --comment 'checked with gh api'"), [(REPO, "849")])
 
+    def test_a_malformed_repo_url_is_denied_not_raised(self) -> None:
+        """Post-verdict finding 1: a URL that urlsplit rejects is an undecided
+        literal gh call, denied before any read; the hook never raises."""
+        for command in ("gh issue close https://[::1/o/r/issues/849",
+                        "gh issue close 849 --repo https://[bad"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+
     def test_a_literal_gh_close_behind_a_gh_mentioning_prefix_is_still_a_close(self) -> None:
         """Reforged pass 1 survivor 1: main stripped `NAME=value` and `env`
         before reading gh, so a gh word in an assignment value or a second
@@ -430,7 +438,8 @@ class StickyWicketTripwireTests(unittest.TestCase):
                 got = hook.find_close_targets(command)
                 self.assertIn(command, table, "regenerate: python3 tools/hooks/testdata/migration_main_table.py")
                 self.assertTrue(table[command], "the grid row must be a close on main")
-                self.assertTrue(got, "main named a target; the hook must not read not-a-close")
+                self.assertEqual(sorted(tuple(t) for t in got), sorted(tuple(t) for t in table[command]),
+                                 "main named a target; the hook must name the same one")
 
     def test_k2_an_inline_gh_repo_expansion_is_denied_before_any_read(self) -> None:
         for command in ("GH_REPO=$OWNER/hrse gh issue close 849", 'GH_REPO="o/$NAME" gh issue close 849',
