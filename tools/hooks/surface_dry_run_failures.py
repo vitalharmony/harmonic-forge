@@ -35,6 +35,9 @@ def _line(data: dict) -> str:
     if data.get("kind") == "unparsed":
         return f"l1_post run FAILED before its arguments parsed: {text}"
     sha = str(data.get("sha") or "")[:12] or "?"
+    if data.get("exit") == 3:
+        return (f"l1_post dry run must WAIT (exit 3) for {data.get('repo')}#{data.get('issue')} "
+                f"{data.get('kind')} @ {sha}: {text}")
     return (f"l1_post dry run FAILED for {data.get('repo')}#{data.get('issue')} "
             f"{data.get('kind')} @ {sha}: {text}")
 

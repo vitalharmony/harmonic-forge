@@ -72,12 +72,17 @@ class Recording(Base):
         self.assertEqual(entries[0][1]["text"], "[l1-post] overlap with feat/1505")
         self.assertEqual((entries[0][1]["repo"], entries[0][1]["kind"]), (REPO, "ae"))
 
-    def test_a_wait_exit_records_nothing(self) -> None:
+    def test_a_wait_exit_is_recorded_as_a_wait(self) -> None:
+        """Epoch-1 pass 1 PATCH: exit 3 is an unread blocker too (a CI wait, or
+        _carry_forward's read/fetch error), so it is recorded with its code."""
         def main():
             drf.bind(ns())
+            sys.stderr.write("WAIT: CI is pending on aaaaaaaaaaaa\n")
             raise SystemExit(drf.WAIT_EXIT)
         self.wrapped(main)
-        self.assertEqual(drf.pending(SID), [])
+        (_, data), = drf.pending(SID)
+        self.assertEqual(data["exit"], 3)
+        self.assertIn("WAIT: CI is pending", data["text"])
 
     def test_a_parsed_real_post_records_nothing(self) -> None:
         def main():
@@ -137,6 +142,22 @@ class Recording(Base):
 
 
 class Clearing(Base):
+    def test_an_older_clean_run_never_erases_a_newer_failure(self) -> None:
+        """Epoch-1 pass 1 survivor: a clean run removes only entries recorded
+        before it started."""
+        def clean_main():
+            drf.record(REPO, 7, "ae", "b" * 40, "newer failure")  # lands mid-run
+            drf.clean("ae", REPO, 7, "a" * 40)
+        with redirect_stdout(io.StringIO()):
+            self.wrapped(clean_main)
+        self.assertEqual([e[1]["text"] for e in drf.pending(SID)], ["newer failure"])
+
+    def test_clean_never_touches_another_sessions_entry(self) -> None:
+        drf.record(REPO, 7, "ae", "a" * 40, "other session's failure", sid="other-session")
+        with redirect_stdout(io.StringIO()):
+            drf.clean("ae", REPO, 7, "a" * 40)
+        self.assertEqual(len(drf.pending("other-session")), 1)
+
     def test_dry_run_clean_clears_an_entry_recorded_without_repo(self) -> None:
         """Recorded by a run that omitted --repo, cleared by one that spells it out."""
         def main():
@@ -152,7 +173,28 @@ class Clearing(Base):
         self.assertEqual(out.getvalue(), f"[l1-post] dry run clean: ae {REPO}#7 @ {'c' * 12}\n")
 
 
+class ShaWriteback(Base):
+    def test_a_failure_after_sha_resolution_records_the_resolved_sha(self) -> None:
+        """l1_post writes the resolved SHA back onto the bound Namespace."""
+        import l1_post
+        argv = ["l1_post.py", "--repo", REPO, "--issue", "7", "--kind", "ae-and-sweep",
+                "--sha", "HEAD", "--branch", "x", "--ae-file", "/nonexistent-ae.md",
+                "--sweep-file", "/nonexistent-sweep.md", "--spec-comment", "1", "--dry-run"]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(l1_post, "apply_project_identity", lambda repo: None), \
+                mock.patch.object(l1_post, "resolve_sha", lambda value: "f" * 40):
+            code, _ = self.wrapped(l1_post.main, l1_post.resolve_repo)
+        self.assertNotIn(code, (None, 0))
+        (_, data), = drf.pending(SID)
+        self.assertEqual(data["sha"], "f" * 40)
+
+
 class Hook(Base):
+    def test_a_wait_entry_is_shown_as_a_wait(self) -> None:
+        drf.record(REPO, 7, "ae", "b" * 40, "WAIT: CI is pending", code=3)
+        ctx = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(f"l1_post dry run must WAIT (exit 3) for {REPO}#7 ae", ctx)
+
     def test_an_entry_is_injected_once_to_its_own_session(self) -> None:
         drf.record(REPO, 7, "ae", "b" * 40, "[l1-post] refused")
         ctx = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
