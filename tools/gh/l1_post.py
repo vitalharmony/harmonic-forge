@@ -3390,9 +3390,13 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
               file=sys.stderr)
         raise SystemExit(_carry_forward.WAIT_EXIT)
+    # The ack hint names only what gate_ci._no_pr_state_eligible can release: a red
+    # run is never released, so a red read is told to fix or re-run CI and nothing else.
+    hint = ("" if state == "red" else
+            "; a SHA that is main's tip with no open PR, whose CI is absent or whose "
+            "required checks were all skipped, takes `--ack-no-pr-required <reason>`")
     fail(f"CI is {state} on {sha[:12]} ({detail}); a pre-merge AE needs green CI "
-         "(harmonic-forge#894). Fix or re-run CI and re-post; a SHA that is main's tip "
-         "with no open PR takes `--ack-no-pr-required <reason>`")
+         f"(harmonic-forge#894). Fix or re-run CI and re-post{hint}")
 
 
 def _refuse_script_contract(script: str, sha: str) -> None:

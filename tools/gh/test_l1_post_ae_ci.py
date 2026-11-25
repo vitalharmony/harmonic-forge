@@ -63,9 +63,14 @@ class AeCiGate(unittest.TestCase):
             with self.subTest(state=state):
                 message = self.refused(state)
                 self.assertIn(f"CI is {state}", message)
+                self.assertIn("Fix or re-run CI", message)
                 # The existing operator paths only; no CI-outage override line.
-                self.assertIn("--ack-no-pr-required", message)
                 self.assertNotIn("ci-outage", message)
+                # The no-PR ack is named only where it can release (never on red).
+                if state == "red":
+                    self.assertNotIn("--ack-no-pr-required", message)
+                else:
+                    self.assertIn("--ack-no-pr-required", message)
 
     def test_an_unresolvable_repo_refuses(self):
         self.assertIn("cannot resolve the source repo", self.refused("green", source=None))
