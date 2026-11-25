@@ -45,12 +45,16 @@ form, and that binding is a bare reference to one loader or exact alias
 (chains resolve by a bounded fixpoint); any other loader-bound name is
 ambiguous, and each use of it, a call included, is an `import-unresolved`
 row. A loader's own name rebound that way is ambiguous too, never remapped.
-A name bound by a walrus, a tuple or list unpacking, a for, comprehension or
-with target, or a match capture is never an exact alias: when the bound
-value (the iterable, context expression or subject; a call's arguments, not
-its callee) references a loader or ambiguous name, every target it binds is
-ambiguous, so a call through it is a row at every use, not only on the
-binding line.
+A name bound by a walrus, a plain assignment whose value is not a bare
+reference (`load = functools.partial(runpy.run_path)`, `fns = (loader,)`), a
+tuple or list unpacking, an augmented assignment, a def or lambda parameter
+default, a for, comprehension or with target, or a match capture is never an
+exact alias: when the bound value (the iterable, context expression or
+subject; anywhere inside it, a call's arguments included but not its callee)
+references a loader or ambiguous name, every target it binds is ambiguous,
+so a call through it is a row at every use, not only on the binding line.
+The fixpoint's bound covers every remap and every turn to ambiguous, so a
+chain converges in any source order.
 
 In shell, a backslash-newline is removed with nothing inserted, as bash
 does. Each joined line is read by two recognizers: the raw-text regexes
@@ -71,7 +75,10 @@ Accepted residuals:
 - (c) A loader bound or looked up by string key is not seen
   (`getattr(importlib, "import_module")(...)`, `globals()['load'] = ...`,
   `setattr(...)`), and an alias rebound that way stays resolved.
-(b) and (c) are out of harmonic-forge#1556's scope by Lane 1's decision.
+- (e) A loader stored on an attribute and called through it
+  (`self.load = runpy.run_path`, then `self.load(p)`) is a row on the binding
+  line only: names are tracked, attribute targets are not.
+(b), (c) and (e) are out of harmonic-forge#1556's scope by Lane 1's decision.
 
 Over-approximated edges fail closed: the scan can emit an `import` edge no
 runtime load makes (`from opentelemetry.telemetry import api` ->
@@ -437,7 +444,7 @@ def _value_refs(value: ast.AST) -> list[str]:
 
 
 def _loose_refs(value: ast.AST) -> list[str]:
-    """Every name referenced anywhere in the value of a non-assignment
+    """Every name referenced anywhere in the value of a `_loose_binds`
     binding, a call's arguments included but never its callee: the value of
     `nullcontext(runpy.run_path)` is the loader, the value of
     `spec_from_file_location(...)` is not (harmonic-forge#1556, operator
@@ -464,19 +471,37 @@ def _store_names(target: ast.AST) -> list[str]:
 
 
 def _loose_binds(tree: ast.AST) -> list[tuple[str, ast.AST]]:
-    """(name, value) for each binding that is not a plain `name = value`: a
-    walrus, a tuple or list unpacking target, a for or comprehension target
-    (value: the iterable), a with target (value: the context expression) and
-    a match capture (value: the subject). Such a name is never an exact
-    alias; one bound to a loader is ambiguous (harmonic-forge#1556, operator
-    widening 2026-11-25)."""
+    """(name, value) for each binding that is not a plain `name = <bare
+    reference>`: a walrus, a plain or annotated assignment whose value is not
+    a bare reference (a call, container, subscript or other expression), a
+    tuple or list unpacking target, an augmented assignment, a def or lambda
+    parameter default (positional or keyword-only), a for or comprehension
+    target (value: the iterable), a with target (value: the context
+    expression) and a match capture (value: the subject). Such a name is
+    never an exact alias; one bound to a loader is ambiguous
+    (harmonic-forge#1556, operator widening 2026-11-25)."""
     loose: list[tuple[str, ast.AST]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.NamedExpr):
             loose.append((node.target.id, node.value))
-        elif isinstance(node, ast.Assign):
-            loose.extend((n, node.value) for t in node.targets
-                         if isinstance(t, (ast.Tuple, ast.List)) for n in _store_names(t))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if node.value is None:
+                continue
+            bare = _ref_name(node.value) is not None
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                if isinstance(t, (ast.Tuple, ast.List)):
+                    loose.extend((n, node.value) for n in _store_names(t))
+                elif isinstance(t, ast.Name) and not bare:
+                    loose.append((t.id, node.value))
+        elif isinstance(node, ast.AugAssign):
+            loose.extend((n, node.value) for n in _store_names(node.target))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            pos = a.posonlyargs + a.args
+            loose.extend((arg.arg, d) for arg, d in
+                         zip(pos[len(pos) - len(a.defaults):], a.defaults))
+            loose.extend((arg.arg, d) for arg, d in zip(a.kwonlyargs, a.kw_defaults)
+                         if d is not None)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             loose.extend((n, node.iter) for n in _store_names(node.target))
         elif isinstance(node, (ast.With, ast.AsyncWith)):
@@ -522,7 +547,10 @@ def _loader_aliases(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
                 if isinstance(t, ast.Name):
                     binds.append((t.id, node.value))
     loose = [(name, _loose_refs(value)) for name, value in _loose_binds(tree)]
-    for _ in range(len(binds) + len(loose) + 1):
+    # Each name is remapped at most once and turns ambiguous at most once, and
+    # a sweep that changes anything spends one of those events, so this bound
+    # always reaches the fixpoint, even for a chain in the worst source order.
+    for _ in range(2 * len(binds) + len(loose) + 1):
         changed = False
         for name, value in binds:
             refs = _value_refs(value)

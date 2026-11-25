@@ -537,10 +537,15 @@ class TestF1556Residuals(ScratchRepo):
                          f'second = first\nsecond("{EMIT}")\n', "tools/telemetry/emit.py")
 
     def test_rebound_alias_call_is_unresolved(self):
-        self.assert_unresolved_call(
-            "import runpy\nload = runpy.run_module\n"
-            "load = runpy.run_path if use_path else runpy.run_module\n"
-            f'load("{EMIT}")\n', f'load("{EMIT}")')
+        """Bound twice, by an expression or by bare references only: the
+        second form is decided by the exact-alias rule alone, since a bare
+        reference is never a loose binding."""
+        for rebind in ("load = runpy.run_path if use_path else runpy.run_module\n",
+                       "if use_path:\n    load = runpy.run_path\n"):
+            with self.subTest(rebind=rebind):
+                self.assert_unresolved_call(
+                    f"import runpy\nload = runpy.run_module\n{rebind}"
+                    f'load("{EMIT}")\n', f'load("{EMIT}")')
 
     def test_import_as_rebinding_is_unresolved(self):
         a = "load = runpy.run_path\n"
@@ -592,6 +597,56 @@ class TestF1556Residuals(ScratchRepo):
         for binding in ("load, x = runpy.run_path, 1\n", "[x, (load, y)] = 1, (runpy.run_path, 2)\n"):
             with self.subTest(binding=binding):
                 self.assert_loose_alias_call(binding)
+
+    def test_augmented_assignment_alias_call_is_unresolved(self):
+        self.assert_loose_alias_call("load = None\nload += runpy.run_path\n")
+
+    def test_parameter_default_alias_call_is_unresolved(self):
+        """A def default, positional or keyword-only, is a loose binding: the
+        call in the body, on its own line, is a row."""
+        call = f'return load("{EMIT}")'
+        for head in ("def f(load=runpy.run_path):\n", "def f(x, *, load=runpy.run_path):\n"):
+            with self.subTest(head=head):
+                self.assert_unresolved_call(f"import runpy\n{head}    {call}\n", call)
+
+    def test_container_then_for_alias_call_is_unresolved(self):
+        """A plain name holding a container of loaders taints a later for target."""
+        self.assert_loose_alias_call("fns = (runpy.run_path,)\nfor load in fns:\n    pass\n")
+
+    def test_plain_assign_of_a_partial_alias_call_is_unresolved(self):
+        self.assert_loose_alias_call("import functools\nload = functools.partial(runpy.run_path)\n")
+
+    def test_match_capture_alias_call_is_unresolved(self):
+        """A single-bound `case load:` over a loader subject."""
+        self.assert_loose_alias_call("match runpy.run_path:\n    case load:\n        pass\n")
+
+    def test_comprehension_target_alias_call_is_unresolved(self):
+        """A comprehension target called in the element, on its own line."""
+        call = f'load("{EMIT}")'
+        self.assert_unresolved_call(
+            f"import runpy\nout = [\n    {call}\n    for load in (runpy.run_path,)\n]\n", call)
+
+    def test_keyword_argument_alias_call_is_unresolved(self):
+        self.assert_loose_alias_call(
+            "from contextlib import nullcontext\n"
+            "with nullcontext(enter_result=runpy.run_path) as load:\n    pass\n")
+
+    def test_loose_chain_alias_call_is_unresolved(self):
+        """A loose binding over a name that is itself only ambiguous."""
+        self.assert_loose_alias_call("x = (runpy.run_path, 1)\ny = x\nfor load in y:\n    pass\n")
+
+    def test_long_chain_alias_call_is_unresolved(self):
+        """The fixpoint converges on a chain in the worst source order: the
+        chain's head is an alias of a rebound loader name, so the call is a
+        row, not an edge. s=3 is pitch inspection r3's counterexample; s=6 is
+        long enough that the old `len(binds) + len(loose) + 1` bound runs out."""
+        for s in (3, 6):
+            with self.subTest(s=s):
+                chain = "".join(f"X{i} = X{i - 1}\n" for i in range(s, 1, -1))
+                call = f'X{s}("tools.telemetry")'
+                self.assert_unresolved_call(
+                    f"import_module = Z\nZ = X{s} if c else q\n{chain}"
+                    f"X1 = import_module\n{call}\n", call)
 
     def test_loose_bind_of_a_loader_call_result_stays_clean(self):
         """A loader's return value is not a loader: `(spec := spec_from_file_location(...))`
