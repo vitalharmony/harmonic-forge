@@ -879,7 +879,7 @@ class SnapshotFloorTests(unittest.TestCase):
     def test_the_forge_snapshot_names_its_source(self) -> None:
         snapshot = fo.frozen_hook_snapshot(self.FORGE)
         self.assertEqual(snapshot["source"]["path"], ".claude/settings.json")
-        self.assertEqual(len(snapshot["entries"]), 57)
+        self.assertEqual(len(snapshot["entries"]), 60)
         self.assertEqual(len(snapshot["project_specific"]), 7)
 
 

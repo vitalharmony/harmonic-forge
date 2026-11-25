@@ -2,9 +2,9 @@
   "schema": 1,
   "source": {
     "repo": "vitalharmony/harmonic-forge",
-    "commit": "475aa6d5208b22c7f4562b44eb82bc0d6d03d543",
+    "commit": "415f19977a396ecbaeb7e4fb7a321791fdee09f5",
     "path": ".claude/settings.json",
-    "blob": "a11e4d11e5971f80a03165b718d22d25e467dff3"
+    "blob": "48a341dda3d31d66c469116e9277d75a7a33a054"
   },
   "entries": [
     {
@@ -141,6 +141,12 @@
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
       "matcher": "Bash|Monitor|Write|Edit|MultiEdit|NotebookEdit|CronCreate|ScheduleWakeup|RemoteTrigger",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
@@ -186,6 +192,12 @@
       "matcher": null,
       "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
       "timeout": 25
+    },
+    {
+      "event": "UserPromptSubmit",
+      "matcher": null,
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/surface_dry_run_failures.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 10
     },
     {
       "event": "UserPromptSubmit",
@@ -321,6 +333,12 @@
     },
     {
       "event": "PostToolUse",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_precheck_outcome.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 5
+    },
+    {
+      "event": "PostToolUse",
       "matcher": "TaskCreate|TaskUpdate",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
@@ -335,6 +353,12 @@
       "event": "PostToolUseFailure",
       "matcher": "Bash",
       "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_failed_command.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+      "timeout": 5
+    },
+    {
+      "event": "PostToolUseFailure",
+      "matcher": "Bash",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_precheck_outcome.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 5
     },
     {
