@@ -503,6 +503,34 @@ class TestF1556Forms(ScratchRepo):
         self.track()
         self.check_fails_naming("tools/hooks/fn.py imports operator file tools/telemetry/")
 
+    def test_every_dotted_part_position_is_a_package_candidate(self):
+        """Sticky-wicket PATCH (harmonic-forge#1556, issuecomment-7175238692):
+        one case per position of the operator package in the module path,
+        with made-up stems so nothing resolves to a real fixture file."""
+        cases = {"first": "from telemetry.zz.yy import *\n",
+                 "middle": "from tools.telemetry.yy import *\n",
+                 "last": "from tools.zz.telemetry import *\n"}
+        for position, line in cases.items():
+            with self.subTest(position=position):
+                self.write(f"tools/hooks/dp_{position}.py", line)
+                self.track()
+                self.check_fails_naming(
+                    f"tools/hooks/dp_{position}.py imports operator file tools/telemetry/")
+
+    def test_every_branch_of_the_imported_name_condition_is_pinned(self):
+        """Sticky-wicket PATCH: each branch of main's condition that makes an
+        imported name a package candidate, and a name after the first."""
+        cases = {"relative_no_module": "from .. import telemetry\n",
+                 "relative_untracked_module": "from ..zzlib import telemetry\n",
+                 "tracked_directory": "from tools import telemetry\n",
+                 "second_name": "from tools import zz, telemetry\n"}
+        for branch, line in cases.items():
+            with self.subTest(branch=branch):
+                self.write(f"tools/hooks/in_{branch}.py", line)
+                self.track()
+                self.check_fails_naming(
+                    f"tools/hooks/in_{branch}.py imports operator file tools/telemetry/")
+
     def test_an_imported_name_of_an_untracked_module_is_not_a_package_candidate(self):
         # harmonic-forge#1556 pass-1 survivor: AC2 keeps main's condition, so a
         # name imported from a module that is not a tracked directory (and not
