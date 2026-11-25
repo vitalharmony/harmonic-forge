@@ -214,7 +214,7 @@ class EndToEnd(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "3"}), \
                  mock.patch.object(P, "check_gate_result",
-                                   lambda repo, body, ack_no_pr_required=None: (True, "[GATE] stubbed")), \
+                                   lambda repo, body, ack_no_pr_required=None, **_kw: (True, "[GATE] stubbed")), \
                  mock.patch.object(P, "comment_body", fake_comment_body):
                 P.main()
         return captured["text"]
@@ -271,7 +271,7 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
         gate comments carry no `kind=gate-result` footer."""
         seen = []
         with mock.patch.object(P, "check_gate_result",
-                               lambda repo, body, ack_no_pr_required=None: (
+                               lambda repo, body, ack_no_pr_required=None, **_kw: (
                                    seen.append(kind_marker := repo),
                                    (True, "ok"))[1]):
             P.require_green_ci("discussion", "o/r", self.PASS_BODY)
@@ -283,7 +283,7 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
         thing to drift; a non-report returns cleanly from the checker."""
         seen = []
         with mock.patch.object(P, "check_gate_result",
-                               lambda repo, body, ack_no_pr_required=None: (
+                               lambda repo, body, ack_no_pr_required=None, **_kw: (
                                    seen.append(body), (True, "ok"))[1]):
             P.require_green_ci("spec", "o/r", "## Lane 2 Plan — H1\n")
         self.assertEqual(len(seen), 1)
@@ -333,7 +333,7 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
         check must key on the BODY, not on the flag the author chose."""
         seen = []
 
-        def spy(repo, body, ack_no_pr_required=None):
+        def spy(repo, body, ack_no_pr_required=None, **_kw):
             seen.append(repo)
             return True, "ok"
         with mock.patch.object(P, "check_gate_result", spy):
@@ -737,7 +737,7 @@ class PostMergeReadonlyClaimTests(unittest.TestCase):
         """Run `require_green_ci`; returns (result_or_SystemExit, check calls, fetches)."""
         calls, fetches = [], []
 
-        def fake_check(repo, text, run=None, *, ack_no_pr_required=None, post_merge_readonly=None):
+        def fake_check(repo, text, run=None, *, ack_no_pr_required=None, post_merge_readonly=None, **_kw):
             calls.append({"ack": ack_no_pr_required, "claim": post_merge_readonly})
             if post_merge_readonly is not None:
                 return True, f"[GATE] post-merge-read-only: 21e587db is on main. Claim: {post_merge_readonly}"

@@ -37,6 +37,8 @@ post = load("l1_post")
 # before static_checks; never make a real `gh api` call from a test.
 import unittest.mock as _ci_mock  # noqa: E402
 _CI_PATCH = _ci_mock.patch.object(post.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
+# harmonic-forge#894 step 4: a pre-merge AE reads CI; never from a test.
+_AE_CI_PATCH = _ci_mock.patch.object(post, "_ae_ci_gate", return_value="ci-green")
 
 
 # harmonic-forge#1115 AC9: a standalone AE or sweep reads the thread for the
@@ -68,6 +70,7 @@ _LANE3_ENV_PATCH = _ci_mock.patch.object(post._lane3_env, "check", return_value=
 def setUpModule():  # noqa: N802
     _LANE3_ENV_PATCH.start()
     _CI_PATCH.start()
+    _AE_CI_PATCH.start()
     _SWEEP_CALLS_PATCH.start()
     _NO_SESSION_PATCH.start()
     import os
@@ -79,6 +82,7 @@ def tearDownModule():  # noqa: N802
     _PREFLIGHT_PATCH.stop()
     _LANE3_ENV_PATCH.stop()
     _CI_PATCH.stop()
+    _AE_CI_PATCH.stop()
     _SWEEP_CALLS_PATCH.stop()
     _NO_SESSION_PATCH.stop()
 

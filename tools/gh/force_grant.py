@@ -184,7 +184,9 @@ def heading(key: str) -> str:
 
 def comment_body(grant: dict) -> str:
     limit = ("only the route recheck's refusal, never another merge hook's"
-             if _mode(grant) == "route" else "never past an IMC receipt")
+             if _mode(grant) == "route" else
+             "never without that SHA's `check-full` receipt, and never a merge"
+             if _mode(grant) == "ci-outage" else "never past an IMC receipt")
     return "\n".join([
         heading(grant["key"]),
         "",
@@ -248,11 +250,16 @@ _AUTHORIZES = {"plain": "one plain `preclose_check.py --force`",
                "reforge": "one `preclose_check.py --force --reforge`",
                "route": "one merge past the route recheck (block_route_tightened_merge.py)",
                "cluster": "one `preclose_check.py --cluster-verdict ... --force`",
-               "gate": "one call past the precheck gate"}
+               "gate": "one call past the precheck gate",
+               "ci-outage": ("the pre-merge AE, and Lane 3's PASS, for exactly this SHA past a "
+                             "CI outage, only beside a `check-full` receipt for it "
+                             "(harmonic-forge#894)")}
 #: harmonic-forge#1291: what a gate grant is bound to; each must match the call.
 GATE_FIELDS = ("gate_tool", "gate_mode", "arg_fp")
 #: The modes bound to the operator-typed SHA prefix, not the covered head.
-_PREFIX_MODES = ("reforge", "route")
+_PREFIX_MODES = ("reforge", "route", "ci-outage")
+#: The prefix modes that bind the whole 40-hex SHA (harmonic-forge#1244, #894).
+_FULL_SHA_MODES = ("route", "ci-outage")
 
 
 def _mode(grant: dict) -> str:
@@ -293,7 +300,7 @@ def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str,
         return None
     if mode in _PREFIX_MODES:
         prefix = str(grant.get("sha_prefix") or "")
-        if len(prefix) < (40 if mode == "route" else 12) or not head_sha or not head_sha.startswith(prefix):
+        if len(prefix) < (40 if mode in _FULL_SHA_MODES else 12) or not head_sha or not head_sha.startswith(prefix):
             return f"the {mode} grant for {key} names {prefix[:12] or '?'}, not {head_sha[:12]}"
         return None
     if not head_sha or str(grant.get("sha")) != head_sha:

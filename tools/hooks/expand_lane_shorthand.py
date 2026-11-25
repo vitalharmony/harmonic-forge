@@ -824,6 +824,13 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
         if not _FORCE_FULL_SHA_RE.match(rest[0].lower()):
             return f"{rest[0]!r} is not a full 40-character hex commit SHA"
         return "route", rest[0].lower()
+    if word == "ci-outage":
+        # harmonic-forge#894 step 5 (pitch amendment 6): the full SHA, as route.
+        if len(rest) != 1:
+            return "a ci-outage FORCE names the SHA it releases: `FORCE <KEY> ci-outage <sha>: <reason>`"
+        if not _FORCE_FULL_SHA_RE.match(rest[0].lower()):
+            return f"{rest[0]!r} is not a full 40-character hex commit SHA"
+        return "ci-outage", rest[0].lower()
     if word == "cluster":
         if rest:
             return "a cluster FORCE takes no SHA: `FORCE <KEY> cluster: <reason>`"
@@ -835,8 +842,8 @@ def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
         if not _FORCE_REFUSAL_ID_RE.match(rest[0]):
             return f"{rest[0]!r} is not a 12-character hex refusal id"
         return "gate", rest[0]
-    return (f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>`, `cluster` "
-            "and `gate <refusal-id>` (lowercase)")
+    return (f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>`, `cluster`, "
+            "`gate <refusal-id>` and `ci-outage <sha>` (lowercase)")
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
 #: An unindented, uppercase FORCE first line that is not the grammar: well placed, malformed.
 _FORCE_MALFORMED_RE = re.compile(r"^FORCE[ \t]+\S")
@@ -878,7 +885,7 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     match = _FORCE_RE.match(lines[first]) if first is not None else None
     if match is None and first is not None and _FORCE_MALFORMED_RE.match(lines[first]):
         return ("FORCE REFUSED: the line needs a key like F1244 and a colon before the reason. "
-                "The form is `FORCE <KEY> [reforge <sha> | route <sha> | cluster | gate <refusal-id>]: <reason>`. "
+                "The form is `FORCE <KEY> [reforge <sha> | route <sha> | cluster | gate <refusal-id> | ci-outage <sha>]: <reason>`. "
                 "No grant written.")
     if match is None:
         return ("FORCE REFUSED: FORCE is honored only as the prompt's first line, typed "
@@ -935,7 +942,7 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
             return (f"FORCE REFUSED for {key}: {sha_prefix} is {reviewed[:12]}, a head a preclose "
                     "pass or post-verdict check already reviewed; a reforge binds the new head the "
                     "reforged code lands on. No grant written.")
-    if mode not in ("reforge", "route", "gate"):
+    if mode not in ("reforge", "route", "gate", "ci-outage"):
         # A reforge or route grant binds the head the operator typed; that
         # head may have no receipt (harmonic-forge#1174, #1244).
         head = grants.covered_head(repo, number)
@@ -950,7 +957,9 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     if previous:
         replaced = (f" It replaces the {previous.get('mode') or 'plain'} grant at "
                     f"{str(previous.get('sha') or previous.get('sha_prefix') or '?')[:12]}.")
-    after = "the merge" if mode == "route" else "the non-force preflight and the --force run"
+    after = ("the merge" if mode == "route" else
+             "the AE (and Lane 3's PASS) at that SHA, beside its check-full receipt"
+             if mode == "ci-outage" else "the non-force preflight and the --force run")
     releases = ""
     if mode == "gate":
         after = "the refused call, unchanged"

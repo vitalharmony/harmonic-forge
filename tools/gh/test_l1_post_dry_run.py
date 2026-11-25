@@ -54,6 +54,11 @@ class Harness(unittest.TestCase):
         labels = mock.patch.object(L, "issue_labels", return_value=set())
         labels.start()
         self.addCleanup(labels.stop)
+        # harmonic-forge#894 step 4: the pre-merge AE's CI read has its own
+        # tests (test_l1_post_ae_ci.py); never a live gh read here.
+        ae_ci = mock.patch.object(L, "_ae_ci_gate", return_value="ci-green")
+        ae_ci.start()
+        self.addCleanup(ae_ci.stop)
         os.environ.pop("L1_POST_ENTRY", None)
         self.overlap = False
         self.pr_open = True

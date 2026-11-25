@@ -29,7 +29,7 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 |---|---|---|---|
 | `board_fields.py` | set | shared-state | gap: writes board fields with no dry run |
 | `check_lane3_ready.py` | --mark-active | shared-state | precheck: `default` |
-| `force_grant.py` | record | external-publish | guard (operator grant): FORCE line: refuses with no operator-typed grant (tools/gh/force_grant.py:170-172) |
+| `force_grant.py` | record | external-publish | guard (operator grant): FORCE line, any mode (plain, reforge, route, cluster, gate, ci-outage <sha>; harmonic-forge#894): refuses with no operator-typed grant (tools/gh/force_grant.py:170-172) |
 | `gh-as` | --init <account> | shared-state | gap: interactive operator login into the account's config dir |
 | `gh_issue.py` | create | external-publish | gap: no dry run |
 | `gh_shim` | wrapper | shared-state | gap: spends the operator's one-shot scan override on the next call |

@@ -1113,9 +1113,34 @@ def open_prs_containing(repo: str, sha: str, run=None) -> list[dict] | None:
     return [p for p in pulls if str(p.get("state", "")).lower() == "open"]
 
 
+def ci_outage_release(repo: str, issue: int | None, source_repo: str, sha: str) -> str | None:
+    """harmonic-forge#894 step 4/5: why a CI outage is released for `sha`, or
+    None. Both must hold: a usable `ci-outage` FORCE grant for `repo#issue`
+    bound to the full `sha` (force_grant.require, never consumed here: it is
+    bound to one SHA and expires), and a `check-full` receipt for `sha` in
+    `source_repo` (the substitute evidence). Any failure is None: fail closed."""
+    if issue is None or len(sha) != 40:
+        return None
+    try:
+        tools = Path(__file__).resolve().parents[1]
+        for sub in ("gh", "hooks"):
+            if str(tools / sub) not in sys.path:
+                sys.path.insert(0, str(tools / sub))
+        import check_receipt  # noqa: PLC0415
+        import force_grant  # noqa: PLC0415
+        grant = force_grant.require(repo, issue, sha, mode="ci-outage")
+        data = check_receipt.lookup(source_repo.replace("/", "__").lower(), sha)
+    except Exception:  # noqa: BLE001 - GrantRefused or an unreadable store: no release
+        return None
+    if not data or data.get("sha") != sha or data.get("source") != check_receipt.CHECK_FULL_SOURCE:
+        return None
+    return (f"ci-outage grant {grant.get('comment_url') or '(recorded)'} with a check-full "
+            f"receipt for {sha[:12]}")
+
+
 def check_gate_result(
     repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
-    post_merge_readonly: str | None = None,
+    post_merge_readonly: str | None = None, issue: int | None = None,
 ) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
@@ -1221,6 +1246,10 @@ def check_gate_result(
             "A green local gate is necessary and not sufficient — Lane 3 runs on "
             "the operator's machine, which is not the environment the merge has "
             "to survive. Post FAIL, or fix the failure and re-gate.")
+    # harmonic-forge#894 step 5 (pitch amendment 1): a ci-outage grant for
+    # exactly this SHA, beside its check-full receipt, releases a non-red PASS.
+    if issue is not None and (released := ci_outage_release(repo, issue, repo, sha)):
+        return True, f"[GATE] CI {state} for {sha[:8]}; released by {released}"
     # pending / absent / unknown all land here, and all mean the same thing:
     # the second signal has not been read yet. AC3 says waiting is the correct
     # behaviour, not a judgment call -- UNLESS no PR (open or closed) exists

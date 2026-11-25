@@ -3317,6 +3317,51 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
          "— the full local check was not started")
 
 
+def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None) -> str:
+    """harmonic-forge#894 step 4: a pre-merge AE posts only on green CI.
+
+    Returns the check name recorded in the footer. `pending` waits
+    (`_carry_forward.WAIT_EXIT`, `WAIT: CI is pending on <sha>`). Every other
+    non-green state refuses, and so does an unresolvable source repo, an
+    unreadable required set and a reader exception: fail closed. Two releases:
+    the no-PR acknowledgment, on `absent` or all-skipped only (as
+    `check_gate_result`'s no-PR branch; `require_open_pr` has already shown no
+    PR exists), and a `ci-outage` grant for exactly this SHA beside its
+    `check-full` receipt. `grant_on_main` and `merged_readonly` AEs never reach
+    here (C2). Every CI read passes the S0 reader (C3)."""
+    source_repo = _cwd_repo_from_git(None)
+    if not source_repo:
+        fail(f"cannot resolve the source repo, so CI on {sha[:12]} cannot be read; "
+             "a pre-merge AE needs green CI (harmonic-forge#894)")
+    try:
+        reader = _ci_reader(source_repo)
+        required = gate_ci.required_checks(source_repo, bare_404_ok=True)
+        if required is None:
+            state, detail = "unknown", f"cannot read {source_repo}'s required checks"
+        else:
+            state, detail = gate_ci.authorizing_conclusion(source_repo, sha, required, reader=reader)
+            if state != "green" and ack_no_pr_required is not None and (
+                    state == "absent"
+                    or (state == "unknown"
+                        and gate_ci._required_checks_all_skipped(source_repo, sha, required,
+                                                                 reader=reader))):
+                return "ci-no-pr-acknowledged"
+    except Exception as exc:  # noqa: BLE001 - fail closed
+        state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
+    if state == "green":
+        return "ci-green"
+    if state != "red" and (released := gate_ci.ci_outage_release(repo, issue, source_repo, sha)):
+        print(f"[l1-post] CI is {state} on {sha[:12]}; released by {released}")
+        return "ci-outage-grant"
+    if state == "pending":
+        print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
+              file=sys.stderr)
+        raise SystemExit(_carry_forward.WAIT_EXIT)
+    fail(f"CI is {state} on {sha[:12]} ({detail}); a pre-merge AE needs green CI "
+         "(harmonic-forge#894). A CI outage is released only by the operator's "
+         f"`FORCE <KEY> ci-outage {sha}: <reason>` beside a check-full receipt for it")
+
+
 def _refuse_script_contract(script: str, sha: str) -> None:
     """harmonic-forge#1026: read the named script at the attested SHA and refuse
     the AE, before anything posts, when it breaks the production runner's
@@ -3499,6 +3544,8 @@ def _post_kind(
             repo, branch, ack_no_pr_required=ack_no_pr_required,
             open_missing=(kind == "ready-for-l3"), issue=issue, sha=sha)
         checks += pr_check_names
+        if kind == "ae":  # harmonic-forge#894 step 4: the pre-merge AE needs green CI
+            checks.append(_ae_ci_gate(repo, issue, sha, ack_no_pr_required))
     # Two distinct override classes, two distinct headings -- a reader
     # auditing the thread for one kind of waiver must not find the other's
     # warning filed under a heading that names something that never
@@ -3809,6 +3856,8 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
                     return
                 raise
         steps.append(pr)
+        if kind == "ae":  # harmonic-forge#894 step 4, the same decision as the real post
+            steps.append(lambda: _ae_ci_gate(repo, issue, sha, ack_no_pr_required))
     return steps
 
 
