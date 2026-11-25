@@ -11,8 +11,8 @@ The pflag-faithful parse and decision of one gh close, merge or api call, agains
 - **Owner:** tools/hooks/gh_argv.py: parse, decide, GATED_ROOTS, ArgvError
 - **Modules:** `tools/hooks/gh_argv.py`, `tools/hooks/gh_flag_table.json`, `tools/hooks/gen_gh_flag_table.py`
 - **Authority:** `tools/hooks/gh_flag_table.json`
-- **Example caller:** `tools/hooks/close_gate.py:89`
+- **Example caller:** `tools/hooks/close_gate.py:90`
 - **Guard and tests:** `tools/hooks/test_gh_argv.py`
-- **Exceptions:** none yet; batch_auth, block_data_migration_close and block_missing_preclose_inspection still keep private recognizers (harmonic-forge#1496 to #1500)
+- **Exceptions:** none yet; batch_auth and block_missing_preclose_inspection still keep private recognizers (harmonic-forge#1496 to #1500)
 - **Scan roots:** `tools/hooks`
 - **Blind spots:** text hooks tokenize a command string with shell_parse, which this contract does not cover; the index checks that example_caller's line exists, not that it still holds a call

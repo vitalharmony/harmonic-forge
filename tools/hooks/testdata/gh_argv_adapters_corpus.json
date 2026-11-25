@@ -1032,7 +1032,7 @@
  "migration": {
   "echo gh issue close 1": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
    [
     "not-a-close",
     "refuse",
@@ -1040,13 +1040,121 @@
     []
    ]
   ],
-  "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=open": [
+  "grep -rn 'gh issue close' tools/": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
    [
     "not-a-close",
     "refuse",
     [],
+    []
+   ]
+  ],
+  "git commit -m 'route gh api reads'": [
+   "intended",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "git grep -n 'gh api'": [
+   "intended",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "which gh": [
+   "intended",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "$PYTHON -m pytest": [
+   "intended",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "bash -c 'gh issue close 849'": [
+   "intended",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "G=gh; $G issue close 849": [
+   "intended",
+   "unchanged from old reader (not-a-close in the text hook); the shim is the authority, close_gate.py",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close 849 --bogus": [
+   "intended",
+   "verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh -R vitalharmony/hrse issue close 849": [
+   "intended",
+   "verdict unchanged; the hook reports an undecided literal gh call as the empty-number target it denies before any read, where the adapter names none",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh issue close 849 -R vitalharmony/hrse --comment 'checked with gh api'": [
+   "intended",
+   "verdict unchanged; the text hook binds a literal gh call whose own arguments mention gh, as the old reader did, where gh_segment's containment names no target (never looser than main)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "vitalharmony/hrse",
+      "849"
+     ]
+    ],
     []
    ]
   ]
