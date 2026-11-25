@@ -253,6 +253,16 @@ class FooterNamesTheCheck(unittest.TestCase):
             self.assertIn("ci-snapshot-state=pending;", marker)
             self.assertEqual(read.call_args.kwargs["reader"], "R")
 
+    def test_an_audit_sampled_post_says_so_in_the_footer(self):
+        with mock.patch.object(L, "run", side_effect=self._fake_run), \
+             mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "x")):
+            sampled = L.pr_issue_marker("o/r", 1, "br", SHA, local_check_mode="full",
+                                        audit_sampled=True)
+            plain = L.pr_issue_marker("o/r", 1, "br", SHA, local_check_mode="full")
+        self.assertIn(" local-check=full; local-check-audit=sampled;", sampled)
+        self.assertNotIn("local-check-audit", plain)
+
     def test_without_a_mode_the_marker_is_unchanged(self):
         with mock.patch.object(L, "run", side_effect=self._fake_run), \
              mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \

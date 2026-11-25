@@ -2540,7 +2540,7 @@ def _open_pr(cwd_repo: str, repo: str, branch: str, issue: int, sha: str,
 def pr_issue_marker(
     repo: str, issue: int, branch: str, sha: str,
     *, local_check: tuple[str, str] | None = None, snapshot_out: dict | None = None,
-    local_check_mode: str | None = None,
+    local_check_mode: str | None = None, audit_sampled: bool = False,
 ) -> str:
     """Versioned, pre-merge PR↔issue provenance for every onboarded repo.
 
@@ -2597,6 +2597,8 @@ def pr_issue_marker(
                       f"ci-snapshot-at={datetime.now(UTC).isoformat()};")
     if local_check_mode is not None:  # harmonic-forge#894 step 3: which check ran
         timing_fields += f" local-check={local_check_mode};"
+        if audit_sampled:  # step 6: the full check ran because this post was sampled
+            timing_fields += " local-check-audit=sampled;"
     # F745 Lane 3 gate FAIL: `head-sha={sha}{timing_fields}` omitted the `;`
     # separating `head-sha`'s value from the next field -- `timing_fields`
     # starts with a space, not `;`, so `head-sha=<sha> local-check-start=...`
@@ -3566,7 +3568,8 @@ def _post_kind(
         body = body.rstrip("\n") + "\n\n### PR opened by l1-post\n" + "\n".join(pr_opened) + "\n"
     if kind == "ready-for-l3":
         marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing,
-                                 snapshot_out=attempt, local_check_mode=local_check_mode)
+                                 snapshot_out=attempt, local_check_mode=local_check_mode,
+                                 audit_sampled=audit)
         body = body.rstrip("\n") + "\n\n" + marker + "\n"
     snapshot_route = None
     if kind == "handoff":

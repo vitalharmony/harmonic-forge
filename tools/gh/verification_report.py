@@ -201,8 +201,9 @@ def build(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
     lines = ["| Issue | Gates | Measured | Cases ac/existing/live | Fails ac/existing/live | "
-             "ready-for-l3 attempts | Median local check ms | CI green, local red |",
-             "|---|---|---|---|---|---|---|---|"]
+             "ready-for-l3 attempts | Median local check ms | CI green, local red | "
+             "Check path local/full/audit |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for (repo, issue), row in sorted(report["issues"].items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         measured = [g["attrs"] for g in row["gates"] if bucket(g) == "measured"]
         cases = "/".join(str(sum(int(a.get(f"case_{c}") or 0) for a in measured)) for c in CLASSES)
@@ -212,11 +213,17 @@ def render(report: dict[str, Any], skipped: Optional[list[str]] = None) -> str:
             attempts = str(len(att))
             local = _fmt(_median(a["local_check_ms"] for a in att if isinstance(a.get("local_check_ms"), int)))
             red = str(sum(1 for a in att if a.get("ci_green_local_red")))
+            # harmonic-forge#894 step 6: which check path each attempt took; an
+            # attempt recorded before #894 has no field and counts as full.
+            paths = "/".join(str(n) for n in (
+                sum(1 for a in att if a.get("check_path") == "local"),
+                sum(1 for a in att if a.get("check_path", "full") == "full"),
+                sum(1 for a in att if a.get("audit_sampled"))))
         else:
-            attempts = local = red = "missing input"
+            attempts = local = red = paths = "missing input"
         lines.append(f"| {repo}#{issue} | {len(row['gates'])} | {len(measured)} | "
                      f"{cases if measured else 'n/a'} | {fails if measured else 'n/a'} | "
-                     f"{attempts} | {local} | {red} |")
+                     f"{attempts} | {local} | {red} | {paths} |")
     b, agg = report["buckets"], report["aggregate"]
     lines += ["", "Buckets (gates, except missing input, which counts issues):",
               *(f"- {name}: {b[name]}" for name in BUCKETS),

@@ -606,6 +606,16 @@ class ReportReadsTheStamp(unittest.TestCase):
         self.assertIn("| 2 | 2,000 | 1 |", row)
         self.assertEqual(VR.build([self.GATE])["buckets"]["missing input"], 1)
 
+    def test_the_check_path_column_counts_local_full_and_audit(self):
+        """harmonic-forge#894 step 6; a pre-#894 attempt (no field) counts as full."""
+        attempts = [{"event_type": "ready-for-l3.attempt", "repo": "o/r", "issue": 2, "attrs": a}
+                    for a in ({"check_path": "local"}, {"check_path": "local"},
+                              {"check_path": "full", "audit_sampled": True}, {})]
+        row = [line for line in VR.render(VR.build([self.GATE, *attempts])).splitlines()
+               if line.startswith("| o/r#2")][0]
+        self.assertTrue(row.endswith("| 2/2/1 |"), row)
+        self.assertIn("Check path local/full/audit", VR.render(VR.build([self.GATE])))
+
     def test_unreadable_store_lines_are_reported(self):
         with tempfile.TemporaryDirectory() as store:
             part = Path(store) / "events" / "a" / "o" / "gh-thread" / "2026-10.jsonl"
