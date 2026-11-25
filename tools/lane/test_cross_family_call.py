@@ -581,6 +581,10 @@ DECISION_TABLE = [
     ("V01", "each_line_is_parsed_alone", "codex",
      stream("not json at all", tf("T"), '{"type":"turn.failed","error":{"mess'), "T"),
     ("V02", "non_object_values_are_skipped", "codex", stream("[1]", '"s"', "7", tf("T")), "T"),
+    # V01 as amended (operator, 2026-11-25): a line counts when jq accepts it.
+    # jq reads a leading-zero number that strict JSON rejects; stated residual.
+    ("V01j", "a_line_jq_accepts_is_an_event", "codex",
+     stream(tf("T"), '{"type":"turn.failed","error":"later","x":01}'), "later"),
     ("V04", "nul_and_trailing_newline_at_the_cap_survive", "codex",
      stream(cx_error(_CAPPED)), _CAPPED[:4000]),
     ("V05", "the_cap_keeps_the_first_4000_code_points", "codex",

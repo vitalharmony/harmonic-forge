@@ -418,7 +418,11 @@ emit_envelope() {
     # twice). ONE program reads the native file and emits the whole envelope,
     # so the message never passes through a shell variable or argv (#466).
     # The selection contract is the decision table posted on the issue: each
-    # line is parsed on its own; the LATEST event of a type is chosen first and
+    # line is parsed on its own, and a line is an event when jq's parser
+    # accepts it (V01 as amended, operator decision 2026-11-25). jq is more
+    # lenient than strict JSON (it reads `01` as 1), so a line that is not
+    # strict JSON but that jq accepts is used: a stated residual, since neither
+    # reviewer CLI emits such lines. The LATEST event of a type is chosen first and
     # its message extracted second, so an older event never stands in; a
     # message is usable only as a non-empty string; the first 4000 code points
     # are kept. Codex: last `turn.failed` (`.error.message`, else `.error`),
