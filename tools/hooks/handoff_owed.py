@@ -241,7 +241,10 @@ def discharge_command(repo: str, issue: int, route: dict | None = None) -> str:
     for a parking filing (harmonic-forge#1382 C2), else the handoff post."""
     if isinstance(route, dict) and route.get("kind") == "deferral":
         import shlex  # noqa: PLC0415
-        return (f"mise run gh-new-issue -- --repo {repo} --defer-existing {issue} "
+        # The forge script directly: mise's gh-new-issue pins --repo to its
+        # own checkout's GH_REPO, and the issue may be another repo's.
+        return (f"python3 \"${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/gh_issue.py\" "
+                f"--repo {repo} --defer-existing {issue} "
                 f"--deferral-trigger {shlex.quote(str(route.get('trigger') or '<trigger>'))} "
                 f"--deferral-owner {shlex.quote(str(route.get('owner') or '<owner>'))}")
     return (f"mise run l1-post -- --repo {repo} --issue {issue} "
