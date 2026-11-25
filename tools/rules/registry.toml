@@ -2501,7 +2501,7 @@ file = "3-lane-protocol.md"
 anchor = "Long waits run in the background"
 statement = "A step expected to take over about two minutes runs in the background; meanwhile the lane does only read-only work and lane posts on other items, never a git write in any checkout; the waiting task resumes first when its wait completes, and a step whose output is a post ends when the post lands. Recovery is the lane's own task entry, never a belt re-offer (at once to a new session, otherwise every 4 hours), which Lane 1's own waits do not have (QUEUE_KINDS[l1] is plan/spec/a non-PASS, non-BLOCKED gate-result, from l2/l3 posters). A Codex lane never ends a turn with an unpolled background session."
 text_sha = "da916db67042dc99"
-hooks = []
+hooks = ["tools/hooks/worktree_busy_guard.py"]
 
 [[rule]]
 id = "R-0374"
