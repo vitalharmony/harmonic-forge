@@ -571,6 +571,38 @@ class TestF1556Residuals(ScratchRepo):
             with self.subTest(text=text):
                 self.assert_unresolved_call(text + call + "\n", call)
 
+    def assert_loose_alias_call(self, binding):
+        """A loader alias bound once by `binding` is unresolved at the call
+        after it, not only on the binding line (operator widening of
+        harmonic-forge#1556 to residual d, 2026-11-25)."""
+        call = f'load("{EMIT}")'
+        self.assert_unresolved_call(f"import runpy\n{binding}{call}\n", call)
+
+    def test_walrus_alias_call_is_unresolved(self):
+        self.assert_loose_alias_call("if (load := runpy.run_path):\n    pass\n")
+
+    def test_for_target_alias_call_is_unresolved(self):
+        self.assert_loose_alias_call("for load in (runpy.run_path,):\n    pass\n")
+
+    def test_with_target_alias_call_is_unresolved(self):
+        self.assert_loose_alias_call("from contextlib import nullcontext\n"
+                                     "with nullcontext(runpy.run_path) as load:\n    pass\n")
+
+    def test_tuple_unpacking_alias_call_is_unresolved(self):
+        for binding in ("load, x = runpy.run_path, 1\n", "[x, (load, y)] = 1, (runpy.run_path, 2)\n"):
+            with self.subTest(binding=binding):
+                self.assert_loose_alias_call(binding)
+
+    def test_loose_bind_of_a_loader_call_result_stays_clean(self):
+        """A loader's return value is not a loader: `(spec := spec_from_file_location(...))`
+        taints nothing, so a later `spec.loader` use is no row."""
+        rel = self.plant("py", "from importlib.util import spec_from_file_location\n"
+                         f'if (spec := spec_from_file_location("m", "{EMIT}")):\n'
+                         "    print(spec.name)\n")
+        out = self.check()
+        self.assertIn(f"{rel} imports operator file tools/telemetry/emit.py", out)
+        self.assertNotIn("print(spec.name)", out)
+
     def test_loader_name_rebinding_is_unresolved(self):
         for text, call in (
                 ("import runpy\nfrom importlib import import_module\n"

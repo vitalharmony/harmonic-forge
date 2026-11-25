@@ -45,6 +45,12 @@ form, and that binding is a bare reference to one loader or exact alias
 (chains resolve by a bounded fixpoint); any other loader-bound name is
 ambiguous, and each use of it, a call included, is an `import-unresolved`
 row. A loader's own name rebound that way is ambiguous too, never remapped.
+A name bound by a walrus, a tuple or list unpacking, a for, comprehension or
+with target, or a match capture is never an exact alias: when the bound
+value (the iterable, context expression or subject; a call's arguments, not
+its callee) references a loader or ambiguous name, every target it binds is
+ambiguous, so a call through it is a row at every use, not only on the
+binding line.
 
 In shell, a backslash-newline is removed with nothing inserted, as bash
 does. Each joined line is read by two recognizers: the raw-text regexes
@@ -65,11 +71,7 @@ Accepted residuals:
 - (c) A loader bound or looked up by string key is not seen
   (`getattr(importlib, "import_module")(...)`, `globals()['load'] = ...`,
   `setattr(...)`), and an alias rebound that way stays resolved.
-- (d) A loader bound exactly once by a non-assignment form (walrus
-  `(load := runpy.run_path)`, `for load in (runpy.run_path,)`, `with ... as
-  load`, tuple unpacking `load, x = runpy.run_path, 1`) gives a row on the
-  binding line only; calls through it never raise a count.
-(b), (c) and (d) are out of harmonic-forge#1556's scope by Lane 1's decision.
+(b) and (c) are out of harmonic-forge#1556's scope by Lane 1's decision.
 
 Over-approximated edges fail closed: the scan can emit an `import` edge no
 runtime load makes (`from opentelemetry.telemetry import api` ->
@@ -434,6 +436,63 @@ def _value_refs(value: ast.AST) -> list[str]:
     return [name] if name else []
 
 
+def _loose_refs(value: ast.AST) -> list[str]:
+    """Every name referenced anywhere in the value of a non-assignment
+    binding, a call's arguments included but never its callee: the value of
+    `nullcontext(runpy.run_path)` is the loader, the value of
+    `spec_from_file_location(...)` is not (harmonic-forge#1556, operator
+    widening 2026-11-25)."""
+    refs: list[str] = []
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        name = _ref_name(node)
+        if name:
+            refs.append(name)
+        if isinstance(node, ast.Call):
+            stack.extend(node.args)
+            stack.extend(k.value for k in node.keywords)
+        else:
+            stack.extend(ast.iter_child_nodes(node))
+    return refs
+
+
+def _store_names(target: ast.AST) -> list[str]:
+    """Each name a binding target stores (`a`, `a, (b, *c)`)."""
+    return [n.id for n in ast.walk(target)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)]
+
+
+def _loose_binds(tree: ast.AST) -> list[tuple[str, ast.AST]]:
+    """(name, value) for each binding that is not a plain `name = value`: a
+    walrus, a tuple or list unpacking target, a for or comprehension target
+    (value: the iterable), a with target (value: the context expression) and
+    a match capture (value: the subject). Such a name is never an exact
+    alias; one bound to a loader is ambiguous (harmonic-forge#1556, operator
+    widening 2026-11-25)."""
+    loose: list[tuple[str, ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.NamedExpr):
+            loose.append((node.target.id, node.value))
+        elif isinstance(node, ast.Assign):
+            loose.extend((n, node.value) for t in node.targets
+                         if isinstance(t, (ast.Tuple, ast.List)) for n in _store_names(t))
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            loose.extend((n, node.iter) for n in _store_names(node.target))
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            loose.extend((n, item.context_expr) for item in node.items
+                         if item.optional_vars is not None
+                         for n in _store_names(item.optional_vars))
+        elif isinstance(node, ast.Match):
+            for case in node.cases:
+                for p in ast.walk(case.pattern):
+                    if isinstance(p, (ast.MatchAs, ast.MatchStar)) and p.name:
+                        loose.append((p.name, node.subject))
+                    elif isinstance(p, ast.MatchMapping) and p.rest:
+                        loose.append((p.rest, node.subject))
+    return loose
+
+
 def _loader_aliases(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
     """(each name provably bound to exactly one loader -> that loader; the
     names bound to a loader in any other way). A name is an exact alias only
@@ -441,7 +500,9 @@ def _loader_aliases(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
     reference to one loader or exact alias; chains resolve by a bounded
     fixpoint. Every other loader-bound name is ambiguous: unresolved at every
     use, a call through it included (harmonic-forge#1556 form 5). A name in
-    LOADER_NAMES is never remapped, and can itself be ambiguous."""
+    LOADER_NAMES is never remapped, and can itself be ambiguous. A target of a
+    `_loose_binds` binding whose value references a loader or ambiguous name
+    is ambiguous too (harmonic-forge#1556, operator widening 2026-11-25)."""
     stores = _binding_counts(tree)
     loaders = {n: n for n in LOADER_NAMES}
     ambiguous: set[str] = set()
@@ -460,7 +521,8 @@ def _loader_aliases(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
             for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
                 if isinstance(t, ast.Name):
                     binds.append((t.id, node.value))
-    for _ in range(len(binds) + 1):
+    loose = [(name, _loose_refs(value)) for name, value in _loose_binds(tree)]
+    for _ in range(len(binds) + len(loose) + 1):
         changed = False
         for name, value in binds:
             refs = _value_refs(value)
@@ -476,6 +538,11 @@ def _loader_aliases(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
                     loaders[name] = target
                     changed = True
             elif name not in ambiguous:
+                ambiguous.add(name)
+                loaders.pop(name, None)
+                changed = True
+        for name, refs in loose:
+            if name not in ambiguous and any(r in loaders or r in ambiguous for r in refs):
                 ambiguous.add(name)
                 loaders.pop(name, None)
                 changed = True
