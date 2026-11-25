@@ -60,8 +60,11 @@ _WIRING_LOCATIONS = {
     # passes as `--settings`, in any project. Read from THIS checkout.
     "forge-lane-set": _PLATFORM_ROOT / "tools" / "lane" / "lane_hooks.json",
     # harmonic-forge#1525: the operator overlay merged into that set when
-    # instance.toml declares `lane_hook_overlay = "operator"`.
-    "forge-lane-overlay": _PLATFORM_ROOT / "tools" / "lane" / "lane_hooks.operator.json",
+    # instance.toml declares `lane_hook_overlay = "operator"`. This scope
+    # reports where the wiring is DECLARED, read statically; with the overlay
+    # declared `none` it is not in effect (a stated residual, operator
+    # decision 2026-11-25: no instance.toml read here).
+    "forge-lane-overlay (if declared)": _PLATFORM_ROOT / "tools" / "lane" / "lane_hooks.operator.json",
 }
 
 _SCRIPT_RE = re.compile(r"([\w./-]+\.py)")
