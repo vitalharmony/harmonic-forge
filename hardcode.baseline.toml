@@ -1228,6 +1228,18 @@ count = 1
 
 [[finding]]
 rule = "import-unresolved"
+path = "tools/lane/cross_family_call.sh"
+text = "if [ -s \"$unfenced_file\" ] && jq -c '.' \"$unfenced_file\" >\"$report_file\" 2>/dev/null && jq -e 'type == \"object\" and (.findings | type == \"array\")' \"$report_file\" >/dev/null 2>&1; then"
+count = 1
+
+[[finding]]
+rule = "import-unresolved"
+path = "tools/lane/cross_family_call.sh"
+text = "jq -s '.' \"$native_file\" >\"$native_norm\" 2>/dev/null || printf 'null\\n' >\"$native_norm\""
+count = 2
+
+[[finding]]
+rule = "import-unresolved"
 path = "tools/precheck/replay_harness.py"
 text = "module = load_module(layer[\"module\"]) if layer[\"module\"] is not None else None"
 count = 1

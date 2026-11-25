@@ -37,6 +37,48 @@ is a tracked directory, and an import of a package directory under `tools/`
 whose files are operator-side is an edge to that directory. A module loaded by `spec_from_file_location`
 resolves from a literal path argument; a computed path is out of scope and
 counted in the output (`--list-dynamic` names each one).
+
+harmonic-forge#1556. Every dotted part of a `from` module, and every name a
+`from` import binds, may be the operator package, as for `import`. A loader
+alias resolves only when its name is bound exactly once in the file, by any
+form, and that binding is a bare reference to one loader or exact alias
+(chains resolve by a bounded fixpoint); any other loader-bound name is
+ambiguous, and each use of it, a call included, is an `import-unresolved`
+row. A loader's own name rebound that way is ambiguous too, never remapped.
+
+In shell, a backslash-newline is removed with nothing inserted, as bash
+does. Each joined line is read by two recognizers: the raw-text regexes
+below, unchanged, and a second one at every shell word start that compares
+the word after quote and backslash removal with `source`, `.` and `eval`.
+Their loads are a multiset union, so a load either sees counts once and an
+eval no longer hides a `source` on its line.
+
+Accepted residuals:
+- (a) The union counts each tail as the larger of the two recognizers'
+  counts, and the unresolved count as their max. A line where the two see
+  different sites with the same target undercounts. Unresolved rows are
+  keyed by line text, so this matters only for identical repeated lines.
+- (b) A command word produced by an expansion is not seen: a variable
+  (`S=source; $S file`), ANSI-C quoting (`$'\\56' file`,
+  `so$'\\x75'rce file`) or brace expansion (`{.,} file`). Only quote-removal
+  and backslash spellings count.
+- (c) A loader bound or looked up by string key is not seen
+  (`getattr(importlib, "import_module")(...)`, `globals()['load'] = ...`,
+  `setattr(...)`), and an alias rebound that way stays resolved.
+- (d) A loader bound exactly once by a non-assignment form (walrus
+  `(load := runpy.run_path)`, `for load in (runpy.run_path,)`, `with ... as
+  load`, tuple unpacking `load, x = runpy.run_path, 1`) gives a row on the
+  binding line only; calls through it never raise a count.
+(b), (c) and (d) are out of harmonic-forge#1556's scope by Lane 1's decision.
+
+Over-approximated edges fail closed: the scan can emit an `import` edge no
+runtime load makes (`from opentelemetry.telemetry import api` ->
+`tools/telemetry/`; `jq '.' ../telemetry/env.sh` -> `tools/telemetry/env.sh`).
+Such an edge only adds a row; there is no "no false edges" guarantee.
+
+A new quoted `.` argument in scanned core shell (`jq -c '.' "$f"`,
+`jq "." "$f"`) is a new `import-unresolved` row by design: `--check` fails
+until its author adds that row to the baseline by hand.
 """
 from __future__ import annotations
 
@@ -344,6 +386,104 @@ PATH_LOADERS = {"spec_from_file_location": 1, "run_path": 0, "load_source": 1,
                 "SourceFileLoader": 1}
 
 
+def _binding_counts(tree: ast.AST) -> Counter:
+    """How many times each name is bound in the file, by any form: a `Store`
+    name (assignment, augmented, walrus, for/with/comprehension target), a
+    parameter, an import alias, a def or class, an `except ... as`, a match
+    capture and a type parameter (harmonic-forge#1556)."""
+    stores: Counter = Counter()
+    for node in ast.walk(tree):
+        names: list[str | None] = []
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.append(node.id)
+        elif isinstance(node, ast.arg):
+            names.append(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.extend(a.asname or a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+        elif isinstance(node, ast.ExceptHandler):
+            names.append(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar,
+                               ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
+            names.append(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            names.append(node.rest)
+        stores.update(n for n in names if n)
+    return stores
+
+
+def _ref_name(node: ast.AST) -> str | None:
+    """The name a bare reference names: `x` or the attribute of `a.x`."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _value_refs(value: ast.AST) -> list[str]:
+    """The names in reference position of an assigned value: the value
+    itself, each `IfExp` branch and each `BoolOp` operand -- never anything
+    inside a call, so `spec = spec_from_file_location(...)` taints nothing."""
+    if isinstance(value, ast.IfExp):
+        return _value_refs(value.body) + _value_refs(value.orelse)
+    if isinstance(value, ast.BoolOp):
+        return [r for v in value.values for r in _value_refs(v)]
+    name = _ref_name(value)
+    return [name] if name else []
+
+
+def _loader_aliases(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
+    """(each name provably bound to exactly one loader -> that loader; the
+    names bound to a loader in any other way). A name is an exact alias only
+    when it is bound once in the whole file and that binding is a bare
+    reference to one loader or exact alias; chains resolve by a bounded
+    fixpoint. Every other loader-bound name is ambiguous: unresolved at every
+    use, a call through it included (harmonic-forge#1556 form 5). A name in
+    LOADER_NAMES is never remapped, and can itself be ambiguous."""
+    stores = _binding_counts(tree)
+    loaders = {n: n for n in LOADER_NAMES}
+    ambiguous: set[str] = set()
+    binds: list[tuple[str, ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            # `from importlib import import_module as load` binds a loader
+            # under another name (post-verdict cross-family finding 2).
+            for a in node.names:
+                if a.name in LOADER_NAMES and a.asname and a.asname != a.name:
+                    if stores[a.asname] == 1 and a.asname not in LOADER_NAMES:
+                        loaders[a.asname] = a.name
+                    else:
+                        ambiguous.add(a.asname)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                if isinstance(t, ast.Name):
+                    binds.append((t.id, node.value))
+    for _ in range(len(binds) + 1):
+        changed = False
+        for name, value in binds:
+            refs = _value_refs(value)
+            hit = {loaders[r] for r in refs if r in loaders and r not in ambiguous}
+            amb_ref = any(r in ambiguous for r in refs)
+            if not hit and not amb_ref:
+                continue
+            exact = (_ref_name(value) is not None and len(hit) == 1 and not amb_ref
+                     and stores[name] == 1)
+            if exact:
+                target = next(iter(hit))
+                if name not in LOADER_NAMES and loaders.get(name) != target:
+                    loaders[name] = target
+                    changed = True
+            elif name not in ambiguous:
+                ambiguous.add(name)
+                loaders.pop(name, None)
+                changed = True
+        if not changed:
+            break
+    return loaders, ambiguous
+
+
 def python_targets(source: str, dirs: frozenset[str] = frozenset()
                    ) -> tuple[list[list[str]], list[int]]:
     """(one candidate group per import: module names, `file:` basenames or
@@ -354,21 +494,7 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
     (harmonic-forge#1524 two-pass sticky-wicket PATCH)."""
     tree = ast.parse(source)
     assigns = _assigns(tree)
-    # `from importlib import import_module as load` binds a loader under
-    # another name (post-verdict cross-family finding 2).
-    loaders = {n: n for n in LOADER_NAMES}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                if a.name in loaders and a.asname:
-                    loaders[a.asname] = a.name
-        elif (isinstance(node, (ast.Assign, ast.AnnAssign))
-              and isinstance(node.value, (ast.Name, ast.Attribute))
-              and (node.value.id if isinstance(node.value, ast.Name) else node.value.attr) in loaders):
-            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
-                if isinstance(t, ast.Name):
-                    loaders[t.id] = loaders[node.value.id if isinstance(node.value, ast.Name)
-                                            else node.value.attr]
+    loaders, ambiguous = _loader_aliases(tree)
     found: list[list[str]] = []
     unresolved: list[int] = []
     resolved_funcs: set[int] = set()
@@ -382,13 +508,20 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
         elif isinstance(node, ast.ImportFrom):
             parts = node.module.split(".") if node.module else []
             if parts:
-                found.append([parts[-1], "pkg:" + parts[0]])
+                # every dotted part may be the operator package
+                # (`from tools.telemetry import *`, harmonic-forge#1556 form 4)
+                found.append([parts[-1]] + ["pkg:" + part for part in parts])
             if node.level or (parts and parts[-1] in dirs):
-                found.extend([a.name] for a in node.names)
+                # an imported name may itself be the package (`from tools import telemetry`)
+                found.extend([a.name, "pkg:" + a.name] for a in node.names)
         elif isinstance(node, ast.Call):
             fn = node.func
             name = fn.attr if isinstance(fn, ast.Attribute) else (
                 fn.id if isinstance(fn, ast.Name) else "")
+            if isinstance(fn, ast.Name) and name in ambiguous:
+                # Never resolved: an ambiguous LOADER_NAMES name is popped from
+                # `loaders`, so the fallback below would resolve it as itself.
+                continue
             name = loaders.get(name, name) if isinstance(fn, ast.Name) else name
             if name in ("import_module", "__import__", "run_module"):
                 arg = node.args[0] if node.args else None
@@ -413,14 +546,17 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
             continue
         name = (node.id if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
                 else node.attr if isinstance(node, ast.Attribute) else None)
-        if name is not None and (name in LOADER_NAMES or loaders.get(name) in LOADER_NAMES):
+        if name is not None and (name in LOADER_NAMES or loaders.get(name) in LOADER_NAMES
+                                 or (isinstance(node, ast.Name) and name in ambiguous)):
             unresolved.append(node.lineno)
     return found, sorted(unresolved)  # every reference counts, two on a line are two
 
 
 # Operator ruling (a): a `source` or `.` word anywhere on a line is a load
 # (after any separator, keyword, prefix, assignment or quote), resolved by its
-# operand's trailing literal filename. Over-approximate on purpose.
+# operand's trailing literal filename. Over-approximate on purpose. These raw
+# regexes are kept as they are; `CMD_POS_RE` below runs beside them
+# (harmonic-forge#1556), and an eval no longer short-circuits the line.
 SOURCE_CMD_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))(?:source['"]?|\.)\s+(?:--\s+)?""")
 #: A line that evaluates text can load without a visible `source`.
 EVAL_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))eval\s""")
@@ -454,28 +590,93 @@ def _shell_word(text: str, i: int) -> str:
     return "".join(out)
 
 
+#: harmonic-forge#1556: every shell word start -- line start, or after
+#: whitespace, a separator, `(`, `{`, `!`, a backtick, a `case` arm's `)` or an
+#: assignment's `=`. No reserved-word or prefix list: command position is never
+#: decided, so no position can be missed.
+CMD_POS_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`)=]))(?=\S)""")
+
+
+def _operand_tail(word: str) -> str | None:
+    """A sourced operand's trailing literal filename, or None when it has
+    none (empty, or carrying an expansion or glob character)."""
+    word = word.replace('"', "").replace("'", "")
+    tail = word.rstrip("/").rsplit("/", 1)[-1]
+    if tail and not any(c in tail for c in "$()`*?[]{}~"):
+        return tail
+    return None
+
+
+def _raw_sites(text: str) -> tuple[Counter, int]:
+    """(literal tails, unresolved count) from the raw-text regexes: an eval
+    anywhere on the line counts once, and each `SOURCE_CMD_RE` match counts
+    its operand."""
+    tails: Counter = Counter()
+    unres = 1 if EVAL_RE.search(text) else 0
+    for m in SOURCE_CMD_RE.finditer(text):
+        tail = _operand_tail(_shell_word(text, m.end()))
+        if tail:
+            tails[tail] += 1
+        else:
+            unres += 1
+    return tails, unres
+
+
+def _skip_space(text: str, i: int) -> int:
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return i
+
+
+def _command_sites(text: str) -> tuple[Counter, int]:
+    """(literal tails, unresolved count) from every shell word start whose
+    word, after quote and backslash removal, is `source`, `.` or `eval`
+    (`'.'`, `s'ource'`, `'eval'`, harmonic-forge#1556 forms 1 and 2a). A
+    quoted `.` argument (`jq -c '.' "$f"`) reads as a load too, on purpose."""
+    tails: Counter = Counter()
+    unres = 0
+    for m in CMD_POS_RE.finditer(text):
+        word = _shell_word(text, m.end())
+        bare = re.sub(r"""['"\\]""", "", word)
+        if bare == "eval":
+            unres += 1
+        elif bare in ("source", "."):
+            i = _skip_space(text, m.end() + len(word))
+            op = _shell_word(text, i)
+            if op.replace('"', "").replace("'", "") == "--":
+                i = _skip_space(text, i + len(op))
+                op = _shell_word(text, i)
+            if not op.replace('"', "").replace("'", ""):
+                continue  # a `.` with no operand loads nothing
+            tail = _operand_tail(op)
+            if tail:
+                tails[tail] += 1
+            else:
+                unres += 1
+    return tails, unres
+
+
 def shell_targets(lines: list[str]) -> tuple[list[list[str]], list[str]]:
     """(`file:` targets resolved by each sourced operand's trailing literal
-    filename; the lines whose operand has no literal filename)."""
+    filename; the lines whose operand has no literal filename). Both
+    recognizers run on every joined line and their loads are a multiset
+    union, so a load either sees counts once and an eval never hides a
+    `source` on its line (harmonic-forge#1556 form 3)."""
     found: list[list[str]] = []
     unresolved: list[str] = []
     joined: list[str] = []
     for line in lines:  # a continuation joins its next line, so the operand is seen
         if joined and joined[-1].endswith("\\"):
-            joined[-1] = joined[-1][:-1] + " " + line.strip()
+            # bash removes backslash-newline outright: `sou\` + `rce` is `source`
+            joined[-1] = joined[-1][:-1] + line
         else:
             joined.append(line)
     for line in joined:
-        if EVAL_RE.search(line):
-            unresolved.append(line)  # the eval'd text decides what loads
-            continue
-        for m in SOURCE_CMD_RE.finditer(line):
-            word = _shell_word(line, m.end()).replace('"', "").replace("'", "")
-            tail = word.rstrip("/").rsplit("/", 1)[-1]
-            if tail and not any(c in tail for c in "$()`*?[]{}~"):
-                found.append(["file:" + tail])
-            else:
-                unresolved.append(line)
+        raw_t, raw_u = _raw_sites(line)
+        cmd_t, cmd_u = _command_sites(line)
+        tails = raw_t + (cmd_t - raw_t)
+        found.extend(["file:" + t] for t in tails.elements())
+        unresolved.extend([line] * max(raw_u, cmd_u))
     return found, unresolved
 
 

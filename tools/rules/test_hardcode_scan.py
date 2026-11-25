@@ -446,6 +446,142 @@ class TestTwoPassPatch(ScratchRepo):
         self.assertEqual(self.run_scan("--check")[0], 0)
 
 
+ENV = "../telemetry/env.sh"
+EMIT = "../telemetry/emit.py"
+
+
+class TestF1556Residuals(ScratchRepo):
+    """harmonic-forge#1556: the five residual load forms, each an edge or an
+    unresolved row, never clean."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("tools/telemetry/env.sh", "X=1\n")
+        self.write("tools/telemetry/emit.py", "X = 1\n")
+        self.track()
+        self.baseline_now()
+        self.n = 0
+
+    def plant(self, ext, text):
+        """Write `text` to a new tracked core file; its path."""
+        self.n += 1
+        rel = (f"tools/lane/p{self.n}.sh" if ext == "sh" else f"tools/hooks/p{self.n}.py")
+        self.write(rel, ("#!/bin/bash\n" if ext == "sh" else "") + text)
+        self.track()
+        return rel
+
+    def check(self):
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1, out)
+        return out
+
+    def assert_edge(self, ext, text, target):
+        rel = self.plant(ext, text)
+        self.assertIn(f"{rel} imports operator file {target}", self.check())
+
+    def assert_unresolved_call(self, text, call):
+        """`call` is an unresolved row and the file has no import edge."""
+        rel = self.plant("py", text)
+        out = self.check()
+        self.assertIn(f"[import-unresolved] {rel} has a load whose target cannot be "
+                      f"resolved: {call}", out)
+        self.assertNotIn(f"{rel} imports operator file", out)
+
+    def test_quoted_dot_is_an_edge(self):
+        for line in (f"'.' {ENV}", f"FOO=1 '.' {ENV}", f"FOO=1 s'ource' {ENV}",
+                     f"case $x in a) '.' {ENV};; esac"):
+            with self.subTest(line=line):
+                self.assert_edge("sh", line + "\n", "tools/telemetry/env.sh")
+
+    def test_quoted_dot_survives_update(self):
+        """AC2: `--update` cannot ratchet a still-live quoted-dot load out."""
+        rel = self.plant("sh", f". {ENV}\n")
+        self.baseline_now()
+        key = ("import", rel, "tools/telemetry/env.sh")
+        self.assertEqual(self.baseline_rows()[key], 1)
+        self.write(rel, f"#!/bin/bash\n'.' {ENV}\n")
+        rc, out = self.run_scan("--update")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.baseline_rows()[key], 1)
+
+    def test_quoted_eval_is_unresolved(self):
+        rel = self.plant("sh", "'eval' \"$CMD\"\n")
+        self.assertIn(f"[import-unresolved] {rel} has a load whose target cannot be "
+                      "resolved: 'eval' \"$CMD\"", self.check())
+
+    def test_continued_command_word_is_an_edge(self):
+        for text in (f"sou\\\nrce {ENV}\n", f"FOO=1 sou\\\nrce {ENV}\n",
+                     f"case $x in a) sou\\\nrce {ENV};; esac\n", f"FOO=1 '.' \\\n{ENV}\n"):
+            with self.subTest(text=text):
+                self.assert_edge("sh", text, "tools/telemetry/env.sh")
+
+    def test_source_on_eval_line_keeps_its_edge(self):
+        """AC3 pin: the eval line is one unresolved row AND the `source` on it
+        keeps its own import row."""
+        line = f'eval ":"; source {ENV}'
+        rel = self.plant("sh", line + "\n")
+        self.baseline_now()
+        rows = {k: v for k, v in self.baseline_rows().items() if k[1] == rel}
+        self.assertEqual(rows, {("import-unresolved", rel, line): 1,
+                                ("import", rel, "tools/telemetry/env.sh"): 1})
+
+    def test_qualified_from_import_star_is_an_edge(self):
+        for text in ("from tools.telemetry import *\n", "from tools import telemetry\n"):
+            with self.subTest(text=text):
+                self.assert_edge("py", text, "tools/telemetry/")
+
+    def test_chained_alias_call_is_an_edge(self):
+        self.assert_edge("py", "import runpy\nif True:\n    first = runpy.run_path\n"
+                         f'second = first\nsecond("{EMIT}")\n', "tools/telemetry/emit.py")
+
+    def test_rebound_alias_call_is_unresolved(self):
+        self.assert_unresolved_call(
+            "import runpy\nload = runpy.run_module\n"
+            "load = runpy.run_path if use_path else runpy.run_module\n"
+            f'load("{EMIT}")\n', f'load("{EMIT}")')
+
+    def test_import_as_rebinding_is_unresolved(self):
+        a = "load = runpy.run_path\n"
+        b = "from importlib import import_module as load\n"
+        for body in (a + b, b + a):
+            with self.subTest(body=body):
+                self.assert_unresolved_call(f'import runpy\n{body}load("tools.telemetry")\n',
+                                            'load("tools.telemetry")')
+
+    def test_def_or_class_rebinding_is_unresolved(self):
+        with self.subTest("class"):
+            self.assert_unresolved_call("import runpy\nload = runpy.run_path\nclass load:\n"
+                                        f'    pass\nload("{EMIT}")\n', f'load("{EMIT}")')
+        with self.subTest("def"):
+            self.assert_unresolved_call("from importlib import import_module as load\n"
+                                        "def load(p):\n    return p\n"
+                                        'load("tools.telemetry")\n', 'load("tools.telemetry")')
+
+    def test_match_or_type_param_rebinding_is_unresolved(self):
+        head = "import runpy\nload = runpy.run_path\n"
+        call = 'load("tools.telemetry")'
+        for text in (
+                "import runpy, importlib\nload = runpy.run_path\n"
+                "match importlib.import_module:\n    case load:\n        pass\n",
+                head + "match 1:\n    case int() as load:\n        pass\n",
+                head + "match [1]:\n    case [*load]:\n        pass\n",
+                head + "class C[load]:\n    pass\n"):
+            with self.subTest(text=text):
+                self.assert_unresolved_call(text + call + "\n", call)
+
+    def test_loader_name_rebinding_is_unresolved(self):
+        for text, call in (
+                ("import runpy\nfrom importlib import import_module\n"
+                 "import_module = runpy.run_path\n", f'import_module("{EMIT}")'),
+                ("from importlib import import_module\nfrom runpy import run_path\n"
+                 "run_path = import_module\n", 'run_path("tools.telemetry")'),
+                ("from runpy import run_path as import_module\n", f'import_module("{EMIT}")')):
+            with self.subTest(call=call):
+                self.assert_unresolved_call(text + call + "\n", call)
+
+
 class TestWiring(unittest.TestCase):
     def test_ci_check_runs_scan(self):
         mise = (HERE.parents[1] / "mise.toml").read_text(encoding="utf-8")
