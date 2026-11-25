@@ -1253,8 +1253,10 @@ def main() -> int:
             if not _post_deferral(args, issue_number, issue_url):
                 unfinished.append("R-0352 deferral: " + handoff_owed.discharge_command(
                     args.repo, issue_number, owed_route))
+        # The same early-return shape as the deferral (operator ruling on the
+        # sticky-wicket PATCH, 2026-11-25): record it and let the board run.
         elif not _discharge_exception(args, issue_number, issue_url):
-            return 1
+            unfinished.append("R-0039 exception record: the repair printed above")
 
     # harmonic-forge#107: derive from --repo. An explicit override still wins.
     if args.project_owner and args.project_number:

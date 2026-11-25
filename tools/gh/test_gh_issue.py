@@ -582,13 +582,12 @@ class TestPostCreateFailureTable(unittest.TestCase):
                  "parent-epic", "--handoff-exception-reason", "children carry it"]
 
     #: step -> (the call `main()` makes, argv, injected failure, stderr repair text,
-    #: whether the later steps run). The `exception` row is False pending the
-    #: operator's decision on extending P1 to `_discharge_exception`; flip it to
-    #: True with that change.
+    #: whether the later steps run). Every row runs the later steps: the operator
+    #: extended P1 to `_discharge_exception` (2026-11-25).
     ROWS = {
         "record": ("handoff_owed.record", PARKING, "record", "--defer-existing 42", True),
         "deferral": ("_post_deferral", PARKING, "post", "--defer-existing 42", True),
-        "exception": ("_discharge_exception", EXCEPTION, "post", "Re-run the comment", False),
+        "exception": ("_discharge_exception", EXCEPTION, "post", "Re-run the comment", True),
         "board": ("add_to_board", PARKING, "board", "board add or field write", True),
     }
     #: Post-create calls that are fail-open or cannot fail the filing, so they
