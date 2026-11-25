@@ -190,32 +190,40 @@ class HookProcess(Busy):
         self.assertIn(self.W, out["permissionDecisionReason"])
 
 
-class Wiring(unittest.TestCase):
-    """The hook row in both hook files uses the guarded idiom, so a checkout of
-    ~/harmonic-forge that lacks the script allows every call instead of
-    exiting 2 (which would block every Bash and file-tool call)."""
+class Wiring(Busy):
+    """Sticky-wicket fix C: each registered row, run as written through `sh -c`
+    with HOME in a temp dir. With `harmonic-forge` there linking to this
+    checkout (so it runs this branch's guard, not the deployed one) it denies a
+    write into a busy W; with no script there the guarded idiom allows the same
+    write instead of exiting 2 (which would block every tool call)."""
 
-    def commands(self, path: Path) -> list[str]:
+    @staticmethod
+    def commands(path: Path) -> list[str]:
         data = json.loads(path.read_text(encoding="utf-8"))
-        found = []
-        for groups in data["hooks"].values():
-            for group in groups:
-                for hook in group.get("hooks", []):
-                    if "worktree_busy_guard.py" in hook.get("command", ""):
-                        found.append(hook["command"])
-        return found
+        return [hook["command"] for groups in data["hooks"].values() for group in groups
+                for hook in group.get("hooks", []) if "worktree_busy_guard.py" in hook.get("command", "")]
 
-    def test_hook_rows_are_guarded_and_allow_when_the_script_is_absent(self):
+    def run_row(self, command: str, linked: bool) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as home:
+            if linked:
+                os.symlink(HERE.parents[1], os.path.join(home, "harmonic-forge"))
+            return subprocess.run(["sh", "-c", command], capture_output=True, text=True, timeout=30,
+                                  input=json.dumps({"tool_name": "Write",
+                                                    "tool_input": {"file_path": f"{self.W}/x"}}),
+                                  env=dict(os.environ, HOME=home))
+
+    def test_each_registered_row_runs_the_guard_and_allows_when_it_is_absent(self):
         checkout = HERE.parents[1]
         for path in (checkout / ".claude" / "settings.json", checkout / "tools" / "lane" / "lane_hooks.json"):
-            commands = self.commands(path)
-            self.assertEqual(len(commands), 1, path)
-            with tempfile.TemporaryDirectory() as home:
-                done = subprocess.run(["sh", "-c", commands[0]], capture_output=True, text=True,
-                                      input=json.dumps({"tool_name": "Bash",
-                                                        "tool_input": {"command": "true"}}),
-                                      env=dict(os.environ, HOME=home), timeout=30)
-            self.assertEqual((done.returncode, done.stdout.strip()), (0, ""), f"{path}: {done.stderr}")
+            with self.subTest(path=path.name):
+                (command,) = self.commands(path)
+                done = self.run_row(command, linked=True)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                out = json.loads(done.stdout)["hookSpecificOutput"]
+                self.assertEqual(out["permissionDecision"], "deny")
+                self.assertIn(self.W, out["permissionDecisionReason"])
+                absent = self.run_row(command, linked=False)
+                self.assertEqual((absent.returncode, absent.stdout.strip()), (0, ""), absent.stderr)
 
 
 if __name__ == "__main__":

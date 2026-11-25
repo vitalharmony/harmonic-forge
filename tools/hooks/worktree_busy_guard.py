@@ -9,7 +9,7 @@ under it: real argv, a real path and realpath containment.
 
 Bash is always allowed (design amendment issuecomment-7169440744, AC3). A Bash
 write into a busy worktree is caught instead by the check's own integrity step
-(`busy_lock.py verify`), which fails the check with no receipt: shell text is
+(`busy_lock.py end`), which fails the check with no receipt: shell text is
 a grammar this repo does not own, so predicting a write from it cannot
 converge (sticky-wicket verdict issuecomment-7156806265).
 
