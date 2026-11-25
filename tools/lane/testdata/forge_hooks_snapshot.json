@@ -2,9 +2,9 @@
   "schema": 1,
   "source": {
     "repo": "vitalharmony/harmonic-forge",
-    "commit": "415f19977a396ecbaeb7e4fb7a321791fdee09f5",
+    "commit": "6b057f6b9f034523a732f42ef4ea3893185e228d",
     "path": ".claude/settings.json",
-    "blob": "48a341dda3d31d66c469116e9277d75a7a33a054"
+    "blob": "e16f917fb11c97adcfa05518bda9e87b86ee8f64"
   },
   "entries": [
     {
@@ -142,7 +142,7 @@
     {
       "event": "PreToolUse",
       "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
-      "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"",
+      "command": "f=\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
       "timeout": 10
     },
     {
