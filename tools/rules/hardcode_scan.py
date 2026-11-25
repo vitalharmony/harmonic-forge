@@ -295,6 +295,8 @@ def _assigns(tree: ast.AST) -> dict[str, ast.AST]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             seen[node.id] = seen.get(node.id, 0) + 1
+        elif isinstance(node, ast.arg):  # a parameter rebinds the name too
+            seen[node.arg] = seen.get(node.arg, 0) + 1
         if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                 and isinstance(node.targets[0], ast.Name):
             out[node.targets[0].id] = node.value
@@ -360,9 +362,10 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
             for a in node.names:
                 if a.name in loaders and a.asname:
                     loaders[a.asname] = a.name
-        elif (isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute))
+        elif (isinstance(node, (ast.Assign, ast.AnnAssign))
+              and isinstance(node.value, (ast.Name, ast.Attribute))
               and (node.value.id if isinstance(node.value, ast.Name) else node.value.attr) in loaders):
-            for t in node.targets:
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
                 if isinstance(t, ast.Name):
                     loaders[t.id] = loaders[node.value.id if isinstance(node.value, ast.Name)
                                             else node.value.attr]
@@ -412,13 +415,13 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
                 else node.attr if isinstance(node, ast.Attribute) else None)
         if name is not None and (name in LOADER_NAMES or loaders.get(name) in LOADER_NAMES):
             unresolved.append(node.lineno)
-    return found, sorted(set(unresolved))
+    return found, sorted(unresolved)  # every reference counts, two on a line are two
 
 
 # Operator ruling (a): a `source` or `.` word anywhere on a line is a load
 # (after any separator, keyword, prefix, assignment or quote), resolved by its
 # operand's trailing literal filename. Over-approximate on purpose.
-SOURCE_CMD_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))(?:source|\.)\s+(?:--\s+)?""")
+SOURCE_CMD_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))(?:source['"]?|\.)\s+(?:--\s+)?""")
 #: A line that evaluates text can load without a visible `source`.
 EVAL_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))eval\s""")
 
@@ -456,8 +459,14 @@ def shell_targets(lines: list[str]) -> tuple[list[list[str]], list[str]]:
     filename; the lines whose operand has no literal filename)."""
     found: list[list[str]] = []
     unresolved: list[str] = []
-    for line in lines:
-        if EVAL_RE.search(line) and SOURCE_CMD_RE.search(line):
+    joined: list[str] = []
+    for line in lines:  # a continuation joins its next line, so the operand is seen
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1][:-1] + " " + line.strip()
+        else:
+            joined.append(line)
+    for line in joined:
+        if EVAL_RE.search(line):
             unresolved.append(line)  # the eval'd text decides what loads
             continue
         for m in SOURCE_CMD_RE.finditer(line):

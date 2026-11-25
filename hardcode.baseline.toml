@@ -1222,6 +1222,12 @@ count = 1
 
 [[finding]]
 rule = "import-unresolved"
+path = "tools/gh/l1_tools_env.sh"
+text = "if ! prov_err=\"$( ( cd \"$path\" && eval \"${L1_TOOLS_PROVISION_CMD:-mise run worktree-provision}\" ) 2>&1 )\"; then"
+count = 1
+
+[[finding]]
+rule = "import-unresolved"
 path = "tools/precheck/replay_harness.py"
 text = "module = load_module(layer[\"module\"]) if layer[\"module\"] is not None else None"
 count = 1

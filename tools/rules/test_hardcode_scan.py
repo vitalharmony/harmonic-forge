@@ -395,6 +395,31 @@ class TestTwoPassPatch(ScratchRepo):
             "tools/hooks/n.py imports operator file tools/telemetry/",
             "tools/hooks/o.py imports operator file tools/telemetry/")
 
+    def test_post_verdict_3_forms_are_never_clean(self):
+        """Post-verdict 3: a parameter rebinding, an annotated alias call,
+        a quoted or continued source, an eval with no source word."""
+        self.write("tools/telemetry/emit.py", "X = 1\n")
+        self.write("tools/hooks/q.py", "import runpy\np = 'core.py'\n\n\ndef load(p):\n"
+                   "    return runpy.run_path(p)\n")
+        self.write("tools/hooks/r.py", "import runpy\nfrom typing import Callable\n"
+                   "load: Callable = runpy.run_path\nload('../telemetry/emit.py')\n")
+        self.write("tools/lane/s.sh", "#!/bin/bash\n'source' ../telemetry/env.sh\n")
+        self.write("tools/lane/t.sh", "#!/bin/bash\nsource \\\n  ../telemetry/env.sh\n")
+        self.write("tools/lane/u.sh", '#!/bin/bash\neval "$CMD"\n')
+        self.track()
+        self.check_fails_naming(
+            "[import-unresolved] tools/hooks/q.py", "[import-unresolved] tools/hooks/r.py",
+            "tools/lane/s.sh imports operator file tools/telemetry/env.sh",
+            "tools/lane/t.sh imports operator file tools/telemetry/env.sh",
+            "[import-unresolved] tools/lane/u.sh")
+
+    def test_two_loader_references_on_one_line_count_twice(self):
+        self.write("tools/hooks/v.py", "from importlib import import_module as load\n"
+                   "exec(code); load(name)\n")
+        self.track()
+        rc, text = self.run_scan("--print")
+        self.assertIn('text = "exec(code); load(name)"\ncount = 2', text)
+
     def test_a_lowered_count_is_stale_and_update_lowers_it(self):
         self.write("tools/hooks/core_hook.py", CORE + PLANT + PLANT)
         self.track()
