@@ -485,6 +485,14 @@ class TestF1556Forms(ScratchRepo):
         rc, text = self.run_scan("--print")
         self.assertIn('text = "eval $X; source $Y"\ncount = 2', text)
 
+    def test_the_quoted_eval_and_source_spelling_ac1_names_counts_twice(self):
+        # harmonic-forge#1556 pass-1 survivor: AC1 names the quoted spelling,
+        # so the quoted operands are pinned too, not only the unquoted ones.
+        self.write("tools/lane/e3.sh", '#!/bin/bash\neval "$X"; source "$Y"\n')
+        self.track()
+        rc, text = self.run_scan("--print")
+        self.assertIn('text = "eval \\"$X\\"; source \\"$Y\\""\ncount = 2', text)
+
     def test_a_qualified_from_import_names_every_dotted_part(self):
         self.write("tools/hooks/fq.py", "from tools.telemetry import *\n")
         self.track()
@@ -494,6 +502,16 @@ class TestF1556Forms(ScratchRepo):
         self.write("tools/hooks/fn.py", "from tools import telemetry\n")
         self.track()
         self.check_fails_naming("tools/hooks/fn.py imports operator file tools/telemetry/")
+
+    def test_an_imported_name_of_an_untracked_module_is_not_a_package_candidate(self):
+        # harmonic-forge#1556 pass-1 survivor: AC2 keeps main's condition, so a
+        # name imported from a module that is not a tracked directory (and not
+        # relative) never becomes an operator-package candidate.
+        self.baseline_now()
+        self.write("tools/hooks/fs.py", "from somelib import telemetry\n")
+        self.track()
+        rc, out = self.run_scan("--check")
+        self.assertNotIn("tools/telemetry/", out)
 
 
 class TestWiring(unittest.TestCase):
