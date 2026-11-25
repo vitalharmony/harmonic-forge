@@ -33,7 +33,7 @@ def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedPro
 
 
 def _failed_check(output: str = "ok\nFAIL: test_thing (suite.Case)\nmore\n"):
-    return lambda sha, branch: ([], (T0, T1), {"result": "fail", "output": output})
+    return lambda sha, branch, **_kw: ([], (T0, T1), {"result": "fail", "output": output})
 
 
 class StoreCase(unittest.TestCase):
@@ -75,7 +75,7 @@ class StoreCase(unittest.TestCase):
 class RefusedCheckTests(StoreCase):
     def _run_failed(self, ci_state: str = "pending", output: str | None = None):
         calls = []
-        def conclusion(repo, sha, required=None):
+        def conclusion(repo, sha, required=None, **_kw):
             calls.append((repo, sha))
             return (ci_state, "detail")
         check = _failed_check() if output is None else _failed_check(output)
@@ -236,7 +236,7 @@ class PostedTests(StoreCase):
 
 class RefusedOtherTests(StoreCase):
     def test_tc4_a_refusal_inside_post_kind_is_recorded_as_refused_other(self):
-        def not_an_ancestor(sha, branch):
+        def not_an_ancestor(sha, branch, **_kw):
             L.fail("attested SHA is not based on current origin/main")
         with mock.patch.object(L, "static_checks", side_effect=not_an_ancestor):
             refusal, _ = self.refuse()

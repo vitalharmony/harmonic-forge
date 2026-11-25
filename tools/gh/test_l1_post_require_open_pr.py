@@ -262,7 +262,7 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         original = (L.comment_body, L.static_checks, L.world_checks,
                     L.write_receipt, L.require_open_pr)
         L.comment_body = fake_comment_body
-        L.static_checks = lambda sha, branch: ["body-validation"]
+        L.static_checks = lambda sha, branch, **_kw: ["body-validation"]
         L.world_checks = lambda *a, **k: ([], [])
         L.require_open_pr = lambda *a, **k: (
             ["pr-open (acknowledged override)"],
@@ -291,7 +291,7 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         original = (L.comment_body, L.static_checks, L.world_checks,
                     L.write_receipt, L.require_open_pr)
         L.comment_body = fake_comment_body
-        L.static_checks = lambda sha, branch: ["body-validation"]
+        L.static_checks = lambda sha, branch, **_kw: ["body-validation"]
         L.world_checks = lambda *a, **k: (
             [], ["- active sibling branch overlaps -- acknowledged: reason"],
         )
@@ -430,7 +430,7 @@ class OpensTheMissingPr(unittest.TestCase):
                     L.write_receipt, L.require_open_pr, L.pr_issue_marker, L.refresh_main)
         L.comment_body = fake_comment_body
         L.refresh_main = lambda *a, **k: None
-        L.static_checks = lambda sha, branch: (["body-validation"], (None, None), {"result": "pass"})
+        L.static_checks = lambda sha, branch, **_kw: (["body-validation"], (None, None), {"result": "pass"})
         L.world_checks = lambda *a, **k: ([], [])
         L.require_open_pr = lambda *a, **k: (
             ["pr-opened #77"], [], ["- PR #77 opened by `l1-post` for `br` against `main`."])
