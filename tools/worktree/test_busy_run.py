@@ -30,7 +30,7 @@ TASKS = ("check", "local-check")
 REAL = ("tools/worktree/busy_lock.py", "tools/worktree/busy_stamp.py", "tools/hooks/check_receipt.py")
 STEP_AT = "tools/rules/check_cross_registry.py"  # a step both tasks run
 STUB = ("import os, subprocess, sys\n"
-        "if os.environ.get('STUB_STEP') and __file__.endswith({at!r}):\n"
+        "if os.environ.get('STUB_STEP') and __file__.endswith(os.environ.get('STUB_AT') or {at!r}):\n"
         "    sys.exit(subprocess.run(os.environ['STUB_STEP'], shell=True).returncode)\n")
 
 
@@ -45,6 +45,15 @@ def wait_for(predicate, timeout: float = 10.0) -> bool:
 
 def run_string(task: str) -> str:
     return tomllib.loads((CHECKOUT / "mise.toml").read_text(encoding="utf-8"))["tasks"][task]["run"]
+
+
+def final_step(task: str) -> str:
+    """The script of the task's last check step: the last line calling a
+    `tools/...py` other than the lock, integrity and receipt scripts. In the
+    shipped order it is the step immediately preceding `end`."""
+    steps = [path for line in run_string(task).splitlines() if not line.lstrip().startswith("#")
+             for path in re.findall(r"tools/[\w/.-]+\.py", line) if path not in REAL]
+    return steps[-1]
 
 
 class RunString(unittest.TestCase):
@@ -89,8 +98,8 @@ class RunString(unittest.TestCase):
     def receipt(self) -> Path:
         return self.base / "home" / ".cache" / "harmonic-forge" / "check-receipts" / "t__t" / self.head
 
-    def start(self, task: str, step: str = "") -> subprocess.Popen:
-        env = dict(self.env, STUB_STEP=step, RUN=run_string(task))
+    def start(self, task: str, step: str = "", at: str = "") -> subprocess.Popen:
+        env = dict(self.env, STUB_STEP=step, STUB_AT=at, RUN=run_string(task))
         child = subprocess.Popen(["sh", "-o", "errexit", "-c", run_string(task)], cwd=self.repo, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -101,8 +110,8 @@ class RunString(unittest.TestCase):
         self.addCleanup(stop)
         return child
 
-    def run_task(self, task: str, step: str = "") -> tuple[int, str]:
-        child = self.start(task, step)
+    def run_task(self, task: str, step: str = "", at: str = "") -> tuple[int, str]:
+        child = self.start(task, step, at)
         _out, err = child.communicate(timeout=120)
         return child.returncode, err
 
@@ -123,6 +132,15 @@ class Outcomes(RunString):
     def test_an_edit_restored_mid_run_fails_with_no_receipt(self):
         for task in self.each_task():
             rc, err = self.run_task(task, "echo b > a.txt; echo a > a.txt")
+            self.assertNotEqual(rc, 0, err)
+            self.assertIn("changed during check", err)
+            self.assertFalse(self.receipt().exists())
+
+    def test_an_edit_at_the_final_step_fails_with_no_receipt(self):
+        """Post-verdict gap: `end` must follow the last check step, so an edit
+        made inside that step is still inside the integrity window."""
+        for task in self.each_task():
+            rc, err = self.run_task(task, "echo b > a.txt; echo a > a.txt", at=final_step(task))
             self.assertNotEqual(rc, 0, err)
             self.assertIn("changed during check", err)
             self.assertFalse(self.receipt().exists())

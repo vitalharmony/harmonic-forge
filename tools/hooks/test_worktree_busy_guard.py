@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -224,6 +225,35 @@ class Wiring(Busy):
                 self.assertIn(self.W, out["permissionDecisionReason"])
                 absent = self.run_row(command, linked=False)
                 self.assertEqual((absent.returncode, absent.stdout.strip()), (0, ""), absent.stderr)
+
+    @staticmethod
+    def resolved(path: Path, tool: str) -> list[str]:
+        """The guard rows Claude Code runs for `tool`'s PreToolUse: a group's
+        matcher is a regex matched against the whole tool name; "" or "*" is all."""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return [hook["command"] for group in data["hooks"].get("PreToolUse", [])
+                if group.get("matcher", "") in ("", "*") or re.fullmatch(group["matcher"], tool)
+                for hook in group.get("hooks", []) if "worktree_busy_guard.py" in hook.get("command", "")]
+
+    def test_the_registered_matcher_routes_every_guarded_tool_to_the_guard(self):
+        """Post-verdict gap: the row reached through its matcher, not called directly."""
+        checkout = HERE.parents[1]
+        for path in (checkout / ".claude" / "settings.json", checkout / "tools" / "lane" / "lane_hooks.json"):
+            for tool, key in (("Write", "file_path"), ("Edit", "file_path"), ("MultiEdit", "file_path"),
+                              ("NotebookEdit", "notebook_path"), ("Bash", None)):
+                with self.subTest(path=path.name, tool=tool):
+                    (command,) = self.resolved(path, tool)
+                    if key is None:
+                        continue  # Bash reaches the guard, which never denies it
+                    with tempfile.TemporaryDirectory() as home:
+                        os.symlink(checkout, os.path.join(home, "harmonic-forge"))
+                        done = subprocess.run(["sh", "-c", command], capture_output=True, text=True,
+                                              input=json.dumps({"tool_name": tool,
+                                                                "tool_input": {key: f"{self.W}/x"}}),
+                                              env=dict(os.environ, HOME=home), timeout=30)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertEqual(json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"],
+                                     "deny", tool)
 
 
 if __name__ == "__main__":
