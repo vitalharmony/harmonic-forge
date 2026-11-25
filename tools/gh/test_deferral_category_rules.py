@@ -2,8 +2,8 @@
 """harmonic-forge#1564 sticky-wicket PATCH: one test group per category rule.
 
 (a) every thread signal the deferral acts on is bound to the recorded login by
-    `deferral_store.same_login` (casefolded); an entry with no login keeps the
-    thread-side handoff discharge (N3).
+    `deferral_store.same_login` (casefolded); an entry with no login binds no
+    thread signal (post-verdict #1, superseding N3).
 (b) the release and the anchor each fullmatch `_first_raw_line`: the first
     non-blank raw line, `""` for indented code (N2).
 (c) `deferral_store.valid_key` is the one key rule (N5); its record_deferral.py
@@ -16,6 +16,7 @@ fixture threads; only GitHub reads are patched, and every store write goes to
 a temp directory."""
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -69,9 +70,17 @@ class SameLoginRuleTests(unittest.TestCase):
         self.assertEqual(trigger(c(2, "go"), c(3, HANDOFF, "VitalHarmony")), ("discharged", None))
         self.assertEqual(trigger(c(2, "go"), c(3, LANE1, "VitalHarmony")), ("cleared", None))
 
-    def test_an_entry_with_no_login_keeps_the_thread_side_discharge(self):
-        """N3: discharge binds to the login only when one is recorded."""
-        self.assertEqual(trigger(c(3, HANDOFF, "kytxii"), login=None), ("discharged", None))
+    def test_an_entry_with_no_login_binds_no_thread_signal(self):
+        """Post-verdict #1 (supersedes N3): a legacy loginless entry is never
+        discharged, cleared or released by a thread comment from any account;
+        its anchor is still found, and a thread without one is still
+        `no-anchor`."""
+        for login in ("kytxii", OP):
+            with self.subTest(login=login):
+                self.assertEqual(trigger(c(3, HANDOFF, login), login=None), ("cleared", None))
+                self.assertEqual(trigger(c(2, "go", login), login=None), ("cleared", None))
+        self.assertEqual(watch_lane_posts._deferral_trigger([c(2, HANDOFF)], None),
+                         ("no-anchor", None))
 
 
 class RawLineRuleTests(unittest.TestCase):
@@ -133,6 +142,42 @@ class ValidKeyRuleTests(unittest.TestCase):
         self.assertFalse(deferral_store.discharge_deferral(REPO, True, "x"))
         self.assertEqual(deferral_store.read_deferrals([REPO]), {(REPO, 1)})
 
+    def test_a_dot_git_repo_key_round_trips_under_either_spelling(self):
+        """Post-verdict #3: one normalizer, to a fixed point, on the writer
+        and on every reader lookup, bulk and direct."""
+        self.assertTrue(deferral_store.record_deferral("vitalharmony/repo.GIT", 1, "backfill",
+                                                       operator_login=OP))
+        for spelling in ("vitalharmony/repo.GIT", "vitalharmony/repo.git", "vitalharmony/repo"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(deferral_store.read_deferrals([spelling]), {(spelling, 1)})
+                self.assertIsNotNone(deferral_store.deferral_entry(spelling, 1))
+
+    def _store_raw(self, issue):
+        path = deferral_store._deferral_path(REPO, 5, None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"repo": REPO, "issue": issue, "operator_login": OP}),
+                        encoding="utf-8")
+
+    def test_the_direct_reader_rejects_a_stored_float_or_string_issue(self):
+        """Post-verdict #4: the direct reader validates the stored payload
+        through `valid_key`, as the bulk reader does."""
+        for issue in (5.0, "5", True, 0):
+            with self.subTest(issue=issue), contextlib.redirect_stderr(io.StringIO()):
+                self._store_raw(issue)
+                self.assertIsNone(deferral_store.deferral_entry(REPO, 5))
+        self._store_raw(5)
+        self.assertEqual(deferral_store.deferral_entry(REPO, 5)["issue"], 5)
+
+    def test_the_bulk_reader_never_coerces_a_stored_issue(self):
+        """Post-verdict #8: rule (c) at the bulk-reader boundary; `int()`
+        coercion would admit `5.0` and `"5"`."""
+        for issue in (5.0, "5"):
+            with self.subTest(issue=issue), contextlib.redirect_stderr(io.StringIO()):
+                self._store_raw(issue)
+                self.assertEqual(deferral_store.read_deferrals([REPO]), set())
+        self._store_raw(5)
+        self.assertEqual(deferral_store.read_deferrals([REPO]), {(REPO, 5)})
+
     def test_the_login_is_stored_casefolded(self):
         deferral_store.record_deferral(REPO, N, "backfill", operator_login="VitalHarmony")
         self.assertEqual(deferral_store.deferral_entry(REPO, N)["operator_login"], OP)
@@ -178,6 +223,23 @@ class CarryForwardRuleTests(unittest.TestCase):
         last = {(REPO, 9): "handoff owes=review"}
         queue, _, _ = self.cycle(last, [], {(REPO, OTHER)}, io.StringIO())
         self.assertEqual(queue[(REPO, 9)], "handoff owes=review")
+
+    def test_a_failed_fetch_on_another_issue_never_masks_a_read_clear(self):
+        """Post-verdict #5: retraction is per item. N's clear was read; OTHER's
+        fetch failed. N retracts, OTHER carries forward, the repo is not ok."""
+        last = {(REPO, N): MARKER, (REPO, OTHER): "handoff owes=review"}
+        thread = [c(100, DEFERRAL), c(101, "go"), c(102, LANE1)]
+        err = io.StringIO()
+        with patch("watch_lane_posts._fetch_all_comments",
+                   side_effect=lambda repo, issue: thread if issue == N else None), \
+             contextlib.redirect_stderr(err):
+            queue, _, ok = watch_lane_posts.queue_cycle(
+                [REPO], "l1", last, "t", candidate_pairs={(REPO, OTHER)})
+        self.assertEqual(ok, set())
+        self.assertNotIn((REPO, N), queue)
+        self.assertEqual(queue[(REPO, OTHER)], "handoff owes=review")
+        self.assertEqual(err.getvalue().count(f"{REPO}#{N} left-queue-for-l1"), 1)
+        self.assertNotIn(f"{REPO}#{OTHER} left-queue-for-l1", err.getvalue())
 
 
 if __name__ == "__main__":

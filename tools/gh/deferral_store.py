@@ -149,11 +149,23 @@ def _replace(path: Path, entry: dict) -> None:
 
 
 def _canonical(repo: object) -> str | None:
-    """`repo` canonical, or None when it does not normalize. Never raises."""
+    """`repo` canonical, or None when it does not normalize. Never raises.
+
+    The one repo-key normalizer for the writer and every reader
+    (harmonic-forge#1564 post-verdict #3). `normalize_repo` lowercases after
+    removing a lowercase `.git`, so one pass maps `owner/repo.GIT` to
+    `owner/repo.git` and a second pass to `owner/repo`; it is applied to a
+    fixed point, so every spelling and its stored key land on one key."""
     try:
-        return normalize_manifest_repo(repo)
+        key = normalize_manifest_repo(repo)
+        for _ in range(8):
+            again = normalize_manifest_repo(key)
+            if again == key:
+                return key
+            key = again
     except (ManifestError, AttributeError, TypeError):
         return None
+    return None
 
 
 def valid_key(repo: object, issue: object) -> tuple[str, int] | None:
@@ -193,6 +205,20 @@ def _read_entry(path: Path) -> dict | None:
     except (OSError, json.JSONDecodeError, ValueError, RecursionError):
         return None
     return entry if isinstance(entry, dict) else None
+
+
+def _valid_entry(path: Path) -> tuple[tuple[str, int], dict] | None:
+    """The stored payload at `path` and its key, validated by `valid_key`
+    exactly as the writer validates it, or None with one stderr line naming
+    the file (harmonic-forge#1564 post-verdict #4). The one validation step
+    for the bulk and the direct reader: a stored issue is never coerced, so
+    `5.0` and `"5"` are rejected as the writer rejects them (rule (c))."""
+    entry = _read_entry(path)
+    valid = None if entry is None else valid_key(entry.get("repo"), entry.get("issue"))
+    if valid is None:
+        print(f"[belt-candidates] deferral entry {path.name} skipped", file=sys.stderr)
+        return None
+    return valid, entry
 
 
 def record_deferral(repo: str, issue: int, source: str, *,
@@ -252,22 +278,31 @@ def read_deferrals(repos: Iterable[str], *,
     except OSError:
         return found
     for path in paths:
-        entry = _read_entry(path) or {}
-        valid = valid_key(entry.get("repo"), entry.get("issue"))
-        if valid is None:
-            print(f"[belt-candidates] deferral entry {path.name} skipped",
-                  file=sys.stderr)
+        read = _valid_entry(path)
+        if read is None:
             continue
-        if valid[0] in wanted:
-            found.add((wanted[valid[0]], valid[1]))
+        (key, number), _entry = read
+        if key in wanted:
+            found.add((wanted[key], number))
     return found
 
 
 def deferral_entry(repo: str, issue: int, *,
                    base_dir: Path | None = None) -> dict | None:
-    """The recorded deferral for `repo`#`issue`, or None."""
+    """The recorded deferral for `repo`#`issue`, or None. The stored payload
+    passes `_valid_entry` and its key must be the requested one, so the
+    direct reader accepts exactly what the bulk reader accepts
+    (harmonic-forge#1564 post-verdict #4)."""
     valid = valid_key(repo, issue)
-    return None if valid is None else _read_entry(_deferral_path(*valid, base_dir))
+    if valid is None:
+        return None
+    path = _deferral_path(*valid, base_dir)
+    if not path.exists():
+        return None
+    read = _valid_entry(path)
+    if read is None or read[0] != valid:
+        return None
+    return read[1]
 
 
 def discharge_deferral(repo: str, issue: int, reason: str, *,

@@ -1112,27 +1112,32 @@ def _deferral_trigger(comments: list[dict],
 
     The anchor is the LAST comment whose first raw line is exactly
     `gh_issue.py`'s heading for a recorded exception, by the recorded login
-    (any login only for an entry without one); with none,
-    `("no-anchor", None)`. Each later comment, in order:
+    (any login only for an entry without one: the anchor is the comment's
+    existence check, not a signal); with none, `("no-anchor", None)`. Each
+    later comment, in order:
 
-    - a verified Lane 1 `handoff` by the recorded login (any login for an
-      entry without one) discharges the deferral (`("discharged", None)`),
-      the backfill fallback to `l1_post.py`'s own discharge;
+    - a verified Lane 1 `handoff` by the recorded login discharges the
+      deferral (`("discharged", None)`), the backfill fallback to
+      `l1_post.py`'s own discharge;
     - a post stamped `posted-by=LANE1` by the same login clears a pending
       release;
     - an unclassified comment by the recorded login is a release when its
-      first raw line fullmatches `RELEASE_RE` (an entry without a login
-      never releases).
+      first raw line fullmatches `RELEASE_RE`.
+
+    Post-verdict #1: an entry with no recorded login binds no thread signal.
+    No handoff, clear or release on its thread acts on it, from any account;
+    it leaves by `l1_post.py`'s writer discharge, a closed or missing issue,
+    or a missing anchor.
 
     `("queued", id)` names the newest release still pending; otherwise
     `("cleared", None)`."""
     def bound(comment: dict) -> bool:
         login = (comment.get("user") or {}).get("login")
-        return not operator_login or deferral_store.same_login(login, operator_login)
+        return deferral_store.same_login(login, operator_login)
     anchor = None
     for index, comment in enumerate(comments):
         if (_DEFERRAL_ANCHOR_RE.fullmatch(_first_raw_line(comment.get("body") or ""))
-                and bound(comment)):
+                and (not operator_login or bound(comment))):
             anchor = index
     if anchor is None:
         return "no-anchor", None
@@ -1147,9 +1152,7 @@ def _deferral_trigger(comments: list[dict],
             continue
         if kind is not None:
             continue
-        login = (comment.get("user") or {}).get("login")
-        if (deferral_store.same_login(login, operator_login)
-                and RELEASE_RE.fullmatch(_first_raw_line(body))):
+        if bound(comment) and RELEASE_RE.fullmatch(_first_raw_line(body)):
             pending = comment.get("id")
     if pending is not None:
         return "queued", pending
@@ -1624,6 +1627,7 @@ def discover_queue(repo: str, lane: str,
                    store_read_at: "dt.datetime | None" = None,
                    marker_ids: "dict[int, int | None] | None" = None,
                    retired_out: "set[int] | None" = None,
+                   read_out: "dict[int, str | None] | None" = None,
                    ) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
@@ -1648,7 +1652,13 @@ def discover_queue(repo: str, lane: str,
     harmonic-forge#1564: when `retired_out` is a set, it receives each issue
     whose recorded deferral this call discharged because the issue is closed
     or missing, so `queue_cycle` retracts its item even on a cycle whose
-    other fetch failed (preclose #12)."""
+    other fetch failed (preclose #12).
+
+    harmonic-forge#1564 post-verdict #5: when `read_out` is a dict, it
+    receives every open candidate whose own read completed this call, mapped
+    to its fresh marker or None, even when another candidate's fetch failed and
+    the call returns `({}, False)`. `queue_cycle` decides each item from its
+    own read: a failed fetch on one issue never masks another's."""
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
     any_poster = QUEUE_ANY_POSTER_KINDS.get(lane, ())
@@ -1677,6 +1687,8 @@ def discover_queue(repo: str, lane: str,
     excluded = queue_qualifiers(repo, lane)
     queued: dict[int, str] = {}
     fetch_failed = False
+    failed_issues: set[int] = set()
+    unread_issues: set[int] = set()
     for issue in candidates:
         # harmonic-forge#854 (REFORGE): a closed issue is queued to no lane,
         # checked before the label exclusion so closed epics and Tooling
@@ -1701,6 +1713,10 @@ def discover_queue(repo: str, lane: str,
                 retired_out.add(issue)
             if state == "closed":
                 _retire_imc(repo, issue)
+            # Not a `read_out` item: a closed or missing issue leaves by its
+            # own rules (`retired_out` here, the closed mark on the next
+            # successful cycle, harmonic-forge#854), which this leaves as is.
+            unread_issues.add(issue)
             continue
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
@@ -1745,6 +1761,7 @@ def discover_queue(repo: str, lane: str,
             # harmonic-forge#854: the loop still finishes, so a closed issue
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
+            failed_issues.add(issue)
             continue
         sticky = lane == "l1" and _sticky_wicket_owed(repo, issue, comments)
         for comment in comments:
@@ -1815,6 +1832,9 @@ def discover_queue(repo: str, lane: str,
         queued[issue] = f"{kind} owes={owes}"
         if marker_ids is not None:
             marker_ids[issue] = last_id
+    if read_out is not None:
+        for issue in candidates - failed_issues - unread_issues:
+            read_out[issue] = queued.get(issue)
     if fetch_failed:
         return {}, False
     return queued, True
@@ -2735,29 +2755,42 @@ def queue_cycle(
     #: discharged as closed or missing. Retracted whatever their repo's fetch
     #: did, because nothing will ever check them again.
     retired_pairs: set[tuple[str, int]] = set()
+    #: harmonic-forge#1564 post-verdict #5: pairs read successfully in a repo
+    #: whose other fetch failed. Each is retracted by its own read.
+    read_pairs: set[tuple[str, int]] = set()
     _prune_batch(batch_state_path)
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
         checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}
         ids: dict[int, int | None] = {}
         retired: set[int] = set()
+        read: dict[int, str | None] = {}
         if offers is None:
             raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
-                                           retired_out=retired)
+                                           retired_out=retired, read_out=read)
         else:
             raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
-                                           marker_ids=ids, retired_out=retired)
+                                           marker_ids=ids, retired_out=retired,
+                                           read_out=read)
         retired_pairs.update((repo, n) for n in retired)
         found = dict(raw)
         if not fetch_ok:
-            # Carry this repo's previous queue forward untouched, and keep it
-            # OUT of `ok_repos` so the retraction pass below cannot see it.
+            # The repo stays OUT of `ok_repos`, but retraction is per item
+            # (harmonic-forge#1564 post-verdict #5): an issue whose own read
+            # completed is decided by that read, queued or retracted, and only
+            # an issue this cycle could not read carries forward untouched.
+            unread = {i: m for i, m in prior.items() if i not in read}
             print(f"[watch_lane_posts]   {repo}: fetch failed -- carrying "
-                  f"{len(prior)} previously-queued issue(s) forward, not retracting",
+                  f"{len(unread)} previously-queued issue(s) forward, not retracting",
                   file=sys.stderr)
-            for issue, marker in prior.items():
+            for issue, marker in unread.items():
                 if issue not in retired:
                     queue[(repo, issue)] = marker
+            for issue, marker in read.items():
+                read_pairs.add((repo, issue))
+                if marker is not None:
+                    queue[(repo, issue)] = marker
+                    fresh_ids[(repo, issue)] = ids.get(issue)
             continue
         ok_repos.add(repo)
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
@@ -2843,7 +2876,7 @@ def queue_cycle(
             offers.record(key, marker, fresh_ids[key], session, when)
         lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
     retract = {k for k in set(last_queue) - set(queue) if k[0] in ok_repos}
-    retract |= {k for k in retired_pairs if k in last_queue and k not in queue}
+    retract |= {k for k in retired_pairs | read_pairs if k in last_queue and k not in queue}
     if offers is not None:
         # AC5: an item an EARLIER process offered that has since cleared
         # retracts once. Only an item this cycle actually checked (or any
@@ -2851,7 +2884,12 @@ def queue_cycle(
         # an unchecked one is "unknown", the carry-forward's own rule, and
         # its entry simply ages out (AC5a).
         for key in offers.keys():
-            if key in queue or key[0] not in ok_repos:
+            if key in queue:
+                continue
+            if key in read_pairs:
+                retract.add(key)
+                continue
+            if key[0] not in ok_repos:
                 continue
             # harmonic-forge#1141: an unchecked offer the candidate store
             # already shows superseded retracts now, not after 14 days.
