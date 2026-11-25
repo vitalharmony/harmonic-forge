@@ -71,20 +71,18 @@ _MAX_TIER_READS = 6
 _READ_TIMEOUT_SECONDS = 4
 _ERROR_CHARS = 200
 _UNCONFIRMED_HIGH = (
-    "This hook read {model} from the transcript, but no route-floor marker confirms that "
-    "this turn's requests go out on a high-tier model (harmonic-forge#1250)."
+    "This hook's model reading is {model}, and no route-floor marker confirms that this "
+    "turn's requests go out on a high-tier model (harmonic-forge#1250)."
 )
 _SELF_CHECK = (
     "Session: read the exact model id in your own system prompt. If it is an Opus or "
-    "Fable model, proceed, and do not ask the operator to run /model. This line blocks "
-    "nothing; the model tier is enforced only by a model_tier_gate PreToolUse deny on a code "
-    "write. If the id is "
-    "not an Opus or Fable model, do not start these, and ask the operator to run /model "
-    "opus (or /model fable) and resend."
+    "Fable model, proceed, and do not ask the operator to run /model. This message blocks "
+    "nothing. If the id is not an Opus or Fable model, do not start these, and ask the "
+    "operator to run /model opus (or /model fable) and resend."
 )
 _UNCONFIRMED_BLOCK = (
     "No marker could be written, so this prompt is blocked. Resend it. If the block "
-    "repeats, the route-floor marker directory is not writable: fix it, or relaunch the "
+    "repeats, check that the route-floor marker directory is writable, or relaunch the "
     "lane with LANE_MODEL set. Running /model does not clear this block."
 )
 
@@ -282,8 +280,7 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
     """
     untrusted_high = not trusted and model_tier_gate.claude_model_is_high(model)
     high = model_tier_gate.claude_model_is_high(model) and not untrusted_high
-    model_label = (f"{model} per the transcript, unconfirmed by a route-floor marker"
-                   if untrusted_high else model or "an unresolved model")
+    model_label = model or "an unresolved model"
     checked, unchecked = refs[:_MAX_TIER_READS], refs[_MAX_TIER_READS:]
     blocks: list[str] = []
     deep_refs: list[str] = []
