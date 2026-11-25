@@ -353,6 +353,24 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
             self._post(GATE_PASS)
         self.assertEqual(seen, [1])
 
+    def test_a_refused_pass_retries_with_the_aes_ci_override(self):
+        """harmonic-forge#894 PATCH A3: a PASS refused for unfinished CI is
+        re-checked with the ci-override the round's AE named, and posts only if
+        that release holds."""
+        calls = []
+
+        def spy(repo, body, ack_no_pr_required=None, **kw):
+            calls.append(kw.get("ci_override"))
+            if kw.get("ci_override") == "777":
+                return True, "released"
+            return False, "[GATE] REFUSED: CI has not completed for the SHA this PASS names."
+        with mock.patch.object(P, "check_gate_result", spy), \
+             mock.patch.object(P, "post_merge_readonly_claim", return_value=None), \
+             mock.patch.object(P, "ci_override_id", return_value="777") as found:
+            self._post(GATE_PASS)
+        self.assertEqual(calls, [None, "777"])
+        found.assert_called_once()
+
     def test_main_resolves_an_omitted_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "body.md"
