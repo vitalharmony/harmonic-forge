@@ -592,16 +592,315 @@ class RouteFloorRaise(unittest.TestCase):
                     with patch.object(t.route_floor_marker, "write", return_value=False):
                         t.route_floor_marker.clear(self.SID)
                         blocked, _ = self._run(prompt, model, tiers)
-                    self.assertEqual(blocked["decision"], "block")
+                    self.assertEqual(blocked.get("decision"), "block")
+                    # harmonic-forge#1573 AC2: the block names the failed write and what clears it.
+                    self.assertIn(reason, blocked["reason"])
+                    self.assertIn("No marker could be written", blocked["reason"])
+                    self.assertIn("LANE_MODEL", blocked["reason"])
+                    self.assertNotIn("/model opus", blocked["reason"])
+
+    # harmonic-forge#1573: the unconfirmed-high wording, written out here rather than read from
+    # the hook, so any changed sentence fails exact equality.
+    UNCONFIRMED_HIGH = ("This hook's model reading is {model}, and no route-floor marker confirms "
+                        "that this turn's requests go out on a high-tier model (harmonic-forge#1250).")
+    SELF_CHECK = ("Session: read the exact model id in your own system prompt. If it is an Opus or "
+                  "Fable model, proceed, and do not ask the operator to run /model. This message "
+                  "blocks nothing. If the id is not an Opus or Fable model, do not start these, and "
+                  "ask the operator to run /model opus (or /model fable) and resend.")
+    UNCONFIRMED_BLOCK = ("No marker could be written, so this prompt is blocked. Resend it. If the "
+                         "block repeats, check that the route-floor marker directory is writable, "
+                         "or relaunch the lane with LANE_MODEL set. Running /model does not clear "
+                         "this block.")
+    NOT_A_TRIGGER = "Belt/task notification not blocked (it is not a trigger). "
+    WRITE_FAILED = ("Belt event not blocked. No route-floor marker could be written, so this "
+                    "turn's requests are not raised. ")
+    RAISED = ("{reason}: this session ({model}) is raised, and its requests go out on a "
+              "high-tier model. The footer still shows the launch model (harmonic-forge#1250).")
+
+    def _advisory(self, lead, reason, model):
+        message = (lead + reason + ". " + self.UNCONFIRMED_HIGH.format(model=model) + "\n"
+                   + self.SELF_CHECK + " (harmonic-forge#656)")
+        return {"systemMessage": message,
+                "hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                       "additionalContext": message}}
 
     def test_an_untrusted_high_reading_on_a_notification_warns(self):
-        for line in (f"{HRSE}#1830 left-queue-for-l2",
-                     f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1831 queued-for-l2 kind=handoff"):
-            with self.subTest(line=line):
-                out, _ = self._run(self._event(line), "claude-opus-5",
-                                   {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
-                self.assertIn("Do NOT start", out["systemMessage"])
+        """harmonic-forge#1573 AC1: the session is told to read its own model id."""
+        for line, reason in (
+                (f"{HRSE}#1830 left-queue-for-l2", f"{HRSE}#1830 is Tier deep"),
+                (f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1831 queued-for-l2 kind=handoff",
+                 f"{HRSE}#1830 is Tier deep; {HRSE}#1831 is Tier deep")):
+            for model in ("claude-opus-5", "claude-fable-5"):
+                with self.subTest(line=line, model=model):
+                    out, _ = self._run(self._event(line), model,
+                                       {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
+                    self.assertEqual(out, self._advisory(self.NOT_A_TRIGGER, reason, model))
+                    self.assertFalse(self._marked())
+        # A lone queued-for-l2 event is a trigger: a raise is tried, and here it fails.
+        for model in ("claude-opus-5", "claude-fable-5"):
+            with self.subTest(line="lone queued-for-l2, write fails", model=model):
+                with patch.object(t.route_floor_marker, "write", return_value=False):
+                    out, _ = self._run(
+                        self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff owes=implement"),
+                        model, {(HRSE, 1830): "deep"})
+                self.assertEqual(out, self._advisory(self.WRITE_FAILED, f"{HRSE}#1830 is Tier deep",
+                                                     model))
                 self.assertFalse(self._marked())
+
+    def test_a_trusted_low_notification_keeps_its_wording(self):
+        """harmonic-forge#1573 AC3: an eligible Sonnet session is not told to self-check."""
+        out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-sonnet-5",
+                           {(HRSE, 1830): "deep"})
+        self.assertNotIn("decision", out)
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertNotIn("read the exact model id", json.dumps(out))
+
+    def test_no_output_says_read_from_a_raise(self):
+        """harmonic-forge#1573 AC4."""
+        refs = " ".join(f"H{1100 + i}" for i in range(t._MAX_TIER_READS + 1))
+        past_cap = {(HRSE, 1100 + i): "fast" for i in range(t._MAX_TIER_READS)}
+        cases = (("deep", "H1830", {(HRSE, 1830): "deep"}),
+                 ("unreadable", "H1830", {(HRSE, 1830): "FAIL"}),
+                 ("past the cap", refs, past_cap))
+        for name, named, tiers in cases:
+            for kind in ("typed", "notification"):
+                prompt = (f"Plan {named}" if kind == "typed" else self._event(
+                    "\n".join(f"{HRSE}#{ref[1:]} queued-for-l2 kind=handoff" for ref in named.split())))
+                for write in (True, False):
+                    with self.subTest(case=name, kind=kind, write=write):
+                        t.route_floor_marker.clear(self.SID)
+                        if write:
+                            out, _ = self._run(prompt, "claude-opus-5", tiers)
+                        else:
+                            with patch.object(t.route_floor_marker, "write", return_value=False):
+                                out, _ = self._run(prompt, "claude-opus-5", tiers)
+                        self.assertIsNotNone(out)
+                        self.assertNotIn("read from a raise", json.dumps(out))
+
+    UNTRUSTED = "untrusted_high"
+    #: harmonic-forge#1573 AC5: every distinct output 178ba5f gave on a row whose reading is
+    #: not untrusted_high, recorded from a `git archive 178ba5f` copy before the change.
+    OUTPUTS_AT_178BA5F = (
+        {
+         'systemMessage': ('vitalharmony/hrse#1830 is Tier deep: this session (claude-sonnet-5) '
+                           'is raised, and its requests go out on a high-tier model. The footer '
+                           'still shows the launch model (harmonic-forge#1250).'),
+        },
+        {
+         'decision': 'block',
+         'reason': ('Tier for vitalharmony/hrse#1830 could not be read (HTTP 403: API rate limit '
+                    'exceeded); this session is claude-sonnet-5. Run /model opus (or /model '
+                    'fable) and resend, wait for the rate-limit reset and resend, or relaunch '
+                    'the lane with LANE_MODEL set. (harmonic-forge#656)'),
+        },
+        {
+         'systemMessage': ("Route floor cleared: this session's requests go back to its launch "
+                           'model (harmonic-forge#1250).'),
+        },
+        {
+         'decision': 'block',
+         'reason': ('Too many issue references to check -- resend naming fewer issues (at most 6 '
+                    'are read; this session is claude-sonnet-5; not checked: '
+                    'vitalharmony/hrse#1106). (harmonic-forge#656)'),
+        },
+        None,
+        {
+         'decision': 'block',
+         'reason': ('vitalharmony/hrse#1830 is Tier deep; this session is claude-sonnet-5. Run '
+                    '/model opus (or /model fable) and resend. (harmonic-forge#656)'),
+        },
+        {
+         'systemMessage': ('Tier for vitalharmony/hrse#1830 could not be read (HTTP 403: API '
+                           'rate limit exceeded).'),
+        },
+        {
+         'systemMessage': ('Tier not checked (more than 6 issue references in one prompt): '
+                           'vitalharmony/hrse#1106.'),
+        },
+        {
+         'systemMessage': ('Belt/task notification not blocked (it is not a trigger). Do NOT '
+                           'start these on this model:\nTier for vitalharmony/hrse#1830 could '
+                           'not be read (HTTP 403: API rate limit exceeded); this session is '
+                           'claude-sonnet-5. Run /model opus (or /model fable) and resend, wait '
+                           'for the rate-limit reset and resend, or relaunch the lane with '
+                           'LANE_MODEL set. (harmonic-forge#656)'),
+         'hookSpecificOutput': {
+          'hookEventName': 'UserPromptSubmit',
+          'additionalContext': ('Belt/task notification not blocked (it is not a trigger). Do '
+                                'NOT start these on this model:\nTier for vitalharmony/hrse#1830 '
+                                'could not be read (HTTP 403: API rate limit exceeded); this '
+                                'session is claude-sonnet-5. Run /model opus (or /model fable) '
+                                'and resend, wait for the rate-limit reset and resend, or '
+                                'relaunch the lane with LANE_MODEL set. (harmonic-forge#656)'),
+         },
+        },
+        {
+         'systemMessage': ('Belt/task notification not blocked (it is not a trigger). Do NOT '
+                           'start these on this model:\nvitalharmony/hrse#1830 is Tier deep; '
+                           'this session is claude-sonnet-5. Run /model opus (or /model fable) '
+                           'and resend. (harmonic-forge#656)'),
+         'hookSpecificOutput': {
+          'hookEventName': 'UserPromptSubmit',
+          'additionalContext': ('Belt/task notification not blocked (it is not a trigger). Do '
+                                'NOT start these on this model:\nvitalharmony/hrse#1830 is Tier '
+                                'deep; this session is claude-sonnet-5. Run /model opus (or '
+                                '/model fable) and resend. (harmonic-forge#656)'),
+         },
+        },
+    )
+    #: (kind, model, marker, tier, output index or UNTRUSTED, route_floor_marker.write calls,
+    #: marker after), every value recorded against 178ba5f. An UNTRUSTED row's output is
+    #: `_untrusted_expected`'s literal text instead; its write count and marker are 178ba5f's.
+    AT_178BA5F = (
+        ('typed', 'claude-sonnet-5', 'present', 'deep', 0, 1, True),
+        ('typed', 'claude-sonnet-5', 'present', 'unreadable', 1, 0, True),
+        ('typed', 'claude-sonnet-5', 'present', 'fast', 2, 0, False),
+        ('typed', 'claude-sonnet-5', 'present', 'past-cap', 3, 0, True),
+        ('typed', 'claude-sonnet-5', 'absent', 'deep', 0, 1, True),
+        ('typed', 'claude-sonnet-5', 'absent', 'unreadable', 1, 0, False),
+        ('typed', 'claude-sonnet-5', 'absent', 'fast', 4, 0, False),
+        ('typed', 'claude-sonnet-5', 'absent', 'past-cap', 3, 0, False),
+        ('typed', 'claude-sonnet-5', 'write-fails', 'deep', 5, 1, False),
+        ('typed', 'claude-sonnet-5', 'write-fails', 'unreadable', 1, 0, False),
+        ('typed', 'claude-sonnet-5', 'write-fails', 'fast', 4, 0, False),
+        ('typed', 'claude-sonnet-5', 'write-fails', 'past-cap', 3, 0, False),
+        ('typed', 'claude-opus-5', 'present', 'deep', 4, 0, True),
+        ('typed', 'claude-opus-5', 'present', 'unreadable', 6, 0, True),
+        ('typed', 'claude-opus-5', 'present', 'fast', 2, 0, False),
+        ('typed', 'claude-opus-5', 'present', 'past-cap', 7, 0, True),
+        ('typed', 'claude-opus-5', 'absent', 'deep', UNTRUSTED, 1, True),
+        ('typed', 'claude-opus-5', 'absent', 'unreadable', UNTRUSTED, 1, True),
+        ('typed', 'claude-opus-5', 'absent', 'fast', UNTRUSTED, 0, False),
+        ('typed', 'claude-opus-5', 'absent', 'past-cap', UNTRUSTED, 1, True),
+        ('typed', 'claude-opus-5', 'write-fails', 'deep', UNTRUSTED, 1, False),
+        ('typed', 'claude-opus-5', 'write-fails', 'unreadable', UNTRUSTED, 1, False),
+        ('typed', 'claude-opus-5', 'write-fails', 'fast', UNTRUSTED, 0, False),
+        ('typed', 'claude-opus-5', 'write-fails', 'past-cap', UNTRUSTED, 1, False),
+        ('typed', 'claude-fable-5', 'present', 'deep', 4, 0, True),
+        ('typed', 'claude-fable-5', 'present', 'unreadable', 6, 0, True),
+        ('typed', 'claude-fable-5', 'present', 'fast', 2, 0, False),
+        ('typed', 'claude-fable-5', 'present', 'past-cap', 7, 0, True),
+        ('typed', 'claude-fable-5', 'absent', 'deep', UNTRUSTED, 1, True),
+        ('typed', 'claude-fable-5', 'absent', 'unreadable', UNTRUSTED, 1, True),
+        ('typed', 'claude-fable-5', 'absent', 'fast', UNTRUSTED, 0, False),
+        ('typed', 'claude-fable-5', 'absent', 'past-cap', UNTRUSTED, 1, True),
+        ('typed', 'claude-fable-5', 'write-fails', 'deep', UNTRUSTED, 1, False),
+        ('typed', 'claude-fable-5', 'write-fails', 'unreadable', UNTRUSTED, 1, False),
+        ('typed', 'claude-fable-5', 'write-fails', 'fast', UNTRUSTED, 0, False),
+        ('typed', 'claude-fable-5', 'write-fails', 'past-cap', UNTRUSTED, 1, False),
+        ('lone-queued', 'claude-sonnet-5', 'present', 'deep', 0, 1, True),
+        ('lone-queued', 'claude-sonnet-5', 'present', 'unreadable', 8, 0, True),
+        ('lone-queued', 'claude-sonnet-5', 'present', 'fast', 2, 0, False),
+        ('lone-queued', 'claude-sonnet-5', 'absent', 'deep', 0, 1, True),
+        ('lone-queued', 'claude-sonnet-5', 'absent', 'unreadable', 8, 0, False),
+        ('lone-queued', 'claude-sonnet-5', 'absent', 'fast', 4, 0, False),
+        ('lone-queued', 'claude-sonnet-5', 'write-fails', 'deep', 9, 1, False),
+        ('lone-queued', 'claude-sonnet-5', 'write-fails', 'unreadable', 8, 0, False),
+        ('lone-queued', 'claude-sonnet-5', 'write-fails', 'fast', 4, 0, False),
+        ('lone-queued', 'claude-opus-5', 'present', 'deep', 4, 0, True),
+        ('lone-queued', 'claude-opus-5', 'present', 'unreadable', 6, 0, True),
+        ('lone-queued', 'claude-opus-5', 'present', 'fast', 2, 0, False),
+        ('lone-queued', 'claude-opus-5', 'absent', 'deep', UNTRUSTED, 1, True),
+        ('lone-queued', 'claude-opus-5', 'absent', 'unreadable', UNTRUSTED, 1, True),
+        ('lone-queued', 'claude-opus-5', 'absent', 'fast', UNTRUSTED, 0, False),
+        ('lone-queued', 'claude-opus-5', 'write-fails', 'deep', UNTRUSTED, 1, False),
+        ('lone-queued', 'claude-opus-5', 'write-fails', 'unreadable', UNTRUSTED, 1, False),
+        ('lone-queued', 'claude-opus-5', 'write-fails', 'fast', UNTRUSTED, 0, False),
+        ('lone-queued', 'claude-fable-5', 'present', 'deep', 4, 0, True),
+        ('lone-queued', 'claude-fable-5', 'present', 'unreadable', 6, 0, True),
+        ('lone-queued', 'claude-fable-5', 'present', 'fast', 2, 0, False),
+        ('lone-queued', 'claude-fable-5', 'absent', 'deep', UNTRUSTED, 1, True),
+        ('lone-queued', 'claude-fable-5', 'absent', 'unreadable', UNTRUSTED, 1, True),
+        ('lone-queued', 'claude-fable-5', 'absent', 'fast', UNTRUSTED, 0, False),
+        ('lone-queued', 'claude-fable-5', 'write-fails', 'deep', UNTRUSTED, 1, False),
+        ('lone-queued', 'claude-fable-5', 'write-fails', 'unreadable', UNTRUSTED, 1, False),
+        ('lone-queued', 'claude-fable-5', 'write-fails', 'fast', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-sonnet-5', 'present', 'deep', 9, 0, True),
+        ('other-notification', 'claude-sonnet-5', 'present', 'unreadable', 8, 0, True),
+        ('other-notification', 'claude-sonnet-5', 'present', 'fast', 4, 0, True),
+        ('other-notification', 'claude-sonnet-5', 'absent', 'deep', 9, 0, False),
+        ('other-notification', 'claude-sonnet-5', 'absent', 'unreadable', 8, 0, False),
+        ('other-notification', 'claude-sonnet-5', 'absent', 'fast', 4, 0, False),
+        ('other-notification', 'claude-sonnet-5', 'write-fails', 'deep', 9, 0, False),
+        ('other-notification', 'claude-sonnet-5', 'write-fails', 'unreadable', 8, 0, False),
+        ('other-notification', 'claude-sonnet-5', 'write-fails', 'fast', 4, 0, False),
+        ('other-notification', 'claude-opus-5', 'present', 'deep', 4, 0, True),
+        ('other-notification', 'claude-opus-5', 'present', 'unreadable', 6, 0, True),
+        ('other-notification', 'claude-opus-5', 'present', 'fast', 4, 0, True),
+        ('other-notification', 'claude-opus-5', 'absent', 'deep', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-opus-5', 'absent', 'unreadable', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-opus-5', 'absent', 'fast', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-opus-5', 'write-fails', 'deep', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-opus-5', 'write-fails', 'unreadable', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-opus-5', 'write-fails', 'fast', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-fable-5', 'present', 'deep', 4, 0, True),
+        ('other-notification', 'claude-fable-5', 'present', 'unreadable', 6, 0, True),
+        ('other-notification', 'claude-fable-5', 'present', 'fast', 4, 0, True),
+        ('other-notification', 'claude-fable-5', 'absent', 'deep', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-fable-5', 'absent', 'unreadable', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-fable-5', 'absent', 'fast', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-fable-5', 'write-fails', 'deep', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-fable-5', 'write-fails', 'unreadable', UNTRUSTED, 0, False),
+        ('other-notification', 'claude-fable-5', 'write-fails', 'fast', UNTRUSTED, 0, False),
+    )
+
+    REASONS = {"deep": f"{HRSE}#1830 is Tier deep",
+               "unreadable": f"Tier for {HRSE}#1830 could not be read (HTTP 403: API rate limit exceeded)",
+               "past-cap": f"Tier not checked for {HRSE}#1106"}
+
+    def _untrusted_expected(self, kind, model, marker, tier):
+        """The literal output of an untrusted_high row: an Opus or Fable reading with no marker."""
+        if tier == "fast":
+            return None
+        reason = self.REASONS[tier]
+        if kind == "other-notification":
+            return self._advisory(self.NOT_A_TRIGGER, reason, model)
+        if marker == "absent":
+            return {"systemMessage": self.RAISED.format(reason=reason, model=model)}
+        if kind == "lone-queued":
+            return self._advisory(self.WRITE_FAILED, reason, model)
+        return {"decision": "block",
+                "reason": f"{reason}. {self.UNCONFIRMED_HIGH.format(model=model)} "
+                          f"{self.UNCONFIRMED_BLOCK} (harmonic-forge#656)"}
+
+    def test_decisions_and_marker_state_are_unchanged_from_178ba5f(self):
+        """harmonic-forge#1573 AC5: every row's full output, write calls and marker state.
+
+        A row whose reading is not untrusted_high must give 178ba5f's output byte for byte; an
+        untrusted_high row gives its literal new wording. Every row makes 178ba5f's number of
+        route_floor_marker.write calls and leaves 178ba5f's marker state."""
+        cap = t._MAX_TIER_READS
+        prompts = {"typed": "Implement H1830",
+                   "lone-queued": self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff owes=implement"),
+                   "other-notification": self._event(f"{HRSE}#1830 left-queue-for-l2")}
+        tiers = {"deep": "deep", "unreadable": "FAIL", "fast": "fast"}
+        self.assertEqual(len(self.AT_178BA5F), 3 * 3 * 3 * 3 + 3 * 3)
+        real_write = t.route_floor_marker.write
+        for kind, model, marker, tier, at_178ba5f, writes, marked in self.AT_178BA5F:
+            with self.subTest(kind=kind, model=model, marker=marker, tier=tier):
+                untrusted = model != "claude-sonnet-5" and marker != "present"
+                self.assertEqual(at_178ba5f == self.UNTRUSTED, untrusted)
+                t.route_floor_marker.clear(self.SID)
+                if marker == "present":
+                    self._mark()
+                if tier == "past-cap":
+                    prompt = "Implement " + " ".join(f"H{1100 + i}" for i in range(cap + 1))
+                    tier_map = {(HRSE, 1100 + i): "fast" for i in range(cap)}
+                else:
+                    prompt, tier_map = prompts[kind], {(HRSE, 1830): tiers[tier]}
+                calls = []
+
+                def counting(session_id, calls=calls, fails=marker == "write-fails"):
+                    calls.append(session_id)
+                    return False if fails else real_write(session_id)
+
+                with patch.object(t.route_floor_marker, "write", side_effect=counting):
+                    out, _ = self._run(prompt, model, tier_map)
+                expected = (self._untrusted_expected(kind, model, marker, tier) if untrusted
+                            else self.OUTPUTS_AT_178BA5F[at_178ba5f])
+                self.assertEqual(out, expected)
+                self.assertEqual(len(calls), writes)
+                self.assertEqual(self._marked(), marked)
 
     def test_a_trusted_reading_is_unchanged(self):
         self._mark()
@@ -659,7 +958,8 @@ class RouteFloorRaise(unittest.TestCase):
 
     def test_a_high_reading_on_an_other_notification_writes_nothing(self):
         out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-opus-5", {(HRSE, 1830): "deep"})
-        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertIn("read the exact model id in your own system prompt", out["systemMessage"])
+        self.assertNotIn("Do NOT start", out["systemMessage"])
         self.assertFalse(self._marked())
 
     def test_ac4_no_signal_or_another_lane_blocks(self):

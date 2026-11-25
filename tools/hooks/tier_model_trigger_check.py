@@ -25,6 +25,9 @@ too, so `vitalharmony/hrse#1830 queued-for-l2` is checked like a trigger.
   Tier, model and the fix. A Lane 2 session whose launcher loaded the route-floor
   mod is raised instead: this writes its marker and the prompt proceeds with a
   visible line (harmonic-forge#1250). A failed write blocks as above.
+  An unconfirmed high reading that is not raised tells the session to check its
+  own model id, and blocks only when the marker write fails on a typed trigger
+  (harmonic-forge#1573).
 - Tier unreadable, model not high (AC2): block with the error and the ways
   forward. On a high model: proceed with a visible note, so a rate-limit
   window cannot wedge the lanes.
@@ -67,6 +70,21 @@ _MAX_TIER_READS = 6
 # 30 s registration timeout; a timed-out read is a failed read, not an allow.
 _READ_TIMEOUT_SECONDS = 4
 _ERROR_CHARS = 200
+_UNCONFIRMED_HIGH = (
+    "This hook's model reading is {model}, and no route-floor marker confirms that this "
+    "turn's requests go out on a high-tier model (harmonic-forge#1250)."
+)
+_SELF_CHECK = (
+    "Session: read the exact model id in your own system prompt. If it is an Opus or "
+    "Fable model, proceed, and do not ask the operator to run /model. This message blocks "
+    "nothing. If the id is not an Opus or Fable model, do not start these, and ask the "
+    "operator to run /model opus (or /model fable) and resend."
+)
+_UNCONFIRMED_BLOCK = (
+    "No marker could be written, so this prompt is blocked. Resend it. If the block "
+    "repeats, check that the route-floor marker directory is writable, or relaunch the "
+    "lane with LANE_MODEL set. Running /model does not clear this block."
+)
 
 _VERBS = (
     r"(?:re-?)?implement|(?:re-?)?plan|fix|blueprint|test|verify"
@@ -262,8 +280,7 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
     """
     untrusted_high = not trusted and model_tier_gate.claude_model_is_high(model)
     high = model_tier_gate.claude_model_is_high(model) and not untrusted_high
-    model_label = (f"{model}, read from a raise whose marker is gone" if untrusted_high
-                   else model or "an unresolved model")
+    model_label = model or "an unresolved model"
     checked, unchecked = refs[:_MAX_TIER_READS], refs[_MAX_TIER_READS:]
     blocks: list[str] = []
     deep_refs: list[str] = []
@@ -331,6 +348,23 @@ def decide(refs: list[tuple[str, int]], model: str | None, lookup,
                 f"go out on a high-tier model. The footer still shows the launch model "
                 f"(harmonic-forge#1250).")
         return {"systemMessage": "\n".join([line, *notes])}
+    if blocks and untrusted_high:
+        found = "; ".join(reasons) + ". " + _UNCONFIRMED_HIGH.format(model=model)
+        if advisory:
+            # Here a set raise_floor means the write was tried and failed: a lone
+            # queued-for-l2 event is a trigger (assigned), so it is not "not a trigger".
+            lead = ("Belt event not blocked. No route-floor marker could be written, so this "
+                    "turn's requests are not raised. " if raise_floor is not None
+                    else "Belt/task notification not blocked (it is not a trigger). ")
+            message = "\n".join(
+                [lead + found,
+                 _SELF_CHECK, *notes]) + " (harmonic-forge#656)"
+            return {"systemMessage": message,
+                    "hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                           "additionalContext": message}}
+        return {"decision": "block",
+                "reason": "\n".join([found + " " + _UNCONFIRMED_BLOCK, *notes])
+                          + " (harmonic-forge#656)"}
     if blocks and advisory:
         # A belt/task notification is not a trigger: it lists every queued
         # issue, so blocking it would erase every belt tick of a Sonnet lane
