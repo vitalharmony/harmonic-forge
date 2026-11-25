@@ -238,23 +238,6 @@ class ForceModes(ForceTrigger):
         self.assertEqual((grant["mode"], grant["sha_prefix"], grant["sha"], grant["status"]),
                          ("route", "abcdef1234" * 4, None, "pending"))
 
-    def test_a_ci_outage_grant_binds_the_typed_full_sha(self) -> None:
-        """harmonic-forge#894 step 5 (pitch amendment 6)."""
-        with mock.patch.object(force_grant, "covered_head", lambda repo, issue: None):
-            receipt = self.force("FORCE F1166 ci-outage " + "ABCDEF1234" * 4 + ": GitHub Actions down")
-        self.assertIn("pending ci-outage grant", receipt)
-        self.assertIn("check-full receipt", receipt)
-        grant = self.grant()
-        self.assertEqual((grant["mode"], grant["sha_prefix"], grant["sha"]),
-                         ("ci-outage", "abcdef1234" * 4, None))
-
-    def test_a_ci_outage_line_needs_a_full_sha(self) -> None:
-        for line, why in (("FORCE F1166 ci-outage abcdef123456: x", "not a full 40-character"),
-                          ("FORCE F1166 ci-outage: x", "names the SHA it releases")):
-            with self.subTest(line=line):
-                self.assertIn(why, self.force(line))
-                self.assertIsNone(self.grant())
-
     def test_route_without_sha_refuses_and_says_why(self) -> None:
         self.assertIn("names the head it releases", self.force("FORCE F1166 route: release"))
         self.assertIsNone(self.grant())

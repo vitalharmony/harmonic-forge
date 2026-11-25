@@ -117,14 +117,11 @@ def lookup(slug: str, sha: str) -> dict | None:
 #: needs only what CI cannot run. It never replaces another source's receipt; a
 #: full `check` replaces it (the upgrade path).
 LOCAL_CHECK_SOURCE = "local-check"
+SOURCES = ("check", LOCAL_CHECK_SOURCE)
 #: harmonic-forge#894 C1: a `local-check` run inside l1_post's scratch worktree.
 #: It keeps local-check's no-replace rule, so it never displaces a full
-#: `l1-post-scratch` receipt or a `check-full` substitute receipt.
+#: `l1-post-scratch` receipt.
 L1_POST_LOCAL_SOURCE = "l1-post-scratch-local"
-#: harmonic-forge#894 step 1: a consuming repo's `check-full` task records its
-#: own label, the substitute evidence a `ci-outage` override reads.
-CHECK_FULL_SOURCE = "check-full"
-SOURCES = ("check", LOCAL_CHECK_SOURCE, CHECK_FULL_SOURCE)
 #: The sources that never replace an existing receipt for the same SHA.
 NO_REPLACE_SOURCES = (LOCAL_CHECK_SOURCE, L1_POST_LOCAL_SOURCE)
 

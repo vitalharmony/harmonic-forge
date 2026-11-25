@@ -306,22 +306,6 @@ class ModeBindingTests(Store):
             G.consume(KEY, grant["granted_at"], SHA, NOW, mode="plain")
         self.assertEqual(G.consume(KEY, grant["granted_at"], SHA, NOW, mode="cluster")["status"], "consumed")
 
-    def test_ci_outage_grant_binds_the_whole_sha_and_no_other_mode(self):
-        """harmonic-forge#894 step 5: a ci-outage grant is a full-SHA prefix
-        mode, like route, and authorizes nothing else."""
-        self.usable("ci-outage", None, SHA)
-        self.assertEqual(G.require(REPO, ISSUE, SHA, NOW, mode="ci-outage")["mode"], "ci-outage")
-        for mode in ("plain", "route", "reforge"):
-            with self.subTest(mode=mode), self.assertRaises(G.GrantRefused):
-                G.require(REPO, ISSUE, SHA, NOW, mode=mode)
-        with self.assertRaises(G.GrantRefused):
-            G.require(REPO, ISSUE, MOVED, NOW, mode="ci-outage")
-        for prefix in (SHA[:12], SHA[:39]):
-            with self.subTest(prefix=prefix):
-                self.usable("ci-outage", None, prefix)
-                with self.assertRaises(G.GrantRefused):
-                    G.require(REPO, ISSUE, SHA, NOW, mode="ci-outage")
-
     def test_route_grant_authorizes_no_preclose_override(self):
         """harmonic-forge#1244 AC3. The grant carries the full SHA too, so only
         the mode check can refuse (kill check: route read as plain in `_mode`)."""

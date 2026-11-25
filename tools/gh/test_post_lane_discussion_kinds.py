@@ -214,7 +214,7 @@ class EndToEnd(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict("os.environ", {"LANE": "3"}), \
                  mock.patch.object(P, "check_gate_result",
-                                   lambda repo, body, ack_no_pr_required=None, **_kw: (True, "[GATE] stubbed")), \
+                                   lambda repo, body, ack_no_pr_required=None: (True, "[GATE] stubbed")), \
                  mock.patch.object(P, "comment_body", fake_comment_body):
                 P.main()
         return captured["text"]
@@ -271,7 +271,7 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
         gate comments carry no `kind=gate-result` footer."""
         seen = []
         with mock.patch.object(P, "check_gate_result",
-                               lambda repo, body, ack_no_pr_required=None, **_kw: (
+                               lambda repo, body, ack_no_pr_required=None: (
                                    seen.append(kind_marker := repo),
                                    (True, "ok"))[1]):
             P.require_green_ci("discussion", "o/r", self.PASS_BODY)
@@ -283,7 +283,7 @@ class GateResultRequiresGreenCiTests(unittest.TestCase):
         thing to drift; a non-report returns cleanly from the checker."""
         seen = []
         with mock.patch.object(P, "check_gate_result",
-                               lambda repo, body, ack_no_pr_required=None, **_kw: (
+                               lambda repo, body, ack_no_pr_required=None: (
                                    seen.append(body), (True, "ok"))[1]):
             P.require_green_ci("spec", "o/r", "## Lane 2 Plan — H1\n")
         self.assertEqual(len(seen), 1)
@@ -333,43 +333,13 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
         check must key on the BODY, not on the flag the author chose."""
         seen = []
 
-        def spy(repo, body, ack_no_pr_required=None, **_kw):
+        def spy(repo, body, ack_no_pr_required=None):
             seen.append(repo)
             return True, "ok"
         with mock.patch.object(P, "check_gate_result", spy):
             self._post(GATE_PASS, kind="discussion")
         self.assertEqual(seen, ["vitalharmony/harmonic-forge"], "a gate report posted as `discussion` "
                                         "skipped the CI check entirely")
-
-    def test_the_gate_check_gets_the_issue_for_a_ci_outage_grant(self):
-        """harmonic-forge#894 step 5: without `issue`, a ci-outage grant could
-        never release a PASS (pitch amendment 1)."""
-        seen = []
-
-        def spy(repo, body, ack_no_pr_required=None, **kw):
-            seen.append(kw.get("issue"))
-            return True, "ok"
-        with mock.patch.object(P, "check_gate_result", spy):
-            self._post(GATE_PASS)
-        self.assertEqual(seen, [1])
-
-    def test_a_refused_pass_retries_with_the_aes_ci_override(self):
-        """harmonic-forge#894 PATCH A3: a PASS refused for unfinished CI is
-        re-checked with the ci-override the round's AE named, and posts only if
-        that release holds."""
-        calls = []
-
-        def spy(repo, body, ack_no_pr_required=None, **kw):
-            calls.append(kw.get("ci_override"))
-            if kw.get("ci_override") == "777":
-                return True, "released"
-            return False, "[GATE] REFUSED: CI has not completed for the SHA this PASS names."
-        with mock.patch.object(P, "check_gate_result", spy), \
-             mock.patch.object(P, "post_merge_readonly_claim", return_value=None), \
-             mock.patch.object(P, "ci_override_id", return_value="777") as found:
-            self._post(GATE_PASS)
-        self.assertEqual(calls, [None, "777"])
-        found.assert_called_once()
 
     def test_main_resolves_an_omitted_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -382,154 +352,6 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
                  mock.patch.object(P, "comment_body", return_value=("https://example/1", "")):
                 P.main()
         resolve.assert_called_once_with(None)
-
-
-class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
-    """Two-pass PATCH P5: the real ci_override_id, with the thread read and the
-    authority decision stubbed."""
-
-    SHA = "cccccccccccccccccccccccccccccccccccccccc"
-    PASS = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {SHA}\n"
-
-    @staticmethod
-    def signed(prefix: str, fields: str, joiner: str = "\n\n") -> str:
-        """`prefix` + a footer carrying a GENUINE body-sha256 of `prefix`, the
-        way l1_post computes it (footer_digest.marker_verifies with no prod-run
-        token: sha256 of the rstripped text before the footer), so a case below
-        is refused only by the rule it names, never by a bad digest."""
-        digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
-        return f"{prefix}{joiner}<!-- l1-post v1; {fields} body-sha256={digest}; checks=x -->"
-
-    def ae(self, body, sha=None, kind="ae"):
-        return {"body": self.signed(body, f"kind={kind}; sha={sha or self.SHA}; ci-override=777;")}
-
-    def override(self, authority):
-        with mock.patch.object(P.check_lane3_ready, "fetch_comments", return_value=[]), \
-             mock.patch.object(P.check_lane3_ready, "resolve_gate_authority",
-                               return_value=(authority, "ok")):
-            return P.ci_override_id("vitalharmony/harmonic-forge", 894, self.PASS)
-
-    def test_the_ae_footer_names_the_grant(self):
-        self.assertEqual(self.override(self.ae("## AE")), "777")
-
-    def test_prose_never_names_it(self):
-        prose = {"body": self.signed("## AE\nci-override=777; in prose", f"kind=ae; sha={self.SHA};")}
-        self.assertIsNone(self.override(prose))
-
-    def test_the_footer_must_carry_a_verifying_digest(self):
-        """Fourth check: the AE's own footer is proven by its body digest. No
-        digest, or a body edited after posting, names no grant."""
-        bare = {"body": f"## AE\n\n<!-- l1-post v1; kind=ae; sha={self.SHA}; ci-override=777; checks=x -->"}
-        self.assertIsNone(self.override(bare))
-        edited = self.ae("## AE")
-        edited["body"] = edited["body"].replace("## AE", "## AE (edited)")
-        self.assertIsNone(self.override(edited))
-
-    def test_another_kind_or_sha_never_names_it(self):
-        self.assertIsNone(self.override(self.ae("## x", kind="sweep")))
-        self.assertIsNone(self.override(self.ae("## AE", sha="d" * 40)))
-
-    def test_text_after_the_footer_closes_never_names_it(self):
-        """Post-verdict finding 3: an id written after `-->` on the footer line
-        is prose, not the footer."""
-        after = {"body": self.signed("## AE", f"kind=ae; sha={self.SHA};") + " ci-override=777; prose"}
-        self.assertIsNone(self.override(after))
-        # Non-vacuous: the same field inside the signed comment names the grant.
-        self.assertEqual(self.override(self.ae("## AE")), "777")
-
-    def test_only_the_one_signed_footer_ending_the_body_names_it(self):
-        """Post-verdict findings 1 (second to fourth checks): the id, kind and
-        SHA come from the AE's one signed footer. Every case carries a GENUINE
-        digest of the text before its last footer, so each is refused by the
-        structural rule it names, not by the digest."""
-        ae_fields = f"kind=ae; sha={self.SHA}; ci-override=777;"
-        decoy = f"<!-- l1-post v1; kind=sweep; sha={'d' * 40}; ci-override=777; checks=x -->"
-        carry = f"<!-- l1-post v1; kind=carry-forward; sha={self.SHA}; checks=x -->"
-        cases = {
-            "an unclosed lookalike above": self.signed("## AE\n<!-- l1-post v1; ci-override=777;", ae_fields),
-            # Fourth check: the lookalike opener on the SAME line as the footer.
-            "an unclosed lookalike on the footer line":
-                self.signed("## AE", ae_fields, joiner="\n\n<!-- l1-post v1; ci-override=777; "),
-            "an earlier unrelated footer": self.signed("## AE\n" + decoy, ae_fields),
-            # Kill run: an AE-SHAPED decoy (same kind and SHA, its own id, and a
-            # body-sha256 field of its own) above the real signed footer. Only
-            # "the first footer ends the body" refuses it: kind, SHA, digest
-            # presence and the LAST footer's digest all pass.
-            "an AE-shaped footer above the real one": self.signed(
-                f"## AE\n<!-- l1-post v1; kind=ae; sha={self.SHA}; ci-override=999; "
-                f"body-sha256={'0' * 64}; checks=x -->",
-                f"kind=ae; sha={self.SHA};"),
-            "a fenced copy above": self.signed("## AE\n```\n" + decoy + "\n```", ae_fields),
-            "a carry-forward quoting an AE footer": self.signed("## carry\n" + carry, ae_fields),
-            "text after the footer": self.signed("## AE", ae_fields) + "\nci-override=777;",
-            "a CR inside the footer": self.signed("## AE", ae_fields.replace("ci-override=777;",
-                                                                             "ci-override=777;\r")),
-        }
-        for name, body in cases.items():
-            with self.subTest(name):
-                self.assertIsNone(self.override({"body": body}))
-        # Non-vacuous: the same fields in one signed footer name the grant.
-        self.assertEqual(self.override({"body": self.signed("## AE", ae_fields)}), "777")
-
-
-class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):
-    """Post-verdict finding 2: the real ci_outage_pass_refusal, with only the
-    grant store read stubbed."""
-
-    SHA = "c" * 40
-
-    def refusal(self, slot):
-        import gate_ci  # noqa: PLC0415
-        fg = mock.Mock(read_grant=mock.Mock(return_value=slot))
-        iw = mock.Mock(issue_key=mock.Mock(return_value="F894"))
-        with mock.patch.object(gate_ci, "_outage_modules", return_value=(None, fg, iw)):
-            return gate_ci.ci_outage_pass_refusal("vitalharmony/harmonic-forge", 894,
-                                                  self.SHA, "777")
-
-    def test_an_empty_slot_is_not_called_replaced(self):
-        self.assertIsNone(self.refusal(None))
-
-    def test_the_named_grant_still_in_the_slot_is_not_replaced(self):
-        self.assertIsNone(self.refusal({"comment_id": 777, "mode": "ci-outage"}))
-
-    def test_a_different_grant_in_the_slot_is_named(self):
-        message = self.refusal({"comment_id": 888, "mode": "plain"})
-        self.assertIn("replaced by a later FORCE line", message)
-        self.assertIn(f"FORCE F894 ci-outage {self.SHA}", message)
-
-    REPLACED = "[GATE] REFUSED: ... replaced by a later FORCE line"
-
-    def caller_message(self, second_read):
-        """require_green_ci's final refusal when the first read is unfinished CI
-        and the second (with the AE's override) is `second_read`; only
-        check_gate_result, the claim, the override id and the grant-store
-        diagnostic are stubbed."""
-        body = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {self.SHA}\n"
-        reads = iter([(False, P.UNFINISHED_CI_REFUSAL + "  cccccccc: pending"),
-                      (False, second_read)])
-        with mock.patch.object(P, "check_gate_result", side_effect=lambda *a, **k: next(reads)), \
-             mock.patch.object(P, "post_merge_readonly_claim", return_value=None), \
-             mock.patch.object(P, "ci_override_id", return_value="777"), \
-             mock.patch("gate_ci.ci_outage_pass_refusal", return_value=self.REPLACED), \
-             mock.patch.object(P, "fail", side_effect=SystemExit) as failed:
-            with self.assertRaises(SystemExit):
-                P.require_green_ci("gate-result", "vitalharmony/harmonic-forge", body, issue=894)
-        return failed.call_args.args[0]
-
-    def test_an_unfinished_second_read_gets_the_replacement_remedy(self):
-        """Post-verdict finding 4 (second check): the diagnostic IS applied on
-        the unfinished-CI refusal."""
-        self.assertEqual(self.caller_message(P.UNFINISHED_CI_REFUSAL + "  cccccccc: pending"),
-                         self.REPLACED)
-
-    def test_a_red_second_read_keeps_its_own_message(self):
-        """A red read is never masked, even when a check name in its detail
-        carries the unfinished-CI phrase (post-verdict finding 2, second check)."""
-        # The detail carries the WHOLE unfinished-CI first line, so only a
-        # match anchored at the start keeps this red (third check, finding 3).
-        red = ("[GATE] REFUSED: CI is RED for the SHA this PASS names.\n"
-               "  cccccccc: " + P.UNFINISHED_CI_REFUSAL)
-        self.assertEqual(self.caller_message(red), red)
 
 
 class CallerRelativeFileResolutionTests(unittest.TestCase):
@@ -915,7 +737,7 @@ class PostMergeReadonlyClaimTests(unittest.TestCase):
         """Run `require_green_ci`; returns (result_or_SystemExit, check calls, fetches)."""
         calls, fetches = [], []
 
-        def fake_check(repo, text, run=None, *, ack_no_pr_required=None, post_merge_readonly=None, **_kw):
+        def fake_check(repo, text, run=None, *, ack_no_pr_required=None, post_merge_readonly=None):
             calls.append({"ack": ack_no_pr_required, "claim": post_merge_readonly})
             if post_merge_readonly is not None:
                 return True, f"[GATE] post-merge-read-only: 21e587db is on main. Claim: {post_merge_readonly}"

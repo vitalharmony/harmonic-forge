@@ -102,21 +102,6 @@ class Decision1(GateCase):
         self.assertIsNotNone(self.decide(FORCE_CMD.replace("tools/gh/", str(FORGE / "tools/gh") + "/")))
 
 
-class CiOutageAe(GateCase):
-    """harmonic-forge#894 test case 13 (C5): an AE released by a `ci-outage`
-    grant is the existing l1_post AE mode, so its own dry run is the precheck
-    and the first real post is not refused by this gate."""
-
-    REAL = ("python3 tools/gh/l1_post.py --issue 894 --kind ae --sha HEAD "
-            "--branch feat/894-x --file ae.md")
-
-    def test_the_first_real_ci_outage_ae_passes_after_its_dry_run(self) -> None:
-        (self.repo / "ae.md").write_text("## Lane 1 AE\n")
-        self.assertIsNotNone(self.decide(self.REAL))
-        self.record("tools/gh/l1_post.py", shlex.split(self.REAL)[2:] + ["--dry-run"])
-        self.assertIsNone(self.decide(self.REAL))
-
-
 class Decision3RefusalText(GateCase):
     def test_refusal_prints_exact_precheck(self) -> None:
         reason = self.decide(FORCE_CMD)

@@ -606,55 +606,6 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
             f"body-sha256={digest}{override}{extra} -->\n")
 
 
-#: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
-CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
-#: The first line of `gate_ci.check_gate_result`'s unfinished-CI refusal; the
-#: P3 diagnostic replaces only that refusal, never a red one.
-UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
-
-
-def ci_override_id(repo: str, issue: int, body: str) -> str | None:
-    """The grant comment id the round's AE named in its `ci-override=` footer,
-    for the gated SHA, or None. The AE is `resolve_gate_authority`'s, as for
-    the post-merge read-only claim."""
-    sha = gated_sha(body)
-    if sha is None:
-        return None
-    comments = check_lane3_ready.fetch_comments(repo, issue)
-    authority, _message = check_lane3_ready.resolve_gate_authority(comments, sha)
-    if authority is None:
-        return None
-    # PATCH P5 and post-verdict findings (second to fourth checks): the grant
-    # id, the kind and the SHA all come from the AE's OWN footer, proven by its
-    # body digest rather than by parsing around lookalikes. l1_post refuses a
-    # body that carries its reserved marker and stamps every AE footer with
-    # `body-sha256`, so a genuine AE's FIRST l1-post comment is its footer:
-    # one line, one opener, ending the body, and `verify_body_sha256` (which
-    # checks the LAST footer) accepts it (harmonic-forge#1358). The first
-    # comment ending the body makes it the last, so the two checks read the
-    # same footer. Anything else -- an edited body, a second footer, an
-    # unclosed lookalike on the same line or above, a CR/LF inside the footer,
-    # text after it, a footer with no digest -- names no grant.
-    text = authority.get("body", "") or ""
-    last = check_lane3_ready._ANY_FOOTER.search(text)
-    if last is None or text[last.end():].strip():
-        return None
-    footer = last.group(0)
-    if "\n" in footer or "\r" in footer or footer.count("<!--") != 1:
-        return None
-    if (check_lane3_ready.FOOTER_BODY_SHA.search(footer) is None
-            or not check_lane3_ready.verify_body_sha256(authority)):
-        return None
-    kind = check_lane3_ready.FOOTER_KIND.search(footer)
-    if not kind or kind.group(1).lower() != "ae":
-        return None
-    footer_sha = check_lane3_ready.FOOTER_SHA.search(footer)
-    if not footer_sha or not check_lane3_ready.same_sha(footer_sha.group(1), sha):
-        return None
-    found = CI_OVERRIDE_FIELD.findall(footer)
-    return found[0] if len(found) == 1 else None
-
-
 def post_merge_readonly_claim(repo: str, issue: int, body: str) -> str | None:
     """harmonic-forge#1495: the reason the round's AE gave for a post-merge
     read-only PASS, or None when this PASS has no such claim.
@@ -739,7 +690,7 @@ def require_green_ci(
     # `lane_state.py` does, and returns cleanly for anything that is not one;
     # asking it every time means the two can never disagree about what a gate
     # report IS.
-    ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required, issue=issue)
+    ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
     # harmonic-forge#1495: only a refusal that says CI has not completed can be
     # lifted, only when `issue` is known and no acknowledgment was given (the
     # tip-plus-ack route decides alone then), and the AE is read once, on this
@@ -749,23 +700,6 @@ def require_green_ci(
         claim = post_merge_readonly_claim(repo, issue, body)
         if claim is not None:
             ok, message = check_gate_result(repo, body, post_merge_readonly=claim)
-    # harmonic-forge#894 PATCH A3: a PASS still refused for unfinished CI is
-    # released only by the consumed ci-outage grant the round's AE named in
-    # its footer. Same gating as the claim above: an issue, no acknowledgment.
-    if (not ok and issue is not None and ack_no_pr_required is None
-            and "CI has not completed" in message):
-        override = ci_override_id(repo, issue, body)
-        if override is not None:
-            ok, message = check_gate_result(repo, body, issue=issue, ci_override=override)
-            # PATCH P3: name the remedy when the grant was replaced -- only while
-            # the refusal is still the unfinished-CI one, matched on its first
-            # line, so a red read keeps its own message even when a check name
-            # carries the phrase (post-verdict findings 2, both checks).
-            if not ok and message.startswith(UNFINISHED_CI_REFUSAL):
-                from gate_ci import ci_outage_pass_refusal  # noqa: PLC0415
-                sha = gated_sha(body)
-                message = (ci_outage_pass_refusal(repo, issue, sha or "", override)
-                           or message)
     if not ok:
         fail(message)
     # Only the acknowledged override is recorded as one in the footer: the

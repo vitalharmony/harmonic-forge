@@ -6,10 +6,9 @@ Pending waits (exit 3); every other non-green state, an unresolvable repo, an
 unreadable required set and a reader exception refuse. The no-PR
 acknowledgment releases only by `gate_ci.no_pr_ack_release`, the rule
 `check_gate_result` uses (A1), and only when `require_open_pr` applied it (A2).
-A `ci-outage` grant releases a non-red state beside a check-full receipt at the
-current forge HEAD, is consumed by the post, and is named in the AE's footer;
-Lane 3's PASS releases only against that consumed grant (A3). `grant_on_main`
-and `merged_readonly` AEs never reach the gate (C2)."""
+A CI outage has no override: it waits or refuses like any other non-green read
+(the operator's 2026-11-25 ruling on issuecomment-7151924845's tripwire).
+`grant_on_main` and `merged_readonly` AEs never reach the gate (C2)."""
 import ast
 import itertools
 import sys
@@ -23,12 +22,11 @@ import l1_post as L  # noqa: E402
 
 SHA = "c" * 40
 REPO = "vitalharmony/harmonic-forge"
-GRANT = {"granted_at": "2026-11-25T00:00:00Z", "comment_id": "777", "comment_url": "u"}
 
 
 class AeCiGate(unittest.TestCase):
     def gate(self, state=None, *, ack=None, required=frozenset({"verify"}), no_pr=False,
-             grant=None, source="o/r", raises=None):
+             source="o/r", raises=None):
         conclusion = (mock.patch.object(L.gate_ci, "authorizing_conclusion", side_effect=raises)
                       if raises else
                       mock.patch.object(L.gate_ci, "authorizing_conclusion",
@@ -38,11 +36,9 @@ class AeCiGate(unittest.TestCase):
              mock.patch.object(L.gate_ci, "required_checks",
                                return_value=None if required is None else set(required)), \
              conclusion as read, \
-             mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=no_pr) as rule, \
-             mock.patch.object(L.gate_ci, "ci_outage_grant", return_value=grant) as og:
+             mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=no_pr) as rule:
             out = L._ae_ci_gate(REPO, 894, SHA, ack)
-        L._CI_OUTAGE.pop(SHA, None)
-        return out, read, rule, og
+        return out, read, rule
 
     def refused(self, *args, **kwargs) -> str:
         with self.assertRaises(SystemExit) as ctx:
@@ -51,7 +47,7 @@ class AeCiGate(unittest.TestCase):
         return str(ctx.exception)
 
     def test_green_posts_and_reads_through_s0(self):
-        out, read, _, _ = self.gate("green")
+        out, read, _ = self.gate("green")
         self.assertEqual(out, "ci-green")
         self.assertEqual(read.call_args.kwargs["reader"], "READER")
 
@@ -65,7 +61,11 @@ class AeCiGate(unittest.TestCase):
     def test_every_other_state_refuses(self):
         for state in ("absent", "unknown", "red"):
             with self.subTest(state=state):
-                self.assertIn(f"CI is {state}", self.refused(state))
+                message = self.refused(state)
+                self.assertIn(f"CI is {state}", message)
+                # The existing operator paths only; no CI-outage override line.
+                self.assertIn("--ack-no-pr-required", message)
+                self.assertNotIn("ci-outage", message)
 
     def test_an_unresolvable_repo_refuses(self):
         self.assertIn("cannot resolve the source repo", self.refused("green", source=None))
@@ -77,27 +77,11 @@ class AeCiGate(unittest.TestCase):
         self.assertIn("raised RuntimeError", self.refused(raises=RuntimeError("gh down")))
 
     def test_the_ack_releases_only_by_the_shared_rule(self):
-        out, _, rule, _ = self.gate("absent", ack="data migration", no_pr=True)
+        out, _, rule = self.gate("absent", ack="data migration", no_pr=True)
         self.assertEqual(out, "ci-no-pr-acknowledged")
         self.assertEqual(rule.call_args.args, ("o/r", SHA, {"verify"}, "absent"))
         self.assertEqual(rule.call_args.kwargs["reader"], "READER")
         self.assertIn("CI is absent", self.refused("absent", ack="x", no_pr=False))
-
-    def test_a_ci_outage_grant_releases_a_non_red_state_and_is_kept_for_the_post(self):
-        for state in ("pending", "absent", "unknown"):
-            with self.subTest(state=state), mock.patch("builtins.print"), \
-                 mock.patch.object(L.gate_ci, "authorizing_conclusion", return_value=(state, "d")), \
-                 mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
-                 mock.patch.object(L, "_ci_reader", return_value="R"), \
-                 mock.patch.object(L.gate_ci, "required_checks", return_value={"verify"}), \
-                 mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=False), \
-                 mock.patch.object(L.gate_ci, "ci_outage_grant", return_value=GRANT):
-                self.assertEqual(L._ae_ci_gate(REPO, 894, SHA, None), "ci-outage-grant")
-                self.assertIs(L._CI_OUTAGE.pop(SHA), GRANT)
-
-    def test_a_ci_outage_grant_never_releases_red(self):
-        self.assertIn("CI is red", self.refused("red", grant=GRANT))
-
 
 class AppliedAck(unittest.TestCase):
     """PATCH A2: the ack is evidence of an override that was used."""
@@ -128,7 +112,6 @@ class NoPrParity(unittest.TestCase):
                 mock.patch.object(g, "_required_checks_all_skipped", return_value=skipped),
                 mock.patch.object(g, "authorizing_conclusion", return_value=(state, "d")),
                 mock.patch.object(g, "required_checks", return_value={"verify"}),
-                mock.patch.object(g, "ci_outage_grant", return_value=None),
                 mock.patch.object(g, "stale_against_pr", return_value=(False, "")),
                 mock.patch.object(g, "render_pending_remote", return_value=None)]
 
@@ -177,44 +160,31 @@ class GrantAndReadonlyAeNeverReachTheGate(unittest.TestCase):
 
 
 class PostKindRunsTheGate(unittest.TestCase):
-    """The real post runs the gate, passes the ack only when applied, and spends
-    a ci-outage grant immediately before publishing (A2, A3)."""
+    """The real post runs the gate and passes the ack only when applied (A2)."""
 
-    def post(self, *, gate_out="ci-green", pr_names=("pr-open #7",), ack=None, consume=None,
+    def post(self, *, gate_out="ci-green", pr_names=("pr-open #7",), ack=None,
              grant_on_main=False):
-        captured = {"order": []}
+        captured = {}
 
         def comment(repo, issue, text):
-            captured["order"].append("post")
             captured["text"] = text
             return "https://github.com/o/r/issues/1#issuecomment-1", 1
 
         def gate(repo, issue, sha, applied):
             captured["applied"] = applied
-            if gate_out == "ci-outage-grant":
-                L._CI_OUTAGE[sha] = GRANT
             return gate_out
-
-        def spend(*a):
-            captured["order"].append("consume")
-            if consume is not None:
-                raise consume
-        try:
-            with mock.patch.object(L, "comment_body", side_effect=comment), \
-                 mock.patch.object(L, "world_checks", return_value=([], [])), \
-                 mock.patch.object(L, "require_open_pr", return_value=(list(pr_names), [], [])), \
-                 mock.patch.object(L, "validate_sticky_wicket"), \
-                 mock.patch.object(L, "write_receipt"), \
-                 mock.patch.object(L, "record_overlap_rulings"), \
-                 mock.patch.object(L, "active_worktree_branches", return_value=[]), \
-                 mock.patch.object(L, "_afk_toggle", None), \
-                 mock.patch.object(L, "_tasklist_owed", None), \
-                 mock.patch.object(L.gate_ci, "consume_ci_outage_grant", side_effect=spend), \
-                 mock.patch.object(L, "_ae_ci_gate", side_effect=gate) as g:
-                L._post_kind("o/r", 1, "ae", "## AE\n", SHA, "feat/1-x",
-                             ack_no_pr_required=ack, grant_on_main=grant_on_main)
-        finally:
-            L._CI_OUTAGE.pop(SHA, None)
+        with mock.patch.object(L, "comment_body", side_effect=comment), \
+             mock.patch.object(L, "world_checks", return_value=([], [])), \
+             mock.patch.object(L, "require_open_pr", return_value=(list(pr_names), [], [])), \
+             mock.patch.object(L, "validate_sticky_wicket"), \
+             mock.patch.object(L, "write_receipt"), \
+             mock.patch.object(L, "record_overlap_rulings"), \
+             mock.patch.object(L, "active_worktree_branches", return_value=[]), \
+             mock.patch.object(L, "_afk_toggle", None), \
+             mock.patch.object(L, "_tasklist_owed", None), \
+             mock.patch.object(L, "_ae_ci_gate", side_effect=gate) as g:
+            L._post_kind("o/r", 1, "ae", "## AE\n", SHA, "feat/1-x",
+                         ack_no_pr_required=ack, grant_on_main=grant_on_main)
         return captured, g
 
     def test_a_pre_merge_ae_runs_the_gate_and_records_it(self):
@@ -231,17 +201,6 @@ class PostKindRunsTheGate(unittest.TestCase):
         self.assertEqual(captured["applied"], "migration")
         with self.assertRaises(SystemExit):
             self.post(pr_names=("pr-open",), ack="migration")
-
-    def test_an_outage_ae_consumes_then_posts_and_names_the_grant(self):
-        captured, _ = self.post(gate_out="ci-outage-grant")
-        self.assertEqual(captured["order"], ["consume", "post"])
-        self.assertIn(f"**CI substitute:** check-full receipt {SHA}", captured["text"])
-        self.assertIn(" ci-override=777;", captured["text"])
-
-    def test_a_refused_consume_posts_nothing(self):
-        with self.assertRaises(SystemExit):
-            self.post(gate_out="ci-outage-grant", consume=RuntimeError("consumed already"))
-
 
 class B2RealPostPath(unittest.TestCase):
     """B2: through `_post_kind`, absent or unknown CI runs the full check, green
@@ -296,171 +255,6 @@ class B3EveryCiReadPassesTheReader(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 5)
         missing = [n.lineno for n in calls if "reader" not in {k.arg for k in n.keywords}]
         self.assertEqual(missing, [], f"gate_ci CI reads without reader= at lines {missing}")
-
-
-class CiOutageGrant(unittest.TestCase):
-    def outage(self, *, grant=True, receipt=None, forge="f" * 40, issue=894, sha=SHA):
-        import force_grant as fg  # noqa: PLC0415
-        cr = L.check_receipt
-        require = (mock.patch.object(fg, "require", return_value=GRANT) if grant
-                   else mock.patch.object(fg, "require", side_effect=fg.GrantRefused("no")))
-        with require as req, mock.patch.object(cr, "lookup", return_value=receipt) as look, \
-             mock.patch.object(cr, "forge_sha", return_value=forge):
-            out = L.gate_ci.ci_outage_grant(REPO, issue, "Owner/Repo", sha)
-        return out, req, look
-
-    def ok_receipt(self):
-        return {"sha": SHA, "source": "check-full", "forge_sha": "f" * 40}
-
-    def test_a_grant_beside_a_current_check_full_receipt_releases(self):
-        out, req, look = self.outage(receipt=self.ok_receipt())
-        self.assertIs(out, GRANT)
-        req.assert_called_once_with(REPO, 894, SHA, mode="ci-outage")
-        look.assert_called_once_with("owner__repo", SHA)
-
-    def test_no_release_without_every_condition(self):
-        stale = {**self.ok_receipt(), "forge_sha": "e" * 40}
-        for kw in ({"grant": False, "receipt": self.ok_receipt()},
-                   {"receipt": None},
-                   {"receipt": {**self.ok_receipt(), "source": "check"}},
-                   {"receipt": {**self.ok_receipt(), "sha": "d" * 40}},
-                   {"receipt": stale},
-                   {"receipt": self.ok_receipt(), "forge": None},
-                   {"issue": None, "receipt": self.ok_receipt()},
-                   {"sha": SHA[:12], "receipt": self.ok_receipt()}):
-            with self.subTest(**{k: str(v)[:30] for k, v in kw.items()}):
-                self.assertIsNone(self.outage(**kw)[0])
-
-
-class PassReleasesOnlyAConsumedNamedGrant(unittest.TestCase):
-    """A3, the PASS side: a consumed ci-outage grant for this SHA, named by the
-    AE's ci-override footer, beside a current receipt."""
-
-    def release(self, grant, override="777", receipt=True):
-        import force_grant as fg  # noqa: PLC0415
-        with mock.patch.object(fg, "read_grant", return_value=grant), \
-             mock.patch.object(L.gate_ci, "_check_full_receipt_holds", return_value=receipt):
-            return L.gate_ci.ci_outage_pass_release(REPO, 894, REPO, SHA, override)
-
-    def consumed(self, **over):
-        return {"mode": "ci-outage", "status": "consumed", "consumed_sha": SHA,
-                "comment_id": "777", "comment_url": "u", **over}
-
-    def test_a_consumed_named_grant_releases(self):
-        self.assertIn("consumed ci-outage grant", self.release(self.consumed()))
-
-    def test_anything_less_does_not(self):
-        for grant, override, receipt in ((self.consumed(status="usable"), "777", True),
-                                         (self.consumed(consumed_sha="d" * 40), "777", True),
-                                         (self.consumed(mode="route"), "777", True),
-                                         (self.consumed(), "778", True),
-                                         (self.consumed(), None, True),
-                                         (self.consumed(), "777", False),
-                                         (None, "777", True)):
-            with self.subTest(grant=str(grant)[:40], override=override, receipt=receipt):
-                self.assertIsNone(self.release(grant, override, receipt))
-
-    def test_check_gate_result_releases_pending_only_with_the_override(self):
-        g = L.gate_ci
-        body = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {SHA}\n"
-        with mock.patch.object(g, "stale_against_pr", return_value=(False, "")), \
-             mock.patch.object(g, "render_pending_remote", return_value=None), \
-             mock.patch.object(g, "required_checks", return_value={"verify"}), \
-             mock.patch.object(g, "authorizing_conclusion", return_value=("pending", "d")), \
-             mock.patch.object(g, "ci_outage_pass_release", return_value="released") as rel:
-            self.assertTrue(g.check_gate_result(REPO, body, issue=894, ci_override="777")[0])
-            rel.assert_called_once_with(REPO, 894, REPO, SHA, "777")
-        with mock.patch.object(g, "stale_against_pr", return_value=(False, "")), \
-             mock.patch.object(g, "render_pending_remote", return_value=None), \
-             mock.patch.object(g, "required_checks", return_value={"verify"}), \
-             mock.patch.object(g, "authorizing_conclusion", return_value=("red", "d")), \
-             mock.patch.object(g, "ci_outage_pass_release", return_value="released") as rel:
-            self.assertFalse(g.check_gate_result(REPO, body, issue=894, ci_override="777")[0])
-            rel.assert_not_called()
-
-
-class RealStoreTwoPassPatch(unittest.TestCase):
-    """Two-pass PATCH P2/P4 (issuecomment-7151924845): against a real grant
-    store, never a mocked consume."""
-
-    def setUp(self):
-        import tempfile  # noqa: PLC0415
-        import force_grant  # noqa: PLC0415
-        import imc_waiver  # noqa: PLC0415
-        self.fg, self.iw = force_grant, imc_waiver
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        p = mock.patch.object(force_grant, "FORCE_STATE_DIR", Path(tmp.name))
-        p.start()
-        self.addCleanup(p.stop)
-        receipt = mock.patch.object(L.gate_ci, "_check_full_receipt_holds", return_value=True)
-        receipt.start()
-        self.addCleanup(receipt.stop)
-        self.key = imc_waiver.issue_key(REPO, 894)
-        grant = force_grant.write_pending(self.key, REPO, 894, None, "outage", "s", "line",
-                                          mode="ci-outage", sha_prefix=SHA)
-        imc_waiver.write_json_atomic(force_grant.grant_path(self.key),
-                                     {**grant, "status": "usable", "comment_id": "777",
-                                      "comment_url": "u"})
-
-    def test_a_consumed_grant_is_single_use(self):
-        """P4: the real consume spends it; a second read and a second consume refuse."""
-        grant = L.gate_ci.ci_outage_grant(REPO, 894, "o/r", SHA)
-        self.assertIsNotNone(grant)
-        L.gate_ci.consume_ci_outage_grant(REPO, 894, SHA, grant)
-        self.assertIsNone(L.gate_ci.ci_outage_grant(REPO, 894, "o/r", SHA))
-        with self.assertRaises(self.fg.GrantRefused):
-            L.gate_ci.consume_ci_outage_grant(REPO, 894, SHA, grant)
-
-    def test_a_spent_unposted_grant_refuses_with_the_force_line(self):
-        """P2: exit 1 naming the new FORCE line, never the exit-3 CI wait."""
-        grant = L.gate_ci.ci_outage_grant(REPO, 894, "o/r", SHA)
-        L.gate_ci.consume_ci_outage_grant(REPO, 894, SHA, grant)
-        with mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
-             mock.patch.object(L, "_ci_reader", return_value="R"), \
-             mock.patch.object(L.gate_ci, "required_checks", return_value={"verify"}), \
-             mock.patch.object(L.gate_ci, "authorizing_conclusion", return_value=("pending", "d")), \
-             mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=False), \
-             mock.patch("sys.stderr"), self.assertRaises(SystemExit) as ctx:
-            L._ae_ci_gate(REPO, 894, SHA, None)
-        # A refusal through `fail()`: SystemExit(<message>), which exits 1 --
-        # never the wait (3) or any other integer code (post-verdict finding 3,
-        # fourth check).
-        self.assertIsInstance(ctx.exception.code, str)
-        # The whole literal line, through `: <reason>` (post-verdict finding 5).
-        self.assertIn(f"`FORCE {self.key} ci-outage {SHA}: <reason>`", str(ctx.exception))
-
-    def test_a_second_ae_under_one_grant_does_not_post(self):
-        """P4: two real AE posts under one grant; only the first publishes."""
-        posted = []
-
-        def comment(repo, issue, text):
-            posted.append(text)
-            return "https://github.com/o/r/issues/1#issuecomment-1", 1
-
-        def post():
-            with mock.patch.object(L, "comment_body", side_effect=comment), \
-                 mock.patch.object(L, "world_checks", return_value=([], [])), \
-                 mock.patch.object(L, "require_open_pr", return_value=(["pr-open #7"], [], [])), \
-                 mock.patch.object(L, "validate_sticky_wicket"), \
-                 mock.patch.object(L, "write_receipt"), \
-                 mock.patch.object(L, "record_overlap_rulings"), \
-                 mock.patch.object(L, "active_worktree_branches", return_value=[]), \
-                 mock.patch.object(L, "_afk_toggle", None), \
-                 mock.patch.object(L, "_tasklist_owed", None), \
-                 mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
-                 mock.patch.object(L, "_ci_reader", return_value="R"), \
-                 mock.patch.object(L.gate_ci, "required_checks", return_value={"verify"}), \
-                 mock.patch.object(L.gate_ci, "authorizing_conclusion",
-                                   return_value=("pending", "d")), \
-                 mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=False), \
-                 mock.patch("builtins.print"), mock.patch("sys.stderr"):
-                L._post_kind(REPO, 894, "ae", "## AE\n", SHA, "feat/894-x")
-        post()
-        with self.assertRaises(SystemExit):
-            post()
-        self.assertEqual(len(posted), 1)
-        self.assertIn(" ci-override=777;", posted[0])
 
 
 class P6InventoryChecksTheValue(unittest.TestCase):

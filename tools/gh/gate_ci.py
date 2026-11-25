@@ -1179,130 +1179,9 @@ def no_pr_ack_release(repo: str, sha: str, required: set[str], state: str,
             and _no_pr_tip_and_unclaimed(repo, sha, run=run))
 
 
-def _outage_modules():
-    tools = Path(__file__).resolve().parents[1]
-    for sub in ("gh", "hooks"):
-        if str(tools / sub) not in sys.path:
-            sys.path.insert(0, str(tools / sub))
-    import check_receipt  # noqa: PLC0415
-    import force_grant  # noqa: PLC0415
-    import imc_waiver  # noqa: PLC0415
-    return check_receipt, force_grant, imc_waiver
-
-
-def _check_full_receipt_holds(source_repo: str, sha: str) -> bool:
-    """The substitute evidence (A2 section, pitch amendment 5): a `check-full`
-    receipt for exactly `sha` in `source_repo`, recorded at the current forge
-    HEAD. Any failure is False."""
-    try:
-        check_receipt, _fg, _iw = _outage_modules()
-        data = check_receipt.lookup(source_repo.replace("/", "__").lower(), sha)
-        forge = check_receipt.forge_sha()
-    except Exception:  # noqa: BLE001 - an unreadable store is no evidence
-        return False
-    return bool(data and forge and data.get("sha") == sha
-                and data.get("source") == check_receipt.CHECK_FULL_SOURCE
-                and data.get("forge_sha") == forge)
-
-
-def ci_outage_grant(repo: str, issue: int | None, source_repo: str, sha: str) -> dict | None:
-    """harmonic-forge#894 step 4/5 and PATCH A3: the usable `ci-outage` FORCE
-    grant for `repo#issue` bound to the full `sha`, when the check-full
-    receipt holds; else None (fail closed). The AE post consumes it
-    (`consume_ci_outage_grant`) immediately before publishing."""
-    if issue is None or len(sha) != 40:
-        return None
-    try:
-        _cr, force_grant, _iw = _outage_modules()
-        grant = force_grant.require(repo, issue, sha, mode="ci-outage")
-    except Exception:  # noqa: BLE001 - GrantRefused or an unreadable store: no release
-        return None
-    return grant if _check_full_receipt_holds(source_repo, sha) else None
-
-
-def ci_outage_spent(repo: str, issue: int | None, sha: str) -> dict | None:
-    """PATCH P2: the issue's ci-outage grant when it was consumed for `sha`,
-    else None. A consumed grant is never re-used (A3); this only lets the AE
-    gate say that a new FORCE line is needed instead of waiting on CI."""
-    if issue is None or len(sha) != 40:
-        return None
-    try:
-        _cr, force_grant, imc_waiver = _outage_modules()
-        key = imc_waiver.issue_key(repo, issue)
-        grant = force_grant.read_grant(key) if key else None
-    except Exception:  # noqa: BLE001
-        return None
-    if (grant and grant.get("mode") == "ci-outage" and grant.get("status") == "consumed"
-            and grant.get("consumed_sha") == sha):
-        return grant
-    return None
-
-
-def ci_outage_pass_refusal(repo: str, issue: int | None, sha: str,
-                           ci_override: str | None) -> str | None:
-    """PATCH P3: why the AE's named grant cannot release this PASS when the
-    issue's grant slot no longer holds it (a later FORCE line replaced it),
-    else None. The PASS stays refused either way; this names the remedy."""
-    if issue is None or not ci_override:
-        return None
-    try:
-        _cr, force_grant, imc_waiver = _outage_modules()
-        key = imc_waiver.issue_key(repo, issue)
-        grant = force_grant.read_grant(key) if key else None
-    except Exception:  # noqa: BLE001
-        return None
-    # Post-verdict finding 2: only a slot that holds a DIFFERENT grant was
-    # replaced. An empty or unreadable slot gets the caller's own message.
-    if not grant or str(grant.get("comment_id")) == str(ci_override):
-        return None
-    return (f"[GATE] REFUSED: the consumed ci-outage grant {ci_override} the AE named was "
-            f"replaced by a later FORCE line for {key}; re-issue `FORCE {key} ci-outage {sha}: "
-            "<reason>`, then re-post the AE and sweep")
-
-
-def ci_outage_release(repo: str, issue: int | None, source_repo: str, sha: str) -> str | None:
-    """Why a CI outage would release the AE for `sha`, or None."""
-    grant = ci_outage_grant(repo, issue, source_repo, sha)
-    if grant is None:
-        return None
-    return (f"ci-outage grant {grant.get('comment_url') or '(recorded)'} with a check-full "
-            f"receipt for {sha[:12]}")
-
-
-def consume_ci_outage_grant(repo: str, issue: int, sha: str, grant: dict) -> dict:
-    """Spend exactly `grant` for `sha` (PATCH A3; raises force_grant.GrantRefused)."""
-    _cr, force_grant, imc_waiver = _outage_modules()
-    key = imc_waiver.issue_key(repo, issue)
-    return force_grant.consume(key, grant["granted_at"], sha, mode="ci-outage")
-
-
-def ci_outage_pass_release(repo: str, issue: int | None, source_repo: str, sha: str,
-                           ci_override: str | None) -> str | None:
-    """PATCH A3, the PASS side (pitch amendment 1): release a non-red PASS only
-    when the round's AE carried `ci-override=<id>`, the grant with that comment
-    id is a CONSUMED `ci-outage` grant whose `consumed_sha` is `sha`, and the
-    check-full receipt still holds. Anything else is None."""
-    if issue is None or not ci_override or len(sha) != 40:
-        return None
-    try:
-        _cr, force_grant, imc_waiver = _outage_modules()
-        key = imc_waiver.issue_key(repo, issue)
-        grant = force_grant.read_grant(key) if key else None
-    except Exception:  # noqa: BLE001
-        return None
-    if not grant or grant.get("mode") != "ci-outage" or grant.get("status") != "consumed":
-        return None
-    if grant.get("consumed_sha") != sha or str(grant.get("comment_id")) != str(ci_override):
-        return None
-    if not _check_full_receipt_holds(source_repo, sha):
-        return None
-    return f"consumed ci-outage grant {grant.get('comment_url') or ci_override} for {sha[:12]}"
-
-
 def check_gate_result(
     repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
-    post_merge_readonly: str | None = None, issue: int | None = None,
-    ci_override: str | None = None,
+    post_merge_readonly: str | None = None,
 ) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
@@ -1408,10 +1287,6 @@ def check_gate_result(
             "A green local gate is necessary and not sufficient — Lane 3 runs on "
             "the operator's machine, which is not the environment the merge has "
             "to survive. Post FAIL, or fix the failure and re-gate.")
-    # harmonic-forge#894 step 5 (pitch amendment 1): a ci-outage grant for
-    # exactly this SHA, beside its check-full receipt, releases a non-red PASS.
-    if issue is not None and (released := ci_outage_pass_release(repo, issue, repo, sha, ci_override)):
-        return True, f"[GATE] CI {state} for {sha[:8]}; released by {released}"
     # pending / absent / unknown all land here, and all mean the same thing:
     # the second signal has not been read yet. AC3 says waiting is the correct
     # behaviour, not a judgment call -- UNLESS no PR (open or closed) exists

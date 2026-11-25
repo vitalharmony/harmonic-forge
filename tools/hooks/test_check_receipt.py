@@ -241,26 +241,11 @@ class LocalCheck(Record):
         self.assertEqual(C.main(["x", "record", "--source", "bogus"]), 2)
 
 
-class ScratchLocalAndCheckFull(Record):
-    """harmonic-forge#894 C1 and step 1."""
+class ScratchLocal(Record):
+    """harmonic-forge#894 C1."""
 
     def _source(self, head):
         return C.lookup(SLUG, head)["source"]
-
-    def test_check_full_records_its_own_label(self):
-        with TemporaryDirectory() as d:
-            head = self._repo(Path(d))
-            self.assertIn(C.CHECK_FULL_SOURCE, C.SOURCES)
-            C.record(d, source=C.CHECK_FULL_SOURCE)
-            self.assertEqual(self._source(head), "check-full")
-
-    def test_a_scratch_local_check_never_replaces_check_full(self):
-        with TemporaryDirectory() as d:
-            head = self._repo(Path(d))
-            C.record(d, source=C.CHECK_FULL_SOURCE)
-            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
-                C.record(d, source=C.LOCAL_CHECK_SOURCE)
-            self.assertEqual(self._source(head), "check-full")
 
     def test_a_scratch_local_check_never_replaces_a_full_scratch_receipt(self):
         with TemporaryDirectory() as d:

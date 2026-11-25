@@ -3332,19 +3332,6 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
          "— the full local check was not started")
 
 
-def imc_waiver_key(repo: str, issue: int) -> str:
-    """The repo-prefixed key (F894) a FORCE line names."""
-    try:
-        import imc_waiver  # noqa: PLC0415
-        return imc_waiver.issue_key(repo, issue) or f"<KEY for {repo}#{issue}>"
-    except Exception:  # noqa: BLE001
-        return f"<KEY for {repo}#{issue}>"
-
-
-#: harmonic-forge#894 PATCH A3: the usable ci-outage grant the AE gate found,
-#: by SHA, which `_post_kind` consumes immediately before publication.
-_CI_OUTAGE: dict[str, dict] = {}
-
 #: The check name `require_open_pr` returns when it applied the no-PR override.
 ACK_APPLIED_CHECK = "pr-open (acknowledged override)"
 
@@ -3371,11 +3358,11 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
     Returns the check name recorded in the footer. `pending` waits
     (`_carry_forward.WAIT_EXIT`, `WAIT: CI is pending on <sha>`). Every other
     non-green state refuses, and so does an unresolvable source repo, an
-    unreadable required set and a reader exception: fail closed. Two releases:
+    unreadable required set and a reader exception: fail closed. One release:
     the no-PR acknowledgment, on `absent` or all-skipped only (as
     `check_gate_result`'s no-PR branch; `require_open_pr` has already shown no
-    PR exists), and a `ci-outage` grant for exactly this SHA beside its
-    `check-full` receipt. (harmonic-forge#894 PATCH A1/A2: the ack is passed
+    PR exists). A CI outage has no override here; it waits or refuses like
+    any other non-green read. (harmonic-forge#894 PATCH A1/A2: the ack is passed
     here only when `require_open_pr` applied it, and its release is
     `gate_ci.no_pr_ack_release`, the rule `check_gate_result` uses.) `grant_on_main` and `merged_readonly` AEs never reach
     here (C2). Every CI read passes the S0 reader (C3)."""
@@ -3399,28 +3386,13 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
         state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
     if state == "green":
         return "ci-green"
-    if state != "red" and (grant := gate_ci.ci_outage_grant(repo, issue, source_repo, sha)):
-        # PATCH A3: the real post consumes it immediately before publishing.
-        _CI_OUTAGE[sha] = grant
-        print(f"[l1-post] CI is {state} on {sha[:12]}; released by ci-outage grant "
-              f"{grant.get('comment_url') or '(recorded)'} with its check-full receipt")
-        return "ci-outage-grant"
-    if state != "red" and (spent := gate_ci.ci_outage_spent(repo, issue, sha)):
-        # PATCH P2: a consumed grant is spent, whether or not its AE published
-        # (this read cannot tell); waiting on CI would never end, so refuse and
-        # name the remedy (post-verdict finding 4, fourth check: the message no
-        # longer claims no AE was published).
-        key = imc_waiver_key(repo, issue)
-        fail(f"the ci-outage grant {spent.get('comment_url') or spent.get('comment_id')} for "
-             f"{sha[:12]} was already consumed at {spent.get('consumed_at')}; a grant releases "
-             f"one AE only, so a new grant is needed: `FORCE {key} ci-outage {sha}: <reason>`")
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
               file=sys.stderr)
         raise SystemExit(_carry_forward.WAIT_EXIT)
     fail(f"CI is {state} on {sha[:12]} ({detail}); a pre-merge AE needs green CI "
-         "(harmonic-forge#894). A CI outage is released only by the operator's "
-         f"`FORCE <KEY> ci-outage {sha}: <reason>` beside a check-full receipt for it")
+         "(harmonic-forge#894). Fix or re-run CI and re-post; a SHA that is main's tip "
+         "with no open PR takes `--ack-no-pr-required <reason>`")
 
 
 def _refuse_script_contract(script: str, sha: str) -> None:
@@ -3654,9 +3626,6 @@ def _post_kind(
         if kind != "ae":
             fail(f"--prod-run is an AE declaration; it cannot ride a {kind}")
         prod_run_token = _prod_run.footer_field(issue, sha, prod_run)
-    outage = _CI_OUTAGE.get(sha) if "ci-outage-grant" in checks else None
-    if outage is not None:  # PATCH A3: the AE names its substitute evidence
-        body = body.rstrip("\n") + f"\n\n**CI substitute:** check-full receipt {sha}\n"
     digest = hashlib.sha256(_prod_run.covered_text(body, prod_run_token).encode()).hexdigest()
     # a private-repo incident: a handoff DECLARES whether it is Plan-First rather than
     # leaving it to be inferred from prose downstream. `lane_state.py` used to
@@ -3676,8 +3645,6 @@ def _post_kind(
     # footer field -- the reserved namespace no body may contain, so only this
     # script can mint it (`_prod_run.declared` reads it back from here alone).
     prod_run_field = f" {prod_run_token};" if prod_run_token else ""
-    if outage is not None:
-        prod_run_field += f" ci-override={outage.get('comment_id')};"
     # harmonic-forge#1036: after `sha=`, so every `\bsha=` reader still finds
     # the carried-to SHA first. `_carry_forward.py check` re-validates these.
     if kind == "carry-forward":
@@ -3712,13 +3679,6 @@ def _post_kind(
             route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
         except Exception as exc:
             print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
-    if outage is not None:
-        # PATCH A3: spend the grant after every other check, immediately before
-        # publication; a refused consume posts nothing.
-        try:
-            gate_ci.consume_ci_outage_grant(repo, issue, sha, outage)
-        except Exception as exc:  # noqa: BLE001 - GrantRefused or a store error
-            fail(f"the ci-outage grant could not be consumed ({exc}); nothing was posted")
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True

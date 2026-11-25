@@ -125,7 +125,7 @@ path = "tools/gh/force_grant.py"
   match = ["record"]
   class = "external-publish"
   guard_kind = "operator-grant"
-  guard = "FORCE line, any mode (plain, reforge, route, cluster, gate, ci-outage <sha>; harmonic-forge#894): refuses with no operator-typed grant (tools/gh/force_grant.py:170-172)"
+  guard = "FORCE line: refuses with no operator-typed grant (tools/gh/force_grant.py:170-172)"
   cite = ["tools/gh/force_grant.py:170-172", "tools/gh/force_grant.py:181"]
   [[tool.mode]]
   name = "status"
@@ -137,12 +137,11 @@ path = "tools/gh/force_grant.py"
 path = "tools/gh/gate_ci.py"
   [[tool.mode]]
   # harmonic-forge#894: still read-only; a required job not yet created while
-  # a run is in flight now reads `pending` (C4), and a ci-outage grant is read,
-  # never consumed.
+  # a run is in flight now reads `pending` (C4).
   name = "--repo --file"
   match = []
   class = "read"
-  cite = ["tools/gh/gate_ci.py:1334"]
+  cite = ["tools/gh/gate_ci.py:1280"]
 
 [[tool]]
 path = "tools/gh/gh-as"
