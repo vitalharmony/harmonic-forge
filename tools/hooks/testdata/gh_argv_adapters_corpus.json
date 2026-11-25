@@ -32,6 +32,16 @@
     []
    ]
   ],
+  "echo 'gh issue close 395' '>' notes.md": [
+   "intended",
+   "tightening (harmonic-forge#1496 containment): a segment with a gh word outside the allowed shapes is unprovable, so BATCH asks where the old reader passed",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
   "env -i gh issue close 700 --repo vitalharmony/hrse": [
    "intended",
    "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
@@ -1017,22 +1027,166 @@
     ],
     []
    ]
-  ],
-  "echo 'gh issue close 395' '>' notes.md": [
-   "intended",
-   "tightening (harmonic-forge#1496 containment): a segment with a gh word outside the allowed shapes is unprovable, so BATCH asks where the old reader passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
   ]
  },
  "migration": {
-  "echo gh issue close 1": [
+  "\"$BIN/gh\" issue close 849 --bogus": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named the number",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "GH_HOST=$H gh issue close 849 -R o/r": [
+   "intended",
+   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1498 sticky-wicket PATCH)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "o/r",
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=\"o/$NAME\" gh issue close 849": [
+   "intended",
+   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1498 sticky-wicket PATCH)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=$OWNER/hrse gh issue close 849": [
+   "intended",
+   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1498 sticky-wicket PATCH)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=`x` gh issue close 849": [
+   "intended",
+   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1498 sticky-wicket PATCH)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=a/b gh issue close 12": [
+   "old-defect",
+   "main ignored the inline GH_REPO and named no repo; gh reads GH_REPO, and the hook binds it",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "12"
+     ]
+    ],
+    [
+     [
+      "issue",
+      "a/b",
+      "12"
+     ]
+    ]
+   ]
+  ],
+  "env 1=x gh issue close 849 --bogus": [
+   "intended",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named the number",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "gh -R vitalharmony/hrse issue close 849": [
+   "intended",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
    [
     "not-a-close",
     "refuse",
@@ -1040,9 +1194,135 @@
     []
    ]
   ],
+  "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=closed -f body=https://example.test/repos/o/s/issues/850/": [
+   "old-defect",
+   "main read the issue from a URL inside the -f body text; gh api acts on the endpoint issue, and the hook binds it (harmonic-forge#1498 post-verdict #3 finding 0)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "o/s",
+      "850"
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/hrse",
+      "849"
+     ]
+    ]
+   ]
+  ],
   "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=open": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh api graphql -f 'query=mutation { x @ }'": [
+   "intended",
+   "tightening against main: a literal gh call whose parse faults is denied before any read, never passed by a crash (harmonic-forge#1498 post-verdict)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close": [
+   "intended",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close \"$N\"": [
+   "intended",
+   "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close 849 --bogus": [
+   "intended",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named the number",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "gh issue close 849 --repo https://[bad": [
+   "intended",
+   "verdict unchanged (refuse) against main; the hook reports the unparseable call as the empty-number target it denies before any read, where main named a malformed repo",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "https://[bad",
+      "849"
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null
+     ]
+    ]
+   ]
+  ],
+  "gh issue close https://[::1/o/r/issues/849": [
+   "intended",
+   "tightening against main: an unparseable literal gh call is denied before any read (harmonic-forge#1498 post-verdict finding 1)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh-as vh gh issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: main read the gh-as/gha wrapper as not-a-close; the hook reads the wrapped gh call (gh_segment's GH kind, the union's second entry) and binds it",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: main read the gh-as/gha wrapper as not-a-close; the hook reads the wrapped gh call (gh_segment's GH kind, the union's second entry) and binds it",
    [
     "not-a-close",
     "refuse",

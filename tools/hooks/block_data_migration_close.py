@@ -55,9 +55,19 @@ which a pasted comment is not.
 state to decide, and it reads a structured board field for the same
 reason.
 
-Known residual gaps, recorded rather than left implicit: `gh api
-graphql` mutations, `--input -`/heredoc bodies, `xargs`-style
-indirection, and any close not issued through the Bash tool.
+Known residual gaps of this text hook, recorded rather than left
+implicit: `gh api graphql` mutations, `--input -`/heredoc bodies, any
+close not issued through the Bash tool, a gh call behind a runner or an
+expansion (`xargs`, `bash -c`, `$G issue close`, an alias), and which
+repo a bare close binds to after the command rebinds it (`cd`, an
+exported `GH_REPO`, `GIT_DIR`, ambient env). The gh shim
+(`close_gate.shim_verdict`, harmonic-forge#1498 reforge) runs this
+file's `decide_target` on the real argv, cwd and environment, and is
+the authority for those forms only when they reach `gh` by PATH lookup.
+A command that names the real binary through an expansion
+(`G=/usr/bin/gh; $G ...`) or a runner that resets PATH (`command -p`,
+`env -i`) reaches neither gate: a known residual, the same as on main,
+left to separate shim hardening.
 """
 from __future__ import annotations
 
@@ -73,20 +83,18 @@ from hook_identity import repo_from_checkout as _repo_from_checkout, run_gh as _
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import gh_argv_adapters as A  # noqa: E402
+import gh_segment  # noqa: E402
 from shell_parse import command_segments  # noqa: E402
 
 LABEL = "data-migration"
 EXECUTED_LABEL = "migration-executed"
 ABANDONED_LABEL = "migration-abandoned"
 
-API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:/|$)")
-ISSUE_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
 ENV_ASSIGNMENT = re.compile(r"^\w+=")
-
-ISSUE_NUMBER = re.compile(r"^#?(\d+)$")
-
-REPO_FLAGS = ("--repo", "-R")
-
+#: The only environment names gh_argv reads (pinned by a test): an inline value
+#: with an expansion is not the repo or host gh will use.
+_GH_ENV = ("GH_REPO", "GH_HOST")
 
 def _allow() -> None:
     print(json.dumps({}))
@@ -112,86 +120,21 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
 
     Fail-open by design: a hook that blocks work whenever the network is
     slow trains people to disable it, and a disabled hook enforces
-    nothing.
+    nothing. Under the gh shim's strict mode (`close_gate.strict`) a failure
+    raises `close_gate.GateReadError` instead, and the read runs the real gh,
+    never the shim again (harmonic-forge#1498 reforge).
     """
-    if shutil.which("gh") is None:
-        return None
+    import close_gate  # noqa: PLC0415
+    gh_bin = close_gate.STATE.gh_bin
+    if (gh_bin is None and shutil.which("gh") is None) or (gh_bin and not os.path.isfile(gh_bin)):
+        return close_gate.unread(args, "no gh binary")
     try:
-        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7)
-    except (OSError, subprocess.SubprocessError):
-        return None
+        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7, gh_bin=gh_bin)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return close_gate.unread(args, f"{type(exc).__name__}: {exc}")
     if result.returncode:
-        return None
+        return close_gate.unread(args, "gh exited non-zero")
     return result.stdout
-
-
-def _flag_value(tokens: list[str], index: int, names: tuple[str, ...]) -> str | None:
-    """Value of `--name value` or `--name=value` at tokens[index]."""
-    token = tokens[index]
-    for name in names:
-        if token == name and index + 1 < len(tokens):
-            return tokens[index + 1]
-        if token.startswith(f"{name}="):
-            return token.split("=", 1)[1]
-    return None
-
-
-def _parse_issue_close(tokens: list[str]) -> tuple[str | None, str] | None:
-    """Parse `gh issue close ...` -> (repo_or_None, issue)."""
-    if len(tokens) < 4 or tokens[1] != "issue" or tokens[2] != "close":
-        return None
-
-    rest = tokens[3:]
-    repo: str | None = None
-    issue: str | None = None
-
-    for i, token in enumerate(rest):
-        value = _flag_value(rest, i, REPO_FLAGS)
-        if value:
-            repo = value
-        if issue is None and not token.startswith("-"):
-            # Skip a token that is a preceding flag's value.
-            previous = rest[i - 1] if i else ""
-            if previous.startswith("-") and "=" not in previous:
-                continue
-            # `gh issue close` accepts {<number> | <url> | <branch>}.
-            url = ISSUE_URL.search(token)
-            if url:
-                repo, issue = url.group(1), url.group(2)
-                continue
-            match = ISSUE_NUMBER.match(token)
-            if match:
-                issue = match.group(1)
-
-    return (repo, issue) if issue else None
-
-
-def _parse_api_close(tokens: list[str]) -> tuple[str, str] | None:
-    """Parse `gh api ... PATCH ... state=closed` -> (repo, issue)."""
-    if len(tokens) < 3 or tokens[1] != "api":
-        return None
-
-    joined = tokens[2:]
-    is_patch = False
-    closes = False
-    target: tuple[str, str] | None = None
-
-    for i, token in enumerate(joined):
-        upper = token.upper()
-        if upper in ("-XPATCH", "--METHOD=PATCH", "-X=PATCH"):
-            is_patch = True
-        if token in ("-X", "--method") and i + 1 < len(joined):
-            if joined[i + 1].upper() == "PATCH":
-                is_patch = True
-        # shlex has already stripped quotes, so `state='closed'` and
-        # `state=closed` both arrive here identically.
-        if token.replace(" ", "") == "state=closed":
-            closes = True
-        match = API_ISSUE_PATH.search(token)
-        if match:
-            target = (match.group(1), match.group(2))
-
-    return target if (is_patch and closes and target) else None
 
 
 def _strip_invocation_prefix(tokens: list[str]) -> list[str]:
@@ -204,33 +147,66 @@ def _strip_invocation_prefix(tokens: list[str]) -> list[str]:
     return tokens[index:]
 
 
-def find_close_targets(command: str) -> list[tuple[str | None, str]] | None:
-    """All (repo, issue) pairs this command would close.
+def _close_result(raw_tokens: list[str]) -> A.Result | None:
+    """The adapter's result for one segment that is a literal gh call and is,
+    or cannot be proved not to be, an issue close; None otherwise.
 
-    Returns None when the command cannot be tokenized, treated as
-    fail-open by the caller.
+    Recognition is main's own predicate, kept verbatim (harmonic-forge#1498
+    sticky-wicket PATCH): after `_strip_invocation_prefix`, the command word's
+    basename is `gh`. `gh_segment`'s GH kind is a second entry only for the
+    `gh-as`/`gha` wrappers. The adapter owns only the argv grammar. A gh word
+    in another program's arguments (`grep -rn 'gh issue close'`), an expansion
+    naming no gh path (`$G`, `$PYTHON`) or a runner (`bash -c`, `xargs`) is
+    not-a-close here, as on main. The environment is the segment's own inline
+    assignments, so a bare close binds to the payload cwd's repo as on main.
+    """
+    stripped = _strip_invocation_prefix(raw_tokens)
+    if stripped and os.path.basename(stripped[0]) == "gh":
+        prefix = raw_tokens[:len(raw_tokens) - len(stripped)]
+        argv, env = stripped[1:], dict(t.split("=", 1) for t in prefix if t != "env")
+    else:
+        segment = gh_segment.gh_segment(raw_tokens)
+        if segment.kind != gh_segment.GH:
+            return None
+        argv, env = list(segment.argv), dict(segment.env)
+    if any(c in env.get(name, "") for name in _GH_ENV for c in "$`"):
+        return A.Result(A.UNPROVABLE, reason="an inline GH_REPO/GH_HOST value is an expansion")
+    result = A.classify_argv(argv, env)
+    if (result.gated and result.kind == "issue") or result.outcome in (A.UNPARSEABLE, A.UNPROVABLE):
+        return result
+    return None
 
-    Segmentation uses the shared `shell_parse.command_segments`, which
-    every sibling hook uses (harmonic-forge#167). Two earlier attempts
-    failed here: a regex with a greedy optional skip group bound
-    `gh issue close 849 --comment 'closes 219 rows'` to issue *219*, and
-    a private regex segmenter split on `;`/`|` inside quoted arguments.
+
+def find_close_targets(command: str, reasons: list[str] | None = None,
+                       ) -> list[tuple[str | None, str]] | None:
+    """All (repo, issue) pairs this command would close; None when the command
+    cannot be tokenized, treated as fail-open by the caller.
+
+    A bound issue close is `(repo, number)`. An unbound, unparseable or
+    unprovable literal gh call is `(None, "")`, which `main()` denies before any
+    repo or label read, appending why to `reasons` when given: a close the hook
+    cannot name must not pass as not-a-close. Target and flag grammar is
+    `gh_argv`'s, through `gh_argv_adapters` (harmonic-forge#1498); segmentation
+    is the shared `shell_parse.command_segments` (harmonic-forge#167).
     """
     try:
         segments = command_segments(command)
     except ValueError:
         return None
-
     targets: list[tuple[str | None, str]] = []
     for raw_tokens in segments:
-        tokens = _strip_invocation_prefix(raw_tokens)
-        if not tokens:
+        try:  # a parse error on a recognized gh call is undecided, never a pass
+            result = _close_result(raw_tokens)
+        except Exception as exc:  # noqa: BLE001 - any parser fault denies, never passes
+            result = A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
+        if result is None:
             continue
-        if os.path.basename(tokens[0]) != "gh":
+        if result.outcome == A.BOUND:
+            targets.append((result.repo, result.number))
             continue
-        parsed = _parse_issue_close(tokens) or _parse_api_close(tokens)
-        if parsed:
-            targets.append(parsed)
+        targets.append((None, ""))
+        if reasons is not None:
+            reasons.append(result.reason or result.outcome)
     return targets
 
 
@@ -261,6 +237,45 @@ def labels_for(repo: str, issue: str) -> set[str] | None:
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
+def decide_target(repo: str | None, issue: str, cwd: str | None, *,
+                  strict_repo: bool = False) -> str | None:
+    """The deny text for closing `issue` (repo None: the command's own), or None.
+
+    Shared by `main()` and the gh shim (`close_gate.shim_verdict`,
+    harmonic-forge#1498 reforge). `strict_repo` is the shim's: an unresolvable
+    repo refuses, and a bare close's repo is asked of the real gh, which reads
+    the same cwd and environment (`GIT_DIR` included) the close itself runs in.
+    """
+    if strict_repo and not repo:
+        out = _gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner", cwd=cwd)
+        resolved = out.strip() if out and out.strip() else None
+    else:
+        resolved = resolve_repo(repo, cwd)
+    if resolved is None:
+        return f"could not resolve the repository for issue {issue}" if strict_repo else None
+    labels = labels_for(resolved, issue)
+    if labels is None or LABEL not in labels:  # fail-open, same rationale as _gh
+        return None
+    if EXECUTED_LABEL in labels or ABANDONED_LABEL in labels:
+        return None
+    return (
+        f"Blocked: {resolved}#{issue} is labelled {LABEL!r} and carries "
+        f"neither {EXECUTED_LABEL!r} nor {ABANDONED_LABEL!r}, so nothing "
+        f"records that the migration ran (hrse#859).\n\n"
+        f"Merging the code is not running the migration. hrse#849 closed "
+        f"exactly this way on 2026-08-13 with all 219 rows untouched, and "
+        f"blocked two downstream issues until a human caught it.\n\n"
+        f"Run the migration, then:\n"
+        f"  gh issue edit {issue} --repo {resolved} --add-label "
+        f"{EXECUTED_LABEL}\n\n"
+        f"If it is being deliberately abandoned, apply {ABANDONED_LABEL!r} "
+        f"instead and say why in a comment.\n\n"
+        f"This hook only makes the close require a deliberate labelling "
+        f"action -- it cannot prevent one, and does not see graphql "
+        f"mutations, heredoc bodies, or web-UI closes."
+    )
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -275,44 +290,24 @@ def main() -> None:
     command = (data.get("tool_input") or {}).get("command", "")
     payload_cwd = data.get("cwd") or None
 
-    targets = find_close_targets(command)
+    reasons: list[str] = []
+    targets = find_close_targets(command, reasons)
     if not targets:
         _allow()
         return
-
-    resolved: dict[str | None, str | None] = {}
-    for explicit_repo, issue in targets:
-        if explicit_repo not in resolved:
-            resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
-        repo = resolved[explicit_repo]
-        if repo is None:
-            continue
-
-        labels = labels_for(repo, issue)
-        if labels is None:  # fail-open, same rationale as _gh
-            continue
-        if LABEL not in labels:
-            continue
-        if EXECUTED_LABEL in labels or ABANDONED_LABEL in labels:
-            continue
-
-        _deny(
-            f"Blocked: {repo}#{issue} is labelled {LABEL!r} and carries "
-            f"neither {EXECUTED_LABEL!r} nor {ABANDONED_LABEL!r}, so nothing "
-            f"records that the migration ran (hrse#859).\n\n"
-            f"Merging the code is not running the migration. hrse#849 closed "
-            f"exactly this way on 2026-08-13 with all 219 rows untouched, and "
-            f"blocked two downstream issues until a human caught it.\n\n"
-            f"Run the migration, then:\n"
-            f"  gh issue edit {issue} --repo {repo} --add-label "
-            f"{EXECUTED_LABEL}\n\n"
-            f"If it is being deliberately abandoned, apply {ABANDONED_LABEL!r} "
-            f"instead and say why in a comment.\n\n"
-            f"This hook only makes the close require a deliberate labelling "
-            f"action -- it cannot prevent one, and does not see graphql "
-            f"mutations, heredoc bodies, or web-UI closes."
-        )
+    # Before resolve_repo and labels_for, whose fail-open paths must not run first.
+    if any(not issue for _, issue in targets):
+        _deny("Blocked: this hook cannot name or prove the issue this command "
+              "closes, so it cannot check the data-migration label "
+              f"(harmonic-forge#1498): {'; '.join(reasons)}.\n\n"
+              "Name it as `gh issue close <N> --repo <owner/repo>`.")
         return
+
+    for explicit_repo, issue in targets:
+        denied = decide_target(explicit_repo, issue, payload_cwd)
+        if denied:
+            _deny(denied)
+            return
 
     _allow()
 

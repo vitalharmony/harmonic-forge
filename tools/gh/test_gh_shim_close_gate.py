@@ -36,11 +36,30 @@ FAKE = textwrap.dedent('''\
         print(fx.get("aliases", "")); sys.exit(0)
     if fx.get("fail_reads") and argv[:1] == ["api"]:
         sys.exit(1)
+    if argv[:1] == ["api"] and ".labels[].name" in argv and "fail_label_read_at" in fx:
+        # Fail only the Nth label read, so a test can fail ONE gate's read
+        # (harmonic-forge#1498 reforged pass 1 survivor 2).
+        with open(os.environ["FAKE_GH_LOG"]) as log:
+            nth = sum(1 for line in log if ".labels[].name" in line)
+        if nth == fx["fail_label_read_at"]:
+            sys.exit(1)
+    if argv[:2] == ["repo", "view"] and "fail_repo_view_at" in fx:
+        with open(os.environ["FAKE_GH_LOG"]) as log:
+            nth = sum(1 for line in log if line.startswith('["repo", "view"'))
+        if nth == fx["fail_repo_view_at"]:
+            sys.exit(1)
     if argv[:1] == ["api"] and len(argv) > 1 and "--jq" in argv:
         path, jq = argv[1], argv[argv.index("--jq") + 1]
         if jq == ".labels[].name":
             num = path.rsplit("/", 1)[-1]
-            print("\\n".join(fx.get("labels", {}).get(num, []))); sys.exit(0)
+            owned = fx.get("repo_labels", {}).get("/".join(path.split("/")[1:3]) + "#" + num)
+            print("\\n".join(owned if owned is not None else fx.get("labels", {}).get(num, []))); sys.exit(0)
+    if argv[:2] == ["repo", "view"] and "repos" in fx:
+        # gh's own resolver reads GIT_DIR, else the cwd (harmonic-forge#1498 reforge).
+        key = os.path.abspath(os.environ.get("GIT_DIR") or os.getcwd())
+        if key in fx["repos"]:
+            print(fx["repos"][key]); sys.exit(0)
+        sys.exit(1)
         if jq == ".body":
             print(fx.get("pr_body", "")); sys.exit(0)
         if jq == ".[].commit.message":
@@ -281,6 +300,92 @@ class ShimBashBypass(unittest.TestCase):
         """Kill check 8: the label read reaches the fake, not the shim again."""
         self.run_bash("gh issue close 5 -R o/r", UNINSPECTED)
         self.assertTrue(any(a[:2] == ["api", "repos/o/r/issues/5"] for a in self.sent()))
+
+
+class DataMigrationGate(unittest.TestCase):
+    """harmonic-forge#1498 reforge: the shim runs the data-migration label
+    decision on the real argv, cwd and environment, so neither an expansion or
+    runner (category A) nor a rebinding of the repo (category B) hides a close
+    of a `data-migration` issue lacking `migration-executed`."""
+
+    def fixture_for(self, labels):
+        other = self.tmp / "other"
+        other.mkdir(exist_ok=True)
+        return {"aliases": "", "repo_labels": {"o/mig#849": labels, "o/safe#849": []},
+                "repos": {str(self.work): "o/mig", str(other): "o/mig",
+                          str(self.tmp / "safe"): "o/safe", str(other / ".git"): "o/mig"}}
+
+    run_bash, sent, closes_sent = ShimBashBypass.run_bash, ShimBashBypass.sent, ShimBashBypass.closes_sent
+
+    def setUp(self):
+        ShimBashBypass.setUp(self)
+        (self.tmp / "safe").mkdir()
+
+    def migration_closes(self):
+        return [a for a in self.closes_sent() if "849" in " ".join(a)]
+
+    SPELLINGS = (
+        "G=gh; $G issue close 849",
+        "declare -x GH_REPO=o/mig; cd ../safe; gh issue close 849",
+        "cd ../safe && cd ../other && gh issue close 849",
+        "bash -c 'gh issue close 849'",
+        "cd ../safe; GIT_DIR=../other/.git gh issue close 849",
+        "gh api -X PATCH repos/o/mig/issues/849 -f state=closed",
+    )
+
+    def test_every_spelling_of_an_unexecuted_migration_close_is_refused(self):
+        for script in self.SPELLINGS:
+            with self.subTest(script=script):
+                self.log.write_text("")
+                done = self.run_bash(script, self.fixture_for(["data-migration"]))
+                self.assertEqual(done.returncode, 4, done.stderr)
+                self.assertIn("'data-migration'", done.stderr)
+                self.assertIn("o/mig#849", done.stderr)
+                self.assertEqual(self.migration_closes(), [], done.stderr)
+
+    def test_an_executed_or_unlabelled_issue_closes(self):
+        for labels in (["data-migration", "migration-executed"], ["data-migration", "migration-abandoned"], []):
+            with self.subTest(labels=labels):
+                self.log.write_text("")
+                done = self.run_bash("G=gh; $G issue close 849", self.fixture_for(labels))
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(["issue", "close", "849"], self.sent())
+
+    def test_a_bare_close_binds_where_gh_runs(self):
+        """A rebinding to the safe repo is honored, not denied as undecided."""
+        done = self.run_bash("cd ../safe && gh issue close 849", self.fixture_for(["data-migration"]))
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def _last_call_index(self, script: str, needle: str) -> int:
+        """How many `needle` calls a refused close makes; the migration gate
+        runs last, so its call is the final one."""
+        self.log.write_text("")
+        done = self.run_bash(script, self.fixture_for(["data-migration"]))
+        self.assertEqual(done.returncode, 4, done.stderr)
+        calls = [line for line in self.log.read_text().splitlines() if needle in line]
+        self.assertTrue(calls, needle)
+        return len(calls)
+
+    def test_a_failed_label_read_refuses(self):
+        """Reforged pass 1 survivor 2: only the MIGRATION gate's label read
+        fails; every earlier gate reads normally, so the refusal is its own."""
+        script = "gh issue close 849 -R o/mig"
+        nth = self._last_call_index(script, ".labels[].name")
+        self.log.write_text("")
+        done = self.run_bash(script, {**self.fixture_for(["data-migration"]), "fail_label_read_at": nth})
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertIn("could not read", done.stderr)
+        self.assertEqual(self.migration_closes(), [])
+
+    def test_an_unresolvable_repo_refuses(self):
+        """Reforged pass 1 survivor 2: only the migration gate's repo lookup
+        fails; the earlier gates resolve the repo normally."""
+        script = "G=gh; $G issue close 849"
+        nth = self._last_call_index(script, '["repo", "view"')
+        self.log.write_text("")
+        done = self.run_bash(script, {**self.fixture_for(["data-migration"]), "fail_repo_view_at": nth})
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertEqual(self.migration_closes(), [])
 
 
 class MergeGate(unittest.TestCase):

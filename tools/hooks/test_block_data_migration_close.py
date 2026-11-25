@@ -94,9 +94,13 @@ class FindTargetsTests(unittest.TestCase):
         )
         self.assertEqual(got, [(REPO, "849"), (REPO, "850")])
 
-    def test_state_open_is_not_a_close(self) -> None:
+    def test_state_open_is_an_issue_mutation_target(self) -> None:
+        """Changed by harmonic-forge#1498 (operator ruling 2026-11-23): corpus
+        fixture row `migration` / `gh api -X PATCH .../issues/849 -f
+        state=open`, classified `intended`. gh_argv binds every issue REST
+        mutation it cannot prove state-free, so the label check runs."""
         self.assertEqual(hook.find_close_targets(
-            f"gh api -X PATCH repos/{REPO}/issues/849 -f state=open"), [])
+            f"gh api -X PATCH repos/{REPO}/issues/849 -f state=open"), [(REPO, "849")])
 
     def test_reopen_is_not_a_close(self) -> None:
         self.assertEqual(hook.find_close_targets("gh issue reopen 849"), [])
@@ -283,6 +287,211 @@ class ReviewRegressionTests(unittest.TestCase):
         with mock.patch.object(hook, "_gh", return_value="tech-debt\ndata-migration\n"):
             self.assertEqual(hook.labels_for("o/r", "849"),
                              {"tech-debt", "data-migration"})
+
+
+def _no_read(*_args, **_kwargs):
+    raise AssertionError("a repo or label read ran")
+
+
+class AdapterAdoptionTests(unittest.TestCase):
+    """harmonic-forge#1498 reforge: one structural cut (a literal gh call or
+    not), the adapter's grammar for the call, and no word list."""
+
+    @staticmethod
+    def _main(command: str, labels: set[str] | None = None, reads=None) -> dict:
+        resolve = {"side_effect": reads} if reads else {"return_value": REPO}
+        label = {"side_effect": reads} if reads else {"return_value": labels}
+        with mock.patch.object(hook, "resolve_repo", **resolve), \
+             mock.patch.object(hook, "labels_for", **label), \
+             mock.patch("sys.stdin", mock.MagicMock()), \
+             mock.patch("json.load", return_value=bash(command)), \
+             mock.patch("builtins.print") as printed:
+            hook.main()
+        return json.loads(printed.call_args[0][0])
+
+    def test_r0423_commands_naming_gh_are_allowed_without_a_read(self) -> None:
+        """Containment-only segments are not-a-close here, as on main; the
+        shim is the authority (close_gate.shim_verdict)."""
+        for command in ("grep -rn 'gh issue close' tools/", "git commit -m 'route gh api reads'",
+                        "git grep -n 'gh api'", "which gh", "$PYTHON -m pytest",
+                        "bash -c 'gh issue close 849'", "G=gh; $G issue close 849"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [])
+                self.assertEqual(self._main(command, reads=_no_read), {})
+
+    def test_an_undecided_literal_gh_close_is_denied_before_any_read(self) -> None:
+        for command in ('gh issue close "$N"', "gh issue close 849 --bogus",
+                        f"gh -R {REPO} issue close 849", "gh issue close"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+                reason = self._main(command, reads=_no_read)["hookSpecificOutput"]
+                self.assertEqual(reason["permissionDecision"], "deny")
+                self.assertIn("harmonic-forge#1498", reason["permissionDecisionReason"])
+
+    def test_the_deny_names_the_adapter_reason(self) -> None:
+        reasons: list[str] = []
+        hook.find_close_targets("gh issue close 849 --bogus", reasons)
+        self.assertEqual(reasons, ["unknown flag: --bogus"])
+        self.assertIn("unknown flag: --bogus", self._main("gh issue close 849 --bogus", reads=_no_read)[
+            "hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_a_literal_gh_close_whose_comment_mentions_gh_is_still_bound(self) -> None:
+        """Never looser than main: the old reader bound this, so the text hook
+        must too, although gh_segment's containment calls it unprovable."""
+        self.assertEqual(hook.find_close_targets(
+            f"gh issue close 849 -R {REPO} --comment 'checked with gh api'"), [(REPO, "849")])
+
+    def test_a_malformed_repo_url_is_denied_not_raised(self) -> None:
+        """Post-verdict finding 1: a URL that urlsplit rejects is an undecided
+        literal gh call, denied before any read; the hook never raises."""
+        for command in ("gh issue close https://[::1/o/r/issues/849",
+                        "gh issue close 849 --repo https://[bad",
+                        "gh api graphql -f 'query=mutation { x @ }'"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+
+    def test_a_literal_gh_close_behind_a_gh_mentioning_prefix_is_still_a_close(self) -> None:
+        """Reforged pass 1 survivor 1: main stripped `NAME=value` and `env`
+        before reading gh, so a gh word in an assignment value or a second
+        `env` must not turn a literal gh close into not-a-close."""
+        for command, want in (
+                ("GH_CONFIG_DIR=/home/u/.config/gh gh issue close 849", [(None, "849")]),
+                (f"TOOL=gh gh issue close 849 -R {REPO}", [(REPO, "849")]),
+                (f"env env gh issue close 849 -R {REPO}", [(REPO, "849")]),
+                ("FOO=bar env gh issue close 849", [(None, "849")]),
+                (f"GH_CONFIG_DIR=~/.config/gh gh api -X PATCH repos/{REPO}/issues/849 -f state=closed",
+                 [(REPO, "849")]),
+                ("PAGER=gh gh issue view 849", [])):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), want)
+
+    def test_a_bound_pr_merge_is_not_a_close(self) -> None:
+        self.assertEqual(hook.find_close_targets(f"gh pr merge 5 --repo {REPO} --squash"), [])
+
+    def test_inline_gh_repo_binds_the_command(self) -> None:
+        """Corpus row `bound_inline_repo` (old-defect): gh reads GH_REPO."""
+        self.assertEqual(hook.find_close_targets("GH_REPO=a/b gh issue close 12"), [("a/b", "12")])
+
+    def test_a_rest_close_targets_the_endpoint_not_a_url_in_its_body(self) -> None:
+        """Corpus row (old-defect): gh api acts on the endpoint issue; main read the body URL."""
+        command = (f"gh api -X PATCH repos/{REPO}/issues/849 -f state=closed "
+                   "-f body=https://example.test/repos/o/s/issues/850/")
+        self.assertEqual(hook.find_close_targets(command), [(REPO, "849")])
+
+    def test_the_hook_process_gh_repo_never_binds_the_command(self) -> None:
+        with mock.patch.dict("os.environ", {"GH_REPO": "other/repo"}):
+            self.assertEqual(hook.find_close_targets("gh issue close 849"), [(None, "849")])
+            self.assertEqual(hook.find_close_targets(f"gh issue close 849 -R {REPO}"), [(REPO, "849")])
+
+
+class DecideTargetStrictTests(unittest.TestCase):
+    """The shim's call (close_gate.shim_verdict): strict reads, strict repo."""
+
+    def test_strict_bare_close_asks_the_real_gh_not_the_checkout_registry(self) -> None:
+        import close_gate
+        seen: list[tuple] = []
+
+        def fake_gh(*args, cwd=None, repo=None):
+            seen.append(args)
+            return "o/mig\n" if args[:2] == ("repo", "view") else "data-migration\n"
+        with mock.patch.object(hook, "_repo_from_checkout", return_value="o/safe"), \
+             mock.patch.object(hook, "_gh", side_effect=fake_gh), close_gate.strict("/bin/true"):
+            denied = hook.decide_target(None, "849", "/x", strict_repo=True)
+        self.assertIn("o/mig#849", denied)
+        self.assertIn(("api", "repos/o/mig/issues/849", "--jq", ".labels[].name"), seen)
+
+    def test_strict_unresolvable_repo_refuses(self) -> None:
+        with mock.patch.object(hook, "_gh", return_value=""):
+            self.assertIn("could not resolve", hook.decide_target(None, "849", "/x", strict_repo=True))
+        with mock.patch.object(hook, "resolve_repo", return_value=None):
+            self.assertIsNone(hook.decide_target(None, "849", "/x"))
+
+    def test_strict_failed_label_read_raises(self) -> None:
+        import close_gate
+        with mock.patch.object(hook, "_run_gh", side_effect=OSError("down")), \
+             close_gate.strict("/bin/true"):
+            with self.assertRaises(close_gate.GateReadError):
+                hook.decide_target("o/r", "849", "/x", strict_repo=True)
+        with mock.patch.object(hook, "_run_gh", side_effect=OSError("down")):
+            self.assertIsNone(hook.decide_target("o/r", "849", "/x"))
+
+
+MAIN_TABLE = Path(__file__).resolve().parent / "testdata" / "migration_main_178ba5f.json"
+#: sha256 of main's `_strip_invocation_prefix` source at 178ba5f (K7); the git
+#: comparison below runs too wherever the commit is present (CI clones shallow).
+MAIN_STRIP_SHA256 = "1d85e3f90910881a944c7053c662eee57721c96d79a600318464243e5e141a6b"
+GRID_PREFIXES = ("", "env ", "env env ", "1=x ", "env 1=x ", "A=gh ", "GH_CONFIG_DIR=~/.config/gh ",
+                 "X=$(true) ")
+GRID_WORDS = ("gh", "/usr/bin/gh", "${B:-/usr/bin}/gh", '"$HOME/.local/bin/gh"', '"$BIN/gh"')
+GRID_BODIES = ("issue close 849 -R o/r", "api -X PATCH repos/o/r/issues/849 -f state=closed")
+
+
+def grid() -> list[str]:
+    """K1's generated commands; migration_main_table.py freezes main's output for each."""
+    return [p + w + " " + b for p in GRID_PREFIXES for w in GRID_WORDS for b in GRID_BODIES]
+
+
+class StickyWicketTripwireTests(unittest.TestCase):
+    """harmonic-forge#1498 sticky-wicket PATCH: recognition is main's predicate
+    verbatim (K1, K5, K6, K7); an inline GH_REPO/GH_HOST expansion is undecided
+    (K2, K3); an undecided call on the restored path is denied (K4)."""
+
+    def test_k1_recognition_is_never_narrower_than_frozen_main(self) -> None:
+        """Generated grid, compared with main's own output (migration_main_table.py
+        runs 178ba5f from `git archive`; the commands reach it by being recorded here)."""
+        table = json.loads(MAIN_TABLE.read_text(encoding="utf-8"))
+        for command in grid():
+            with self.subTest(command=command):
+                got = hook.find_close_targets(command)
+                self.assertIn(command, table, "regenerate: python3 tools/hooks/testdata/migration_main_table.py")
+                self.assertTrue(table[command], "the grid row must be a close on main")
+                self.assertEqual(sorted(tuple(t) for t in got), sorted(tuple(t) for t in table[command]),
+                                 "main named a target; the hook must name the same one")
+
+    def test_k2_an_inline_gh_repo_expansion_is_denied_before_any_read(self) -> None:
+        for command in ("GH_REPO=$OWNER/hrse gh issue close 849", 'GH_REPO="o/$NAME" gh issue close 849',
+                        "GH_REPO=`x` gh issue close 849", "GH_HOST=$H gh issue close 849 -R o/r"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+                reason = AdapterAdoptionTests._main(command, reads=_no_read)["hookSpecificOutput"]
+                self.assertEqual(reason["permissionDecision"], "deny")
+
+    def test_k3_the_expansion_guard_names_every_env_var_gh_argv_reads(self) -> None:
+        import re
+        source = (Path(__file__).resolve().parent / "gh_argv.py").read_text(encoding="utf-8")
+        read = set(re.findall(r"""env\.get\(\s*["']([^"']+)["']""", source))
+        self.assertEqual(read, {"GH_REPO", "GH_HOST"})
+        self.assertEqual(set(hook._GH_ENV), read)
+
+    def test_k4_an_undecided_call_on_the_restored_path_is_denied(self) -> None:
+        for command in ("env 1=x gh issue close 849 --bogus", '"$BIN/gh" issue close 849 --bogus'):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [(None, "")])
+                reason = AdapterAdoptionTests._main(command, reads=_no_read)["hookSpecificOutput"]
+                self.assertEqual(reason["permissionDecision"], "deny")
+
+    def test_k5_a_gha_wrapper_close_is_bound(self) -> None:
+        self.assertEqual(hook.find_close_targets("gha vh issue close 849 -R o/r"), [("o/r", "849")])
+        self.assertEqual(hook.find_close_targets("gh-as vh gh issue close 849 -R o/r"), [("o/r", "849")])
+
+    def test_k6_r0423_rows_are_allowed(self) -> None:
+        for command in ("grep -rn 'gh issue close' tools/", "git commit -m 'gh issue close 849'",
+                        "git grep -n 'gh api'", "which gh", "$PYTHON -m pytest", "echo gh issue close 1"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_close_targets(command), [])
+
+    def test_k7_the_recognizer_is_main_verbatim(self) -> None:
+        import hashlib
+        import inspect
+        source = inspect.getsource(hook._strip_invocation_prefix)
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), MAIN_STRIP_SHA256)
+        self.assertEqual(hook.ENV_ASSIGNMENT.pattern, r"^\w+=")
+        main = subprocess.run(["git", "-C", str(HOOK.parent), "show",
+                               "178ba5f:tools/hooks/block_data_migration_close.py"],
+                              capture_output=True, text=True)
+        if main.returncode == 0:
+            self.assertIn(source, main.stdout)
+            self.assertIn('ENV_ASSIGNMENT = re.compile(r"^\\w+=")', main.stdout)
 
 
 if __name__ == "__main__":

@@ -3,12 +3,16 @@ and the gh shim (harmonic-forge#1447).
 
 The hooks read a Bash command's text; the shim reads the real argv `gh`
 receives, so no shell spelling (an alias, `xargs`, `$G`, a function, a
-comment hiding a reserved word) can hide a close or merge from it. Both call
+comment hiding a reserved word) that reaches `gh` by PATH lookup can hide a
+close or merge from it. One naming the real binary through an expansion, or a
+runner that resets PATH (`command -p`, `env -i`), skips the shim: a known
+residual (harmonic-forge#1498). Both call
 the same decisions here: `block_missing_preclose_inspection.decide_targets`
 (the preclose label and receipt) and
 `block_undetermined_phase_close.segment_verdict` (the shipped-evidence
-phase rule). The hooks stay fail-open; the shim runs them in strict mode,
-where any read the decision needs and cannot make refuses (`GateReadError`).
+phase rule) and `block_data_migration_close.decide_target` (the
+data-migration label, harmonic-forge#1498 reforge). The hooks stay fail-open;
+the shim runs them in strict mode, where any read refuses (`GateReadError`).
 """
 from __future__ import annotations
 
@@ -92,6 +96,7 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
     if verdict.action == "refuse":
         return PREFIX + verdict.reason
     target = verdict.target
+    import block_data_migration_close as migration  # noqa: PLC0415
     import block_missing_preclose_inspection as preclose  # noqa: PLC0415
     import block_undetermined_phase_close as phase  # noqa: PLC0415
     tokens = list(target.tokens)
@@ -105,6 +110,12 @@ def shim_verdict(argv: list[str], *, cwd: str, real_gh: str) -> str | None:
             decided = phase.segment_verdict(tokens, cwd, {}, strict_repo=True)
             if decided:
                 return PREFIX + decided[0]
+            if target.kind == "issue":
+                # The real argv, cwd and env: no shell spelling or rebinding hides
+                # a data-migration close here (harmonic-forge#1498 reforge).
+                denied = migration.decide_target(target.repo, target.number, cwd, strict_repo=True)
+                if denied:
+                    return PREFIX + denied
     except GateReadError as exc:
         return (PREFIX + f"{exc}; a close or merge fails closed when its gate cannot be "
                 "evaluated. Retry once GitHub is reachable.")
