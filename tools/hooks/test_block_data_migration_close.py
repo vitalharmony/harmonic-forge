@@ -372,6 +372,12 @@ class AdapterAdoptionTests(unittest.TestCase):
         """Corpus row `bound_inline_repo` (old-defect): gh reads GH_REPO."""
         self.assertEqual(hook.find_close_targets("GH_REPO=a/b gh issue close 12"), [("a/b", "12")])
 
+    def test_a_rest_close_targets_the_endpoint_not_a_url_in_its_body(self) -> None:
+        """Corpus row (old-defect): gh api acts on the endpoint issue; main read the body URL."""
+        command = (f"gh api -X PATCH repos/{REPO}/issues/849 -f state=closed "
+                   "-f body=https://example.test/repos/o/s/issues/850/")
+        self.assertEqual(hook.find_close_targets(command), [(REPO, "849")])
+
     def test_the_hook_process_gh_repo_never_binds_the_command(self) -> None:
         with mock.patch.dict("os.environ", {"GH_REPO": "other/repo"}):
             self.assertEqual(hook.find_close_targets("gh issue close 849"), [(None, "849")])

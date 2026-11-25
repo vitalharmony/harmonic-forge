@@ -1194,6 +1194,28 @@
     []
    ]
   ],
+  "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=closed -f body=https://example.test/repos/o/s/issues/850/": [
+   "old-defect",
+   "main read the issue from a URL inside the -f body text; gh api acts on the endpoint issue, and the hook binds it (harmonic-forge#1498 post-verdict #3 finding 0)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "o/s",
+      "850"
+     ]
+    ],
+    [
+     [
+      "issue",
+      "vitalharmony/hrse",
+      "849"
+     ]
+    ]
+   ]
+  ],
   "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=open": [
    "intended",
    "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",

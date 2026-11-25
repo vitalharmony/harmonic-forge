@@ -590,6 +590,12 @@
    "849"
   ]
  ],
+ "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=closed -f body=https://example.test/repos/o/s/issues/850/": [
+  [
+   "o/s",
+   "850"
+  ]
+ ],
  "gh api -X PATCH repos/vitalharmony/hrse/issues/849 -f state=open": [],
  "gh api -X PUT 'repos/{owner}/{repo}/pulls/5/merge'": [],
  "gh api -X PUT repos/o/r/pulls/5/merge": [],
