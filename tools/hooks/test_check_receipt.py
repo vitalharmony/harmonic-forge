@@ -213,14 +213,16 @@ class LocalCheck(Record):
             C.record(d, source=C.LOCAL_CHECK_SOURCE)
             self.assertEqual(self._source(head), "check")
 
-    def test_the_source_override_never_relabels_a_local_check(self):
+    def test_the_source_override_never_relabels_a_local_check_as_full(self):
         # harmonic-forge#1343 preclose pass 1: with the override set, a
         # local-check run neither becomes l1-post-scratch nor replaces a check.
+        # harmonic-forge#894 C1: it is labeled l1-post-scratch-local instead.
         with TemporaryDirectory() as d:
             head = self._repo(Path(d))
             with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
                 C.record(d, source=C.LOCAL_CHECK_SOURCE)
-            self.assertEqual(self._source(head), C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), C.L1_POST_LOCAL_SOURCE)
+            self.assertNotEqual(C.L1_POST_LOCAL_SOURCE, C.L1_POST_SOURCE)
         with TemporaryDirectory() as d:
             head = self._repo(Path(d))
             C.record(d)
@@ -237,6 +239,44 @@ class LocalCheck(Record):
 
     def test_main_parses_source_and_refuses_an_unknown_one(self):
         self.assertEqual(C.main(["x", "record", "--source", "bogus"]), 2)
+
+
+class ScratchLocalAndCheckFull(Record):
+    """harmonic-forge#894 C1 and step 1."""
+
+    def _source(self, head):
+        return C.lookup(SLUG, head)["source"]
+
+    def test_check_full_records_its_own_label(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            self.assertIn(C.CHECK_FULL_SOURCE, C.SOURCES)
+            C.record(d, source=C.CHECK_FULL_SOURCE)
+            self.assertEqual(self._source(head), "check-full")
+
+    def test_a_scratch_local_check_never_replaces_check_full(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            C.record(d, source=C.CHECK_FULL_SOURCE)
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), "check-full")
+
+    def test_a_scratch_local_check_never_replaces_a_full_scratch_receipt(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d)
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+            self.assertEqual(self._source(head), C.L1_POST_SOURCE)
+
+    def test_a_full_scratch_check_upgrades_a_scratch_local_receipt(self):
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.LOCAL_CHECK_SOURCE)
+                C.record(d)
+            self.assertEqual(self._source(head), C.L1_POST_SOURCE)
 
 
 if __name__ == "__main__":
