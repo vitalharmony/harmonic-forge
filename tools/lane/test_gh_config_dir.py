@@ -130,6 +130,24 @@ class GhConfigDir(unittest.TestCase):
         self.assertIn("dir=UNSET", proc.stdout)
         self.assertNotIn("rc=0", proc.stdout)
 
+    # harmonic-forge#1527 constraint 5: a repo registered only through its own
+    # .claude/forge.toml launches, with the launcher's cwd at the repo.
+    def test_an_overlay_only_repo_launches_from_its_checkout(self) -> None:
+        repo = self.root / "scratch-app"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                        "https://github.com/vitalharmony/scratch-app.git"], check=True)
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "forge.toml").write_text(
+            '[project]\nname = "scratch-app"\nprefix = "S"\n'
+            'repo = "vitalharmony/scratch-app"\naccount = "vitalharmony"\n')
+        proc = subprocess.run(
+            ["bash", "-c", f'cd "{repo}"; target="{repo}"; source "{self.script}"; rc=$?; '
+                           'echo "rc=$rc dir=${GH_CONFIG_DIR:-UNSET}"'],
+            capture_output=True, text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "GH_ACCT_HOME": str(self.slots)})
+        self.assertEqual(proc.stdout.strip(), f"rc=0 dir={self.slots / 'vitalharmony'}", proc.stderr)
+
     def test_a_relative_slot_root_refuses(self) -> None:
         _, out, err = self.launch("https://github.com/kenekted/kenekted-ai.git",
                                   {"GH_ACCT_HOME": "slots"})

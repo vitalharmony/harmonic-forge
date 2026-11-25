@@ -63,6 +63,17 @@
 # onboarded       Whether the 3-lane apparatus is installed. A projected repo is
 #                 false; a real repo that is false is a backlog item.
 # protocol        Repo-specific scalar inputs to the portable lane procedure.
+# min_version     The oldest forge core the repo needs, `vYYYY.MM.N`
+#                 (harmonic-forge#1527). Parsed and exposed; `doctor` enforces it.
+#
+# ## .claude/forge.toml (harmonic-forge#1527)
+#
+# An app repo may register itself, or override this file's keys for itself,
+# with one `[project]` table (and an optional `[project.protocol]`) in its own
+# main checkout's `.claude/forge.toml`. It merges per key over the entry here.
+# Machine-local and instance keys are refused there, and a repo registered here
+# keeps its `account`, `name` and `prefix`. The merge rule,
+# discovery and guards are in `tools/onboard/manifest_overlay.py`'s docstring.
 #
 # ## [workspace_labels] (harmonic-forge#1014)
 #
