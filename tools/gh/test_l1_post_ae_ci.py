@@ -112,6 +112,40 @@ class GrantAndReadonlyAeNeverReachTheGate(unittest.TestCase):
                 self.assertEqual(len(self.steps(**kw)), 1)  # the world checks only
 
 
+class PostKindRunsTheGate(unittest.TestCase):
+    """The real post, not only the dry run, runs the gate for a pre-merge AE,
+    records its check name, and skips it for a grant_on_main AE."""
+
+    def post(self, **kw):
+        captured = {}
+
+        def comment(repo, issue, text):
+            captured["text"] = text
+            return "https://github.com/o/r/issues/1#issuecomment-1", 1
+        with mock.patch.object(L, "comment_body", side_effect=comment), \
+             mock.patch.object(L, "world_checks", return_value=([], [])), \
+             mock.patch.object(L, "require_open_pr", return_value=(["pr-open #7"], [], [])), \
+             mock.patch.object(L, "validate_sticky_wicket"), \
+             mock.patch.object(L, "write_receipt"), \
+             mock.patch.object(L, "record_overlap_rulings"), \
+             mock.patch.object(L, "active_worktree_branches", return_value=[]), \
+             mock.patch.object(L, "_afk_toggle", None), \
+             mock.patch.object(L, "_tasklist_owed", None), \
+             mock.patch.object(L, "_ae_ci_gate", return_value="ci-green") as gate:
+            L._post_kind("o/r", 1, "ae", "## AE\n", SHA, "feat/1-x", **kw)
+        return captured["text"], gate
+
+    def test_a_pre_merge_ae_runs_the_gate_and_records_it(self):
+        text, gate = self.post()
+        gate.assert_called_once_with("o/r", 1, SHA, None)
+        self.assertIn("ci-green", text.rsplit("checks=", 1)[1])
+
+    def test_a_grant_on_main_ae_never_runs_it(self):
+        text, gate = self.post(grant_on_main=True)
+        gate.assert_not_called()
+        self.assertNotIn("ci-green", text)
+
+
 class CiOutageRelease(unittest.TestCase):
     def release(self, *, grant=True, receipt=None, issue=894, sha=SHA):
         fg = sys.modules.get("force_grant")

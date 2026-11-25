@@ -341,6 +341,18 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
         self.assertEqual(seen, ["vitalharmony/harmonic-forge"], "a gate report posted as `discussion` "
                                         "skipped the CI check entirely")
 
+    def test_the_gate_check_gets_the_issue_for_a_ci_outage_grant(self):
+        """harmonic-forge#894 step 5: without `issue`, a ci-outage grant could
+        never release a PASS (pitch amendment 1)."""
+        seen = []
+
+        def spy(repo, body, ack_no_pr_required=None, **kw):
+            seen.append(kw.get("issue"))
+            return True, "ok"
+        with mock.patch.object(P, "check_gate_result", spy):
+            self._post(GATE_PASS)
+        self.assertEqual(seen, [1])
+
     def test_main_resolves_an_omitted_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "body.md"
