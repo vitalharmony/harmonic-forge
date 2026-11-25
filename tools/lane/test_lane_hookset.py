@@ -726,6 +726,32 @@ class Overlay(_Tmp):
         for name in deny:
             self.assertIn(name, proc.stderr)
 
+    def test_an_overlay_narrowing_a_handlers_matcher_refuses_naming_it(self):
+        """The matcher is part of a handler's identity (harmonic-forge#1525
+        pass-2 survivor 2): enforce_belt_arming.py moved to a block that
+        matches only `Monitor` is a missing handler, not the same one."""
+        data = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
+        blocks = data["hooks"]["PreToolUse"]
+        (bi, hi), = [(bi, hi) for bi, b in enumerate(blocks) for hi, h in enumerate(b["hooks"])
+                     if "enforce_belt_arming.py" in h["command"]]
+        self.assertNotEqual(blocks[bi]["matcher"], "Monitor")
+        handler = blocks[bi]["hooks"].pop(hi)
+        if not blocks[bi]["hooks"]:
+            del blocks[bi]
+        blocks.append({"matcher": "Monitor", "hooks": [handler]})
+        path = self._pair(_set(), data)
+        overlay_path = path.parent / "lane_hooks.operator.json"
+        for name, load in (("load_overlay", lambda: hs.load_overlay(overlay_path, _set(), forge_root=ROOT)),
+                           ("load_effective", lambda: hs.load_effective(path, "operator", forge_root=ROOT))):
+            with self.subTest(load=name):
+                with self.assertRaises(hs.SetError) as raised:
+                    load()
+                message = str(raised.exception)
+                self.assertIn("missing 1 operator handler", message)
+                self.assertIn("PreToolUse ", message)
+                self.assertIn("enforce_belt_arming.py", message)
+                self.assertNotIn("deny_retired_belt_sweep.py", message)
+
     # Test Case 5 (A-AC3, "none" is loud)
     def test_none_builds_core_only_and_says_so(self):
         config = self.declare('lane_hook_overlay = "none"\n')

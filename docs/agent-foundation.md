@@ -98,11 +98,11 @@ new adopter declares it before the first launch. The launcher accepts
 `XDG_CONFIG_HOME` only as `$HOME/.config` (or unset, empty or relative), so the
 declaration cannot be relocated through the environment.
 
-The file is refused inside any git checkout, so it is never committed. When
-`$HOME` or `~/.config` is itself kept in git (a dotfiles repo), add
-`.config/harmonic-forge/` to that checkout's `.gitignore` and leave it
-untracked: the file is accepted there only while git reports it ignored and
-untracked, read with every `GIT_*` variable dropped (harmonic-forge#1525).
+The file is refused inside any git checkout, so it is never committed.
+Residual (harmonic-forge#1525): an instance.toml under any git work tree
+refuses every launch, including a HOME that is itself a git checkout, while a
+bare-repo dotfiles layout used with `--work-tree=$HOME`, and `git add -f`, are
+out of reach of any `.git` check; revisit under harmonic-forge#1523.
 
 Read the timezone only through `timezone()`. A missing file or
 key returns `America/Los_Angeles`, reported as defaulted; an invalid zone is an

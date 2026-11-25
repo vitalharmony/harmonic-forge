@@ -2,6 +2,7 @@
 """Instance settings and the zone-literal check (harmonic-forge#1505)."""
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 import subprocess
@@ -106,16 +107,6 @@ class PathSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "tools", "HOME": tmp}):
             self.assertEqual(I.config_path(), Path(tmp) / ".config" / "harmonic-forge" / "instance.toml")
 
-    def test_settings_path_bare_git_file_check_still_refuses(self):
-        """A `.git` git cannot read (here, a gitdir pointing nowhere) is a git
-        error, so the ignored-and-untracked exception never applies."""
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / ".gitignore").write_text("cfg/\n", encoding="utf-8")
-            (Path(tmp) / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
-            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(tmp) / "cfg")}):
-                with self.assertRaises(ValueError):
-                    I.config_path()
-
     def test_reading_an_existing_file_leaves_it_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
             path = Path(tmp) / "harmonic-forge" / "instance.toml"
@@ -126,92 +117,41 @@ class PathSafety(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
 
 
-@unittest.skipUnless(shutil.which("git"), "git is required")
-class HomeInAGitCheckout(unittest.TestCase):
-    """harmonic-forge#1525 pass-1 lockout: a HOME (or ~/.config) kept in git
-    still has a valid declaration location, at the one path the launcher
-    accepts ($HOME/.config), when that checkout ignores the file and does not
-    track it. Anything git cannot vouch for stays refused (#1505)."""
+class CheckoutTripwire(unittest.TestCase):
+    """harmonic-forge#1525 sticky-wicket reforge: an instance.toml inside any
+    git checkout refuses, as #1505 made it, even where that checkout ignores
+    the file. A relaxation fails here and comes in through its own issue
+    (harmonic-forge#1523), never inside another one."""
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.home = Path(self._tmp.name) / "home"
-        self.home.mkdir()
-        self.env = mock.patch.dict(os.environ, {"HOME": str(self.home),
-                                                "XDG_CONFIG_HOME": str(self.home / ".config")})
-        self.env.start()
-        self.addCleanup(self.env.stop)
-        for var in [k for k in os.environ if k.startswith("GIT_")]:
-            self.addCleanup(os.environ.__setitem__, var, os.environ.pop(var))
-        self.git(self.home, "init", "-q", ".")
-        self.path = self.home / ".config" / "harmonic-forge" / "instance.toml"
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_a_checkout_whose_gitignore_lists_the_file_still_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            subprocess.run(["git", "-C", str(home), "init", "-q", "."], check=True,
+                           capture_output=True, env=env)
+            (home / ".gitignore").write_text(".config/harmonic-forge/instance.toml\n", encoding="utf-8")
+            path = home / ".config" / "harmonic-forge" / "instance.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text('lane_hook_overlay = "operator"\n', encoding="utf-8")
+            check = subprocess.run(["git", "-C", str(home), "check-ignore", "-q", "--", str(path)],
+                                   capture_output=True, env=env)
+            self.assertEqual(check.returncode, 0, "fixture: git must report the file ignored")
+            with mock.patch.dict(os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config")}):
+                with self.assertRaisesRegex(ValueError, "must live outside any git checkout"):
+                    I.config_path()
+                with self.assertRaisesRegex(ValueError, "must live outside any git checkout"):
+                    I.lane_hook_overlay()
 
-    @staticmethod
-    def git(cwd: Path, *args: str) -> None:
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
-
-    def declare(self, text: str = 'lane_hook_overlay = "operator"\n') -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(text, encoding="utf-8")
-
-    def test_an_ignored_untracked_declaration_is_read(self):
-        (self.home / ".gitignore").write_text(".config/harmonic-forge/\n", encoding="utf-8")
-        self.declare('lane_hook_overlay = "operator"\ntimezone = "Europe/Berlin"\n')
-        self.assertEqual(I.lane_hook_overlay(), ("operator", self.path))
-        self.assertEqual(I.timezone(), (ZoneInfo("Europe/Berlin"), False))
-
-    def test_an_ignored_location_with_no_file_is_undeclared_not_refused_as_a_checkout(self):
-        (self.home / ".gitignore").write_text(".config/\n", encoding="utf-8")
-        with self.assertRaises(ValueError) as raised:
-            I.lane_hook_overlay()
-        self.assertIn("not declared", str(raised.exception))
-        self.assertEqual(I.timezone(), (ZoneInfo("America/Los_Angeles"), True))
-
-    def test_a_declaration_the_checkout_does_not_ignore_is_refused(self):
-        self.declare()
-        with self.assertRaises(ValueError) as raised:
-            I.lane_hook_overlay()
-        self.assertIn("ignored and untracked", str(raised.exception))
-        self.assertIn(str(self.path), str(raised.exception))
-
-    def test_an_ignored_but_tracked_declaration_is_refused(self):
-        (self.home / ".gitignore").write_text(".config/harmonic-forge/\n", encoding="utf-8")
-        self.declare()
-        self.git(self.home, "add", "-f", str(self.path))
-        with self.assertRaisesRegex(ValueError, "ignored and untracked"):
-            I.lane_hook_overlay()
-
-    def test_git_environment_cannot_vouch_for_the_file(self):
-        """GIT_DIR/GIT_WORK_TREE naming another repository that ignores
-        everything must not make the HOME checkout's unignored file pass."""
-        other = Path(self._tmp.name) / "other"
-        other.mkdir()
-        self.git(other, "init", "-q", ".")
-        (other / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
-        self.declare()
-        with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git"),
-                                          "GIT_WORK_TREE": str(self.home),
-                                          "GIT_CONFIG_COUNT": "1",
-                                          "GIT_CONFIG_KEY_0": "core.excludesFile",
-                                          "GIT_CONFIG_VALUE_0": str(other / ".git" / "info" / "exclude")}):
-            with self.assertRaisesRegex(ValueError, "ignored and untracked"):
-                I.lane_hook_overlay()
-
-    def test_a_config_dir_symlinked_into_a_dotfiles_checkout(self):
-        """The finding's second layout: ~/.config is a symlink into a
-        git-tracked dotfiles directory outside HOME's own checkout."""
-        dots = Path(self._tmp.name) / "dotfiles"
-        (dots / "config").mkdir(parents=True)
-        self.git(dots, "init", "-q", ".")
-        (self.home / ".gitignore").write_text("*\n", encoding="utf-8")
-        (self.home / ".config").symlink_to(dots / "config")
-        self.declare()
-        with self.assertRaisesRegex(ValueError, "ignored and untracked"):
-            I.lane_hook_overlay()
-        (dots / ".gitignore").write_text("config/harmonic-forge/\n", encoding="utf-8")
-        self.assertEqual(I.lane_hook_overlay(), ("operator", self.path))
+    def test_instance_imports_no_subprocess(self):
+        tree = ast.parse((HERE / "instance.py").read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertNotIn("subprocess", imported)
 
 
 class LaneHookOverlay(unittest.TestCase):
