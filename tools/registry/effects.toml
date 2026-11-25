@@ -1015,6 +1015,8 @@ path = "tools/gh/preclose_passes.py"
 [[library]]
 path = "tools/gh/projects_token.py"
 [[library]]
+path = "tools/gh/release_milestone.py"
+[[library]]
 path = "tools/gh/retired_artifacts.py"
 [[library]]
 path = "tools/gh/staleness_ff.py"
