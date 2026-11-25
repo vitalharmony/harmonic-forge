@@ -3,6 +3,8 @@
 
 Run: python3 tools/gh/test_belt_candidates.py
 """
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -319,8 +321,13 @@ class DeferralStoreTests(unittest.TestCase):
         self.assertEqual(path, self.base / "deferrals" / "vitalharmony__hrse__2757.json")
         entry = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(entry["source"], "filing")
-        self.assertEqual(entry["own_comment_ids"], [])
+        self.assertNotIn("operator_login", entry)
         self.assertEqual(ds.deferral_entry(self.REPO, 2757, base_dir=self.base), entry)
+
+    def test_the_operator_login_is_recorded(self):
+        ds.record_deferral(self.REPO, 2757, "filing", operator_login="vitalharmony", base_dir=self.base)
+        self.assertEqual(ds.deferral_entry(self.REPO, 2757, base_dir=self.base)["operator_login"],
+                         "vitalharmony")
 
     def test_a_later_record_candidate_leaves_the_deferral_intact(self):
         ds.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
@@ -349,16 +356,30 @@ class DeferralStoreTests(unittest.TestCase):
         (ds._deferrals_dir(self.base) / "junk.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 1)})
 
-    def test_note_own_comment_appends_once_and_only_to_an_existing_entry(self):
-        ds.note_own_comment(self.REPO, 9, 111, base_dir=self.base)
-        self.assertIsNone(ds.deferral_entry(self.REPO, 9, base_dir=self.base))
-        ds.record_deferral(self.REPO, 9, "filing", base_dir=self.base)
-        ds.note_own_comment(self.REPO, 9, 111, base_dir=self.base)
-        ds.note_own_comment(self.REPO, 9, "111", base_dir=self.base)
-        self.assertEqual(ds.deferral_entry(self.REPO, 9, base_dir=self.base)["own_comment_ids"], ["111"])
-        # a re-record keeps the ids it already holds
-        ds.record_deferral(self.REPO, 9, "backfill", base_dir=self.base)
-        self.assertEqual(ds.deferral_entry(self.REPO, 9, base_dir=self.base)["own_comment_ids"], ["111"])
+    def test_every_spelling_of_a_repo_lands_on_the_canonical_key(self):
+        """harmonic-forge#1564 AC11 (preclose #4, #9)."""
+        for spelling in ("vitalharmony/HRSE", "https://github.com/VitalHarmony/hrse.git"):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(ds.record_deferral(spelling, 7, "backfill", base_dir=self.base))
+                self.assertEqual(sorted(p.name for p in ds._deferrals_dir(self.base).glob("*.json")),
+                                 ["vitalharmony__hrse__7.json"])
+                self.assertEqual(ds.deferral_entry(self.REPO, 7, base_dir=self.base)["repo"], self.REPO)
+                self.assertIsNotNone(ds.deferral_entry(spelling, 7, base_dir=self.base))
+        self.assertEqual(ds.read_deferrals(["vitalharmony/HRSE"], base_dir=self.base),
+                         {("vitalharmony/HRSE", 7)})
+        self.assertTrue(ds.discharge_deferral("VitalHarmony/Hrse", 7, "closed", base_dir=self.base))
+        self.assertIsNone(ds.deferral_entry(self.REPO, 7, base_dir=self.base))
+
+    def test_a_malformed_key_never_raises(self):
+        """AC11: `ManifestError` is caught on every store path."""
+        ds.record_deferral(self.REPO, 8, "filing", base_dir=self.base)
+        bad = "not a repo"
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(ds.record_deferral(bad, 8, "filing", base_dir=self.base))
+            self.assertIsNone(ds.deferral_entry(bad, 8, base_dir=self.base))
+            self.assertFalse(ds.discharge_deferral(bad, 8, "closed", base_dir=self.base))
+            self.assertEqual(ds.read_deferrals([bad, self.REPO], base_dir=self.base), {(self.REPO, 8)})
+        self.assertIsNotNone(ds.deferral_entry(self.REPO, 8, base_dir=self.base))
 
     def test_discharge_removes_the_entry(self):
         ds.record_deferral(self.REPO, 5, "filing", base_dir=self.base)

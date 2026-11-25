@@ -55,6 +55,14 @@ try:
 except ImportError:
     _belt_candidates = None
 
+# harmonic-forge#1564: a posted handoff discharges the issue's recorded R-0352
+# deferral at the writer, so Lane 1's belt stops watching it for a `go`.
+# Core (`tools/gh/deferral_store.py`); the same graceful-absence posture.
+try:
+    import deferral_store as _deferral_store
+except ImportError:
+    _deferral_store = None
+
 # a private-repo incident: R-0128 (harmonic-forge#496) fixed the READ side
 # (check_lane3_ready.py refuses to execute without the exact
 # `<PREFIX><N>` heading) but left the write side loose -- AE_HEADING/
@@ -3730,6 +3738,12 @@ def _post_kind(
             print(f"[route] handoff snapshot not recorded: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
+        # harmonic-forge#1564: reached only after a live post, never on --dry-run.
+        if _deferral_store is not None:
+            try:
+                _deferral_store.discharge_deferral(repo, issue, reason="handoff posted")
+            except Exception as exc:  # noqa: BLE001 - a posted handoff never fails here
+                print(f"[l1-post] deferral not discharged: {type(exc).__name__}: {exc}")
     if attempt is not None:
         attempt["emitted"] = True
         _emit_attempt(repo, issue, sha, "posted", attempt)

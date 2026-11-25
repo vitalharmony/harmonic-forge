@@ -4,9 +4,12 @@
 `gh_issue.py --handoff-exception` records each deferral it files. An issue
 deferred before that landed is recorded here, by explicit key:
 
-    python3 tools/gh/record_deferral.py --repo vitalharmony/hrse --issue 2757 --issue 2778
+    python3 tools/gh/record_deferral.py --repo vitalharmony/hrse --issue 2757 --issue 2778 \
+        --operator-login <the deferral comment's login>
 
-A local write only: no `gh` call and no network. At most
+`--operator-login` is required: it is the one login whose `go` releases the
+deferral. The repo must be onboarded (`projects.toml`), and is recorded under
+its canonical key. A local write only: no `gh` call and no network. At most
 `deferral_store.MAX_BACKFILL_KEYS` keys per run. The belt verifies each
 entry's deferral comment on its next tick, and discharges a backfilled entry
 whose thread carries none (a mistyped key), with one stderr line.
@@ -19,6 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import deferral_store  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from manifest import ManifestError, require_onboarded_repo  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +35,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--issue", type=int, action="append", required=True,
                         help="an issue number carrying a deferral comment; repeat for each "
                              f"(at most {deferral_store.MAX_BACKFILL_KEYS})")
+    parser.add_argument("--operator-login", required=True,
+                        help="the login that posted the deferral comment; only its `go` "
+                             "releases the deferral")
     args = parser.parse_args(argv)
+    try:
+        repo = require_onboarded_repo(args.repo).repo
+    except ManifestError as exc:
+        print(f"record_deferral: {exc}", file=sys.stderr)
+        return 2
     issues = list(dict.fromkeys(args.issue))
     if len(args.issue) > deferral_store.MAX_BACKFILL_KEYS:
         print(f"record_deferral: {len(args.issue)} keys given; at most "
@@ -38,11 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     failed = 0
     for number in issues:
-        if not deferral_store.record_deferral(args.repo, number, "backfill"):
-            print(f"record_deferral: could not record {args.repo}#{number}", file=sys.stderr)
+        if not deferral_store.record_deferral(repo, number, "backfill",
+                                              operator_login=args.operator_login):
+            print(f"record_deferral: could not record {repo}#{number}", file=sys.stderr)
             failed += 1
             continue
-        print(f"recorded deferral {args.repo}#{number}; the belt verifies its deferral "
+        print(f"recorded deferral {repo}#{number}; the belt verifies its deferral "
               "comment on its next tick")
     return 1 if failed else 0
 

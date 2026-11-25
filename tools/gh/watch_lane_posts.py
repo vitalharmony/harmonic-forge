@@ -102,8 +102,12 @@ CLI `record_deferral.py`) records the deferral in
 `deferral_store.py`'s `deferrals/` store (core), `queue_cycle` adds every recorded
 deferral to Lane 1's candidate set (`read_deferrals`, no GitHub call), and
 `discover_queue` queues `queued-for-l1 kind=deferral-trigger owes=handoff`
-for a later comment by the deferral comment's author that carries no lane
-footer and no heading, until a Lane 1 post follows it (`_deferral_trigger`).
+for a later unclassified comment whose first visible line is `go`, optionally
+followed by one token (`RELEASE_RE`), posted by the entry's recorded
+`operator_login`. Only a post stamped `posted-by=LANE1` (a `lane-comment`
+from a `LANE=1` session) clears it; a handoff discharges it, at the writer
+(`l1_post.py`) and, as the backfill fallback, on the thread
+(`_deferral_trigger`). Every store touch is Lane 1's only.
 
 **Kind- and poster-filtered, not just repo and age (harmonic-forge#691
 AC2').** The pre-rescope design recorded only `{repo, issue, posted_at}`,
@@ -633,9 +637,11 @@ DEFERRAL_OWES = "handoff"
 _DEFERRAL_ANCHOR_RE = re.compile(
     re.escape(deferral_store.DEFERRAL_HEADING) + r" `(?:"
     + "|".join(re.escape(e) for e in deferral_store.RECORDED_EXCEPTIONS) + r")`")
-#: Any Markdown ATX heading: every markerless post a lane tool makes starts
-#: with one, and an operator's release comment does not.
-_ANY_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]")
+#: The release grammar (harmonic-forge#1564 design amendment, operator
+#: decision 1): a comment's stripped first visible line is `go`, optionally
+#: followed by one group or issue token. One constant, so tightening the token
+#: class later is one edit. `deferral_store.RELEASE_SENTENCE` states it.
+RELEASE_RE = re.compile(r"(?i)^go(\s+[A-Za-z0-9#-]+)?[.!]?$")
 #: One belt interval (the canonical `--interval 300`). A `filing` entry whose
 #: thread shows no deferral comment yet is kept this long: a just-filed issue
 #: can read as an empty thread before its comment count catches up.
@@ -1071,43 +1077,63 @@ def _first_line(body: str) -> str:
     return body.strip().split("\n", 1)[0]
 
 
-def _deferral_trigger(comments: list[dict], own_ids: set[str]) -> tuple[str, int | None]:
+def _first_visible_line(body: str) -> str:
+    """The first non-blank line `markdown_strip.visible_text` keeps (fences,
+    indented code and `>` quotes removed), stripped."""
+    for line in markdown_strip.visible_text(body).splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _stamped_lane1(body: str) -> bool:
+    """Whether the comment's own footer reads `posted-by=LANE1` (only
+    `post_lane_discussion.py` stamps it). Read from the raw marker, not
+    `_classify`, which folds `LANE1`, `LANE-unset` and an absent field
+    together into `l1`."""
+    stamp = _POSTED_BY_RE.search(_own_marker(body) or "")
+    return bool(stamp and stamp.group(1) == "LANE1")
+
+
+def _deferral_trigger(comments: list[dict],
+                      operator_login: str | None) -> tuple[str, int | None]:
     """harmonic-forge#1564: where a recorded R-0352 deferral stands on its
     thread. Pure.
 
     The anchor is the LAST comment whose first line is `gh_issue.py`'s
     heading for a recorded exception; with none, `("no-anchor", None)`. Each
-    later comment is dispatched on `_classify`: a Lane 1 `handoff` discharges
-    the deferral (`("discharged", None)`), any other Lane 1 post clears a
-    pending trigger, and an L2 or L3 post changes nothing. An unclassified
-    comment is a trigger when it is by the anchor's author, carries no
-    visible `l1-post` marker (verified or not), does not start with a
-    Markdown heading, was not posted by `post_comment.py` (`own_ids`), and has
-    visible text. `("queued", id)` names the newest trigger still pending;
-    otherwise `("cleared", None)`."""
+    later comment, in order:
+
+    - a verified Lane 1 `handoff` discharges the deferral
+      (`("discharged", None)`), the backfill fallback to `l1_post.py`'s own
+      discharge;
+    - a post stamped `posted-by=LANE1` clears a pending release;
+    - an unclassified comment is a release when its first visible line
+      matches `RELEASE_RE` and its login is the entry's recorded
+      `operator_login` (an entry without one never releases).
+
+    `("queued", id)` names the newest release still pending; otherwise
+    `("cleared", None)`."""
     anchor = None
     for index, comment in enumerate(comments):
         if _DEFERRAL_ANCHOR_RE.match(_first_line(comment.get("body") or "")):
             anchor = index
     if anchor is None:
         return "no-anchor", None
-    anchor_login = (comments[anchor].get("user") or {}).get("login")
     pending: int | None = None
     for comment in comments[anchor + 1:]:
         body = comment.get("body") or ""
         kind = _classify(body)
+        if kind == ("l1", "handoff"):
+            return "discharged", None
+        if _stamped_lane1(body):
+            pending = None
+            continue
         if kind is not None:
-            if kind == ("l1", "handoff"):
-                return "discharged", None
-            if kind[0] == "l1":
-                pending = None
             continue
         login = (comment.get("user") or {}).get("login")
-        if (anchor_login and login == anchor_login
-                and unverified_marker(body) is None
-                and not _ANY_HEADING_RE.match(_first_line(body))
-                and str(comment.get("id")) not in own_ids
-                and markdown_strip.visible_text(body).strip()):
+        if (operator_login and login == operator_login
+                and RELEASE_RE.match(_first_visible_line(body))):
             pending = comment.get("id")
     if pending is not None:
         return "queued", pending
@@ -1573,6 +1599,7 @@ def discover_queue(repo: str, lane: str,
                    candidates_for_repo: set[int],
                    store_read_at: "dt.datetime | None" = None,
                    marker_ids: "dict[int, int | None] | None" = None,
+                   retired_out: "set[int] | None" = None,
                    ) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
@@ -1592,7 +1619,12 @@ def discover_queue(repo: str, lane: str,
     harmonic-forge#1007: when `marker_ids` is a dict, it is filled with each
     queued issue's marker comment id -- the comment that set `last_kind`, or
     the newest comment for a markerless sticky-wicket item -- so the offer
-    state can tell a new marker of the same kind from a repeat."""
+    state can tell a new marker of the same kind from a repeat.
+
+    harmonic-forge#1564: when `retired_out` is a set, it receives each issue
+    whose recorded deferral this call discharged because the issue is closed
+    or missing, so `queue_cycle` retracts its item even on a cycle whose
+    other fetch failed (preclose #12)."""
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
     any_poster = QUEUE_ANY_POSTER_KINDS.get(lane, ())
@@ -1639,7 +1671,10 @@ def discover_queue(repo: str, lane: str,
             # after the store was read.
             belt_candidates.retire_candidate(repo, issue, read_before=read_before)
             # harmonic-forge#1564: a closed or missing issue's deferral is over.
-            deferral_store.discharge_deferral(repo, issue, state)
+            # Lane 1's store, so Lane 1's belt only (preclose #1, #13).
+            if lane == "l1" and deferral_store.discharge_deferral(repo, issue, state) \
+                    and retired_out is not None:
+                retired_out.add(issue)
             if state == "closed":
                 _retire_imc(repo, issue)
             continue
@@ -1708,8 +1743,7 @@ def discover_queue(repo: str, lane: str,
         if deferral is not None:
             # harmonic-forge#1564: an operator comment on a recorded R-0352
             # deferral. Set first, so every owed kind below overwrites it.
-            outcome, trigger_id = _deferral_trigger(
-                comments, {str(i) for i in (deferral.get("own_comment_ids") or ())})
+            outcome, trigger_id = _deferral_trigger(comments, deferral.get("operator_login"))
             if outcome == "discharged":
                 deferral_store.discharge_deferral(repo, issue, "a Lane 1 handoff followed it")
             elif outcome == "no-anchor":
@@ -2673,16 +2707,23 @@ def queue_cycle(
     ok_repos: set[str] = set()
     fresh_ids: dict[tuple[str, int], int | None] = {}
     checked_pairs: set[tuple[str, int]] = set()
+    #: harmonic-forge#1564 preclose #12: pairs whose deferral this cycle
+    #: discharged as closed or missing. Retracted whatever their repo's fetch
+    #: did, because nothing will ever check them again.
+    retired_pairs: set[tuple[str, int]] = set()
     _prune_batch(batch_state_path)
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
         checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}
         ids: dict[int, int | None] = {}
+        retired: set[int] = set()
         if offers is None:
-            raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at)
+            raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
+                                           retired_out=retired)
         else:
             raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
-                                           marker_ids=ids)
+                                           marker_ids=ids, retired_out=retired)
+        retired_pairs.update((repo, n) for n in retired)
         found = dict(raw)
         if not fetch_ok:
             # Carry this repo's previous queue forward untouched, and keep it
@@ -2691,7 +2732,8 @@ def queue_cycle(
                   f"{len(prior)} previously-queued issue(s) forward, not retracting",
                   file=sys.stderr)
             for issue, marker in prior.items():
-                queue[(repo, issue)] = marker
+                if issue not in retired:
+                    queue[(repo, issue)] = marker
             continue
         ok_repos.add(repo)
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
@@ -2768,6 +2810,7 @@ def queue_cycle(
             offers.record(key, marker, fresh_ids[key], session, when)
         lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
     retract = {k for k in set(last_queue) - set(queue) if k[0] in ok_repos}
+    retract |= {k for k in retired_pairs if k in last_queue and k not in queue}
     if offers is not None:
         # AC5: an item an EARLIER process offered that has since cleared
         # retracts once. Only an item this cycle actually checked (or any

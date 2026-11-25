@@ -299,23 +299,23 @@ mise_tasks = [{task = "l1-post", prefix = []}]
   match = ["--dry-run"]
   class = "local-write"
   note = "preflight receipt (rule step 3); refresh_main's fetch is a cache (step 2)"
-  cite = ["tools/gh/l1_post.py:3778-3780", "tools/gh/l1_post.py:3466-3468"]
+  cite = ["tools/gh/l1_post.py:3792-3794", "tools/gh/l1_post.py:3474-3476"]
   [[tool.mode]]
   name = "post (every --kind)"
   match = []
   class = "external-publish"
   precheck = "--dry-run"
   binds = ["head_sha", "body_content", "args"]
-  binds_cite = "tools/gh/l1_post.py:3440-3458"
+  binds_cite = "tools/gh/l1_post.py:3448-3466"
   precheck_form = {strip = [], add = ["--dry-run"]}
   bind_args = {head_sha = "--sha", body_content = ["--file", "--ae-file", "--sweep-file"]}
   receipt_writer = true
   prefix = true
-  cite = ["tools/gh/l1_post.py:3488", "tools/gh/l1_post.py:3642-3647", "tools/gh/l1_post.py:3786"]
+  cite = ["tools/gh/l1_post.py:3496", "tools/gh/l1_post.py:3650-3655", "tools/gh/l1_post.py:3800"]
   validates = [
-    {class = "receipt", cite = "tools/gh/l1_post.py:3642-3647"},
-    {class = "freshness", cite = "tools/gh/l1_post.py:3440-3458"},
-    {class = "freshness", cite = "tools/gh/l1_post.py:3610-3614"},
+    {class = "receipt", cite = "tools/gh/l1_post.py:3650-3655"},
+    {class = "freshness", cite = "tools/gh/l1_post.py:3448-3466"},
+    {class = "freshness", cite = "tools/gh/l1_post.py:3618-3622"},
   ]
 
 [[tool]]
@@ -375,7 +375,7 @@ replay_tool = "post-comment"
   class = "external-publish"
   gap = "role-scoped hooks only"
   guard_note = "deny_lane3_ae_self_post.py:204 acts in Lane 3 on AE or sweep content only; block_lane1_status_claims.py:328-331 is HRSE2-only; deny_advisory_subagent_gh_writes.py:89 covers subagents only"
-  cite = ["tools/gh/post_comment.py:49"]
+  cite = ["tools/gh/post_comment.py:46"]
 
 [[tool]]
 path = "tools/gh/post_lane1_issue.py"
@@ -511,7 +511,7 @@ path = "tools/gh/record_deferral.py"
   match = []
   class = "shared-state"
   gap = "no precheck; the belt re-verifies the deferral comment each tick"
-  cite = ["tools/gh/record_deferral.py:41"]
+  cite = ["tools/gh/record_deferral.py:54"]
 
 [[tool]]
 path = "tools/gh/repo_hygiene.py"
@@ -609,7 +609,7 @@ path = "tools/gh/watch_lane_posts.py"
   class = "shared-state"
   gap = "writes the belt's seen, offer and tick state under ~/.claude/state/belt"
   guard_note = "enforce_belt_arming.py checks a Monitor command in a LANE session only; deny_retired_belt_sweep.py:27 denies the retired flag only"
-  cite = ["tools/gh/watch_lane_posts.py:684", "tools/gh/watch_lane_posts.py:3127", "tools/gh/watch_lane_posts.py:3383"]
+  cite = ["tools/gh/watch_lane_posts.py:690", "tools/gh/watch_lane_posts.py:3170", "tools/gh/watch_lane_posts.py:3426"]
 
 [[tool]]
 path = "tools/gh/wrapper_parity.py"
