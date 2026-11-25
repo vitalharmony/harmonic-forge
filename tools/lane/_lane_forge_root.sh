@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# The forge root and the platform-rules sync (harmonic-forge#1526, #651).
+#
+# Sourced by tools/lane/_cli_launch.sh only, immediately before the lane's
+# settings are built, at every agent. Split out of _cli_launch.sh so that file
+# stays within the line cap. Sets _lane_forge_root and _lane_forge_root_source,
+# which _cli_launch.sh passes to `lane_hookset.py build` and then unsets.
+#
+## The forge root (harmonic-forge#1526)
+#
+# HARMONIC_FORGE_ROOT, then instance.toml forge_root, then this launcher's own
+# checkout (`instance.resolve_forge_root`). A bad value, or a root with no
+# tools/hooks/, refuses the launch naming the value and its source. The
+# assignment-then-`||` form is required: `set -e` ignores a failing
+# substitution inside `[`.
+_lane_root_out="$(python3 -I -E "$_lane_dir/lane_hookset.py" root --launcher-checkout "$_lane_dir/../..")" \
+  || _lane_launch_die "the forge root could not be resolved (see the reason above) -- refusing to launch (harmonic-forge#1526). Nothing was launched."
+IFS=$'\t' read -r _lane_forge_root _lane_forge_root_source <<<"$_lane_root_out"
+# The root notice: one stderr line for any root not taken from the launcher
+# checkout, before the pull so it precedes any pull output. It changes no argv.
+# "launcher checkout" is instance.LAUNCHER_CHECKOUT, compared as a literal.
+if [ "$_lane_forge_root_source" != "launcher checkout" ]; then
+  echo "${_lane_name:-lane launcher}: forge root $_lane_forge_root (from $_lane_forge_root_source) -- its tools/hooks and sync_rules.py run for this session; the hook set stays $_lane_dir's (harmonic-forge#1526)" >&2
+fi
+
+## Platform-rules sync -- immediately before the final exec (harmonic-forge#651)
+#
+# A fast-forward-only pull of the forge root itself. The 2026-09-14 incident
+# was a Lane 1 session running belt-mode tooling from a checkout 3 commits
+# behind origin/main -- both the stale SKILL.md prose AND the stale script
+# that still accepted a retired flag were served from the same stale
+# checkout, so the launcher is the one place that can close that gap for
+# every subsequent hook/skill/tool invocation in the session. Best-effort by
+# design: this must never block session startup -- a warning and continue on
+# any failure (missing sync_rules.py, no network, merge conflict a
+# fast-forward-only pull refuses, timeout).
+if ! timeout 30 python3 "$_lane_forge_root/sync_rules.py" --pull >&2; then
+  echo "${_lane_name:-lane launcher}: sync_rules.py --pull failed or timed out -- continuing with the current $_lane_forge_root checkout" >&2
+fi
+unset _lane_root_out

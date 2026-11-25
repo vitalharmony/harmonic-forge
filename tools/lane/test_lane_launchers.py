@@ -63,8 +63,8 @@ def _place_route_mod(lane_dir: Path) -> None:
 
 def _place_hook_set(lane_dir: Path) -> None:
     """A copied lane dir carries the Forge lane hook set (harmonic-forge#1307).
-    The builder is linked, not copied: it imports `../onboard/hook_targets.py`
-    relative to its own resolved path, which is the real checkout's. The
+    The builder is linked, not copied: it imports `hookset_root.py` and
+    `../settings/instance.py` by its own resolved path (the real checkout). The
     operator overlay is copied beside it: the fixture HOME declares
     `"operator"`, which reads it from the set's own directory (harmonic-forge#1525)."""
     (lane_dir / "lane_hooks.json").write_text((LANE_DIR / "lane_hooks.json").read_text())
@@ -118,7 +118,7 @@ class _FixtureTree:
         # harmonic-forge#1396: each lane launches on its own slot's token.
         bc.write_lane_slots(self.home)
         # harmonic-forge#1307 change 3: the lane hook set's scripts resolve.
-        bc.link_forge_tools(self.home, LANE_DIR.parent)
+        self.forge = bc.link_forge_tools(self.home, LANE_DIR.parent)
         # harmonic-forge#1525: every Claude launch reads this declaration
         # (XDG_CONFIG_HOME is pinned to $HOME/.config by run and run_script).
         self.instance_toml = bc.write_overlay_declaration(self.home)
@@ -240,7 +240,7 @@ exit 0
         return False
 
     def run(self, lane: str, args: list[str], **env_overrides) -> dict:
-        env_overrides.setdefault("HOME", str(self.home))
+        env_overrides = {"HOME": str(self.home), "HARMONIC_FORGE_ROOT": str(self.forge), **env_overrides}
         return bc.capture_cell(self.lane_dir, self.main, self.stub_bin, lane, args,
                                env_overrides=env_overrides)
 
@@ -256,13 +256,13 @@ exit 0
                     # harmonic-forge#1014: a run inside a lane pane must never
                     # retitle it, nor inherit a label.
                     "TMUX", "TMUX_PANE", "LANE_LABEL",
-                    # harmonic-forge#1525: pinned below to the fixture HOME's.
-                    "XDG_CONFIG_HOME"):
+                    # harmonic-forge#1525/#1526: pinned below to the fixture's.
+                    "XDG_CONFIG_HOME", "HARMONIC_FORGE_ROOT"):
             env.pop(key, None)
         env["PATH"] = f"{self.stub_bin}{os.pathsep}{env['PATH']}"
-        env["HOME"] = str(self.home)
+        env.update(HOME=str(self.home), HARMONIC_FORGE_ROOT=str(self.forge))
         env.update(env_overrides)
-        env.setdefault("XDG_CONFIG_HOME", f"{env['HOME']}/.config")
+        bc.pin_forge_root(env, self.lane_dir)
         return subprocess.run(
             ["bash", str(self.lane_dir / script), *(args or [])],
             cwd=self.main, env=env, capture_output=True, text=True)
@@ -528,7 +528,7 @@ class RegistryIntegrity(unittest.TestCase):
         _place_hook_set(dest)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                     "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
+                     "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh", "_lane_forge_root.sh"):
             (dest / name).write_text((LANE_DIR / name).read_text())
         (dest / "policies").mkdir()
         for policy in (LANE_DIR / "policies").glob("*.toml"):
@@ -540,7 +540,7 @@ class RegistryIntegrity(unittest.TestCase):
             lane_dir = self._copy_lane_dir(tree.root)
             mutate(lane_dir / "_agent_registry.sh")
             return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
-                                   env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
+                                   env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge)})
 
     def test_missing_registry_refuses_to_launch(self):
         cell = self._run_with_broken_registry(lambda p: p.unlink())
@@ -641,7 +641,7 @@ class RegistryIntegrity(unittest.TestCase):
             self.assertNotIn("AGENT_LAUNCH_REFUSED_ENV\n)", registry.read_text())
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
                                    env_overrides={"LANE_CLI": "claude",
-                                                  "HOME": str(tree.home),
+                                                  "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge),
                                                   "ANTHROPIC_MODEL": "opus"})
         self.assertFalse(cell["launched"], cell.get("stderr"))
         self.assertNotEqual(cell["returncode"], 0)
@@ -979,14 +979,14 @@ class SafetyFlagsUnremovable(unittest.TestCase):
 
     @staticmethod
     def _toml_policy_lane_dir(tree, lane: str) -> Path:
-        """A copied lane dir whose registry declares a `toml`-checked policy
-        for codex at LANE -- the shape the retired agent rows used
-        (harmonic-forge#1113), now exercised through an agent that exists."""
+        """A copied lane dir whose registry declares a `toml`-checked policy for
+        codex at LANE (the retired rows' shape, harmonic-forge#1113)."""
         lane_dir = _lane_dir_in_forge(tree.root)
         _place_route_mod(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_gh_config_dir.sh",
-                     "_lane_refresh.sh", "_lane_identity.sh"):
+                     "_lane_refresh.sh", "_lane_identity.sh", "_lane_forge_root.sh",
+                     "lane_hookset.py", "hookset_root.py"):
             (lane_dir / name).write_text((LANE_DIR / name).read_text())
         registry = (LANE_DIR / "_agent_registry.sh").read_text()
         for old, new in (
@@ -1012,7 +1012,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                 '[[rules]]\nname = "placeholder"\n')
 
             injected = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
-                                       [], env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
+                                       [], env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge)})
             self.assertTrue(injected["launched"], injected.get("stderr"))
             args = _agent_args(injected)
             self.assertIn("--test-policy", args)
@@ -1023,7 +1023,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
                 with self.subTest(passthrough=passthrough):
                     denied = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3",
                                              passthrough,
-                                             env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
+                                             env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge)})
                     self.assertFalse(denied["launched"])
                     self.assertNotEqual(denied["returncode"], 0)
 
@@ -1035,7 +1035,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
         with _FixtureTree() as tree:
             lane_dir = self._toml_policy_lane_dir(tree, "1")  # policies/ left empty
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
-                                   env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
+                                   env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge)})
             self.assertFalse(cell["launched"])
             self.assertIn("policy file missing", cell["stderr"])
 
@@ -1045,7 +1045,7 @@ class SafetyFlagsUnremovable(unittest.TestCase):
             (lane_dir / "policies" / "codex-lane1.toml").write_text(
                 "this is [ not valid toml\n")
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "1", [],
-                                   env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home)})
+                                   env_overrides={"LANE_CLI": "codex", "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge)})
             self.assertFalse(cell["launched"])
             self.assertIn("not valid TOML", cell["stderr"])
 
@@ -1069,7 +1069,7 @@ class ClaudeLane3Settings(unittest.TestCase):
         _place_hook_set(lane_dir)
         for name in ("lane1", "lane2", "lane3", "_lane_args.sh",
                      "_cli_launch.sh", "_lane_cleanup.sh", "_agent_registry.sh",
-                     "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh"):
+                     "_gh_config_dir.sh", "_lane_refresh.sh", "_lane_identity.sh", "_lane_forge_root.sh"):
             (lane_dir / name).write_text((LANE_DIR / name).read_text())
         (lane_dir / "policies").mkdir()
         reg = lane_dir / "_agent_registry.sh"
@@ -1096,7 +1096,7 @@ class ClaudeLane3Settings(unittest.TestCase):
 
     def _run(self, tree, lane_dir, lane="3"):
         return bc.capture_cell(lane_dir, tree.main, tree.stub_bin, lane, [],
-                               env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home)})
+                               env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home), "HARMONIC_FORGE_ROOT": str(tree.forge)})
 
     def test_only_lane3_gets_the_installed_claude_policy(self):
         """harmonic-forge#1307: every Claude lane now carries one `--settings`
@@ -1192,7 +1192,7 @@ class ClaudeLane3Settings(unittest.TestCase):
             lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
             cell = bc.capture_cell(lane_dir, tree.main, tree.stub_bin, "3", [],
                                    env_overrides={"LANE_CLI": "claude", "HOME": str(tree.home),
-                                                  "PYTHONOPTIMIZE": "2"})
+                                                  "HARMONIC_FORGE_ROOT": str(tree.forge), "PYTHONOPTIMIZE": "2"})
             self.assertFalse(cell["launched"])
 
     def test_an_invalid_installed_policy_refuses_to_launch(self):
@@ -1954,7 +1954,7 @@ class PlatformRulesSync(unittest.TestCase):
     `sync_rules.py --pull` is invoked (immediately before the final exec, per
     the issue) -- so asserting it fires at all three lanes exercises the one
     shared call site rather than three separate ones. Best-effort by design:
-    the fixture's HOME has no `harmonic-forge/sync_rules.py` at all, which is
+    the fixture forge root has no `sync_rules.py` at all, which is
     exactly the "sync fails" case, and the launch must still proceed."""
 
     @needs_trusted_lane3_policy
@@ -1965,8 +1965,8 @@ class PlatformRulesSync(unittest.TestCase):
                     cell = tree.run(lane, [])
                     self.assertTrue(cell["launched"], cell.get("stderr"))
                     self.assertIn("sync_rules.py --pull failed", cell["stderr"])
-                    self.assertIn("continuing with the current "
-                                  "~/harmonic-forge checkout", cell["stderr"])
+                    self.assertIn(f"continuing with the current {tree.forge} "
+                                  "checkout", cell["stderr"])
 
     def test_sync_rules_pull_invoked_before_the_final_exec(self):
         """The call site lives in `_cli_launch.sh`, sourced by every launcher
@@ -2324,10 +2324,10 @@ class LaneHookSet(unittest.TestCase):
     SHAPES = (["-p", "two words here"], [], ["*.md"], ["--permission-mode", "plan"])
 
     def setUp(self):
-        # The fixture HOME declares "operator" (harmonic-forge#1525), so a
-        # launch carries the effective set: core plus the operator overlay.
-        self.set_hooks = lane_hookset.load_effective(
-            SET_FILE, "operator", forge_root=LANE_DIR.parent.parent)["hooks"]
+        # Core plus the operator overlay (harmonic-forge#1525), spelled as the
+        # fixture HOME's `harmonic-forge` link renders it (harmonic-forge#1526).
+        with unittest.mock.patch.object(lane_hookset, "spelling", return_value="${HOME}/harmonic-forge"):
+            self.set_hooks = lane_hookset.load_effective(SET_FILE, "operator", forge_root=LANE_DIR.parent.parent)["hooks"]
 
     @needs_trusted_lane3_policy
     def test_every_claude_lane_passes_the_set_exactly_once(self):

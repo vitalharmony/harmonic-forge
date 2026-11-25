@@ -858,11 +858,11 @@ path = "tools/lane/lane3_marker.py"
 [[tool]]
 path = "tools/lane/lane_hookset.py"
   [[tool.mode]]
-  name = "build, doubled, freeze, running"
+  name = "build, doubled, freeze, root, running"
   match = []
   class = "read"
   note = "every subcommand prints to stdout; git calls are reads"
-  cite = ["tools/lane/lane_hookset.py:379-381", "tools/lane/lane_hookset.py:519-560"]
+  cite = ["tools/lane/lane_hookset.py:373-375", "tools/lane/lane_hookset.py:514-560"]
 
 [[tool]]
 path = "tools/lane/probe_hook_merge.py"
@@ -1069,6 +1069,9 @@ path = "tools/lane/_lane3_policy.py"
 path = "tools/lane/_lane_args.sh"
 sourced_by = "tools/lane/lane1:39"
 [[library]]
+path = "tools/lane/_lane_forge_root.sh"
+sourced_by = "tools/lane/_cli_launch.sh:629"
+[[library]]
 path = "tools/lane/_lane_cleanup.sh"
 sourced_by = "tools/lane/lane1:62"
 [[library]]
@@ -1079,6 +1082,10 @@ path = "tools/lane/_lane_refresh.sh"
 sourced_by = "tools/lane/lane1:45"
 [[library]]
 path = "tools/lane/ci_plan_constraints.py"
+[[library]]
+path = "tools/lane/fixture_forge_root.py"
+[[library]]
+path = "tools/lane/hookset_root.py"
 [[library]]
 path = "tools/lane/lane_targets.py"
 [[library]]

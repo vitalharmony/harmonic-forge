@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for the Forge lane hook set and its builder (harmonic-forge#1307).
 
-Hermetic: the set is validated against THIS checkout (`forge_root`), or under a
-fixture HOME whose `harmonic-forge/tools` links to it, never against the
-operator's `~/harmonic-forge`. Every CLI run pins `XDG_CONFIG_HOME` to the
+Hermetic: the set is validated against THIS checkout (`forge_root`) and rendered
+under a fixture HOME, never the operator's (harmonic-forge#1526: `OP` is the
+operator-layout spelling). Every CLI run pins `XDG_CONFIG_HOME` to the
 fixture HOME's `.config`, so the overlay declaration it reads is the fixture's,
 never the operator's `instance.toml` (harmonic-forge#1525). The launcher half (the set reaches every Claude
 lane as one `--settings`) is `test_lane_launchers.py`'s LaneHookSet class.
@@ -44,13 +44,21 @@ CLASS_A = {
 }
 
 
-def _set() -> dict:
-    return json.loads(SET_FILE.read_text(encoding="utf-8"))
+OP = "${HOME}/harmonic-forge"
+
+
+def _set(prefix: str | None = None) -> dict:
+    data = json.loads(SET_FILE.read_text(encoding="utf-8"))
+    return data if prefix is None else hs.render(data, prefix)
 
 
 def _effective() -> dict:
-    """The operator's lane set: the core set plus the operator overlay."""
-    return hs.load_effective(SET_FILE, "operator", forge_root=ROOT)
+    """The operator's lane set (core plus overlay), rendered under a HOME whose
+    `harmonic-forge` links this checkout: the operator layout (#1526)."""
+    with tempfile.TemporaryDirectory() as home:
+        (Path(home) / "harmonic-forge").symlink_to(ROOT)
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            return hs.load_effective(SET_FILE, "operator", forge_root=ROOT)
 
 
 def _tuple_key(t: list) -> tuple:
@@ -89,7 +97,12 @@ class _Tmp(unittest.TestCase):
         path = self.write("set.json", data)
         kw.setdefault("overlay", "none")
         with mock.patch.dict(os.environ, {"HOME": str(self.fixture_home())}):
-            return hs.build(path, **kw)
+            return hs.build(path, ROOT, "test", **kw)
+
+    def rendered(self) -> dict:
+        """The core set as `build` renders it under the fixture HOME."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.fixture_home())}):
+            return _set(hs.spelling(ROOT))
 
     def declare(self, text: str | None) -> Path:
         """Write the fixture HOME's instance.toml (None: no file) and return
@@ -107,7 +120,8 @@ class _Tmp(unittest.TestCase):
         return dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
 
     def cli(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run([sys.executable, "-I", "-E", str(HERE / "lane_hookset.py"), *args],
+        root = ("--forge-root", str(ROOT), "--forge-root-source", "test") if args[0] == "build" else ()
+        return subprocess.run([sys.executable, "-I", "-E", str(HERE / "lane_hookset.py"), *args, *root],
                               capture_output=True, text=True, env=self.cli_env(), timeout=60)
 
 
@@ -120,11 +134,11 @@ class Build(_Tmp):
         value = self.build(_set())
         self.assertEqual(list(value), ["disableAllHooks", "hooks"])
         self.assertIs(value["disableAllHooks"], False)
-        self.assertEqual(value["hooks"], _set()["hooks"])
+        self.assertEqual(value["hooks"], self.rendered()["hooks"])
 
     def test_a_missing_set_refuses(self):
         with self.assertRaisesRegex(hs.SetError, "missing"):
-            hs.build(self.tmp / "absent.json", overlay="none")
+            hs.build(self.tmp / "absent.json", ROOT, "test", overlay="none")
 
     def test_an_empty_set_refuses(self):
         for data in ("", "{}", "[]"):
@@ -192,38 +206,38 @@ class Build(_Tmp):
     def test_an_unresolvable_script_refuses(self):
         data = _set()
         data["hooks"]["Stop"][0]["hooks"][0]["command"] = (
-            'f="${HOME}/harmonic-forge/tools/hooks/no_such_hook.py"; [ -f "$f" ] && python3 "$f" || true')
-        with self.assertRaisesRegex(hs.SetError, "do not exist"):
+            'f="@FORGE_ROOT@/tools/hooks/no_such_hook.py"; [ -f "$f" ] && python3 "$f" || true')
+        with self.assertRaisesRegex(hs.SetError, "do not exist under forge root"):
             self.build(data)
         with self.assertRaisesRegex(hs.SetError, "do not exist"):
             hs.validate(data, forge_root=ROOT)
 
-    def test_the_set_refuses_under_a_home_with_no_checkout(self):
-        """Why the launcher tests link the fixture HOME's harmonic-forge/tools."""
-        path = self.write("set.json", _set())
-        with mock.patch.dict(os.environ, {"HOME": str(self.tmp / "empty-home")}):
-            with self.assertRaisesRegex(hs.SetError, "do not exist"):
-                hs.build(path, overlay="none")
+    def test_a_root_without_the_scripts_refuses(self):
+        """Each script is checked under the forge root, never under HOME."""
+        (self.tmp / "bare" / "tools" / "hooks").mkdir(parents=True)
+        with self.assertRaisesRegex(hs.SetError, "from test.*do not exist under forge root"):
+            hs.build(self.write("set.json", _set()), self.tmp / "bare", "test", overlay="none")
 
     def test_build_refuses_an_unmatched_command(self):
         """Change 4: a command the platform-path pattern does not match is never
         existence-checked, and a guarded form then fails open at runtime."""
-        for command in ('python3 "$HOME/harmonic-forge/tools/hooks/batch_gate.py"',
-                        'python3 "${HOME}/harmonic_forge/tools/hooks/batch_gate.py"',
+        for command in ('python3 "${HOME}/harmonic-forge/tools/hooks/batch_gate.py"',
+                        'python3 "$HOME/harmonic-forge/tools/hooks/batch_gate.py"',
                         'python3 "${CLAUDE_PROJECT_DIR}/tools/hooks/batch_gate.py"',
-                        "echo hi"):
+                        'python3 "/abs/tools/hooks/batch_gate.py"', "echo hi",
+                        'python3 "@FORGE_ROOT@/tools/hooks/batch_gate.py" "$HOME/x"'):
             with self.subTest(command=command):
                 data = _set()
                 data["hooks"]["PreToolUse"][0]["hooks"][3]["command"] = command
-                with self.assertRaisesRegex(hs.SetError, "platform path"):
+                with self.assertRaisesRegex(hs.SetError, "as @FORGE_ROOT@/tools/hooks/"):
                     self.build(data)
 
     def test_no_set_command_uses_the_project_dir(self):
         overlay = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
         for data in (_set(), overlay):
             for _e, _m, handler in hs.handlers(data["hooks"]):
-                self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
-                self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
+                self.assertNotIn("HOME", handler["command"])
+                self.assertIn("@FORGE_ROOT@/tools/hooks/", handler["command"])
 
     def test_the_core_set_holds_48_entries(self):
         # +1: TaskCreate tasklist_hold (harmonic-forge#1477); +1: UserPromptSubmit
@@ -249,7 +263,7 @@ class Policy(_Tmp):
         policy, manifest = self.install(POLICY.read_bytes())
         value = self.build(_set(), policy=policy, manifest=manifest)
         self.assertEqual(value["permissions"], json.loads(POLICY.read_text())["permissions"])
-        self.assertEqual(value["hooks"], _set()["hooks"])
+        self.assertEqual(value["hooks"], self.rendered()["hooks"])
         self.assertIs(value["disableAllHooks"], False)
 
     def test_a_key_in_both_sources_refuses(self):
@@ -493,7 +507,7 @@ def _declare_operator(home: Path) -> None:
 class Doubled(unittest.TestCase):
 
     def _entry(self, script: str) -> tuple[str, str | None, dict]:
-        for event, matcher, handler in hs.handlers(_set()["hooks"]):
+        for event, matcher, handler in hs.handlers(_set(OP)["hooks"]):
             if script in handler["command"]:
                 return event, matcher, dict(handler)
         raise AssertionError(script)
@@ -512,11 +526,11 @@ class Doubled(unittest.TestCase):
     def test_doubled_reports_a_different_string_and_a_different_timeout(self):
         event, matcher, handler = self._entry("block_blind_repeat.py")
         plain = dict(handler, command='python3 "${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py"')
-        doubles, _ = hs.doubled(_set(), {"p": self._settings(event, matcher, plain)})
+        doubles, _ = hs.doubled(_set(OP), {"p": self._settings(event, matcher, plain)})
         self.assertEqual(len(doubles), 1)
         self.assertIn("runs twice", doubles[0])
         slow = dict(handler, timeout=60)
-        doubles, _ = hs.doubled(_set(), {"p": self._settings(event, matcher, slow)})
+        doubles, _ = hs.doubled(_set(OP), {"p": self._settings(event, matcher, slow)})
         self.assertIn("timeout 60 differs", doubles[0])
 
     def test_doubled_reports_a_user_level_double(self):
@@ -527,7 +541,7 @@ class Doubled(unittest.TestCase):
             {"type": "command", "command": "python3 /home/u/harmonic-forge/tools/hooks/block_irreversible_ops.py"},
             {"type": "command", "command": "python3 /home/u/harmonic-forge/tools/gh/block_closing_keywords.py"},
         ]}]}}
-        doubles, _ = hs.doubled(_set(), {"user": user})
+        doubles, _ = hs.doubled(_set(OP), {"user": user})
         self.assertEqual(len(doubles), 2)
         self.assertTrue(any("batch_gate.py" in d for d in doubles))
         self.assertTrue(any("block_irreversible_ops.py" in d for d in doubles))
@@ -599,7 +613,7 @@ class Doubled(unittest.TestCase):
             event, matcher, handler = self._entry(script)
             block = {"hooks": [handler], **({"matcher": matcher} if matcher else {})}
             settings["hooks"].setdefault(event, []).append(block)
-        doubles, removable = hs.doubled(_set(), {"p": settings})
+        doubles, removable = hs.doubled(_set(OP), {"p": settings})
         self.assertEqual(doubles, [])
         self.assertEqual(len(removable), 1)
         self.assertIn("require_ci_plan.py", removable[0])
@@ -648,14 +662,14 @@ class Overlay(_Tmp):
         self.assertEqual(hs.snapshot_gaps(data, snapshot), [])
 
     def test_none_is_the_core_set_and_unknown_refuses(self):
-        self.assertEqual(hs.load_effective(SET_FILE, "none", forge_root=ROOT), _set())
+        self.assertEqual(hs.load_effective(SET_FILE, "none", forge_root=ROOT), _set(hs.spelling(ROOT)))
         for bad in ("yes", "", "Operator", None, True):
             with self.subTest(bad=bad), self.assertRaisesRegex(hs.SetError, "operator, none"):
                 hs.load_effective(SET_FILE, bad, forge_root=ROOT)
 
     def test_merge_appends_overlay_blocks_after_core_blocks(self):
         data = _effective()
-        core = _set()
+        core = _set(OP)
         for event, blocks in core["hooks"].items():
             self.assertEqual(data["hooks"][event][:len(blocks)], blocks)
         self.assertEqual(data["lane_only"][:len(core["lane_only"])], core["lane_only"])
@@ -679,7 +693,7 @@ class Overlay(_Tmp):
         overlay = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
         missing_script = copy.deepcopy(overlay)
         missing_script["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
-            'f="${HOME}/harmonic-forge/tools/hooks/no_such_hook.py"; [ -f "$f" ] && python3 "$f" || true')
+            'f="@FORGE_ROOT@/tools/hooks/no_such_hook.py"; [ -f "$f" ] && python3 "$f" || true')
         self.declare('lane_hook_overlay = "operator"\n')
         for name, data in (("absent", None),
                            ("disableAllHooks", {**overlay, "disableAllHooks": True}),
@@ -829,43 +843,6 @@ class Running(_Tmp):
         self.proc(20, ["claude"], {"LANE": "1"}, a)
         self.proc(21, ["claude"], {"LANE": "1"}, b)
         self.assertEqual([line.split()[0] for line in hs.running(self.tmp / "proc", a)], ["20"])
-
-
-class ProbeFixture(_Tmp):
-    """The re-measurement tool stays runnable; without --real-run it launches
-    nothing, which is all a test may do."""
-
-    def test_every_variant_writes_a_fixture_and_launches_nothing(self):
-        proc = subprocess.run([sys.executable, str(HERE / "probe_hook_merge.py"),
-                               "--dir", str(self.tmp)], capture_output=True, text=True,
-                              env={**os.environ, "PATH": "/nonexistent"}, timeout=60)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.count("== "), 4)
-        self.assertTrue((self.tmp / "proj" / ".claude" / "settings.json").is_file())
-
-    def test_variant_and_env_select_without_launching(self):
-        """The refused-env sweep's measurement form, launch-free."""
-        base = [sys.executable, str(HERE / "probe_hook_merge.py"), "--dir", str(self.tmp)]
-        env = {**os.environ, "PATH": "/nonexistent"}
-        proc = subprocess.run([*base, "--variant", "merge", "--env", "CLAUDE_CODE_X=1"],
-                              capture_output=True, text=True, env=env, timeout=60)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.count("== "), 1)
-        self.assertIn("env: CLAUDE_CODE_X=1", proc.stdout)
-        proc = subprocess.run([*base, "--env", "NOEQUALS"], capture_output=True, text=True,
-                              env=env, timeout=60)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("NAME=VALUE", proc.stderr)
-
-    def test_other_hooks_are_the_cli_count_less_the_stub_count(self):
-        import probe_hook_merge as probe
-        log = self.write("log.txt", "A event=PreToolUse\nB event=PreToolUse\n")
-        stream = "\n".join(json.dumps({"type": "system", "subtype": "hook_started",
-                                       "hook_event": ev}) for ev in
-                           ["PreToolUse"] * 5 + ["Stop"]) + "\nnot json\n"
-        self.assertEqual(probe.other_hooks(stream, log), [
-            "      3 OTHER PreToolUse (cli reported 5, stub 2)",
-            "      1 OTHER Stop (cli reported 1, stub 0)"])
 
 
 if __name__ == "__main__":

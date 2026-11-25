@@ -686,8 +686,8 @@ class LaneHookSetCheckTests(unittest.TestCase):
         return mf.Project(name=name, prefix="Z", path=str(checkout))
 
     def _set_entry(self, script: str) -> tuple[str, dict]:
-        for path in (self.SET, self.OVERLAY):
-            data = json.loads(path.read_text(encoding="utf-8"))
+        for path in (self.SET, self.OVERLAY):  # rendered as the operator layout (harmonic-forge#1526)
+            data = json.loads(path.read_text(encoding="utf-8").replace("@FORGE_ROOT@", "${HOME}/harmonic-forge"))
             for event, blocks in data["hooks"].items():
                 for block in blocks:
                     for handler in block["hooks"]:

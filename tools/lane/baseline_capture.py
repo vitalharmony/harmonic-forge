@@ -68,6 +68,7 @@ from pathlib import Path
 # own resolved location; appended, so nothing there shadows a lane module.
 sys.path.append(str(Path(__file__).resolve().parent.parent / "settings"))
 import instance  # noqa: E402
+from fixture_forge_root import pin_forge_root  # noqa: E402,F401
 
 LANES = ("1", "2", "3")
 AGENTS = ("claude", "codex")
@@ -161,22 +162,21 @@ def write_codex_hooks(checkout: Path) -> None:
     hooks_json.write_text(json.dumps(config))
 
 
-def link_forge_tools(home: Path, tools: Path) -> None:
-    """Make `<home>/harmonic-forge/tools` the checkout under test's `tools/`.
+def link_forge_tools(home: Path, tools: Path) -> Path:
+    """Make `<home>/harmonic-forge/tools` the checkout under test's `tools/`,
+    and return that fixture forge root (harmonic-forge#1307, #1526).
 
-    harmonic-forge#1307 (Lane 1 change 3): every Claude launch validates the
-    Forge lane hook set, whose commands name `${HOME}/harmonic-forge/tools/
-    hooks/<script>`, so under a fixture HOME with no checkout every Claude
-    launch would refuse. Only `tools/` is linked, never the checkout itself:
-    `$HOME/harmonic-forge/sync_rules.py --pull` would otherwise run a real
-    `git pull --ff-only` on the checkout under test, and the harmonic-forge#651
-    test relies on the fixture HOME having no `sync_rules.py`.
+    Every Claude launch validates the lane hook set's scripts under the forge
+    root, which a launch under test pins here (`pin_forge_root`). Only `tools/`
+    is linked, never the checkout itself: the root's `sync_rules.py --pull`
+    would otherwise run a real `git pull --ff-only` on the checkout under test.
     """
     forge = home / "harmonic-forge"
     forge.mkdir(parents=True, exist_ok=True)
     link = forge / "tools"
     if not link.exists():
         link.symlink_to(tools.resolve())
+    return forge
 
 
 #: harmonic-forge#1396: the fixture lane tokens and the stub gh that knows them.
@@ -332,15 +332,15 @@ def capture_cell(
                     "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS",
                     # Pinned to $HOME/.claude, and the capture's HOME differs.
                     "CLAUDE_CONFIG_DIR",
-                    # harmonic-forge#1525: pinned to $HOME/.config below, so
-                    # the overlay declaration read is the fixture HOME's.
-                    "XDG_CONFIG_HOME"):
+                    # harmonic-forge#1525/#1526: pinned below, so the overlay
+                    # declaration and the forge root are the fixture's.
+                    "XDG_CONFIG_HOME", "HARMONIC_FORGE_ROOT"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)
         env["HOME"] = env.get("HOME", str(main))
         env.update(env_overrides or {})
-        env.setdefault("XDG_CONFIG_HOME", f"{env['HOME']}/.config")
+        pin_forge_root(env, lane_dir)
 
         proc = subprocess.run(
             ["bash", str(lane_dir / f"lane{lane}"), *launch_args],
@@ -423,7 +423,7 @@ def capture_all(lane_dir: Path) -> dict:
         home = root / "home"
         write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
         write_lane_slots(home)
-        link_forge_tools(home, lane_dir.parent)
+        forge = link_forge_tools(home, lane_dir.parent)
         write_overlay_declaration(home)
         for lane in LANES:
             for agent in AGENTS:
@@ -431,7 +431,7 @@ def capture_all(lane_dir: Path) -> dict:
                     key = f"lane{lane}/{agent}/{shape}"
                     cell = capture_cell(
                         lane_dir, main, stub_bin, lane, args,
-                        env_overrides={"LANE_CLI": agent, "HOME": str(home)},
+                        env_overrides={"LANE_CLI": agent, "HOME": str(home), "HARMONIC_FORGE_ROOT": str(forge)},
                     )
                     cells[key] = _normalize(cell, root, lane_dir, home)
     return {"schema": 1, "cells": cells}

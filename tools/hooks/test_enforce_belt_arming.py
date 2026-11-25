@@ -732,13 +732,13 @@ class Registration(unittest.TestCase):
 
 
 def _effective_operator_set() -> dict:
-    """The lane hook set with the operator overlay merged, validated against
-    this checkout (`tools/lane/lane_hookset.py`, loaded by path)."""
+    """The operator lane set, validated here and spelled as the operator layout renders it (#1526)."""
     import importlib.util
     root = HERE.parent.parent
     spec = importlib.util.spec_from_file_location("lane_hookset", root / "tools" / "lane" / "lane_hookset.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.spelling = lambda _root: "${HOME}/harmonic-forge"
     return module.load_effective(root / "tools" / "lane" / "lane_hooks.json", "operator", forge_root=root)
 
 

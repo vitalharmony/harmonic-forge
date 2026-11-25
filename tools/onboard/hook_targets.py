@@ -6,6 +6,9 @@ Its own module for the same reason `required_hooks.py` is: the lane launcher's
 `unresolvable_hook_targets` at every launch, and must not import
 `forge_onboard.py` and its manifest stack to do it. `forge_onboard.py`
 re-imports the three names, so its callers and tests are unchanged.
+
+The forge checkout's directory name is not assumed: any one path component
+before `/tools/` is the checkout (harmonic-forge#1526).
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ def _hook_commands(hooks: dict) -> list[str]:
     return found
 
 
-_PLATFORM_HOOK_PATH = re.compile(r'["\']?(\$\{HOME\}|~|/[^"\'\s]*?)/(harmonic-forge/[^"\'\s]+\.py)')
+_PLATFORM_HOOK_PATH = re.compile(r'["\']?(\$\{HOME\}|~|/[^"\'\s]*?)/([^"\'\s/]+/tools/[^"\'\s]+\.py)')
 
 
 def unresolvable_hook_targets(hooks: dict) -> list[str]:

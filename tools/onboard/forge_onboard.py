@@ -643,10 +643,10 @@ def _lane_hookset_module():
 
 def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
     """(set, error). The set is validated as the launcher's `build` validates
-    it, with each script checked in THIS checkout rather than under `$HOME`, so
-    the answer does not depend on which machine runs the report. A set that
-    does not load is `({}, reason)`: every lane launch refuses then, so every
-    project's hooks check fails with it (harmonic-forge#1307).
+    it, each script checked in THIS checkout, and rendered by
+    `spelling(_THIS_CHECKOUT)`, so `check_hooks` and `stale_worktree_hook_gaps`
+    compare rendered commands (harmonic-forge#1526). A set that does not load
+    is `({}, reason)`: every lane launch refuses then (harmonic-forge#1307).
 
     The set is the effective one: the core set plus the overlay `instance.toml`
     declares (`lane_hook_overlay`). An undeclared or unknown overlay is the

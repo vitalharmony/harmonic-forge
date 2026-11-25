@@ -259,12 +259,12 @@ class LaneWiring(unittest.TestCase):
     def test_the_lane_hook_set_wires_it_as_this_repo_does(self) -> None:
         """Epoch-1 pass 2: lane sessions in other repos get hooks only from
         tools/lane/lane_hooks.json (harmonic-forge#1307); byte-identical to this
-        repo's entry so the two run once, not twice."""
+        repo's entry once rendered, so the two run once, not twice."""
         def commands(path):
             data = json.loads(path.read_text(encoding="utf-8"))
             return [h["command"] for block in data["hooks"]["UserPromptSubmit"]
                     for h in block["hooks"] if "surface_dry_run_failures.py" in h["command"]]
-        lane = commands(ROOT / "tools" / "lane" / "lane_hooks.json")
+        lane = [c.replace("@FORGE_ROOT@", "${HOME}/harmonic-forge") for c in commands(ROOT / "tools" / "lane" / "lane_hooks.json")]
         project = commands(ROOT / ".claude" / "settings.json")
         self.assertEqual(len(lane), 1)
         self.assertEqual(lane, project)

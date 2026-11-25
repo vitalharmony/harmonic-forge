@@ -316,9 +316,9 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(wired, {"^Bash$", "^apply_patch$"})
 
     def test_the_lane_hook_set_wires_it_once_per_event_in_the_same_form(self):
-        """harmonic-forge#1307: the set's strings are byte-identical to this
-        repo's, so the two run once, not twice."""
-        lane_set = json.loads((HERE.parent / "lane" / "lane_hooks.json").read_text(encoding="utf-8"))
+        """harmonic-forge#1307: the set's strings, rendered, are byte-identical
+        to this repo's, so the two run once, not twice."""
+        lane_set = json.loads((HERE.parent / "lane" / "lane_hooks.json").read_text(encoding="utf-8").replace("@FORGE_ROOT@", "${HOME}/harmonic-forge"))
         for event in ("UserPromptSubmit", "PreToolUse"):
             in_set = [(block.get("matcher", ""), hook["command"])
                       for block in lane_set["hooks"][event] for hook in block["hooks"]
