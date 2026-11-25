@@ -1785,6 +1785,350 @@
     [],
     []
    ]
+  ],
+  "gha vh gh issue close 849": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "GH_REPO=x/y env --chdir=/t gh issue close 5": [
+   "intended",
+   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y bash -c 'unset GH_REPO; gh issue close 5'": [
+   "intended",
+   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y dash -c 'GH_REPO=o/r; gh issue close 5'": [
+   "intended",
+   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y env GH_REPO=o/r gh issue close 5": [
+   "old-defect",
+   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "o/r",
+      "5",
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y time GH_REPO=o/r gh issue close 5": [
+   "old-defect",
+   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "o/r",
+      "5",
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y dash -c 'GH_REPO=o/r gh issue close 5'": [
+   "old-defect",
+   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "o/r",
+      "5",
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y ksh -c 'gh issue close 5'": [
+   "old-defect",
+   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "x/y",
+      "5",
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y bash -c 'gh issue close 5'": [
+   "old-defect",
+   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "x/y",
+      "5",
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup GH_REPO=a/b gh issue close 5": [
+   "intended",
+   "verdict unchanged (refuse); nohup runs a program named GH_REPO=a/b, so gh never starts, and the hook reads every assignment word the strip walks as setting the environment, which names no decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "a/b",
+      "5",
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y time GH_REPO=o/r gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+   "old-defect",
+   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "pr",
+      "o/r",
+      "7",
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y exec -lx gh issue close 5": [
+   "intended",
+   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
   ]
  }
 }

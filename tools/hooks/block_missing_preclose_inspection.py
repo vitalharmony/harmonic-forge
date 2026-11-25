@@ -85,17 +85,21 @@ fails open on a branch outside `BRANCH_ISSUE` (`issues_closed_by_pr` returns
 `[]`). That is pre-existing, filed separately, and not widened here.
 
 **It does not and cannot prevent the merge or close.** Its reads fail open,
-as every sibling hook's do, but a literal gh call it cannot name or prove is
-not a close or merge is denied before any read (harmonic-forge#1499). It sees
-nothing behind a runner or expansion main's predicate does not strip (`sudo`,
-`xargs`, `$G`), heredoc bodies, the web UI, Python or curl; some of those also
-skip the gh shim (harmonic-forge#1577). Its audience is the honest-but-careless agent.
+as every sibling hook's do, but a literal gh call it reads and cannot name or
+prove is not a close or merge is denied before any read (harmonic-forge#1499).
+It reads no gh call in a segment holding a `bash|sh|zsh -c` word pair anywhere:
+that segment is read only as the shell's payload, so `gh issue close 5 -c sh -c
+x` passes, as on main. It sees nothing behind a runner or expansion main's
+predicate does not strip (`sudo`, `xargs`, `$G`), heredoc bodies, the web UI,
+Python or curl; some of those also skip the gh shim (harmonic-forge#1577). Its
+audience is the honest-but-careless agent.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -109,7 +113,7 @@ from hook_identity import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gh_argv_adapters as A  # noqa: E402
-from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+from shell_parse import PREFIX_WORDS, command_segments, strip_invocation_prefix  # noqa: E402
 
 #: harmonic-forge#1433 (sticky-wicket PATCH, issuecomment-7002145817): the
 #: exemption is a closed-world allowlist of exact close shapes, never a search
@@ -188,11 +192,20 @@ PRECLOSE_LABEL = "preclose-inspected"
 #: are gated -- see "What this guarantees" above for why gating on the
 #: *absence* of a Lane 3 trail was wrong.
 TOOLING_EXCEPTION_LABEL = "tooling-exception"
-#: A leading `NAME=value` word: the command's own environment (harmonic-forge#1499).
+#: A `NAME=value` word: an assignment to the environment gh starts with (harmonic-forge#1499).
 _INLINE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 #: The only environment names gh_argv reads: an inline value with an expansion
 #: is not the repo or host gh will use, so the call is undecided.
 _GH_ENV = ("GH_REPO", "GH_HOST")
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_SHELL_FLAGS = {"-c", "-lc", "--command"}
+#: The options of `env`/`exec` whose effect on gh's environment is known; any
+#: other is undecidable (`env -C dir`, `env -S str`, `exec -lx`).
+_ENV_CLEARS = {"env": {"-i", "-", "--ignore-environment"}, "exec": {"-c", "-cl", "-lc"}}
+_ENV_NO_OPS = {"env": {"--"}, "exec": {"-l"}}
+#: The environment a top-level segment inherits: none of GH_REPO/GH_HOST, as on
+#: main (gh then resolves the checkout's repo). Read only, never mutated.
+_BASE_ENV: dict[str, str] = {}
 
 
 def _allow() -> None:
@@ -245,27 +258,90 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     return result.stdout
 
 
-def _gh_reading(raw_tokens: list[str]) -> tuple[list[str], A.Result] | None:
+def _start_env(raw_tokens: list[str], env: dict[str, str]) -> tuple[list[str], dict[str, str]] | None:
+    """The words left after the prefix `strip_invocation_prefix` walks, and the
+    environment gh starts with once every word of that prefix has acted on `env`
+    (harmonic-forge#1499 round 1): an assignment sets, `env -u NAME` unsets,
+    `env -i` and `exec -c` clear, and a `-c` payload is one segment walked in
+    place. None (undecidable) for any other `env`/`exec` option, a payload of
+    more than one command, or a walk that ends anywhere the strip does not."""
+    env, words, i = dict(env), list(raw_tokens), 0
+    while i < len(words):
+        word, name = words[i], Path(words[i]).name
+        if _INLINE_ENV.match(word):
+            key, value = word.split("=", 1)
+            env[key], i = value, i + 1
+        elif word in _ENV_CLEARS:
+            i += 1
+            while i < len(words) and words[i].startswith("-"):
+                opt, i = words[i], i + 1
+                if opt in _ENV_CLEARS[word]:
+                    env.clear()
+                elif word == "env" and opt in ("-u", "--unset"):
+                    env.pop(words[i] if i < len(words) else "", None)
+                    i += 1
+                elif word == "env" and opt.startswith(("--unset=", "-u")):
+                    env.pop(opt.partition("=")[2] if opt.startswith("--") else opt[2:], None)
+                elif word == "exec" and opt in ("-a", "--"):
+                    i += opt == "-a" and i < len(words)
+                    if opt == "--":
+                        break
+                elif opt not in _ENV_NO_OPS[word]:
+                    return None
+        elif word in ("time", "command"):
+            i += 1
+            while i < len(words) and words[i] in ("-p", "--"):
+                i += 1
+                if words[i - 1] == "--":
+                    break
+        elif word == "nohup" or word in PREFIX_WORDS:
+            i += 1
+        elif name == "gh-as" and i + 1 < len(words):
+            i += 2
+        elif name == "gha" and i + 1 < len(words):
+            words = words[:i] + ["gh"] + words[i + 2:]
+        elif name in ("timeout", "stdbuf"):
+            i += 1
+            valued = ("-k", "--kill-after", "-s", "--signal") if name == "timeout" else ("-i", "-o", "-e")
+            while i < len(words) and words[i].startswith("-"):
+                i += 2 if words[i] in valued and i + 1 < len(words) else 1
+            i += name == "timeout" and i < len(words)  # timeout's DURATION
+        elif name == "nice":
+            i += 1
+            while i < len(words) and words[i].startswith("-") and words[i] != "--":
+                i += 2 if words[i] in ("-n", "--adjustment") and i + 1 < len(words) else 1
+            i += i < len(words) and words[i] == "--"
+        elif name in _SHELLS and i + 2 < len(words) and words[i + 1] in _SHELL_FLAGS:
+            if len(command_segments(words[i + 2])) != 1:
+                return None
+            words = words[:i] + shlex.split(words[i + 2]) + words[i + 3:]
+        else:
+            break
+    return (words[i:], env) if words[i:] == strip_invocation_prefix(raw_tokens) else None
+
+
+def _gh_reading(raw_tokens: list[str], inherited: dict[str, str] | None = _BASE_ENV
+                ) -> tuple[list[str], A.Result] | None:
     """One segment's literal gh call and the adapter's reading of it; None when
     the segment is not a literal gh call (harmonic-forge#1499).
 
     Recognition is main's, unchanged: `shell_parse.strip_invocation_prefix` plus
     a basename test (design amendment, F1498's sticky-wicket PATCH). The adapter
-    owns only target and flag grammar. Its environment is the segment's leading
-    `NAME=value` words; no other stripped word contributes one. Any fault after
-    recognition, and an inline GH_REPO/GH_HOST expansion, is undecided: a deny,
-    never a pass. Shared by `find_gated_targets_exempt` and `merge_head_commits`.
+    owns only target and flag grammar. Its environment is `_start_env`'s: the
+    one gh starts with after every prefix word acts on `inherited` (a `-c`
+    payload's), never only the leading assignments. An undecidable environment
+    (`inherited` None included), any fault after recognition, and an inline
+    GH_REPO/GH_HOST expansion are undecided: a deny, never a pass. Shared by
+    `find_gated_targets_exempt` and `merge_head_commits`.
     """
     tokens = strip_invocation_prefix(raw_tokens)
     if not tokens or os.path.basename(tokens[0]) != "gh":
         return None
     try:
-        env: dict[str, str] = {}
-        for token in raw_tokens:
-            if not _INLINE_ENV.match(token):
-                break
-            name, value = token.split("=", 1)
-            env[name] = value
+        walked = None if inherited is None else _start_env(raw_tokens, inherited)
+        if walked is None:
+            return tokens, A.Result(A.UNPROVABLE, reason="cannot determine the environment gh starts with")
+        env = walked[1]
         if any(c in env.get(name, "") for name in _GH_ENV for c in "$`"):
             return tokens, A.Result(A.UNPROVABLE, reason="an inline GH_REPO/GH_HOST value is an expansion")
         return tokens, A.classify_argv(tokens[1:], env)
@@ -273,12 +349,26 @@ def _gh_reading(raw_tokens: list[str]) -> tuple[list[str], A.Result] | None:
         return tokens, A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
 
 
-def _shell_payload(raw_tokens: list[str]) -> str | None:
-    """The command string of a `bash|sh|zsh -c|-lc|--command` segment, else None."""
+def _shell_payload(raw_tokens: list[str], inherited: dict[str, str] | None
+                   ) -> tuple[str, dict[str, str] | None] | None:
+    """The command string of a `bash|sh|zsh -c|-lc|--command` segment and the
+    environment its commands inherit, else None. That environment is
+    `_start_env`'s over the words before the shell when they are all prefix
+    words (else `{}`, as main); undecidable (None) when a payload of more than
+    one command inherits GH_REPO/GH_HOST, which an earlier command may unset."""
     index = next((i for i, token in enumerate(raw_tokens)
                   if Path(token).name in {"bash", "sh", "zsh"} and i + 2 < len(raw_tokens)
-                  and raw_tokens[i + 1] in {"-c", "-lc", "--command"}), None)
-    return None if index is None else raw_tokens[index + 2]
+                  and raw_tokens[i + 1] in _SHELL_FLAGS), None)
+    if index is None:
+        return None
+    payload = raw_tokens[index + 2]
+    try:
+        walked = None if inherited is None else _start_env(raw_tokens[:index], inherited)
+        several = len(command_segments(payload)) > 1
+    except ValueError:
+        walked, several = None, True
+    env = None if walked is None else {} if walked[0] else walked[1]
+    return payload, (None if env is None or (several and any(n in env for n in _GH_ENV)) else env)
 
 
 def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None:
@@ -290,7 +380,8 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
     return None if found is None else [t[:3] for t in found]
 
 
-def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, bool]] | None:
+def find_gated_targets_exempt(command: str, inherited: dict[str, str] | None = _BASE_ENV
+                              ) -> list[tuple[str | None, str, str, bool]] | None:
     """`find_gated_targets`, each target carrying its own exempt bit: True
     only for an issue close in an exact not-planned / duplicate shape
     (`_canonical_not_planned_close`). harmonic-forge#1433: never one bit per command.
@@ -307,14 +398,14 @@ def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, 
 
     targets: list[tuple[str | None, str, str, bool]] = []
     for raw_tokens in segments:
-        payload = _shell_payload(raw_tokens)
-        if payload is not None:
-            nested_targets = find_gated_targets_exempt(payload)
+        shell = _shell_payload(raw_tokens, inherited)
+        if shell is not None:
+            nested_targets = find_gated_targets_exempt(*shell)
             if nested_targets is None:
                 return None
             targets.extend(nested_targets)
             continue
-        reading = _gh_reading(raw_tokens)
+        reading = _gh_reading(raw_tokens, inherited)
         if reading is None:
             continue
         tokens, result = reading
@@ -633,7 +724,8 @@ def _bound_sha(tokens: list[str], cli: bool) -> str | None:
     return value
 
 
-def merge_head_commits(command: str, number: str) -> list[str | None]:
+def merge_head_commits(command: str, number: str, inherited: dict[str, str] | None = _BASE_ENV
+                       ) -> list[str | None]:
     """The `--match-head-commit` value of every `gh pr merge` segment of
     `command` that merges PR `number`; None for a segment that carries none
     (harmonic-forge#1077 AC5). The REST merge form is always None: where gh
@@ -645,18 +737,19 @@ def merge_head_commits(command: str, number: str) -> list[str | None]:
         return [None]
     found: list[str | None] = []
     for raw_tokens in segments:
-        payload = _shell_payload(raw_tokens)
-        found.extend(merge_head_commits(payload, number) if payload is not None
-                     else _segment_heads(raw_tokens, number))
+        shell = _shell_payload(raw_tokens, inherited)
+        found.extend(merge_head_commits(shell[0], number, shell[1]) if shell is not None
+                     else _segment_heads(raw_tokens, number, inherited))
     return found or [None]
 
 
-def _segment_heads(raw_tokens: list[str], number: str) -> list[str | None]:
+def _segment_heads(raw_tokens: list[str], number: str,
+                   inherited: dict[str, str] | None = _BASE_ENV) -> list[str | None]:
     """The head one segment binds when it is a bound merge of PR `number`:
     `_bound_sha` (the harmonic-forge#1077 allow-list) for a CLI merge, None for
     the REST form; `[]` for any other segment. Recognition and target are
     `_gh_reading`'s, the same reading `find_gated_targets_exempt` acts on."""
-    reading = _gh_reading(raw_tokens)
+    reading = _gh_reading(raw_tokens, inherited)
     if reading is None:
         return []
     tokens, result = reading

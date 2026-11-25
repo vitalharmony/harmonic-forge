@@ -31,10 +31,14 @@ MAIN_TABLE = Path(__file__).resolve().parent / "testdata" / "preclose_main_178ba
 #: REST close; preclose_main_table.py freezes main's output for each.
 GRID_PREFIXES = ("", "A=v ", "A=/usr/bin/gh ", "env ", "env env ", "env 1=x ", "env -u GH_REPO ",
                  "nohup ", "time ", "timeout 5 ", "exec ", "command -p ", "nice -n5 ",
-                 "stdbuf -oL ", "then ", "! ", "gh-as vh ", "gha vh ")
+                 "stdbuf -oL ", "then ", "! ", "gh-as vh ", "gha vh ",
+                 # Round 1 survivor 1: a decoy GH_REPO a later wrapper unsets or clears.
+                 "GH_REPO=d/x env -u GH_REPO ", "GH_REPO=d/x env -i ")
 GRID_WORDS = ("gh", "/usr/bin/gh", '"$X/gh"', "dash -c")
 GRID_BODIES = ("issue close 849 -R o/r", "pr merge 7 -R o/r --match-head-commit abc123",
-               "api -X PATCH repos/o/r/issues/849 -f state=closed")
+               "api -X PATCH repos/o/r/issues/849 -f state=closed",
+               # Unbound: the environment alone names the repo (main: cwd).
+               "issue close 849", "pr merge 7 --match-head-commit abc123")
 
 
 def grid() -> list[str]:
@@ -116,10 +120,47 @@ class VerdictColumnTests(unittest.TestCase):
                 self.assertEqual(hook.find_gated_targets_exempt(command), UNDECIDED)
                 self.assertTrue(_denied(_main(command)))
 
-    def test_only_leading_assignments_are_the_environment(self) -> None:
-        """`timeout 5`, `-u GH_REPO`, `nohup` and wrappers contribute no env."""
-        self.assertEqual(hook.find_gated_targets("nohup GH_REPO=a/b gh issue close 12"),
-                         [(None, "12", "issue")])
+    def test_the_environment_is_the_one_gh_starts_with_never_a_decoy(self) -> None:
+        """Round 1 survivor 1: every prefix word acts on the environment, so a
+        leading GH_REPO that a later wrapper unsets, clears or replaces is never
+        the target. Each binds the repo gh uses, or none (cwd, as main)."""
+        sha = "c" * 40
+        for command, want in (
+                ("GH_REPO=decoy/x env -u GH_REPO gh issue close 5", None),
+                ("GH_REPO=decoy/x env -uGH_REPO gh issue close 5", None),
+                ("GH_REPO=decoy/x env --unset=GH_REPO gh issue close 5", None),
+                ("GH_REPO=x/y env GH_REPO=o/r gh issue close 5", "o/r"),
+                ("GH_REPO=x/y env -i HOME=/h gh issue close 5", None),
+                ("GH_REPO=x/y exec -c gh issue close 5", None),
+                ("GH_REPO=x/y exec -cl gh issue close 5", None),
+                ("GH_REPO=x/y time GH_REPO=o/r gh issue close 5", "o/r"),
+                ("GH_REPO=x/y dash -c 'GH_REPO=o/r gh issue close 5'", "o/r"),
+                ("GH_REPO=x/y ksh -c 'gh issue close 5'", "x/y"),
+                ("GH_REPO=x/y bash -c 'gh issue close 5'", "x/y"),
+                ("exec -a GH_REPO=decoy/x gh issue close 5", None),
+                ("timeout -s GH_REPO=decoy/x 5 gh issue close 5", None),
+                ("nohup GH_REPO=a/b gh issue close 5", "a/b")):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_gated_targets(command), [(want, "5", "issue")])
+        for command in (f"GH_REPO=decoy/x env -u GH_REPO gh pr merge 7 --match-head-commit {sha}",
+                        f"GH_REPO=x/y env -i gh pr merge 7 --match-head-commit {sha}"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_gated_targets(command), [(None, "7", "pr")])
+                self.assertEqual(hook.merge_head_commits(command, "7"), [sha])
+        self.assertEqual(hook.find_gated_targets(f"GH_REPO=x/y time GH_REPO=o/r gh pr merge 7 "
+                                                 f"--match-head-commit {sha}"), [("o/r", "7", "pr")])
+
+    def test_an_undeterminable_wrapper_is_undecided_never_a_leading_assignment(self) -> None:
+        for command in ("GH_REPO=x/y env --chdir=/t gh issue close 5", "GH_REPO=x/y exec -lx gh issue close 5",
+                        "GH_REPO=x/y bash -c 'unset GH_REPO; gh issue close 5'",
+                        "GH_REPO=x/y dash -c 'GH_REPO=o/r; gh issue close 5'"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_gated_targets_exempt(command), UNDECIDED)
+                self.assertTrue(_denied(_main(command)))
+
+    def test_a_shell_word_pair_in_a_gh_argv_reads_only_that_payload(self) -> None:
+        """The docstring's stated residual, unchanged from main."""
+        self.assertEqual(hook.find_gated_targets_exempt("gh issue close 5 -c sh -c x"), [])
 
     def test_an_adapter_fault_is_a_deny_never_a_raise(self) -> None:
         with mock.patch.object(hook.A, "classify_argv", side_effect=RuntimeError("boom")):
@@ -188,7 +229,7 @@ class ParityGridTests(unittest.TestCase):
         self.assertIn('os.path.basename(tokens[0]) != "gh"', tree["_gh_reading"])
         for reader in ("find_gated_targets_exempt", "_segment_heads"):
             with self.subTest(reader=reader):
-                self.assertIn("_gh_reading(raw_tokens)", tree[reader])
+                self.assertIn("_gh_reading(raw_tokens, inherited)", tree[reader])
 
 
 if __name__ == "__main__":
