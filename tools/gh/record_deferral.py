@@ -8,8 +8,9 @@ deferred before that landed is recorded here, by explicit key:
         --operator-login <the deferral comment's login>
 
 `--operator-login` is required: it is the one login whose `go` releases the
-deferral. The repo must be onboarded (`projects.toml`), and is recorded under
-its canonical key. A local write only: no `gh` call and no network. At most
+deferral, stored casefolded. The repo must be onboarded (`projects.toml`), and
+every key must pass `deferral_store.valid_key` (an issue >= 1) before anything
+is written: a rejected key exits 2 (harmonic-forge#1564 sticky-wicket fix (c)). A local write only: no `gh` call and no network. At most
 `deferral_store.MAX_BACKFILL_KEYS` keys per run. The belt verifies each
 entry's deferral comment on its next tick, and discharges a backfilled entry
 whose thread carries none (a mistyped key), with one stderr line.
@@ -48,6 +49,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(args.issue) > deferral_store.MAX_BACKFILL_KEYS:
         print(f"record_deferral: {len(args.issue)} keys given; at most "
               f"{deferral_store.MAX_BACKFILL_KEYS} per run", file=sys.stderr)
+        return 2
+    rejected = [n for n in issues if deferral_store.valid_key(repo, n) is None]
+    if rejected:
+        print(f"record_deferral: invalid key(s) {rejected}: an issue number must be "
+              ">= 1; nothing recorded", file=sys.stderr)
         return 2
     failed = 0
     for number in issues:

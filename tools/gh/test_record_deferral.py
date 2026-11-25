@@ -81,6 +81,21 @@ class RecordDeferralCliTests(unittest.TestCase):
         self.assertIn("--operator-login", err)
         self.assertEqual(deferral_store.read_deferrals([REPO]), set())
 
+    def test_refuses_a_non_positive_issue_with_exit_2_and_writes_nothing(self):
+        """Sticky-wicket fix (c), N5: the CLI calls `valid_key` itself, before
+        any write, so one rejected key in a batch records nothing."""
+        for bad in ("0", "-5"):
+            with self.subTest(issue=bad):
+                code, _, err = self._main(["--repo", REPO, "--issue", "2757", "--issue", bad, *LOGIN])
+                self.assertEqual(code, 2)
+                self.assertIn("invalid key", err)
+                self.assertEqual(deferral_store.read_deferrals([REPO]), set())
+
+    def test_the_login_is_stored_casefolded(self):
+        code, _, _ = self._main(["--repo", REPO, "--issue", "2757", "--operator-login", "VitalHarmony"])
+        self.assertEqual(code, 0)
+        self.assertEqual(deferral_store.deferral_entry(REPO, 2757)["operator_login"], "vitalharmony")
+
     def test_refuses_a_repo_that_is_not_onboarded(self):
         for repo in ("hrse", "vitalharmony/not-a-project"):
             with self.subTest(repo=repo):

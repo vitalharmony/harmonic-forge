@@ -5201,9 +5201,10 @@ class DeferralTriggerTests(unittest.TestCase):
                 _, lines, _ = watch_lane_posts.queue_cycle([self.REPO], "l1", {}, "t", candidate_pairs=set())
                 self.assertEqual(lines, [self.LINE])
 
-    def test_a_quote_reply_ending_in_go_queues(self):
+    def test_a_quote_reply_then_go_is_not_watched(self):
+        """N1 (inverted): a Quote reply ending in `go` is the accepted residual."""
         self.record()
-        self.assertTrue(self.queued(self.thread(self.c(101, "> Waits on hrse#1810.\n\ngo"))))
+        self.assertFalse(self.queued(self.thread(self.c(101, "> Waits on hrse#1810.\n\ngo"))))
 
     # AC4
     def test_tool_and_lane_posts_queue_nothing(self):
@@ -5233,7 +5234,7 @@ class DeferralTriggerTests(unittest.TestCase):
         for body in self.GO_FIRST_CLASSIFIED:
             with self.subTest(body=body[-40:]):
                 self.assertIsNotNone(watch_lane_posts._classify(body))
-                self.assertTrue(watch_lane_posts.RELEASE_RE.match(watch_lane_posts._first_visible_line(body)))
+                self.assertTrue(watch_lane_posts.RELEASE_RE.fullmatch(watch_lane_posts._first_raw_line(body)))
                 self.assertFalse(self.queued(self.thread(self.c(101, body))))
 
     def test_a_quoted_heading_by_another_login_keeps_the_pending_release(self):
@@ -5368,8 +5369,8 @@ class DeferralTriggerTests(unittest.TestCase):
         """preclose #0: the same retraction through `queue_cycle`'s `offers`
         call site, the one `main()` runs. The closed deferral's queued item is
         an owed plan review (AC8: it wins over the trigger), so only
-        `retired_out` retracts it: the preclose #9 entry check covers the
-        deferral kind alone."""
+        `retired_out` retracts it: the fix (d) filter covers the deferral
+        kind alone (N4)."""
         self.record()
         key = (self.REPO, self.N)
         marker = "plan owes=plan-review"
@@ -5421,7 +5422,7 @@ class DeferralTriggerTests(unittest.TestCase):
                 self.assertEqual(err.getvalue().count(f"{self.REPO}#{self.N} left-queue-for-l1"), 1)
 
     def test_a_failed_tick_still_carries_a_release_whose_entry_stands(self):
-        """The preclose #9 check is the entry's absence only: a non-deferral
+        """The fix (d) filter is the entry's absence only: a non-deferral
         item, and a deferral item whose entry stands, are carried."""
         self.record()
         key = (self.REPO, self.N)
@@ -5535,18 +5536,17 @@ class DeferralTriggerPureTests(unittest.TestCase):
         self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("queued", 3))
 
     def test_a_lazy_blockquote_continuation_is_no_release(self):
-        """preclose #6: `go` straight after a `>` line, with no blank line
-        between, renders inside the quote."""
+        """The first raw line is the `>` line, so the `go` after it is no
+        release however it renders."""
         comments = [self.c(1, self.DEFERRAL), self.c(2, "> Waits on hrse#1810.\ngo")]
         self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
 
-    def test_a_go_after_an_html_comment_releases(self):
-        """preclose #6: an HTML comment renders as nothing, so the visible
-        first line is the `go` after it, on its own line or the same one."""
+    def test_a_go_after_an_html_comment_is_not_watched(self):
+        """N1 (inverted): a `go` after an HTML comment is the accepted residual."""
         for body in ("<!-- note to self -->\ngo", "<!--\nhidden\n-->\n\ngo E3", "<!-- x --> go"):
             with self.subTest(body=body):
                 comments = [self.c(1, self.DEFERRAL), self.c(2, body)]
-                self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("queued", 2))
+                self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
 
     def test_a_fenced_go_is_no_release(self):
         comments = [self.c(1, self.DEFERRAL), self.c(2, "```\ngo\n```")]
@@ -5558,7 +5558,7 @@ class DeferralTriggerPureTests(unittest.TestCase):
     def test_the_heading_text_is_the_one_gh_issue_posts(self):
         import gh_issue  # noqa: PLC0415
         self.assertIs(gh_issue.deferral_store, deferral_store)
-        self.assertTrue(watch_lane_posts._DEFERRAL_ANCHOR_RE.match(
+        self.assertTrue(watch_lane_posts._DEFERRAL_ANCHOR_RE.fullmatch(
             f"{deferral_store.DEFERRAL_HEADING} `deferred-design-record`"))
 
 

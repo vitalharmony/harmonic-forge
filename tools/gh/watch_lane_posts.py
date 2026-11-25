@@ -102,7 +102,7 @@ CLI `record_deferral.py`) records the deferral in
 `deferral_store.py`'s `deferrals/` store (core), `queue_cycle` adds every recorded
 deferral to Lane 1's candidate set (`read_deferrals`, no GitHub call), and
 `discover_queue` queues `queued-for-l1 kind=deferral-trigger owes=handoff`
-for a later unclassified comment whose first visible line is `go`, optionally
+for a later unclassified comment whose first non-blank raw line is `go`, optionally
 followed by one group or issue token (`RELEASE_RE`), posted by the entry's recorded
 `operator_login`. Only a post stamped `posted-by=LANE1` (a `lane-comment`
 from a `LANE=1` session) clears it; a handoff discharges it, at the writer
@@ -639,7 +639,7 @@ _DEFERRAL_ANCHOR_RE = re.compile(
     re.escape(deferral_store.DEFERRAL_HEADING) + r" `(?:"
     + "|".join(re.escape(e) for e in deferral_store.RECORDED_EXCEPTIONS) + r")`")
 #: The release grammar (harmonic-forge#1564 design amendment, operator
-#: decision 1): a comment's stripped first visible line is `go`, optionally
+#: decision 1): a comment's first non-blank raw line is `go`, optionally
 #: followed by one group or issue token. One constant, so tightening the token
 #: class later is one edit. `deferral_store.RELEASE_SENTENCE` states it.
 #: Operator decision 3 (2026-11-25): the token is a group (`R`, `E3`) or an
@@ -1077,36 +1077,18 @@ def _classify(body: str) -> tuple[str, str] | None:
     return None
 
 
-def _first_line(body: str) -> str:
-    return body.strip().split("\n", 1)[0]
-
-
-#: An HTML comment renders as nothing (preclose #6).
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-#: A blockquote line, `markdown_strip`'s reading (any indent).
-_QUOTE_LINE_RE = re.compile(r"^[ \t]*>")
-
-
-def _first_visible_line(body: str) -> str:
-    """The first non-blank line `markdown_strip.visible_text` keeps (fences,
-    indented code and `>` quotes removed), stripped. Two rendered-view rules
-    on top (preclose #6): a closed HTML comment is removed, so it never hides
-    a visible `go` after it; and a non-blank line straight after a `>` line,
-    with no blank line between, is that quote's lazy continuation, so it is
-    quoted text, never a command."""
-    lines: list[str] = []
-    in_quote = False
-    for line in _HTML_COMMENT_RE.sub("", body).splitlines():
-        if _QUOTE_LINE_RE.match(line):
-            in_quote = True
-        elif not line.strip():
-            in_quote = False
-        elif in_quote:
-            line = "> " + line
-        lines.append(line)
-    for line in markdown_strip.visible_text("\n".join(lines)).splitlines():
-        if line.strip():
-            return line.strip()
+def _first_raw_line(body: str) -> str:
+    """harmonic-forge#1564 sticky-wicket fix (b): the deferral's one reading
+    rule, for the release and the anchor alike. The first non-blank line of
+    the raw body, stripped; `""` when that line is indented code (4 or more
+    leading spaces, or a tab). No rendering is modelled: a quote, fence, HTML
+    comment or prose ahead of it is that line, so the caller's fullmatch
+    fails, and the chat relay is the fallback (an accepted residual)."""
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        return "" if "\t" in indent or len(indent) >= 4 else line.strip()
     return ""
 
 
@@ -1124,28 +1106,33 @@ def _deferral_trigger(comments: list[dict],
     """harmonic-forge#1564: where a recorded R-0352 deferral stands on its
     thread. Pure.
 
-    The anchor is the LAST comment whose first line is `gh_issue.py`'s
-    heading for a recorded exception, posted by the recorded
-    `operator_login` (any login only for an entry without one, which never
-    releases), so a collaborator quoting the heading neither moves the anchor
-    nor erases a pending release (preclose #7); with none,
+    Sticky-wicket fix (a): every signal acted on is bound to the recorded
+    `operator_login` by `deferral_store.same_login` (casefolded). Fix (b):
+    the anchor and the release each fullmatch `_first_raw_line`.
+
+    The anchor is the LAST comment whose first raw line is exactly
+    `gh_issue.py`'s heading for a recorded exception, by the recorded login
+    (any login only for an entry without one); with none,
     `("no-anchor", None)`. Each later comment, in order:
 
-    - a verified Lane 1 `handoff` discharges the deferral
-      (`("discharged", None)`), the backfill fallback to `l1_post.py`'s own
-      discharge;
-    - a post stamped `posted-by=LANE1` clears a pending release;
-    - an unclassified comment is a release when its first visible line
-      matches `RELEASE_RE` and its login is the entry's recorded
-      `operator_login` (an entry without one never releases).
+    - a verified Lane 1 `handoff` by the recorded login (any login for an
+      entry without one) discharges the deferral (`("discharged", None)`),
+      the backfill fallback to `l1_post.py`'s own discharge;
+    - a post stamped `posted-by=LANE1` by the same login clears a pending
+      release;
+    - an unclassified comment by the recorded login is a release when its
+      first raw line fullmatches `RELEASE_RE` (an entry without a login
+      never releases).
 
     `("queued", id)` names the newest release still pending; otherwise
     `("cleared", None)`."""
+    def bound(comment: dict) -> bool:
+        login = (comment.get("user") or {}).get("login")
+        return not operator_login or deferral_store.same_login(login, operator_login)
     anchor = None
     for index, comment in enumerate(comments):
-        author = (comment.get("user") or {}).get("login")
-        if (_DEFERRAL_ANCHOR_RE.match(_first_line(comment.get("body") or ""))
-                and (not operator_login or author == operator_login)):
+        if (_DEFERRAL_ANCHOR_RE.fullmatch(_first_raw_line(comment.get("body") or ""))
+                and bound(comment)):
             anchor = index
     if anchor is None:
         return "no-anchor", None
@@ -1153,16 +1140,16 @@ def _deferral_trigger(comments: list[dict],
     for comment in comments[anchor + 1:]:
         body = comment.get("body") or ""
         kind = _classify(body)
-        if kind == ("l1", "handoff"):
+        if kind == ("l1", "handoff") and bound(comment):
             return "discharged", None
-        if _stamped_lane1(body):
+        if _stamped_lane1(body) and bound(comment):
             pending = None
             continue
         if kind is not None:
             continue
         login = (comment.get("user") or {}).get("login")
-        if (operator_login and login == operator_login
-                and RELEASE_RE.match(_first_visible_line(body))):
+        if (deferral_store.same_login(login, operator_login)
+                and RELEASE_RE.fullmatch(_first_raw_line(body))):
             pending = comment.get("id")
     if pending is not None:
         return "queued", pending
@@ -2769,16 +2756,8 @@ def queue_cycle(
                   f"{len(prior)} previously-queued issue(s) forward, not retracting",
                   file=sys.stderr)
             for issue, marker in prior.items():
-                if issue in retired:
-                    continue
-                if (lane == "l1" and marker == DEFERRAL_MARKER
-                        and deferral_store.deferral_entry(repo, issue) is None):
-                    # harmonic-forge#1564 preclose #9: its entry is gone (a
-                    # handoff discharged it at the writer), so nothing is
-                    # left to carry; retracted like a closed deferral.
-                    retired_pairs.add((repo, issue))
-                    continue
-                queue[(repo, issue)] = marker
+                if issue not in retired:
+                    queue[(repo, issue)] = marker
             continue
         ok_repos.add(repo)
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
@@ -2827,6 +2806,15 @@ def queue_cycle(
                         # forward), so it left the candidate set on purpose.
                         continue
                     queue[(repo, issue)] = marker
+    if lane == "l1":
+        #: harmonic-forge#1564 sticky-wicket fix (d): one rule for every
+        #: carry-forward branch. A deferral item is derived from the store,
+        #: re-read every tick, so one with no fresh read and no entry is stale
+        #: whichever branch carried it; retracted like a closed deferral.
+        for key in [k for k, m in queue.items() if m == DEFERRAL_MARKER
+                    and k not in fresh_ids and deferral_store.deferral_entry(*k) is None]:
+            del queue[key]
+            retired_pairs.add(key)
 
     lines: list[str] = []
     when = time.time() if now_ts is None else now_ts

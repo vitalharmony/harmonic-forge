@@ -11,8 +11,9 @@ only when the deferral is discharged. Its writers are two:
     record_deferral.py   -- record_deferral(..., "backfill"), explicit keys and
                             a required `--operator-login`
 
-`operator_login` is the filing login: the only login whose `go` releases the
-deferral. An entry without one never releases.
+`operator_login` is the filing login, stored casefolded: the only login whose
+`go` releases the deferral, compared by `same_login`. An entry without one
+never releases.
 
 `watch_lane_posts.py` is its one reader (`read_deferrals`, `deferral_entry`).
 `discharge_deferral` has two callers: `l1_post.py`, when a handoff posts (the
@@ -20,11 +21,11 @@ writer-side discharge), and `watch_lane_posts.py`, for a closed or missing
 issue, a verified Lane 1 handoff on the thread, or a thread with no deferral
 comment (the backfill fallback).
 
-**Repo keys are canonical** (`manifest_protocol.normalize_repo`, the helper
-`preclose_check.normalize_repo` wraps): `vitalharmony/HRSE` and a URL land on
-one key. A repo that does not normalize raises `ManifestError`, which every
-public function here catches and reports on stderr, so one malformed key
-never ends a belt tick.
+**One validator for keys** (`valid_key`, harmonic-forge#1564 sticky-wicket
+fix (c)): the repo canonical (`manifest_protocol.normalize_repo`), so
+`vitalharmony/HRSE` and a URL land on one key, and the issue an `int` >= 1.
+Every function here and `record_deferral.py` call it; it never raises, so
+one malformed key never ends a belt tick.
 
 A core module: filing and posting are core, and core never imports an
 operator-side file (harmonic-forge#1523), so the store lives here rather than
@@ -147,14 +148,29 @@ def _replace(path: Path, entry: dict) -> None:
     os.replace(tmp, path)
 
 
-def _canonical(repo: str) -> str | None:
-    """`repo` as the one key every entry uses, or None (one stderr line) when
-    it does not normalize. Never raises."""
+def _canonical(repo: object) -> str | None:
+    """`repo` canonical, or None when it does not normalize. Never raises."""
     try:
         return normalize_manifest_repo(repo)
-    except (ManifestError, AttributeError, TypeError) as exc:
-        print(f"[belt-candidates] deferral key {repo!r} skipped: {exc}", file=sys.stderr)
+    except (ManifestError, AttributeError, TypeError):
         return None
+
+
+def valid_key(repo: object, issue: object) -> tuple[str, int] | None:
+    """`(canonical_repo, issue)` when `issue` is an `int` (never a `bool`)
+    >= 1 and `repo` normalizes; otherwise None. The one key rule for the
+    writer and every reader. Silent and never raises."""
+    key = _canonical(repo)
+    if key is None or type(issue) is not int or issue < 1:
+        return None
+    return key, issue
+
+
+def same_login(a: object, b: object) -> bool:
+    """Whether two logins are one GitHub account: both non-empty strings,
+    equal casefolded (GitHub resolves logins case-insensitively)."""
+    return (isinstance(a, str) and isinstance(b, str) and bool(a) and bool(b)
+            and a.casefold() == b.casefold())
 
 
 def _deferrals_dir(base_dir: Path | None = None) -> Path:
@@ -189,9 +205,12 @@ def record_deferral(repo: str, issue: int, source: str, *,
     releases. Best-effort and non-raising, like
     `belt_candidates.record_candidate`. Returns whether the entry was
     written."""
-    key = _canonical(repo)
-    if key is None:
+    valid = valid_key(repo, issue)
+    if valid is None:
+        print(f"[belt-candidates] deferral key {repo!r}#{issue!r} rejected",
+              file=sys.stderr)
         return False
+    key, issue = valid
     if _refuses_real_store(base_dir or DEFAULT_CANDIDATES_DIR):
         _refused("writing")
         return False
@@ -204,7 +223,7 @@ def record_deferral(repo: str, issue: int, source: str, *,
         "source": source,
     }
     if operator_login:
-        entry["operator_login"] = operator_login
+        entry["operator_login"] = operator_login.casefold()
     try:
         with _store_lock(directory):
             _replace(path, entry)
@@ -233,29 +252,22 @@ def read_deferrals(repos: Iterable[str], *,
     except OSError:
         return found
     for path in paths:
-        entry = _read_entry(path)
-        try:
-            repo = entry["repo"]
-            issue = int(entry["issue"])
-            if issue <= 0:
-                raise ValueError(f"issue {issue} is not positive")
-        except (TypeError, KeyError, ValueError, OverflowError) as exc:
-            print(f"[belt-candidates] deferral entry {path.name} skipped: "
-                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        entry = _read_entry(path) or {}
+        valid = valid_key(entry.get("repo"), entry.get("issue"))
+        if valid is None:
+            print(f"[belt-candidates] deferral entry {path.name} skipped",
+                  file=sys.stderr)
             continue
-        key = _canonical(repo) if isinstance(repo, str) else None
-        if key in wanted:
-            found.add((wanted[key], issue))
+        if valid[0] in wanted:
+            found.add((wanted[valid[0]], valid[1]))
     return found
 
 
 def deferral_entry(repo: str, issue: int, *,
                    base_dir: Path | None = None) -> dict | None:
     """The recorded deferral for `repo`#`issue`, or None."""
-    key = _canonical(repo)
-    if key is None:
-        return None
-    return _read_entry(_deferral_path(key, issue, base_dir))
+    valid = valid_key(repo, issue)
+    return None if valid is None else _read_entry(_deferral_path(*valid, base_dir))
 
 
 def discharge_deferral(repo: str, issue: int, reason: str, *,
@@ -263,10 +275,10 @@ def discharge_deferral(repo: str, issue: int, reason: str, *,
     """Remove `repo`#`issue`'s recorded deferral, with one stderr line. Not
     archived: the deferral comment on GitHub is the R-0352 record. Returns
     whether an entry was removed."""
-    key = _canonical(repo)
-    if key is None:
+    valid = valid_key(repo, issue)
+    if valid is None:
         return False
-    path = _deferral_path(key, issue, base_dir)
+    path = _deferral_path(*valid, base_dir)
     if not path.exists():
         return False
     if _refuses_real_store(base_dir or DEFAULT_CANDIDATES_DIR):

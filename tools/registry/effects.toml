@@ -511,7 +511,7 @@ path = "tools/gh/record_deferral.py"
   match = []
   class = "shared-state"
   gap = "no precheck; the belt re-verifies the deferral comment each tick"
-  cite = ["tools/gh/record_deferral.py:54"]
+  cite = ["tools/gh/record_deferral.py:60"]
 
 [[tool]]
 path = "tools/gh/repo_hygiene.py"
@@ -609,7 +609,7 @@ path = "tools/gh/watch_lane_posts.py"
   class = "shared-state"
   gap = "writes the belt's seen, offer and tick state under ~/.claude/state/belt"
   guard_note = "enforce_belt_arming.py checks a Monitor command in a LANE session only; deny_retired_belt_sweep.py:27 denies the retired flag only"
-  cite = ["tools/gh/watch_lane_posts.py:694", "tools/gh/watch_lane_posts.py:3215", "tools/gh/watch_lane_posts.py:3471"]
+  cite = ["tools/gh/watch_lane_posts.py:694", "tools/gh/watch_lane_posts.py:3203", "tools/gh/watch_lane_posts.py:3459"]
 
 [[tool]]
 path = "tools/gh/wrapper_parity.py"
