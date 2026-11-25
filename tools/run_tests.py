@@ -182,12 +182,18 @@ def redirected_belt_candidates_dir(tmp_dir: Path):
     if str(forge_gh) not in sys.path:
         sys.path.insert(0, str(forge_gh))
     import belt_candidates
+    import deferral_store
     original = belt_candidates.DEFAULT_CANDIDATES_DIR
+    original_deferrals = deferral_store.DEFAULT_CANDIDATES_DIR
     belt_candidates.DEFAULT_CANDIDATES_DIR = tmp_dir
+    #: harmonic-forge#1564: the deferral store's base, its `deferrals/` beside
+    #: the candidates in the same redirect.
+    deferral_store.DEFAULT_CANDIDATES_DIR = tmp_dir
     try:
         yield
     finally:
         belt_candidates.DEFAULT_CANDIDATES_DIR = original
+        deferral_store.DEFAULT_CANDIDATES_DIR = original_deferrals
 
 
 #: A placeholder, never a credential: the identity probe is stubbed, so no

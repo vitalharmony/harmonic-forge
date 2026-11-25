@@ -99,7 +99,7 @@ issue filed with a `blocked-on-prerequisite` or `deferred-design-record`
 exception has no worktree and no candidate entry, and the operator's comment
 that releases it (`go`) carries no marker. `gh_issue.py` (and the backfill
 CLI `record_deferral.py`) records the deferral in
-`belt_candidates`' `deferrals/` store, `queue_cycle` adds every recorded
+`deferral_store.py`'s `deferrals/` store (core), `queue_cycle` adds every recorded
 deferral to Lane 1's candidate set (`read_deferrals`, no GitHub call), and
 `discover_queue` queues `queued-for-l1 kind=deferral-trigger owes=handoff`
 for a later comment by the deferral comment's author that carries no lane
@@ -235,6 +235,7 @@ import belt_batch_view  # noqa: E402
 import _etag_cache  # noqa: E402  (harmonic-forge#1393: conditional issue and thread reads)
 import release_milestone  # noqa: E402  (harmonic-forge#1382 C1: the one current-release definition)
 import belt_candidates  # noqa: E402
+import deferral_store  # noqa: E402  (harmonic-forge#1564: core, so filing never imports the belt)
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: harmonic-forge#851: the FAIL/PASS reader for a gate result is
 #: `lane_state.py`'s, imported rather than restated -- a second regex is how
@@ -630,8 +631,8 @@ DEFERRAL_OWES = "handoff"
 #: The deferral comment's first line, `gh_issue.py`'s heading for a recorded
 #: exception, built from the one constant that writes it.
 _DEFERRAL_ANCHOR_RE = re.compile(
-    re.escape(belt_candidates.DEFERRAL_HEADING) + r" `(?:"
-    + "|".join(re.escape(e) for e in belt_candidates.RECORDED_EXCEPTIONS) + r")`")
+    re.escape(deferral_store.DEFERRAL_HEADING) + r" `(?:"
+    + "|".join(re.escape(e) for e in deferral_store.RECORDED_EXCEPTIONS) + r")`")
 #: Any Markdown ATX heading: every markerless post a lane tool makes starts
 #: with one, and an operator's release comment does not.
 _ANY_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]")
@@ -1638,7 +1639,7 @@ def discover_queue(repo: str, lane: str,
             # after the store was read.
             belt_candidates.retire_candidate(repo, issue, read_before=read_before)
             # harmonic-forge#1564: a closed or missing issue's deferral is over.
-            belt_candidates.discharge_deferral(repo, issue, state)
+            deferral_store.discharge_deferral(repo, issue, state)
             if state == "closed":
                 _retire_imc(repo, issue)
             continue
@@ -1703,17 +1704,17 @@ def discover_queue(repo: str, lane: str,
                 last_body = comment.get("body", "")
                 last_id = comment.get("id")
         newest_id = comments[-1].get("id") if comments else None
-        deferral = belt_candidates.deferral_entry(repo, issue) if lane == "l1" else None
+        deferral = deferral_store.deferral_entry(repo, issue) if lane == "l1" else None
         if deferral is not None:
             # harmonic-forge#1564: an operator comment on a recorded R-0352
             # deferral. Set first, so every owed kind below overwrites it.
             outcome, trigger_id = _deferral_trigger(
                 comments, {str(i) for i in (deferral.get("own_comment_ids") or ())})
             if outcome == "discharged":
-                belt_candidates.discharge_deferral(repo, issue, "a Lane 1 handoff followed it")
+                deferral_store.discharge_deferral(repo, issue, "a Lane 1 handoff followed it")
             elif outcome == "no-anchor":
                 if _deferral_recorded_long_ago(deferral):
-                    belt_candidates.discharge_deferral(
+                    deferral_store.discharge_deferral(
                         repo, issue, "its thread carries no R-0039 deferral comment")
             elif outcome == "queued":
                 queued[issue] = f"{DEFERRAL_KIND} owes={DEFERRAL_OWES}"
@@ -2667,7 +2668,7 @@ def queue_cycle(
     if lane == "l1":
         #: harmonic-forge#1564: a recorded deferral has no worktree and no
         #: candidate entry, so it is a candidate source of its own.
-        candidate_pairs = candidate_pairs | belt_candidates.read_deferrals(repos)
+        candidate_pairs = candidate_pairs | deferral_store.read_deferrals(repos)
     queue: dict[tuple[str, int], str] = {}
     ok_repos: set[str] = set()
     fresh_ids: dict[tuple[str, int], int | None] = {}

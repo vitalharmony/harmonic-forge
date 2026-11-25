@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from retired_artifacts import RETIRED_ARTIFACTS, RETIRED_COMMAND_FRAGMENTS  # noqa: E402
-import belt_candidates  # noqa: E402  (harmonic-forge#1564: the deferral store)
+import deferral_store  # noqa: E402  (harmonic-forge#1564)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
@@ -386,7 +386,7 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
             return False
     reason = args.handoff_exception_reason
     comment = (
-        f"{belt_candidates.DEFERRAL_HEADING} `{args.handoff_exception}`\n\n"
+        f"{deferral_store.DEFERRAL_HEADING} `{args.handoff_exception}`\n\n"
         f"No Lane 1 handoff accompanies this filing. R-0039 permits that for "
         f"this case, and requires the claim to be recorded rather than "
         f"assumed — this comment is that record (R-0352's deferral shape).\n\n"
@@ -399,10 +399,10 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
               f"[GH] The handoff obligation therefore STANDS. Re-run the "
               f"comment, or post the handoff.", file=sys.stderr)
         return False
-    if args.handoff_exception in belt_candidates.RECORDED_EXCEPTIONS:
+    if args.handoff_exception in deferral_store.RECORDED_EXCEPTIONS:
         # harmonic-forge#1564: Lane 1's belt watches this deferral for the
         # operator's comment that fires its trigger.
-        belt_candidates.record_deferral(args.repo, issue, "filing")
+        deferral_store.record_deferral(args.repo, issue, "filing")
     handoff_owed.discharge(args.repo, issue)
     print(f"[GH] R-0039 exception '{args.handoff_exception}' recorded on "
           f"{issue_url}; no handoff owed.")

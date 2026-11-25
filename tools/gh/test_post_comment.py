@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import belt_candidates  # noqa: E402
+import deferral_store  # noqa: E402  (harmonic-forge#1564)
 import post_comment  # noqa: E402
 
 REPO = "vitalharmony/hrse"
@@ -26,7 +26,7 @@ class PostCommentNotesOwnCommentTests(unittest.TestCase):
         self.base = Path(tmp.name)
         self.body_file = self.base / "body.md"
         self.body_file.write_text(BODY, encoding="utf-8")
-        for patcher in (mock.patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.base),
+        for patcher in (mock.patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.base),
                         mock.patch.object(post_comment.tasklist_owed, "record_post")):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -42,27 +42,27 @@ class PostCommentNotesOwnCommentTests(unittest.TestCase):
             return post_comment.post_comment(REPO, ISSUE, self.body_file, BODY)
 
     def _ids(self):
-        entry = belt_candidates.deferral_entry(REPO, ISSUE)
+        entry = deferral_store.deferral_entry(REPO, ISSUE)
         return None if entry is None else entry["own_comment_ids"]
 
     def test_self_check_pass_records_the_id(self):
-        belt_candidates.record_deferral(REPO, ISSUE, "filing")
+        deferral_store.record_deferral(REPO, ISSUE, "filing")
         self.assertEqual(self._post(BODY), 0)
         self.assertEqual(self._ids(), [COMMENT_ID])
 
     def test_self_check_failure_still_records_the_id(self):
-        belt_candidates.record_deferral(REPO, ISSUE, "filing")
+        deferral_store.record_deferral(REPO, ISSUE, "filing")
         self.assertEqual(self._post("mangled"), 1)
         self.assertEqual(self._ids(), [COMMENT_ID])
 
     def test_no_recorded_deferral_creates_no_entry(self):
         self.assertEqual(self._post(BODY), 0)
-        self.assertIsNone(belt_candidates.deferral_entry(REPO, ISSUE))
-        self.assertEqual(list((self.base / belt_candidates.DEFERRALS_SUBDIR).glob("*.json"))
-                         if (self.base / belt_candidates.DEFERRALS_SUBDIR).exists() else [], [])
+        self.assertIsNone(deferral_store.deferral_entry(REPO, ISSUE))
+        self.assertEqual(list((self.base / deferral_store.DEFERRALS_SUBDIR).glob("*.json"))
+                         if (self.base / deferral_store.DEFERRALS_SUBDIR).exists() else [], [])
 
     def test_a_record_failure_never_fails_the_post(self):
-        with mock.patch.object(belt_candidates, "note_own_comment", side_effect=RuntimeError("boom")):
+        with mock.patch.object(deferral_store, "note_own_comment", side_effect=RuntimeError("boom")):
             self.assertEqual(self._post(BODY), 0)
 
 

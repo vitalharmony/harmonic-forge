@@ -22,26 +22,16 @@ marker is ever written calls `record_candidate` on every successful post:
 `watch_lane_posts.py` (this repo) is the one reader: `read_candidates`.
 
 **A second store, one directory down: recorded R-0352 deferrals**
-(harmonic-forge#1564). `candidates/deferrals/<owner>__<repo>__<issue>.json`
-holds `{repo, issue, recorded_at, source, own_comment_ids}` for an issue
-filed with a recorded R-0039 exception and no handoff. It has no age prune:
-an entry leaves only when the deferral is discharged. Its writers are three:
-
-    gh_issue.py          -- record_deferral(..., "filing"), after the R-0039
-                            comment posts, for RECORDED_EXCEPTIONS only
-    record_deferral.py   -- record_deferral(..., "backfill"), explicit keys
-    post_comment.py      -- note_own_comment, the id of a free-text comment
-                            it posted on a recorded deferral
-
-`watch_lane_posts.py` is its one reader (`read_deferrals`, `deferral_entry`),
-and the only caller of `discharge_deferral`.
+(harmonic-forge#1564), in the core module `deferral_store.py`. Filing and
+posting are core and never import this operator-side file (harmonic-forge
+#1523), so the store's writers and reader import that module instead; this
+one imports from it the real-store literal and the test marker, so the two
+stores' guards share one definition of each.
 
 **Every mutation of the store happens under `_store_lock`** (harmonic-forge
 #854). The sites are three: `record_candidate`'s write, `retire_candidate`'s
-read-and-rewrite, and `_prune_if_stale`'s archive-and-unlink. The deferral
-store's three (`record_deferral`, `note_own_comment`, `discharge_deferral`)
-take the lock of their own directory. A new mutation site must take the
-lock too and join this list.
+read-and-rewrite, and `_prune_if_stale`'s archive-and-unlink. A new mutation
+site must take the lock too and join this list.
 
 **Kind- and poster-aware, not just repo/age (the pre-rescope defect).** The
 original design recorded only `{repo, issue, posted_at}` -- every issue
@@ -98,28 +88,16 @@ from typing import Iterable
 
 UTC = timezone.utc
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 #: Real, production location -- the same directory the pre-rescope design
 #: used for its single JSONL file. Every writer and the reader default
-#: here; every test passes `base_dir` instead (AC4').
-REAL_CANDIDATES_DIR = Path.home() / ".claude" / "state" / "belt" / "candidates"
-#: One literal, so the guard's notion of "the real store" cannot drift from the
-#: default; `tools/run_tests.py` redirects by rebinding only this name.
+#: here; every test passes `base_dir` instead (AC4'). The literal lives in
+#: `deferral_store.py` (harmonic-forge#1564), so the guard's notion of "the
+#: real store" is one literal for both stores.
+from deferral_store import REAL_CANDIDATES_DIR, TESTING_ENV  # noqa: E402
+#: The default every writer and the reader use; `tools/run_tests.py`
+#: redirects by rebinding this name (and `deferral_store`'s).
 DEFAULT_CANDIDATES_DIR = REAL_CANDIDATES_DIR
-
-#: harmonic-forge#1564. The first line `gh_issue.py` posts for an R-0039
-#: filing-bar exception, up to the exception name. Already-posted comments are
-#: the belt's anchors, so the posted text must stay byte-identical.
-DEFERRAL_HEADING = "## R-0039 filing-bar exception:"
-#: The exceptions that name a trigger (R-0352). `parent-epic` names none.
-RECORDED_EXCEPTIONS = ("blocked-on-prerequisite", "deferred-design-record")
-DEFERRALS_SUBDIR = "deferrals"
-#: `record_deferral.py`'s per-run key cap.
-MAX_BACKFILL_KEYS = 25
-
-#: Set by the test runners (`tools/run_tests.py`,
-#: `tools/gh/run_lane1_transport_tests.py`, `tools/gh/kill_check.py`) and
-#: inherited by any writer a test spawns as a subprocess (harmonic-forge#865).
-TESTING_ENV = "HARMONIC_FORGE_TESTING"
 
 
 def _refuses_real_store(base: Path) -> bool:
@@ -431,138 +409,3 @@ def _retire_failed(repo: str, issue: int, exc: Exception) -> None:
     print(f"[belt-candidates] could not mark closed {repo}#{issue} (non-fatal): {exc}",
           file=sys.stderr)
 
-
-# --- harmonic-forge#1564: recorded R-0352 deferrals ---------------------------
-
-
-def _deferrals_dir(base_dir: Path | None = None) -> Path:
-    """`candidates/deferrals/`, resolved at call time from
-    `DEFAULT_CANDIDATES_DIR`, so the test runners' redirect covers it. A
-    separate directory because a candidate file keeps only an issue's newest
-    post and is pruned at 14 days; a deferral can wait longer than that."""
-    return (base_dir or DEFAULT_CANDIDATES_DIR) / DEFERRALS_SUBDIR
-
-
-def _deferral_path(repo: str, issue: int, base_dir: Path | None) -> Path:
-    """The one path every deferral function uses: the issue's candidate-file
-    basename, one directory down."""
-    return _candidate_path(_deferrals_dir(base_dir), repo, issue)
-
-
-def _read_entry(path: Path) -> dict | None:
-    try:
-        entry = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-    return entry if isinstance(entry, dict) else None
-
-
-def record_deferral(repo: str, issue: int, source: str, *,
-                    base_dir: Path | None = None) -> bool:
-    """Record that `repo`#`issue` carries an R-0352 deferral comment.
-    `source` is `"filing"` (`gh_issue.py`) or `"backfill"`
-    (`record_deferral.py`). Keeps any `own_comment_ids` already recorded.
-    Best-effort and non-raising, like `record_candidate`. Returns whether
-    the entry was written."""
-    if _refuses_real_store(base_dir or DEFAULT_CANDIDATES_DIR):
-        _refused("writing")
-        return False
-    directory = _deferrals_dir(base_dir)
-    path = _deferral_path(repo, issue, base_dir)
-    try:
-        with _store_lock(directory):
-            prior = _read_entry(path) or {}
-            ids = prior.get("own_comment_ids")
-            entry = {
-                "repo": repo,
-                "issue": issue,
-                "recorded_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "source": source,
-                "own_comment_ids": [str(i) for i in ids] if isinstance(ids, list) else [],
-            }
-            _replace(path, entry)
-    except OSError as exc:
-        print(f"[belt-candidates] deferral record failed (non-fatal): {exc}",
-              file=sys.stderr)
-        return False
-    return True
-
-
-def read_deferrals(repos: Iterable[str], *,
-                   base_dir: Path | None = None) -> set[tuple[str, int]]:
-    """`(repo, issue)` for every recorded deferral in `repos`. No age cutoff
-    and no GitHub call; a malformed file is skipped."""
-    wanted = set(repos)
-    found: set[tuple[str, int]] = set()
-    try:
-        paths = sorted(_deferrals_dir(base_dir).glob("*.json"))
-    except OSError:
-        return found
-    for path in paths:
-        entry = _read_entry(path)
-        try:
-            repo = entry["repo"]
-            issue = int(entry["issue"])
-        except (TypeError, KeyError, ValueError):
-            continue
-        if repo in wanted:
-            found.add((repo, issue))
-    return found
-
-
-def deferral_entry(repo: str, issue: int, *,
-                   base_dir: Path | None = None) -> dict | None:
-    """The recorded deferral for `repo`#`issue`, or None."""
-    return _read_entry(_deferral_path(repo, issue, base_dir))
-
-
-def note_own_comment(repo: str, issue: int, comment_id: int | str, *,
-                     base_dir: Path | None = None) -> None:
-    """Add `comment_id` to a recorded deferral's `own_comment_ids`, so the
-    belt never reads a comment `post_comment.py` posted as the operator's
-    trigger. Only when an entry exists; deduplicated; non-raising."""
-    path = _deferral_path(repo, issue, base_dir)
-    if not path.exists():
-        return
-    if _refuses_real_store(base_dir or DEFAULT_CANDIDATES_DIR):
-        _refused("writing")
-        return
-    try:
-        with _store_lock(_deferrals_dir(base_dir)):
-            entry = _read_entry(path)
-            if entry is None:
-                return
-            ids = entry.get("own_comment_ids")
-            ids = [str(i) for i in ids] if isinstance(ids, list) else []
-            if str(comment_id) not in ids:
-                ids.append(str(comment_id))
-            entry["own_comment_ids"] = ids
-            _replace(path, entry)
-    except OSError as exc:
-        print(f"[belt-candidates] deferral own-comment record failed (non-fatal): {exc}",
-              file=sys.stderr)
-
-
-def discharge_deferral(repo: str, issue: int, reason: str, *,
-                       base_dir: Path | None = None) -> bool:
-    """Remove `repo`#`issue`'s recorded deferral, with one stderr line. Not
-    archived: the deferral comment on GitHub is the R-0352 record. Returns
-    whether an entry was removed."""
-    path = _deferral_path(repo, issue, base_dir)
-    if not path.exists():
-        return False
-    if _refuses_real_store(base_dir or DEFAULT_CANDIDATES_DIR):
-        _refused("discharging")
-        return False
-    try:
-        with _store_lock(_deferrals_dir(base_dir)):
-            path.unlink()
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        print(f"[belt-candidates] could not discharge deferral {repo}#{issue} "
-              f"(non-fatal): {exc}", file=sys.stderr)
-        return False
-    print(f"[belt-candidates] deferral discharged {repo}#{issue}: {reason}",
-          file=sys.stderr)
-    return True

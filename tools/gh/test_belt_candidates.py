@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import belt_candidates as bc  # noqa: E402
+import deferral_store as ds  # noqa: E402  (harmonic-forge#1564)
 
 UTC = timezone.utc
 
@@ -302,7 +303,8 @@ class PostedAtOutTests(unittest.TestCase):
 
 
 class DeferralStoreTests(unittest.TestCase):
-    """harmonic-forge#1564 AC2: the deferral store, one directory down."""
+    """harmonic-forge#1564 AC2: the deferral store (`deferral_store.py`), one
+    directory below the candidate store, at the same basename."""
 
     REPO = "vitalharmony/hrse"
 
@@ -312,19 +314,19 @@ class DeferralStoreTests(unittest.TestCase):
         self.base = Path(tmp.name)
 
     def test_the_entry_lives_at_the_candidate_basename_one_directory_down(self):
-        bc.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
-        path = bc._candidate_path(bc._deferrals_dir(self.base), self.REPO, 2757)
+        ds.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
+        path = bc._candidate_path(ds._deferrals_dir(self.base), self.REPO, 2757)
         self.assertEqual(path, self.base / "deferrals" / "vitalharmony__hrse__2757.json")
         entry = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(entry["source"], "filing")
         self.assertEqual(entry["own_comment_ids"], [])
-        self.assertEqual(bc.deferral_entry(self.REPO, 2757, base_dir=self.base), entry)
+        self.assertEqual(ds.deferral_entry(self.REPO, 2757, base_dir=self.base), entry)
 
     def test_a_later_record_candidate_leaves_the_deferral_intact(self):
-        bc.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
-        before = bc.deferral_entry(self.REPO, 2757, base_dir=self.base)
+        ds.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
+        before = ds.deferral_entry(self.REPO, 2757, base_dir=self.base)
         bc.record_candidate(self.REPO, 2757, "plan", "l2", base_dir=self.base)
-        after = bc.deferral_entry(self.REPO, 2757, base_dir=self.base)
+        after = ds.deferral_entry(self.REPO, 2757, base_dir=self.base)
         self.assertIsNotNone(after)
         self.assertEqual(after.get("source"), "filing")
         self.assertEqual(after.get("recorded_at"), before["recorded_at"])
@@ -334,35 +336,35 @@ class DeferralStoreTests(unittest.TestCase):
                          {(self.REPO, 2757)})
 
     def test_read_deferrals_applies_no_age_cutoff(self):
-        bc.record_deferral(self.REPO, 2766, "backfill", base_dir=self.base)
-        path = bc._candidate_path(bc._deferrals_dir(self.base), self.REPO, 2766)
+        ds.record_deferral(self.REPO, 2766, "backfill", base_dir=self.base)
+        path = bc._candidate_path(ds._deferrals_dir(self.base), self.REPO, 2766)
         entry = json.loads(path.read_text(encoding="utf-8"))
         entry["recorded_at"] = (datetime.now(UTC) - timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
         path.write_text(json.dumps(entry), encoding="utf-8")
-        self.assertEqual(bc.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 2766)})
+        self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 2766)})
 
     def test_read_deferrals_filters_repos_and_skips_malformed_files(self):
-        bc.record_deferral(self.REPO, 1, "filing", base_dir=self.base)
-        bc.record_deferral("vitalharmony/harmonic-forge", 2, "filing", base_dir=self.base)
-        (bc._deferrals_dir(self.base) / "junk.json").write_text("{not json", encoding="utf-8")
-        self.assertEqual(bc.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 1)})
+        ds.record_deferral(self.REPO, 1, "filing", base_dir=self.base)
+        ds.record_deferral("vitalharmony/harmonic-forge", 2, "filing", base_dir=self.base)
+        (ds._deferrals_dir(self.base) / "junk.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 1)})
 
     def test_note_own_comment_appends_once_and_only_to_an_existing_entry(self):
-        bc.note_own_comment(self.REPO, 9, 111, base_dir=self.base)
-        self.assertIsNone(bc.deferral_entry(self.REPO, 9, base_dir=self.base))
-        bc.record_deferral(self.REPO, 9, "filing", base_dir=self.base)
-        bc.note_own_comment(self.REPO, 9, 111, base_dir=self.base)
-        bc.note_own_comment(self.REPO, 9, "111", base_dir=self.base)
-        self.assertEqual(bc.deferral_entry(self.REPO, 9, base_dir=self.base)["own_comment_ids"], ["111"])
+        ds.note_own_comment(self.REPO, 9, 111, base_dir=self.base)
+        self.assertIsNone(ds.deferral_entry(self.REPO, 9, base_dir=self.base))
+        ds.record_deferral(self.REPO, 9, "filing", base_dir=self.base)
+        ds.note_own_comment(self.REPO, 9, 111, base_dir=self.base)
+        ds.note_own_comment(self.REPO, 9, "111", base_dir=self.base)
+        self.assertEqual(ds.deferral_entry(self.REPO, 9, base_dir=self.base)["own_comment_ids"], ["111"])
         # a re-record keeps the ids it already holds
-        bc.record_deferral(self.REPO, 9, "backfill", base_dir=self.base)
-        self.assertEqual(bc.deferral_entry(self.REPO, 9, base_dir=self.base)["own_comment_ids"], ["111"])
+        ds.record_deferral(self.REPO, 9, "backfill", base_dir=self.base)
+        self.assertEqual(ds.deferral_entry(self.REPO, 9, base_dir=self.base)["own_comment_ids"], ["111"])
 
     def test_discharge_removes_the_entry(self):
-        bc.record_deferral(self.REPO, 5, "filing", base_dir=self.base)
-        self.assertTrue(bc.discharge_deferral(self.REPO, 5, "closed", base_dir=self.base))
-        self.assertIsNone(bc.deferral_entry(self.REPO, 5, base_dir=self.base))
-        self.assertFalse(bc.discharge_deferral(self.REPO, 5, "closed", base_dir=self.base))
+        ds.record_deferral(self.REPO, 5, "filing", base_dir=self.base)
+        self.assertTrue(ds.discharge_deferral(self.REPO, 5, "closed", base_dir=self.base))
+        self.assertIsNone(ds.deferral_entry(self.REPO, 5, base_dir=self.base))
+        self.assertFalse(ds.discharge_deferral(self.REPO, 5, "closed", base_dir=self.base))
 
 
 if __name__ == "__main__":

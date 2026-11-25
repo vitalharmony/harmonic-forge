@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import belt_candidates  # noqa: E402
+import deferral_store  # noqa: E402  (harmonic-forge#1564)
 import record_deferral  # noqa: E402
 
 REPO = "vitalharmony/hrse"
@@ -21,7 +21,7 @@ class RecordDeferralCliTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.base = Path(tmp.name)
-        patcher = mock.patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.base)
+        patcher = mock.patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.base)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -42,8 +42,8 @@ class RecordDeferralCliTests(unittest.TestCase):
              mock.patch("urllib.request.urlopen", side_effect=refuse):
             code, out, _ = self._main(["--repo", REPO, "--issue", "2757", "--issue", "2778"])
         self.assertEqual(code, 0)
-        self.assertEqual(belt_candidates.read_deferrals([REPO]), {(REPO, 2757), (REPO, 2778)})
-        self.assertEqual(belt_candidates.deferral_entry(REPO, 2757)["source"], "backfill")
+        self.assertEqual(deferral_store.read_deferrals([REPO]), {(REPO, 2757), (REPO, 2778)})
+        self.assertEqual(deferral_store.deferral_entry(REPO, 2757)["source"], "backfill")
         self.assertIn(f"recorded deferral {REPO}#2757", out)
 
     def test_refuses_more_than_25_keys(self):
@@ -53,7 +53,7 @@ class RecordDeferralCliTests(unittest.TestCase):
         code, _, err = self._main(argv)
         self.assertEqual(code, 2)
         self.assertIn("at most 25", err)
-        self.assertEqual(belt_candidates.read_deferrals([REPO]), set())
+        self.assertEqual(deferral_store.read_deferrals([REPO]), set())
 
     def test_25_keys_are_accepted(self):
         argv = ["--repo", REPO]
@@ -61,12 +61,12 @@ class RecordDeferralCliTests(unittest.TestCase):
             argv += ["--issue", str(n)]
         code, _, _ = self._main(argv)
         self.assertEqual(code, 0)
-        self.assertEqual(len(belt_candidates.read_deferrals([REPO])), 25)
+        self.assertEqual(len(deferral_store.read_deferrals([REPO])), 25)
 
     def test_refuses_to_run_with_no_issue(self):
         code, _, _ = self._main(["--repo", REPO])
         self.assertEqual(code, 2)
-        self.assertEqual(belt_candidates.read_deferrals([REPO]), set())
+        self.assertEqual(deferral_store.read_deferrals([REPO]), set())
 
     def test_refuses_to_run_with_no_repo(self):
         code, _, _ = self._main(["--issue", "1"])

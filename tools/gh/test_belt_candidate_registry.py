@@ -35,12 +35,7 @@ _GH_DIR = Path(__file__).resolve().parent
 #:     (`read_candidates`), never to record a post -- the reader, not a
 #:     fourth writer. Its own coverage is `ReadQueueCandidatesTests` in
 #:     `test_watch_lane_posts.py`, not this registry.
-#:   - `gh_issue.py`, `record_deferral.py`, `post_comment.py`: import
-#:     `belt_candidates` to write its `deferrals/` store (harmonic-forge#1564),
-#:     never to record a marker post; none of them emits the footer. Their
-#:     coverage is `test_gh_issue.py`, `test_record_deferral.py` and
-#:     `test_post_comment.py`.
-_EXCLUDE_STEMS = {"watch_lane_posts", "gh_issue", "record_deferral", "post_comment"}
+_EXCLUDE_STEMS = {"watch_lane_posts"}
 
 
 def _is_emitter(path: Path) -> bool:

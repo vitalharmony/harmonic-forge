@@ -1713,12 +1713,12 @@ class ExceptionRecordsDeferralTests(unittest.TestCase):
     REPO = "vitalharmony/hrse"
 
     def setUp(self):
-        import belt_candidates
-        self.bc = belt_candidates
+        import deferral_store
+        self.ds = deferral_store
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.base = Path(tmp.name)
-        for target in (patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.base),
+        for target in (patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.base),
                        patch.object(gh_issue.handoff_owed, "discharge"),
                        patch.object(gh_issue, "_link_blocker", return_value=True)):
             target.start()
@@ -1746,7 +1746,7 @@ class ExceptionRecordsDeferralTests(unittest.TestCase):
         ok, _ = self._file("blocked-on-prerequisite")
         self.assertTrue(ok)
         self.assertEqual([p.name for p in self._entries()], ["vitalharmony__hrse__2757.json"])
-        self.assertEqual(self.bc.deferral_entry(self.REPO, 2757)["source"], "filing")
+        self.assertEqual(self.ds.deferral_entry(self.REPO, 2757)["source"], "filing")
 
     def test_deferred_design_record_records_deferral(self):
         ok, _ = self._file("deferred-design-record")

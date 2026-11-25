@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import tasklist_owed  # noqa: E402  (harmonic-forge#1126: never raises)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import belt_candidates  # noqa: E402  (harmonic-forge#1564: the deferral store)
+import deferral_store  # noqa: E402  (harmonic-forge#1564)
 
 
 def post_comment(repo: str, issue: int, body_file: Path, source_content: str) -> int:
@@ -71,7 +71,7 @@ def post_comment(repo: str, issue: int, body_file: Path, source_content: str) ->
     # trigger on a recorded deferral. Recorded before the self-check, because
     # the comment exists whether or not the check passes.
     try:
-        belt_candidates.note_own_comment(repo, issue, comment_id)
+        deferral_store.note_own_comment(repo, issue, comment_id)
     except Exception as exc:  # noqa: BLE001 - never fails the post
         print(f"[POST-COMMENT] deferral own-comment record failed (non-fatal): {exc}",
               file=sys.stderr)

@@ -609,7 +609,7 @@ path = "tools/gh/watch_lane_posts.py"
   class = "shared-state"
   gap = "writes the belt's seen, offer and tick state under ~/.claude/state/belt"
   guard_note = "enforce_belt_arming.py checks a Monitor command in a LANE session only; deny_retired_belt_sweep.py:27 denies the retired flag only"
-  cite = ["tools/gh/watch_lane_posts.py:683", "tools/gh/watch_lane_posts.py:3126", "tools/gh/watch_lane_posts.py:3382"]
+  cite = ["tools/gh/watch_lane_posts.py:684", "tools/gh/watch_lane_posts.py:3127", "tools/gh/watch_lane_posts.py:3383"]
 
 [[tool]]
 path = "tools/gh/wrapper_parity.py"
@@ -1014,6 +1014,8 @@ path = "tools/gh/belt_batch_view.py"
 path = "tools/gh/belt_candidates.py"
 [[library]]
 path = "tools/gh/belt_mechanics.py"
+[[library]]
+path = "tools/gh/deferral_store.py"
 [[library]]
 path = "tools/gh/footer_digest.py"
 [[library]]

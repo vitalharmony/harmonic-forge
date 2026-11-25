@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import belt_candidates
+import deferral_store  # harmonic-forge#1564
 import watch_lane_posts
 from belt_mechanics import SeenSet, Watermarks, query_since
 from watch_lane_posts import (
@@ -3776,11 +3777,13 @@ def setUpModule():
     # `discover_queue` would fetch their threads). The kill-check runner
     # bypasses tools/run_tests.py's redirect, so the module redirects itself;
     # a test that needs its own store still patches over this one.
-    global _CANDIDATES_TMP, _CANDIDATES_PATCHER
+    global _CANDIDATES_TMP, _CANDIDATES_PATCHERS
     _CANDIDATES_TMP = tempfile.TemporaryDirectory()
-    _CANDIDATES_PATCHER = patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR",
-                                       Path(_CANDIDATES_TMP.name))
-    _CANDIDATES_PATCHER.start()
+    _CANDIDATES_PATCHERS = [patch.object(module, "DEFAULT_CANDIDATES_DIR",
+                                         Path(_CANDIDATES_TMP.name))
+                            for module in (belt_candidates, deferral_store)]
+    for patcher in _CANDIDATES_PATCHERS:
+        patcher.start()
     # harmonic-forge#1393: no test may write the real `~/.claude/state/belt/etag` cache.
     global _ETAG_TMP, _ETAG_ROOT_PATCHER
     _ETAG_TMP = tempfile.TemporaryDirectory()
@@ -3791,7 +3794,8 @@ def setUpModule():
 
 
 def tearDownModule():
-    _CANDIDATES_PATCHER.stop()
+    for patcher in _CANDIDATES_PATCHERS:
+        patcher.stop()
     _CANDIDATES_TMP.cleanup()
     _CURRENT_RELEASE_PATCHER.stop()
     _ETAG_ROOT_PATCHER.stop()
@@ -5123,6 +5127,7 @@ class DeferralTriggerTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.dir = Path(tmp.name)
         for patcher in (patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.dir / "candidates"),
+                        patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.dir / "candidates"),
                         patch("watch_lane_posts._sticky_wicket_owed", return_value=False),
                         patch("watch_lane_posts._prune_batch")):
             patcher.start()
@@ -5135,9 +5140,9 @@ class DeferralTriggerTests(unittest.TestCase):
         return [self.c(100, self.DEFERRAL), *extra]
 
     def record(self, source="filing", recorded_at=None, own_ids=()):
-        belt_candidates.record_deferral(self.REPO, self.N, source)
+        deferral_store.record_deferral(self.REPO, self.N, source)
         if recorded_at is not None or own_ids:
-            path = belt_candidates._candidate_path(belt_candidates._deferrals_dir(), self.REPO, self.N)
+            path = deferral_store._deferral_path(self.REPO, self.N, None)
             entry = json.loads(path.read_text(encoding="utf-8"))
             if recorded_at is not None:
                 entry["recorded_at"] = recorded_at
@@ -5145,7 +5150,7 @@ class DeferralTriggerTests(unittest.TestCase):
             path.write_text(json.dumps(entry), encoding="utf-8")
 
     def entry(self):
-        return belt_candidates.deferral_entry(self.REPO, self.N)
+        return deferral_store.deferral_entry(self.REPO, self.N)
 
     def discover(self, comments, meta=("open", set(), None), active=None):
         ids: dict = {}
@@ -5337,9 +5342,9 @@ class DeferralTriggerPureTests(unittest.TestCase):
 
     def test_the_heading_text_is_the_one_gh_issue_posts(self):
         import gh_issue  # noqa: PLC0415
-        self.assertIs(gh_issue.belt_candidates, belt_candidates)
+        self.assertIs(gh_issue.deferral_store, deferral_store)
         self.assertTrue(watch_lane_posts._DEFERRAL_ANCHOR_RE.match(
-            f"{belt_candidates.DEFERRAL_HEADING} `deferred-design-record`"))
+            f"{deferral_store.DEFERRAL_HEADING} `deferred-design-record`"))
 
 
 if __name__ == "__main__":

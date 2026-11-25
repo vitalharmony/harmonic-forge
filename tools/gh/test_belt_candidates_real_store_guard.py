@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import belt_candidates as bc  # noqa: E402
+import deferral_store as ds  # noqa: E402  (harmonic-forge#1564)
 
 GH_DIR = Path(__file__).resolve().parent
 
@@ -29,10 +30,12 @@ class RealStoreFixture(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.real = Path(tmp.name) / "real-store"
         self.real.mkdir()
-        for name in ("REAL_CANDIDATES_DIR", "DEFAULT_CANDIDATES_DIR"):
-            patcher = mock.patch.object(bc, name, self.real)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        # harmonic-forge#1564: `deferral_store` holds its own two names.
+        for module in (bc, ds):
+            for name in ("REAL_CANDIDATES_DIR", "DEFAULT_CANDIDATES_DIR"):
+                patcher = mock.patch.object(module, name, self.real)
+                patcher.start()
+                self.addCleanup(patcher.stop)
         # Sticky-wicket PATCH: run_tests.main() exports the env marker into its
         # own process, so without this every in-process test would pass on the
         # env half and none would exercise the `unittest`-loaded half.
@@ -210,10 +213,10 @@ class DeferralStoreGuardTests(RealStoreFixture):
     refused for the real store's `deferrals/` directory."""
 
     def deferrals(self):
-        return sorted(p.name for p in (self.real / bc.DEFERRALS_SUBDIR).glob("*.json"))
+        return sorted(p.name for p in (self.real / ds.DEFERRALS_SUBDIR).glob("*.json"))
 
     def _seed(self, issue):
-        directory = self.real / bc.DEFERRALS_SUBDIR
+        directory = self.real / ds.DEFERRALS_SUBDIR
         directory.mkdir(exist_ok=True)
         path = directory / f"vitalharmony__hrse__{issue}.json"
         path.write_text('{"repo": "vitalharmony/hrse", "issue": %d, "recorded_at": '
@@ -223,7 +226,7 @@ class DeferralStoreGuardTests(RealStoreFixture):
     def test_record_deferral_under_test_writes_nothing(self):
         err = io.StringIO()
         with mock.patch.object(sys, "stderr", err):
-            self.assertFalse(bc.record_deferral("vitalharmony/hrse", 1, "filing"))
+            self.assertFalse(ds.record_deferral("vitalharmony/hrse", 1, "filing"))
         self.assertEqual(self.deferrals(), [])
         self.assertIn("not writing the real candidate store", err.getvalue())
 
@@ -231,13 +234,13 @@ class DeferralStoreGuardTests(RealStoreFixture):
         path = self._seed(2)
         before = path.read_text()
         with mock.patch.object(sys, "stderr", io.StringIO()):
-            bc.note_own_comment("vitalharmony/hrse", 2, 99)
+            ds.note_own_comment("vitalharmony/hrse", 2, 99)
         self.assertEqual(path.read_text(), before)
 
     def test_discharge_under_test_leaves_the_entry(self):
         path = self._seed(3)
         with mock.patch.object(sys, "stderr", io.StringIO()):
-            self.assertFalse(bc.discharge_deferral("vitalharmony/hrse", 3, "closed"))
+            self.assertFalse(ds.discharge_deferral("vitalharmony/hrse", 3, "closed"))
         self.assertTrue(path.exists())
 
 
