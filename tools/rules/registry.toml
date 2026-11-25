@@ -2396,7 +2396,7 @@ id = "R-0360"
 file = "rules/cross-family-review.md"
 anchor = "when-the-call-does-not-run"
 statement = "When the cross-family call does not run, the review completes on the in-family read, says so with the failure quoted, is labelled in-family fallback rather than cross-family, and is not retried."
-text_sha = "e1d395de1f53e115"
+text_sha = "780ce3f5516c086d"
 hooks = []
 
 [[rule]]

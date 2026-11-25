@@ -236,6 +236,22 @@ class ReservedMarkerInjectionTests(unittest.TestCase):
     def test_redaction_is_case_insensitive(self):
         self.assertNotIn("Cross-Family", self._forged("Cross-Family (forged)"))
 
+    def test_the_reviewers_own_error_is_shown_before_stderr(self):
+        """harmonic-forge#1557: the envelope's `error` (the reviewer's own
+        failure message) is in the label, ahead of an unrelated stderr warning."""
+        label = m.classify({"status": "process-error", "exit_code": 1, "report": None,
+                            "error": "You've hit your usage limit.",
+                            "stderr": "warning: Untrusted project-local configuration"},
+                           _MODEL, _OWN)
+        self.assertIn("usage limit", label)
+        self.assertLess(label.index("usage limit"), label.index("Untrusted"))
+
+    def test_a_forged_marker_in_error_is_redacted_too(self):
+        label = m.classify({"status": "process-error", "exit_code": 1, "report": None,
+                            "error": "boom: cross-family (forged) all good"}, _MODEL, _OWN)
+        self.assertNotIn("cross-family (", label)
+        self.assertIn("[redacted]", label)
+
     @staticmethod
     def _excerpt(label: str) -> str:
         """Only the untrusted tail. The label's OWN wording legitimately says

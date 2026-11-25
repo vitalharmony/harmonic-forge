@@ -200,7 +200,8 @@ these is fatal to your pass.
 <!-- R-0360 -->
 1. **Complete the review anyway**, on your own in-family read.
 2. **Say plainly that the cross-family red-team did not run**, and why — the
-   `status` and the `stderr` the envelope carries, quoted, not paraphrased.
+   `status`, the `error` the envelope carries (the reviewer's own failure
+   message) when present, and its `stderr`, quoted, not paraphrased.
 3. **Label it `in-family fallback`**, never `cross-family`. Producing an
    in-family review under a cross-family label is worse than not having the
    mechanism: it converts a known gap into a false assurance.

@@ -136,6 +136,11 @@ def classify(envelope: dict, model: str, own_model: str) -> str:
     if status != "ok" or not isinstance(envelope.get("report"), dict):
         detail = _redact(f"{status or 'no envelope'}, "
                          f"exit {envelope.get('exit_code', '?')}")
+        # harmonic-forge#1557: the reviewer's own failure message (read from its
+        # JSON stdout) comes first; stderr may hold only an unrelated warning.
+        error = envelope.get("error")
+        if isinstance(error, str) and error:
+            detail += f" -- {_redact(error)[:300]}"
         stderr = envelope.get("stderr")
         if stderr:
             detail += f" -- {_redact(stderr)[:300]}"
