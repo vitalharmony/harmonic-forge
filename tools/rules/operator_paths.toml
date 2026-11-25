@@ -1,0 +1,36 @@
+# harmonic-forge#1524: operator-side paths. `tools/rules/hardcode_scan.py`
+# never scans or baselines a file matched here, and a core file importing one
+# is an import-edge finding. Globs are fnmatch patterns on repo-relative paths
+# (`*` also matches `/`). A file whose side is unclear stays core: it is
+# scanned, never silently excluded.
+globs = [
+    # belt
+    "tools/gh/belt_*",
+    "tools/lane/belt_*",
+    # memory and telemetry
+    "tools/memory/*",
+    "tools/telemetry/*",
+    # TE runner
+    "tools/runner/*",
+    # systemd units
+    "*/systemd/*",
+    # gh identity and scan tooling
+    "tools/gh/gh_shim",
+    "tools/gh/gh-as",
+    "tools/gh/gha",
+    "tools/gh/install_gh_shim.sh",
+    "tools/gh/bounded_scan.py",
+    "tools/gh/gh_scan_patterns.py",
+    "tools/gh/projects_token.py",
+    "tools/lane/_gh_config_dir.sh",
+    "tools/lane/_lane_identity.sh",
+    "tools/hooks/scan_grant.py",
+    # the consuming-project gate files
+    "tools/gate/*_gate_*",
+    # belt and memory hooks
+    "tools/hooks/belt_wakeup.py",
+    "tools/hooks/deny_retired_belt_sweep.py",
+    "tools/hooks/enforce_belt_arming.py",
+    "tools/hooks/gate_feedback_memory_write.py",
+    "tools/hooks/memory_fold_notice.py",
+]

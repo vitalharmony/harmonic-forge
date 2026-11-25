@@ -569,6 +569,7 @@ CHECK_STEPS: tuple[tuple[str, str], ...] = (
      'test "$rc" -eq 1 || { echo "memory_lint: the aging fixture must FAIL with exit 1 under '
      '--gate (got $rc)"; exit 1; }'),
     ("check_test_main_last", "python3 tools/rules/check_test_main_last.py"),
+    ("hardcode_scan", "python3 tools/rules/hardcode_scan.py --check"),
     ("check_installed_lane_sources",
      'python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" '
      "--skip-if-absent"),
