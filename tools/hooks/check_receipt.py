@@ -118,6 +118,12 @@ def lookup(slug: str, sha: str) -> dict | None:
 #: full `check` replaces it (the upgrade path).
 LOCAL_CHECK_SOURCE = "local-check"
 SOURCES = ("check", LOCAL_CHECK_SOURCE)
+#: harmonic-forge#894 C1: a `local-check` run inside l1_post's scratch worktree.
+#: It keeps local-check's no-replace rule, so it never displaces a full
+#: `l1-post-scratch` receipt.
+L1_POST_LOCAL_SOURCE = "l1-post-scratch-local"
+#: The sources that never replace an existing receipt for the same SHA.
+NO_REPLACE_SOURCES = (LOCAL_CHECK_SOURCE, L1_POST_LOCAL_SOURCE)
 
 
 def record(repo_root: str = ".", head: str | None = None, source: str = "check") -> int:
@@ -137,10 +143,13 @@ def record(repo_root: str = ".", head: str | None = None, source: str = "check")
         path.parent.mkdir(parents=True, exist_ok=True)
         # harmonic-forge#1343 preclose pass 1: the override relabels only a full
         # check; a local-check run never becomes a source l1_post reuses.
-        if source == "check" and os.environ.get(SOURCE_ENV) == L1_POST_SOURCE:
-            source = L1_POST_SOURCE
+        if os.environ.get(SOURCE_ENV) == L1_POST_SOURCE:
+            if source == "check":
+                source = L1_POST_SOURCE
+            elif source == LOCAL_CHECK_SOURCE:  # harmonic-forge#894 C1
+                source = L1_POST_LOCAL_SOURCE
         existing = lookup(slug, sha)
-        if source == LOCAL_CHECK_SOURCE and existing is not None:
+        if source in NO_REPLACE_SOURCES and existing is not None:
             print(f"check-receipt: kept the existing {existing.get('source')} receipt")
             return 0
         path.write_text(json.dumps({"repo": slug, "sha": sha, "forge_sha": _recorded_forge_sha(),

@@ -262,7 +262,7 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         original = (L.comment_body, L.static_checks, L.world_checks,
                     L.write_receipt, L.require_open_pr)
         L.comment_body = fake_comment_body
-        L.static_checks = lambda sha, branch: ["body-validation"]
+        L.static_checks = lambda sha, branch, **_kw: ["body-validation"]
         L.world_checks = lambda *a, **k: ([], [])
         L.require_open_pr = lambda *a, **k: (
             ["pr-open (acknowledged override)"],
@@ -291,7 +291,7 @@ class OverrideHeadingsAreDistinct(unittest.TestCase):
         original = (L.comment_body, L.static_checks, L.world_checks,
                     L.write_receipt, L.require_open_pr)
         L.comment_body = fake_comment_body
-        L.static_checks = lambda sha, branch: ["body-validation"]
+        L.static_checks = lambda sha, branch, **_kw: ["body-validation"]
         L.world_checks = lambda *a, **k: (
             [], ["- active sibling branch overlaps -- acknowledged: reason"],
         )
@@ -430,7 +430,7 @@ class OpensTheMissingPr(unittest.TestCase):
                     L.write_receipt, L.require_open_pr, L.pr_issue_marker, L.refresh_main)
         L.comment_body = fake_comment_body
         L.refresh_main = lambda *a, **k: None
-        L.static_checks = lambda sha, branch: (["body-validation"], (None, None), {"result": "pass"})
+        L.static_checks = lambda sha, branch, **_kw: (["body-validation"], (None, None), {"result": "pass"})
         L.world_checks = lambda *a, **k: ([], [])
         L.require_open_pr = lambda *a, **k: (
             ["pr-opened #77"], [], ["- PR #77 opened by `l1-post` for `br` against `main`."])
@@ -457,16 +457,20 @@ _STICKY_PATCH = _sticky_mock.patch.object(_sticky_l1, "validate_sticky_wicket")
 # before static_checks; never make a real `gh api` call from a test.
 import unittest.mock as _ci_mock  # noqa: E402
 _CI_PATCH = _ci_mock.patch.object(_sticky_l1.gate_ci, "ci_conclusion", return_value=("pending", "stub"))
+# harmonic-forge#894 step 4: a pre-merge AE reads CI; never from a test.
+_AE_CI_PATCH = _ci_mock.patch.object(_sticky_l1, "_ae_ci_gate", return_value="ci-green")
 
 
 def setUpModule():  # noqa: N802
     _STICKY_PATCH.start()
     _CI_PATCH.start()
+    _AE_CI_PATCH.start()
 
 
 def tearDownModule():  # noqa: N802
     _STICKY_PATCH.stop()
     _CI_PATCH.stop()
+    _AE_CI_PATCH.stop()
 
 if __name__ == "__main__":
     unittest.main()

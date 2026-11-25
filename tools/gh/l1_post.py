@@ -2515,7 +2515,7 @@ def require_open_pr(
     )
     if ack_no_pr_required is None:
         fail(message)
-    return ["pr-open (acknowledged override)"], [f"- {message} -- acknowledged: {ack_no_pr_required}"], []
+    return [ACK_APPLIED_CHECK], [f"- {message} -- acknowledged: {ack_no_pr_required}"], []
 
 
 def _open_pr(cwd_repo: str, repo: str, branch: str, issue: int, sha: str,
@@ -2544,6 +2544,7 @@ def _open_pr(cwd_repo: str, repo: str, branch: str, issue: int, sha: str,
 def pr_issue_marker(
     repo: str, issue: int, branch: str, sha: str,
     *, local_check: tuple[str, str] | None = None, snapshot_out: dict | None = None,
+    local_check_mode: str | None = None, audit_sampled: bool = False,
 ) -> str:
     """Versioned, pre-merge PR↔issue provenance for every onboarded repo.
 
@@ -2592,11 +2593,16 @@ def pr_issue_marker(
     # harmonic-forge#745 AC1: one snapshot, no wait -- one call site, with no
     # retry/poll loop. (`ci_conclusion` itself makes 2+N `gh api` calls: a SHA
     # resolve for a short SHA, the runs list, and one jobs call per run.)
-    ci_state, _ci_detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
+    ci_state, _ci_detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"},
+                                                 reader=_ci_reader(source_repo))
     if snapshot_out is not None:
         snapshot_out["ci_state"] = ci_state
     timing_fields += (f" ci-check-name=verify; ci-snapshot-state={ci_state}; "
                       f"ci-snapshot-at={datetime.now(UTC).isoformat()};")
+    if local_check_mode is not None:  # harmonic-forge#894 step 3: which check ran
+        timing_fields += f" local-check={local_check_mode};"
+        if audit_sampled:  # step 6: the full check ran because this post was sampled
+            timing_fields += " local-check-audit=sampled;"
     # F745 Lane 3 gate FAIL: `head-sha={sha}{timing_fields}` omitted the `;`
     # separating `head-sha`'s value from the next field -- `timing_fields`
     # starts with a space, not `;`, so `head-sha=<sha> local-check-start=...`
@@ -2986,17 +2992,68 @@ def cheap_static_checks(sha: str, branch: str) -> None:
         fail(gate_ci.render_pending_refusal(sha, pending))
 
 
-def _receipt_matches(repo_root: Path, sha: str) -> bool:
-    """True only for a receipt l1_post's own scratch check wrote for this repo,
-    SHA and current forge HEAD (harmonic-forge#1134 AC2)."""
+def _ci_reader(source_repo: str):
+    """The S0 reader every l1_post CI read goes through (harmonic-forge#894 C3)."""
+    return gate_ci.s0_reader(source_repo)
+
+
+#: harmonic-forge#894 step 6: one real ready-for-l3 post in this many runs the
+#: full check whatever CI says, so the local path's blind spots stay measured.
+AUDIT_RATE = 10
+
+
+def _audit_sampled() -> bool:
+    import secrets  # noqa: PLC0415
+    return secrets.randbelow(AUDIT_RATE) == 0
+
+
+#: harmonic-forge#894 post-verdict finding 1: `verify` still running beside a
+#: visible red job. Not a gate_ci state: `_refuse_if_ci_red` returns it only to
+#: `_check_path`, which runs the full check for it.
+PENDING_WITH_RED = "pending-with-red"
+
+
+def _check_path(ci_state: str | None, *, real_post: bool) -> tuple[str, bool]:
+    """`(path, audit_sampled)` for a ready-for-l3 (harmonic-forge#894 step 3).
+
+    `green` or `pending` CI takes the local path (`local-check` if declared,
+    else none); anything else -- `absent`, `unknown`, or a CI read that failed
+    open -- takes the full check. `red` never reaches here (it refuses). The
+    audit sample is drawn on the real post only (C1)."""
+    if ci_state not in ("green", "pending"):
+        return "full", False
+    if real_post and _audit_sampled():
+        return "full", True
+    return "local", False
+
+
+_LOCAL_CHECK_TASK = re.compile(r'^\[tasks\.(?:local-check|"local-check")\]\s*$', re.M)
+
+
+def _declares_local_check(sha: str) -> bool:
+    """Does the attested SHA's own mise.toml declare a `local-check` task?
+    Read from the commit, never the working tree (harmonic-forge#894)."""
+    shown = run("git", "show", f"{sha}:mise.toml")
+    return shown.returncode == 0 and bool(_LOCAL_CHECK_TASK.search(shown.stdout or ""))
+
+
+def _receipt_matches(repo_root: Path, sha: str,
+                     sources: tuple[str, ...] = (check_receipt.L1_POST_SOURCE,)) -> str | None:
+    """The matching receipt's source, only for a receipt l1_post's own scratch
+    check wrote for this repo, SHA and current forge HEAD (harmonic-forge#1134
+    AC2). `sources` is the labels this path may reuse (harmonic-forge#894 C1):
+    the full path reuses `l1-post-scratch` only; the local path also
+    `l1-post-scratch-local`. Never `check`, `local-check` or `check-full`."""
     origin = run("git", "remote", "get-url", "origin", cwd=repo_root)
     slug = check_receipt.repo_slug(origin.stdout) if origin.returncode == 0 else None
     if slug is None:
         return False
     data = check_receipt.lookup(slug, sha)
     forge = check_receipt.forge_sha()
-    return bool(data and forge and data.get("repo") == slug and data.get("sha") == sha
-                and data.get("forge_sha") == forge and data.get("source") == check_receipt.L1_POST_SOURCE)
+    if (data and forge and data.get("repo") == slug and data.get("sha") == sha
+            and data.get("forge_sha") == forge and data.get("source") in sources):
+        return str(data.get("source"))
+    return None
 
 
 #: Where a failed check's step logs are kept: the scratch worktree is removed.
@@ -3020,15 +3077,28 @@ def _keep_gate_logs(scratch: Path, sha: str) -> str | None:
     return dest
 
 
+#: The dry run's CI read, handed from its CI step to its check step (#894 C1).
+_DRY_RUN_CI: dict[str, str | None] = {}
+
+
 def _dry_run_check(sha: str, branch: str) -> None:
-    _checks, _timing, check = static_checks(sha, branch, dry_run=True)
+    # harmonic-forge#894 C1: the same CI decision the real post makes, from the
+    # dry run's own read; the real post re-reads and re-decides.
+    path, _ = _check_path(_DRY_RUN_CI.get(sha), real_post=False)
+    print(f"[l1-post] dry run: CI reads {_DRY_RUN_CI.get(sha)}; the {path} check path runs")
+    if path == "local":
+        _checks, _timing, check = static_checks(sha, branch, dry_run=True, mode="local")
+    else:
+        _checks, _timing, check = static_checks(sha, branch, dry_run=True)
     if check["result"] == "fail":
         logs = check.get("logs")
-        fail("dry run: mise run check failed" + (f"; step logs kept at {logs}" if logs else "")
+        task = "local-check" if check.get("mode") == "local-check" else "check"
+        fail(f"dry run: mise run {task} failed" + (f"; step logs kept at {logs}" if logs else "")
              + "\n" + check.get("output", "")[-4000:])
 
 
-def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[str], tuple[str, str] | None, dict]:
+def static_checks(sha: str, branch: str, dry_run: bool = False,
+                  mode: str = "full") -> tuple[list[str], tuple[str, str] | None, dict]:
     """Returns (check names, (local_check_started_at, local_check_finished_at),
     check) -- the second element brackets the `mise run check` call below in
     UTC ISO-8601, for harmonic-forge#745 AC1's local-pre-flight timing.
@@ -3039,8 +3109,14 @@ def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[st
     before refusing with the same message as before. The dirty-worktree check
     is skipped on that path, as the old `fail()` never reached it either, so a
     failed check that also wrote files keeps its own output. A passing check
-    returns `{"result": "pass"}`. Every other refusal in here is unchanged."""
+    returns `{"result": "pass"}`. Every other refusal in here is unchanged.
+
+    harmonic-forge#894 step 3: `mode="local"` runs the SHA's `local-check` task
+    in the scratch worktree (recorded `l1-post-scratch-local`), or no check at
+    all when the SHA declares none. `check["mode"]` names what ran or was
+    reused: `full`, `local-check` or `none`."""
     cheap_static_checks(sha, branch)
+    local = mode == "local"
     repo_root_result = run("git", "rev-parse", "--show-toplevel")
     if repo_root_result.returncode:
         fail("cannot resolve the source worktree root")
@@ -3049,11 +3125,21 @@ def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[st
     # for this exact SHA and forge HEAD is reused, never a lane worktree's.
     # No timing and a distinct result: no check ran in this attempt, and only
     # the checks that did run are listed (no scratch worktree, so no clean-worktree).
-    if _receipt_matches(repo_root, sha):
+    sources = ((check_receipt.L1_POST_SOURCE, check_receipt.L1_POST_LOCAL_SOURCE) if local
+               else (check_receipt.L1_POST_SOURCE,))
+    if (found := _receipt_matches(repo_root, sha, sources)):
         print(f"[l1-post] dry run: check receipt found for {sha[:12]}; the real post reuses it"
               if dry_run else f"[l1-post] check receipt found for {sha[:12]}; reusing it")
-        return (["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"],
-                None, {"result": "reused"})
+        if found == check_receipt.L1_POST_SOURCE:
+            return (["mise-check:receipt", "origin-main-ancestor", "branch-sha-match"],
+                    None, {"result": "reused"})
+        return (["local-check:receipt", "origin-main-ancestor", "branch-sha-match"],
+                None, {"result": "reused", "mode": "local-check"})
+    if local and not _declares_local_check(sha):
+        print(f"[l1-post] CI is green or pending and {sha[:12]} declares no local-check task; "
+              "no local check runs")
+        return (["local-check:none", "origin-main-ancestor", "branch-sha-match"],
+                None, {"result": "skipped", "mode": "none"})
     if (why := check_receipt.forge_unusable_reason()):  # harmonic-forge#1538: never silent
         print(f"[l1-post] receipt will not be reusable: {why}")
     # harmonic-forge#949: the scratch copy and its install live under the
@@ -3109,12 +3195,16 @@ def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[st
         # wall-clock local time -- the reporter compares this against GitHub
         # API timestamps, which are always UTC.
         local_check_started_at = datetime.now(UTC).isoformat()
-        checked = run("mise", "run", "check", cwd=scratch, env=check_env)
+        if local:
+            checked = run("mise", "run", "local-check", cwd=scratch, env=check_env)
+        else:
+            checked = run("mise", "run", "check", cwd=scratch, env=check_env)
         local_check_finished_at = datetime.now(UTC).isoformat()
         if checked.returncode:
             return ([], (local_check_started_at, local_check_finished_at),
                     {"result": "fail", "output": checked.stdout + checked.stderr,
-                     "logs": _keep_gate_logs(scratch, sha)})
+                     "logs": _keep_gate_logs(scratch, sha),
+                     **({"mode": "local-check"} if local else {})})
         clean = run("git", "status", "--porcelain", cwd=scratch)
         if clean.returncode or clean.stdout.strip():
             fail("verification left the detached worktree dirty")
@@ -3122,8 +3212,10 @@ def static_checks(sha: str, branch: str, dry_run: bool = False) -> tuple[list[st
         run("git", "worktree", "remove", "--force", str(scratch))
         holder_cm.__exit__(None, None, None)
         run("git", "worktree", "prune")
-    return (["mise-check", "origin-main-ancestor", "branch-sha-match", "clean-worktree"],
-            (local_check_started_at, local_check_finished_at), {"result": "pass"})
+    return (["local-check" if local else "mise-check", "origin-main-ancestor",
+             "branch-sha-match", "clean-worktree"],
+            (local_check_started_at, local_check_finished_at),
+            {"result": "pass", **({"mode": "local-check"} if local else {})})
 
 
 def comment_body(repo: str, issue: int, body: str) -> tuple[str, int]:
@@ -3180,6 +3272,8 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) 
                 "outcome": outcome, "local_check_ms": attempt.get("local_check_ms"),
                 "local_check_result": result_state, "ci_state": ci_state,
                 "ci_green_local_red": ci_state == "green" and result_state == "fail",
+                "check_path": attempt.get("check_path", "full"),
+                "audit_sampled": bool(attempt.get("audit_sampled")),
             },
         }
         counts = telemetry_emit.emit([event])
@@ -3196,7 +3290,7 @@ def _emit_attempt(repo: str, issue: int, sha: str, outcome: str, attempt: dict) 
 
 
 def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
-                      note_unconcluded: bool = False) -> None:
+                      note_unconcluded: bool = False) -> str | None:
     """harmonic-forge#1016: read the attested SHA's required `verify`
     conclusion once, before the full local check. `red` refuses and records
     one `refused-ci` attempt; every other state proceeds unchanged, and
@@ -3206,20 +3300,32 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
     harmonic-forge#1301: `note_unconcluded` (the dry run's call only) prints
     one stderr line when `verify` is `pending` or `absent`, so a clean dry run
     no longer reads as a prediction about CI it never made. The real post
-    keeps the default and is unchanged."""
+    keeps the default and is unchanged.
+
+    harmonic-forge#894 step 3: returns the state read (None when the read
+    failed open), which decides the check path; the read goes through S0."""
     try:
         source_repo = _cwd_repo_from_git(None)
         if not source_repo:
-            return
-        state, detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"})
+            return None
+        visible_bad: list[str] = []
+        state, detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"},
+                                              reader=_ci_reader(source_repo),
+                                              visible_bad_out=visible_bad)
     except Exception:  # noqa: BLE001 - fail open
-        return
-    if note_unconcluded and state in ("pending", "absent"):
+        return None
+    if state == "pending" and visible_bad:
+        # harmonic-forge#894 post-verdict finding 1: a red job beside a running
+        # `verify` sends this post to the full check. The label is local to the
+        # check-path decision; no gate reader ever sees it.
+        state = PENDING_WITH_RED
+    if note_unconcluded and state in ("pending", PENDING_WITH_RED, "absent"):
         print(f"[l1-post] dry run: CI on {sha[:12]} has not concluded ({state}: {detail}); "
-              "the real post refuses if CI is red when it reads it", file=sys.stderr)
-        return
+              "the real post re-reads CI, refuses if it is red, and re-decides its check path",
+              file=sys.stderr)
+        return state
     if state != "red":
-        return
+        return state
     if attempt is not None:
         # Set before emitting so post_kind's catch-all does not record a
         # second `refused-other` event.
@@ -3228,6 +3334,73 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
         _emit_attempt(repo, issue, sha, "refused-ci", attempt)
     fail(f"CI on {sha[:12]} is red ({detail}); fix or re-run CI before posting "
          "— the full local check was not started")
+
+
+#: The check name `require_open_pr` returns when it applied the no-PR override.
+ACK_APPLIED_CHECK = "pr-open (acknowledged override)"
+
+
+def _applied_ack(pr_check_names: list[str] | None, ack_no_pr_required: str | None,
+                 branch: str) -> str | None:
+    """harmonic-forge#894 PATCH A2: the acknowledgment only when
+    `require_open_pr` applied it (no open PR existed). An ack passed while a
+    PR is open refuses rather than being ignored, and an unread PR state
+    (None) never yields an applied ack."""
+    if ack_no_pr_required is None:
+        return None
+    if pr_check_names is not None and ACK_APPLIED_CHECK in pr_check_names:
+        return ack_no_pr_required
+    if pr_check_names is not None and "pr-open" in pr_check_names:
+        fail(f"--ack-no-pr-required given but an open PR exists for {branch}; drop the "
+             "acknowledgment: a pre-merge AE on a PR SHA needs green CI (harmonic-forge#894)")
+    return None
+
+
+def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None) -> str:
+    """harmonic-forge#894 step 4: a pre-merge AE posts only on green CI.
+
+    Returns the check name recorded in the footer. `pending` waits
+    (`_carry_forward.WAIT_EXIT`, `WAIT: CI is pending on <sha>`). Every other
+    non-green state refuses, and so does an unresolvable source repo, an
+    unreadable required set and a reader exception: fail closed. One release:
+    the no-PR acknowledgment, on `absent` or all-skipped only (as
+    `check_gate_result`'s no-PR branch; `require_open_pr` has already shown no
+    PR exists). A CI outage has no override here; it waits or refuses like
+    any other non-green read. (harmonic-forge#894 PATCH A1/A2: the ack is passed
+    here only when `require_open_pr` applied it, and its release is
+    `gate_ci.no_pr_ack_release`, the rule `check_gate_result` uses.) `grant_on_main` and `merged_readonly` AEs never reach
+    here (C2). Every CI read passes the S0 reader (C3)."""
+    source_repo = _cwd_repo_from_git(None)
+    if not source_repo:
+        fail(f"cannot resolve the source repo, so CI on {sha[:12]} cannot be read; "
+             "a pre-merge AE needs green CI (harmonic-forge#894)")
+    try:
+        reader = _ci_reader(source_repo)
+        required = gate_ci.required_checks(source_repo, bare_404_ok=True)
+        if required is None:
+            state, detail = "unknown", f"cannot read {source_repo}'s required checks"
+        else:
+            state, detail = gate_ci.authorizing_conclusion(source_repo, sha, required, reader=reader)
+            # harmonic-forge#894 PATCH A1: the one no-PR rule check_gate_result
+            # uses (eligible state, main's tip, no open PR containing the SHA).
+            if state != "green" and ack_no_pr_required is not None and gate_ci.no_pr_ack_release(
+                    source_repo, sha, required, state, reader=reader):
+                return "ci-no-pr-acknowledged"
+    except Exception as exc:  # noqa: BLE001 - fail closed
+        state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
+    if state == "green":
+        return "ci-green"
+    if state == "pending":
+        print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
+              file=sys.stderr)
+        raise SystemExit(_carry_forward.WAIT_EXIT)
+    # The ack hint names only what gate_ci._no_pr_state_eligible can release: a red
+    # run is never released, so a red read is told to fix or re-run CI and nothing else.
+    hint = ("" if state == "red" else
+            "; a SHA that is main's tip with no open PR, whose CI is absent or whose "
+            "required checks were all skipped, takes `--ack-no-pr-required <reason>`")
+    fail(f"CI is {state} on {sha[:12]} ({detail}); a pre-merge AE needs green CI "
+         f"(harmonic-forge#894). Fix or re-run CI and re-post{hint}")
 
 
 def _refuse_script_contract(script: str, sha: str) -> None:
@@ -3355,9 +3528,18 @@ def _post_kind(
         world_checks(repo, issue, sha, branch, ack_overlap=ack_overlap)
         # harmonic-forge#1016: a SHA whose CI is already red refuses here, in
         # seconds, before the ~8 minute `mise run check` below.
-        _refuse_if_ci_red(repo, issue, sha, attempt)
-        checks, local_check_timing, check = static_checks(sha, branch)
+        ci_read = _refuse_if_ci_red(repo, issue, sha, attempt)
+        # harmonic-forge#894 step 3: green or pending CI runs local-check (or
+        # nothing when undeclared); absent or unreadable runs the full check.
+        check_path, audit = _check_path(ci_read, real_post=True)
+        if check_path == "local":
+            checks, local_check_timing, check = static_checks(sha, branch, mode="local")
+        else:
+            checks, local_check_timing, check = static_checks(sha, branch)
+        local_check_mode = check.get("mode", "full")
         if attempt is not None:
+            attempt["check_path"] = check_path
+            attempt["audit_sampled"] = audit
             attempt["local_check_result"] = check["result"]
             attempt["local_check_ms"] = _ms_between(*local_check_timing) if local_check_timing else None
         if check["result"] == "fail":
@@ -3366,7 +3548,8 @@ def _post_kind(
                 # lives in, exactly as `pr_issue_marker()` resolves it.
                 try:
                     source_repo = _cwd_repo_from_git(None)
-                    ci_state = (gate_ci.ci_conclusion(source_repo, sha, required={"verify"})[0]
+                    ci_state = (gate_ci.ci_conclusion(source_repo, sha, required={"verify"},
+                                                      reader=_ci_reader(source_repo))[0]
                                 if source_repo else "unknown")
                 except Exception:  # noqa: BLE001
                     ci_state = "unknown"
@@ -3402,6 +3585,9 @@ def _post_kind(
             repo, branch, ack_no_pr_required=ack_no_pr_required,
             open_missing=(kind == "ready-for-l3"), issue=issue, sha=sha)
         checks += pr_check_names
+        if kind == "ae":  # harmonic-forge#894 step 4: the pre-merge AE needs green CI
+            checks.append(_ae_ci_gate(repo, issue, sha,
+                                      _applied_ack(pr_check_names, ack_no_pr_required, branch)))
     # Two distinct override classes, two distinct headings -- a reader
     # auditing the thread for one kind of waiver must not find the other's
     # warning filed under a heading that names something that never
@@ -3422,7 +3608,8 @@ def _post_kind(
         body = body.rstrip("\n") + "\n\n### PR opened by l1-post\n" + "\n".join(pr_opened) + "\n"
     if kind == "ready-for-l3":
         marker = pr_issue_marker(repo, issue, branch, sha, local_check=local_check_timing,
-                                 snapshot_out=attempt)
+                                 snapshot_out=attempt, local_check_mode=local_check_mode,
+                                 audit_sampled=audit)
         body = body.rstrip("\n") + "\n\n" + marker + "\n"
     snapshot_route = None
     if kind == "handoff":
@@ -3698,18 +3885,25 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
 
     steps = [world]
     if kind == "ready-for-l3":
-        steps.append(lambda: _refuse_if_ci_red(repo, issue, sha, None, note_unconcluded=True))
+        def ci() -> None:
+            _DRY_RUN_CI[sha] = _refuse_if_ci_red(repo, issue, sha, None, note_unconcluded=True)
+        steps.append(ci)
     if kind in ("ready-for-l3", "ae") and not (kind == "ae" and (grant_on_main or merged_readonly)):
+        seen: dict[str, list[str]] = {}
+
         def pr() -> None:
             try:
-                require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
-                                open_missing=False, issue=issue, sha=sha)
+                seen["names"] = require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
+                                                open_missing=False, issue=issue, sha=sha)[0]
             except SystemExit as exc:
                 if kind == "ready-for-l3" and str(exc).startswith("[l1-post] no open PR exists for"):
                     print(f"[l1-post] dry run: would open PR for {branch} against main")
                     return
                 raise
         steps.append(pr)
+        if kind == "ae":  # harmonic-forge#894 step 4, the same decision as the real post
+            steps.append(lambda: _ae_ci_gate(
+                repo, issue, sha, _applied_ack(seen.get("names"), ack_no_pr_required, branch)))
     return steps
 
 

@@ -863,14 +863,40 @@ class CiConclusionStatesTests(unittest.TestCase):
                                          run=lambda cmd: (0, "{not json"))
         self.assertEqual(state, "unknown")
 
-    def test_pending_wins_over_a_red_sibling(self):
-        """Report the weaker fact. 'Still running' tells the operator to wait;
-        'red' tells them to fix — and while anything is pending, which one is
-        true is not yet known."""
+    def test_a_red_unrequired_job_demotes_a_scoped_pending(self):
+        """P1 after the post-verdict check: verify runs, frontend failed. The
+        state stays `pending` (never `absent`, which the no-PR and post-merge
+        exceptions release on); the red job is reported only to a caller that
+        passes `visible_bad_out`."""
+        runs = [{"name": "verify", "status": "in_progress", "conclusion": None,
+                 "workflow_status": "in_progress", "workflow_event": "pull_request",
+                 "workflow_path": ".github/workflows/ci.yml"},
+                {"name": "frontend", "status": "completed", "conclusion": "failure"}]
+        seen: list[str] = []
+        state, detail = gate_ci._judge_runs(runs, "a" * 40, {"verify"}, seen)
+        self.assertEqual(state, "pending", detail)
+        self.assertEqual(seen, ["frontend:failure"])
+        self.assertEqual(gate_ci._judge_runs(runs, "a" * 40, {"verify"})[0], "pending")
+        quiet: list[str] = []
+        self.assertEqual(gate_ci._judge_runs(runs[:1], "a" * 40, {"verify"}, quiet)[0],
+                         "pending")
+        self.assertEqual(quiet, [])
+        # Post-verdict finding 1: the state this snapshot yields must not be one
+        # the no-PR acknowledgment (and the post-merge claim, same `absent` test)
+        # can stand on.
+        self.assertFalse(gate_ci._no_pr_state_eligible("o/r", "a" * 40, {"verify"}, state))
+        green = [{"name": "verify", "status": "completed", "conclusion": "success"},
+                 {"name": "frontend", "status": "completed", "conclusion": "failure"}]
+        self.assertEqual(gate_ci._judge_runs(green, "a" * 40, {"verify"})[0], "green")
+
+    def test_a_red_sibling_wins_over_pending(self):
+        """harmonic-forge#894 PATCH A4 (C4 condition 3): a visible failure is
+        red even while another job runs. `pending` now releases ready-for-l3
+        to the local check path, so it must never cover a known failure."""
         state, _ = gate_ci.ci_conclusion(
             "o/r", "abc1234",
             run=fake_runs(check("a", "failure"), check("b", None, "queued")))
-        self.assertEqual(state, "pending")
+        self.assertEqual(state, "red")
 
 
 class CliTests(unittest.TestCase):

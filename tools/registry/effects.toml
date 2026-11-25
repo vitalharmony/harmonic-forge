@@ -136,10 +136,12 @@ path = "tools/gh/force_grant.py"
 [[tool]]
 path = "tools/gh/gate_ci.py"
   [[tool.mode]]
+  # harmonic-forge#894: still read-only; a required job not yet created while
+  # a run is in flight now reads `pending` (C4).
   name = "--repo --file"
   match = []
   class = "read"
-  cite = ["tools/gh/gate_ci.py:1041"]
+  cite = ["tools/gh/gate_ci.py:1280"]
 
 [[tool]]
 path = "tools/gh/gh-as"

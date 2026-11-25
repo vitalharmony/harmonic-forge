@@ -39,7 +39,7 @@ class CiFirstTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.check_calls: list = []
 
-    def _check(self, sha, branch):
+    def _check(self, sha, branch, **_kw):
         self.check_calls.append(sha)
         # Stop right after the check, so the test never reaches the post.
         L.fail("stop after static_checks")
