@@ -3698,6 +3698,13 @@ def _post_kind(
         attempt["posted"] = True
     # harmonic-forge#1426 sticky-wicket PATCH: spend the pitch verdict right after the
     # confirmed post, before the fallible local receipt write below.
+    if kind == "handoff" and _deferral_store is not None:
+        # harmonic-forge#1564: right after the confirmed post (never on --dry-run),
+        # before the fallible receipt write, so a local failure cannot skip it.
+        try:
+            _deferral_store.discharge_deferral(repo, issue, reason="handoff posted")
+        except Exception as exc:  # noqa: BLE001 - a posted handoff never fails here
+            print(f"[l1-post] deferral not discharged: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         # harmonic-forge#838 (F838 preclose pass 1): a verdict covers the one
         # handoff it reviewed. R-0239's single revision happens before posting,
@@ -3738,12 +3745,6 @@ def _post_kind(
             print(f"[route] handoff snapshot not recorded: {type(exc).__name__}: {exc}")
     if kind == "handoff":
         _discharge_handoff_owed(repo, issue)
-        # harmonic-forge#1564: reached only after a live post, never on --dry-run.
-        if _deferral_store is not None:
-            try:
-                _deferral_store.discharge_deferral(repo, issue, reason="handoff posted")
-            except Exception as exc:  # noqa: BLE001 - a posted handoff never fails here
-                print(f"[l1-post] deferral not discharged: {type(exc).__name__}: {exc}")
     if attempt is not None:
         attempt["emitted"] = True
         _emit_attempt(repo, issue, sha, "posted", attempt)

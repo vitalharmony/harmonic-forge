@@ -43,14 +43,15 @@ class HandoffPostDischargesTheDeferral(_Store, unittest.TestCase):
     def setUp(self):
         self._store()
 
-    def _post(self, kind="handoff", body=HANDOFF, **kw):
+    def _post(self, kind="handoff", body=HANDOFF, receipt=None, **kw):
         def no_thread_read(*args, **_kwargs):
             raise AssertionError(f"a thread read on the post path: {args}")
 
+        self.out = io.StringIO()
         patches = [
             mock.patch.object(L, "world_checks", return_value=(["issue-open"], [])),
             mock.patch.object(L, "validate_sticky_wicket"),
-            mock.patch.object(L, "write_receipt"),
+            mock.patch.object(L, "write_receipt", side_effect=receipt),
             mock.patch.object(L, "_discharge_handoff_owed"),
             mock.patch.object(L, "_record_attrib"),
             mock.patch.object(L, "_emit_attempt"),
@@ -66,7 +67,7 @@ class HandoffPostDischargesTheDeferral(_Store, unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for patch in patches:
                 stack.enter_context(patch)
-            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(contextlib.redirect_stdout(self.out))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             return L.post_kind(REPO, N, kind, body, SHA_A, "main", **kw)
 
@@ -80,8 +81,21 @@ class HandoffPostDischargesTheDeferral(_Store, unittest.TestCase):
         self.assertIsNotNone(deferral_store.deferral_entry(REPO, N))
 
     def test_a_store_error_never_fails_the_post(self):
-        with mock.patch.object(deferral_store, "discharge_deferral", side_effect=RuntimeError("x")):
+        """The discharge is really called, raises, and the post still returns,
+        with the one printed line (preclose #12: without the call this test
+        passed too)."""
+        with mock.patch.object(deferral_store, "discharge_deferral",
+                               side_effect=RuntimeError("x")) as discharge:
             self.assertEqual(self._post(plan_first=False, labels=set()), ("https://example.test/c", 7))
+        discharge.assert_called_once_with(REPO, N, reason="handoff posted")
+        self.assertIn("[l1-post] deferral not discharged: RuntimeError: x", self.out.getvalue())
+
+    def test_a_receipt_failure_after_the_post_still_discharges(self):
+        """preclose #11: the discharge runs right after the confirmed post,
+        before the fallible local receipt write."""
+        with self.assertRaises(OSError):
+            self._post(plan_first=False, labels=set(), receipt=OSError("disk full"))
+        self.assertIsNone(deferral_store.deferral_entry(REPO, N))
 
 
 class DryRunDischargesNothing(_Store, Harness):

@@ -632,6 +632,7 @@ STICKY_OWES = "sticky-wicket"
 #: indexes it. `skills/belt-and-suspenders/SKILL.md` rule 9 carries its row.
 DEFERRAL_KIND = "deferral-trigger"
 DEFERRAL_OWES = "handoff"
+DEFERRAL_MARKER = f"{DEFERRAL_KIND} owes={DEFERRAL_OWES}"
 #: The deferral comment's first line, `gh_issue.py`'s heading for a recorded
 #: exception, built from the one constant that writes it.
 _DEFERRAL_ANCHOR_RE = re.compile(
@@ -1080,10 +1081,30 @@ def _first_line(body: str) -> str:
     return body.strip().split("\n", 1)[0]
 
 
+#: An HTML comment renders as nothing (preclose #6).
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+#: A blockquote line, `markdown_strip`'s reading (any indent).
+_QUOTE_LINE_RE = re.compile(r"^[ \t]*>")
+
+
 def _first_visible_line(body: str) -> str:
     """The first non-blank line `markdown_strip.visible_text` keeps (fences,
-    indented code and `>` quotes removed), stripped."""
-    for line in markdown_strip.visible_text(body).splitlines():
+    indented code and `>` quotes removed), stripped. Two rendered-view rules
+    on top (preclose #6): a closed HTML comment is removed, so it never hides
+    a visible `go` after it; and a non-blank line straight after a `>` line,
+    with no blank line between, is that quote's lazy continuation, so it is
+    quoted text, never a command."""
+    lines: list[str] = []
+    in_quote = False
+    for line in _HTML_COMMENT_RE.sub("", body).splitlines():
+        if _QUOTE_LINE_RE.match(line):
+            in_quote = True
+        elif not line.strip():
+            in_quote = False
+        elif in_quote:
+            line = "> " + line
+        lines.append(line)
+    for line in markdown_strip.visible_text("\n".join(lines)).splitlines():
         if line.strip():
             return line.strip()
     return ""
@@ -1104,8 +1125,11 @@ def _deferral_trigger(comments: list[dict],
     thread. Pure.
 
     The anchor is the LAST comment whose first line is `gh_issue.py`'s
-    heading for a recorded exception; with none, `("no-anchor", None)`. Each
-    later comment, in order:
+    heading for a recorded exception, posted by the recorded
+    `operator_login` (any login only for an entry without one, which never
+    releases), so a collaborator quoting the heading neither moves the anchor
+    nor erases a pending release (preclose #7); with none,
+    `("no-anchor", None)`. Each later comment, in order:
 
     - a verified Lane 1 `handoff` discharges the deferral
       (`("discharged", None)`), the backfill fallback to `l1_post.py`'s own
@@ -1119,7 +1143,9 @@ def _deferral_trigger(comments: list[dict],
     `("cleared", None)`."""
     anchor = None
     for index, comment in enumerate(comments):
-        if _DEFERRAL_ANCHOR_RE.match(_first_line(comment.get("body") or "")):
+        author = (comment.get("user") or {}).get("login")
+        if (_DEFERRAL_ANCHOR_RE.match(_first_line(comment.get("body") or ""))
+                and (not operator_login or author == operator_login)):
             anchor = index
     if anchor is None:
         return "no-anchor", None
@@ -1408,7 +1434,8 @@ def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None
         # harmonic-forge#866: a 404 means the issue is gone only when this
         # account can see the repo itself; a private repo read with the wrong
         # account 404s too, and must stay unreadable, never retire a real issue.
-        if resp.status == 404 and _confirmed_missing(repo, issue):
+        # harmonic-forge#1564 preclose #4: a deleted issue answers 410 Gone.
+        if resp.status in _GONE_STATUSES and _confirmed_missing(repo, issue):
             print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
                   "retiring its candidate", file=sys.stderr)
             return "missing", None, None
@@ -1437,13 +1464,20 @@ def _fail_may_reach(repo: str, issue: int, lane: str) -> bool:
 _STATUS_LINE = re.compile(r"^HTTP/[\d.]+\s+(\d{3})\b")
 
 
+#: The issue-read statuses that can mean the issue is gone: 404, and 410 for
+#: a deleted issue (harmonic-forge#1564 preclose #4: a deleted deferral read
+#: as unreadable failed its repo's every tick).
+_GONE_STATUSES = (404, 410)
+
+
 def _confirmed_missing(repo: str, issue: int) -> bool:
-    """Whether `issue` is definitely gone: its read 404s AND `repos/{repo}`
-    reads 200 under the same account (harmonic-forge#866). A private repo
-    read with the wrong account 404s too, so a 404 alone is never enough.
-    Every issue reader that fails open on an unreadable issue asks this
-    first, so no reader keeps a missing issue alive that another retires."""
-    return (_http_status(repo, f"repos/{repo}/issues/{issue}") == 404
+    """Whether `issue` is definitely gone: its read 404s or 410s AND
+    `repos/{repo}` reads 200 under the same account (harmonic-forge#866). A
+    private repo read with the wrong account 404s too, so a 404 alone is
+    never enough. Every issue reader that fails open on an unreadable issue
+    asks this first, so no reader keeps a missing issue alive that another
+    retires."""
+    return (_http_status(repo, f"repos/{repo}/issues/{issue}") in _GONE_STATUSES
             and _http_status(repo, f"repos/{repo}") == 200)
 
 
@@ -1752,9 +1786,9 @@ def discover_queue(repo: str, lane: str,
             elif outcome == "no-anchor":
                 if _deferral_recorded_long_ago(deferral):
                     deferral_store.discharge_deferral(
-                        repo, issue, "its thread carries no R-0039 deferral comment")
+                        repo, issue, "its thread carries no R-0039 deferral comment by its filing login")
             elif outcome == "queued":
-                queued[issue] = f"{DEFERRAL_KIND} owes={DEFERRAL_OWES}"
+                queued[issue] = DEFERRAL_MARKER
                 if marker_ids is not None:
                     marker_ids[issue] = trigger_id
         if not last_kind:
@@ -2735,8 +2769,16 @@ def queue_cycle(
                   f"{len(prior)} previously-queued issue(s) forward, not retracting",
                   file=sys.stderr)
             for issue, marker in prior.items():
-                if issue not in retired:
-                    queue[(repo, issue)] = marker
+                if issue in retired:
+                    continue
+                if (lane == "l1" and marker == DEFERRAL_MARKER
+                        and deferral_store.deferral_entry(repo, issue) is None):
+                    # harmonic-forge#1564 preclose #9: its entry is gone (a
+                    # handoff discharged it at the writer), so nothing is
+                    # left to carry; retracted like a closed deferral.
+                    retired_pairs.add((repo, issue))
+                    continue
+                queue[(repo, issue)] = marker
             continue
         ok_repos.add(repo)
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)

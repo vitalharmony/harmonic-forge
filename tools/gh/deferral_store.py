@@ -174,7 +174,7 @@ def _deferral_path(repo: str, issue: int, base_dir: Path | None) -> Path:
 def _read_entry(path: Path) -> dict | None:
     try:
         entry = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError, RecursionError):
         return None
     return entry if isinstance(entry, dict) else None
 
@@ -219,7 +219,9 @@ def read_deferrals(repos: Iterable[str], *,
                    base_dir: Path | None = None) -> set[tuple[str, int]]:
     """`(repo, issue)` for every recorded deferral in `repos`, each pair
     spelled as the caller spelled its repo. No age cutoff and no GitHub
-    call; a malformed file or key is skipped."""
+    call; a malformed file, key or issue number is skipped with one stderr
+    line, never raised, so one bad entry never ends a belt tick (preclose
+    #10: `int(inf)` raised `OverflowError`)."""
     wanted: dict[str, str] = {}
     for repo in repos:
         key = _canonical(repo)
@@ -235,7 +237,11 @@ def read_deferrals(repos: Iterable[str], *,
         try:
             repo = entry["repo"]
             issue = int(entry["issue"])
-        except (TypeError, KeyError, ValueError):
+            if issue <= 0:
+                raise ValueError(f"issue {issue} is not positive")
+        except (TypeError, KeyError, ValueError, OverflowError) as exc:
+            print(f"[belt-candidates] deferral entry {path.name} skipped: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
             continue
         key = _canonical(repo) if isinstance(repo, str) else None
         if key in wanted:

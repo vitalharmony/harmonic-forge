@@ -356,6 +356,22 @@ class DeferralStoreTests(unittest.TestCase):
         (ds._deferrals_dir(self.base) / "junk.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 1)})
 
+    def test_a_malformed_issue_number_is_skipped_with_one_line(self):
+        """harmonic-forge#1564 preclose #10: an entry whose issue is
+        `Infinity` (`int` raises `OverflowError`), zero, or a word is skipped
+        with one stderr line naming its file; the good entry is still read."""
+        ds.record_deferral(self.REPO, 3, "filing", base_dir=self.base)
+        directory = ds._deferrals_dir(self.base)
+        bad = {"inf.json": float("inf"), "zero.json": 0, "word.json": "three"}
+        for name, issue in bad.items():
+            (directory / name).write_text(json.dumps({"repo": self.REPO, "issue": issue}),
+                                          encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 3)})
+        for name in bad:
+            self.assertEqual(err.getvalue().count(f"deferral entry {name} skipped"), 1, name)
+
     def test_every_spelling_of_a_repo_lands_on_the_canonical_key(self):
         """harmonic-forge#1564 AC11 (preclose #4, #9)."""
         for spelling in ("vitalharmony/HRSE", "https://github.com/VitalHarmony/hrse.git"):

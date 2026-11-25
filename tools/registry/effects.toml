@@ -299,7 +299,7 @@ mise_tasks = [{task = "l1-post", prefix = []}]
   match = ["--dry-run"]
   class = "local-write"
   note = "preflight receipt (rule step 3); refresh_main's fetch is a cache (step 2)"
-  cite = ["tools/gh/l1_post.py:3792-3794", "tools/gh/l1_post.py:3474-3476"]
+  cite = ["tools/gh/l1_post.py:3793-3795", "tools/gh/l1_post.py:3474-3476"]
   [[tool.mode]]
   name = "post (every --kind)"
   match = []
@@ -311,7 +311,7 @@ mise_tasks = [{task = "l1-post", prefix = []}]
   bind_args = {head_sha = "--sha", body_content = ["--file", "--ae-file", "--sweep-file"]}
   receipt_writer = true
   prefix = true
-  cite = ["tools/gh/l1_post.py:3496", "tools/gh/l1_post.py:3650-3655", "tools/gh/l1_post.py:3800"]
+  cite = ["tools/gh/l1_post.py:3496", "tools/gh/l1_post.py:3650-3655", "tools/gh/l1_post.py:3801"]
   validates = [
     {class = "receipt", cite = "tools/gh/l1_post.py:3650-3655"},
     {class = "freshness", cite = "tools/gh/l1_post.py:3448-3466"},
@@ -609,7 +609,7 @@ path = "tools/gh/watch_lane_posts.py"
   class = "shared-state"
   gap = "writes the belt's seen, offer and tick state under ~/.claude/state/belt"
   guard_note = "enforce_belt_arming.py checks a Monitor command in a LANE session only; deny_retired_belt_sweep.py:27 denies the retired flag only"
-  cite = ["tools/gh/watch_lane_posts.py:690", "tools/gh/watch_lane_posts.py:3170", "tools/gh/watch_lane_posts.py:3426"]
+  cite = ["tools/gh/watch_lane_posts.py:694", "tools/gh/watch_lane_posts.py:3215", "tools/gh/watch_lane_posts.py:3471"]
 
 [[tool]]
 path = "tools/gh/wrapper_parity.py"
