@@ -155,23 +155,24 @@ def workspace_for(path: str | Path | None, manifest: Path | None = None) -> str:
 
 def slot_env(repo: str, path: Path | None = None, *, at: Path | None = None) -> dict[str, str]:
     """`os.environ` with the repo's slot injected and tokens removed. No probe. For hooks
-    and sweeps (a per-subprocess `env=`); `at`'s Project wins when it names `repo` (#1527).
-    """
+    and sweeps (a per-subprocess `env=`); `at`'s usable Project slot wins (#1527)."""
     if at is not None:
         try:
             project = project_for_path(at, path)
+            if project.repo == normalize_repo(repo):
+                return slot_env_for_project(project)
         except (ManifestError, OSError):
-            project = None
-        if project is not None and project.repo == normalize_repo(repo):
-            return slot_env_for_project(project)
+            pass  # no usable Project slot: resolve exactly as with no Project
     return _slot_env_for(account_for(repo, path))
 
 
 def slot_env_for_project(project: Project) -> dict[str, str]:
-    """`slot_env` for an already-resolved Project (harmonic-forge#1527)."""
-    if not project.account:
-        raise ManifestError(f"{project.repo or project.name} declares no `account`")
-    return _slot_env_for(project.account)
+    """`slot_env` for a resolved Project (harmonic-forge#1527). Raises with no account or no
+    slot directory: a Project never swaps a key lookup's env for a missing credential."""
+    env = _slot_env_for(project.account) if project.account else None
+    if env is None or not Path(env["GH_CONFIG_DIR"]).is_dir():
+        raise ManifestError(f"{project.repo or project.name}: no `account` or no slot directory")
+    return env
 
 
 def _slot_env_for(account: str) -> dict[str, str]:

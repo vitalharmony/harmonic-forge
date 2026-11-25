@@ -1652,11 +1652,31 @@ class OverlayOnlyCheckoutSlot(unittest.TestCase):
     """harmonic-forge#1527 AC9 / TC18c: a --checkout in an overlay-only repo runs its
     audits as that repo's owner slot, taken from the Project its path resolves to."""
 
-    def test_tc18c_use_slot_at_the_checkout_selects_the_owner_slot(self):
+    def test_tc18c_every_checkout_call_site_in_main_runs_as_the_owner_slot(self):
+        """Pass-1 survivor 4: driven through `main`'s two `--checkout` loops (the audits
+        and the prune), never by calling `_use_slot` directly."""
+        import io
+        from contextlib import redirect_stdout
         repo, slots = overlay_only_env(self)
         self.addCleanup(rh._use_slot, None)
-        rh._use_slot(rh.repo_for_path_or_none(repo), at=repo)
-        self.assertEqual(rh._ENV["GH_CONFIG_DIR"], str(slots / "acme"))
+        seen = {}
+
+        def record(label, result=None):
+            def fn(*_a, **_k):
+                seen.setdefault(label, []).append(rh._ENV and rh._ENV.get("GH_CONFIG_DIR"))
+                return result
+            return fn
+        audits = ("audit_worktrees", "audit_checkout_branch", "audit_stashes",
+                  "audit_transaction_log")
+        with patch.object(sys, "argv", ["repo_hygiene.py", "--checkout", str(repo),
+                                        "--prune-worktrees"]), \
+             patch.object(rh, "_require_precheck", return_value=None), \
+             patch.object(rh, "prune_worktrees", record("prune", 0)), \
+             patch.multiple(rh, **{name: record(name) for name in audits}), \
+             redirect_stdout(io.StringIO()):
+            rh.main()
+        want = [str(slots / "acme")]
+        self.assertEqual(seen, {name: want for name in (*audits, "prune")})
 
 
 if __name__ == "__main__":

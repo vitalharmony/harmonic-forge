@@ -81,12 +81,12 @@ def _project_env(project, repo: str | None) -> dict[str, str] | None:
     identity = _identity()
     if identity is None or not repo:
         return None
-    try:
-        if project.repo != identity.normalize_repo(repo):
-            return slot_env(repo)
-        return identity.slot_env_for_project(project)
+    try:  # harmonic-forge#1527: a Project slot that is unusable leaves the key lookup's env
+        if project.repo == identity.normalize_repo(repo):
+            return identity.slot_env_for_project(project)
     except identity.ManifestError:
-        return None
+        pass
+    return slot_env(repo)
 
 
 def run_gh(args, *, repo: str | None, project=None, cwd: str | None = None,

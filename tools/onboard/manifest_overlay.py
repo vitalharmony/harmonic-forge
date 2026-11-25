@@ -28,15 +28,19 @@ base does not register is validated together with the base and returned with
   belong in instance.toml, so a clone cannot redirect the install;
 - machine-local keys (`path`, `worktree_dir`) and `token_exception` refused:
   they belong in `projects.toml`;
-- identity guard: a registered repo's `account`, `name` and `prefix` may only
-  repeat the base value exactly;
+- identity guard: a registered repo's `account`, `name`, `prefix` and
+  `workspace` (slot, BATCH key, belt queue) are absent or the base value exactly;
 - checkout binding: an overlay naming a registered repo applies only in that
   repo's registered checkout, and a registered checkout's overlay must name it;
 - origin binding: an overlay-only repo must be the main checkout's real origin
   (one `git remote get-url`, this module's only subprocess), and its
   `account`, when given, must be its owner exactly;
-- base clash: an overlay-only `name`, or `prefix` in any case, already in
-  `projects.toml` is refused.
+- base clash: an overlay-only repo may not claim a `name`, `prefix` or
+  `workspace` `projects.toml` already declares (any case), so it never joins a
+  registered repo's BATCH key or belt queue.
+
+**An overlay refines a base hit, never erases it**: when it is rejected,
+`path_project` returns the base Project.
 
 **An overlay-only `prefix` is display-only**: validated and exposed on the
 Project, and in no prefix map. A BATCH key needs `projects.toml` plus
@@ -69,7 +73,9 @@ OVERLAY_RELPATH = Path(".claude") / "forge.toml"
 INSTANCE_KEYS = ("forge_root", "projects_root", "timezone")
 MACHINE_LOCAL_KEYS = ("path", "worktree_dir")
 OPERATOR_KEYS = ("token_exception",)
-IDENTITY_KEYS = ("account", "name", "prefix")
+IDENTITY_KEYS = ("account", "name", "prefix", "workspace")
+#: What an overlay-only repo may not share with any base entry (any case).
+CLAIM_KEYS = ("name", "prefix", "workspace")
 _GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 
@@ -161,14 +167,18 @@ def _validated(raw: dict, path: Path, known: set[str]) -> dict:
     unknown = sorted(set(project) - known - {"protocol"})
     if unknown:
         raise ManifestError(f"{path}: [project] has unknown key(s): {', '.join(unknown)}")
-    for required in ("name", "prefix", "repo"):
-        if not project.get(required):
-            raise ManifestError(f"{path}: [project] is missing `{required}`")
+    _require(project, path, "repo")  # the rest only for an overlay-only entry
     if "protocol" in project and not isinstance(project["protocol"], dict):
         raise ManifestError(f"{path}: [project.protocol] must be a table")
     project = dict(project)
     project["repo"] = normalize_repo(str(project["repo"]))
     return project
+
+
+def _require(project: dict, path: Path, *keys: str) -> None:
+    for key in keys:
+        if not project.get(key):
+            raise ManifestError(f"{path}: [project] is missing `{key}`")
 
 
 def _base_repo(entry: object) -> str | None:
@@ -235,15 +245,16 @@ def _resolve(root: Path, manifest: Path | None) -> Project | None:
         raise ManifestError(
             f"{overlay}: an overlay-only repo's account must be its owner ({owner}); "
             "register a different account in projects.toml")
-    name, prefix = project["name"], project["prefix"]
-    for base in (e for e in entries if isinstance(e, dict)):
-        if name == base.get("name"):
-            raise ManifestError(f"{overlay}: name {name!r} is already registered in projects.toml")
-        other = base.get("prefix")
-        if isinstance(other, str) and str(prefix).lower() == other.lower():
-            raise ManifestError(
-                f"{overlay}: prefix {prefix!r} clashes with projects.toml's {other!r}; an "
-                "overlay-only prefix is display-only and may not shadow a registered one")
+    _require(project, overlay, "name", "prefix")
+    for key in (k for k in CLAIM_KEYS if k in project):
+        mine = str(project[key]).casefold()
+        for base in (e for e in entries if isinstance(e, dict)):
+            other = base.get(key)
+            if isinstance(other, str) and mine == other.casefold():
+                raise ManifestError(
+                    f"{overlay}: {key} {project[key]!r} clashes with projects.toml's {other!r}; "
+                    "an overlay-only repo may not claim a name, prefix or workspace already "
+                    "registered (its prefix is display-only)")
     entry = dict(project)
     if isinstance(entry.get("protocol"), dict):
         entry["protocol"] = dict(entry["protocol"])
@@ -273,11 +284,17 @@ def path_project(target: Path, base_hit: Project | None,
                  manifest: Path | None = None) -> Project | None:
     """The Project for `target` given the base scan's hit: the checkout's
     resolved Project when it names the same repo (or there is no base hit),
-    else the base hit. A path in no checkout consults no overlay."""
+    else the base hit. A path in no checkout consults no overlay, and a rejected
+    overlay raises only when there is no base hit to fall back to."""
     root = checkout_root(target)
     if root is None:
         return base_hit
-    resolved = project_for_checkout(root, manifest)
+    try:
+        resolved = project_for_checkout(root, manifest)
+    except ManifestError:
+        if base_hit is None:
+            raise
+        return base_hit  # a rejected overlay never erases what projects.toml resolves
     if resolved is not None and (base_hit is None or resolved.repo == base_hit.repo):
         return resolved
     return base_hit

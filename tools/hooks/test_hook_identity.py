@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "onboard"))
 
-from test_manifest_overlay import overlay_only_env  # noqa: E402
+from test_manifest_overlay import overlay_only_env, registered_env  # noqa: E402
 
 import batch_preflight as bp  # noqa: E402
 import block_data_migration_close as dmc  # noqa: E402
@@ -240,6 +240,76 @@ class OverlayOnlyRepoRunsAsItsOwner(unittest.TestCase):
         result = hi.run_gh(["api", "user"], repo="acme/app", project=project, gh_bin=str(stub))
         self.assertEqual(result.stdout.strip(), str(slots / "acme"))
         self.assertIsNone(hi.project_for_repo_at("acme/other", repo))
+
+
+class AnUnusableProjectSlotNeverReplacesTheKeyLookup(unittest.TestCase):
+    """Pass-1 survivor 3: a Project adds a slot, never swaps the key lookup's env for a
+    credential directory that does not exist. With no `acme` slot an overlay-only repo
+    runs as it did before its overlay (inherit), and a registered one keeps #804's
+    no-fallback refusal."""
+
+    def _stub(self, slots: Path) -> str:
+        stub = slots.parent / "gh-stub"
+        stub.write_text('#!/bin/sh\necho "$GH_CONFIG_DIR"\n')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        return str(stub)
+
+    def test_r3_overlay_only_repo_with_no_slot_inherits_as_before_its_overlay(self) -> None:
+        repo, slots = overlay_only_env(self)
+        (slots / "acme").rmdir()
+        project = hi.project_for_repo_at("acme/app", repo)
+        self.assertEqual(project.repo, "acme/app")
+        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": "/inherited"}):
+            result = hi.run_gh(["api", "user"], repo="acme/app", project=project,
+                               gh_bin=self._stub(slots))
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, "/inherited"))
+            self.assertIsNone(mi.slot_env_or_none("acme/app", at=repo))
+
+    def test_r3_registered_repo_with_no_slot_still_refuses_to_inherit(self) -> None:
+        repo, slots = registered_env(self, '[project]\nrepo = "acme/app"\n')
+        (slots / "acme").rmdir()
+        project = hi.project_for_repo_at("acme/app", repo)
+        self.assertEqual(project.repo, "acme/app")
+        with mock.patch.dict(os.environ, {"GH_CONFIG_DIR": "/inherited"}), \
+                mock.patch("sys.stderr"):
+            result = hi.run_gh(["api", "user"], repo="acme/app", project=project,
+                               gh_bin=self._stub(slots))
+        self.assertEqual((result.returncode, result.stderr), (1, "identity slot missing"))
+
+
+class EveryCloseHookReadCarriesTheProject(unittest.TestCase):
+    """Pass-1 survivor 6: TC18b reaches only the reads an issue close with empty output
+    makes. The rule is structural, so it covers every read path (PR merge, shipped-label
+    events, evidence comments): in each close hook, every call to a function that takes
+    `project` passes it, except a `_gh`/`_gh_json` call naming no `repo` (the cwd's own
+    `gh repo view`, which no Project can name yet)."""
+
+    def test_r6_every_project_taking_call_in_a_close_hook_passes_project(self) -> None:
+        import ast
+        import inspect
+        for module in (dmc, mpi, upc):
+            takes = {name for name, fn in vars(module).items() if callable(fn) and _takes_project(fn)}
+            self.assertIn("_run_gh", takes)
+            missing = []
+            for node in ast.walk(ast.parse(inspect.getsource(module))):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in takes):
+                    continue
+                keywords = {k.arg for k in node.keywords}
+                if node.func.id in ("_gh", "_gh_json") and "repo" not in keywords:
+                    continue
+                if "project" not in keywords:
+                    missing.append(f"{module.__name__}:{node.lineno} {node.func.id}")
+            with self.subTest(module=module.__name__):
+                self.assertEqual(missing, [])
+
+
+def _takes_project(fn) -> bool:
+    import inspect
+    try:
+        return "project" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 if __name__ == "__main__":

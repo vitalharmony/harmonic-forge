@@ -124,6 +124,17 @@ def overlay_only_env(case: unittest.TestCase, prefix: str = "Z") -> tuple[Path, 
     return repo, slots
 
 
+def registered_env(case: unittest.TestCase, overlay: str) -> tuple[Path, Path]:
+    """`overlay_only_env`, but the base registers `acme/app` at the repo, whose main
+    checkout holds `overlay` (harmonic-forge#1527 pass-1 survivors 3 and 7)."""
+    repo, slots = overlay_only_env(case)
+    write_overlay(repo, overlay)
+    base = Path(os.environ["FORGE_PROJECTS_MANIFEST"])
+    base.write_text(FILLER + f'\n[[project]]\nname = "app"\nprefix = "Z"\nrepo = "acme/app"\n'
+                    f'account = "acme"\npath = "{repo}"\n')
+    return repo, slots
+
+
 def probe_from(cwd: Path, base: Path, code: str) -> str:
     """stdout of `code` run in a fresh interpreter with its cwd at `cwd` and
     `FORGE_PROJECTS_MANIFEST` at `base`; `tools/hooks` and `tools/onboard` are on
@@ -474,6 +485,55 @@ class ValidatedAgainstTheBase(OverlayCase):
             with self.subTest(fragment=fragment, index=index):
                 repo = self.repo(f"app{index}", APP_URL, text)
                 self.raises(repo, base, fragment)
+
+
+class SharedStateIsNeverClaimed(OverlayCase):
+    """Pass-1 survivor 1: `workspace` selects a belt queue, as `prefix` selects a BATCH
+    key, so an overlay never claims or changes a workspace `projects.toml` declares."""
+
+    def test_r1_an_overlay_never_claims_a_registered_workspace(self) -> None:
+        declared = FILLER.replace('path = "/nonexistent/forge"',
+                                  'path = "/nonexistent/forge"\nworkspace = "vh"')
+        only = self.repo("only", APP_URL, overlay_text(extra='workspace = "VH"\n'))
+        self.raises(only, self.base(text=declared), "workspace", "clashes")
+        write_overlay(only, overlay_text(extra='workspace = "acme"\n'))
+        self.assertEqual(mo.project_for_checkout(only, self.base(text=declared)).workspace, "acme")
+        reg = self.repo("reg", APP_URL, overlay_text(extra='workspace = "vh"\n'))
+        base = self.base(text=declared + self.registered(reg, extra='workspace = "acme"\n'))
+        self.raises(reg, base, "workspace", "may not change it")
+        write_overlay(reg, overlay_text(extra='workspace = "acme"\n'))
+        self.assertEqual(mo.project_for_checkout(reg, base).workspace, "acme")
+
+
+class RegisteredOverlayNeedsOnlyItsRepo(OverlayCase):
+    """Pass-1 survivor 2: a registered repo's identity keys are "absent or exactly
+    equal", so its overlay needs only `repo`; an overlay-only entry needs all three."""
+
+    def test_r2_a_registered_overlay_may_omit_name_and_prefix(self) -> None:
+        repo = self.repo("app", APP_URL, '[project]\nrepo = "acme/app"\nmin_version = "v2026.12.1"\n')
+        base = self.base(self.registered(repo))
+        for project in (mo.project_for_checkout(repo, base), mi.project_for_path(repo, base)):
+            with self.subTest(project=project):
+                self.assertEqual((project.name, project.prefix, project.min_version),
+                                 ("app", "Z", "v2026.12.1"))
+        only = self.repo("only", APP_URL, '[project]\nrepo = "acme/app"\nprefix = "Q"\n')
+        self.raises(only, self.base(), "missing `name`")
+
+
+class ARejectedOverlayNeverErasesTheBase(OverlayCase):
+    """Pass-1 survivor 7: an overlay refines a base hit; a rejected one leaves the
+    checkout as `projects.toml` alone resolves it, and raises only with no base hit."""
+
+    def test_r7_a_rejected_overlay_on_a_registered_checkout_yields_the_base(self) -> None:
+        repo = self.repo("app", APP_URL, "[project\n")
+        base = self.base(self.registered(repo))
+        self.raises(repo, base, "forge.toml")
+        self.assertEqual(mi.project_for_path(repo, base).repo, "acme/app")
+        with self.env_base(base):
+            self.assertEqual(mi.repo_for_path_or_none(repo), "acme/app")
+        only = self.repo("only", APP_URL, "[project\n")
+        with self.assertRaisesRegex(ManifestError, "forge.toml"):
+            mi.project_for_path(only, base)
 
 
 class ScopeLimitEntrypointsRefuse(OverlayCase):

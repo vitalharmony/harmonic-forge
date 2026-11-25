@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import block_data_migration_close as hook  # noqa: E402
 from test_hook_identity import close_hook_projects  # noqa: E402
-from test_manifest_overlay import overlay_only_env  # noqa: E402
+from test_manifest_overlay import overlay_only_env, registered_env  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "block_data_migration_close.py"
 REPO = "vitalharmony/hrse"
@@ -505,6 +505,23 @@ class OverlayOnlyRepoSlot(unittest.TestCase):
         projects = close_hook_projects(hook, repo, "gh issue close 5 --repo acme/app")
         self.assertTrue(projects)
         self.assertTrue(all(p is not None and p.repo == "acme/app" for p in projects), projects)
+
+
+class ARejectedOverlayKeepsTheRegisteredRepo(unittest.TestCase):
+    """Pass-1 survivor 7: a registered checkout whose overlay is rejected still names
+    its repo with no `gh` call, so a failed `gh repo view` cannot skip the label check."""
+
+    def test_r7_a_bare_close_in_a_registered_checkout_with_a_broken_overlay_is_gated(self) -> None:
+        repo, _ = registered_env(self, "[project\n")
+        reads: list[tuple] = []
+
+        def fake_gh(*args, cwd=None, repo=None, project=None):
+            reads.append(args)
+            return None if args[:2] == ("repo", "view") else "data-migration\n"
+        with mock.patch.object(hook, "_gh", side_effect=fake_gh):
+            denied = hook.decide_target(None, "5", str(repo))
+        self.assertIn("acme/app#5", denied or "")
+        self.assertNotIn(("repo", "view"), [r[:2] for r in reads])
 
 
 if __name__ == "__main__":
