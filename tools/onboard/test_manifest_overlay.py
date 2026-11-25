@@ -657,6 +657,15 @@ class GitTopology(OverlayCase):
         finally:
             signal.alarm(0)
 
+    def test_a_symlinked_overlay_is_refused_not_followed(self) -> None:
+        # harmonic-forge#1527 post-verdict finding 1 (operator 2026-11-25).
+        repo = self.repo("app", APP_URL)
+        (repo / ".claude").mkdir()
+        outside = self.tmp / "outside.toml"
+        outside.write_text('[project]\nrepo = "acme/app"\n', encoding="utf-8")
+        (repo / ".claude" / "forge.toml").symlink_to(outside)
+        self.raises(repo, self.base(), "cannot read")
+
 
 class RemainingGuardsArePinned(OverlayCase):
     """Sticky-wicket R5: one killing test per guard round 2 found unpinned."""

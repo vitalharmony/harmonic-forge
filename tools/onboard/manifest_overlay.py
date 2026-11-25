@@ -94,11 +94,12 @@ CLAIM_KEYS = ("name", "prefix", "workspace")
 
 def read(path: Path) -> dict | None:
     """The parsed overlay, or None when nothing is at `path`. Only a regular file
-    is read: the open never blocks, and anything else is refused (R3)."""
+    is read: a symlink is never followed, the open never blocks, and anything
+    else is refused (R3; post-verdict finding 1)."""
     if not os.path.lexists(path):
         return None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise OSError("not a regular file")
