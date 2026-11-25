@@ -339,10 +339,10 @@ class TestMilestoneCliGate(unittest.TestCase):
         self.assertNotEqual(exc.code, 0)
 
     def test_milestone_not_required_on_a_repo_with_none(self):
-        # AC5 / LBA3: harmonic-forge has zero milestones and is decided never
-        # to carry release ones — it must never be gated.
+        # AC5 / LBA3: a repo with no open milestones (openclaw-projects) is
+        # never gated. harmonic-forge#1382: forge carries `0.y` and `Later`.
         exc, created = self._main(
-            ["gh_issue.py", "--repo", "vitalharmony/harmonic-forge", "--title", "t"], {},
+            ["gh_issue.py", "--repo", "vitalharmony/openclaw-projects", "--title", "t"], {},
         )
         created.assert_called_once()
         self.assertIsNone(created.call_args[0][4])
@@ -368,10 +368,330 @@ class TestMilestoneCliGate(unittest.TestCase):
     def test_later_sentinel_is_accepted(self):
         _, created = self._main(
             ["gh_issue.py", "--repo", "vitalharmony/hrse", "--title", "t",
-             "--milestone", "Later"],
+             "--milestone", "Later", "--deferral-trigger", "3.3 planning",
+             "--deferral-owner", "operator"],
             {"2.7": 1, "Later": 5},
         )
         self.assertEqual(created.call_args[0][4], 5)
+
+
+FORGE = "vitalharmony/harmonic-forge"
+FORGE_MILESTONES = {"0.3": 1, "Later": 2}
+DEFER = ["--deferral-trigger", "0.4 planning", "--deferral-owner", "operator"]
+
+
+class TestDeferExisting(unittest.TestCase):
+    """harmonic-forge#1382 cluster verdict C2: `--defer-existing N` retries the
+    deferral on the existing issue, never files a second one, and is idempotent."""
+
+    def _defer(self, milestone="Later", comments="", post_rc=0, read_rc=0):
+        calls: list[list[str]] = []
+
+        def run(cmd, check=False):
+            calls.append(cmd)
+            joined = " ".join(cmd)
+            if "/comments?" in joined:
+                return _completed(comments)
+            if "/comments" in joined:
+                return _completed("", returncode=post_rc)
+            return _completed(f"https://github.com/{FORGE}/issues/42\t{milestone}\n",
+                              returncode=read_rc)
+        argv = ["gh_issue.py", "--repo", FORGE, "--defer-existing", "42"] + DEFER
+        with patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value=FORGE_MILESTONES), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue") as created, \
+             patch("gh_issue._run", side_effect=run), \
+             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            try:
+                code = gh_issue.main()
+            except SystemExit as exc:
+                code = exc.code
+        posts = [c for c in calls if "-X" in c and "POST" in c]
+        return code, created, discharge, posts
+
+    def test_a_retry_posts_the_deferral_and_clears_with_no_second_filing(self):
+        code, created, discharge, posts = self._defer()
+        self.assertEqual(code, 0)
+        created.assert_not_called()
+        self.assertEqual(len(posts), 1)
+        discharge.assert_called_once_with(FORGE, 42)
+
+    def test_a_deferral_already_present_clears_without_posting(self):
+        code, _created, discharge, posts = self._defer(
+            comments="## R-0352 deferral: parked in `Later`\n**Trigger:** x\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(posts, [])
+        discharge.assert_called_once_with(FORGE, 42)
+
+    def test_a_current_release_issue_is_refused_and_the_obligation_stands(self):
+        for milestone in ("0.3", ""):
+            with self.subTest(milestone=milestone):
+                code, _created, discharge, posts = self._defer(milestone=milestone)
+                self.assertEqual(code, 1)
+                self.assertEqual(posts, [])
+                discharge.assert_not_called()
+
+    def test_a_failed_retry_post_leaves_the_obligation(self):
+        code, _created, discharge, posts = self._defer(post_rc=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(posts), 1)
+        discharge.assert_not_called()
+
+
+class TestParkingMilestoneDeferral(unittest.TestCase):
+    """harmonic-forge#1382: a filing into a parking milestone owes no handoff
+    and requires an R-0352 deferral, posted before the obligation clears."""
+
+    def _main(self, argv, milestones, post_rc=0):
+        posts: list[list[str]] = []
+
+        def run(cmd, check=False):
+            posts.append(cmd)
+            return _completed("", returncode=post_rc)
+
+        with patch.object(sys, "argv", ["gh_issue.py", "--title", "t"] + argv), \
+             patch("gh_issue.fetch_milestones", return_value=milestones), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue",
+                   return_value="https://github.com/o/r/issues/42") as created, \
+             patch("gh_issue._route_at_filing", return_value=None), \
+             patch("gh_issue.resolve_board_for_repo", return_value=(None, None)), \
+             patch("gh_issue._run", side_effect=run), \
+             patch("gh_issue.handoff_owed.record") as record, \
+             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                code = gh_issue.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, created, record, discharge, posts, err.getvalue()
+
+    def _comments(self, posts):
+        return [c for c in posts if "comments" in " ".join(c)]
+
+    def test_later_with_deferral_posts_it_then_clears_the_obligation(self):
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", FORGE, "--milestone", "Later"] + DEFER, FORGE_MILESTONES)
+        self.assertEqual(code, 0)
+        created.assert_called_once()
+        record.assert_called_once()
+        discharge.assert_called_once_with(FORGE, 42)
+        comment = " ".join(self._comments(posts)[0])
+        self.assertIn("R-0352 deferral", comment)
+        self.assertIn("**Trigger:** 0.4 planning", comment)
+        self.assertIn("**Owner:** operator", comment)
+
+    def test_later_without_deferral_is_refused_naming_the_flag(self):
+        code, created, *_rest, err = self._main(
+            ["--repo", FORGE, "--milestone", "Later"], FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+        self.assertIn("--deferral-trigger", err)
+
+    def test_a_half_deferral_is_refused(self):
+        code, created, *_rest = self._main(
+            ["--repo", FORGE, "--milestone", "Later",
+             "--deferral-trigger", "x"], FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+
+    def test_parking_with_handoff_exception_is_refused(self):
+        code, created, *_rest, err = self._main(
+            ["--repo", FORGE, "--milestone", "Later", "--handoff-exception",
+             "parent-epic", "--handoff-exception-reason", "r"], FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+        self.assertIn("not --handoff-exception", err)
+
+    def test_a_failed_deferral_post_leaves_the_obligation_standing(self):
+        code, _created, record, discharge, *_ = self._main(
+            ["--repo", FORGE, "--milestone", "Later"] + DEFER,
+            FORGE_MILESTONES, post_rc=1)
+        self.assertEqual(code, 1)
+        record.assert_called_once()
+        discharge.assert_not_called()
+
+    def test_a_failed_post_prints_the_retry_and_records_the_route(self):
+        """Cluster verdict C2: the obligation carries the deferral route, and the
+        failure names the --defer-existing retry, never a second filing."""
+        code, _created, record, _discharge, _posts, err = self._main(
+            ["--repo", FORGE, "--milestone", "Later"] + DEFER, FORGE_MILESTONES, post_rc=1)
+        self.assertEqual(code, 1)
+        route = record.call_args.kwargs["route"]
+        self.assertEqual((route["kind"], route["milestone"], route["owner"]),
+                         ("deferral", "Later", "operator"))
+        self.assertIn("--defer-existing 42", err)
+
+    def test_current_release_filing_still_records_an_obligation(self):
+        """AC3: `0.3` is the current release, so it owes a handoff as today."""
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", FORGE, "--milestone", "0.3"], FORGE_MILESTONES)
+        self.assertEqual(code, 0)
+        record.assert_called_once()
+        discharge.assert_not_called()
+        self.assertEqual(self._comments(posts), [])
+
+    def test_a_deferral_on_the_current_release_is_refused(self):
+        code, created, *_rest = self._main(
+            ["--repo", FORGE, "--milestone", "0.3"] + DEFER, FORGE_MILESTONES)
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+
+    def test_no_milestone_repo_is_inert(self):
+        """AC1: with no open milestone, a filing records the obligation and
+        posts nothing, whatever --milestone says."""
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", FORGE, "--milestone", "Later"], {})
+        self.assertEqual(code, 0)
+        record.assert_called_once()
+        discharge.assert_not_called()
+        self.assertEqual(self._comments(posts), [])
+
+    def test_hrse_platform_is_exempt_not_parking(self):
+        code, created, record, discharge, posts, _ = self._main(
+            ["--repo", "vitalharmony/hrse", "--milestone", "Platform"],
+            {"3.2": 1, "Platform": 3, "Later": 4})
+        self.assertEqual(code, 0)
+        record.assert_called_once()
+        discharge.assert_not_called()
+
+    def test_hrse_later_needs_a_deferral_too(self):
+        """Operator ruling: the rule applies to every milestone-carrying repo."""
+        code, created, *_rest = self._main(
+            ["--repo", "vitalharmony/hrse", "--milestone", "Later"],
+            {"3.2": 1, "Later": 4})
+        self.assertNotEqual(code, 0)
+        created.assert_not_called()
+
+
+class TestPostCreateFailureTable(unittest.TestCase):
+    """harmonic-forge#1382 sticky-wicket tripwire, for the category rather than
+    one instance: every post-create step of a filing runs when an earlier one
+    fails. Each row fails ONE step and asserts (a) every other step still ran,
+    including `add_to_board` with the requested Tier/Theme/Venture, (b) exit 1,
+    (c) stderr names the unfinished step and its repair command.
+    `test_every_post_create_step_has_a_row` fails for a new step with no row."""
+
+    BOARD_ARGS = ["--tier", "fast", "--theme", "Tooling", "--venture", "Platform"]
+    PARKING = ["--repo", FORGE, "--milestone", "Later"] + DEFER
+    EXCEPTION = ["--repo", FORGE, "--milestone", "0.3", "--handoff-exception",
+                 "parent-epic", "--handoff-exception-reason", "children carry it"]
+
+    #: step -> (the call `main()` makes, argv, injected failure, stderr repair text,
+    #: whether the later steps run). Every row runs the later steps: the operator
+    #: extended P1 to `_discharge_exception` (2026-11-25).
+    ROWS = {
+        "record": ("handoff_owed.record", PARKING, "record", "--defer-existing 42", True),
+        "deferral": ("_post_deferral", PARKING, "post", "--defer-existing 42", True),
+        "exception": ("_discharge_exception", EXCEPTION, "post", "Re-run the comment", True),
+        "board": ("add_to_board", PARKING, "board", "board add or field write", True),
+    }
+    #: Post-create calls that are fail-open or cannot fail the filing, so they
+    #: need no row. A new call belongs in ROWS or here, with the reason.
+    NOT_FAILURE_STEPS = {
+        "_issue_number",               # pure parse of the URL
+        "_route_at_filing",            # fail-open by contract (harmonic-forge#1232)
+        "_record_escape",              # fail-open by contract (harmonic-forge#1248)
+        "resolve_board_for_repo",      # a lookup; an unmapped repo is a reported unfinished step
+        "handoff_owed.discharge_command",  # builds repair text
+        "_post_create_exit",           # the single exit
+    }
+
+    def _drive(self, argv, fail, run_error=None, resolve_error=None):
+        posts: list[list[str]] = []
+
+        def run(cmd, check=False):
+            posts.append(cmd)
+            if run_error is not None:
+                raise run_error
+            return _completed("", returncode=1 if fail == "post" else 0)
+
+        resolve = ({"side_effect": resolve_error} if resolve_error is not None
+                   else {"return_value": ("o", "1")})
+
+        with patch.object(sys, "argv", ["gh_issue.py", "--title", "t"] + argv + self.BOARD_ARGS), \
+             patch("gh_issue.fetch_milestones", return_value=FORGE_MILESTONES), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue", return_value="https://github.com/o/r/issues/42"), \
+             patch("gh_issue._route_at_filing", return_value=None) as route, \
+             patch("gh_issue.resolve_board_for_repo", **resolve), \
+             patch("gh_issue._run", side_effect=run), \
+             patch("gh_issue.handoff_owed.record", return_value=fail != "record") as record, \
+             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             patch("gh_issue.add_to_board", return_value=fail != "board") as board, \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            code = gh_issue.main()
+        comments = [c for c in posts if "comments" in " ".join(c)]
+        return code, err.getvalue(), {"record": record, "route": route, "board": board,
+                                      "discharge": discharge, "comments": comments}
+
+    def test_every_post_create_failure_runs_the_rest(self):
+        for step, (_call, argv, fail, repair, later_run) in self.ROWS.items():
+            with self.subTest(step=step):
+                code, err, ran = self._drive(argv, fail)
+                self.assertEqual(code, 1, err)
+                self.assertIn(repair, err)
+                ran["record"].assert_called_once()
+                ran["route"].assert_called_once()
+                self.assertEqual(len(ran["comments"]), 1)  # the deferral/exception post ran
+                if later_run:
+                    ran["board"].assert_called_once()
+                    self.assertEqual(ran["board"].call_args.args[3:6],
+                                     ("fast", "Tooling", "Platform"))
+                    self.assertIn("post-create step(s) did not finish", err)
+                else:
+                    ran["board"].assert_not_called()
+
+    def test_a_gh_that_cannot_start_is_a_failed_post_not_a_crash(self):
+        """Post-verdict finding 0: an OSError from spawning gh, on either the
+        deferral or the exception post, still lets the board run, exit 1."""
+        for argv in (self.PARKING, self.EXCEPTION):
+            with self.subTest(argv=argv[3]):
+                code, err, ran = self._drive(argv, None, run_error=OSError("could not start gh"))
+                self.assertEqual(code, 1, err)
+                self.assertIn("could not start gh", err)
+                ran["board"].assert_called_once()
+
+    def test_an_unmapped_board_is_an_unfinished_step(self):
+        """Post-verdict finding 4: an unmapped repo is listed with the earlier
+        failures in the one summary, not an exit that hides them."""
+        code, err, _ran = self._drive(self.PARKING, "post",
+                                      resolve_error=SystemExit("[GH] No project board mapped"))
+        self.assertEqual(code, 1, err)
+        self.assertIn("2 post-create step(s) did not finish", err)
+        self.assertIn("board resolution", err)
+        self.assertIn("R-0352 deferral", err)
+
+    def test_every_post_create_step_has_a_row(self):
+        """The enumeration: each gh_issue/handoff_owed call `main()` makes
+        after `create_issue` is a row or a named non-failure step."""
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(gh_issue.main))
+        create_line = next(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
+                           and isinstance(n.func, ast.Name) and n.func.id == "create_issue")
+        found = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or node.lineno <= create_line:
+                continue
+            func = node.func
+            if isinstance(func, ast.Name) and inspect.isfunction(getattr(gh_issue, func.id, None)) \
+                    and getattr(gh_issue, func.id).__module__ == gh_issue.__name__:
+                found.add(func.id)
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                    and func.value.id == "handoff_owed":
+                found.add(f"handoff_owed.{func.attr}")
+        rows = {call for call, *_ in self.ROWS.values()}
+        self.assertEqual(found - rows - self.NOT_FAILURE_STEPS, set(),
+                         "a new post-create step needs a row in ROWS (or a reasoned "
+                         "entry in NOT_FAILURE_STEPS)")
+        self.assertEqual((rows | self.NOT_FAILURE_STEPS) - found, set(),
+                         "a listed step is no longer called after create_issue")
 
 
 class TestTierWriteFailureIsLoud(unittest.TestCase):
@@ -445,9 +765,13 @@ class TestUnmappedRepoFailsLoudly(unittest.TestCase):
                 return exc, created
 
     def test_unmapped_repo_exits_rather_than_guessing(self):
-        result, _ = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
-        self.assertIsInstance(result, SystemExit)
-        self.assertIn("No project board mapped", str(result))
+        """Still loud and non-zero; since the harmonic-forge#1382 post-verdict
+        check it is reported with the other unfinished steps, not raised."""
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            result, _ = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
+        self.assertEqual(result, 1)
+        self.assertIn("No project board mapped", err.getvalue())
+        self.assertIn("board resolution", err.getvalue())
 
     def test_issue_is_still_created_before_the_failure(self):
         """harmonic-forge#263 AC2 -- a filed issue with a missing field beats

@@ -34,10 +34,12 @@ def _venture_board() -> tuple[str | None, str | None]:
 
 
 _BOARD = _venture_board()
-MILESTONE_REPOS = tuple(p.repo for p in _PROJECTS if p.milestones and
+# harmonic-forge#1382: forge carries milestones, but its own `0.y` series, not
+# the venture's release, so it is listed in its own section, never here.
+FORGE_REPO = next(p.repo for p in _PROJECTS if p.name == "harmonic-forge")
+MILESTONE_REPOS = tuple(p.repo for p in _PROJECTS if p.milestones and p.repo != FORGE_REPO and
                         (_BOARD == (None, None) or (p.board_owner, p.board_number) == _BOARD))
-NO_MILESTONE_REPO = next(p.repo for p in _PROJECTS if p.name == "harmonic-forge")
-ALL_REPOS = (*MILESTONE_REPOS, NO_MILESTONE_REPO)
+ALL_REPOS = (*MILESTONE_REPOS, FORGE_REPO)
 NOT_RELEASES = ("later", "platform")
 ANCHOR = re.compile(r"^## Current release\s*[—-]\s*([^,\n]+)", re.M)
 REPO_PREFIX = {p.repo.split("/")[-1]: p.prefix for p in _PROJECTS if p.repo in ALL_REPOS}

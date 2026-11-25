@@ -266,3 +266,13 @@ FORCE table's `gate <refusal-id>` row. The operator types it as the prompt's fir
 the precheck gate prints the refusal id, so the grammar stays always-loaded with the other
 FORCE modes. The gate's behavior is in tools/precheck/gate.py's docstring, not here.
 """
+
+[[increase]]
+date = "2026-11-25"
+files = [".claude/rules/lane-shorthand.md", "CLAUDE.md"]
+bytes = 8798
+why = """
+Cumulative since the last baseline: 8774 (entry above) plus harmonic-forge#1382 (24): CLAUDE.md's
+foundation line now says forge carries its own `0.y` release milestones plus `Later`, replacing the
+"no release milestones" claim the cutover retires (AC5).
+"""

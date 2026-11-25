@@ -351,6 +351,17 @@ def _link_blocker(repo: str, issue: int, blocker: str) -> bool:
     return True
 
 
+def _post_comment(repo: str, issue: str, body: str) -> subprocess.CompletedProcess:
+    """POST one issue comment. A gh that cannot be started is a failed post,
+    never an exception, so the post-create steps after it still run
+    (harmonic-forge#1382 post-verdict finding 0)."""
+    try:
+        return _run(["gh", "api", f"repos/{repo}/issues/{issue}/comments",
+                     "-X", "POST", "-f", f"body={body}"], check=False)
+    except OSError as exc:
+        return subprocess.CompletedProcess([], 1, "", f"could not start gh: {exc}")
+
+
 def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     """Apply an R-0039 filing-bar exception, if one was claimed. True on OK.
 
@@ -380,8 +391,7 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
         f"assumed — this comment is that record (R-0352's deferral shape).\n\n"
         f"**Reason given at filing time:** {reason}\n"
     )
-    result = _run(["gh", "api", f"repos/{args.repo}/issues/{issue}/comments",
-                   "-X", "POST", "-f", f"body={comment}"], check=False)
+    result = _post_comment(args.repo, issue, comment)
     if result.returncode != 0:
         print(f"[GH] ERROR: --handoff-exception was claimed but its reason "
               f"could not be posted to {issue_url}:\n{result.stderr}\n"
@@ -392,6 +402,86 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     print(f"[GH] R-0039 exception '{args.handoff_exception}' recorded on "
           f"{issue_url}; no handoff owed.")
     return True
+
+
+def is_parking_milestone(repo: str, milestone: str, titles) -> bool:
+    """harmonic-forge#1382: a parking milestone is an open one that is neither
+    the current release nor exempt for `repo` -- R-0404 refuses a handoff for
+    it, so a filing into it may not owe one. Only called inside the
+    `if milestones:` branch: a repo with no open milestones has no parking one.
+    Lazy import: l1_post owns the current-release and exemption definitions."""
+    from l1_post import EXEMPT_MILESTONES, current_release_milestone
+    if milestone in EXEMPT_MILESTONES.get(repo.lower(), frozenset()):
+        return False
+    return milestone != current_release_milestone(list(titles))
+
+
+def _post_deferral(args, issue: int, issue_url: str) -> bool:
+    """harmonic-forge#1382: a filing into a parking milestone posts the R-0352
+    deferral comment (trigger, owner, record) and only then clears the
+    handoff obligation -- `_discharge_exception`'s order, so a comment that
+    fails to post leaves the obligation standing. True on OK."""
+    comment = (
+        f"## R-0352 deferral: parked in `{args.milestone}`\n\n"
+        f"Filed into a parking milestone, so no Lane 1 handoff accompanies "
+        f"this filing (R-0404 posts a handoff only for current-release work). "
+        f"This comment is the deferral record.\n\n"
+        f"**Trigger:** {args.deferral_trigger.strip()}\n"
+        f"**Owner:** {args.deferral_owner.strip()}\n"
+        f"**Record:** this comment.\n"
+    )
+    result = _post_comment(args.repo, issue, comment)
+    if result.returncode != 0:
+        retry = handoff_owed.discharge_command(
+            args.repo, issue, {"kind": "deferral", "trigger": args.deferral_trigger,
+                               "owner": args.deferral_owner})
+        print(f"[GH] ERROR: the R-0352 deferral could not be posted to "
+              f"{issue_url}:\n{result.stderr}\n[GH] The handoff obligation "
+              f"therefore STANDS. Retry the deferral on the existing issue "
+              f"(no second filing):\n  {retry}", file=sys.stderr)
+        return False
+    handoff_owed.discharge(args.repo, issue)
+    print(f"[GH] R-0352 deferral recorded on {issue_url} (parked in "
+          f"{args.milestone}); no handoff owed.")
+    return True
+
+
+DEFERRAL_HEADING = "## R-0352 deferral"
+
+
+def _defer_existing(args) -> int:
+    """harmonic-forge#1382 C2: retry the R-0352 deferral for an issue that
+    already exists, with no second filing. Refuses unless the issue's live
+    milestone is a parking one. Idempotent: a deferral comment already on the
+    issue (a POST that timed out after the server accepted it) discharges the
+    obligation without posting again. 0 on discharge, 1 otherwise."""
+    issue = args.defer_existing
+    got = _run(["gh", "api", f"repos/{args.repo}/issues/{issue}", "--jq",
+                "[.html_url, (.milestone.title // \"\")] | @tsv"], check=False)
+    if got.returncode != 0 or not got.stdout.strip():
+        print(f"[GH] ERROR: cannot read {args.repo}#{issue}: {got.stderr.strip()}",
+              file=sys.stderr)
+        return 1
+    issue_url, _, milestone = got.stdout.strip().partition("\t")
+    titles = fetch_milestones(args.repo)
+    if not milestone or not is_parking_milestone(args.repo, milestone, titles):
+        print(f"[GH] ERROR: {args.repo}#{issue} is in {milestone or 'no milestone'!r}, not a "
+              "parking milestone; a deferral does not discharge it (post its handoff).",
+              file=sys.stderr)
+        return 1
+    comments = _run(["gh", "api", "--paginate",
+                     f"repos/{args.repo}/issues/{issue}/comments?per_page=100",
+                     "--jq", ".[].body"], check=False)
+    if comments.returncode != 0:
+        print(f"[GH] ERROR: cannot read the comments of {args.repo}#{issue}: "
+              f"{comments.stderr.strip()}", file=sys.stderr)
+        return 1
+    if any(line.startswith(DEFERRAL_HEADING) for line in comments.stdout.splitlines()):
+        handoff_owed.discharge(args.repo, issue)
+        print(f"[GH] the R-0352 deferral is already on {issue_url}; obligation cleared.")
+        return 0
+    args.milestone = milestone
+    return 0 if _post_deferral(args, issue, issue_url) else 1
 
 
 def create_issue(repo: str, title: str, body: str, labels: list[str],
@@ -825,7 +915,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a GitHub issue and optionally add it to a project board")
     parser.add_argument("--repo", required=True, help="Target repo, e.g. vitalharmony/hrse (no default — must be explicit)")
-    parser.add_argument("--title", required=True, help="Issue title")
+    parser.add_argument("--title", default=None, help="Issue title (required unless --defer-existing)")
     parser.add_argument("--body", default="", help="Issue body (prefer --body-file)")
     parser.add_argument(
         "--body-file", default=None, metavar="PATH",
@@ -892,6 +982,25 @@ def main() -> int:
              "identically to a deliberate 'in no release'.",
     )
     parser.add_argument(
+        "--deferral-trigger", default=None, metavar="TEXT",
+        help="harmonic-forge#1382: REQUIRED when --milestone names a parking "
+             "milestone (open, not the current release, not exempt, e.g. "
+             "'Later'): the observable event that ends the deferral. Posted "
+             "with --deferral-owner as the R-0352 deferral comment, which "
+             "replaces the handoff obligation. Refused with --handoff-exception.",
+    )
+    parser.add_argument(
+        "--defer-existing", type=int, default=None, metavar="N",
+        help="Retry the R-0352 deferral for existing issue N in a parking "
+             "milestone (no new filing); clears its handoff obligation "
+             "(harmonic-forge#1382).",
+    )
+    parser.add_argument(
+        "--deferral-owner", default=None, metavar="TEXT",
+        help="harmonic-forge#1382: the named lane or the operator who owns the "
+             "deferral (R-0352). Required with --deferral-trigger.",
+    )
+    parser.add_argument(
         "--no-prior-owner", default=None, metavar="REASON",
         help="R-0397 (harmonic-forge#1032): file even though the pre-create "
              "title search printed candidate prior owners. The reason says "
@@ -904,6 +1013,16 @@ def main() -> int:
              "body and records one `escape.filed` telemetry event after filing.",
     )
     args = parser.parse_args()
+    # harmonic-forge#1382 C2: the deferral retry for an existing issue.
+    if args.defer_existing is not None:
+        if not all((v or "").strip() for v in (args.deferral_trigger, args.deferral_owner)):
+            parser.error("--defer-existing requires --deferral-trigger and --deferral-owner.")
+        if args.title or args.handoff_exception:
+            parser.error("--defer-existing files nothing: drop --title and --handoff-exception.")
+        apply_project_identity(args.repo)
+        return _defer_existing(args)
+    if not args.title:
+        parser.error("--title is required.")
     _caller_path.resolve_args(args, 'body_file')  # harmonic-forge#1117 AC2
     if args.escape_of is not None and _escape_of_repo(args.escape_of) is None:
         parser.error(f"--escape-of {args.escape_of!r} is not a known repo-prefixed "
@@ -939,6 +1058,16 @@ def main() -> int:
                      f"{BLOCKED_ON_PREREQUISITE}.")
     if args.blocked_by and _parse_blocker(args.blocked_by) is None:
         parser.error(f"--blocked-by {args.blocked_by!r} is not OWNER/REPO#N.")
+    # harmonic-forge#1382: the deferral pair is all-or-nothing, and is one
+    # discharge route: a filing claims a deferral or an exception, never both.
+    deferral_given = [bool((v or "").strip()) for v in
+                      (args.deferral_trigger, args.deferral_owner)]
+    if any(deferral_given) and not all(deferral_given):
+        parser.error("--deferral-trigger and --deferral-owner are required "
+                     "together (R-0352: a deferral names its trigger and owner).")
+    if any(deferral_given) and args.handoff_exception:
+        parser.error("--deferral-trigger/--deferral-owner and "
+                     "--handoff-exception are two discharge routes; pass one.")
 
     # harmonic-forge#266: --body-file is the safe path for prose. --body still
     # works for short bodies, but anything with backticks, apostrophes or
@@ -963,7 +1092,7 @@ def main() -> int:
 
     # harmonic-forge#283: requiredness is derived from live state — does this
     # repo use milestones at all? — rather than a hardcoded per-repo list.
-    # A repo with none (harmonic-forge, openclaw-projects) is never gated;
+    # A repo with none (openclaw-projects) is never gated;
     # nothing invents a per-issue milestone concept for a repo that decided
     # against having one.
     # harmonic-forge#804: act as the repo's own account. Deliberately AFTER the flag
@@ -971,6 +1100,7 @@ def main() -> int:
     apply_project_identity(args.repo)
     milestones = fetch_milestones(args.repo)
     milestone_number: int | None = None
+    parking = False
     if milestones:
         if args.milestone is None:
             parser.error(
@@ -984,9 +1114,27 @@ def main() -> int:
                 f"{args.repo}. Valid: {', '.join(sorted(milestones))}."
             )
         milestone_number = milestones[args.milestone]
+        # harmonic-forge#1382: a parking milestone owes no handoff (R-0404
+        # would refuse it) but requires an R-0352 deferral, refused here,
+        # before anything is created.
+        parking = is_parking_milestone(args.repo, args.milestone, milestones)
+        if parking and args.handoff_exception:
+            parser.error(
+                f"--milestone {args.milestone!r} is a parking milestone on "
+                f"{args.repo}: file it with --deferral-trigger and "
+                f"--deferral-owner, not --handoff-exception.")
+        if parking and not all(deferral_given):
+            parser.error(
+                f"--milestone {args.milestone!r} is a parking milestone on "
+                f"{args.repo} (not the current release): --deferral-trigger "
+                f"and --deferral-owner are required (R-0352), and replace the "
+                f"handoff obligation (harmonic-forge#1382).")
     elif args.milestone is not None:
         print(f"[GH] {args.repo} has no milestones — ignoring --milestone "
               f"{args.milestone!r}.", file=sys.stderr)
+    if any(deferral_given) and not parking:
+        parser.error("--deferral-trigger/--deferral-owner apply only to a "
+                     "filing into a parking milestone (harmonic-forge#1382).")
 
     # harmonic-forge#329: a half-override is a mistake, not a partial
     # instruction -- and unlike an unmapped repo (below, deliberately still
@@ -1084,24 +1232,55 @@ def main() -> int:
     # for an issue that does not exist.
     issue_number = _issue_number(issue_url)
     route_path = None
+    # harmonic-forge#1382 sticky-wicket P1: a post-create step that fails is
+    # recorded here and the remaining steps still run; the exit is 1 at the
+    # end. An early `return 1` skipped every later step (the board and its
+    # Tier/Theme/Venture writes) while the retry covered only its own step.
+    # Each entry is "<step>: <repair>", printed together by
+    # `_post_create_exit`.
+    unfinished: list[str] = []
     if issue_number is None and args.escape_of is not None:
         print(f"[GH] escape-of: not recorded — no issue number in {issue_url}", file=sys.stderr)
     if issue_number is not None:
-        handoff_owed.record(args.repo, issue_number, issue_url)
+        owed_route = ({"kind": "deferral", "milestone": args.milestone,
+                       "trigger": (args.deferral_trigger or "").strip(),
+                       "owner": (args.deferral_owner or "").strip()} if parking else None)
+        # P2: the Stop hook cannot name an obligation that was never stored,
+        # so a failed write prints the discharge command itself, now.
+        if not handoff_owed.record(args.repo, issue_number, issue_url, route=owed_route):
+            repair = handoff_owed.discharge_command(args.repo, issue_number, owed_route)
+            print(f"[GH] ERROR: the handoff obligation for {issue_url} could not "
+                  f"be recorded, so no Stop hook will name it. Discharge it by "
+                  f"hand:\n  {repair}", file=sys.stderr)
+            unfinished.append(f"obligation record: {repair}")
         # harmonic-forge#1232: before `_discharge_exception`, which can return 1,
         # so the filing checkpoint is recorded on every exit below.
         route_path = _route_at_filing(args.repo, body, labels, issue_number)
         if args.escape_of is not None:
             _record_escape(args.repo, issue_number, args.escape_of)
-        if not _discharge_exception(args, issue_number, issue_url):
-            return 1
+        if parking:
+            if not _post_deferral(args, issue_number, issue_url):
+                unfinished.append("R-0352 deferral: " + handoff_owed.discharge_command(
+                    args.repo, issue_number, owed_route))
+        # The same early-return shape as the deferral (operator ruling on the
+        # sticky-wicket PATCH, 2026-11-25): record it and let the board run.
+        elif not _discharge_exception(args, issue_number, issue_url):
+            unfinished.append("R-0039 exception record: the repair printed above")
 
     # harmonic-forge#107: derive from --repo. An explicit override still wins.
     if args.project_owner and args.project_number:
         project_owner, project_number = args.project_owner, args.project_number
         print(f"[GH] Board overridden explicitly: {project_owner}/#{project_number}")
     else:
-        project_owner, project_number = resolve_board_for_repo(args.repo)
+        try:
+            project_owner, project_number = resolve_board_for_repo(args.repo)
+        except SystemExit as exc:
+            # Post-verdict finding 4: an unmapped repo is one more unfinished
+            # step, reported with the others, not an exit that hides them.
+            print(str(exc), file=sys.stderr)
+            unfinished.append("board resolution: map the repo in projects.toml or pass "
+                              "--project-owner/--project-number")
+            return _post_create_exit(issue_url, unfinished)
 
     if not project_owner or not project_number:
         print("[GH] No project board configured — skipping board-add.")
@@ -1123,11 +1302,25 @@ def main() -> int:
                 f"$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
                 file=sys.stderr,
             )
-            return 1
-        return 0
+            unfinished.append("board fields: re-run with --project-owner/--project-number")
+        return _post_create_exit(issue_url, unfinished)
 
-    return 0 if add_to_board(issue_url, project_owner, project_number, tier,
-                              args.theme, args.venture, route_path) else 1
+    if not add_to_board(issue_url, project_owner, project_number, tier,
+                        args.theme, args.venture, route_path):
+        unfinished.append("board add or field write: see the [GH] lines above for the step that failed")
+    return _post_create_exit(issue_url, unfinished)
+
+
+def _post_create_exit(issue_url: str, unfinished: list[str]) -> int:
+    """harmonic-forge#1382 P1: the one exit after every post-create step ran.
+    0 when all finished; else 1, naming each unfinished step and its repair."""
+    if not unfinished:
+        return 0
+    print(f"[GH] ERROR: {issue_url} was filed, but {len(unfinished)} post-create "
+          f"step(s) did not finish (every other step ran):", file=sys.stderr)
+    for entry in unfinished:
+        print(f"[GH]   - {entry}", file=sys.stderr)
+    return 1
 
 
 def _print_owed() -> None:
@@ -1150,7 +1343,7 @@ def _print_owed() -> None:
               f"{entry.get('url', '')}", file=sys.stderr)
         try:
             print(f"[GH]     "
-                  f"{handoff_owed.discharge_command(str(entry.get('repo')), int(entry.get('issue')))}",
+                  f"{handoff_owed.discharge_command(str(entry.get('repo')), int(entry.get('issue')), entry.get('route'))}",
                   file=sys.stderr)
         except (TypeError, ValueError):
             continue

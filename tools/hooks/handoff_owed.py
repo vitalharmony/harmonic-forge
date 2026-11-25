@@ -180,7 +180,7 @@ def _archive_owed(owed: list[dict], session: str) -> int:
 
 
 def record(repo: str, issue: int, url: str = "", key: str | None = None,
-           now: float | None = None) -> bool:
+           now: float | None = None, route: dict | None = None) -> bool:
     """Record that `repo#issue` owes a handoff. Idempotent per (repo, issue).
 
     Called the moment an issue exists and **before** anything that can fail
@@ -200,6 +200,9 @@ def record(repo: str, issue: int, url: str = "", key: str | None = None,
         "recorded_at": time.strftime(
             "%Y-%m-%dT%H:%M:%SZ",
             time.gmtime(now if now is not None else time.time())),
+        # harmonic-forge#1382 C2: a parking filing's deferral route, so the
+        # owed text names the retry, not a handoff R-0404 would refuse.
+        **({"route": route} if route else {}),
     })
     ok = _write(path, entries)
     prune(now)
@@ -233,7 +236,16 @@ def discharge(repo: str, issue: int) -> int:
     return cleared
 
 
-def discharge_command(repo: str, issue: int) -> str:
-    """The literal command that discharges this obligation."""
+def discharge_command(repo: str, issue: int, route: dict | None = None) -> str:
+    """The literal command that discharges this obligation: the deferral retry
+    for a parking filing (harmonic-forge#1382 C2), else the handoff post."""
+    if isinstance(route, dict) and route.get("kind") == "deferral":
+        import shlex  # noqa: PLC0415
+        # The forge script directly: mise's gh-new-issue pins --repo to its
+        # own checkout's GH_REPO, and the issue may be another repo's.
+        return (f"python3 \"${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/gh_issue.py\" "
+                f"--repo {repo} --defer-existing {issue} "
+                f"--deferral-trigger {shlex.quote(str(route.get('trigger') or '<trigger>'))} "
+                f"--deferral-owner {shlex.quote(str(route.get('owner') or '<owner>'))}")
     return (f"mise run l1-post -- --repo {repo} --issue {issue} "
             f"--kind handoff --file <handoff.md> --sha <sha> --branch main")

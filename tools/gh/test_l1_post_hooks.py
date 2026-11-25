@@ -987,11 +987,11 @@ class MilestoneGateTests(unittest.TestCase):
     """harmonic-forge#283: a handoff must not post without release membership."""
 
     def test_no_ops_on_a_repo_that_uses_no_milestones(self):
-        # AC5: harmonic-forge/openclaw-projects are never gated — there is
-        # nothing to enforce against, and requiredness is derived live.
+        # AC5: a repo with no open milestones (openclaw-projects) is never
+        # gated — nothing to enforce against, and requiredness is derived live.
         with patch.object(post, "repo_milestone_titles", return_value=[]), \
              patch.object(post, "issue_milestone_title") as issue_read:
-            post.validate_milestone_set("vitalharmony/harmonic-forge", 283)
+            post.validate_milestone_set("vitalharmony/openclaw-projects", 283)
         issue_read.assert_not_called()
 
     def test_passes_when_the_issue_carries_a_milestone(self):

@@ -123,10 +123,9 @@ Not every project has a service to restart or an artifact to version-stamp.
 that case (harmonic-forge#54) — resolved via `product-strategy`, not just
 deferred: `check` + `commit` + `gh-new-issue` + `post-comment` only, no
 `bump`/`restart`/`pc-up`/`pc-down`. A version bump would gate nothing here
-— consumers pull this repo via `sync_rules.py --pull`, so the git SHA
-already **is** the version, and `harmonic-forge.md`'s own "Draft v0.2" header
+— the release tag (`v0.y.z`, harmonic-forge#1382) **is** the version, and `harmonic-forge.md`'s own "Draft v0.2" header
 is a hand-maintained spec-status marker deliberately bumped at real
-milestones, not automated per-commit. Without a bump to anchor a
+milestones, not automated per-commit. Until its first tag exists to anchor a
 `version-minor` boundary, its transaction-log view uses `recent:<N>`. Use this subset (not the full
 pattern above) for any future docs/tooling-only project; don't invent a
 fake `bump`/`restart` ceremony just to match the shape.

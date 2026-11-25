@@ -168,10 +168,11 @@ class MainWiring(TempStore):
             return gh_issue.main(), add
 
     def test_event_is_written_even_when_discharge_exits_nonzero(self):
-        """AC3."""
+        """AC3. Since the harmonic-forge#1382 PATCH (operator ruling on P1), a
+        failed exception post no longer skips the board: it still runs."""
         result, add = self._main(discharge_ok=False)
         self.assertEqual(result, 1)
-        add.assert_not_called()
+        add.assert_called_once()
         self.assertEqual([e["attrs"]["checkpoint"] for e in route_store.load(f"{FORGE}#77")], ["filing"])
 
     def test_path_reaches_add_to_board(self):
@@ -248,10 +249,12 @@ class RouteNoticeEveryExit(TempStore):
         self.assertEqual(code, 0)
         self.assertEqual(err.count(self.NOTICE), 0)
 
-    def test_failed_discharge_exit_prints_it_once(self):
+    def test_failed_discharge_exit_still_writes_the_path(self):
+        """harmonic-forge#1382 PATCH: a failed exception post still runs the
+        board, which writes Path, so the unwritten-route notice does not print."""
         code, err = self._drive(discharge_ok=False)
         self.assertEqual(code, 1)
-        self.assertEqual(err.count(self.NOTICE), 1)
+        self.assertEqual(err.count(self.NOTICE), 0)
 
     def test_no_board_prints_it_once(self):
         code, err = self._drive(board=("", ""))

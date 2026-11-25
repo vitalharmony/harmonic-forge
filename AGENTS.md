@@ -4,8 +4,8 @@ Entrypoint for **Codex and any other agent reading AGENTS.md** working in this r
 
 **Read [`docs/agent-foundation.md`](docs/agent-foundation.md) first.** It is
 the vendor-neutral foundation for this repo — what it is, what to read, and
-the conventions that differ from the other Vital Harmony repos (no release
-milestones; board #3; `F<N>`/`H<N>` shorthand; rules edits propagate to
+the conventions that differ from the other Vital Harmony repos (its own
+`0.y` release milestones plus `Later`; board #3; `F<N>`/`H<N>` shorthand; rules edits propagate to
 every project).
 
 Then read [`3-lane-protocol.md`](3-lane-protocol.md), which is the

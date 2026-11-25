@@ -2,9 +2,9 @@
 """hrse#1476 — periodic pipeline-relevance triage across harmonic-forge's
 open issues, cross-referenced against hrse's live pipeline.
 
-harmonic-forge carries no release milestones by design (CLAUDE.md — its
-work is pulled by multiple ventures, belongs to no single release). That
-left a real gap: no periodic, automated way to know which of its ~80 open
+harmonic-forge's work is pulled by multiple ventures and belongs to no
+single CymaGraph release (its own `0.y` series is independent of it,
+harmonic-forge#1382). That left a real gap: no periodic, automated way to know which of its ~80 open
 issues matter to the live job/opp search pipeline right now versus which
 are safely deferrable.
 
@@ -437,9 +437,9 @@ def classify(
     their bodies for `forge#N`, so they were reference *sources* and were
     never classified. hrse#1477 needs them grouped alongside forge's.
 
-    **The milestone filter is hrse-only.** harmonic-forge carries no release
-    milestones by design (CLAUDE.md — its work is pulled by several ventures
-    and belongs to no single release), so there is nothing to filter it by.
+    **The milestone filter is hrse-only.** harmonic-forge's milestones are its
+    own `0.y` series (harmonic-forge#1382), independent of the hrse release
+    being filtered, so forge rows are never filtered by it.
 
     **Epic children outside the current milestone are invisible** to the
     inheritance rule: only issues inside the filtered set are available to

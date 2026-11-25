@@ -76,8 +76,15 @@ class ActiveMilestonesTests(unittest.TestCase):
         self.assertEqual(mf.load(write(MINIMAL))[0].active_milestones, ())
 
     def test_a_list_loads_as_a_tuple(self) -> None:
-        path = write(MINIMAL + '    milestones = true\n    active_milestones = ["3.0", "Later"]\n')
-        self.assertEqual(mf.load(path)[0].active_milestones, ("3.0", "Later"))
+        path = write(MINIMAL + '    milestones = true\n    active_milestones = ["@current-release", "Later"]\n')
+        self.assertEqual(mf.load(path)[0].active_milestones, ("@current-release", "Later"))
+
+    def test_a_pinned_release_literal_is_refused(self) -> None:
+        """harmonic-forge#1382 C1: a version literal drifts from R-0404 at turnover."""
+        for value in ('["0.3"]', '["3.2.1", "Platform"]', '["@current-release", "3.3"]'):
+            with self.subTest(value=value), self.assertRaises(mf.ManifestError) as ctx:
+                mf.load(write(MINIMAL + f'    milestones = true\n    active_milestones = {value}\n'))
+            self.assertIn("@current-release", str(ctx.exception))
 
     def test_refused_on_a_repo_without_milestones(self) -> None:
         with self.assertRaises(mf.ManifestError) as ctx:
@@ -93,7 +100,9 @@ class ActiveMilestonesTests(unittest.TestCase):
         scoped = {p.name: p.active_milestones for p in mf.load(LIVE) if p.active_milestones}
         # cymagraph-infra has no release milestone (preclose pass 2), so no
         # list. The release entry is the @current-release token (harmonic-forge#1489).
-        self.assertEqual(scoped, {"hrse": ("@current-release", "Platform")})
+        # harmonic-forge#1382: forge carries its own 0.y series.
+        self.assertEqual(scoped, {"hrse": ("@current-release", "Platform"),
+                                  "harmonic-forge": ("@current-release",)})
 
 
 class FailLoudlyTests(unittest.TestCase):

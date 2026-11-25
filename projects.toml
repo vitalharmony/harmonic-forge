@@ -36,10 +36,11 @@
 #                 OFF #1 to its own #4 (2026-09-10) -- it is a prototyping
 #                 ground that feeds the products and belongs to none of them,
 #                 so it is its own venture, not CymaGraph work.
-# milestones      Whether the repo carries release milestones. `false` for
-#                 harmonic-forge is a DECISION, not a gap: its work is pulled by
-#                 several ventures and belongs to no single release. See
-#                 hrse docs/ROADMAP.md. Do not "fix" it.
+# milestones      Whether the repo carries release milestones. harmonic-forge
+#                 carries its own SemVer `0.y` series plus `Later` (operator
+#                 decision 184, harmonic-forge#1382), independent of CymaGraph's
+#                 releases; see forge docs/ROADMAP.md. Inert until the milestones
+#                 exist on GitHub: every gate reads the open milestones live.
 # active_milestones  The operator's live releases (harmonic-forge#952): the lane
 #                 queue skips an issue whose milestone is set and not listed; an
 #                 issue with no milestone is never skipped. Explicit on purpose:
@@ -160,7 +161,7 @@ account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "1"
 milestones = true
-active_milestones = ["@current-release", "Platform"]  # harmonic-forge#1489: the token is hrse's lowest open X.Y milestone (no edit per release); Platform holds hrse tooling
+active_milestones = ["@current-release", "Platform"]  # harmonic-forge#1489, #1382: the token is hrse's lowest open version-shaped milestone (no edit per release); Platform holds hrse tooling
 onboarded = true
 token_exception = "fine-grained PATs cannot access user-owned Projects v2 (GitHub-documented limitation; verified 403 in harmonic-forge#805 issuecomment-5883764727). Revisit if the boards move to an organization."
 
@@ -203,7 +204,8 @@ workspace = "vh"
 account = "vitalharmony"
 board_owner = "vitalharmony"
 board_number = "3"
-milestones = false
+milestones = true
+active_milestones = ["@current-release"]  # harmonic-forge#1382 C1: forge's lowest open 0.y milestone (no edit per release); `Later` is parking
 onboarded = true
 token_exception = "fine-grained PATs cannot access user-owned Projects v2 (GitHub-documented limitation; verified 403 in harmonic-forge#805 issuecomment-5883764727). Revisit if the boards move to an organization."
 
