@@ -104,8 +104,11 @@ class S0Reader(unittest.TestCase):
         self.assertEqual(reader.calls, [RUNS, jobs_path(1)])
 
     def test_a_404_or_403_reads_unknown_never_absent(self):
+        # A real error answer carries a JSON body; an empty run list in it must
+        # never read as `absent` (C3: only 200, or 304 with a body, counts).
+        empty = {"total_count": 0, "workflow_runs": []}
         for status in (404, 403, 500, None):
-            reader = Reader({RUNS: (status, None)})
+            reader = Reader({RUNS: (status, empty)})
             self.assertEqual(gate_ci.ci_conclusion(REPO, SHA, required={"verify"},
                                                    reader=reader)[0], "unknown", status)
 
