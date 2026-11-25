@@ -146,9 +146,10 @@ the call gets no retry budget of its own and does not extend it.
      readers when there were three.
    - **The handoff's own Consumers and Equivalents section.** Every reader
      and equivalent it names comes with the command that found it, "none"
-     included; re-run one of them. `l1_post.py` checks only that the section
-     is filled in, because whether a search ran is not in the text
-     (harmonic-forge#838 sticky-wicket PATCH).
+     included; re-run one of them. `l1_post.py` checks only the field's form
+     (`Contract: <id>` lines that resolve, or `No index entry applies` plus
+     `Search:`, harmonic-forge#1502), because whether a search ran is not in
+     the text (harmonic-forge#838 sticky-wicket PATCH).
    - **The handoff's own Live Probe section** (harmonic-forge#994). Re-run
      one named probe: its output must match what the handoff states. If the
      Affected Files add or change an external call (a network fetch, an LLM

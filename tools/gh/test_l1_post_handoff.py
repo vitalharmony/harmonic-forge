@@ -29,11 +29,12 @@ class HandoffTests(unittest.TestCase):
         )
 
     FILLER = "A documented value, per `git grep -n value` (l1_post.py:94), verified-live."
+    CONSUMERS = "No index entry applies: none of these readers is indexed.\nSearch: `git grep -n value`"
 
     def _with_trace(self, trace: str | None) -> str:
         """Every heading real, `Scenario Trace` set to `trace` (None drops it)."""
         return "\n".join(
-            f"### {h}\n{trace if h == 'Scenario Trace' else self.FILLER}"
+            f"### {h}\n{trace if h == 'Scenario Trace' else self.CONSUMERS if h == 'Consumers and Equivalents' else self.FILLER}"
             for h in post.HANDOFF_HEADINGS if h != "Scenario Trace" or trace is not None)
 
     def test_scenario_trace_is_a_required_heading_after_root_cause(self) -> None:
@@ -235,25 +236,28 @@ class HandoffTests(unittest.TestCase):
             post.validate_handoff(self._body("{none | for each contract this handoff changes}"),
                                   requires_preflight=False)
 
-    def test_consumers_prose_is_not_pattern_matched(self) -> None:
-        """Sticky-wicket PATCH (F838): whether a search ran is not in the text,
-        so l1_post checks only structure and pitch-inspection checks the rest."""
-        post.validate_handoff(self._body("none, per the search recorded in the review"),
-                              requires_preflight=False)
+    def test_consumers_free_prose_is_refused_naming_both_forms(self) -> None:
+        """harmonic-forge#1502 (it supersedes F838's structure-only rule): free prose
+        carries neither labeled form, and the refusal names both."""
+        with self.assertRaises(SystemExit) as caught:
+            post.validate_handoff(self._body("none, per the search recorded in the review"),
+                                  requires_preflight=False)
+        self.assertIn("Contract: <id>", str(caught.exception))
+        self.assertIn("No index entry applies", str(caught.exception))
 
     def test_none_with_its_search_is_accepted(self) -> None:
-        post.validate_handoff(self._body("none: `git grep -n HANDOFF_HEADINGS` finds only l1_post.py"),
+        post.validate_handoff(self._body("No index entry applies.\nSearch: `git grep -n HANDOFF_HEADINGS` finds only l1_post.py"),
                               requires_preflight=False)
 
     def test_none_elsewhere_still_needs_no_search(self) -> None:
         """The rule is scoped to this one heading (plan review change 4)."""
-        body = self._body("`HANDOFF_HEADINGS`: l1_post.py (`git grep -n HANDOFF_HEADINGS`)").replace(
+        body = self._body("No index entry applies.\nSearch: `git grep -n HANDOFF_HEADINGS`").replace(
             "### Design Alternatives Considered\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live.",
             "### Design Alternatives Considered\nnone")
         post.validate_handoff(body, requires_preflight=False)
     def test_template_with_real_content_is_accepted(self) -> None:
         body = "\n".join(
-            f"### {heading}\nA documented value, per `git grep -n value` (l1_post.py:94), verified-live." for heading in post.HANDOFF_HEADINGS
+            f"### {heading}\n{self.CONSUMERS if heading == 'Consumers and Equivalents' else self.FILLER}" for heading in post.HANDOFF_HEADINGS
         )
         post.validate_handoff(body, requires_preflight=False)
 
