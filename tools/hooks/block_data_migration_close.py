@@ -197,8 +197,8 @@ def find_close_targets(command: str, reasons: list[str] | None = None,
     for raw_tokens in segments:
         try:  # a parse error on a recognized gh call is undecided, never a pass
             result = _close_result(raw_tokens)
-        except ValueError as exc:
-            result = A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {exc}")
+        except Exception as exc:  # noqa: BLE001 - any parser fault denies, never passes
+            result = A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
         if result is None:
             continue
         if result.outcome == A.BOUND:

@@ -1204,6 +1204,16 @@
     []
    ]
   ],
+  "gh api graphql -f 'query=mutation { x @ }'": [
+   "intended",
+   "tightening against main: a literal gh call whose parse faults is denied before any read, never passed by a crash (harmonic-forge#1498 post-verdict)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
   "gh issue close": [
    "intended",
    "tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)",

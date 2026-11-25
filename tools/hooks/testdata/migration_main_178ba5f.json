@@ -600,6 +600,7 @@
   ]
  ],
  "gh api graphql --input body.json -X POST": [],
+ "gh api graphql -f 'query=mutation { x @ }'": [],
  "gh issue close": [],
  "gh issue close \"$N\"": [],
  "gh issue close '#849' --repo vitalharmony/hrse": [

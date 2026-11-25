@@ -345,7 +345,8 @@ class AdapterAdoptionTests(unittest.TestCase):
         """Post-verdict finding 1: a URL that urlsplit rejects is an undecided
         literal gh call, denied before any read; the hook never raises."""
         for command in ("gh issue close https://[::1/o/r/issues/849",
-                        "gh issue close 849 --repo https://[bad"):
+                        "gh issue close 849 --repo https://[bad",
+                        "gh api graphql -f 'query=mutation { x @ }'"):
             with self.subTest(command=command):
                 self.assertEqual(hook.find_close_targets(command), [(None, "")])
 
