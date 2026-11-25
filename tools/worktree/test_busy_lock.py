@@ -2,7 +2,7 @@
 """Tests for the per-worktree busy lock (harmonic-forge#1560).
 
 Every lock here is a real `flock` held by a child bash, in a store under a
-temp `WORKTREE_BUSY_DIR`; nothing touches ~/.cache/harmonic-forge/worktree-busy.
+temp `WORKTREE_BUSY_DIR`; nothing touches ~/.claude/state/worktree-busy.
 """
 import json
 import os

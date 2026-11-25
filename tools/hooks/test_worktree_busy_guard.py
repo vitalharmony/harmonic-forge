@@ -2,7 +2,7 @@
 """harmonic-forge#1560: no writes into a worktree whose own check holds its lock.
 
 The lock is a real `flock` held by a child bash, in a temp `WORKTREE_BUSY_DIR`;
-no test touches ~/.cache/harmonic-forge/worktree-busy.
+no test touches ~/.claude/state/worktree-busy.
 """
 from __future__ import annotations
 

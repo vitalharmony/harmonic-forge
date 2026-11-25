@@ -22,7 +22,7 @@ says. Every other failure (no lock file, any other `OSError`, a missing or
 unreadable sidecar) reads not busy: this module can only ever release a
 write, never invent a block.
 
-The store is `$WORKTREE_BUSY_DIR`, or `~/.cache/harmonic-forge/worktree-busy`
+The store is `$WORKTREE_BUSY_DIR`, or `~/.claude/state/worktree-busy`
 when that is unset. Tests always set `WORKTREE_BUSY_DIR`.
 
 CLI:
@@ -41,7 +41,7 @@ import os
 import sys
 from pathlib import Path
 
-DEFAULT_STATE = Path("~/.cache/harmonic-forge/worktree-busy")
+DEFAULT_STATE = Path("~/.claude/state/worktree-busy")
 
 
 def state_dir() -> Path:
