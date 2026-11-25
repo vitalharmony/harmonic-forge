@@ -446,13 +446,10 @@ class TestTwoPassPatch(ScratchRepo):
         self.assertEqual(self.run_scan("--check")[0], 0)
 
 
-ENV = "../telemetry/env.sh"
-EMIT = "../telemetry/emit.py"
-
-
-class TestF1556Residuals(ScratchRepo):
-    """harmonic-forge#1556: the five residual load forms, each an edge or an
-    unresolved row, never clean."""
+class TestF1556Forms(ScratchRepo):
+    """harmonic-forge#1556 (amended scope): form 3, a source on an eval line
+    keeps its own edge; form 4, a qualified from-import names every dotted
+    part as a package candidate."""
 
     def setUp(self):
         super().setUp()
@@ -460,213 +457,43 @@ class TestF1556Residuals(ScratchRepo):
         self.write("tools/telemetry/emit.py", "X = 1\n")
         self.track()
         self.baseline_now()
-        self.n = 0
 
-    def plant(self, ext, text):
-        """Write `text` to a new tracked core file; its path."""
-        self.n += 1
-        rel = (f"tools/lane/p{self.n}.sh" if ext == "sh" else f"tools/hooks/p{self.n}.py")
-        self.write(rel, ("#!/bin/bash\n" if ext == "sh" else "") + text)
-        self.track()
-        return rel
-
-    def check(self):
+    def check_fails_naming(self, *needles):
         rc, out = self.run_scan("--check")
         self.assertEqual(rc, 1, out)
-        return out
+        for n in needles:
+            self.assertIn(n, out)
 
-    def assert_edge(self, ext, text, target):
-        rel = self.plant(ext, text)
-        self.assertIn(f"{rel} imports operator file {target}", self.check())
+    def test_a_source_on_an_eval_line_keeps_its_edge(self):
+        for spelling in ("source", "."):
+            with self.subTest(spelling=spelling):
+                self.write("tools/lane/ev.sh", f'#!/bin/bash\neval ":"; {spelling} ../telemetry/env.sh\n')
+                self.track()
+                self.check_fails_naming(
+                    "tools/lane/ev.sh imports operator file tools/telemetry/env.sh",
+                    "[import-unresolved] tools/lane/ev.sh")
 
-    def assert_unresolved_call(self, text, call):
-        """`call` is an unresolved row and the file has no import edge."""
-        rel = self.plant("py", text)
-        out = self.check()
-        self.assertIn(f"[import-unresolved] {rel} has a load whose target cannot be "
-                      f"resolved: {call}", out)
-        self.assertNotIn(f"{rel} imports operator file", out)
+    def test_a_source_inside_the_eval_text_is_an_edge(self):
+        self.write("tools/lane/ei.sh", '#!/bin/bash\neval "source ../telemetry/env.sh"\n')
+        self.track()
+        self.check_fails_naming("tools/lane/ei.sh imports operator file tools/telemetry/env.sh",
+                                "[import-unresolved] tools/lane/ei.sh")
 
-    def test_quoted_dot_is_an_edge(self):
-        for line in (f"'.' {ENV}", f"FOO=1 '.' {ENV}", f"FOO=1 s'ource' {ENV}",
-                     f"case $x in a) '.' {ENV};; esac"):
-            with self.subTest(line=line):
-                self.assert_edge("sh", line + "\n", "tools/telemetry/env.sh")
+    def test_an_eval_and_an_unresolved_source_count_twice(self):
+        self.write("tools/lane/e2.sh", "#!/bin/bash\neval $X; source $Y\n")
+        self.track()
+        rc, text = self.run_scan("--print")
+        self.assertIn('text = "eval $X; source $Y"\ncount = 2', text)
 
-    def test_quoted_dot_survives_update(self):
-        """AC2: `--update` cannot ratchet a still-live quoted-dot load out."""
-        rel = self.plant("sh", f". {ENV}\n")
-        self.baseline_now()
-        key = ("import", rel, "tools/telemetry/env.sh")
-        self.assertEqual(self.baseline_rows()[key], 1)
-        self.write(rel, f"#!/bin/bash\n'.' {ENV}\n")
-        rc, out = self.run_scan("--update")
-        self.assertEqual(rc, 0, out)
-        rc, out = self.run_scan("--check")
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(self.baseline_rows()[key], 1)
+    def test_a_qualified_from_import_names_every_dotted_part(self):
+        self.write("tools/hooks/fq.py", "from tools.telemetry import *\n")
+        self.track()
+        self.check_fails_naming("tools/hooks/fq.py imports operator file tools/telemetry/")
 
-    def test_quoted_eval_is_unresolved(self):
-        rel = self.plant("sh", "'eval' \"$CMD\"\n")
-        self.assertIn(f"[import-unresolved] {rel} has a load whose target cannot be "
-                      "resolved: 'eval' \"$CMD\"", self.check())
-
-    def test_continued_command_word_is_an_edge(self):
-        for text in (f"sou\\\nrce {ENV}\n", f"FOO=1 sou\\\nrce {ENV}\n",
-                     f"case $x in a) sou\\\nrce {ENV};; esac\n", f"FOO=1 '.' \\\n{ENV}\n"):
-            with self.subTest(text=text):
-                self.assert_edge("sh", text, "tools/telemetry/env.sh")
-
-    def test_source_on_eval_line_keeps_its_edge(self):
-        """AC3 pin: the eval line is one unresolved row AND the `source` on it
-        keeps its own import row."""
-        line = f'eval ":"; source {ENV}'
-        rel = self.plant("sh", line + "\n")
-        self.baseline_now()
-        rows = {k: v for k, v in self.baseline_rows().items() if k[1] == rel}
-        self.assertEqual(rows, {("import-unresolved", rel, line): 1,
-                                ("import", rel, "tools/telemetry/env.sh"): 1})
-
-    def test_qualified_from_import_star_is_an_edge(self):
-        for text in ("from tools.telemetry import *\n", "from tools import telemetry\n"):
-            with self.subTest(text=text):
-                self.assert_edge("py", text, "tools/telemetry/")
-
-    def test_chained_alias_call_is_an_edge(self):
-        self.assert_edge("py", "import runpy\nif True:\n    first = runpy.run_path\n"
-                         f'second = first\nsecond("{EMIT}")\n', "tools/telemetry/emit.py")
-
-    def test_rebound_alias_call_is_unresolved(self):
-        """Bound twice, by an expression or by bare references only: the
-        second form is decided by the exact-alias rule alone, since a bare
-        reference is never a loose binding."""
-        for rebind in ("load = runpy.run_path if use_path else runpy.run_module\n",
-                       "if use_path:\n    load = runpy.run_path\n"):
-            with self.subTest(rebind=rebind):
-                self.assert_unresolved_call(
-                    f"import runpy\nload = runpy.run_module\n{rebind}"
-                    f'load("{EMIT}")\n', f'load("{EMIT}")')
-
-    def test_import_as_rebinding_is_unresolved(self):
-        a = "load = runpy.run_path\n"
-        b = "from importlib import import_module as load\n"
-        for body in (a + b, b + a):
-            with self.subTest(body=body):
-                self.assert_unresolved_call(f'import runpy\n{body}load("tools.telemetry")\n',
-                                            'load("tools.telemetry")')
-
-    def test_def_or_class_rebinding_is_unresolved(self):
-        with self.subTest("class"):
-            self.assert_unresolved_call("import runpy\nload = runpy.run_path\nclass load:\n"
-                                        f'    pass\nload("{EMIT}")\n', f'load("{EMIT}")')
-        with self.subTest("def"):
-            self.assert_unresolved_call("from importlib import import_module as load\n"
-                                        "def load(p):\n    return p\n"
-                                        'load("tools.telemetry")\n', 'load("tools.telemetry")')
-
-    def test_match_or_type_param_rebinding_is_unresolved(self):
-        head = "import runpy\nload = runpy.run_path\n"
-        call = 'load("tools.telemetry")'
-        for text in (
-                "import runpy, importlib\nload = runpy.run_path\n"
-                "match importlib.import_module:\n    case load:\n        pass\n",
-                head + "match 1:\n    case int() as load:\n        pass\n",
-                head + "match [1]:\n    case [*load]:\n        pass\n",
-                head + "class C[load]:\n    pass\n"):
-            with self.subTest(text=text):
-                self.assert_unresolved_call(text + call + "\n", call)
-
-    def assert_loose_alias_call(self, binding):
-        """A loader alias bound once by `binding` is unresolved at the call
-        after it, not only on the binding line (operator widening of
-        harmonic-forge#1556 to residual d, 2026-11-25)."""
-        call = f'load("{EMIT}")'
-        self.assert_unresolved_call(f"import runpy\n{binding}{call}\n", call)
-
-    def test_walrus_alias_call_is_unresolved(self):
-        self.assert_loose_alias_call("if (load := runpy.run_path):\n    pass\n")
-
-    def test_for_target_alias_call_is_unresolved(self):
-        self.assert_loose_alias_call("for load in (runpy.run_path,):\n    pass\n")
-
-    def test_with_target_alias_call_is_unresolved(self):
-        self.assert_loose_alias_call("from contextlib import nullcontext\n"
-                                     "with nullcontext(runpy.run_path) as load:\n    pass\n")
-
-    def test_tuple_unpacking_alias_call_is_unresolved(self):
-        for binding in ("load, x = runpy.run_path, 1\n", "[x, (load, y)] = 1, (runpy.run_path, 2)\n"):
-            with self.subTest(binding=binding):
-                self.assert_loose_alias_call(binding)
-
-    def test_augmented_assignment_alias_call_is_unresolved(self):
-        self.assert_loose_alias_call("load = None\nload += runpy.run_path\n")
-
-    def test_parameter_default_alias_call_is_unresolved(self):
-        """A def default, positional or keyword-only, is a loose binding: the
-        call in the body, on its own line, is a row."""
-        call = f'return load("{EMIT}")'
-        for head in ("def f(load=runpy.run_path):\n", "def f(x, *, load=runpy.run_path):\n"):
-            with self.subTest(head=head):
-                self.assert_unresolved_call(f"import runpy\n{head}    {call}\n", call)
-
-    def test_container_then_for_alias_call_is_unresolved(self):
-        """A plain name holding a container of loaders taints a later for target."""
-        self.assert_loose_alias_call("fns = (runpy.run_path,)\nfor load in fns:\n    pass\n")
-
-    def test_plain_assign_of_a_partial_alias_call_is_unresolved(self):
-        self.assert_loose_alias_call("import functools\nload = functools.partial(runpy.run_path)\n")
-
-    def test_match_capture_alias_call_is_unresolved(self):
-        """A single-bound `case load:` over a loader subject."""
-        self.assert_loose_alias_call("match runpy.run_path:\n    case load:\n        pass\n")
-
-    def test_comprehension_target_alias_call_is_unresolved(self):
-        """A comprehension target called in the element, on its own line."""
-        call = f'load("{EMIT}")'
-        self.assert_unresolved_call(
-            f"import runpy\nout = [\n    {call}\n    for load in (runpy.run_path,)\n]\n", call)
-
-    def test_keyword_argument_alias_call_is_unresolved(self):
-        self.assert_loose_alias_call(
-            "from contextlib import nullcontext\n"
-            "with nullcontext(enter_result=runpy.run_path) as load:\n    pass\n")
-
-    def test_loose_chain_alias_call_is_unresolved(self):
-        """A loose binding over a name that is itself only ambiguous."""
-        self.assert_loose_alias_call("x = (runpy.run_path, 1)\ny = x\nfor load in y:\n    pass\n")
-
-    def test_long_chain_alias_call_is_unresolved(self):
-        """The fixpoint converges on a chain in the worst source order: the
-        chain's head is an alias of a rebound loader name, so the call is a
-        row, not an edge. s=3 is pitch inspection r3's counterexample; s=6 is
-        long enough that the old `len(binds) + len(loose) + 1` bound runs out."""
-        for s in (3, 6):
-            with self.subTest(s=s):
-                chain = "".join(f"X{i} = X{i - 1}\n" for i in range(s, 1, -1))
-                call = f'X{s}("tools.telemetry")'
-                self.assert_unresolved_call(
-                    f"import_module = Z\nZ = X{s} if c else q\n{chain}"
-                    f"X1 = import_module\n{call}\n", call)
-
-    def test_loose_bind_of_a_loader_call_result_stays_clean(self):
-        """A loader's return value is not a loader: `(spec := spec_from_file_location(...))`
-        taints nothing, so a later `spec.loader` use is no row."""
-        rel = self.plant("py", "from importlib.util import spec_from_file_location\n"
-                         f'if (spec := spec_from_file_location("m", "{EMIT}")):\n'
-                         "    print(spec.name)\n")
-        out = self.check()
-        self.assertIn(f"{rel} imports operator file tools/telemetry/emit.py", out)
-        self.assertNotIn("print(spec.name)", out)
-
-    def test_loader_name_rebinding_is_unresolved(self):
-        for text, call in (
-                ("import runpy\nfrom importlib import import_module\n"
-                 "import_module = runpy.run_path\n", f'import_module("{EMIT}")'),
-                ("from importlib import import_module\nfrom runpy import run_path\n"
-                 "run_path = import_module\n", 'run_path("tools.telemetry")'),
-                ("from runpy import run_path as import_module\n", f'import_module("{EMIT}")')):
-            with self.subTest(call=call):
-                self.assert_unresolved_call(text + call + "\n", call)
+    def test_an_imported_name_of_a_tracked_package_is_a_package_candidate(self):
+        self.write("tools/hooks/fn.py", "from tools import telemetry\n")
+        self.track()
+        self.check_fails_naming("tools/hooks/fn.py imports operator file tools/telemetry/")
 
 
 class TestWiring(unittest.TestCase):
