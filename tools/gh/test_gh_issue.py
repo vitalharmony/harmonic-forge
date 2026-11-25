@@ -568,6 +568,108 @@ class TestParkingMilestoneDeferral(unittest.TestCase):
         created.assert_not_called()
 
 
+class TestPostCreateFailureTable(unittest.TestCase):
+    """harmonic-forge#1382 sticky-wicket tripwire, for the category rather than
+    one instance: every post-create step of a filing runs when an earlier one
+    fails. Each row fails ONE step and asserts (a) every other step still ran,
+    including `add_to_board` with the requested Tier/Theme/Venture, (b) exit 1,
+    (c) stderr names the unfinished step and its repair command.
+    `test_every_post_create_step_has_a_row` fails for a new step with no row."""
+
+    BOARD_ARGS = ["--tier", "fast", "--theme", "Tooling", "--venture", "Platform"]
+    PARKING = ["--repo", FORGE, "--milestone", "Later"] + DEFER
+    EXCEPTION = ["--repo", FORGE, "--milestone", "0.3", "--handoff-exception",
+                 "parent-epic", "--handoff-exception-reason", "children carry it"]
+
+    #: step -> (the call `main()` makes, argv, injected failure, stderr repair text,
+    #: whether the later steps run). The `exception` row is False pending the
+    #: operator's decision on extending P1 to `_discharge_exception`; flip it to
+    #: True with that change.
+    ROWS = {
+        "record": ("handoff_owed.record", PARKING, "record", "--defer-existing 42", True),
+        "deferral": ("_post_deferral", PARKING, "post", "--defer-existing 42", True),
+        "exception": ("_discharge_exception", EXCEPTION, "post", "Re-run the comment", False),
+        "board": ("add_to_board", PARKING, "board", "board add or field write", True),
+    }
+    #: Post-create calls that are fail-open or cannot fail the filing, so they
+    #: need no row. A new call belongs in ROWS or here, with the reason.
+    NOT_FAILURE_STEPS = {
+        "_issue_number",               # pure parse of the URL
+        "_route_at_filing",            # fail-open by contract (harmonic-forge#1232)
+        "_record_escape",              # fail-open by contract (harmonic-forge#1248)
+        "resolve_board_for_repo",      # a lookup; no board is its own exit path
+        "handoff_owed.discharge_command",  # builds repair text
+        "_post_create_exit",           # the single exit
+    }
+
+    def _drive(self, argv, fail):
+        posts: list[list[str]] = []
+
+        def run(cmd, check=False):
+            posts.append(cmd)
+            return _completed("", returncode=1 if fail == "post" else 0)
+
+        with patch.object(sys, "argv", ["gh_issue.py", "--title", "t"] + argv + self.BOARD_ARGS), \
+             patch("gh_issue.fetch_milestones", return_value=FORGE_MILESTONES), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue", return_value="https://github.com/o/r/issues/42"), \
+             patch("gh_issue._route_at_filing", return_value=None) as route, \
+             patch("gh_issue.resolve_board_for_repo", return_value=("o", "1")), \
+             patch("gh_issue._run", side_effect=run), \
+             patch("gh_issue.handoff_owed.record", return_value=fail != "record") as record, \
+             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             patch("gh_issue.add_to_board", return_value=fail != "board") as board, \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            code = gh_issue.main()
+        comments = [c for c in posts if "comments" in " ".join(c)]
+        return code, err.getvalue(), {"record": record, "route": route, "board": board,
+                                      "discharge": discharge, "comments": comments}
+
+    def test_every_post_create_failure_runs_the_rest(self):
+        for step, (_call, argv, fail, repair, later_run) in self.ROWS.items():
+            with self.subTest(step=step):
+                code, err, ran = self._drive(argv, fail)
+                self.assertEqual(code, 1, err)
+                self.assertIn(repair, err)
+                ran["record"].assert_called_once()
+                ran["route"].assert_called_once()
+                self.assertEqual(len(ran["comments"]), 1)  # the deferral/exception post ran
+                if later_run:
+                    ran["board"].assert_called_once()
+                    self.assertEqual(ran["board"].call_args.args[3:6],
+                                     ("fast", "Tooling", "Platform"))
+                    self.assertIn("post-create step(s) did not finish", err)
+                else:
+                    ran["board"].assert_not_called()
+
+    def test_every_post_create_step_has_a_row(self):
+        """The enumeration: each gh_issue/handoff_owed call `main()` makes
+        after `create_issue` is a row or a named non-failure step."""
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(gh_issue.main))
+        create_line = next(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
+                           and isinstance(n.func, ast.Name) and n.func.id == "create_issue")
+        found = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or node.lineno <= create_line:
+                continue
+            func = node.func
+            if isinstance(func, ast.Name) and inspect.isfunction(getattr(gh_issue, func.id, None)) \
+                    and getattr(gh_issue, func.id).__module__ == gh_issue.__name__:
+                found.add(func.id)
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                    and func.value.id == "handoff_owed":
+                found.add(f"handoff_owed.{func.attr}")
+        rows = {call for call, *_ in self.ROWS.values()}
+        self.assertEqual(found - rows - self.NOT_FAILURE_STEPS, set(),
+                         "a new post-create step needs a row in ROWS (or a reasoned "
+                         "entry in NOT_FAILURE_STEPS)")
+        self.assertEqual((rows | self.NOT_FAILURE_STEPS) - found, set(),
+                         "a listed step is no longer called after create_issue")
+
+
 class TestTierWriteFailureIsLoud(unittest.TestCase):
     """harmonic-forge#263. A tier that was asked for and not written must not
     exit 0 -- the model-tier gate reads an unset Tier as 'does not escalate',

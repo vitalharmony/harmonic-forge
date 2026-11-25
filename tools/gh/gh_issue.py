@@ -1223,14 +1223,27 @@ def main() -> int:
     # for an issue that does not exist.
     issue_number = _issue_number(issue_url)
     route_path = None
+    # harmonic-forge#1382 sticky-wicket P1: a post-create step that fails is
+    # recorded here and the remaining steps still run; the exit is 1 at the
+    # end. An early `return 1` skipped every later step (the board and its
+    # Tier/Theme/Venture writes) while the retry covered only its own step.
+    # Each entry is "<step>: <repair>", printed together by
+    # `_post_create_exit`.
+    unfinished: list[str] = []
     if issue_number is None and args.escape_of is not None:
         print(f"[GH] escape-of: not recorded — no issue number in {issue_url}", file=sys.stderr)
     if issue_number is not None:
-        handoff_owed.record(
-            args.repo, issue_number, issue_url,
-            route=({"kind": "deferral", "milestone": args.milestone,
-                    "trigger": (args.deferral_trigger or "").strip(),
-                    "owner": (args.deferral_owner or "").strip()} if parking else None))
+        owed_route = ({"kind": "deferral", "milestone": args.milestone,
+                       "trigger": (args.deferral_trigger or "").strip(),
+                       "owner": (args.deferral_owner or "").strip()} if parking else None)
+        # P2: the Stop hook cannot name an obligation that was never stored,
+        # so a failed write prints the discharge command itself, now.
+        if not handoff_owed.record(args.repo, issue_number, issue_url, route=owed_route):
+            repair = handoff_owed.discharge_command(args.repo, issue_number, owed_route)
+            print(f"[GH] ERROR: the handoff obligation for {issue_url} could not "
+                  f"be recorded, so no Stop hook will name it. Discharge it by "
+                  f"hand:\n  {repair}", file=sys.stderr)
+            unfinished.append(f"obligation record: {repair}")
         # harmonic-forge#1232: before `_discharge_exception`, which can return 1,
         # so the filing checkpoint is recorded on every exit below.
         route_path = _route_at_filing(args.repo, body, labels, issue_number)
@@ -1238,7 +1251,8 @@ def main() -> int:
             _record_escape(args.repo, issue_number, args.escape_of)
         if parking:
             if not _post_deferral(args, issue_number, issue_url):
-                return 1
+                unfinished.append("R-0352 deferral: " + handoff_owed.discharge_command(
+                    args.repo, issue_number, owed_route))
         elif not _discharge_exception(args, issue_number, issue_url):
             return 1
 
@@ -1269,11 +1283,25 @@ def main() -> int:
                 f"$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
                 file=sys.stderr,
             )
-            return 1
-        return 0
+            unfinished.append("board fields: re-run with --project-owner/--project-number")
+        return _post_create_exit(issue_url, unfinished)
 
-    return 0 if add_to_board(issue_url, project_owner, project_number, tier,
-                              args.theme, args.venture, route_path) else 1
+    if not add_to_board(issue_url, project_owner, project_number, tier,
+                        args.theme, args.venture, route_path):
+        unfinished.append("board add or field write: the repair command printed above")
+    return _post_create_exit(issue_url, unfinished)
+
+
+def _post_create_exit(issue_url: str, unfinished: list[str]) -> int:
+    """harmonic-forge#1382 P1: the one exit after every post-create step ran.
+    0 when all finished; else 1, naming each unfinished step and its repair."""
+    if not unfinished:
+        return 0
+    print(f"[GH] ERROR: {issue_url} was filed, but {len(unfinished)} post-create "
+          f"step(s) did not finish (every other step ran):", file=sys.stderr)
+    for entry in unfinished:
+        print(f"[GH]   - {entry}", file=sys.stderr)
+    return 1
 
 
 def _print_owed() -> None:

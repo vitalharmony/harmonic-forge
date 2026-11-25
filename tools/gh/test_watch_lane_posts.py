@@ -3261,6 +3261,39 @@ class DiscoverQueueActiveMilestoneTests(unittest.TestCase):
             self.assertEqual(watch_lane_posts._active_milestones("vitalharmony/hrse"), frozenset({"3.3", "Platform"}))
         watch_lane_posts._TICK_RELEASE.clear()
 
+    def _forge_tick(self, milestones):
+        """harmonic-forge#1382 P3: a forge-shaped repo (`@current-release`, no
+        open milestone); returns the milestones reads one queue pass made."""
+        watch_lane_posts._TICK_RELEASE.clear()
+        project = [type("P", (), {"repo": "vitalharmony/harmonic-forge",
+                                  "active_milestones": ("@current-release",)})()]
+        fake, calls = _fake_milestones([]), []
+
+        def counting(account, path, counter=None):
+            calls.append(path)
+            return fake(account, path, counter)
+        with patch("watch_lane_posts.onboard_manifest.load", return_value=project), \
+             patch.object(watch_lane_posts, "_current_release", _REAL_CURRENT_RELEASE), \
+             patch("watch_lane_posts._etag_cache.conditional_get", counting), \
+             patch("watch_lane_posts._issue_meta", side_effect=lambda r, n: ("open", set(), milestones[n])), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[{"body": self.HANDOFF}]), \
+             patch("watch_lane_posts.belt_candidates.retire_candidate"), \
+             patch("sys.stderr", io.StringIO()), patch("sys.stdout", io.StringIO()):
+            queue, ok = discover_queue("vitalharmony/harmonic-forge", "l2", set(milestones))
+        watch_lane_posts._TICK_RELEASE.clear()
+        self.assertTrue(ok)
+        return queue, [c for c in calls if "milestones" in c]
+
+    def test_unmilestoned_candidates_make_no_milestones_read(self):
+        queue, reads = self._forge_tick({1: None, 2: None})
+        self.assertEqual(queue, {1: "handoff owes=plan", 2: "handoff owes=plan"})
+        self.assertEqual(reads, [])
+
+    def test_a_milestoned_candidate_still_reads_the_release(self):
+        # The zero-read test above is not vacuous: the read path is live.
+        _, reads = self._forge_tick({1: None, 2: "Later"})
+        self.assertEqual(len(reads), 1)
+
     # harmonic-forge#1489: `@current-release` (every read patched, N6).
     def _token(self, titles=None, raise_=None):
         watch_lane_posts._TICK_RELEASE.clear()

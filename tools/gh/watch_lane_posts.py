@@ -1561,8 +1561,11 @@ def discover_queue(repo: str, lane: str,
             # (a second preclose finding: this block used to do exactly
             # that, leaving `queue_qualifiers` itself an untested orphan).
             continue
-        active = _active_milestones(repo)
-        if milestone and (active is None or (active and milestone not in active)):
+        # harmonic-forge#1382 P3: `active` is consulted only for a milestoned
+        # candidate, so only one reads it -- an unmilestoned candidate (all of
+        # forge's) makes no milestones read, as before @current-release.
+        if milestone and ((active := _active_milestones(repo)) is None
+                          or (active and milestone not in active)):
             # harmonic-forge#952: outside the operator's live releases
             # (`active_milestones` in projects.toml). Reported on stderr only:
             # a stdout line would wake every lane on every tick. The store
