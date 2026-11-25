@@ -113,9 +113,9 @@ def resolve(path: Path) -> tuple[str, int] | str:
     return repo, issue
 
 
-def issue_state(repo: str, issue: int) -> str:
-    """`open`/`closed`, or raises with the reason (a 404 included)."""
-    env = slot_env(repo)
+def issue_state(repo: str, issue: int, path: Path | None = None) -> str:
+    """`open`/`closed`, or raises with the reason (a 404 included); `path`'s Project gives the slot."""
+    env = slot_env(repo, at=path)
     result = subprocess.run(["gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".state"],
                             capture_output=True, text=True, env=env, timeout=GH_TIMEOUT_SECONDS,
                             check=False)
@@ -197,7 +197,7 @@ def sweep_registered(path: Path, execute: bool) -> str:
     if keep:
         return f"reported: non-regenerable: {_summary(keep)}"
     try:
-        state = issue_state(repo, issue)
+        state = issue_state(repo, issue, path)
     except (ManifestError, SystemExit, RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
         return f"skipped: {repo}#{issue}: {exc}"
     if state != "closed":

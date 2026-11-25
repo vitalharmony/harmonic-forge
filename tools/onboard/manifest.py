@@ -26,12 +26,11 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-import manifest_overlay
 from manifest_protocol import (
     ManifestError, Protocol, lane_shorthand_prefixes, load_protocol,
     normalize_repo,
 )
-from manifest_validate import validate
+from manifest_validate import check_min_version, validate
 
 
 def manifest_path() -> Path:
@@ -102,11 +101,8 @@ class Project:
         return None
 
 
-def load(path: Path | None = None, *, app_root: Path | None = None) -> list[Project]:
-    """Every entry in declaration order, validated, with the app repo's
-    `.claude/forge.toml` merged in (`manifest_overlay`, harmonic-forge#1527).
-    `app_root` names the checkout whose overlay applies; None means the cwd's."""
-    target = path or manifest_path()
+def raw_entries(target: Path) -> list:
+    """The `[[project]]` tables `target` declares, parsed fresh on every call."""
     try:
         raw = tomllib.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -114,15 +110,16 @@ def load(path: Path | None = None, *, app_root: Path | None = None) -> list[Proj
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ManifestError(f"cannot read {target}: {exc}") from exc
 
-    entries = raw.get("project", [])
-    if not isinstance(entries, list):
-        raise ManifestError(f"{target}: [[project]] must be an array of tables")
-    known = {f.name for f in Project.__dataclass_fields__.values()}
-    entries, label = manifest_overlay.apply(entries, target, known, app_root)
-    if not entries:
-        raise ManifestError(f"{label} declares no [[project]] entries")
+    entries = raw.get("project")
+    if not isinstance(entries, list) or not entries:
+        raise ManifestError(f"{target} declares no [[project]] entries")
+    return entries
 
+
+def build_projects(entries: list, label: str) -> list[Project]:
+    """`entries` as validated Projects, in order; `label` names the source in errors."""
     projects: list[Project] = []
+    known = {f.name for f in Project.__dataclass_fields__.values()}
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ManifestError(f"{label}: [[project]] #{index + 1} is not a table")
@@ -146,13 +143,21 @@ def load(path: Path | None = None, *, app_root: Path | None = None) -> list[Proj
                 raise ManifestError(
                     f"{label}: {entry['name']} active_milestones must be a list of milestone titles")
             entry["active_milestones"] = tuple(value)
-        manifest_overlay.check_min_version(entry.get("min_version"), label, str(entry["name"]))
+        check_min_version(entry.get("min_version"), label, str(entry["name"]))
         protocol_entry = entry.pop("protocol", None)
         protocol = load_protocol(protocol_entry, label, str(entry["name"]))
         projects.append(Project(**entry, protocol=protocol))
 
     validate(projects, label)
     return projects
+
+
+def load(path: Path | None = None) -> list[Project]:
+    """Every entry in declaration order, validated. Reads `projects.toml` only:
+    an app repo's `.claude/forge.toml` is reached only by the per-checkout
+    resolver (`project_for_checkout`, harmonic-forge#1527), never from here."""
+    target = path or manifest_path()
+    return build_projects(raw_entries(target), str(target))
 
 
 def require_onboarded_repo(value: str, path: Path | None = None) -> Project:

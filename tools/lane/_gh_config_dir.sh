@@ -16,6 +16,9 @@
 # the origin's exact owner/repo is looked up with manifest_identity.account_for
 # in the projects.toml of the forge checkout this file lives in
 # (FORGE_PROJECTS_MANIFEST is unset for the lookup, as _lane_refresh.sh does).
+# An origin projects.toml does not register is looked up in <target>'s
+# main-checkout .claude/forge.toml, bound to that checkout's real origin
+# (harmonic-forge#1527); the launcher's cwd is never consulted.
 # An origin that is missing, unparseable or unregistered, or any lookup
 # failure, REFUSES the launch rather than falling through to the global gh
 # login; so does a registered repo whose account has no lane slot here.
@@ -48,11 +51,11 @@ _gh_remote="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
 _gh_forge="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
 _gh_rc=0
 _gh_account="$(env -u FORGE_PROJECTS_MANIFEST python3 -I -c '
-import sys
+import pathlib, sys
 sys.path.insert(0, sys.argv[1] + "/tools/onboard")
 import manifest_identity
-print(manifest_identity.account_for_origin(sys.argv[2]))
-' "$_gh_forge" "$_gh_remote" 2>/dev/null)" || _gh_rc=$?
+print(manifest_identity.account_for_origin(sys.argv[2], checkout=pathlib.Path(sys.argv[3])))
+' "$_gh_forge" "$_gh_remote" "$target" 2>/dev/null)" || _gh_rc=$?
 if [ "$_gh_rc" -ne 0 ] || [ -z "$_gh_account" ]; then
   echo "lane${LANE:-?}: origin '${_gh_remote:-none}' is not registered in projects.toml or .claude/forge.toml -- refusing to launch on the global gh login (harmonic-forge#1507)." >&2
   unset _gh_remote _gh_slots _gh_forge _gh_rc _gh_account

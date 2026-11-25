@@ -21,6 +21,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import block_missing_preclose_inspection as hook  # noqa: E402
+from test_hook_identity import close_hook_projects  # noqa: E402
+from test_manifest_overlay import overlay_only_env  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "block_missing_preclose_inspection.py"
 REPO = "vitalharmony/hrse"
@@ -538,7 +540,7 @@ class PublishedExampleIsNotACredentialTests(unittest.TestCase):
         """Proves the guard above is not itself inert: the same stub, run
         against a labels_for that ORs in a comment read, must produce an
         allow -- i.e. the assertion above would genuinely fail."""
-        def mutant_labels_for(repo, issue):
+        def mutant_labels_for(repo, issue, **_kwargs):
             names = {hook.TOOLING_EXCEPTION_LABEL}
             body = hook._gh("issue", "view", issue, "--repo", repo,
                             "--json", "comments", "--jq", ".comments[].body")
@@ -969,6 +971,18 @@ class PreCloseReceiptOkIntegrationTests(unittest.TestCase):
         message = hook._stale_receipt_message(REPO, "1476", "9", "new-head")
         self.assertIn("sticky-wicket", message)
         self.assertNotIn("Run the pre-close pass", message)
+
+
+
+class OverlayOnlyRepoSlot(unittest.TestCase):
+    """harmonic-forge#1527 AC9 / TC18b: every `gh` read for the payload's repo carries the
+    Project resolved from the payload cwd, so it runs as that repo's own slot."""
+
+    def test_tc18b_the_project_reaching_run_gh_names_the_overlay_only_repo(self) -> None:
+        repo, _ = overlay_only_env(self)
+        projects = close_hook_projects(hook, repo, "gh issue close 5 --repo acme/app")
+        self.assertTrue(projects)
+        self.assertTrue(all(p is not None and p.repo == "acme/app" for p in projects), projects)
 
 
 if __name__ == "__main__":

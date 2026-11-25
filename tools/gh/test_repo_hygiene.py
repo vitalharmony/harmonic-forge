@@ -11,6 +11,9 @@ from unittest.mock import patch
 
 import repo_hygiene as rh
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from test_manifest_overlay import overlay_only_env  # noqa: E402
+
 
 class ClassificationTests(unittest.TestCase):
     """Branch classification. Every case here is one the 2026-08-12 manual
@@ -1642,6 +1645,18 @@ class InertPhaseDependentsTests(unittest.TestCase):
             )
         self.assertTrue(any("/dependencies/blocking" in p for p in called),
                         "the dependency API must actually be consulted")
+
+
+
+class OverlayOnlyCheckoutSlot(unittest.TestCase):
+    """harmonic-forge#1527 AC9 / TC18c: a --checkout in an overlay-only repo runs its
+    audits as that repo's owner slot, taken from the Project its path resolves to."""
+
+    def test_tc18c_use_slot_at_the_checkout_selects_the_owner_slot(self):
+        repo, slots = overlay_only_env(self)
+        self.addCleanup(rh._use_slot, None)
+        rh._use_slot(rh.repo_for_path_or_none(repo), at=repo)
+        self.assertEqual(rh._ENV["GH_CONFIG_DIR"], str(slots / "acme"))
 
 
 if __name__ == "__main__":

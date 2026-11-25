@@ -2477,9 +2477,10 @@ def require_open_pr(
         # `gh repo view` -- that call ran before any identity was applied, and
         # under the wrong login it cannot see a client account's repo at all.
         # Only when git did NOT already name the repo: this branch is also reached
-        # when REST failed for a transient reason with `cwd_repo` in hand, and
-        # overwriting that with a manifest lookup would hard-fail in a per-issue
-        # `.worktrees/*-impl` worktree, which no `Project.worktrees` entry covers.
+        # when REST failed for a transient reason with `cwd_repo` in hand. A
+        # per-issue `.worktrees/*-impl` worktree now resolves through its main
+        # checkout (harmonic-forge#1527); keeping git's answer still covers a
+        # stale worktree whose checkout cannot be resolved.
         if cwd_repo is None:
             try:
                 cwd_repo = project_for_path(cwd or Path.cwd()).repo

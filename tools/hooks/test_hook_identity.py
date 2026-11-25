@@ -8,6 +8,8 @@ Every hook here fails open, so the properties that matter are: a registered repo
 from __future__ import annotations
 
 import os
+import stat
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -16,6 +18,8 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "onboard"))
+
+from test_manifest_overlay import overlay_only_env  # noqa: E402
 
 import batch_preflight as bp  # noqa: E402
 import block_data_migration_close as dmc  # noqa: E402
@@ -206,6 +210,36 @@ class NoHookMutatesTheEnvironment(unittest.TestCase):
                 upc._gh("api", "x", repo=REGISTERED)
                 dmc._gh("api", "x", repo=REGISTERED)
             self.assertEqual(dict(os.environ), before)
+
+
+
+def close_hook_projects(module, payload_cwd: Path, command: str) -> list:
+    """The `project` keyword of every `_run_gh` call `module.main()` makes for `command`
+    with the payload cwd at `payload_cwd` (harmonic-forge#1527 TC18b)."""
+    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(payload_cwd)}
+    done = subprocess.CompletedProcess(["gh"], 0, stdout="", stderr="")
+    with mock.patch.object(module, "_run_gh", return_value=done) as run, \
+            mock.patch("shutil.which", return_value="/usr/bin/gh"), \
+            mock.patch("sys.stdin", mock.MagicMock()), \
+            mock.patch("json.load", return_value=data), \
+            mock.patch("builtins.print"):
+        module.main()
+    return [call.kwargs.get("project") for call in run.call_args_list]
+
+
+class OverlayOnlyRepoRunsAsItsOwner(unittest.TestCase):
+    """harmonic-forge#1527 AC9 / TC18a: the repo and its slot come from one resolution."""
+
+    def test_tc18a_run_gh_takes_the_slot_from_the_path_resolved_project(self) -> None:
+        repo, slots = overlay_only_env(self)
+        stub = slots.parent / "gh-stub"
+        stub.write_text('#!/bin/sh\necho "$GH_CONFIG_DIR"\n')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        project = hi.project_for_repo_at("acme/app", repo)
+        self.assertEqual(project.repo, "acme/app")
+        result = hi.run_gh(["api", "user"], repo="acme/app", project=project, gh_bin=str(stub))
+        self.assertEqual(result.stdout.strip(), str(slots / "acme"))
+        self.assertIsNone(hi.project_for_repo_at("acme/other", repo))
 
 
 if __name__ == "__main__":

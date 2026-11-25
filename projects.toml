@@ -70,10 +70,12 @@
 #
 # An app repo may register itself, or override this file's keys for itself,
 # with one `[project]` table (and an optional `[project.protocol]`) in its own
-# main checkout's `.claude/forge.toml`. It merges per key over the entry here.
-# Machine-local and instance keys are refused there, and a repo registered here
-# keeps its `account`, `name` and `prefix`. The merge rule,
-# discovery and guards are in `tools/onboard/manifest_overlay.py`'s docstring.
+# main checkout's `.claude/forge.toml`. It merges per key over the entry here,
+# only for a path inside that repo's checkout. Global lookups (BATCH prefixes,
+# the belt, the sweep) read this file alone. Machine-local and instance keys are
+# refused there, and a repo registered here keeps its `account`, `name` and
+# `prefix`. The merge rule, discovery and guards are in the resolver's
+# docstring, `tools/onboard/manifest_overlay.py`.
 #
 # ## [workspace_labels] (harmonic-forge#1014)
 #

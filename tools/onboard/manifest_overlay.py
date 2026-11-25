@@ -1,59 +1,68 @@
-"""Merge an app repo's `.claude/forge.toml` over `projects.toml` (harmonic-forge#1527).
+"""An app repo's `.claude/forge.toml`, resolved for one checkout (harmonic-forge#1527).
 
-**Precedence.** The in-forge `projects.toml` (the base), then the app repo's
-`.claude/forge.toml` (the overlay). No environment variable overrides a key.
+**Discovery: an explicit root, never a process cwd.** `project_for_checkout(root)`
+is the only reader, and `root` is required. The path-keyed consumers reach it
+through `path_project`, which passes the checkout root of the path being
+resolved (`manifest_identity.project_for_path`, `account_for_origin(...,
+checkout=)`); a path in no checkout consults no overlay. `manifest.load()` and
+every global lookup (`by_repo`, `prefixes`, `prefix_repos`, `sweep_repos`, the
+belt, BATCH) read `projects.toml` alone, so one checkout's overlay never
+changes a lookup about another repo, from any cwd.
 
-**Merge rule, per table.** The overlay is one `[project]` table with an
-optional `[project.protocol]`; it describes exactly one repo. When the base
-registers that repo, the overlay merges into a copy of the base entry key by
-key, and its `protocol` merges key by key into a copy of the base protocol
-table. Every other value, arrays (`active_milestones`) and nested tables
-(`rebase_regenerate`, `rebase_visual_baselines`) included, is replaced whole.
-The entry keeps its base position. When the base does not register the repo,
-the overlay is appended as a new entry whose `path` is the main checkout.
+**Which copy.** Always the MAIN checkout's, never a linked worktree's own: a
+worktree is the code under test, and its edit must not reconfigure the hooks
+that check it. Residual, stated: the main checkout's working-tree state (its
+branch, any uncommitted edit) is what is read.
 
-**Discovery.** The path being resolved when the caller has one
-(`manifest_identity.project_for_path` passes its target's checkout root), else
-the process cwd's checkout root. Never a hook's assumed cwd: a hook process's
-cwd is not the session's. The copy read is always the MAIN checkout's, never a
-linked worktree's: a worktree is the code under test, and its own edit must
-not reconfigure the hooks that check it. Residual, stated: the main
-checkout's working-tree state (its branch, any uncommitted edit) is read.
+**Merge rule and precedence.** `projects.toml` (the base), then the overlay:
+one `[project]` table with an optional `[project.protocol]`, for exactly one
+repo. For a repo the base registers, the overlay merges into a copy of the
+base entry key by key, and `protocol` key by key into a copy of the base
+protocol table; arrays and other nested tables are replaced whole. A repo the
+base does not register is validated together with the base and returned with
+`path` = the main checkout. No environment variable overrides a key.
 
-**The overlay is untrusted third-party data** in a cloned repo. It is parsed
-only by `tomllib`, and guarded by:
-- instance keys (`forge_root`, `projects_root`, `timezone`) are refused: they
+**The overlay is untrusted third-party data** in a cloned repo, parsed only by
+`tomllib` and guarded by:
+- instance keys (`forge_root`, `projects_root`, `timezone`) refused: they
   belong in instance.toml, so a clone cannot redirect the install;
-- machine-local keys (`path`, `worktree_dir`) and `token_exception` are
-  refused: they belong in `projects.toml`;
-- identity keys (`account`, `name`, `prefix`) of a registered repo may only
-  repeat the base value exactly, so no BATCH key or prefix moves;
+- machine-local keys (`path`, `worktree_dir`) and `token_exception` refused:
+  they belong in `projects.toml`;
+- identity guard: a registered repo's `account`, `name` and `prefix` may only
+  repeat the base value exactly;
 - checkout binding: an overlay naming a registered repo applies only in that
-  repo's registered checkout;
-- origin binding: an overlay-only repo must be the main checkout's real
-  origin (one `git remote get-url`, the only subprocess here), and its
-  `account`, when given, must be its owner exactly.
+  repo's registered checkout, and a registered checkout's overlay must name it;
+- origin binding: an overlay-only repo must be the main checkout's real origin
+  (one `git remote get-url`, this module's only subprocess), and its
+  `account`, when given, must be its owner exactly;
+- base clash: an overlay-only `name`, or `prefix` in any case, already in
+  `projects.toml` is refused.
 
-**Scope limit.** An overlay-only repo is visible only to a consumer run inside
-its checkout (or asked about a path inside it); enumeration from anywhere else
-(belt, sweep, BATCH from another session) does not see it.
+**An overlay-only `prefix` is display-only**: validated and exposed on the
+Project, and in no prefix map. A BATCH key needs `projects.toml` plus
+`rules/lane-shorthand.md`.
+
+**Scope limit.** An overlay-only repo resolves only through this resolver and
+the path-keyed consumers. The lane posting entrypoints resolve identity by
+repo key (`apply_project_identity`, `require_onboarded_repo`) and refuse it
+until the follow-up child resolves their identity from the invoking checkout.
 
 Protocol `*_task` keys an overlay sets run as `mise run <task>`: the same trust
 domain as the repo's own `mise.toml`, read from the same main checkout. No
 other key runs code.
 
-Stdlib only, and no import of `tools/settings` or `manifest_identity`: the
-launcher test fixture copies `tools/onboard/` alone, and `manifest_identity`
-imports `manifest`, which imports this.
+**Imports.** This module imports `manifest`; `manifest` never imports this, so
+`load()` cannot reach an overlay. Stdlib only, and no import of `tools/settings`
+or `manifest_identity`: the launcher test fixture copies `tools/onboard/` alone.
 """
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import tomllib
 from pathlib import Path
 
+from manifest import Project, build_projects, manifest_path, raw_entries
 from manifest_protocol import ManifestError, normalize_repo, origin_repo
 
 OVERLAY_RELPATH = Path(".claude") / "forge.toml"
@@ -61,10 +70,6 @@ INSTANCE_KEYS = ("forge_root", "projects_root", "timezone")
 MACHINE_LOCAL_KEYS = ("path", "worktree_dir")
 OPERATOR_KEYS = ("token_exception",)
 IDENTITY_KEYS = ("account", "name", "prefix")
-#: Passed as `app_root` by a path-keyed resolver whose path is in no checkout:
-#: no overlay applies, and the cwd is not consulted.
-NO_OVERLAY = Path("<no overlay>")
-_VERSION = re.compile(r"v(\d{4})\.(0[1-9]|1[0-2])\.(\d+)")
 _GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 
@@ -97,16 +102,6 @@ def main_checkout(root: Path) -> Path:
     except OSError:
         return root
     return (gitdir / common).resolve().parent
-
-
-def overlay_path(app_root: Path | None) -> Path | None:
-    """`<main checkout>/.claude/forge.toml`, never the worktree's own copy."""
-    if app_root is NO_OVERLAY:
-        return None
-    root = Path(app_root).resolve() if app_root is not None else checkout_root(Path.cwd())
-    if root is None:
-        return None
-    return main_checkout(root) / OVERLAY_RELPATH
 
 
 def read(path: Path) -> dict | None:
@@ -185,17 +180,22 @@ def _base_repo(entry: object) -> str | None:
         return None  # the loader's own pass reports it
 
 
-def apply(entries: list, target: Path, known: set[str],
-          app_root: Path | None) -> tuple[list, str]:
-    """`(entries, label)` with the overlay merged; the caller's dicts are not mutated."""
-    overlay = overlay_path(app_root)
-    raw = read(overlay) if overlay is not None else None
+def _resolve(root: Path, manifest: Path | None) -> Project | None:
+    if not Path(root).exists():
+        raise ManifestError(f"{root}: no such checkout")
+    main = main_checkout(Path(root).resolve())
+    target = manifest or manifest_path()
+    entries = raw_entries(target)
+    known = {f.name for f in Project.__dataclass_fields__.values()}
+    at_main = next((i for i, e in enumerate(entries) if isinstance(e, dict) and e.get("path")
+                    and Path(str(e["path"])).expanduser().resolve() == main), None)
+    overlay = main / OVERLAY_RELPATH
+    raw = read(overlay)
     if raw is None:
-        return entries, str(target)
-    main = overlay.parent.parent
+        return None if at_main is None else build_projects(entries, str(target))[at_main]
     project = _validated(raw, overlay, known)
     repo = project["repo"]
-    merged = list(entries)
+    label = f"{target} + {overlay}"
     index = next((i for i, e in enumerate(entries) if _base_repo(e) == repo), None)
     if index is not None:
         base = entries[index]
@@ -215,40 +215,69 @@ def apply(entries: list, target: Path, known: set[str],
                 entry["protocol"] = {**base["protocol"], **value}
             else:
                 entry[key] = value
+        merged = list(entries)
         merged[index] = entry
-    else:
-        try:
-            origin = origin_of(main)
-        except ManifestError as exc:
-            raise ManifestError(f"{overlay}: {exc}") from exc
-        if origin != repo:
+        return build_projects(merged, label)[index]
+    if at_main is not None:
+        raise ManifestError(
+            f"{overlay}: this checkout is registered in projects.toml as "
+            f"{_base_repo(entries[at_main])}; its overlay must name that repo")
+    try:
+        origin = origin_of(main)
+    except ManifestError as exc:
+        raise ManifestError(f"{overlay}: {exc}") from exc
+    if origin != repo:
+        raise ManifestError(
+            f"{overlay}: declares {repo}, but this checkout's origin is {origin}; "
+            "an overlay-only entry must name its own origin")
+    owner = repo.split("/")[0]
+    if "account" in project and project["account"] != owner:
+        raise ManifestError(
+            f"{overlay}: an overlay-only repo's account must be its owner ({owner}); "
+            "register a different account in projects.toml")
+    name, prefix = project["name"], project["prefix"]
+    for base in (e for e in entries if isinstance(e, dict)):
+        if name == base.get("name"):
+            raise ManifestError(f"{overlay}: name {name!r} is already registered in projects.toml")
+        other = base.get("prefix")
+        if isinstance(other, str) and str(prefix).lower() == other.lower():
             raise ManifestError(
-                f"{overlay}: declares {repo}, but this checkout's origin is {origin}; "
-                "an overlay-only entry must name its own origin")
-        owner = repo.split("/")[0]
-        if "account" in project and project["account"] != owner:
-            raise ManifestError(
-                f"{overlay}: an overlay-only repo's account must be its owner ({owner}); "
-                "register a different account in projects.toml")
-        entry = dict(project)
-        if isinstance(entry.get("protocol"), dict):
-            entry["protocol"] = dict(entry["protocol"])
-        entry["path"] = str(main)
-        merged.append(entry)
-    return merged, f"{target} + {overlay}"
+                f"{overlay}: prefix {prefix!r} clashes with projects.toml's {other!r}; an "
+                "overlay-only prefix is display-only and may not shadow a registered one")
+    entry = dict(project)
+    if isinstance(entry.get("protocol"), dict):
+        entry["protocol"] = dict(entry["protocol"])
+    entry["path"] = str(main)
+    return build_projects([*entries, entry], label)[-1]
 
 
-def check_min_version(value: object, label: str, name: str) -> None:
-    """`min_version` is absent or the epic's `vYYYY.MM.N`."""
-    if value is None:
-        return
-    if not isinstance(value, str) or not _VERSION.fullmatch(value):
-        raise ManifestError(f"{label}: {name} min_version {value!r} is not vYYYY.MM.N")
+def project_for_checkout(root: Path, manifest: Path | None = None) -> Project | None:
+    """The Project for the checkout at `root`, with its main checkout's overlay
+    merged; None when neither `projects.toml` nor an overlay names it.
+
+    `root` is required: no process cwd is ever consulted. Every failure is a
+    `ManifestError`, so a path-keyed caller's fail-open handling covers it.
+    """
+    try:
+        result = _resolve(root, manifest)
+        if result is not None:
+            result.checkout, result.worktrees  # noqa: B018 -- a bad template raises here
+        return result
+    except ManifestError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- AC10: one exception type for callers
+        raise ManifestError(f"{root}: cannot resolve its project ({type(exc).__name__}: {exc})") from exc
 
 
-def parse_version(value: str) -> tuple[int, int, int]:
-    """`(year, month, n)` of a valid `vYYYY.MM.N` (for S10's `doctor`)."""
-    match = _VERSION.fullmatch(value)
-    if match is None:
-        raise ManifestError(f"version {value!r} is not vYYYY.MM.N")
-    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+def path_project(target: Path, base_hit: Project | None,
+                 manifest: Path | None = None) -> Project | None:
+    """The Project for `target` given the base scan's hit: the checkout's
+    resolved Project when it names the same repo (or there is no base hit),
+    else the base hit. A path in no checkout consults no overlay."""
+    root = checkout_root(target)
+    if root is None:
+        return base_hit
+    resolved = project_for_checkout(root, manifest)
+    if resolved is not None and (base_hit is None or resolved.repo == base_hit.repo):
+        return resolved
+    return base_hit

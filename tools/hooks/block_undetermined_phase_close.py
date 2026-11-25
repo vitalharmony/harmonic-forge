@@ -71,7 +71,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hook_identity import repo_from_checkout as _repo_from_checkout, run_gh as _run_gh  # noqa: E402
+from hook_identity import (  # noqa: E402
+    project_for_repo_at as _project_for_repo_at, repo_from_checkout as _repo_from_checkout,
+    run_gh as _run_gh)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -125,7 +127,7 @@ def _deny(reason: str, target_key: str | None = None) -> None:
     }))
 
 
-def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
+def _gh(*args: str, cwd: str | None = None, repo: str | None = None, project=None) -> str | None:
     """Return stdout, or None on any failure. Fail-open, see module docstring.
 
     harmonic-forge#1447: under the gh shim's strict mode (`close_gate.strict`)
@@ -136,7 +138,7 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     if (gh_bin is None and shutil.which("gh") is None) or (gh_bin and not os.path.isfile(gh_bin)):
         return close_gate.unread(args, "no gh binary")
     try:
-        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7, gh_bin=gh_bin)
+        result = _run_gh(args, repo=repo, project=project, cwd=cwd, timeout=7, gh_bin=gh_bin)
     except (OSError, subprocess.SubprocessError) as exc:
         return close_gate.unread(args, f"{type(exc).__name__}: {exc}")
     if result.returncode:
@@ -144,8 +146,8 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     return result.stdout
 
 
-def _gh_json(*args: str, cwd: str | None = None, repo: str | None = None):
-    out = _gh(*args, cwd=cwd, repo=repo)
+def _gh_json(*args: str, cwd: str | None = None, repo: str | None = None, project=None):
+    out = _gh(*args, cwd=cwd, repo=repo, project=project)
     if out is None:
         return None
     try:
@@ -290,7 +292,7 @@ def _closing_keyword_targets(text: str, this_repo: str) -> set[str]:
 
 
 def issues_closed_by_pr(repo: str, pr: str, merge_tokens: list[str],
-                         cwd: str | None) -> set[str]:
+                         cwd: str | None, *, project=None) -> set[str]:
     """Every issue this PR merge would close via a closing keyword --
     scanned in the PR body, its commit messages, and the merge command's
     own `--body`/`-b`/`--subject` values (pitch-inspection binding change
@@ -302,28 +304,30 @@ def issues_closed_by_pr(repo: str, pr: str, merge_tokens: list[str],
         if value:
             targets |= _closing_keyword_targets(value, repo)
 
-    body = _gh("api", f"repos/{repo}/pulls/{pr}", "--jq", ".body", cwd=cwd, repo=repo)
+    body = _gh("api", f"repos/{repo}/pulls/{pr}", "--jq", ".body", cwd=cwd, repo=repo,
+               project=project)
     if body:
         targets |= _closing_keyword_targets(body, repo)
 
     commits = _gh("api", f"repos/{repo}/pulls/{pr}/commits",
-                   "--jq", ".[].commit.message", cwd=cwd, repo=repo)
+                   "--jq", ".[].commit.message", cwd=cwd, repo=repo, project=project)
     if commits:
         targets |= _closing_keyword_targets(commits, repo)
 
     return targets
 
 
-def labels_for(repo: str, issue: str) -> set[str] | None:
-    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo)
+def labels_for(repo: str, issue: str, *, project=None) -> set[str] | None:
+    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo,
+              project=project)
     if out is None:
         return None
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
-def _latest_label_event_time(repo: str, issue: str, label: str) -> str | None:
+def _latest_label_event_time(repo: str, issue: str, label: str, *, project=None) -> str | None:
     events = _gh_json("api", f"repos/{repo}/issues/{issue}/events",
-                       "--paginate", repo=repo)
+                       "--paginate", repo=repo, project=project)
     if events is None:
         return None
     latest: str | None = None
@@ -335,9 +339,9 @@ def _latest_label_event_time(repo: str, issue: str, label: str) -> str | None:
     return latest
 
 
-def _has_evidence_comment(repo: str, issue: str, since: str) -> bool | None:
+def _has_evidence_comment(repo: str, issue: str, since: str, *, project=None) -> bool | None:
     comments = _gh_json("api", f"repos/{repo}/issues/{issue}/comments",
-                         "--paginate", repo=repo)
+                         "--paginate", repo=repo, project=project)
     if comments is None:
         return None
     for comment in comments:
@@ -352,8 +356,9 @@ def _has_evidence_comment(repo: str, issue: str, since: str) -> bool | None:
     return False
 
 
-def _has_open_blocker(repo: str, issue: str) -> bool | None:
-    items = _gh_json("api", f"repos/{repo}/issues/{issue}/dependencies/blocked_by", repo=repo)
+def _has_open_blocker(repo: str, issue: str, *, project=None) -> bool | None:
+    items = _gh_json("api", f"repos/{repo}/issues/{issue}/dependencies/blocked_by", repo=repo,
+                     project=project)
     if items is None:
         return None
     return any(item.get("state") == "open" for item in items)
@@ -390,9 +395,9 @@ def _deny_message(repo: str, issue: str, via_pr: str | None, condition: str) -> 
     )
 
 
-def _decide(repo: str, issue: str) -> str | None:
+def _decide(repo: str, issue: str, *, project=None) -> str | None:
     """None = allow. A reason string = deny."""
-    labels = labels_for(repo, issue)
+    labels = labels_for(repo, issue, project=project)
     if labels is None:
         return None  # fail open
     if not (set(labels) & set(GATED_LABELS)):
@@ -408,12 +413,12 @@ def _decide(repo: str, issue: str) -> str | None:
 
     import close_gate  # noqa: PLC0415
     if shipped:
-        since = _latest_label_event_time(repo, issue, "shipped")
+        since = _latest_label_event_time(repo, issue, "shipped", project=project)
         if since is None:
             # harmonic-forge#1447 pass 1: strict mode never allows on a
             # missing answer (a null response, no labeled event).
             return close_gate.unread(("events", repo, issue), "no `shipped` label event")
-        has_evidence = _has_evidence_comment(repo, issue, since)
+        has_evidence = _has_evidence_comment(repo, issue, since, project=project)
         if has_evidence is None:
             return close_gate.unread(("comments", repo, issue), "no answer")
         if not has_evidence:
@@ -422,7 +427,7 @@ def _decide(repo: str, issue: str) -> str | None:
         return None
 
     # inert
-    has_blocker = _has_open_blocker(repo, issue)
+    has_blocker = _has_open_blocker(repo, issue, project=project)
     if has_blocker is None:
         return close_gate.unread(("blocked_by", repo, issue), "no answer")
     if not has_blocker:
@@ -485,7 +490,9 @@ def segment_verdict(raw_tokens: list[str], cwd: str | None, resolved: dict,
             if strict_repo:
                 return f"could not resolve the repository for PR {pr_target[1]}", None
             return None
-        issues = issues_closed_by_pr(repo, pr_target[1], rest, payload_cwd)
+        # harmonic-forge#1527: the repo and its slot come from one resolution.
+        issues = issues_closed_by_pr(repo, pr_target[1], rest, payload_cwd,
+                                     project=_project_for_repo_at(repo, payload_cwd))
         for issue in issues:
             targets.append((explicit_repo, issue, pr_target[1]))
 
@@ -498,7 +505,7 @@ def segment_verdict(raw_tokens: list[str], cwd: str | None, resolved: dict,
                 return f"could not resolve the repository for issue {issue}", None
             continue
 
-        condition = _decide(repo, issue)
+        condition = _decide(repo, issue, project=_project_for_repo_at(repo, payload_cwd))
         if condition is None:
             continue
 

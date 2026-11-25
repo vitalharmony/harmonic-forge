@@ -54,9 +54,9 @@ class GhError(Exception):
 _ENV: dict[str, str] | None = None
 
 
-def _use_slot(repo: str | None) -> None:
+def _use_slot(repo: str | None, at: str | Path | None = None) -> None:
     global _ENV
-    _ENV = slot_env_or_none(repo)
+    _ENV = slot_env_or_none(repo, at=at)  # harmonic-forge#1527: `at`'s Project, when it names repo
 
 
 def _run(args: list[str], cwd: str | None = None, board: bool = False) -> str:
@@ -1507,7 +1507,7 @@ def main() -> int:
             print(f"WARN: migration sweep skipped for {repo}: {exc}",
                   file=sys.stderr)
     for checkout in args.checkout:
-        _use_slot(repo_for_path_or_none(checkout))  # harmonic-forge#804
+        _use_slot(repo_for_path_or_none(checkout), at=checkout)  # harmonic-forge#804
         audit_worktrees(checkout, report)
         audit_checkout_branch(checkout, report)
         audit_stashes(checkout, report)
@@ -1523,7 +1523,7 @@ def main() -> int:
         for checkout in args.checkout:
             # The prune pass calls GitHub (`gh pr list --state merged`), so it needs the
             # checkout's slot too; resetting before it read a wrong "no merged PR".
-            _use_slot(repo_for_path_or_none(checkout))
+            _use_slot(repo_for_path_or_none(checkout), at=checkout)
             prune_exit = max(prune_exit, prune_worktrees(checkout, args.dry_run))
     # harmonic-forge#1291 (sticky-wicket PATCH): the precheck receipt is recorded
     # only once the run's FINAL exit is known to be 0, at each `return prune_exit`

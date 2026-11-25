@@ -102,7 +102,8 @@ from datetime import datetime
 from pathlib import Path
 
 from hook_identity import (  # noqa: E402
-    repo_from_checkout as _repo_from_checkout, run_gh as _run_gh, slot_env as _slot_env)
+    project_for_repo_at as _project_for_repo_at, repo_from_checkout as _repo_from_checkout,
+    run_gh as _run_gh, slot_env as _slot_env)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -237,7 +238,7 @@ def _deny(reason: str, target_key: str | None = None) -> None:
     }))
 
 
-def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
+def _gh(*args: str, cwd: str | None = None, repo: str | None = None, project=None) -> str | None:
     """Return stdout, or None on any failure. Fail-open, see module docstring.
 
     harmonic-forge#1447: under the gh shim's strict mode (`close_gate.strict`)
@@ -248,7 +249,7 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     if (gh_bin is None and shutil.which("gh") is None) or (gh_bin and not os.path.isfile(gh_bin)):
         return close_gate.unread(args, "no gh binary")
     try:
-        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7, gh_bin=gh_bin)
+        result = _run_gh(args, repo=repo, project=project, cwd=cwd, timeout=7, gh_bin=gh_bin)
     except (OSError, subprocess.SubprocessError) as exc:
         return close_gate.unread(args, f"{type(exc).__name__}: {exc}")
     if result.returncode:
@@ -444,14 +445,15 @@ def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
     return out.strip() if out and out.strip() else None
 
 
-def labels_for(repo: str, issue: str) -> set[str] | None:
+def labels_for(repo: str, issue: str, *, project=None) -> set[str] | None:
     """Label names on the issue, or None when they cannot be read.
 
     `--jq` emits string scalars raw (like `jq -r`), one label name per line
     -- verified empirically, and the same assumption
     `block_data_migration_close.py:255-258` makes.
     """
-    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo)
+    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo,
+              project=project)
     if out is None:
         return None
     return {line.strip() for line in out.splitlines() if line.strip()}
@@ -463,7 +465,7 @@ def labels_for(repo: str, issue: str) -> set[str] | None:
 BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)[-/]")
 
 
-def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
+def issues_closed_by_pr(repo: str, pr: str, *, project=None) -> list[str] | None:
     """Issue numbers this PR is for, resolved from its BRANCH NAME.
 
     A PR carries no labels of its own that mean anything here -- the gate
@@ -479,7 +481,7 @@ def issues_closed_by_pr(repo: str, pr: str) -> list[str] | None:
     was well-formed.
     """
     out = _gh("pr", "view", pr, "--repo", repo, "--json", "headRefName",
-              "--jq", ".headRefName", repo=repo)
+              "--jq", ".headRefName", repo=repo, project=project)
     if out is None:
         return None
     if not out.strip():
@@ -519,9 +521,9 @@ def _deny_message(repo: str, issue: str, via_pr: str | None) -> str:
     ) + tail
 
 
-def _pr_head_sha(repo: str, pr: str) -> str | None:
+def _pr_head_sha(repo: str, pr: str, *, project=None) -> str | None:
     out = _gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid",
-              "--jq", ".headRefOid", repo=repo)
+              "--jq", ".headRefOid", repo=repo, project=project)
     return out.strip() if out and out.strip() else None
 
 
@@ -883,10 +885,12 @@ def decide_targets(targets, cwd: str | None, heads_for, *, strict_repo: bool = F
               "  gh pr merge <N> --repo <owner/repo> --squash --match-head-commit <sha>"), None
 
     resolved: dict[str | None, str | None] = {}
+    projects: dict[str | None, object] = {}  # harmonic-forge#1527: repo and slot, one resolution
     for explicit_repo, number, kind, exempt in targets:
         if explicit_repo not in resolved:
             resolved[explicit_repo] = resolve_repo(explicit_repo, payload_cwd)
-        repo = resolved[explicit_repo]
+            projects[explicit_repo] = _project_for_repo_at(resolved[explicit_repo], payload_cwd)
+        repo, project = resolved[explicit_repo], projects[explicit_repo]
         if repo is None:
             if strict_repo:
                 return (f"could not resolve the repository for {kind} {number} "
@@ -894,7 +898,7 @@ def decide_targets(targets, cwd: str | None, heads_for, *, strict_repo: bool = F
             continue
 
         if kind == "pr":
-            issues = issues_closed_by_pr(repo, number)
+            issues = issues_closed_by_pr(repo, number, project=project)
             if not issues:  # unlinked PR, or unreadable -- fail open
                 continue
             pairs = [(issue, number) for issue in issues]
@@ -902,7 +906,7 @@ def decide_targets(targets, cwd: str | None, heads_for, *, strict_repo: bool = F
             pairs = [(number, None)]
 
         for issue, via_pr in pairs:
-            labels = labels_for(repo, issue)
+            labels = labels_for(repo, issue, project=project)
             if labels is None:  # fail-open, same rationale as _gh
                 continue
             if TOOLING_EXCEPTION_LABEL not in labels:
@@ -939,7 +943,7 @@ def decide_targets(targets, cwd: str | None, heads_for, *, strict_repo: bool = F
                 if blocked:
                     return (blocked), _acting
             if kind == "pr":
-                head_sha = _pr_head_sha(repo, number)
+                head_sha = _pr_head_sha(repo, number, project=project)
                 # Preclose finding: this is NOT the same "cannot read GitHub"
                 # case the fail-open rationale elsewhere in this file covers.
                 # By this point the issue is confirmed tooling-exception AND
