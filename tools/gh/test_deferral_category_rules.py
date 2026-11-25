@@ -329,5 +329,128 @@ class CarryForwardRuleTests(unittest.TestCase):
         self.assertIsNone(deferral_store.deferral_entry(REPO, N))
 
 
+class TerminalStateRuleTests(unittest.TestCase):
+    """(e) harmonic-forge#1564 terminal-state patch: a closed or missing state
+    from ANY issue read in a tick (the first read, the thread read's own read,
+    its retry, the count-mismatch re-read) is terminal for that tick. It is
+    checked before fetch-failure handling and no later open read replaces it.
+
+    Only the two lowest GitHub readers (`_read_issue_meta`, `_read_thread_pages`)
+    are faked; `_issue_meta`, `_fetch_all_comments`, `discover_queue` and
+    `queue_cycle` run for real, with the tick cache on ("cached") and off."""
+
+    THREAD = [c(100, DEFERRAL), c(101, "go")]
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name) / "candidates"
+        for patcher in (patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", base),
+                        patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", base),
+                        patch("watch_lane_posts._sticky_wicket_owed", return_value=False),
+                        patch("watch_lane_posts._prune_batch"),
+                        patch("watch_lane_posts._retire_imc")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_tick(self, cached, reads, pages):
+        """One `queue_cycle` with N previously queued and offered. `reads` is
+        the sequence of `issues/{N}` read results, each `(state, comments)`
+        (`state` None is a failed read); `pages` the sequence of thread-page
+        results. Returns the observed states and the tick's outcome."""
+        self.assertTrue(deferral_store.record_deferral(REPO, N, "filing", operator_login=OP))
+        reads, pages, states = iter(reads), iter(pages), []
+
+        def read_meta(repo, issue):
+            state, count = next(reads)
+            states.append(state)
+            if state is None:
+                return None, None, None
+            watch_lane_posts._ISSUE_COMMENTS[(repo, issue)] = count
+            return (state, set(), None) if state != "missing" else ("missing", None, None)
+
+        offers = Offers([(REPO, N)])
+        with patch("watch_lane_posts._read_issue_meta", side_effect=read_meta), \
+             patch("watch_lane_posts._read_thread_pages", side_effect=lambda *_: next(pages)), \
+             patch.object(watch_lane_posts, "_TICK_READS_ON", cached), \
+             patch.dict(watch_lane_posts._TICK_META, clear=True), \
+             patch.dict(watch_lane_posts._TICK_THREADS, clear=True), \
+             patch.dict(watch_lane_posts._ISSUE_COMMENTS, clear=True), \
+             contextlib.redirect_stderr(io.StringIO()):
+            queue, lines, _ = watch_lane_posts.queue_cycle(
+                [REPO], "l1", {(REPO, N): MARKER}, "t", candidate_pairs=set(), offers=offers)
+        return states, queue, lines, offers
+
+    def assert_retired(self, result, expected_states):
+        states, queue, lines, offers = result
+        self.assertEqual(states, expected_states)
+        self.assertNotIn((REPO, N), queue)
+        self.assertEqual(lines, [])
+        self.assertIsNone(offers.get((REPO, N)))
+        self.assertIsNone(deferral_store.deferral_entry(REPO, N))
+
+    def test_a_closed_retry_read_retires_before_a_failed_thread_read(self):
+        """Finding 1: the first read fails, the thread read's own (retry) read
+        reports closed, then the comment pages fail. Closed wins."""
+        for cached in (True, False):
+            with self.subTest(cached=cached):
+                self.assert_retired(self.run_tick(cached, [(None, 0), ("closed", 2)], [None]),
+                                    [None, "closed"])
+
+    def test_a_missing_retry_read_retires_before_a_failed_thread_read(self):
+        """Findings 1 and 5: the retry read reports missing, so the thread read
+        returns no thread. The guard must recognize `missing`, not only
+        `closed`, ahead of the fetch-failure path."""
+        for cached in (True, False):
+            with self.subTest(cached=cached):
+                self.assert_retired(self.run_tick(cached, [(None, 0), ("missing", 0)], []),
+                                    [None, "missing"])
+
+    def test_a_closed_count_mismatch_re_read_retires_before_a_failed_page_retry(self):
+        """Finding 1: the count-mismatch re-read reports closed and the page
+        retry fails. Cached, the thread read's own read is served from the
+        tick cache, so one fewer issue read happens."""
+        for cached, opens in ((True, ["open"]), (False, ["open", "open"])):
+            with self.subTest(cached=cached):
+                reads = [(s, 3) for s in opens] + [("closed", 3)]
+                self.assert_retired(self.run_tick(cached, reads, [self.THREAD, None]),
+                                    opens + ["closed"])
+
+    def test_a_missing_count_mismatch_re_read_retires_before_a_failed_page_retry(self):
+        """Finding 1: as above, with the re-read reporting missing."""
+        for cached, opens in ((True, ["open"]), (False, ["open", "open"])):
+            with self.subTest(cached=cached):
+                reads = [(s, 3) for s in opens] + [("missing", 0)]
+                self.assert_retired(self.run_tick(cached, reads, [self.THREAD, None]),
+                                    opens + ["missing"])
+
+    def test_a_later_open_read_never_overwrites_a_closed_read(self):
+        """Finding 2: the thread read's own read reports closed, the
+        count-mismatch re-read reports open and the page retry succeeds. The
+        issue is retired, never queued or offered afresh."""
+        for cached in (True, False):
+            with self.subTest(cached=cached):
+                reads = [(None, 0), ("closed", 3), ("open", len(self.THREAD))]
+                self.assert_retired(self.run_tick(cached, reads, [self.THREAD, self.THREAD]),
+                                    [None, "closed", "open"])
+
+    def test_the_count_mismatch_re_read_records_its_state(self):
+        """Finding 5: the only closed read is the count-mismatch re-read and
+        the page retry succeeds, so the issue is retired only if that re-read
+        records its state."""
+        reads = [("open", 3), ("open", 3), ("closed", len(self.THREAD))]
+        self.assert_retired(self.run_tick(False, reads, [self.THREAD, self.THREAD]),
+                            ["open", "open", "closed"])
+
+    def test_consistent_open_reads_still_queue_and_offer(self):
+        """The rule's other side: the same thread read open throughout queues
+        and offers as before."""
+        reads = [("open", len(self.THREAD)), ("open", len(self.THREAD))]
+        states, queue, lines, offers = self.run_tick(False, reads, [self.THREAD])
+        self.assertEqual(states, ["open", "open"])
+        self.assertEqual(queue[(REPO, N)], MARKER)
+        self.assertIsNotNone(deferral_store.deferral_entry(REPO, N))
+
+
 if __name__ == "__main__":
     unittest.main()

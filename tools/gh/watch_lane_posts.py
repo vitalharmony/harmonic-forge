@@ -1414,6 +1414,19 @@ _ISSUE_COMMENTS: dict[tuple[str, int], int] = {}
 #: an issue's first read and consults it after the thread read, so a closed
 #: state from any read this call made wins over an earlier failed read.
 _READ_STATE: dict[tuple[str, int], str] = {}
+#: The issue states that end an issue's tick (harmonic-forge#1564 terminal-state
+#: patch): once any read reports one, no later read in the tick replaces it.
+_TERMINAL_STATES = frozenset({"closed", "missing"})
+
+
+def _note_read_state(repo: str, issue: int, state: str | None) -> None:
+    """Record one issue read's state for this tick (harmonic-forge#1564
+    terminal-state patch). A failed read (`None`) records nothing, and a
+    closed or missing state already recorded is final: a later open read in
+    the same tick never overwrites it."""
+    if state is None or _READ_STATE.get((repo, issue)) in _TERMINAL_STATES:
+        return
+    _READ_STATE[(repo, issue)] = state
 
 
 def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
@@ -1518,8 +1531,7 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     # read conditionally. An edited comment does not change the issue's ETag but does
     # change its page's, so the pages are read even when the issue read was a 304.
     state, *_ = _issue_meta(repo, issue)
-    if state is not None:
-        _READ_STATE[(repo, issue)] = state
+    _note_read_state(repo, issue, state)
     if state is None or state == "missing":
         return None  # no readable issue, so no readable thread (never `[]`: that reads as no work)
     comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
@@ -1530,8 +1542,7 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
             # between two page reads shifts every boundary): refresh the count once and
             # read the pages again (harmonic-forge#1393 AC3). A thread still off after
             # that is returned for this tick but not memoized; the next tick re-reads it.
-            if (refreshed := _read_issue_meta(repo, issue)[0]) is not None:
-                _READ_STATE[(repo, issue)] = refreshed
+            _note_read_state(repo, issue, _read_issue_meta(repo, issue)[0])
             comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
             if comments is not None and len(comments) != _ISSUE_COMMENTS.get((repo, issue)):
                 return comments
@@ -1727,8 +1738,9 @@ def discover_queue(repo: str, lane: str,
         # `read_candidates` skips and a fresh `record_candidate` clears. An
         # unreadable state is treated as open (AC4).
         state, labels, *rest = _issue_meta(repo, issue)
+        _note_read_state(repo, issue, state)
         milestone = rest[0] if rest else None
-        if state in ("closed", "missing"):
+        if state in _TERMINAL_STATES:
             retire(issue, state)
             continue
         if labels is not None and labels & excluded:
@@ -1759,6 +1771,17 @@ def discover_queue(repo: str, lane: str,
         last_body = ""
         last_id: int | None = None
         comments = _fetch_all_comments(repo, issue)
+        if (later := _READ_STATE.get((repo, issue))) in _TERMINAL_STATES:
+            # harmonic-forge#1564 terminal-state patch: a closed or missing state
+            # from ANY read of this issue this tick (the read above, the thread
+            # read's own issue read, its retry, the count-mismatch re-read) is
+            # terminal, and is checked before the fetch failure below: a thread
+            # that failed to read never carries a closed issue forward. The issue
+            # is retired exactly as an early closed state is, never classified,
+            # queued or offered (`_note_read_state` keeps a later open read from
+            # replacing it).
+            retire(issue, later)
+            continue
         if comments is None:
             # harmonic-forge#602 (found by an out-of-family review). `None` is
             # a FAILED fetch, distinct from `[]`. The note below was written
@@ -1775,13 +1798,6 @@ def discover_queue(repo: str, lane: str,
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
             failed_issues.add(issue)
-            continue
-        if (later := _READ_STATE.get((repo, issue))) in ("closed", "missing"):
-            # harmonic-forge#1564 final post-verdict #5: a closed state from any
-            # read wins. The thread read's own issue read can report closed after
-            # the read above failed (and was taken as open, AC4); the issue is
-            # retired here and never classified, queued or offered.
-            retire(issue, later)
             continue
         sticky = lane == "l1" and _sticky_wicket_owed(repo, issue, comments)
         for comment in comments:
