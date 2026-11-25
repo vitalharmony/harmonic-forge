@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -51,13 +52,11 @@ _RESERVED_MARKERS = ("cross-family", "provenance:", "in-family")
 def _redact(text: str) -> str:
     """Untrusted text, made safe to sit inside a label line."""
     flat = " ".join(str(text).split())
+    # One case-insensitive substitution on the text itself (harmonic-forge#1561):
+    # offsets taken from flat.lower() drift when a character's lowercase changes
+    # length (U+0130), redacting the wrong span or never terminating.
     for marker in _RESERVED_MARKERS:
-        lowered = flat.lower()
-        start = lowered.find(marker)
-        while start != -1:
-            flat = flat[:start] + "[redacted]" + flat[start + len(marker):]
-            lowered = flat.lower()
-            start = lowered.find(marker)
+        flat = re.sub(re.escape(marker), "[redacted]", flat, flags=re.IGNORECASE)
     return flat
 
 CROSS_FAMILY = "Red-team provenance: cross-family ({family} / {model})"

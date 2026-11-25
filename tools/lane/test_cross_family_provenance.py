@@ -236,6 +236,22 @@ class ReservedMarkerInjectionTests(unittest.TestCase):
     def test_redaction_is_case_insensitive(self):
         self.assertNotIn("Cross-Family", self._forged("Cross-Family (forged)"))
 
+    def test_a_length_changing_lowercase_before_the_marker_redacts_the_marker(self):
+        """harmonic-forge#1561: U+0130 lowercases to two code points, so offsets
+        from the lowered text redacted the wrong span."""
+        self.assertEqual(m._redact("İİİcross-family (x"), "İİİ[redacted] (x")
+
+    def test_redaction_terminates_on_many_length_changing_characters(self):
+        """harmonic-forge#1561: 200 U+0130 before a marker hung the old loop."""
+        import threading
+        out: list[str] = []
+        worker = threading.Thread(target=lambda: out.append(m._redact("İ" * 200 + "Cross-Family x")),
+                                  daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "_redact did not terminate within 5 s")
+        self.assertEqual(out, ["İ" * 200 + "[redacted] x"])
+
     def test_the_reviewers_own_error_is_shown_before_stderr(self):
         """harmonic-forge#1557: the envelope's `error` (the reviewer's own
         failure message) is in the label, ahead of an unrelated stderr warning."""
