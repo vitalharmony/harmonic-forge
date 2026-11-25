@@ -177,8 +177,10 @@ class Build(_Tmp):
             self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
             self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
 
-    def test_the_set_holds_55_entries(self):
-        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 55)  # +1: TaskCreate tasklist_hold (harmonic-forge#1477)
+    def test_the_set_holds_56_entries(self):
+        # +1: TaskCreate tasklist_hold (harmonic-forge#1477); +1: UserPromptSubmit
+        # surface_dry_run_failures (harmonic-forge#1544)
+        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 56)
 
 
 class Policy(_Tmp):
