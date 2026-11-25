@@ -469,6 +469,77 @@ DEFAULT_REQUIRED_CHECKS = frozenset({"verify"})
 UNPROTECTED_MESSAGE = "Branch not protected"
 
 
+#: harmonic-forge#894 C4: the workflow-run events whose unfinished run can
+#: still create a missing required job. `pull_request_target` (hrse's
+#: `ui-approval`) and `issue_comment` never produce `verify`.
+PENDING_EVENTS = frozenset({"pull_request", "push", "schedule", "workflow_dispatch"})
+
+
+def s0_reader(repo: str, counter=None):
+    """A reader for harmonic-forge#894 C3: `reader(path) -> (status, body)`,
+    one `_etag_cache.conditional_get` per call, under the account
+    `manifest_identity.account_for(repo)` names, with no fallback. A
+    `ManifestError` (or any failure resolving the account) answers status
+    None, which every reader path reads as `unknown`."""
+    def read(path: str) -> tuple[int | None, str | None]:
+        try:
+            tools = Path(__file__).resolve().parents[1]
+            for sub in ("onboard", "gh"):
+                if str(tools / sub) not in sys.path:
+                    sys.path.insert(0, str(tools / sub))
+            import _etag_cache  # noqa: PLC0415
+            from manifest_identity import account_for  # noqa: PLC0415
+            account = account_for(repo)
+        except Exception:  # noqa: BLE001 - an unresolvable identity is unknown, never absent
+            return None, None
+        resp = _etag_cache.conditional_get(account, path, counter)
+        return resp.status, resp.body
+    return read
+
+
+def _s0_json(reader, path: str):
+    """`(payload, None)` for a 200, or a 304 that carries the cached body;
+    `(None, detail)` for anything else -- 404 and 403 included, so a
+    wrong-account read is `unknown`, never an empty run list (#894 C3)."""
+    try:
+        status, body = reader(path)
+    except Exception as exc:  # noqa: BLE001 - a reader exception fails closed
+        return None, f"CI reader raised {type(exc).__name__} for {path}"
+    if status not in (200, 304) or body is None:
+        return None, f"CI read of {path} answered {status}"
+    try:
+        return json.loads(body), None
+    except ValueError:
+        return None, f"unparseable CI payload for {path}"
+
+
+def _s0_full_sha(reader, repo: str, sha: str) -> tuple[str | None, str | None]:
+    if len(sha) >= 40:
+        return sha, None
+    data, failure = _s0_json(reader, f"repos/{repo}/commits/{sha}")
+    full = data.get("sha") if isinstance(data, dict) else None
+    if failure or not isinstance(full, str) or len(full) != 40:
+        return None, failure or f"could not resolve {sha[:8]} to a full SHA"
+    return full, None
+
+
+def _s0_page(reader, path: str, key: str) -> tuple[list | None, str | None]:
+    """One page of a list endpoint that reports `total_count`; a page that
+    returned fewer items than its `total_count` is `unknown` (#894 C3, the
+    rule `_read_every_attempt` keeps)."""
+    data, failure = _s0_json(reader, path)
+    if failure:
+        return None, failure
+    try:
+        items = data[key]
+        total = int(data["total_count"])
+    except (TypeError, KeyError, ValueError):
+        return None, f"unparseable CI payload for {path}"
+    if not isinstance(items, list) or total != len(items):
+        return None, f"{path} returned {len(items) if isinstance(items, list) else '?'} of {total}"
+    return items, None
+
+
 def _latest_per_name(runs: list[dict]) -> list[dict]:
     """One run per check name — the most recent.
 
@@ -489,7 +560,7 @@ def _latest_per_name(runs: list[dict]) -> list[dict]:
 
 
 def authorizing_conclusion(repo: str, sha: str, required: set[str],
-                           run=None) -> tuple[str, str]:
+                           run=None, reader=None) -> tuple[str, str]:
     """`ci_conclusion` for a caller that AUTHORIZES (#1103 reforge fix 1).
 
     ONE snapshot of the checks is read and every condition is judged against
@@ -498,11 +569,12 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     `DEFAULT_REQUIRED_CHECKS` reported green. Every visible check is judged
     FIRST, so a red check with `verify` missing is `red`, never the `absent`
     a no-PR override could authorize."""
-    runs, failure = _read_check_runs(repo, sha, run=run)
+    runs, failure = _read_check_runs(repo, sha, run=run, reader=reader)
     if failure is not None:
         return failure
     if required:
-        runs, failure = _merge_status_records(repo, sha, runs, required, run=run)
+        runs, failure = _merge_status_records(repo, sha, runs, required, run=run,
+                                              reader=reader)
         if failure is not None:
             return failure
         return _judge_runs(runs, sha, required)
@@ -519,7 +591,7 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
 RUNS_LIST_CAP = 1000
 
 
-def _read_every_attempt(repo: str, sha: str, run=None) -> list[dict] | None:
+def _read_every_attempt(repo: str, sha: str, run=None, reader=None) -> list[dict] | None:
     """Every job of every attempt of every workflow run on `sha`, or None.
 
     harmonic-forge#1276 (sticky-wicket 6689496006): the all-skipped predicate's
@@ -529,7 +601,29 @@ def _read_every_attempt(repo: str, sha: str, run=None) -> list[dict] | None:
     may be truncated (`total_count` at or past `RUNS_LIST_CAP`, or not equal
     to the runs read), or ANY workflow run on the SHA is not `completed`: a
     run still in flight may yet create a required job (a tag-push `verify`
-    exists only once `tag-proof` finishes), so it vetoes the inference."""
+    exists only once `tag-proof` finishes), so it vetoes the inference.
+
+    With `reader` (harmonic-forge#894 C3), each read is one S0 page; a page
+    short of its `total_count` is None, as a truncated read is here."""
+    if reader is not None:
+        sha, _ = _s0_full_sha(reader, repo, sha)
+        if sha is None:
+            return None
+        wf_runs, failure = _s0_page(
+            reader, f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", "workflow_runs")
+        if failure or not wf_runs or len(wf_runs) >= RUNS_LIST_CAP:
+            return None
+        if any(not isinstance(wf, dict) or wf.get("status") != "completed" for wf in wf_runs):
+            return None
+        jobs: list[dict] = []
+        for wf in wf_runs:
+            page, failure = _s0_page(
+                reader, f"repos/{repo}/actions/runs/{wf.get('id')}/jobs?per_page=100&filter=all",
+                "jobs")
+            if failure:
+                return None
+            jobs += page
+        return jobs
     run = run or _run
     if len(sha) < 40:
         code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
@@ -572,7 +666,7 @@ def _read_every_attempt(repo: str, sha: str, run=None) -> list[dict] | None:
 
 
 def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
-                                 run=None) -> bool:
+                                 run=None, reader=None) -> bool:
     """Was every required check, in every run and every attempt on `sha`,
     created and `skipped`? (harmonic-forge#1276)
 
@@ -588,7 +682,7 @@ def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
     Accepted open gaps, shared with harmonic-forge#788's `absent` path rather
     than introduced here: a run started AFTER this read, and a red run deleted
     by someone with write access, are not seen."""
-    jobs = _read_every_attempt(repo, sha, run=run)
+    jobs = _read_every_attempt(repo, sha, run=run, reader=reader)
     if not jobs:
         return False
     want = set(required) or set(DEFAULT_REQUIRED_CHECKS)
@@ -613,7 +707,7 @@ def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
 
 
 def ci_conclusion(repo: str, sha: str, run=None,
-                  required: set[str] | None = None) -> tuple[str, str]:
+                  required: set[str] | None = None, reader=None) -> tuple[str, str]:
     """`(state, detail)` for a commit's checks.
 
     `state` is one of `green`, `red`, `pending`, `absent`, `unknown`.
@@ -625,16 +719,61 @@ def ci_conclusion(repo: str, sha: str, run=None,
     "every check completed", an empty list satisfied it vacuously, and it
     reported done on a PR whose CI had not yet registered.
     """
-    runs, failure = _read_check_runs(repo, sha, run=run)
+    runs, failure = _read_check_runs(repo, sha, run=run, reader=reader)
     if failure is not None:
         return failure
     return _judge_runs(runs, sha, required)
 
 
-def _read_check_runs(repo: str, sha: str, run=None
+def _with_run(job: dict, wf: dict) -> dict:
+    """A job record carrying its workflow run's status and event, which
+    `_judge_runs`' pending predicate reads (harmonic-forge#894 C4)."""
+    return {**job, "workflow_status": wf.get("status"), "workflow_event": wf.get("event")}
+
+
+def _jobless(wf: dict, run_id) -> dict:
+    return {"name": wf.get("name") or f"run {run_id}",
+            "status": wf.get("status"), "conclusion": wf.get("conclusion"),
+            "started_at": wf.get("started_at") or wf.get("run_started_at"),
+            "jobless_run": True,
+            "workflow_status": wf.get("status"), "workflow_event": wf.get("event")}
+
+
+def _read_check_runs_s0(repo: str, sha: str, reader
+                        ) -> tuple[list[dict], tuple[str, str] | None]:
+    """`_read_check_runs` through the S0 reader (harmonic-forge#894 C3): one
+    page of runs and one page of jobs per run, each `per_page=100`; a page
+    short of its `total_count`, or any non-200/304 answer, is `unknown`."""
+    full, failure = _s0_full_sha(reader, repo, sha)
+    if full is None:
+        return [], ("unknown", failure or f"could not resolve {sha[:8]}")
+    wf_runs, failure = _s0_page(
+        reader, f"repos/{repo}/actions/runs?head_sha={full}&per_page=100", "workflow_runs")
+    if failure:
+        return [], ("unknown", f"could not read checks for {full[:8]}: {failure}")
+    runs: list[dict] = []
+    for wf in wf_runs:
+        if not isinstance(wf, dict) or "id" not in wf:
+            return [], ("unknown", f"unparseable job payload for {full[:8]}")
+        jobs, failure = _s0_page(
+            reader, f"repos/{repo}/actions/runs/{wf['id']}/jobs?per_page=100&filter=latest",
+            "jobs")
+        if failure:
+            return [], ("unknown", f"could not read the jobs of run {wf['id']} for "
+                                   f"{full[:8]}: {failure}")
+        if any(not isinstance(j, dict) for j in jobs):
+            return [], ("unknown", f"unparseable job payload for {full[:8]}")
+        runs += [_with_run(j, wf) for j in jobs] or [_jobless(wf, wf["id"])]
+    return runs, None
+
+
+def _read_check_runs(repo: str, sha: str, run=None, reader=None
                      ) -> tuple[list[dict], tuple[str, str] | None]:
     """One snapshot of the commit's check runs: `(runs, None)`, or
-    `([], (state, detail))` when it could not be read."""
+    `([], (state, detail))` when it could not be read. With `reader`, every
+    read goes through it (harmonic-forge#894 C3)."""
+    if reader is not None:
+        return _read_check_runs_s0(repo, sha, reader)
     run = run or _run
     # harmonic-forge#805: read the Actions runs for this SHA, then each run's jobs, instead of
     # `commits/<sha>/check-runs`. A fine-grained PAT has no permission that can read check-runs
@@ -657,7 +796,7 @@ def _read_check_runs(repo: str, sha: str, run=None
         sha = full.strip()
     code, out = run(["gh", "api", "--paginate",
                      f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
-                     "--jq", ".workflow_runs[] | {id, name, status, conclusion, "
+                     "--jq", ".workflow_runs[] | {id, name, status, conclusion, event, "
                              "started_at: .run_started_at}"])
     if code != 0:
         return [], ("unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}")
@@ -676,7 +815,7 @@ def _read_check_runs(repo: str, sha: str, run=None
             for line in (out or "").splitlines():
                 line = line.strip()
                 if line:
-                    runs.append(json.loads(line))
+                    runs.append(_with_run(json.loads(line), wf))
             if len(runs) == before:
                 # A workflow run with NO jobs (`startup_failure`, awaiting approval, cancelled
                 # while queued) has no job to read. Read the run itself as the check, or a broken
@@ -684,9 +823,7 @@ def _read_check_runs(repo: str, sha: str, run=None
                 # `jobless_run` (harmonic-forge#1283): this record is a run, not a job, so it
                 # does not carry a required context; a bot commit status of the same name may
                 # replace it (`_merge_status_records`).
-                runs.append({"name": wf.get("name") or f"run {run_id}",
-                             "status": wf.get("status"), "conclusion": wf.get("conclusion"),
-                             "started_at": wf.get("started_at"), "jobless_run": True})
+                runs.append(_jobless(wf, run_id))
     except (ValueError, KeyError, TypeError):
         return [], ("unknown", f"unparseable job payload for {sha[:8]}")
     return runs, None
@@ -706,7 +843,7 @@ _STATUS_AS_RUN = {
 }
 
 
-def _status_records(repo: str, sha: str, names: set[str], run=None
+def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None
                     ) -> tuple[list[dict], tuple[str, str] | None]:
     """Check-shaped records for the required contexts in `names` that a
     commit STATUS satisfies (harmonic-forge#1283).
@@ -735,18 +872,41 @@ def _status_records(repo: str, sha: str, names: set[str], run=None
     too, so on a protected repo this reader matches GitHub and goes no
     further. It is never called on an unprotected repo
     (`authorizing_conclusion` calls it for a non-empty `required` only).
+
+    With `reader` (harmonic-forge#894 C3) the list is one S0 page; this
+    endpoint reports no `total_count`, so a full page (100) may be truncated
+    and reads `unknown`.
     """
-    run = run or _run
-    if len(sha) < 40:
-        code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
-        if code != 0 or len(full.strip()) != 40:
-            return [], ("unknown", f"could not resolve {sha[:8]} to a full SHA: {full.strip()[:120]}")
-        sha = full.strip()
-    code, out = run(["gh", "api", "--paginate",
-                     f"repos/{repo}/commits/{sha}/statuses?per_page=100",
-                     "--jq", ".[] | {context, state, creator: .creator.login, updated_at}"])
-    if code != 0:
-        return [], ("unknown", f"could not read commit statuses for {sha[:8]}: {out.strip()[:200]}")
+    if reader is not None:
+        full, failure = _s0_full_sha(reader, repo, sha)
+        if full is None:
+            return [], ("unknown", failure or f"could not resolve {sha[:8]}")
+        data, failure = _s0_json(reader, f"repos/{repo}/commits/{full}/statuses?per_page=100")
+        if failure or not isinstance(data, list):
+            return [], ("unknown", f"could not read commit statuses for {full[:8]}: "
+                                   f"{failure or 'not a list'}")
+        if len(data) >= 100:
+            return [], ("unknown", f"commit statuses for {full[:8]} may be truncated "
+                                   "(a full page of 100)")
+        try:
+            out = "\n".join(json.dumps({"context": e["context"], "state": e.get("state"),
+                                        "creator": (e.get("creator") or {}).get("login"),
+                                        "updated_at": e.get("updated_at")}) for e in data)
+        except (TypeError, KeyError, AttributeError):
+            return [], ("unknown", f"unparseable commit status payload for {full[:8]}")
+        sha = full
+    else:
+        run = run or _run
+        if len(sha) < 40:
+            code, full = run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".sha"])
+            if code != 0 or len(full.strip()) != 40:
+                return [], ("unknown", f"could not resolve {sha[:8]} to a full SHA: {full.strip()[:120]}")
+            sha = full.strip()
+        code, out = run(["gh", "api", "--paginate",
+                         f"repos/{repo}/commits/{sha}/statuses?per_page=100",
+                         "--jq", ".[] | {context, state, creator: .creator.login, updated_at}"])
+        if code != 0:
+            return [], ("unknown", f"could not read commit statuses for {sha[:8]}: {out.strip()[:200]}")
     records: dict[str, dict] = {}
     try:
         for line in (out or "").splitlines():
@@ -768,7 +928,7 @@ def _status_records(repo: str, sha: str, names: set[str], run=None
 
 
 def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[str],
-                          run=None) -> tuple[list[dict], tuple[str, str] | None]:
+                          run=None, reader=None) -> tuple[list[dict], tuple[str, str] | None]:
     """`runs` plus a status record for each required name no real JOB carries
     (harmonic-forge#1283). No call when jobs cover every required name.
 
@@ -782,7 +942,7 @@ def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[s
     missing = set(required) - carried
     if not missing:
         return runs, None
-    records, failure = _status_records(repo, sha, missing, run=run)
+    records, failure = _status_records(repo, sha, missing, run=run, reader=reader)
     if failure is not None:
         # Only real jobs the branch requires decide a red here (harmonic-forge#1283
         # preclose pass 1): a red unrequired job, or a job-less run record, must
@@ -807,6 +967,19 @@ def _judge_runs(runs: list[dict], sha: str,
         scoped = [r for r in runs if r.get("name") in required]
         missing = sorted(required - {r.get("name") for r in runs})
         if missing:
+            # harmonic-forge#894 C4: a required job not yet created while a
+            # run that can create it is unfinished is `pending`, not `absent`
+            # (hrse's fan-in `verify` exists only once its `needs:` finish).
+            # All three must hold: an unfinished run of a PENDING_EVENTS
+            # event, and no visible job already red.
+            inflight = sorted({str(r.get("workflow_event")) for r in runs
+                               if r.get("workflow_status") not in (None, "completed")
+                               and r.get("workflow_event") in PENDING_EVENTS})
+            red = [r for r in runs if (r.get("conclusion") or "").lower() in _BAD]
+            if inflight and not red:
+                return "pending", (f"{sha[:8]}'s required check(s) not yet created ("
+                                   + ", ".join(missing) + "); a "
+                                   + "/".join(inflight) + " run is still in flight")
             return "absent", (f"{sha[:8]} has not run its required check(s): "
                               + ", ".join(missing))
         runs = scoped
@@ -879,8 +1052,10 @@ def sha_is_current_main_tip(repo: str, sha: str, run=None) -> bool | None:
     signal never distinguishes a data-migration's reference SHA from an
     ordinary code change. `verify` runs only on `pull_request` or a `v*` tag
     push whose `tag-proof` is unproven (HRSE2 `.github/workflows/ci.yml:111`,
-    re-read for harmonic-forge#1276); hrse has no push-to-`main` trigger, and
-    on `schedule`/`workflow_dispatch` the job is created and `skipped`. So
+    re-read for harmonic-forge#1276); hrse has no push-to-`main` trigger. Since
+    hrse#2800 split CI behind a fan-in, `verify` also runs on `main` on its
+    schedule and on dispatch (hrse ci.yml), so a just-merged SHA reads
+    `absent` until the next scheduled run (harmonic-forge#894 D). So
     `verify` structurally never vouches for an untagged `main` commit -- what actually
     marks "there is no PR pending for this SHA and none is coming" is that
     the SHA already IS the tip of `main` itself, not that it lacks a PR
