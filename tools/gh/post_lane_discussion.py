@@ -608,8 +608,6 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
 
 #: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
 CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
-#: Any l1-post comment opener, closed or not: a genuine AE body holds one.
-_L1_POST_OPENER = re.compile(r"<!--\s*l1-post\s+v\d+;", re.I)
 #: The first line of `gate_ci.check_gate_result`'s unfinished-CI refusal; the
 #: P3 diagnostic replaces only that refusal, never a red one.
 UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
@@ -630,14 +628,14 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
     # id, the kind and the SHA all come from the AE's OWN footer, proven by its
     # body digest rather than by parsing around lookalikes. l1_post refuses a
     # body that carries its reserved marker and stamps every AE footer with
-    # `body-sha256`, so a genuine AE holds exactly one l1-post opener, its
-    # footer is one line ending the body, and `verify_body_sha256` accepts it
-    # (harmonic-forge#1358). Anything else -- an edited body, a second footer,
-    # an unclosed lookalike on the same line or above, a CR/LF inside the
-    # footer, text after it, a footer with no digest -- names no grant.
+    # `body-sha256`, so a genuine AE's FIRST l1-post comment is its footer:
+    # one line, one opener, ending the body, and `verify_body_sha256` (which
+    # checks the LAST footer) accepts it (harmonic-forge#1358). The first
+    # comment ending the body makes it the last, so the two checks read the
+    # same footer. Anything else -- an edited body, a second footer, an
+    # unclosed lookalike on the same line or above, a CR/LF inside the footer,
+    # text after it, a footer with no digest -- names no grant.
     text = authority.get("body", "") or ""
-    if len(_L1_POST_OPENER.findall(text)) != 1:
-        return None
     last = check_lane3_ready._ANY_FOOTER.search(text)
     if last is None or text[last.end():].strip():
         return None
