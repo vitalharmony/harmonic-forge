@@ -1114,6 +1114,42 @@ count = 2
 
 [[finding]]
 rule = "import"
+path = "tools/lane/lane1"
+text = "tools/lane/_gh_config_dir.sh"
+count = 1
+
+[[finding]]
+rule = "import"
+path = "tools/lane/lane1"
+text = "tools/lane/_lane_identity.sh"
+count = 1
+
+[[finding]]
+rule = "import"
+path = "tools/lane/lane2"
+text = "tools/lane/_gh_config_dir.sh"
+count = 1
+
+[[finding]]
+rule = "import"
+path = "tools/lane/lane2"
+text = "tools/lane/_lane_identity.sh"
+count = 1
+
+[[finding]]
+rule = "import"
+path = "tools/lane/lane3"
+text = "tools/lane/_gh_config_dir.sh"
+count = 1
+
+[[finding]]
+rule = "import"
+path = "tools/lane/lane3"
+text = "tools/lane/_lane_identity.sh"
+count = 1
+
+[[finding]]
+rule = "import"
 path = "tools/lane/lane3_audit.py"
 text = "tools/telemetry/archive.py"
 count = 2
@@ -1170,6 +1206,18 @@ count = 1
 rule = "import"
 path = "tools/run_tests.py"
 text = "tools/gh/belt_candidates.py"
+count = 1
+
+[[finding]]
+rule = "import-unresolved"
+path = "tools/gate/adapter.py"
+text = "spec = importlib.util.spec_from_file_location(f\"_gate_adapter_{target.stem}\", target)"
+count = 1
+
+[[finding]]
+rule = "import-unresolved"
+path = "tools/precheck/replay_harness.py"
+text = "spec = importlib.util.spec_from_file_location(f\"_precheck_layer_{Path(path).stem}\", path)"
 count = 1
 
 [[finding]]

@@ -276,6 +276,87 @@ class TestReviewFixes(ScratchRepo):
             self.assertIn(f"tools/lane/{f}.sh imports operator file tools/telemetry/env.sh", out)
 
 
+class TestTwoPassPatch(ScratchRepo):
+    """harmonic-forge#1524 two-pass sticky-wicket PATCH: a load the scanner
+    cannot resolve is a baselined row, never clean; the ratchet's count and
+    --update paths are pinned."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("tools/telemetry/env.sh", "X=1\n")
+        self.track()
+        self.baseline_now()
+
+    def check_fails_naming(self, *needles):
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1, out)
+        for n in needles:
+            self.assertIn(n, out)
+
+    def test_self_locating_source_is_an_edge(self):
+        self.write("tools/lane/a.sh", '#!/bin/bash\nsource "$(dirname "$(readlink -f '
+                   '"${BASH_SOURCE[0]}")")/../telemetry/env.sh"\n')
+        self.track()
+        self.check_fails_naming("tools/lane/a.sh imports operator file tools/telemetry/env.sh")
+
+    def test_source_after_a_keyword_is_an_edge(self):
+        self.write("tools/lane/b.sh", '#!/bin/sh\nif [ -f "$D/env.sh" ]; then source "$D/env.sh"; fi\n')
+        self.write("tools/lane/c.sh", '#!/bin/sh\nfor f in x; do . "$D/env.sh"; done\n')
+        self.track()
+        self.check_fails_naming("tools/lane/b.sh imports operator file tools/telemetry/env.sh",
+                                "tools/lane/c.sh imports operator file tools/telemetry/env.sh")
+
+    def test_a_source_with_no_literal_filename_is_an_unresolved_row(self):
+        self.write("tools/lane/d.sh", '#!/bin/sh\nsource "$CONF"\n')
+        self.track()
+        self.check_fails_naming("[import-unresolved] tools/lane/d.sh has a load whose target "
+                                'cannot be resolved: source "$CONF"')
+
+    def test_a_by_path_load_resolves_its_literal_tail(self):
+        self.write("tools/telemetry/emit.py", "X = 1\n")
+        self.write("tools/hooks/byp.py", 'import importlib.util\nfrom pathlib import Path\n'
+                   '_P = Path(__file__).parent.parent / "telemetry" / "emit.py"\n'
+                   'spec = importlib.util.spec_from_file_location("emit", _P)\n')
+        self.track()
+        self.check_fails_naming("tools/hooks/byp.py imports operator file tools/telemetry/emit.py")
+
+    def test_an_unresolvable_load_is_an_unresolved_row(self):
+        self.write("tools/hooks/dyn.py", "import importlib\n\n\ndef load(name):\n"
+                   "    return importlib.import_module(name)\n")
+        self.track()
+        self.check_fails_naming("[import-unresolved] tools/hooks/dyn.py")
+
+    def test_a_python_file_that_does_not_parse_fails_the_scan(self):
+        self.write("tools/hooks/broken.py", "def f(:\n    import emit\n")
+        self.track()
+        self.check_fails_naming("tools/hooks/broken.py: does not parse as Python")
+
+    def test_a_lowered_count_is_stale_and_update_lowers_it(self):
+        self.write("tools/hooks/core_hook.py", CORE + PLANT + PLANT)
+        self.track()
+        self.baseline_now()
+        key = ("projects-root", "tools/hooks/core_hook.py", 'ROOT = Path.home() / "Harmonic_Projects"')
+        self.assertEqual(self.baseline_rows()[key], 2)
+        self.write("tools/hooks/core_hook.py", CORE + PLANT)
+        self.check_fails_naming("remove 1 stale rows", "(baseline 2, scan 1)")
+        self.assertEqual(self.run_scan("--update")[0], 0)
+        self.assertEqual(self.baseline_rows()[key], 1)
+
+    def test_update_keeps_a_still_live_row(self):
+        self.write("tools/hooks/core_hook.py", CORE + PLANT)
+        self.write("tools/hooks/other.py", 'P = "~/Harmonic_Projects/x"\n')
+        self.track()
+        self.baseline_now()
+        live = [k for k in self.baseline_rows() if k[1] == "tools/hooks/other.py"]
+        self.assertTrue(live)
+        self.write("tools/hooks/core_hook.py", CORE)
+        self.assertEqual(self.run_scan("--update")[0], 0)
+        after = self.baseline_rows()
+        for k in live:
+            self.assertIn(k, after)
+        self.assertEqual(self.run_scan("--check")[0], 0)
+
+
 class TestWiring(unittest.TestCase):
     def test_ci_check_runs_scan(self):
         mise = (HERE.parents[1] / "mise.toml").read_text(encoding="utf-8")

@@ -285,18 +285,53 @@ def normalize(line: str) -> str:
 
 # --- import edges ------------------------------------------------------------
 
+def _assigns(tree: ast.AST) -> dict[str, ast.AST]:
+    """Each simple `name = value` in the file (the last one wins)."""
+    out: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = node.value
+    return out
+
+
+def _literal_tail(node: ast.AST | None, assigns: dict[str, ast.AST], depth: int = 0) -> str | None:
+    """The literal trailing filename of a path expression, or None: a string,
+    `x / "f.py"`, `os.path.join(..., "f.py")`, `Path(..., "f.py")`, an f-string
+    ending in a literal, or one name followed to its assignment."""
+    if node is None or depth > 2:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        tail = node.value.rstrip("/").rsplit("/", 1)[-1]
+        return tail or None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _literal_tail(node.right, assigns, depth)
+    if isinstance(node, ast.JoinedStr) and node.values:
+        return _literal_tail(node.values[-1], assigns, depth)
+    if isinstance(node, ast.Call) and node.args:
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+        if name in ("join", "Path", "PurePath", "joinpath"):
+            return _literal_tail(node.args[-1], assigns, depth)
+        return None
+    if isinstance(node, ast.Name) and node.id in assigns:
+        return _literal_tail(assigns[node.id], assigns, depth + 1)
+    return None
+
+
 def python_targets(source: str, dirs: frozenset[str] = frozenset()
-                   ) -> tuple[list[list[str]], int, list[str]]:
+                   ) -> tuple[list[list[str]], list[int]]:
     """(one candidate group per import: module names, `file:` basenames or
-    `pkg:` package names; count of computed path loads; the computed-load
-    line descriptions). `dirs` names the tracked directories, so that
-    `from pkg import name` resolves `name` only when `pkg` is one."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return [], 0, []
+    `pkg:` package names; the line numbers of loads whose target cannot be
+    resolved to a literal name). `dirs` names the tracked directories, so that
+    `from pkg import name` resolves `name` only when `pkg` is one. A file that
+    does not parse raises SyntaxError: it is never read as importing nothing
+    (harmonic-forge#1524 two-pass sticky-wicket PATCH)."""
+    tree = ast.parse(source)
+    assigns = _assigns(tree)
     found: list[list[str]] = []
-    dynamic: list[str] = []
+    unresolved: list[int] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -312,27 +347,71 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
             fn = node.func
             name = fn.attr if isinstance(fn, ast.Attribute) else (
                 fn.id if isinstance(fn, ast.Name) else "")
-            if name in ("import_module", "__import__") and node.args:
-                arg = node.args[0]
+            if name in ("import_module", "__import__"):
+                arg = node.args[0] if node.args else None
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                     found.append([arg.value.split(".")[-1]])
+                else:
+                    unresolved.append(node.lineno)
             elif name == "spec_from_file_location":
                 arg = node.args[1] if len(node.args) > 1 else next(
                     (k.value for k in node.keywords if k.arg == "location"), None)
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    found.append(["file:" + arg.value.rsplit("/", 1)[-1]])
+                tail = _literal_tail(arg, assigns)
+                if tail:
+                    found.append(["file:" + tail])
                 else:
-                    dynamic.append(f"line {node.lineno}")
-    return found, len(dynamic), dynamic
+                    unresolved.append(node.lineno)
+    return found, unresolved
 
 
-SOURCE_RE = re.compile(
-    r"(?:^|&&|\|\||;)\s*(?:source|\.)\s+[\"']?([^\s\"';&|]+)")
+# A `source`/`.` in command position: line start, after a separator or pipe,
+# or after a keyword that starts a command list.
+SOURCE_CMD_RE = re.compile(
+    r"(?:^|&&|\|\||[;|({!]|\b(?:then|do|else|elif|if|while|until))\s*(?:source|\.)\s+")
 
 
-def shell_targets(lines: list[str]) -> list[list[str]]:
-    return [["file:" + m.group(1).rsplit("/", 1)[-1]]
-            for l in lines for m in SOURCE_RE.finditer(l)]
+def _shell_word(text: str, i: int) -> str:
+    """The one shell word starting at `i`, quotes and `$( )` nesting respected."""
+    out, depth, quote = [], 0, ""
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            out.append(c)
+        elif c in "\"'":
+            quote = c
+            out.append(c)
+        elif text.startswith("$(", i):
+            depth += 1
+            out.append("$(")
+            i += 2
+            continue
+        elif c == ")" and depth:
+            depth -= 1
+            out.append(c)
+        elif depth == 0 and (c.isspace() or c in ";&|)"):
+            break
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def shell_targets(lines: list[str]) -> tuple[list[list[str]], list[str]]:
+    """(`file:` targets resolved by each sourced operand's trailing literal
+    filename; the lines whose operand has no literal filename)."""
+    found: list[list[str]] = []
+    unresolved: list[str] = []
+    for line in lines:
+        for m in SOURCE_CMD_RE.finditer(line):
+            word = _shell_word(line, m.end()).replace('"', "").replace("'", "")
+            tail = word.rstrip("/").rsplit("/", 1)[-1]
+            if tail and "$" not in tail and "(" not in tail and ")" not in tail:
+                found.append(["file:" + tail])
+            else:
+                unresolved.append(line)
+    return found, unresolved
 
 
 def read_source(root: Path, path: str) -> str:
@@ -404,13 +483,26 @@ def scan(root: Path, manifest: Path | None = None) -> tuple[Counter, list[str]]:
             for name, rx in rules:
                 if rx.search(text):
                     rows[(name, p, text)] += 1
+        unresolved: list[str] = []
         if k == "python":
-            targets, _, dyn = python_targets(source, dirs)
-            dynamic.extend(f"{p} {d}" for d in dyn)
+            try:
+                targets, linenos = python_targets(source, dirs)
+            except SyntaxError as exc:
+                raise ScanError(f"{p}: does not parse as Python ({exc.msg}, line "
+                                f"{exc.lineno}); a file that does not parse is never "
+                                "read as importing nothing") from exc
+            src_lines = source.splitlines()
+            unresolved = [src_lines[n - 1] for n in linenos if 0 < n <= len(src_lines)]
         elif k == "shell":
-            targets = shell_targets(lines)
+            targets, unresolved = shell_targets(lines)
         else:
             targets = []
+        # harmonic-forge#1524 two-pass PATCH: a load the scanner cannot resolve
+        # is a baselined, shrink-only row, never an unchecked count.
+        for line in unresolved:
+            text = normalize(line)
+            rows[("import-unresolved", p, text)] += 1
+            dynamic.append(f"{p}: {text}")
         for group in targets:
             edges = []
             for t in group:
@@ -464,7 +556,8 @@ def compare(scan_rows: Counter, base: Counter) -> tuple[list[str], list[str]]:
         if n > b:
             rule, path, text = key
             what = (f"{path} imports operator file {text}" if rule == "import"
-                    else f"{path}: {text}")
+                    else f"{path} has a load whose target cannot be resolved: {text}"
+                    if rule == "import-unresolved" else f"{path}: {text}")
             new.append(f"[{rule}] {what} (count {n} > baseline {b})")
     for key, b in sorted(base.items()):
         n = scan_rows.get(key, 0)
@@ -520,8 +613,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {line}", file=sys.stderr)
         return 1
     print(f"[CHECK] hardcode_scan: {sum(rows.values())} baselined finding(s) "
-          f"in {len(rows)} row(s), none new; {len(dynamic)} computed file-path "
-          "load(s) out of scope (--list-dynamic)")
+          f"in {len(rows)} row(s), none new; {len(dynamic)} unresolved load(s), "
+          "each a baselined row (--list-dynamic)")
     return 0
 
 
