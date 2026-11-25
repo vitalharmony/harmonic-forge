@@ -79,7 +79,10 @@ def _write(slug: str, data: dict, sid: str | None) -> None:
         return
     folder = session_dir(sid)
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{slug}.{time.time_ns()}.json"
+    # Stamped with the RUN's start, so "newer" means started later
+    # (epoch-1 pass 2 survivor); unique per record (stamp plus pid).
+    started = _started if _started is not None else time.time_ns()
+    path = folder / f"{slug}.{started}{os.getpid():07d}.json"
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps({**data, "at": int(time.time())}))
     os.replace(tmp, path)
@@ -90,10 +93,20 @@ def _files(folder: Path, slug: str) -> list[Path]:
 
 
 def _stamp(path: Path) -> int | None:
+    """The recording run's start (ns), from `<slug>.<start ns><pid:07d>.json`."""
     try:
-        return int(path.name[:-len(".json")].rsplit(".", 1)[1])
+        tail = path.name[:-len(".json")].rsplit(".", 1)[1]
+        return int(tail[:-7]) if len(tail) > 7 else None
     except (IndexError, ValueError):
         return None
+
+
+def _watermark(folder: Path, slug: str) -> int:
+    """The start (ns) of the latest clean dry run for this key, or 0."""
+    try:
+        return int((folder / f"{slug}.clean").read_text().strip() or 0)
+    except (OSError, ValueError):
+        return 0
 
 
 def clean(kind: str, repo: str, issue, sha: str) -> None:
@@ -106,7 +119,17 @@ def clean(kind: str, repo: str, issue, sha: str) -> None:
         if sid == NO_SESSION:
             return
         cutoff = _started if _started is not None else time.time_ns()
-        for path in _files(session_dir(sid), _slug(repo, issue, kind)):
+        folder, slug = session_dir(sid), _slug(repo, issue, kind)
+        # The watermark makes "the latest-started run wins" hold whichever order
+        # a failure and a clean land in (Thomas write rule; epoch-1 two-pass
+        # PATCH issuecomment-7148701001): pending() hides an entry from a run
+        # that started before the latest clean run.
+        if cutoff > _watermark(folder, slug):
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = folder / f"{slug}.clean.tmp"
+            tmp.write_text(str(cutoff))
+            os.replace(tmp, folder / f"{slug}.clean")
+        for path in _files(folder, slug):
             stamp = _stamp(path)
             if stamp is not None and stamp <= cutoff:
                 path.unlink(missing_ok=True)
@@ -126,8 +149,13 @@ def pending(sid: str) -> list[tuple[Path, dict]]:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and data.get("text"):
-            out.append((path, data))
+        if not (isinstance(data, dict) and data.get("text")):
+            continue
+        stamp = _stamp(path)
+        slug = path.name[:-len(".json")].rsplit(".", 1)[0]
+        if stamp is not None and stamp < _watermark(path.parent, slug):
+            continue  # a later-started clean dry run superseded it
+        out.append((path, data))
     return out
 
 

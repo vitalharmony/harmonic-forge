@@ -31,7 +31,9 @@ def _session(raw: str) -> str:
 
 
 def _line(data: dict) -> str:
-    text = " ".join(str(data.get("text", "")).split())[:600]
+    text = " ".join(str(data.get("text", "")).split())
+    if len(text) > 600:  # keep the head and the tail: argparse's error: line is last
+        text = f"{text[:150]} ... {text[-450:]}"
     if data.get("kind") == "unparsed":
         return f"l1_post run FAILED before its arguments parsed: {text}"
     sha = str(data.get("sha") or "")[:12] or "?"

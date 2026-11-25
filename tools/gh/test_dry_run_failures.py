@@ -142,14 +142,32 @@ class Recording(Base):
 
 
 class Clearing(Base):
-    def test_an_older_clean_run_never_erases_a_newer_failure(self) -> None:
-        """Epoch-1 pass 1 survivor: a clean run removes only entries recorded
-        before it started."""
-        def clean_main():
-            drf.record(REPO, 7, "ae", "b" * 40, "newer failure")  # lands mid-run
+    def at(self, start_ns: int):
+        """Act as a run that started at `start_ns`."""
+        return mock.patch.object(drf, "_started", start_ns)
+
+    def test_a_failure_from_a_run_started_after_the_clean_one_survives(self) -> None:
+        """Epoch-1 pass 2: the latest-STARTED run wins, whatever order the
+        failure and the clean land in."""
+        with self.at(2_000), redirect_stdout(io.StringIO()):
+            drf.clean("ae", REPO, 7, "a" * 40)          # clean run started at 2000
+        with self.at(3_000):
+            drf.record(REPO, 7, "ae", "b" * 40, "newer failure")  # started later
+        self.assertEqual([e[1]["text"] for e in drf.pending(SID)], ["newer failure"])
+
+    def test_a_failure_from_a_run_started_before_the_clean_one_is_superseded(self) -> None:
+        """The older run fails after the newer clean run has already finished."""
+        with self.at(2_000), redirect_stdout(io.StringIO()):
             drf.clean("ae", REPO, 7, "a" * 40)
-        with redirect_stdout(io.StringIO()):
-            self.wrapped(clean_main)
+        with self.at(1_000):
+            drf.record(REPO, 7, "ae", "b" * 40, "stale failure")  # started first, wrote last
+        self.assertEqual(drf.pending(SID), [])
+
+    def test_a_clean_run_never_erases_a_failure_from_a_later_started_run(self) -> None:
+        with self.at(3_000):
+            drf.record(REPO, 7, "ae", "b" * 40, "newer failure")
+        with self.at(2_000), redirect_stdout(io.StringIO()):
+            drf.clean("ae", REPO, 7, "a" * 40)
         self.assertEqual([e[1]["text"] for e in drf.pending(SID)], ["newer failure"])
 
     def test_clean_never_touches_another_sessions_entry(self) -> None:
@@ -190,6 +208,13 @@ class ShaWriteback(Base):
 
 
 class Hook(Base):
+    def test_a_long_failure_keeps_its_tail(self) -> None:
+        """Epoch-1 pass 2: argparse's error: line is at the end of a long usage block."""
+        drf.record(REPO, 7, "ae", "b" * 40, "usage: " + "x" * 700 + " error: the following arguments are required: --sha")
+        ctx = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("required: --sha", ctx)
+        self.assertIn("usage: ", ctx)
+
     def test_a_wait_entry_is_shown_as_a_wait(self) -> None:
         drf.record(REPO, 7, "ae", "b" * 40, "WAIT: CI is pending", code=3)
         ctx = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
@@ -228,6 +253,21 @@ class Hook(Base):
         with redirect_stdout(out):
             self.assertEqual(hook.main(io.StringIO("not json")), 0)
         self.assertEqual(out.getvalue(), "")
+
+
+class LaneWiring(unittest.TestCase):
+    def test_the_lane_hook_set_wires_it_as_this_repo_does(self) -> None:
+        """Epoch-1 pass 2: lane sessions in other repos get hooks only from
+        tools/lane/lane_hooks.json (harmonic-forge#1307); byte-identical to this
+        repo's entry so the two run once, not twice."""
+        def commands(path):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return [h["command"] for block in data["hooks"]["UserPromptSubmit"]
+                    for h in block["hooks"] if "surface_dry_run_failures.py" in h["command"]]
+        lane = commands(ROOT / "tools" / "lane" / "lane_hooks.json")
+        project = commands(ROOT / ".claude" / "settings.json")
+        self.assertEqual(len(lane), 1)
+        self.assertEqual(lane, project)
 
 
 class ThroughL1PostMain(Base):
