@@ -1704,3 +1704,67 @@ class TestPriorOwnerSearch(unittest.TestCase):
         self.assertEqual(gh_issue.title_keywords("Fix the bug in a thing when it breaks"),
                          ["thing", "breaks"])
         self.assertEqual(gh_issue.title_keywords("a b c"), [])
+
+
+class ExceptionRecordsDeferralTests(unittest.TestCase):
+    """harmonic-forge#1564 AC1: a recorded exception whose comment posts writes
+    exactly one deferral entry; `parent-epic`, or a failed post, writes none."""
+
+    REPO = "vitalharmony/hrse"
+
+    def setUp(self):
+        import belt_candidates
+        self.bc = belt_candidates
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        for target in (patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.base),
+                       patch.object(gh_issue.handoff_owed, "discharge"),
+                       patch.object(gh_issue, "_link_blocker", return_value=True)):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def _args(self, exception):
+        class A:
+            pass
+        a = A()
+        a.repo, a.handoff_exception = self.REPO, exception
+        a.handoff_exception_reason, a.blocked_by = "waits on hrse#1810", "vitalharmony/hrse#1810"
+        return a
+
+    def _file(self, exception, returncode=0):
+        with patch.object(gh_issue, "_run", return_value=_completed(returncode=returncode)) as run, \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ok = gh_issue._discharge_exception(self._args(exception), 2757, "https://x/2757")
+        return ok, run
+
+    def _entries(self):
+        directory = self.base / "deferrals"
+        return sorted(directory.glob("*.json")) if directory.exists() else []
+
+    def test_blocked_on_prerequisite_records_deferral(self):
+        ok, _ = self._file("blocked-on-prerequisite")
+        self.assertTrue(ok)
+        self.assertEqual([p.name for p in self._entries()], ["vitalharmony__hrse__2757.json"])
+        self.assertEqual(self.bc.deferral_entry(self.REPO, 2757)["source"], "filing")
+
+    def test_deferred_design_record_records_deferral(self):
+        ok, _ = self._file("deferred-design-record")
+        self.assertTrue(ok)
+        self.assertEqual(len(self._entries()), 1)
+
+    def test_parent_epic_records_nothing(self):
+        ok, _ = self._file("parent-epic")
+        self.assertTrue(ok)
+        self.assertEqual(self._entries(), [])
+
+    def test_a_failed_comment_records_nothing(self):
+        ok, _ = self._file("deferred-design-record", returncode=1)
+        self.assertFalse(ok)
+        self.assertEqual(self._entries(), [])
+
+    def test_the_posted_heading_is_byte_identical(self):
+        _, run = self._file("blocked-on-prerequisite")
+        body = next(a for a in run.call_args[0][0] if a.startswith("body="))
+        self.assertTrue(body.startswith(
+            "body=## R-0039 filing-bar exception: `blocked-on-prerequisite`\n\n"))

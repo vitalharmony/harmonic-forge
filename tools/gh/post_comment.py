@@ -37,6 +37,9 @@ import _caller_path  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import tasklist_owed  # noqa: E402  (harmonic-forge#1126: never raises)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import belt_candidates  # noqa: E402  (harmonic-forge#1564: the deferral store)
+
 
 def post_comment(repo: str, issue: int, body_file: Path, source_content: str) -> int:
     print(f"[POST-COMMENT] Posting to {repo}#{issue}")
@@ -64,6 +67,14 @@ def post_comment(repo: str, issue: int, body_file: Path, source_content: str) ->
         print(f"[POST-COMMENT] Warning: could not parse comment id from '{comment_url}', skipping self-check", file=sys.stderr)
         return 1
     comment_id = comment_url.rsplit("#issuecomment-", 1)[1]
+    # harmonic-forge#1564: this comment is the tool's, never an operator's
+    # trigger on a recorded deferral. Recorded before the self-check, because
+    # the comment exists whether or not the check passes.
+    try:
+        belt_candidates.note_own_comment(repo, issue, comment_id)
+    except Exception as exc:  # noqa: BLE001 - never fails the post
+        print(f"[POST-COMMENT] deferral own-comment record failed (non-fatal): {exc}",
+              file=sys.stderr)
 
     fetch = subprocess.run(
         ["gh", "api", f"repos/{repo}/issues/comments/{comment_id}", "-q", ".body"],

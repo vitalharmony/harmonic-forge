@@ -175,7 +175,7 @@ replay_tool = "gh-new-issue"
   class = "external-publish"
   gap = "no dry run"
   guard_note = "deny_advisory_subagent_gh_writes.py:89 covers subagents only"
-  cite = ["tools/gh/gh_issue.py:335"]
+  cite = ["tools/gh/gh_issue.py:336"]
 
 [[tool]]
 path = "tools/gh/gh_shim"
@@ -375,7 +375,7 @@ replay_tool = "post-comment"
   class = "external-publish"
   gap = "role-scoped hooks only"
   guard_note = "deny_lane3_ae_self_post.py:204 acts in Lane 3 on AE or sweep content only; block_lane1_status_claims.py:328-331 is HRSE2-only; deny_advisory_subagent_gh_writes.py:89 covers subagents only"
-  cite = ["tools/gh/post_comment.py:46"]
+  cite = ["tools/gh/post_comment.py:49"]
 
 [[tool]]
 path = "tools/gh/post_lane1_issue.py"
@@ -505,6 +505,15 @@ wrapper = true
   cite = ["tools/gh/receipt_runner.py:135", "tools/gh/receipt_runner.py:110"]
 
 [[tool]]
+path = "tools/gh/record_deferral.py"
+  [[tool.mode]]
+  name = "record"
+  match = []
+  class = "shared-state"
+  gap = "no precheck; the belt re-verifies the deferral comment each tick"
+  cite = ["tools/gh/record_deferral.py:41"]
+
+[[tool]]
 path = "tools/gh/repo_hygiene.py"
   [[tool.mode]]
   name = "--prune-worktrees --dry-run"
@@ -600,7 +609,7 @@ path = "tools/gh/watch_lane_posts.py"
   class = "shared-state"
   gap = "writes the belt's seen, offer and tick state under ~/.claude/state/belt"
   guard_note = "enforce_belt_arming.py checks a Monitor command in a LANE session only; deny_retired_belt_sweep.py:27 denies the retired flag only"
-  cite = ["tools/gh/watch_lane_posts.py:653", "tools/gh/watch_lane_posts.py:3015", "tools/gh/watch_lane_posts.py:3271"]
+  cite = ["tools/gh/watch_lane_posts.py:683", "tools/gh/watch_lane_posts.py:3126", "tools/gh/watch_lane_posts.py:3382"]
 
 [[tool]]
 path = "tools/gh/wrapper_parity.py"

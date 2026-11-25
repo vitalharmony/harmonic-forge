@@ -94,6 +94,17 @@ successful post, and `read_queue_candidates` (a thin wrapper over
 candidate exists only because a session already handed it a number by
 posting on it.
 
+**Lane 1 has a fifth: recorded R-0352 deferrals (harmonic-forge#1564).** An
+issue filed with a `blocked-on-prerequisite` or `deferred-design-record`
+exception has no worktree and no candidate entry, and the operator's comment
+that releases it (`go`) carries no marker. `gh_issue.py` (and the backfill
+CLI `record_deferral.py`) records the deferral in
+`belt_candidates`' `deferrals/` store, `queue_cycle` adds every recorded
+deferral to Lane 1's candidate set (`read_deferrals`, no GitHub call), and
+`discover_queue` queues `queued-for-l1 kind=deferral-trigger owes=handoff`
+for a later comment by the deferral comment's author that carries no lane
+footer and no heading, until a Lane 1 post follows it (`_deferral_trigger`).
+
 **Kind- and poster-filtered, not just repo and age (harmonic-forge#691
 AC2').** The pre-rescope design recorded only `{repo, issue, posted_at}`,
 so every issue ANY writer had ever touched in 14 days stayed a candidate
@@ -610,6 +621,25 @@ PLAN_FIRST_OWES = "plan"
 #: when `_sticky_wicket_owed` holds (harmonic-forge#997, #1099).
 STICKY_OWES = "sticky-wicket"
 
+#: harmonic-forge#1564. A recorded R-0352 deferral whose trigger an operator
+#: comment may have fired: a Lane 1 queue item like the sticky-wicket one, not
+#: an `OWES` entry (no marker carries this kind), so `_queue_owes` never
+#: indexes it. `skills/belt-and-suspenders/SKILL.md` rule 9 carries its row.
+DEFERRAL_KIND = "deferral-trigger"
+DEFERRAL_OWES = "handoff"
+#: The deferral comment's first line, `gh_issue.py`'s heading for a recorded
+#: exception, built from the one constant that writes it.
+_DEFERRAL_ANCHOR_RE = re.compile(
+    re.escape(belt_candidates.DEFERRAL_HEADING) + r" `(?:"
+    + "|".join(re.escape(e) for e in belt_candidates.RECORDED_EXCEPTIONS) + r")`")
+#: Any Markdown ATX heading: every markerless post a lane tool makes starts
+#: with one, and an operator's release comment does not.
+_ANY_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]")
+#: One belt interval (the canonical `--interval 300`). A `filing` entry whose
+#: thread shows no deferral comment yet is kept this long: a just-filed issue
+#: can read as an empty thread before its comment count catches up.
+DEFERRAL_NO_ANCHOR_GRACE = dt.timedelta(seconds=300)
+
 
 def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
     """harmonic-forge#997: the countable sticky-wicket trigger, uncovered."""
@@ -1034,6 +1064,65 @@ def _classify(body: str) -> tuple[str, str] | None:
         # under `#`, `###` or `####` reaches Lane 1 too.
         return "l3", headline
     return None
+
+
+def _first_line(body: str) -> str:
+    return body.strip().split("\n", 1)[0]
+
+
+def _deferral_trigger(comments: list[dict], own_ids: set[str]) -> tuple[str, int | None]:
+    """harmonic-forge#1564: where a recorded R-0352 deferral stands on its
+    thread. Pure.
+
+    The anchor is the LAST comment whose first line is `gh_issue.py`'s
+    heading for a recorded exception; with none, `("no-anchor", None)`. Each
+    later comment is dispatched on `_classify`: a Lane 1 `handoff` discharges
+    the deferral (`("discharged", None)`), any other Lane 1 post clears a
+    pending trigger, and an L2 or L3 post changes nothing. An unclassified
+    comment is a trigger when it is by the anchor's author, carries no
+    visible `l1-post` marker (verified or not), does not start with a
+    Markdown heading, was not posted by `post_comment.py` (`own_ids`), and has
+    visible text. `("queued", id)` names the newest trigger still pending;
+    otherwise `("cleared", None)`."""
+    anchor = None
+    for index, comment in enumerate(comments):
+        if _DEFERRAL_ANCHOR_RE.match(_first_line(comment.get("body") or "")):
+            anchor = index
+    if anchor is None:
+        return "no-anchor", None
+    anchor_login = (comments[anchor].get("user") or {}).get("login")
+    pending: int | None = None
+    for comment in comments[anchor + 1:]:
+        body = comment.get("body") or ""
+        kind = _classify(body)
+        if kind is not None:
+            if kind == ("l1", "handoff"):
+                return "discharged", None
+            if kind[0] == "l1":
+                pending = None
+            continue
+        login = (comment.get("user") or {}).get("login")
+        if (anchor_login and login == anchor_login
+                and unverified_marker(body) is None
+                and not _ANY_HEADING_RE.match(_first_line(body))
+                and str(comment.get("id")) not in own_ids
+                and markdown_strip.visible_text(body).strip()):
+            pending = comment.get("id")
+    if pending is not None:
+        return "queued", pending
+    return "cleared", None
+
+
+def _deferral_recorded_long_ago(entry: dict, now: "dt.datetime | None" = None) -> bool:
+    """Whether a deferral entry is a `backfill`, or was recorded more than
+    `DEFERRAL_NO_ANCHOR_GRACE` ago (an unparseable stamp counts as old)."""
+    if entry.get("source") == "backfill":
+        return True
+    try:
+        recorded = belt_candidates._parse_iso(entry["recorded_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return (now or dt.datetime.now(dt.timezone.utc)) - recorded > DEFERRAL_NO_ANCHOR_GRACE
 
 
 #: Retired lane tokens, and what replaced them. Read from the same registry
@@ -1548,6 +1637,8 @@ def discover_queue(repo: str, lane: str,
             # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
             # after the store was read.
             belt_candidates.retire_candidate(repo, issue, read_before=read_before)
+            # harmonic-forge#1564: a closed or missing issue's deferral is over.
+            belt_candidates.discharge_deferral(repo, issue, state)
             if state == "closed":
                 _retire_imc(repo, issue)
             continue
@@ -1612,6 +1703,22 @@ def discover_queue(repo: str, lane: str,
                 last_body = comment.get("body", "")
                 last_id = comment.get("id")
         newest_id = comments[-1].get("id") if comments else None
+        deferral = belt_candidates.deferral_entry(repo, issue) if lane == "l1" else None
+        if deferral is not None:
+            # harmonic-forge#1564: an operator comment on a recorded R-0352
+            # deferral. Set first, so every owed kind below overwrites it.
+            outcome, trigger_id = _deferral_trigger(
+                comments, {str(i) for i in (deferral.get("own_comment_ids") or ())})
+            if outcome == "discharged":
+                belt_candidates.discharge_deferral(repo, issue, "a Lane 1 handoff followed it")
+            elif outcome == "no-anchor":
+                if _deferral_recorded_long_ago(deferral):
+                    belt_candidates.discharge_deferral(
+                        repo, issue, "its thread carries no R-0039 deferral comment")
+            elif outcome == "queued":
+                queued[issue] = f"{DEFERRAL_KIND} owes={DEFERRAL_OWES}"
+                if marker_ids is not None:
+                    marker_ids[issue] = trigger_id
         if not last_kind:
             if sticky:
                 queued[issue] = f"gate-result owes={STICKY_OWES}"
@@ -2557,6 +2664,10 @@ def queue_cycle(
     #: to a search -- a silent fallback would reinstate the defect the moment
     #: a caller forgot the argument.
     candidate_pairs = candidate_pairs or set()
+    if lane == "l1":
+        #: harmonic-forge#1564: a recorded deferral has no worktree and no
+        #: candidate entry, so it is a candidate source of its own.
+        candidate_pairs = candidate_pairs | belt_candidates.read_deferrals(repos)
     queue: dict[tuple[str, int], str] = {}
     ok_repos: set[str] = set()
     fresh_ids: dict[tuple[str, int], int | None] = {}

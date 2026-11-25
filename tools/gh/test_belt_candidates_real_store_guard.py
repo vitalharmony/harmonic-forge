@@ -205,5 +205,41 @@ class RunnersSetTheFlagTests(unittest.TestCase):
         self.assertEqual(set(seen), {"1"})
 
 
+class DeferralStoreGuardTests(RealStoreFixture):
+    """harmonic-forge#1564 AC12: every deferral-store write under test is
+    refused for the real store's `deferrals/` directory."""
+
+    def deferrals(self):
+        return sorted(p.name for p in (self.real / bc.DEFERRALS_SUBDIR).glob("*.json"))
+
+    def _seed(self, issue):
+        directory = self.real / bc.DEFERRALS_SUBDIR
+        directory.mkdir(exist_ok=True)
+        path = directory / f"vitalharmony__hrse__{issue}.json"
+        path.write_text('{"repo": "vitalharmony/hrse", "issue": %d, "recorded_at": '
+                        '"2026-11-16T00:00:00Z", "source": "filing", "own_comment_ids": []}' % issue)
+        return path
+
+    def test_record_deferral_under_test_writes_nothing(self):
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            self.assertFalse(bc.record_deferral("vitalharmony/hrse", 1, "filing"))
+        self.assertEqual(self.deferrals(), [])
+        self.assertIn("not writing the real candidate store", err.getvalue())
+
+    def test_note_own_comment_under_test_leaves_the_entry(self):
+        path = self._seed(2)
+        before = path.read_text()
+        with mock.patch.object(sys, "stderr", io.StringIO()):
+            bc.note_own_comment("vitalharmony/hrse", 2, 99)
+        self.assertEqual(path.read_text(), before)
+
+    def test_discharge_under_test_leaves_the_entry(self):
+        path = self._seed(3)
+        with mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertFalse(bc.discharge_deferral("vitalharmony/hrse", 3, "closed"))
+        self.assertTrue(path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2329,8 +2329,8 @@ exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0
 id = "R-0352"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "A deferral is declared on the issue at filing time, in one comment naming the trigger, the owner (a named lane or the operator, never 'someone'), and the record. An issue with no such comment is not deferred, it is unfinished. Nothing watches for a fired trigger today -- a declared deferral is debt visible to the standing hygiene pass, and the rule states that rather than implying a sweep that does not exist."
-text_sha = "426eff48acc424e0"
+statement = "A deferral is declared on the issue at filing time, in one comment naming the trigger, the owner (a named lane or the operator, never 'someone'), and the record. An issue with no such comment is not deferred, it is unfinished. One fired trigger is watched (harmonic-forge#1564): gh_issue.py --handoff-exception records each blocked-on-prerequisite and deferred-design-record deferral, and Lane 1's belt queues queued-for-l1 kind=deferral-trigger owes=handoff for a later comment by the deferral comment's author carrying no lane footer and no heading, until a Lane 1 post follows it. Every other trigger is still unwatched: there is no scheduled sweep for deferred artifacts, and a declared deferral is debt visible to the standing hygiene pass."
+text_sha = "1f7272cef7d7de84"
 hooks = []
 
 [[rule]]
