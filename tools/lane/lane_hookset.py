@@ -51,6 +51,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -78,6 +79,12 @@ SCRIPT_RE = re.compile(r"tools/hooks/([A-Za-z0-9_]+\.py)")
 OVERLAY_FILES = {"operator": "lane_hooks.operator.json"}
 OVERLAY_CHOICES = instance.OVERLAY_CHOICES
 OVERLAY_KEYS = frozenset({"schema", "lane_only", "hooks"})
+# The frozen pre-split set (f61ac37). The operator overlay must carry every
+# handler of it whose script the core set does not wire, exactly as recorded:
+# an overlay that drops a deny handler refuses rather than builds
+# (harmonic-forge#1525). Read from this file's own checkout, never beside a
+# caller-chosen set.
+OPERATOR_FIXTURE = _HERE / "testdata" / "lane_hooks_f61ac37_tuples.json"
 
 
 class SetError(ValueError):
@@ -204,7 +211,9 @@ def _scripts(data: dict) -> set[str]:
 def load_overlay(path: Path, core: dict, *, forge_root: Path | None = None) -> dict:
     """The operator overlay at `path`, validated as a set of its own and
     disjoint from `core`: it may only add hooks, never carry
-    `disableAllHooks` or name a script the core set wires."""
+    `disableAllHooks` or name a script the core set wires. It must also be
+    complete: every operator handler `_operator_handlers(core)` derives from
+    the frozen record, byte for byte, or it refuses naming each one missing."""
     data = load_json_object(path, "operator hook overlay")
     if "disableAllHooks" in data:
         raise SetError(f"operator hook overlay carries `disableAllHooks`, which only "
@@ -221,7 +230,41 @@ def load_overlay(path: Path, core: dict, *, forge_root: Path | None = None) -> d
     if shared:
         raise SetError(f"overlay names core script(s) {', '.join(shared)}: "
                        f"an overlay only adds hooks: {path}")
+    missing = sorted((_operator_handlers(core) - Counter(_handler_keys(data))).elements(),
+                     key=lambda k: (k[0], k[1] or "", k[2], k[3] or 0))
+    if missing:
+        listed = "; ".join(f"{e} {m or '(no matcher)'} {'/'.join(SCRIPT_RE.findall(c)) or c} "
+                           f"timeout={t}" for e, m, c, t in missing)
+        raise SetError(f"operator hook overlay is missing {len(missing)} operator handler(s) "
+                       f"recorded in {OPERATOR_FIXTURE.name} (every recorded handler whose "
+                       f"script the core set does not wire; a core script retired since "
+                       f"then needs that record refreshed): {listed}: {path}")
     return data
+
+
+def _handler_keys(data: dict) -> list[tuple]:
+    """Every handler's (event, matcher, command, timeout), the identity
+    `doubled` and `snapshot_gaps` use."""
+    return [(e, m, h.get("command"), h.get("timeout"))
+            for e, m, h in handlers(data.get("hooks") or {})]
+
+
+def _operator_handlers(core: dict) -> Counter:
+    """The handlers the operator overlay must carry: every handler of the
+    frozen f61ac37 set (`OPERATOR_FIXTURE`) whose script `core` does not wire.
+    Derived, not listed, so no hand list can drift from the record."""
+    frozen = load_json_object(OPERATOR_FIXTURE, "frozen operator hook record")
+    rows = frozen.get("handlers")
+    if (not isinstance(rows, list) or not rows
+            or not all(isinstance(r, list) and len(r) == 4 for r in rows)):
+        raise SetError(f"frozen operator hook record has no handler list: {OPERATOR_FIXTURE}")
+    wired = _scripts(core)
+    required = Counter(tuple(r) for r in rows
+                       if isinstance(r[2], str) and SCRIPT_RE.findall(r[2])
+                       and not set(SCRIPT_RE.findall(r[2])) & wired)
+    if not required:
+        raise SetError(f"frozen operator hook record names no operator handler: {OPERATOR_FIXTURE}")
+    return required
 
 
 def merge(core: dict, overlay: dict, *, forge_root: Path | None = None) -> dict:

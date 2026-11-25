@@ -7,6 +7,9 @@ per-user file this module only reads:
     $XDG_CONFIG_HOME/harmonic-forge/instance.toml   (an empty XDG_CONFIG_HOME counts as unset)
     ~/.config/harmonic-forge/instance.toml          (otherwise)
 
+The file is refused inside a git checkout unless that checkout reports it
+ignored and untracked (a HOME or ~/.config kept in git, harmonic-forge#1525).
+
     timezone = "America/Los_Angeles"
     lane_hook_overlay = "operator"
 
@@ -22,6 +25,7 @@ any other value raises ValueError, so a lane launch refuses rather than guess.
 from __future__ import annotations
 
 import os
+import subprocess
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -38,17 +42,45 @@ def _inside_a_checkout(path: Path) -> bool:
     return any(os.path.lexists(parent / ".git") for parent in path.resolve().parents)
 
 
+def _git_ignored_and_untracked(path: Path) -> bool:
+    """True only when the git checkout holding `path` reports it ignored AND
+    untracked, so no `git add -A` or commit there can carry it
+    (harmonic-forge#1525). Every `GIT_*` variable is dropped, so the
+    environment cannot point git at another repository, index or config;
+    any git error, a missing git, or a timeout is False (refuse)."""
+    resolved = path.resolve()
+    anchor = next((p for p in resolved.parents if p.is_dir()), None)
+    if anchor is None:
+        return False
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    base = ["git", "-c", "core.fsmonitor=false", "-C", str(anchor)]
+    try:
+        ignored = subprocess.run([*base, "check-ignore", "-q", "--", str(resolved)],
+                                 env=env, capture_output=True, timeout=10)
+        tracked = subprocess.run([*base, "--literal-pathspecs", "ls-files", "-z", "--", str(resolved)],
+                                 env=env, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return ignored.returncode == 0 and tracked.returncode == 0 and tracked.stdout == b""
+
+
 def config_path(environ: Mapping[str, str] | None = None) -> Path:
     """The per-user settings file. A relative XDG_CONFIG_HOME is ignored, as the
-    XDG spec requires; a path inside any git checkout raises ValueError.
+    XDG spec requires. A path inside a git checkout raises ValueError unless
+    that checkout reports it ignored and untracked: #1505 keeps per-user
+    values out of every repository, and an ignored, untracked file cannot be
+    committed by accident, so a HOME or ~/.config kept in git (a dotfiles
+    repo) still has a valid location (harmonic-forge#1525).
 
     `environ` (default: the process environment) is where XDG_CONFIG_HOME is
     read, so a fixture can name the file a launch under its environment reads."""
     xdg = (os.environ if environ is None else environ).get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
     path = base / "harmonic-forge" / FILE_NAME
-    if _inside_a_checkout(path):
-        raise ValueError(f"{path}: the instance settings file must live outside any git checkout")
+    if _inside_a_checkout(path) and not _git_ignored_and_untracked(path):
+        raise ValueError(f"{path}: the instance settings file must live outside any git "
+                         f"checkout, or be ignored and untracked by it (add it to that "
+                         f"checkout's .gitignore)")
     return path
 
 

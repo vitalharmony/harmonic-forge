@@ -851,7 +851,7 @@ path = "tools/lane/lane_hookset.py"
   match = []
   class = "read"
   note = "every subcommand prints to stdout; git calls are reads"
-  cite = ["tools/lane/lane_hookset.py:338-340", "tools/lane/lane_hookset.py:478-519"]
+  cite = ["tools/lane/lane_hookset.py:379-381", "tools/lane/lane_hookset.py:519-560"]
 
 [[tool]]
 path = "tools/lane/probe_hook_merge.py"

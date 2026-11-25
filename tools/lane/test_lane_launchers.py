@@ -2413,7 +2413,11 @@ class LaneHookSet(unittest.TestCase):
 
     def test_the_set_is_built_after_the_rules_pull(self):
         """A set the rules pull changes is the one passed: the build runs
-        after `sync_rules.py --pull`, not before it."""
+        after `sync_rules.py --pull`, not before it. The pull changes a core
+        handler's timeout rather than retiring a script: a core script
+        retired since the frozen f61ac37 record counts as an operator handler
+        the overlay lacks, which refuses until the record is refreshed
+        (harmonic-forge#1525)."""
         with _FixtureTree() as tree:
             lane_dir = _copied_forge_tools(tree)
             stub = tree.home / "harmonic-forge" / "sync_rules.py"
@@ -2421,14 +2425,32 @@ class LaneHookSet(unittest.TestCase):
                 "import json, sys\n"
                 f"path = {str(lane_dir / 'lane_hooks.json')!r}\n"
                 "data = json.load(open(path))\n"
-                "del data['hooks']['PreToolUse'][[b.get('matcher') for b in data['hooks']"
-                "['PreToolUse']].index('SendMessage')]\n"
+                "block = next(b for b in data['hooks']['PreToolUse'] if b.get('matcher') == 'SendMessage')\n"
+                "block['hooks'][0]['timeout'] = 77\n"
                 "json.dump(data, open(path, 'w'))\n")
             tree.lane_dir = lane_dir
             cell = tree.run("1", [], LANE_CLI="claude")
             self.assertTrue(cell["launched"], cell.get("stderr"))
-            matchers = [b.get("matcher") for b in _settings_value(cell)["hooks"]["PreToolUse"]]
-            self.assertNotIn("SendMessage", matchers)
+            timeouts = [h.get("timeout") for b in _settings_value(cell)["hooks"]["PreToolUse"]
+                        if b.get("matcher") == "SendMessage" for h in b["hooks"]]
+            self.assertEqual(timeouts[:1], [77])
+
+    def test_a_core_script_retired_since_the_frozen_record_refuses_naming_it(self):
+        """The operator handler set is derived as the frozen f61ac37 record
+        minus what the core set wires, so a retired core script reads as a
+        handler the overlay lacks: the launch refuses, naming the script and
+        the record to refresh, rather than build silently (harmonic-forge#1525)."""
+        with _FixtureTree() as tree:
+            lane_dir = _copied_forge_tools(tree)
+            data = json.loads(SET_FILE.read_text())
+            data["hooks"]["PreToolUse"] = [b for b in data["hooks"]["PreToolUse"]
+                                           if b.get("matcher") != "SendMessage"]
+            (lane_dir / "lane_hooks.json").write_text(json.dumps(data))
+            tree.lane_dir = lane_dir
+            cell = tree.run("1", [], LANE_CLI="claude")
+            self.assertFalse(cell["launched"])
+            self.assertIn("deny_cross_session_contact.py", cell["stderr"])
+            self.assertIn("lane_hooks_f61ac37_tuples.json", cell["stderr"])
 
     def _refuses_flag(self, flag):
         with _FixtureTree() as tree:

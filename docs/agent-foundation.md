@@ -98,6 +98,12 @@ new adopter declares it before the first launch. The launcher accepts
 `XDG_CONFIG_HOME` only as `$HOME/.config` (or unset, empty or relative), so the
 declaration cannot be relocated through the environment.
 
+The file is refused inside any git checkout, so it is never committed. When
+`$HOME` or `~/.config` is itself kept in git (a dotfiles repo), add
+`.config/harmonic-forge/` to that checkout's `.gitignore` and leave it
+untracked: the file is accepted there only while git reports it ignored and
+untracked, read with every `GIT_*` variable dropped (harmonic-forge#1525).
+
 Read the timezone only through `timezone()`. A missing file or
 key returns `America/Los_Angeles`, reported as defaulted; an invalid zone is an
 error. Every current timestamp stays UTC. `tools/settings/check_zone_literals.py`

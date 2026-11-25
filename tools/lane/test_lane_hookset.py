@@ -668,6 +668,64 @@ class Overlay(_Tmp):
                 self.assertEqual(proc.stdout, "")
                 self.assertIn(str(path.parent / "lane_hooks.operator.json"), proc.stderr)
 
+    # Pass-1 finding (hostile-author): an incomplete overlay refuses.
+    def test_an_overlay_missing_any_operator_handler_refuses_naming_it(self):
+        overlay = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
+        frozen = json.loads(F61AC37.read_text(encoding="utf-8"))["handlers"]
+        core_named = _named(_set())
+        required = [t for t in frozen if not set(hs.SCRIPT_RE.findall(t[2])) & core_named]
+        self.assertEqual(len(required), 9)
+        self.assertEqual({s for t in required for s in hs.SCRIPT_RE.findall(t[2])}, SIX)
+        seen = 0
+        for event, blocks in overlay["hooks"].items():
+            for bi, block in enumerate(blocks):
+                for hi, handler in enumerate(block["hooks"]):
+                    script = hs.SCRIPT_RE.findall(handler["command"])[0]
+                    for how in ("dropped", "timeout changed", "command changed"):
+                        with self.subTest(event=event, script=script, how=how):
+                            data = copy.deepcopy(overlay)
+                            entries = data["hooks"][event][bi]["hooks"]
+                            if how == "dropped":
+                                del entries[hi]
+                                if not entries:
+                                    del data["hooks"][event][bi]
+                                if not data["hooks"][event]:
+                                    del data["hooks"][event]
+                                # Dropped coherently, so `validate`'s own
+                                # lane_only check cannot be what refuses.
+                                if script not in _named(data):
+                                    data["lane_only"] = [n for n in data["lane_only"] if n != script]
+                            elif how == "timeout changed":
+                                entries[hi]["timeout"] = entries[hi].get("timeout", 10) + 1
+                            else:
+                                entries[hi]["command"] += " "
+                            path = self._pair(_set(), data)
+                            with self.assertRaises(hs.SetError) as raised:
+                                hs.load_effective(path, "operator", forge_root=ROOT)
+                            message = str(raised.exception)
+                            self.assertIn("missing 1 operator handler", message)
+                            self.assertIn(f"{event} ", message)
+                            self.assertIn(script, message)
+                            self.assertIn(str(path.parent / "lane_hooks.operator.json"), message)
+                    seen += 1
+        self.assertEqual(seen, 9)
+        # Every deny hook dropped at once: all three named, and the CLI refuses.
+        data = copy.deepcopy(overlay)
+        deny = ("enforce_belt_arming.py", "deny_retired_belt_sweep.py", "gate_feedback_memory_write.py")
+        data["hooks"] = {e: kept for e, blocks in data["hooks"].items()
+                         if (kept := [{**b, "hooks": hk} for b in blocks
+                                      if (hk := [h for h in b["hooks"]
+                                                 if not any(d in h["command"] for d in deny)])])}
+        self.declare('lane_hook_overlay = "operator"\n')
+        for stale in self.tmp.glob("lane_hooks*.json"):
+            stale.unlink()
+        path = self._pair(_set(), data)
+        proc = self.cli("build", "--set", str(path))
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        for name in deny:
+            self.assertIn(name, proc.stderr)
+
     # Test Case 5 (A-AC3, "none" is loud)
     def test_none_builds_core_only_and_says_so(self):
         config = self.declare('lane_hook_overlay = "none"\n')
