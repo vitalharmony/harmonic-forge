@@ -33,7 +33,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import manifest_overlay
 from manifest import ManifestError, Project, by_repo, load
 from manifest_protocol import normalize_repo, origin_repo
 
@@ -70,11 +69,16 @@ def account_for_origin(url: str, path: Path | None = None, *, checkout: Path | N
     """The account a lane checkout whose origin is `url` acts as
     (harmonic-forge#1507 reforge). One normalization, one exact refusal rule
     (`manifest_protocol.origin_repo`), one direct lookup: the key is looked up
-    directly, never through `account_for`, which would normalize again. On a base
-    miss, `checkout`'s overlay may register this exact key (harmonic-forge#1527)."""
+    directly, never through `account_for`, which would normalize again.
+
+    On a base miss, `checkout`'s main-checkout overlay may register this exact
+    key (harmonic-forge#1527). This is the launcher's call and one of the
+    overlay's only two consumers (the other is `ci_plan`); every other function
+    here reads `projects.toml` alone, so no gate, hook or slot sees an overlay."""
     key = origin_repo(url)
     project = by_repo(path).get(key)
     if project is None and checkout is not None:
+        import manifest_overlay  # noqa: PLC0415 -- R1: the overlay is reached from here only
         project = manifest_overlay.path_project(Path(checkout).expanduser().resolve(), None, path)
     if project is None or project.repo != key:
         raise ManifestError(f"no [[project]] entry for {key}; refusing to fall back to the "
@@ -100,10 +104,9 @@ def project_for_path(path: str | Path, manifest: Path | None = None) -> Project:
             if target == root or root in target.parents:
                 if best is None or len(root.parts) > best[0]:
                     best = (len(root.parts), project)
-    found = manifest_overlay.path_project(target, best[1] if best else None, manifest)
-    if found is None:
+    if best is None:
         raise ManifestError(f"{target} is not inside any registered checkout or lane worktree")
-    return found
+    return best[1]
 
 
 def workspaces(manifest: Path | None = None) -> list[str]:
@@ -153,30 +156,14 @@ def workspace_for(path: str | Path | None, manifest: Path | None = None) -> str:
     return project.workspace
 
 
-def slot_env(repo: str, path: Path | None = None, *, at: Path | None = None) -> dict[str, str]:
-    """`os.environ` with the repo's slot injected and tokens removed. No probe. For hooks
-    and sweeps (a per-subprocess `env=`); `at`'s usable Project slot wins (#1527)."""
-    if at is not None:
-        try:
-            project = project_for_path(at, path)
-            if project.repo == normalize_repo(repo):
-                return slot_env_for_project(project)
-        except (ManifestError, OSError):
-            pass  # no usable Project slot: resolve exactly as with no Project
-    return _slot_env_for(account_for(repo, path))
+def slot_env(repo: str, path: Path | None = None) -> dict[str, str]:
+    """`os.environ` with the repo's slot injected and tokens removed. No probe.
 
-
-def slot_env_for_project(project: Project) -> dict[str, str]:
-    """`slot_env` for a resolved Project (harmonic-forge#1527). Raises with no account or no
-    slot directory: a Project never swaps a key lookup's env for a missing credential."""
-    env = _slot_env_for(project.account) if project.account else None
-    if env is None or not Path(env["GH_CONFIG_DIR"]).is_dir():
-        raise ManifestError(f"{project.repo or project.name}: no `account` or no slot directory")
-    return env
-
-
-def _slot_env_for(account: str) -> dict[str, str]:
+    For hooks and multi-repo sweeps, which pass it as a per-subprocess `env=`
+    rather than mutating the process environment.
+    """
     env = {k: v for k, v in os.environ.items() if k not in STRIPPED_TOKEN_VARS}
+    account = account_for(repo, path)
     lane = os.environ.get("LANE")
     if account == "vitalharmony" and lane in ("1", "2", "3"):
         # harmonic-forge#1396 preclose pass 1: in a lane, a vitalharmony child
@@ -212,7 +199,7 @@ def _hosts_file_token(slot: Path) -> str:
     return ""
 
 
-def slot_env_or_none(repo: str | None, path: Path | None = None, *, at: Path | None = None) -> dict[str, str] | None:
+def slot_env_or_none(repo: str | None, path: Path | None = None) -> dict[str, str] | None:
     """`slot_env`, or None when the repo is missing or unregistered.
 
     For hooks, which fail open on anything they cannot resolve rather than block
@@ -222,7 +209,7 @@ def slot_env_or_none(repo: str | None, path: Path | None = None, *, at: Path | N
     if not repo:
         return None
     try:
-        return slot_env(repo, path, at=at)
+        return slot_env(repo, path)
     except ManifestError:
         return None
 

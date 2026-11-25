@@ -59,7 +59,7 @@ class FakeGitHub:
         self.delay = delay
         self.calls: list[tuple] = []
 
-    def __call__(self, *args, cwd=None, repo=None, project=None):
+    def __call__(self, *args, cwd=None, repo=None):
         self.calls.append(args)
         time.sleep(self.delay)
         joined = " ".join(args)

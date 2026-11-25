@@ -11,9 +11,6 @@ from unittest.mock import patch
 
 import repo_hygiene as rh
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
-from test_manifest_overlay import overlay_only_env  # noqa: E402
-
 
 class ClassificationTests(unittest.TestCase):
     """Branch classification. Every case here is one the 2026-08-12 manual
@@ -1645,38 +1642,6 @@ class InertPhaseDependentsTests(unittest.TestCase):
             )
         self.assertTrue(any("/dependencies/blocking" in p for p in called),
                         "the dependency API must actually be consulted")
-
-
-
-class OverlayOnlyCheckoutSlot(unittest.TestCase):
-    """harmonic-forge#1527 AC9 / TC18c: a --checkout in an overlay-only repo runs its
-    audits as that repo's owner slot, taken from the Project its path resolves to."""
-
-    def test_tc18c_every_checkout_call_site_in_main_runs_as_the_owner_slot(self):
-        """Pass-1 survivor 4: driven through `main`'s two `--checkout` loops (the audits
-        and the prune), never by calling `_use_slot` directly."""
-        import io
-        from contextlib import redirect_stdout
-        repo, slots = overlay_only_env(self)
-        self.addCleanup(rh._use_slot, None)
-        seen = {}
-
-        def record(label, result=None):
-            def fn(*_a, **_k):
-                seen.setdefault(label, []).append(rh._ENV and rh._ENV.get("GH_CONFIG_DIR"))
-                return result
-            return fn
-        audits = ("audit_worktrees", "audit_checkout_branch", "audit_stashes",
-                  "audit_transaction_log")
-        with patch.object(sys, "argv", ["repo_hygiene.py", "--checkout", str(repo),
-                                        "--prune-worktrees"]), \
-             patch.object(rh, "_require_precheck", return_value=None), \
-             patch.object(rh, "prune_worktrees", record("prune", 0)), \
-             patch.multiple(rh, **{name: record(name) for name in audits}), \
-             redirect_stdout(io.StringIO()):
-            rh.main()
-        want = [str(slots / "acme")]
-        self.assertEqual(seen, {name: want for name in (*audits, "prune")})
 
 
 if __name__ == "__main__":

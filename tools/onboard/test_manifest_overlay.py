@@ -7,9 +7,11 @@ Every case uses scratch `git init` repos and a scratch base manifest passed as
 restored on cleanup. None reads the live manifest or the repo's own cwd. The
 case numbers are the handoff's TC numbers.
 
-`overlay_only_fixture` and `overlay_only_env` are imported by the hook, hygiene
-and worktree tests (TC17, TC18), so every consumer is driven against the same
-overlay-only repo.
+The overlay has exactly two consumers (sticky-wicket R1): the launcher's
+`account_for_origin(checkout=)` and `ci_plan.resolve_project`, which `consumer`
+below drives. Every other path-keyed reader returns its origin/main answer.
+`overlay_only_fixture` and `probe_from` are imported by the BATCH tests (TC17)
+and the gate-equivalence tests in `tools/hooks/test_overlay_never_reaches_a_gate.py`.
 """
 from __future__ import annotations
 
@@ -26,11 +28,14 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "lane"))
 
 import manifest as mf  # noqa: E402
 import manifest_identity as mi  # noqa: E402
+import ci_plan  # noqa: E402
 import manifest_overlay as mo  # noqa: E402
 import manifest_validate as mv  # noqa: E402
+import manifest_git as mg  # noqa: E402
 from manifest_protocol import ManifestError  # noqa: E402
 
 PROTOCOL = """\
@@ -177,6 +182,11 @@ class OverlayCase(unittest.TestCase):
     def env_base(self, base: Path):
         return mock.patch.dict(os.environ, {"FORGE_PROJECTS_MANIFEST": str(base)})
 
+    def consumer(self, target: Path, base: Path):
+        """What `ci_plan`, the overlay's path-keyed consumer, resolves for `target`."""
+        with self.env_base(base):
+            return ci_plan.resolve_project(Path(target))
+
     def raises(self, root: Path, base: Path, *fragments: str) -> str:
         with self.assertRaises(ManifestError) as ctx:
             mo.project_for_checkout(root, base)
@@ -191,15 +201,13 @@ class OverlayCase(unittest.TestCase):
 
 
 class AC1OverlayOnlyResolvesByPath(OverlayCase):
-    def test_tc1_overlay_only_resolves_through_every_path_keyed_consumer(self) -> None:
+    def test_tc1_overlay_only_resolves_through_its_two_consumers(self) -> None:
         repo, base = overlay_only_fixture(self.tmp)
         project = mo.project_for_checkout(repo, base)
         self.assertEqual((project.repo, project.checkout), ("acme/app", repo))
         (repo / "sub").mkdir()
-        found = mi.project_for_path(repo / "sub", base)
+        found = self.consumer(repo / "sub", base)
         self.assertEqual((found.repo, found.checkout), ("acme/app", repo))
-        with self.env_base(base):
-            self.assertEqual(mi.repo_for_path_or_none(repo), "acme/app")
         self.assertEqual(mi.account_for_origin(APP_URL, base, checkout=repo), "acme")
         os.chdir(repo)
         self.assertNotIn("acme/app", mf.by_repo(base))
@@ -238,9 +246,9 @@ class AC3RegisteredOverlayMerges(OverlayCase):
         lane2 = self.worktree(repo, self.tmp / "app-lane2")
         for label, project in (
                 ("checkout", mo.project_for_checkout(repo, base)),
-                ("path", mi.project_for_path(repo, base)),
-                ("worktree", mi.project_for_path(worktree, base)),
-                ("lane2", mi.project_for_path(lane2, base))):
+                ("path", self.consumer(repo, base)),
+                ("worktree", self.consumer(worktree, base)),
+                ("lane2", self.consumer(lane2, base))):
             with self.subTest(label):
                 self.assertEqual(project.board_number, "2")
                 self.assertEqual(project.board_owner, "acme")
@@ -249,6 +257,7 @@ class AC3RegisteredOverlayMerges(OverlayCase):
                 self.assertEqual(project.protocol.l1_post_task, "l1-post")
                 self.assertEqual(project.checkout, repo)
         self.assertEqual(mf.by_repo(base)["acme/app"].board_number, "1")
+        self.assertEqual(mi.project_for_path(repo, base).board_number, "1")  # R1
 
 
 class AC4MinVersion(OverlayCase):
@@ -301,7 +310,7 @@ class MainCheckoutRead(OverlayCase):
         w = self.worktree(a, self.tmp / "w")
         (w / "x").mkdir()
         self.assertEqual(mo.project_for_checkout(w, base).board_number, "2")
-        self.assertEqual(mi.project_for_path(w / "x", base).board_number, "2")
+        self.assertEqual(self.consumer(w / "x", base).board_number, "2")
 
     def test_tc7b_a_worktrees_own_overlay_is_ignored(self) -> None:
         a = self.repo("a", APP_URL)
@@ -309,7 +318,7 @@ class MainCheckoutRead(OverlayCase):
         w = self.worktree(a, self.tmp / "w")
         write_overlay(w, overlay_text(extra='board_number = "9"\n'))
         self.assertEqual(mo.project_for_checkout(w, base).board_number, "1")
-        self.assertEqual(mi.project_for_path(w, base).board_number, "1")
+        self.assertEqual(self.consumer(w, base).board_number, "1")
 
 
 class IdentityGuard(OverlayCase):
@@ -358,6 +367,10 @@ class ExplicitRootOnly(OverlayCase):
         self.assertEqual(mo.project_for_checkout(y, base).repo, "acme/y")
         with self.assertRaisesRegex(ManifestError, "not inside any registered checkout"):
             mi.project_for_path(self.outside, base)
+        with self.assertRaisesRegex(ManifestError, "not inside any registered checkout"):
+            self.consumer(self.outside, base)
+        with self.assertRaisesRegex(ManifestError, r"no \[\[project\]\] entry for acme/x"):
+            mi.account_for_origin("https://github.com/acme/x.git", base, checkout=self.outside)
         with self.assertRaises(TypeError):
             mo.project_for_checkout()  # type: ignore[call-arg]
 
@@ -371,9 +384,9 @@ class PathKeyedDiscovery(OverlayCase):
                       overlay_text(name="y", prefix="Q", repo="acme/y"))
         (y / "sub").mkdir()
         os.chdir(x)
-        self.assertEqual(mi.project_for_path(y / "sub", base).repo, "acme/y")
-        with self.env_base(base):
-            self.assertEqual(mi.repo_for_path_or_none(y), "acme/y")
+        self.assertEqual(self.consumer(y / "sub", base).repo, "acme/y")
+        self.assertEqual(mi.account_for_origin("https://github.com/acme/y.git", base,
+                                               checkout=y / "sub"), "acme")
 
 
 class OriginBinding(OverlayCase):
@@ -387,11 +400,17 @@ class OriginBinding(OverlayCase):
         repo = self.repo("x", None, overlay_text())
         self.raises(repo, self.base(), str(repo))
 
-    def test_tc13c_registered_overlay_makes_no_git_call(self) -> None:
+    def test_tc13c_registered_overlay_is_origin_bound(self) -> None:
+        """R4 (round 2 #11), inverting the old TC13(c): a registered path holding a
+        clone of another origin never applies its overlay."""
         repo = self.repo("app", APP_URL, overlay_text(extra='board_number = "2"\n'))
-        base = self.base(self.registered(repo, extra='board_owner = "acme"\n'))
-        with mock.patch.object(mo.subprocess, "run", side_effect=AssertionError("git ran")):
-            self.assertEqual(mo.project_for_checkout(repo, base).board_number, "2")
+        base = self.base(self.registered(repo, extra='board_owner = "acme"\nboard_number = "1"\n'))
+        self.assertEqual(mo.project_for_checkout(repo, base).board_number, "2")
+        _git("-C", str(repo), "remote", "set-url", "origin", "https://github.com/evil/app.git")
+        self.raises(repo, base, "acme/app", "evil/app")
+        self.assertEqual(self.consumer(repo, base).board_number, "1")
+        _git("-C", str(repo), "remote", "remove", "origin")
+        self.raises(repo, base, "no origin remote")
 
 
 class EmptyBase(OverlayCase):
@@ -512,7 +531,7 @@ class RegisteredOverlayNeedsOnlyItsRepo(OverlayCase):
     def test_r2_a_registered_overlay_may_omit_name_and_prefix(self) -> None:
         repo = self.repo("app", APP_URL, '[project]\nrepo = "acme/app"\nmin_version = "v2026.12.1"\n')
         base = self.base(self.registered(repo))
-        for project in (mo.project_for_checkout(repo, base), mi.project_for_path(repo, base)):
+        for project in (mo.project_for_checkout(repo, base), self.consumer(repo, base)):
             with self.subTest(project=project):
                 self.assertEqual((project.name, project.prefix, project.min_version),
                                  ("app", "Z", "v2026.12.1"))
@@ -528,12 +547,10 @@ class ARejectedOverlayNeverErasesTheBase(OverlayCase):
         repo = self.repo("app", APP_URL, "[project\n")
         base = self.base(self.registered(repo))
         self.raises(repo, base, "forge.toml")
-        self.assertEqual(mi.project_for_path(repo, base).repo, "acme/app")
-        with self.env_base(base):
-            self.assertEqual(mi.repo_for_path_or_none(repo), "acme/app")
+        self.assertEqual(self.consumer(repo, base).repo, "acme/app")
         only = self.repo("only", APP_URL, "[project\n")
         with self.assertRaisesRegex(ManifestError, "forge.toml"):
-            mi.project_for_path(only, base)
+            self.consumer(only, base)
 
 
 class ScopeLimitEntrypointsRefuse(OverlayCase):
@@ -545,6 +562,128 @@ class ScopeLimitEntrypointsRefuse(OverlayCase):
                 mf.require_onboarded_repo("acme/app")
             with self.assertRaisesRegex(ManifestError, r"no \[\[project\]\] entry"):
                 mi.account_for("acme/app")
+
+
+class OverlayHasTwoConsumers(OverlayCase):
+    """Sticky-wicket R1: only `account_for_origin(checkout=)` and `ci_plan` read the
+    overlay; every gate, hook and slot input answers as origin/main did."""
+
+    def test_r1_overlay_only_checkout_is_unknown_to_every_gate_input(self) -> None:
+        sys.path.insert(0, str(HERE.parent / "hooks"))
+        import hook_identity  # noqa: PLC0415
+        repo = self.repo("app", APP_URL, overlay_text(
+            extra='onboarded = true\nworkspace = "acmews"\n' + PROTOCOL))
+        base = self.base()
+        self.assertEqual(self.consumer(repo, base).workspace, "acmews")
+        os.chdir(repo)
+        with self.env_base(base):
+            self.assertIsNone(hook_identity.repo_from_checkout(str(repo)))
+            self.assertIsNone(mi.repo_for_path_or_none(repo))
+            with self.assertRaises(ManifestError):
+                mi.workspace_for(repo)
+            with self.assertRaises(ManifestError):
+                mi.project_for_path(repo)
+            self.assertIsNone(mi.slot_env_or_none("acme/app"))
+
+    def test_r1_structural_allowlist(self) -> None:
+        root = HERE.parents[1]
+        found = subprocess.run(
+            ["git", "-C", str(root), "grep", "-l", "-E",
+             "manifest_overlay|path_project|project_for_checkout", "--",
+             "tools/**/*.py", "skills/**/*.py", ":!**/test_*"],
+            capture_output=True, text=True, check=False).stdout.split()
+        self.assertEqual(sorted(found), ["tools/lane/ci_plan.py",
+                                         "tools/onboard/manifest_identity.py",
+                                         "tools/onboard/manifest_overlay.py"])
+        import ast  # noqa: PLC0415
+        source = (HERE / "manifest_identity.py").read_text()
+        fn = next(n for n in ast.parse(source).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "account_for_origin")
+        lines = [i for i, line in enumerate(source.splitlines(), 1)
+                 if re.search(r"manifest_overlay|path_project|project_for_checkout", line)]
+        self.assertTrue(lines)
+        self.assertTrue(all(fn.lineno <= i <= fn.end_lineno for i in lines), lines)
+
+
+class GitTopology(OverlayCase):
+    """Sticky-wicket R3: the main checkout is git's own answer, and only a regular
+    file is read."""
+
+    def test_r3_separate_git_dir_resolves_from_git_not_a_path_join(self) -> None:
+        decoy = self.repo("decoy", "https://github.com/acme/decoy.git",
+                          overlay_text(name="decoy", prefix="D", repo="acme/decoy"))
+        main = self.tmp / "main"
+        _git("init", "-q", "--separate-git-dir", str(decoy / "sep.git"), str(main))
+        _git("-C", str(main), "remote", "add", "origin", APP_URL)
+        write_overlay(main, overlay_text())
+        wt = self.worktree(main, self.tmp / "wt")
+        base = self.base()
+        self.assertEqual(mg.main_checkout(main), main)
+        self.assertEqual(mo.project_for_checkout(main, base).repo, "acme/app")
+        with self.assertRaisesRegex(ManifestError, "no main worktree"):
+            mg.main_checkout(wt)
+        with self.assertRaisesRegex(ManifestError, "no main worktree"):
+            mo.project_for_checkout(wt, base)
+
+    def test_r3_submodule_and_bare_worktrees(self) -> None:
+        upstream = self.repo("upstream", APP_URL)
+        _git("-C", str(upstream), "commit", "-q", "--allow-empty", "-m", "init")
+        sup = self.repo("super")
+        _git("-C", str(sup), "commit", "-q", "--allow-empty", "-m", "init")
+        _git("-c", "protocol.file.allow=always", "-C", str(sup), "submodule", "add", "-q",
+             str(upstream), "sub")
+        sub = sup / "sub"
+        subwt = self.tmp / "subwt"
+        _git("-C", str(sub), "worktree", "add", "-q", "--detach", str(subwt))
+        self.assertEqual(mg.main_checkout(sub), sub)
+        self.assertEqual(mg.main_checkout(subwt), sub)
+        bare = self.tmp / "bare.git"
+        _git("clone", "-q", "--bare", str(upstream), str(bare))
+        barewt = self.tmp / "barewt"
+        _git("-C", str(bare), "worktree", "add", "-q", "--detach", str(barewt))
+        with self.assertRaisesRegex(ManifestError, "no main worktree"):
+            mg.main_checkout(barewt)
+
+    def test_r3_a_fifo_overlay_is_refused_without_reading(self) -> None:
+        import signal  # noqa: PLC0415
+        repo = self.repo("app", APP_URL)
+        (repo / ".claude").mkdir()
+        os.mkfifo(repo / ".claude" / "forge.toml")
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError("stalled")))
+        self.addCleanup(signal.signal, signal.SIGALRM, signal.SIG_DFL)
+        signal.alarm(10)
+        try:
+            self.raises(repo, self.base(), "regular file")
+        finally:
+            signal.alarm(0)
+
+
+class RemainingGuardsArePinned(OverlayCase):
+    """Sticky-wicket R5: one killing test per guard round 2 found unpinned."""
+
+    def test_r5_account_for_origin_refuses_a_checkout_of_another_repo(self) -> None:
+        repo, base = overlay_only_fixture(self.tmp)
+        self.assertEqual(mi.account_for_origin(APP_URL, base, checkout=repo), "acme")
+        with self.assertRaisesRegex(ManifestError, r"no \[\[project\]\] entry for acme/other"):
+            mi.account_for_origin("https://github.com/acme/other.git", base, checkout=repo)
+
+    def test_r5_a_nested_clone_never_displaces_the_base_hit(self) -> None:
+        outer = self.repo("app", APP_URL)
+        base = self.base(self.registered(outer))
+        nested = make_repo(outer / "vendor" / "x", "https://github.com/acme/x.git",
+                           overlay_text(name="x", prefix="X", repo="acme/x"))
+        self.assertEqual(mo.project_for_checkout(nested, base).repo, "acme/x")
+        hit = mi.project_for_path(nested, base)
+        self.assertEqual(hit.repo, "acme/app")
+        self.assertEqual(mo.path_project(nested, hit, base).repo, "acme/app")
+        self.assertEqual(self.consumer(nested, base).repo, "acme/app")
+
+    def test_r5_origin_of_ignores_the_callers_git_location_env(self) -> None:
+        repo = self.repo("app", APP_URL)
+        other = self.repo("other", "https://github.com/evil/x.git")
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git"),
+                                          "GIT_WORK_TREE": str(other)}):
+            self.assertEqual(mg.origin_of(repo), "acme/app")
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
 from ci_plan_constraints import (changed_files, constraints, git as _git,  # noqa: E402,F401
                                  repo_root, root_relative)
 from manifest_identity import ManifestError, project_for_path  # noqa: E402
+import manifest_overlay  # noqa: E402 -- harmonic-forge#1527 R1
 
 RECEIPT_DIR_ENV = "HARMONIC_FORGE_CI_PLAN_DIR"
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -93,10 +94,10 @@ def has_receipt(session_id: object, cwd: Path) -> bool:
     return bool(top) and isinstance(entry, dict) and entry.get("branch") == branch
 
 
-def resolve_project(cwd: Path):
-    """The owning project; a per-issue worktree is registered nowhere, so on a
-    miss ask git for the common dir, whose parent is the main checkout (the
-    fallback `manifest_identity.workspace_for` uses, harmonic-forge#917)."""
+def _base_project(cwd: Path):
+    """The owning project in `projects.toml`; a per-issue worktree is registered
+    nowhere, so on a miss ask git for the common dir, whose parent is the main
+    checkout (the fallback `manifest_identity.workspace_for` uses, harmonic-forge#917)."""
     try:
         return project_for_path(cwd)
     except ManifestError:
@@ -104,6 +105,21 @@ def resolve_project(cwd: Path):
         if not common or not common.strip():
             raise
         return project_for_path(Path(common.strip()).parent)
+
+
+def resolve_project(cwd: Path):
+    """`_base_project`, refined by the checkout's main-checkout `.claude/forge.toml`
+    (or, on a base miss, the repo that overlay registers). ci_plan is one of the
+    overlay's two consumers (harmonic-forge#1527 R1): its protocol `*_task` keys
+    run as `mise run`, the repo's own `mise.toml` trust domain."""
+    try:
+        base = _base_project(cwd)
+    except ManifestError:
+        found = manifest_overlay.path_project(Path(cwd), None)
+        if found is None:
+            raise
+        return found
+    return manifest_overlay.path_project(Path(cwd), base) or base
 
 
 def task_info(task: str, cwd: Path) -> dict:

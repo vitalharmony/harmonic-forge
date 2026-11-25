@@ -17,8 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gh"))
 
 import block_undetermined_phase_close as hook  # noqa: E402
-from test_hook_identity import close_hook_projects  # noqa: E402
-from test_manifest_overlay import overlay_only_env  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "block_undetermined_phase_close.py"
 REPO = "vitalharmony/hrse"
@@ -304,18 +302,6 @@ class ProcessTests(unittest.TestCase):
              mock.patch("builtins.print"):
             hook.main()
         labels_mock.assert_not_called()
-
-
-
-class OverlayOnlyRepoSlot(unittest.TestCase):
-    """harmonic-forge#1527 AC9 / TC18b: every `gh` read for the payload's repo carries the
-    Project resolved from the payload cwd, so it runs as that repo's own slot."""
-
-    def test_tc18b_the_project_reaching_run_gh_names_the_overlay_only_repo(self) -> None:
-        repo, _ = overlay_only_env(self)
-        projects = close_hook_projects(hook, repo, "gh issue close 5 --repo acme/app")
-        self.assertTrue(projects)
-        self.assertTrue(all(p is not None and p.repo == "acme/app" for p in projects), projects)
 
 
 if __name__ == "__main__":

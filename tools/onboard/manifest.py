@@ -155,7 +155,7 @@ def build_projects(entries: list, label: str) -> list[Project]:
 def load(path: Path | None = None) -> list[Project]:
     """Every entry in declaration order, validated. Reads `projects.toml` only:
     an app repo's `.claude/forge.toml` is reached only by the per-checkout
-    resolver (`project_for_checkout`, harmonic-forge#1527), never from here."""
+    resolver (harmonic-forge#1527), never from here."""
     target = path or manifest_path()
     return build_projects(raw_entries(target), str(target))
 

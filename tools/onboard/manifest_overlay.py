@@ -1,18 +1,27 @@
 """An app repo's `.claude/forge.toml`, resolved for one checkout (harmonic-forge#1527).
 
+**Two consumers, no others (harmonic-forge#1527 sticky-wicket R1).** The
+overlay is read only by the launcher's `manifest_identity.account_for_origin(...,
+checkout=)` and by `tools/lane/ci_plan.resolve_project` (protocol `*_task` keys,
+in the repo's own `mise.toml` trust domain). Every gate, hook, credential slot,
+gh target, belt workspace and prefix map resolves exactly as origin/main did:
+`project_for_path`, `repo_for_path_or_none`, `workspace_for`, `slot_env`,
+`manifest.load()` and every global lookup read `projects.toml` alone. A later
+change that lets the overlay reach one of them breaches this rule; it is not
+fixed by a new guard here (R6).
+
 **Discovery: an explicit root, never a process cwd.** `project_for_checkout(root)`
-is the only reader, and `root` is required. The path-keyed consumers reach it
-through `path_project`, which passes the checkout root of the path being
-resolved (`manifest_identity.project_for_path`, `account_for_origin(...,
-checkout=)`); a path in no checkout consults no overlay. `manifest.load()` and
-every global lookup (`by_repo`, `prefixes`, `prefix_repos`, `sweep_repos`, the
-belt, BATCH) read `projects.toml` alone, so one checkout's overlay never
-changes a lookup about another repo, from any cwd.
+is the only reader, and `root` is required. `path_project` passes it the
+checkout root of the path being resolved; a path in no checkout consults no
+overlay.
 
 **Which copy.** Always the MAIN checkout's, never a linked worktree's own: a
-worktree is the code under test, and its edit must not reconfigure the hooks
-that check it. Residual, stated: the main checkout's working-tree state (its
-branch, any uncommitted edit) is what is read.
+worktree is the code under test, and its edit must not reconfigure what checks
+it. The main checkout is git's own answer (`main_checkout`), never a re-derived
+path, and a layout git names no main worktree for (a bare repo's worktree, a
+`--separate-git-dir` repo's linked worktree) reads no overlay. Residual, stated:
+the main checkout's working-tree state (its branch, any uncommitted edit) is
+what is read.
 
 **Merge rule and precedence.** `projects.toml` (the base), then the overlay:
 one `[project]` table with an optional `[project.protocol]`, for exactly one
@@ -30,11 +39,14 @@ base does not register is validated together with the base and returned with
   they belong in `projects.toml`;
 - identity guard: a registered repo's `account`, `name`, `prefix` and
   `workspace` (slot, BATCH key, belt queue) are absent or the base value exactly;
+- a regular file only: a FIFO, device or directory at the path is refused
+  before any read, so it can never stall the caller;
 - checkout binding: an overlay naming a registered repo applies only in that
   repo's registered checkout, and a registered checkout's overlay must name it;
-- origin binding: an overlay-only repo must be the main checkout's real origin
-  (one `git remote get-url`, this module's only subprocess), and its
-  `account`, when given, must be its owner exactly;
+- origin binding, on both branches: the overlay's repo must be the main
+  checkout's real origin (`git remote get-url`), whether or not `projects.toml`
+  registers it, and an overlay-only repo's `account`, when given, must be its
+  owner exactly;
 - base clash: an overlay-only repo may not claim a `name`, `prefix` or
   `workspace` `projects.toml` already declares (any case), so it never joins a
   registered repo's BATCH key or belt queue.
@@ -46,8 +58,8 @@ base does not register is validated together with the base and returned with
 Project, and in no prefix map. A BATCH key needs `projects.toml` plus
 `rules/lane-shorthand.md`.
 
-**Scope limit.** An overlay-only repo resolves only through this resolver and
-the path-keyed consumers. The lane posting entrypoints resolve identity by
+**Scope limit.** An overlay-only repo resolves only through this resolver's two
+consumers. The lane posting entrypoints resolve identity by
 repo key (`apply_project_identity`, `require_onboarded_repo`) and refuse it
 until the follow-up child resolves their identity from the invoking checkout.
 
@@ -55,19 +67,21 @@ Protocol `*_task` keys an overlay sets run as `mise run <task>`: the same trust
 domain as the repo's own `mise.toml`, read from the same main checkout. No
 other key runs code.
 
-**Imports.** This module imports `manifest`; `manifest` never imports this, so
-`load()` cannot reach an overlay. Stdlib only, and no import of `tools/settings`
+**Imports.** This module imports `manifest` and `manifest_git` (git's own
+answers about a checkout); `manifest` never imports this, so `load()` cannot
+reach an overlay. Stdlib only, and no import of `tools/settings`
 or `manifest_identity`: the launcher test fixture copies `tools/onboard/` alone.
 """
 from __future__ import annotations
 
 import os
-import subprocess
+import stat
 import tomllib
 from pathlib import Path
 
 from manifest import Project, build_projects, manifest_path, raw_entries
-from manifest_protocol import ManifestError, normalize_repo, origin_repo
+from manifest_git import checkout_root, main_checkout, origin_of
+from manifest_protocol import ManifestError, normalize_repo
 
 OVERLAY_RELPATH = Path(".claude") / "forge.toml"
 INSTANCE_KEYS = ("forge_root", "projects_root", "timezone")
@@ -76,67 +90,22 @@ OPERATOR_KEYS = ("token_exception",)
 IDENTITY_KEYS = ("account", "name", "prefix", "workspace")
 #: What an overlay-only repo may not share with any base entry (any case).
 CLAIM_KEYS = ("name", "prefix", "workspace")
-_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
-
-
-def checkout_root(start: Path) -> Path | None:
-    """The nearest of `start` (resolved) and its ancestors holding a `.git` entry."""
-    here = Path(start).resolve()
-    for candidate in (here, *here.parents):
-        if os.path.lexists(candidate / ".git"):
-            return candidate
-    return None
-
-
-def main_checkout(root: Path) -> Path:
-    """The main checkout of a checkout root (a linked worktree maps to its main)."""
-    dotgit = root / ".git"
-    if dotgit.is_dir():
-        return root
-    try:
-        text = dotgit.read_text(encoding="utf-8").strip()
-    except OSError:
-        return root
-    if not text.startswith("gitdir:"):
-        return root
-    gitdir = Path(text[len("gitdir:"):].strip())
-    if not gitdir.is_absolute():
-        gitdir = root / gitdir
-    commondir = gitdir / "commondir"
-    try:
-        common = commondir.read_text(encoding="utf-8").strip()
-    except OSError:
-        return root
-    return (gitdir / common).resolve().parent
 
 
 def read(path: Path) -> dict | None:
-    """The parsed overlay, or None when nothing is at `path`."""
+    """The parsed overlay, or None when nothing is at `path`. Only a regular file
+    is read: the open never blocks, and anything else is refused (R3)."""
     if not os.path.lexists(path):
         return None
     try:
-        if not path.is_file():
-            raise OSError("not a file")
-        return tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise OSError("not a regular file")
+            data = handle.read()
+        return tomllib.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ManifestError(f"cannot read {path}: {exc}") from exc
-
-
-def origin_of(main: Path) -> str:
-    """The normalized repo `main`'s origin names. The module's only subprocess."""
-    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV}
-    try:
-        result = subprocess.run(["git", "-C", str(main), "remote", "get-url", "origin"],
-                                capture_output=True, text=True, timeout=10, env=env)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ManifestError(f"cannot read the origin of {main}: {exc}") from exc
-    url = result.stdout.strip()
-    if result.returncode != 0 or not url:
-        raise ManifestError(f"cannot read the origin of {main}: it has no origin remote")
-    try:
-        return origin_repo(url)
-    except ManifestError as exc:
-        raise ManifestError(f"cannot read the origin of {main}: {exc}") from exc
 
 
 def _instance_error(path: Path, key: str) -> ManifestError:
@@ -190,6 +159,18 @@ def _base_repo(entry: object) -> str | None:
         return None  # the loader's own pass reports it
 
 
+def _bind_origin(main: Path, overlay: Path, repo: str) -> None:
+    """Refuse unless `main`'s real origin is `repo`."""
+    try:
+        origin = origin_of(main)
+    except ManifestError as exc:
+        raise ManifestError(f"{overlay}: {exc}") from exc
+    if origin != repo:
+        raise ManifestError(
+            f"{overlay}: declares {repo}, but this checkout's origin is {origin}; "
+            "an overlay must name its own checkout's origin")
+
+
 def _resolve(root: Path, manifest: Path | None) -> Project | None:
     if not Path(root).exists():
         raise ManifestError(f"{root}: no such checkout")
@@ -214,6 +195,7 @@ def _resolve(root: Path, manifest: Path | None) -> Project | None:
             raise ManifestError(
                 f"{overlay}: declares {repo}, which projects.toml registers at {base_path}; "
                 "an overlay applies only in that repo's own checkout")
+        _bind_origin(main, overlay, repo)  # R4: a registered path may hold another clone
         for key in IDENTITY_KEYS:
             if key in project and project[key] != base.get(key):
                 raise ManifestError(
@@ -232,14 +214,7 @@ def _resolve(root: Path, manifest: Path | None) -> Project | None:
         raise ManifestError(
             f"{overlay}: this checkout is registered in projects.toml as "
             f"{_base_repo(entries[at_main])}; its overlay must name that repo")
-    try:
-        origin = origin_of(main)
-    except ManifestError as exc:
-        raise ManifestError(f"{overlay}: {exc}") from exc
-    if origin != repo:
-        raise ManifestError(
-            f"{overlay}: declares {repo}, but this checkout's origin is {origin}; "
-            "an overlay-only entry must name its own origin")
+    _bind_origin(main, overlay, repo)
     owner = repo.split("/")[0]
     if "account" in project and project["account"] != owner:
         raise ManifestError(

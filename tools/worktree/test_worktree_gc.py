@@ -17,9 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import worktree_gc as gc  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
-from test_manifest_overlay import overlay_only_env  # noqa: E402
-
 
 def git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
@@ -45,7 +42,7 @@ class Fixture(unittest.TestCase):
         git(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
         self.state = "closed"
         self.patches = [
-            mock.patch.object(gc, "issue_state", side_effect=lambda repo, issue, path: self._state()),
+            mock.patch.object(gc, "issue_state", side_effect=lambda repo, issue: self._state()),
             mock.patch.object(gc, "_busy", return_value=[]),
         ]
         for p in self.patches:
@@ -145,7 +142,7 @@ class RegisteredTests(Fixture):
         second = self.worktree(name="widgets-13-impl", branch="fix/13-b")
         calls = []
 
-        def state(repo, issue, path=None):
+        def state(repo, issue):
             calls.append(issue)
             if issue == 12:
                 raise gc.ManifestError("unregistered repo")
@@ -425,45 +422,6 @@ class RegenerableTests(unittest.TestCase):
             self.assertTrue(gc.regenerable(root, "a/node_modules/b.js", None))
             self.assertTrue(gc.regenerable(root, ".mise.local.toml", None))
             self.assertFalse(gc.regenerable(root, "frontend/.env", None))
-
-
-
-class OverlayOnlyIssueState(unittest.TestCase):
-    """harmonic-forge#1527 AC9 / TC18d: the landed check for a worktree of an overlay-only
-    repo runs `gh` as that repo's owner slot, from the worktree's path."""
-
-    def test_tc18d_issue_state_takes_the_slot_from_the_path(self):
-        repo, slots = overlay_only_env(self)
-        real_run, seen = subprocess.run, []
-
-        def fake_run(argv, *args, **kwargs):  # the resolver's own `git` call runs for real
-            if argv[0] != "gh":
-                return real_run(argv, *args, **kwargs)
-            seen.append(kwargs["env"])
-            return subprocess.CompletedProcess(argv, 0, stdout="open\n", stderr="")
-        with mock.patch.object(gc.subprocess, "run", side_effect=fake_run):
-            self.assertEqual(gc.issue_state("acme/app", 1, repo), "open")
-        self.assertEqual([env["GH_CONFIG_DIR"] for env in seen], [str(slots / "acme")])
-
-    def test_tc18d_the_sweep_call_site_passes_the_worktree_path(self):
-        """Pass-1 survivor 5: driven through `sweep_registered`, the call site, with the
-        real `issue_state`; the fixture mock above also requires `path` now."""
-        repo, slots = overlay_only_env(self)
-        git(repo, "-c", "user.email=t@example.test", "-c", "user.name=t", "add", ".")
-        git(repo, "-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-q", "-m", "init")
-        tree = repo.parent / "app-1-impl"
-        git(repo, "worktree", "add", "-q", "-b", "fix/1-thing", str(tree))
-        real_run, seen = subprocess.run, []
-
-        def fake_run(argv, *args, **kwargs):
-            if argv[0] != "gh":
-                return real_run(argv, *args, **kwargs)
-            seen.append(kwargs["env"]["GH_CONFIG_DIR"])
-            return subprocess.CompletedProcess(argv, 0, stdout="open\n", stderr="")
-        with mock.patch.object(gc.subprocess, "run", side_effect=fake_run), \
-                mock.patch.object(gc, "_busy", return_value=[]):
-            self.assertEqual(gc.sweep_registered(tree, False), "kept: acme/app#1 open")
-        self.assertEqual(seen, [str(slots / "acme")])
 
 
 if __name__ == "__main__":

@@ -36,60 +36,18 @@ def slot_env(repo: str | None) -> dict[str, str] | None:
     return slot_env_or_none(repo)
 
 
-def _identity():
-    """`manifest_identity`, or None when it cannot load (a hook never fails on import)."""
+def repo_from_checkout(cwd: str | Path | None) -> str | None:
+    """The registered repo for `cwd`, from projects.toml, with no `gh` call."""
     try:
         if _ONBOARD not in sys.path:
             sys.path.insert(0, _ONBOARD)
-        import manifest_identity  # noqa: PLC0415
+        from manifest_identity import repo_for_path_or_none  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return None
-    return manifest_identity
+    return repo_for_path_or_none(cwd or Path.cwd())
 
 
-def project_from_checkout(cwd: str | Path | None):
-    """The Project resolved from `cwd`'s path (harmonic-forge#1527), or None. No `gh` call."""
-    identity = _identity()
-    if identity is None:
-        return None
-    try:
-        return identity.project_for_path(cwd or Path.cwd())
-    except (identity.ManifestError, OSError):
-        return None
-
-
-def project_for_repo_at(repo: str | None, cwd: str | Path | None):
-    """`project_from_checkout(cwd)` when it names `repo`, else None: the repo and its
-    slot then come from one resolution (harmonic-forge#1527)."""
-    identity = _identity()
-    if not repo or identity is None:
-        return None
-    project = project_from_checkout(cwd)
-    try:
-        same = project is not None and project.repo == identity.normalize_repo(repo)
-    except identity.ManifestError:
-        return None
-    return project if same else None
-
-
-def repo_from_checkout(cwd: str | Path | None) -> str | None:
-    """The registered repo for `cwd`, from projects.toml, with no `gh` call."""
-    return p.repo if (p := project_from_checkout(cwd)) else None
-
-
-def _project_env(project, repo: str | None) -> dict[str, str] | None:
-    identity = _identity()
-    if identity is None or not repo:
-        return None
-    try:  # harmonic-forge#1527: a Project slot that is unusable leaves the key lookup's env
-        if project.repo == identity.normalize_repo(repo):
-            return identity.slot_env_for_project(project)
-    except identity.ManifestError:
-        pass
-    return slot_env(repo)
-
-
-def run_gh(args, *, repo: str | None, project=None, cwd: str | None = None,
+def run_gh(args, *, repo: str | None, cwd: str | None = None,
            timeout: int = 7, gh_bin: str | None = None) -> subprocess.CompletedProcess:
     """Run `gh` for a hook, as the repo's slot, retrying a transient failure once.
 
@@ -103,11 +61,8 @@ def run_gh(args, *, repo: str | None, project=None, cwd: str | None = None,
     The single retry uses the SAME environment and is skipped for a 404 or a timeout:
     a 404 is an answer, not a transient error, and two full timeouts would blow the
     hook's own budget. A call with no slot to begin with is not retried.
-
-    `project`, a path-resolved Project naming `repo`, supplies the slot instead of the
-    key lookup (harmonic-forge#1527), so an overlay-only repo runs as its owner.
     """
-    env = _project_env(project, repo) if project is not None else slot_env(repo)
+    env = slot_env(repo)
     # harmonic-forge#1447: the gh shim passes the real binary explicitly, so its
     # own gate reads never re-enter the shim. A parameter, never an env var: the
     # shim runs in the gated command's environment.

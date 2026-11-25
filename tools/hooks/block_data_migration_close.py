@@ -79,9 +79,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hook_identity import (  # noqa: E402
-    project_for_repo_at as _project_for_repo_at, repo_from_checkout as _repo_from_checkout,
-    run_gh as _run_gh)
+from hook_identity import repo_from_checkout as _repo_from_checkout, run_gh as _run_gh  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -117,7 +115,7 @@ def _deny(reason: str) -> None:
     }))
 
 
-def _gh(*args: str, cwd: str | None = None, repo: str | None = None, project=None) -> str | None:
+def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | None:
     """Return stdout, or None on any failure.
 
     Fail-open by design: a hook that blocks work whenever the network is
@@ -131,7 +129,7 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None, project=Non
     if (gh_bin is None and shutil.which("gh") is None) or (gh_bin and not os.path.isfile(gh_bin)):
         return close_gate.unread(args, "no gh binary")
     try:
-        result = _run_gh(args, repo=repo, project=project, cwd=cwd, timeout=7, gh_bin=gh_bin)
+        result = _run_gh(args, repo=repo, cwd=cwd, timeout=7, gh_bin=gh_bin)
     except (OSError, subprocess.SubprocessError) as exc:
         return close_gate.unread(args, f"{type(exc).__name__}: {exc}")
     if result.returncode:
@@ -231,10 +229,9 @@ def resolve_repo(explicit: str | None, cwd: str | None = None) -> str | None:
     return out.strip() if out and out.strip() else None
 
 
-def labels_for(repo: str, issue: str, *, project=None) -> set[str] | None:
+def labels_for(repo: str, issue: str) -> set[str] | None:
     """Label names on the issue, or None when they cannot be read."""
-    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo,
-              project=project)
+    out = _gh("api", f"repos/{repo}/issues/{issue}", "--jq", ".labels[].name", repo=repo)
     if out is None:
         return None
     return {line.strip() for line in out.splitlines() if line.strip()}
@@ -256,9 +253,7 @@ def decide_target(repo: str | None, issue: str, cwd: str | None, *,
         resolved = resolve_repo(repo, cwd)
     if resolved is None:
         return f"could not resolve the repository for issue {issue}" if strict_repo else None
-    # harmonic-forge#1527: the label read runs under the slot of the Project the
-    # payload cwd resolves to when that Project names this repo.
-    labels = labels_for(resolved, issue, project=_project_for_repo_at(resolved, cwd))
+    labels = labels_for(resolved, issue)
     if labels is None or LABEL not in labels:  # fail-open, same rationale as _gh
         return None
     if EXECUTED_LABEL in labels or ABANDONED_LABEL in labels:

@@ -2,7 +2,7 @@
 
 Moved verbatim from `manifest.py` to keep that file under R-0006's 300-line
 cap, with the `min_version` helpers both `manifest.load()` and
-`manifest_overlay.project_for_checkout` validate through. `Project` is typed
+the per-checkout overlay resolver (harmonic-forge#1527) validate through. `Project` is typed
 under `TYPE_CHECKING` only, so this module never imports `manifest` at runtime
 (no cycle).
 """
