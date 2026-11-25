@@ -417,8 +417,12 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
         """Post-verdict finding 3: an id written after `-->` on the footer line
         is prose, not the footer."""
         after = {"body": "## AE\n\n<!-- l1-post v1; kind=ae; sha=" + self.SHA
-                         + "; checks=x --> ci-override=777"}
+                         + "; checks=x --> ci-override=777; prose"}
         self.assertIsNone(self.override(after))
+        # Non-vacuous: the same text inside the comment does name the grant.
+        inside = {"body": "## AE\n\n<!-- l1-post v1; kind=ae; sha=" + self.SHA
+                          + "; ci-override=777; checks=x -->"}
+        self.assertEqual(self.override(inside), "777")
 
 
 class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):
