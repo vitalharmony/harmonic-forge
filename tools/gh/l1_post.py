@@ -2511,7 +2511,7 @@ def require_open_pr(
     )
     if ack_no_pr_required is None:
         fail(message)
-    return ["pr-open (acknowledged override)"], [f"- {message} -- acknowledged: {ack_no_pr_required}"], []
+    return [ACK_APPLIED_CHECK], [f"- {message} -- acknowledged: {ack_no_pr_required}"], []
 
 
 def _open_pr(cwd_repo: str, repo: str, branch: str, issue: int, sha: str,
@@ -3319,6 +3319,30 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
          "— the full local check was not started")
 
 
+#: harmonic-forge#894 PATCH A3: the usable ci-outage grant the AE gate found,
+#: by SHA, which `_post_kind` consumes immediately before publication.
+_CI_OUTAGE: dict[str, dict] = {}
+
+#: The check name `require_open_pr` returns when it applied the no-PR override.
+ACK_APPLIED_CHECK = "pr-open (acknowledged override)"
+
+
+def _applied_ack(pr_check_names: list[str] | None, ack_no_pr_required: str | None,
+                 branch: str) -> str | None:
+    """harmonic-forge#894 PATCH A2: the acknowledgment only when
+    `require_open_pr` applied it (no open PR existed). An ack passed while a
+    PR is open refuses rather than being ignored, and an unread PR state
+    (None) never yields an applied ack."""
+    if ack_no_pr_required is None:
+        return None
+    if pr_check_names is not None and ACK_APPLIED_CHECK in pr_check_names:
+        return ack_no_pr_required
+    if pr_check_names is not None and "pr-open" in pr_check_names:
+        fail(f"--ack-no-pr-required given but an open PR exists for {branch}; drop the "
+             "acknowledgment: a pre-merge AE on a PR SHA needs green CI (harmonic-forge#894)")
+    return None
+
+
 def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None) -> str:
     """harmonic-forge#894 step 4: a pre-merge AE posts only on green CI.
 
@@ -3329,7 +3353,9 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
     the no-PR acknowledgment, on `absent` or all-skipped only (as
     `check_gate_result`'s no-PR branch; `require_open_pr` has already shown no
     PR exists), and a `ci-outage` grant for exactly this SHA beside its
-    `check-full` receipt. `grant_on_main` and `merged_readonly` AEs never reach
+    `check-full` receipt. (harmonic-forge#894 PATCH A1/A2: the ack is passed
+    here only when `require_open_pr` applied it, and its release is
+    `gate_ci.no_pr_ack_release`, the rule `check_gate_result` uses.) `grant_on_main` and `merged_readonly` AEs never reach
     here (C2). Every CI read passes the S0 reader (C3)."""
     source_repo = _cwd_repo_from_git(None)
     if not source_repo:
@@ -3342,18 +3368,20 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
             state, detail = "unknown", f"cannot read {source_repo}'s required checks"
         else:
             state, detail = gate_ci.authorizing_conclusion(source_repo, sha, required, reader=reader)
-            if state != "green" and ack_no_pr_required is not None and (
-                    state == "absent"
-                    or (state == "unknown"
-                        and gate_ci._required_checks_all_skipped(source_repo, sha, required,
-                                                                 reader=reader))):
+            # harmonic-forge#894 PATCH A1: the one no-PR rule check_gate_result
+            # uses (eligible state, main's tip, no open PR containing the SHA).
+            if state != "green" and ack_no_pr_required is not None and gate_ci.no_pr_ack_release(
+                    source_repo, sha, required, state, reader=reader):
                 return "ci-no-pr-acknowledged"
     except Exception as exc:  # noqa: BLE001 - fail closed
         state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
     if state == "green":
         return "ci-green"
-    if state != "red" and (released := gate_ci.ci_outage_release(repo, issue, source_repo, sha)):
-        print(f"[l1-post] CI is {state} on {sha[:12]}; released by {released}")
+    if state != "red" and (grant := gate_ci.ci_outage_grant(repo, issue, source_repo, sha)):
+        # PATCH A3: the real post consumes it immediately before publishing.
+        _CI_OUTAGE[sha] = grant
+        print(f"[l1-post] CI is {state} on {sha[:12]}; released by ci-outage grant "
+              f"{grant.get('comment_url') or '(recorded)'} with its check-full receipt")
         return "ci-outage-grant"
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
@@ -3547,7 +3575,8 @@ def _post_kind(
             open_missing=(kind == "ready-for-l3"), issue=issue, sha=sha)
         checks += pr_check_names
         if kind == "ae":  # harmonic-forge#894 step 4: the pre-merge AE needs green CI
-            checks.append(_ae_ci_gate(repo, issue, sha, ack_no_pr_required))
+            checks.append(_ae_ci_gate(repo, issue, sha,
+                                      _applied_ack(pr_check_names, ack_no_pr_required, branch)))
     # Two distinct override classes, two distinct headings -- a reader
     # auditing the thread for one kind of waiver must not find the other's
     # warning filed under a heading that names something that never
@@ -3594,6 +3623,9 @@ def _post_kind(
         if kind != "ae":
             fail(f"--prod-run is an AE declaration; it cannot ride a {kind}")
         prod_run_token = _prod_run.footer_field(issue, sha, prod_run)
+    outage = _CI_OUTAGE.get(sha) if "ci-outage-grant" in checks else None
+    if outage is not None:  # PATCH A3: the AE names its substitute evidence
+        body = body.rstrip("\n") + f"\n\n**CI substitute:** check-full receipt {sha}\n"
     digest = hashlib.sha256(_prod_run.covered_text(body, prod_run_token).encode()).hexdigest()
     # a private-repo incident: a handoff DECLARES whether it is Plan-First rather than
     # leaving it to be inferred from prose downstream. `lane_state.py` used to
@@ -3613,6 +3645,8 @@ def _post_kind(
     # footer field -- the reserved namespace no body may contain, so only this
     # script can mint it (`_prod_run.declared` reads it back from here alone).
     prod_run_field = f" {prod_run_token};" if prod_run_token else ""
+    if outage is not None:
+        prod_run_field += f" ci-override={outage.get('comment_id')};"
     # harmonic-forge#1036: after `sha=`, so every `\bsha=` reader still finds
     # the carried-to SHA first. `_carry_forward.py check` re-validates these.
     if kind == "carry-forward":
@@ -3647,6 +3681,13 @@ def _post_kind(
             route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
         except Exception as exc:
             print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
+    if outage is not None:
+        # PATCH A3: spend the grant after every other check, immediately before
+        # publication; a refused consume posts nothing.
+        try:
+            gate_ci.consume_ci_outage_grant(repo, issue, sha, outage)
+        except Exception as exc:  # noqa: BLE001 - GrantRefused or a store error
+            fail(f"the ci-outage grant could not be consumed ({exc}); nothing was posted")
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
@@ -3849,10 +3890,12 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
             _DRY_RUN_CI[sha] = _refuse_if_ci_red(repo, issue, sha, None, note_unconcluded=True)
         steps.append(ci)
     if kind in ("ready-for-l3", "ae") and not (kind == "ae" and (grant_on_main or merged_readonly)):
+        seen: dict[str, list[str]] = {}
+
         def pr() -> None:
             try:
-                require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
-                                open_missing=False, issue=issue, sha=sha)
+                seen["names"] = require_open_pr(repo, branch, ack_no_pr_required=ack_no_pr_required,
+                                                open_missing=False, issue=issue, sha=sha)[0]
             except SystemExit as exc:
                 if kind == "ready-for-l3" and str(exc).startswith("[l1-post] no open PR exists for"):
                     print(f"[l1-post] dry run: would open PR for {branch} against main")
@@ -3860,7 +3903,8 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
                 raise
         steps.append(pr)
         if kind == "ae":  # harmonic-forge#894 step 4, the same decision as the real post
-            steps.append(lambda: _ae_ci_gate(repo, issue, sha, ack_no_pr_required))
+            steps.append(lambda: _ae_ci_gate(
+                repo, issue, sha, _applied_ack(seen.get("names"), ack_no_pr_required, branch)))
     return steps
 
 

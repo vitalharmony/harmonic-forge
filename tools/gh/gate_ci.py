@@ -473,6 +473,12 @@ UNPROTECTED_MESSAGE = "Branch not protected"
 #: still create a missing required job. `pull_request_target` (hrse's
 #: `ui-approval`) and `issue_comment` never produce `verify`.
 PENDING_EVENTS = frozenset({"pull_request", "push", "schedule", "workflow_dispatch"})
+#: harmonic-forge#894 PATCH A4 (C4 condition 2): the workflow file that
+#: produces each required check. Only an unfinished run of the producer can
+#: make a missing check `pending`; a required name with no declared producer
+#: stays `absent` (the full-check direction). Forge and hrse both create
+#: `verify` in ci.yml.
+REQUIRED_CHECK_PRODUCERS = {"verify": ".github/workflows/ci.yml"}
 
 
 def s0_reader(repo: str, counter=None):
@@ -728,7 +734,8 @@ def ci_conclusion(repo: str, sha: str, run=None,
 def _with_run(job: dict, wf: dict) -> dict:
     """A job record carrying its workflow run's status and event, which
     `_judge_runs`' pending predicate reads (harmonic-forge#894 C4)."""
-    return {**job, "workflow_status": wf.get("status"), "workflow_event": wf.get("event")}
+    return {**job, "workflow_status": wf.get("status"), "workflow_event": wf.get("event"),
+            "workflow_path": wf.get("path")}
 
 
 def _jobless(wf: dict, run_id) -> dict:
@@ -736,7 +743,8 @@ def _jobless(wf: dict, run_id) -> dict:
             "status": wf.get("status"), "conclusion": wf.get("conclusion"),
             "started_at": wf.get("started_at") or wf.get("run_started_at"),
             "jobless_run": True,
-            "workflow_status": wf.get("status"), "workflow_event": wf.get("event")}
+            "workflow_status": wf.get("status"), "workflow_event": wf.get("event"),
+            "workflow_path": wf.get("path")}
 
 
 def _read_check_runs_s0(repo: str, sha: str, reader
@@ -796,7 +804,7 @@ def _read_check_runs(repo: str, sha: str, run=None, reader=None
         sha = full.strip()
     code, out = run(["gh", "api", "--paginate",
                      f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
-                     "--jq", ".workflow_runs[] | {id, name, status, conclusion, event, "
+                     "--jq", ".workflow_runs[] | {id, name, status, conclusion, event, path, "
                              "started_at: .run_started_at}"])
     if code != 0:
         return [], ("unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}")
@@ -972,11 +980,19 @@ def _judge_runs(runs: list[dict], sha: str,
             # (hrse's fan-in `verify` exists only once its `needs:` finish).
             # All three must hold: an unfinished run of a PENDING_EVENTS
             # event, and no visible job already red.
+            # A4: condition 2 -- each missing check's own producer workflow is
+            # the unfinished run, never an unrelated one.
+            def producing(name: str) -> bool:
+                path = REQUIRED_CHECK_PRODUCERS.get(name)
+                return bool(path) and any(
+                    r.get("workflow_path") == path
+                    and r.get("workflow_status") not in (None, "completed")
+                    and r.get("workflow_event") in PENDING_EVENTS for r in runs)
             inflight = sorted({str(r.get("workflow_event")) for r in runs
                                if r.get("workflow_status") not in (None, "completed")
                                and r.get("workflow_event") in PENDING_EVENTS})
             red = [r for r in runs if (r.get("conclusion") or "").lower() in _BAD]
-            if inflight and not red:
+            if inflight and not red and all(producing(m) for m in missing):
                 return "pending", (f"{sha[:8]}'s required check(s) not yet created ("
                                    + ", ".join(missing) + "); a "
                                    + "/".join(inflight) + " run is still in flight")
@@ -984,13 +1000,16 @@ def _judge_runs(runs: list[dict], sha: str,
                               + ", ".join(missing))
         runs = scoped
 
-    pending = [r["name"] for r in runs if r.get("status") != "completed"]
-    if pending:
-        return "pending", f"still running: {', '.join(sorted(pending))}"
+    # harmonic-forge#894 PATCH A4 (C4 condition 3): a visible red job is red
+    # even while another is still running, so `pending` (now a release to the
+    # local check path) never covers a known failure.
     bad = [f"{r['name']}:{r.get('conclusion')}" for r in runs
            if (r.get("conclusion") or "").lower() in _BAD]
     if bad:
         return "red", ", ".join(sorted(bad))
+    pending = [r["name"] for r in runs if r.get("status") != "completed"]
+    if pending:
+        return "pending", f"still running: {', '.join(sorted(pending))}"
     unknown = [f"{r['name']}:{r.get('conclusion')}" for r in runs
                if (r.get("conclusion") or "").lower() not in _GOOD]
     if unknown:
@@ -1113,34 +1132,118 @@ def open_prs_containing(repo: str, sha: str, run=None) -> list[dict] | None:
     return [p for p in pulls if str(p.get("state", "")).lower() == "open"]
 
 
-def ci_outage_release(repo: str, issue: int | None, source_repo: str, sha: str) -> str | None:
-    """harmonic-forge#894 step 4/5: why a CI outage is released for `sha`, or
-    None. Both must hold: a usable `ci-outage` FORCE grant for `repo#issue`
-    bound to the full `sha` (force_grant.require, never consumed here: it is
-    bound to one SHA and expires), and a `check-full` receipt for `sha` in
-    `source_repo` (the substitute evidence). Any failure is None: fail closed."""
+def _no_pr_state_eligible(repo: str, sha: str, required: set[str], state: str,
+                          *, run=None, reader=None) -> bool:
+    """The CI states the no-PR acknowledgment can stand on: `absent`, or
+    `unknown` with every required check created and skipped. `pending` and
+    `red` never qualify (harmonic-forge#788 preclose)."""
+    return state == "absent" or (
+        state == "unknown"
+        and _required_checks_all_skipped(repo, sha, required, run=run, reader=reader))
+
+
+def _no_pr_tip_and_unclaimed(repo: str, sha: str, *, run=None) -> bool:
+    """`sha` is main's current tip and no OPEN PR contains it; a failed lookup
+    (None) is never read as "confirmed no PR" (harmonic-forge#788 AC1)."""
+    return (sha_is_current_main_tip(repo, sha, run=run) is True
+            and open_prs_containing(repo, sha, run=run) == [])
+
+
+def no_pr_ack_release(repo: str, sha: str, required: set[str], state: str,
+                      *, run=None, reader=None) -> bool:
+    """harmonic-forge#894 pass-2 PATCH A1: the ONE no-PR release rule, used by
+    `check_gate_result`'s acknowledgment branch and by l1_post's pre-merge AE
+    gate, so the two can never accept different SHAs (pitch amendment 3: "no
+    second rule"). True only for an eligible CI state on a SHA that is main's
+    tip with no open PR containing it."""
+    return (_no_pr_state_eligible(repo, sha, required, state, run=run, reader=reader)
+            and _no_pr_tip_and_unclaimed(repo, sha, run=run))
+
+
+def _outage_modules():
+    tools = Path(__file__).resolve().parents[1]
+    for sub in ("gh", "hooks"):
+        if str(tools / sub) not in sys.path:
+            sys.path.insert(0, str(tools / sub))
+    import check_receipt  # noqa: PLC0415
+    import force_grant  # noqa: PLC0415
+    import imc_waiver  # noqa: PLC0415
+    return check_receipt, force_grant, imc_waiver
+
+
+def _check_full_receipt_holds(source_repo: str, sha: str) -> bool:
+    """The substitute evidence (A2 section, pitch amendment 5): a `check-full`
+    receipt for exactly `sha` in `source_repo`, recorded at the current forge
+    HEAD. Any failure is False."""
+    try:
+        check_receipt, _fg, _iw = _outage_modules()
+        data = check_receipt.lookup(source_repo.replace("/", "__").lower(), sha)
+        forge = check_receipt.forge_sha()
+    except Exception:  # noqa: BLE001 - an unreadable store is no evidence
+        return False
+    return bool(data and forge and data.get("sha") == sha
+                and data.get("source") == check_receipt.CHECK_FULL_SOURCE
+                and data.get("forge_sha") == forge)
+
+
+def ci_outage_grant(repo: str, issue: int | None, source_repo: str, sha: str) -> dict | None:
+    """harmonic-forge#894 step 4/5 and PATCH A3: the usable `ci-outage` FORCE
+    grant for `repo#issue` bound to the full `sha`, when the check-full
+    receipt holds; else None (fail closed). The AE post consumes it
+    (`consume_ci_outage_grant`) immediately before publishing."""
     if issue is None or len(sha) != 40:
         return None
     try:
-        tools = Path(__file__).resolve().parents[1]
-        for sub in ("gh", "hooks"):
-            if str(tools / sub) not in sys.path:
-                sys.path.insert(0, str(tools / sub))
-        import check_receipt  # noqa: PLC0415
-        import force_grant  # noqa: PLC0415
+        _cr, force_grant, _iw = _outage_modules()
         grant = force_grant.require(repo, issue, sha, mode="ci-outage")
-        data = check_receipt.lookup(source_repo.replace("/", "__").lower(), sha)
     except Exception:  # noqa: BLE001 - GrantRefused or an unreadable store: no release
         return None
-    if not data or data.get("sha") != sha or data.get("source") != check_receipt.CHECK_FULL_SOURCE:
+    return grant if _check_full_receipt_holds(source_repo, sha) else None
+
+
+def ci_outage_release(repo: str, issue: int | None, source_repo: str, sha: str) -> str | None:
+    """Why a CI outage would release the AE for `sha`, or None."""
+    grant = ci_outage_grant(repo, issue, source_repo, sha)
+    if grant is None:
         return None
     return (f"ci-outage grant {grant.get('comment_url') or '(recorded)'} with a check-full "
             f"receipt for {sha[:12]}")
 
 
+def consume_ci_outage_grant(repo: str, issue: int, sha: str, grant: dict) -> dict:
+    """Spend exactly `grant` for `sha` (PATCH A3; raises force_grant.GrantRefused)."""
+    _cr, force_grant, imc_waiver = _outage_modules()
+    key = imc_waiver.issue_key(repo, issue)
+    return force_grant.consume(key, grant["granted_at"], sha, mode="ci-outage")
+
+
+def ci_outage_pass_release(repo: str, issue: int | None, source_repo: str, sha: str,
+                           ci_override: str | None) -> str | None:
+    """PATCH A3, the PASS side (pitch amendment 1): release a non-red PASS only
+    when the round's AE carried `ci-override=<id>`, the grant with that comment
+    id is a CONSUMED `ci-outage` grant whose `consumed_sha` is `sha`, and the
+    check-full receipt still holds. Anything else is None."""
+    if issue is None or not ci_override or len(sha) != 40:
+        return None
+    try:
+        _cr, force_grant, imc_waiver = _outage_modules()
+        key = imc_waiver.issue_key(repo, issue)
+        grant = force_grant.read_grant(key) if key else None
+    except Exception:  # noqa: BLE001
+        return None
+    if not grant or grant.get("mode") != "ci-outage" or grant.get("status") != "consumed":
+        return None
+    if grant.get("consumed_sha") != sha or str(grant.get("comment_id")) != str(ci_override):
+        return None
+    if not _check_full_receipt_holds(source_repo, sha):
+        return None
+    return f"consumed ci-outage grant {grant.get('comment_url') or ci_override} for {sha[:12]}"
+
+
 def check_gate_result(
     repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
     post_merge_readonly: str | None = None, issue: int | None = None,
+    ci_override: str | None = None,
 ) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
@@ -1248,7 +1351,7 @@ def check_gate_result(
             "to survive. Post FAIL, or fix the failure and re-gate.")
     # harmonic-forge#894 step 5 (pitch amendment 1): a ci-outage grant for
     # exactly this SHA, beside its check-full receipt, releases a non-red PASS.
-    if issue is not None and (released := ci_outage_release(repo, issue, repo, sha)):
+    if issue is not None and (released := ci_outage_pass_release(repo, issue, repo, sha, ci_override)):
         return True, f"[GATE] CI {state} for {sha[:8]}; released by {released}"
     # pending / absent / unknown all land here, and all mean the same thing:
     # the second signal has not been read yet. AC3 says waiting is the correct
@@ -1259,15 +1362,12 @@ def check_gate_result(
     # in flight and `unknown` is a failed or unreadable lookup; neither is
     # evidence CI cannot exist, and letting the override through on them
     # published "cannot run" over a build that was running, or unread.
-    if ack_no_pr_required is not None and (
-            state == "absent"
-            or (state == "unknown"
-                and _required_checks_all_skipped(repo, sha, required, run=run))):
-        is_tip = sha_is_current_main_tip(repo, sha, run=run)
+    if ack_no_pr_required is not None and _no_pr_state_eligible(
+            repo, sha, required, state, run=run):
         # AC1: never when an OPEN PR contains this SHA. A main-tip commit's
         # own merge PR is closed, so only a genuinely pending PR refuses.
-        prs = open_prs_containing(repo, sha, run=run)
-        if is_tip and prs == []:
+        # harmonic-forge#894 A1: the same helper the AE gate uses.
+        if _no_pr_tip_and_unclaimed(repo, sha, run=run):
             return True, (
                 f"[GATE] no-pr-override: {sha[:8]} is the current tip of "
                 f"main -- no PR is pending for it and `verify` is gated to "

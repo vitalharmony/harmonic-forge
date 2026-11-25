@@ -863,14 +863,14 @@ class CiConclusionStatesTests(unittest.TestCase):
                                          run=lambda cmd: (0, "{not json"))
         self.assertEqual(state, "unknown")
 
-    def test_pending_wins_over_a_red_sibling(self):
-        """Report the weaker fact. 'Still running' tells the operator to wait;
-        'red' tells them to fix — and while anything is pending, which one is
-        true is not yet known."""
+    def test_a_red_sibling_wins_over_pending(self):
+        """harmonic-forge#894 PATCH A4 (C4 condition 3): a visible failure is
+        red even while another job runs. `pending` now releases ready-for-l3
+        to the local check path, so it must never cover a known failure."""
         state, _ = gate_ci.ci_conclusion(
             "o/r", "abc1234",
             run=fake_runs(check("a", "failure"), check("b", None, "queued")))
-        self.assertEqual(state, "pending")
+        self.assertEqual(state, "red")
 
 
 class CliTests(unittest.TestCase):

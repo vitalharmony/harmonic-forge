@@ -33,9 +33,10 @@ class Reader:
         return status, (None if payload is None else json.dumps(payload))
 
 
-def wf(run_id, status="completed", event="pull_request", conclusion="success", name="CI"):
+def wf(run_id, status="completed", event="pull_request", conclusion="success", name="CI",
+       path=".github/workflows/ci.yml"):
     return {"id": run_id, "name": name, "status": status, "event": event,
-            "conclusion": conclusion}
+            "conclusion": conclusion, "path": path}
 
 
 def job(name, status="completed", conclusion="success"):
@@ -78,6 +79,14 @@ class PendingPredicate(unittest.TestCase):
                               {1: [job("frontend", conclusion="failure"),
                                    job("backend", status="in_progress", conclusion=None)]})
         self.assertNotEqual(state, "pending")
+
+    def test_an_unrelated_in_flight_workflow_never_makes_verify_pending(self):
+        """PATCH A4 (C4 condition 2): only verify's producer, ci.yml, counts."""
+        state, _ = self.judge([wf(1), wf(2, status="in_progress", conclusion=None,
+                                         name="docs", path=".github/workflows/docs.yml")],
+                              {1: [job("frontend")], 2: [job("build", status="in_progress",
+                                                             conclusion=None)]})
+        self.assertEqual(state, "absent")
 
     def test_a_jobless_unfinished_run_reads_pending(self):
         state, _ = self.judge([wf(1, status="queued", conclusion=None)], {1: []})
@@ -165,6 +174,33 @@ class S0Reader(unittest.TestCase):
         p[RUNS] = (403, None)
         self.assertFalse(gate_ci._required_checks_all_skipped(REPO, SHA, {"verify"},
                                                               reader=Reader(p)))
+
+
+class NoPrAckRelease(unittest.TestCase):
+    """harmonic-forge#894 PATCH A1: the one no-PR rule needs an eligible state,
+    main's tip, and no open PR containing the SHA; a failed lookup refuses."""
+
+    def rule(self, state="absent", tip=True, prs=(), skipped=False):
+        with mock.patch.object(gate_ci, "sha_is_current_main_tip", return_value=tip), \
+             mock.patch.object(gate_ci, "open_prs_containing",
+                               return_value=None if prs is None else list(prs)), \
+             mock.patch.object(gate_ci, "_required_checks_all_skipped", return_value=skipped):
+            return gate_ci.no_pr_ack_release(REPO, SHA, {"verify"}, state)
+
+    def test_absent_on_main_tip_with_no_open_pr_releases(self):
+        self.assertTrue(self.rule())
+        self.assertTrue(self.rule(state="unknown", skipped=True))
+
+    def test_off_tip_an_open_pr_or_a_failed_lookup_refuses(self):
+        self.assertFalse(self.rule(tip=False))
+        self.assertFalse(self.rule(tip=None))
+        self.assertFalse(self.rule(prs=[{"number": 1}]))
+        self.assertFalse(self.rule(prs=None))
+
+    def test_pending_red_and_unskipped_unknown_refuse(self):
+        for state in ("pending", "red", "green"):
+            self.assertFalse(self.rule(state=state))
+        self.assertFalse(self.rule(state="unknown", skipped=False))
 
 
 if __name__ == "__main__":

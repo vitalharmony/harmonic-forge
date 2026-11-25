@@ -606,6 +606,30 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
             f"body-sha256={digest}{override}{extra} -->\n")
 
 
+#: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
+CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
+
+
+def ci_override_id(repo: str, issue: int, body: str) -> str | None:
+    """The grant comment id the round's AE named in its `ci-override=` footer,
+    for the gated SHA, or None. The AE is `resolve_gate_authority`'s, as for
+    the post-merge read-only claim."""
+    sha = gated_sha(body)
+    if sha is None:
+        return None
+    comments = check_lane3_ready.fetch_comments(repo, issue)
+    authority, _message = check_lane3_ready.resolve_gate_authority(comments, sha)
+    if authority is None:
+        return None
+    kind = check_lane3_ready.FOOTER_KIND.search(authority.get("body", ""))
+    if not kind or kind.group(1).lower() != "ae":
+        return None
+    if not check_lane3_ready.same_sha(check_lane3_ready.footer_sha(authority), sha):
+        return None
+    found = CI_OVERRIDE_FIELD.findall(authority.get("body", ""))
+    return found[-1] if len(found) == 1 else None
+
+
 def post_merge_readonly_claim(repo: str, issue: int, body: str) -> str | None:
     """harmonic-forge#1495: the reason the round's AE gave for a post-merge
     read-only PASS, or None when this PASS has no such claim.
@@ -690,8 +714,6 @@ def require_green_ci(
     # `lane_state.py` does, and returns cleanly for anything that is not one;
     # asking it every time means the two can never disagree about what a gate
     # report IS.
-    # harmonic-forge#894 step 5: `issue` lets a ci-outage grant for this SHA
-    # (with its check-full receipt) release a non-red PASS.
     ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required, issue=issue)
     # harmonic-forge#1495: only a refusal that says CI has not completed can be
     # lifted, only when `issue` is known and no acknowledgment was given (the
@@ -702,6 +724,14 @@ def require_green_ci(
         claim = post_merge_readonly_claim(repo, issue, body)
         if claim is not None:
             ok, message = check_gate_result(repo, body, post_merge_readonly=claim)
+    # harmonic-forge#894 PATCH A3: a PASS still refused for unfinished CI is
+    # released only by the consumed ci-outage grant the round's AE named in
+    # its footer. Same gating as the claim above: an issue, no acknowledgment.
+    if (not ok and issue is not None and ack_no_pr_required is None
+            and "CI has not completed" in message):
+        override = ci_override_id(repo, issue, body)
+        if override is not None:
+            ok, message = check_gate_result(repo, body, issue=issue, ci_override=override)
     if not ok:
         fail(message)
     # Only the acknowledged override is recorded as one in the footer: the
