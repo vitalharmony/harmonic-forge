@@ -22,6 +22,7 @@ and report clean. Both would look like success.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,10 @@ from manifest_protocol import (
     ManifestError, Protocol, lane_shorthand_prefixes, load_protocol,
     normalize_repo,
 )
+
+#: A version-shaped milestone title, the shape of
+#: tools/gh/release_milestone.RELEASE_TITLE (tools/onboard does not import tools/gh).
+_VERSION_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
 
 
 def manifest_path() -> Path:
@@ -177,6 +182,14 @@ def _validate(projects: list[Project], target: Path) -> None:
         if project.active_milestones and not project.milestones:  # harmonic-forge#952
             raise ManifestError(
                 f"{target}: {project.name} lists active_milestones but carries no milestones")
+        # harmonic-forge#1382 C1: the release is `@current-release`, resolved
+        # by the one definition R-0404 and the filing gate use; a version
+        # literal here drifts from them at the first turnover.
+        pinned = [m for m in project.active_milestones if _VERSION_TITLE.match(m)]
+        if pinned:
+            raise ManifestError(
+                f"{target}: {project.name} pins release milestone(s) {pinned} in "
+                "active_milestones; use \"@current-release\" (harmonic-forge#1382)")
         if project.onboarded and not project.repo:
             raise ManifestError(
                 f"{target}: {project.name} is onboarded but declares no repo")

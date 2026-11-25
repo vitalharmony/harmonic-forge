@@ -222,6 +222,7 @@ from manifest_identity import workspaces as manifest_workspaces  # noqa: E402
 
 import belt_batch_view  # noqa: E402
 import _etag_cache  # noqa: E402  (harmonic-forge#1393: conditional issue and thread reads)
+import release_milestone  # noqa: E402  (harmonic-forge#1382 C1: the one current-release definition)
 import belt_candidates  # noqa: E402
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: harmonic-forge#851: the FAIL/PASS reader for a gate result is
@@ -307,11 +308,12 @@ def _account_of(repo: str) -> str:
 
 
 #: harmonic-forge#1489: the release entry in `active_milestones`. It names no
-#: milestone: it resolves to the repo's open milestone with the lowest `X.Y`
-#: title (3.10 after 3.9), so a release needs no manifest edit. Literal titles
-#: (`Platform`) are kept as written.
+#: milestone: it resolves to the repo's open milestone with the lowest
+#: version-shaped title (3.10 after 3.9, 3.2.1 before 3.3), so a release needs no
+#: manifest edit. Literal titles (`Platform`) are kept as written.
+#: harmonic-forge#1382 C1: resolved by `release_milestone.current_release`, the
+#: definition R-0404 and the filing gate use, so the three never disagree.
 CURRENT_RELEASE = "@current-release"
-_RELEASE_TITLE = re.compile(r"^\d+\.\d+$")
 #: repo -> the resolved release title (None: no open X.Y milestone), or the
 #: `_RELEASE_READ_FAILED` marker. Failures are kept too (named change N2), so an
 #: outage costs one read per tick, not one per candidate. Cleared at each tick's
@@ -335,8 +337,7 @@ def _current_release(repo: str) -> object:
             body = json.loads(resp.body)
             if isinstance(body, list):  # any other shape is a failed read (pass 1)
                 titles = [str(m.get("title") or "") for m in body if isinstance(m, dict)]
-                releases = [t for t in titles if _RELEASE_TITLE.match(t)]
-                result = min(releases, key=lambda t: tuple(int(p) for p in t.split(".")), default=None)
+                result = release_milestone.current_release(titles)
     except Exception as exc:  # noqa: BLE001 -- reported; the caller fails closed
         print(f"[watch_lane_posts] {repo} milestones unreadable: {exc}", file=sys.stderr)
     if result is _RELEASE_READ_FAILED:

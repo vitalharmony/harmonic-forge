@@ -1942,7 +1942,8 @@ def validate_milestone_set(repo: str, issue: int) -> None:
 #: names hrse's Platform, not any repo's milestone of that title.
 EXEMPT_MILESTONES = {"vitalharmony/hrse": frozenset({"Platform"})}
 
-_RELEASE_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
+import release_milestone  # noqa: E402  (harmonic-forge#1382 C1: the one definition)
+_RELEASE_TITLE = release_milestone.RELEASE_TITLE
 
 
 def current_release_milestone(titles: list[str]) -> str | None:
@@ -1952,10 +1953,7 @@ def current_release_milestone(titles: list[str]) -> str | None:
     Only a bare number matches: `v3.0`, `3.0-rc` and `3.0 hotfix` are never a
     release. Turnover is closing the milestone; until 3.0 closes, 3.1 is not
     current. None when no open title is version-shaped."""
-    releases = [t for t in titles if _RELEASE_TITLE.match(t)]
-    if not releases:
-        return None
-    return min(releases, key=lambda t: tuple(int(part) for part in t.split(".")))
+    return release_milestone.current_release(titles)
 
 
 def validate_milestone_current(repo: str, issue: int, kind: str, ack: str | None) -> None:
