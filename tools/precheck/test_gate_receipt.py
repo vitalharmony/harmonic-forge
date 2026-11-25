@@ -197,5 +197,40 @@ class ReceiptWriters(Store):
         self.assertIsNotNone(R.consume("tools/lane/lane1_rebase.py", argv[1:], cwd=self.repo, extra="new|main"))
 
 
+class RealStoreBackstopGuard(Store):
+    """harmonic-forge#1555 AC2: a test process never appends a refused-backstop
+    row to the real decision log; the refusal itself is unchanged. The real
+    store is patched to this test's temporary store, never the account's. The
+    refusal is the extra-moved backstop that
+    `test_tool_only_extra_state_is_bound_by_the_backstop` already exercises."""
+
+    TOOL = "tools/lane/lane1_rebase.py"
+
+    def refuse(self, real: Path) -> str | None:
+        argv = ["--check", str(self.repo), "1", "main"]
+        self.record(self.TOOL, argv, extra="old|main")
+        with mock.patch.object(R, "REAL_STORE_DIR", real):
+            return R.consume(self.TOOL, argv[1:], cwd=self.repo, extra="new|main")
+
+    def backstops(self) -> list[str]:
+        log = self.root / "store" / "decisions.jsonl"
+        rows = log.read_text().splitlines() if log.exists() else []
+        return [r for r in rows if "refused-backstop" in r]
+
+    def test_tc5_no_backstop_row_at_the_real_store_in_a_test(self) -> None:
+        self.assertIsNotNone(self.refuse(self.root / "store"))
+        self.assertEqual(self.backstops(), [])
+
+    def test_tc5_a_store_that_is_not_the_real_one_still_logs(self) -> None:
+        self.assertIsNotNone(self.refuse(self.root / "elsewhere"))
+        self.assertEqual(len(self.backstops()), 1)
+
+    def test_tc6_the_refusal_text_is_the_same_with_the_guard_on(self) -> None:
+        unguarded = self.refuse(self.root / "elsewhere")
+        guarded = self.refuse(self.root / "store")
+        self.assertIsNotNone(guarded)
+        self.assertEqual(guarded, unguarded)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -297,5 +297,53 @@ class ThroughL1PostMain(Base):
         self.assertEqual((data["repo"], data["kind"]), (REPO, "handoff"))
 
 
+class RealStoreGuard(unittest.TestCase):
+    """harmonic-forge#1555: a test process never writes the real dry-run store.
+    The real store is patched to a temporary path, so no case (and no kill-check
+    mutant) can reach the account's real home."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        real = self.home / ".claude" / "state" / "l1post" / "dry-run-failed"
+        for patcher in (mock.patch.object(drf, "REAL_STATE_DIR", real),
+                        mock.patch.dict(os.environ, {"HOME": str(self.home),
+                                                     "CLAUDE_CODE_SESSION_ID": SID})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop(drf.TESTING_ENV, None)
+
+    def files(self) -> list[Path]:
+        root = drf.state_dir()
+        return sorted(root.rglob("*")) if root.exists() else []
+
+    def test_tc1_a_record_at_the_real_store_is_refused_in_a_test(self) -> None:
+        drf.record(REPO, 7, "ae", "a" * 40, "boom")
+        self.assertEqual([p for p in self.files() if p.suffix == ".json"], [])
+
+    def test_tc2_a_clean_watermark_at_the_real_store_is_refused_in_a_test(self) -> None:
+        with redirect_stdout(io.StringIO()):
+            drf.clean("ae", REPO, 7, "a" * 40)
+        self.assertEqual([p for p in self.files() if p.name.endswith(".clean")], [])
+
+    def test_tc3_the_env_marker_alone_refuses_and_its_absence_writes(self) -> None:
+        with mock.patch.dict(sys.modules), mock.patch.dict(os.environ, {drf.TESTING_ENV: "1"}):
+            sys.modules.pop("unittest", None)
+            drf.record(REPO, 7, "ae", "a" * 40, "boom")
+            self.assertEqual(self.files(), [])
+        with mock.patch.dict(sys.modules):
+            sys.modules.pop("unittest", None)
+            drf.record(REPO, 7, "ae", "a" * 40, "boom")
+        self.assertEqual(len([p for p in self.files() if p.suffix == ".json"]), 1)
+
+    def test_tc4_a_test_store_that_is_not_the_real_one_is_written(self) -> None:
+        other = self.home / "elsewhere"
+        with mock.patch.dict(os.environ, {"HOME": str(other)}):
+            drf.record(REPO, 7, "ae", "a" * 40, "boom")
+            written = list(drf.state_dir().rglob("*.json"))
+        self.assertEqual(len(written), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

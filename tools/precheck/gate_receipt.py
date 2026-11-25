@@ -45,6 +45,7 @@ import functools
 import hashlib
 import json
 import os
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -89,6 +90,24 @@ def store_dir() -> Path:
     # PREFLIGHT_RECEIPT_DIR: the pre-#1291 override, still honored for tests.
     override = os.environ.get(STORE_ENV) or os.environ.get("PREFLIGHT_RECEIPT_DIR")
     return Path(override) if override else Path.home() / ".claude" / "state" / "precheck-gate"
+
+
+#: The account's real store, from the password database so it does not move
+#: with `$HOME` (harmonic-forge#1555).
+REAL_STORE_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".claude" / "state" / "precheck-gate"
+
+
+def _test_targets_real_store() -> bool:
+    """harmonic-forge#865's detector (tools/gh/belt_candidates.py), for the
+    decision log only (harmonic-forge#1555 AC2): a test process never appends
+    a `refused-backstop` row to the operator's real store."""
+    under_test = "unittest" in sys.modules or os.environ.get("HARMONIC_FORGE_TESTING") == "1"
+    if not under_test:
+        return False
+    try:
+        return store_dir().resolve() == REAL_STORE_DIR.resolve()
+    except OSError:
+        return True
 
 
 def _session_dir(sid: str) -> Path:
@@ -519,6 +538,8 @@ def _log_backstop(tool: dict, mode: dict | None, fp: str | None, sid: str, reaso
     """harmonic-forge#1448 AC2: a tool-side refusal is a `refused-backstop`
     row in `decisions.jsonl`, the gate's row shape. Never raises."""
     with contextlib.suppress(Exception):
+        if _test_targets_real_store():  # harmonic-forge#1555 AC2
+            return
         import decision_row  # noqa: PLC0415
         decision_row.append(store_dir() / "decisions.jsonl", decision_row.row(
             "refused-backstop", tool=tool["path"], mode=mode["name"] if mode else None,

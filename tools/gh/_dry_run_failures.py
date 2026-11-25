@@ -30,6 +30,7 @@ import hashlib
 import io
 import json
 import os
+import pwd
 import sys
 import time
 from pathlib import Path
@@ -45,6 +46,27 @@ _started: int | None = None
 
 def state_dir() -> Path:
     return Path(os.environ.get("HOME", str(Path.home()))) / ".claude" / "state" / "l1post" / "dry-run-failed"
+
+
+#: The account's real store, from the password database so it does not move
+#: with `$HOME` (harmonic-forge#1555; precedent tools/runner/sandbox.py).
+REAL_STATE_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".claude" / "state" / "l1post" / "dry-run-failed"
+#: Set by the test runners and inherited by a writer a test spawns.
+TESTING_ENV = "HARMONIC_FORGE_TESTING"
+
+
+def _refuses_real_store() -> bool:
+    """harmonic-forge#865's detector (tools/gh/belt_candidates.py
+    `_refuses_real_store`), reused for this store (harmonic-forge#1555): a test
+    process -- `unittest` imported in-process, or `HARMONIC_FORGE_TESTING=1`
+    inherited by a spawned writer -- never writes the operator's real store."""
+    under_test = "unittest" in sys.modules or os.environ.get(TESTING_ENV) == "1"
+    if not under_test:
+        return False
+    try:
+        return state_dir().resolve() == REAL_STATE_DIR.resolve()
+    except OSError:
+        return True  # cannot tell: refuse, never write the real store from a test
 
 
 def session() -> str:
@@ -76,6 +98,8 @@ def record(repo: str, issue, kind: str, sha: str, text: str, sid: str | None = N
 def _write(slug: str, data: dict, sid: str | None) -> None:
     sid = sid or session()
     if sid == NO_SESSION:
+        return
+    if _refuses_real_store():  # harmonic-forge#1555 AC1
         return
     folder = session_dir(sid)
     folder.mkdir(parents=True, exist_ok=True)
@@ -117,6 +141,8 @@ def clean(kind: str, repo: str, issue, sha: str) -> None:
     try:
         sid = session()
         if sid == NO_SESSION:
+            return
+        if _refuses_real_store():  # harmonic-forge#1555 AC1: no test watermark
             return
         cutoff = _started if _started is not None else time.time_ns()
         folder, slug = session_dir(sid), _slug(repo, issue, kind)
