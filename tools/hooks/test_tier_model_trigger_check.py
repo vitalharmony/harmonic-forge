@@ -593,15 +593,156 @@ class RouteFloorRaise(unittest.TestCase):
                         t.route_floor_marker.clear(self.SID)
                         blocked, _ = self._run(prompt, model, tiers)
                     self.assertEqual(blocked["decision"], "block")
+                    # harmonic-forge#1573 AC2: the block names the failed write and what clears it.
+                    self.assertIn(reason, blocked["reason"])
+                    self.assertIn("No marker could be written", blocked["reason"])
+                    self.assertIn("LANE_MODEL", blocked["reason"])
+                    self.assertNotIn("/model opus", blocked["reason"])
+
+    SELF_CHECK = ("read the exact model id in your own system prompt",
+                  "only a model_tier_gate PreToolUse deny blocks a code write",
+                  "If the id is not an Opus or Fable model")
+    OLD_REMEDY = ("Do NOT start these on this model", "Run /model opus (or /model fable) and resend")
+
+    def _assert_self_check(self, out):
+        for text in (out["systemMessage"], out["hookSpecificOutput"]["additionalContext"]):
+            for wanted in self.SELF_CHECK:
+                self.assertIn(wanted, text)
+            for gone in self.OLD_REMEDY:
+                self.assertNotIn(gone, text)
 
     def test_an_untrusted_high_reading_on_a_notification_warns(self):
+        """harmonic-forge#1573 AC1: the session is told to read its own model id."""
         for line in (f"{HRSE}#1830 left-queue-for-l2",
                      f"{HRSE}#1830 queued-for-l2 kind=handoff\n{HRSE}#1831 queued-for-l2 kind=handoff"):
-            with self.subTest(line=line):
-                out, _ = self._run(self._event(line), "claude-opus-5",
-                                   {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
-                self.assertIn("Do NOT start", out["systemMessage"])
+            for model in ("claude-opus-5", "claude-fable-5"):
+                with self.subTest(line=line, model=model):
+                    out, _ = self._run(self._event(line), model,
+                                       {(HRSE, 1830): "deep", (HRSE, 1831): "deep"})
+                    self.assertNotIn("decision", out)
+                    self._assert_self_check(out)
+                    self.assertIn("(it is not a trigger)", out["systemMessage"])
+                    self.assertFalse(self._marked())
+        # A lone queued-for-l2 event is a trigger: a raise is tried, and here it fails.
+        for model in ("claude-opus-5", "claude-fable-5"):
+            with self.subTest(line="lone queued-for-l2, write fails", model=model):
+                with patch.object(t.route_floor_marker, "write", return_value=False):
+                    out, _ = self._run(
+                        self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff owes=implement"),
+                        model, {(HRSE, 1830): "deep"})
+                self.assertNotIn("decision", out)
+                self._assert_self_check(out)
+                self.assertIn("No route-floor marker could be written", out["systemMessage"])
+                self.assertNotIn("(it is not a trigger)", out["systemMessage"])
                 self.assertFalse(self._marked())
+
+    def test_a_trusted_low_notification_keeps_its_wording(self):
+        """harmonic-forge#1573 AC3: an eligible Sonnet session is not told to self-check."""
+        out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-sonnet-5",
+                           {(HRSE, 1830): "deep"})
+        self.assertNotIn("decision", out)
+        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertNotIn("read the exact model id", json.dumps(out))
+
+    def test_no_output_says_read_from_a_raise(self):
+        """harmonic-forge#1573 AC4."""
+        refs = " ".join(f"H{1100 + i}" for i in range(t._MAX_TIER_READS + 1))
+        past_cap = {(HRSE, 1100 + i): "fast" for i in range(t._MAX_TIER_READS)}
+        cases = (("deep", "H1830", {(HRSE, 1830): "deep"}),
+                 ("unreadable", "H1830", {(HRSE, 1830): "FAIL"}),
+                 ("past the cap", refs, past_cap))
+        for name, named, tiers in cases:
+            for kind in ("typed", "notification"):
+                prompt = (f"Plan {named}" if kind == "typed" else self._event(
+                    "\n".join(f"{HRSE}#{ref[1:]} queued-for-l2 kind=handoff" for ref in named.split())))
+                for write in (True, False):
+                    with self.subTest(case=name, kind=kind, write=write):
+                        t.route_floor_marker.clear(self.SID)
+                        if write:
+                            out, _ = self._run(prompt, "claude-opus-5", tiers)
+                        else:
+                            with patch.object(t.route_floor_marker, "write", return_value=False):
+                                out, _ = self._run(prompt, "claude-opus-5", tiers)
+                        self.assertIsNotNone(out)
+                        self.assertNotIn("read from a raise", json.dumps(out))
+
+    #: harmonic-forge#1573 AC5: (prompt, model, marker, tier) -> ("decision" in out, marker after),
+    #: recorded by running these rows against 178ba5f, before the change.
+    DECISIONS_AT_178BA5F = (
+    ('typed', 'claude-sonnet-5', 'present', 'deep', False, True),
+    ('typed', 'claude-sonnet-5', 'present', 'unreadable', True, True),
+    ('typed', 'claude-sonnet-5', 'present', 'fast', False, False),
+    ('typed', 'claude-sonnet-5', 'absent', 'deep', False, True),
+    ('typed', 'claude-sonnet-5', 'absent', 'unreadable', True, False),
+    ('typed', 'claude-sonnet-5', 'absent', 'fast', False, False),
+    ('typed', 'claude-sonnet-5', 'write-fails', 'deep', True, False),
+    ('typed', 'claude-sonnet-5', 'write-fails', 'unreadable', True, False),
+    ('typed', 'claude-sonnet-5', 'write-fails', 'fast', False, False),
+    ('typed', 'claude-opus-5', 'present', 'deep', False, True),
+    ('typed', 'claude-opus-5', 'present', 'unreadable', False, True),
+    ('typed', 'claude-opus-5', 'present', 'fast', False, False),
+    ('typed', 'claude-opus-5', 'absent', 'deep', False, True),
+    ('typed', 'claude-opus-5', 'absent', 'unreadable', False, True),
+    ('typed', 'claude-opus-5', 'absent', 'fast', False, False),
+    ('typed', 'claude-opus-5', 'write-fails', 'deep', True, False),
+    ('typed', 'claude-opus-5', 'write-fails', 'unreadable', True, False),
+    ('typed', 'claude-opus-5', 'write-fails', 'fast', False, False),
+    ('lone-queued', 'claude-sonnet-5', 'present', 'deep', False, True),
+    ('lone-queued', 'claude-sonnet-5', 'present', 'unreadable', False, True),
+    ('lone-queued', 'claude-sonnet-5', 'present', 'fast', False, False),
+    ('lone-queued', 'claude-sonnet-5', 'absent', 'deep', False, True),
+    ('lone-queued', 'claude-sonnet-5', 'absent', 'unreadable', False, False),
+    ('lone-queued', 'claude-sonnet-5', 'absent', 'fast', False, False),
+    ('lone-queued', 'claude-sonnet-5', 'write-fails', 'deep', False, False),
+    ('lone-queued', 'claude-sonnet-5', 'write-fails', 'unreadable', False, False),
+    ('lone-queued', 'claude-sonnet-5', 'write-fails', 'fast', False, False),
+    ('lone-queued', 'claude-opus-5', 'present', 'deep', False, True),
+    ('lone-queued', 'claude-opus-5', 'present', 'unreadable', False, True),
+    ('lone-queued', 'claude-opus-5', 'present', 'fast', False, False),
+    ('lone-queued', 'claude-opus-5', 'absent', 'deep', False, True),
+    ('lone-queued', 'claude-opus-5', 'absent', 'unreadable', False, True),
+    ('lone-queued', 'claude-opus-5', 'absent', 'fast', False, False),
+    ('lone-queued', 'claude-opus-5', 'write-fails', 'deep', False, False),
+    ('lone-queued', 'claude-opus-5', 'write-fails', 'unreadable', False, False),
+    ('lone-queued', 'claude-opus-5', 'write-fails', 'fast', False, False),
+    ('other-notification', 'claude-sonnet-5', 'present', 'deep', False, True),
+    ('other-notification', 'claude-sonnet-5', 'present', 'unreadable', False, True),
+    ('other-notification', 'claude-sonnet-5', 'present', 'fast', False, True),
+    ('other-notification', 'claude-sonnet-5', 'absent', 'deep', False, False),
+    ('other-notification', 'claude-sonnet-5', 'absent', 'unreadable', False, False),
+    ('other-notification', 'claude-sonnet-5', 'absent', 'fast', False, False),
+    ('other-notification', 'claude-sonnet-5', 'write-fails', 'deep', False, False),
+    ('other-notification', 'claude-sonnet-5', 'write-fails', 'unreadable', False, False),
+    ('other-notification', 'claude-sonnet-5', 'write-fails', 'fast', False, False),
+    ('other-notification', 'claude-opus-5', 'present', 'deep', False, True),
+    ('other-notification', 'claude-opus-5', 'present', 'unreadable', False, True),
+    ('other-notification', 'claude-opus-5', 'present', 'fast', False, True),
+    ('other-notification', 'claude-opus-5', 'absent', 'deep', False, False),
+    ('other-notification', 'claude-opus-5', 'absent', 'unreadable', False, False),
+    ('other-notification', 'claude-opus-5', 'absent', 'fast', False, False),
+    ('other-notification', 'claude-opus-5', 'write-fails', 'deep', False, False),
+    ('other-notification', 'claude-opus-5', 'write-fails', 'unreadable', False, False),
+    ('other-notification', 'claude-opus-5', 'write-fails', 'fast', False, False),
+    )
+
+    def test_decisions_and_marker_state_are_unchanged_from_178ba5f(self):
+        """harmonic-forge#1573 AC5: the change is wording only."""
+        prompts = {"typed": "Implement H1830",
+                   "lone-queued": self._event(f"{HRSE}#1830 queued-for-l2 kind=handoff owes=implement"),
+                   "other-notification": self._event(f"{HRSE}#1830 left-queue-for-l2")}
+        tiers = {"deep": "deep", "unreadable": "FAIL", "fast": "fast"}
+        self.assertEqual(len(self.DECISIONS_AT_178BA5F), 3 * 2 * 3 * 3)
+        for kind, model, marker, tier, decided, marked in self.DECISIONS_AT_178BA5F:
+            with self.subTest(kind=kind, model=model, marker=marker, tier=tier):
+                t.route_floor_marker.clear(self.SID)
+                if marker == "present":
+                    self._mark()
+                if marker == "write-fails":
+                    with patch.object(t.route_floor_marker, "write", return_value=False):
+                        out, _ = self._run(prompts[kind], model, {(HRSE, 1830): tiers[tier]})
+                else:
+                    out, _ = self._run(prompts[kind], model, {(HRSE, 1830): tiers[tier]})
+                self.assertEqual((bool(out) and "decision" in out, self._marked()), (decided, marked))
 
     def test_a_trusted_reading_is_unchanged(self):
         self._mark()
@@ -659,7 +800,8 @@ class RouteFloorRaise(unittest.TestCase):
 
     def test_a_high_reading_on_an_other_notification_writes_nothing(self):
         out, _ = self._run(self._event(f"{HRSE}#1830 left-queue-for-l2"), "claude-opus-5", {(HRSE, 1830): "deep"})
-        self.assertIn("Do NOT start", out["systemMessage"])
+        self.assertIn("read the exact model id in your own system prompt", out["systemMessage"])
+        self.assertNotIn("Do NOT start", out["systemMessage"])
         self.assertFalse(self._marked())
 
     def test_ac4_no_signal_or_another_lane_blocks(self):
