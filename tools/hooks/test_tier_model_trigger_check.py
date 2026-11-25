@@ -600,7 +600,7 @@ class RouteFloorRaise(unittest.TestCase):
                     self.assertNotIn("/model opus", blocked["reason"])
 
     SELF_CHECK = ("read the exact model id in your own system prompt",
-                  "only a model_tier_gate PreToolUse deny blocks a code write",
+                  "the model tier is enforced only by a model_tier_gate PreToolUse deny on a code write",
                   "If the id is not an Opus or Fable model")
     OLD_REMEDY = ("Do NOT start these on this model", "Run /model opus (or /model fable) and resend")
 

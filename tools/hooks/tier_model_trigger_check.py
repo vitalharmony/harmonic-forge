@@ -77,7 +77,8 @@ _UNCONFIRMED_HIGH = (
 _SELF_CHECK = (
     "Session: read the exact model id in your own system prompt. If it is an Opus or "
     "Fable model, proceed, and do not ask the operator to run /model. This line blocks "
-    "nothing; only a model_tier_gate PreToolUse deny blocks a code write. If the id is "
+    "nothing; the model tier is enforced only by a model_tier_gate PreToolUse deny on a code "
+    "write. If the id is "
     "not an Opus or Fable model, do not start these, and ask the operator to run /model "
     "opus (or /model fable) and resend."
 )
