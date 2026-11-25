@@ -427,6 +427,276 @@ class TestVerifyEnvelopeNormalization(unittest.TestCase):
         self.assertEqual(env["status"], "invalid-report")
 
 
+# --- harmonic-forge#1557: the `process-error` envelope's `error` field ---
+#
+# Table-driven from the reforge decision table posted on the issue: ONE row per
+# clause, each fixture carrying a decoy that only that clause rejects, and the
+# kill checks are that table's clause list (one mutant per clause).
+
+def emit_failure(family: str, native_text: str | None, stderr_text: str | None = None) -> dict:
+    """`emit_envelope` on the failure path (exit 1) under the script's own
+    `set -euo pipefail`. `native_text=None` means the native file is missing."""
+    source = SCRIPT.read_text()
+    body = ("set -euo pipefail\n"
+            + source[source.index("emit_envelope() {"):source.index("# --- dispatch ---")])
+    with tempfile.TemporaryDirectory() as tmp:
+        native = Path(tmp) / "native"
+        if native_text is not None:
+            native.write_text(native_text)
+        err_arg = ""
+        if stderr_text is not None:
+            err = Path(tmp) / "stderr"
+            err.write_text(stderr_text)
+            err_arg = f' "{err}"'
+        harness = Path(tmp) / "harness.sh"
+        harness.write_text(body + f'\nemit_envelope {family} verify 1 "{native}"{err_arg}\n')
+        proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def stream(*lines: dict | str) -> str:
+    """JSONL: a dict is one JSON event, a str is written as a raw line."""
+    return "".join((line if isinstance(line, str) else json.dumps(line)) + "\n" for line in lines)
+
+
+def tf(message) -> dict:
+    return {"type": "turn.failed", "error": {"message": message}}
+
+
+def cx_error(message) -> dict:
+    return {"type": "error", "message": message}
+
+
+def failed_result(**fields) -> dict:
+    return {"type": "result", "subtype": "success", "is_error": True, **fields}
+
+
+ENVELOPE_KEYS = {"family", "posture", "status", "exit_code", "report", "native", "stderr", "error"}
+
+#: Live `codex exec --json` stdout under a usage limit (2026-11-24,
+#: harmonic-forge#1557 trace step 2): its four events' types and messages,
+#: re-serialized here by `stream`, not the probe's bytes, with the thread id
+#: zeroed for privacy; and its stderr.
+USAGE_LIMIT = ("You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+               "visit https://chatgpt.com/settings/usage to purchase more credits or try again "
+               "at Nov 25th, 2026 10:50 AM.")
+CODEX_LIVE_STDOUT = stream(
+    {"type": "thread.started", "thread_id": "00000000-0000-0000-0000-000000000000"},
+    {"type": "turn.started"}, cx_error(USAGE_LIMIT), tf(USAGE_LIMIT))
+CODEX_LIVE_STDERR = (
+    "warning: Untrusted project-local configuration is disabled. Run `codex exec --trust` to "
+    "allow project configuration and MCP servers for this and future chats in the project, "
+    "including MCP commands outside the sandbox. Explicitly untrusted projects must have their "
+    "trust setting updated first.\n")
+#: Live `claude -p --output-format json --model no-such-model-xyz` stdout and
+#: stderr (reforge probe json-badmodel.out/.err, 2026-11-24), byte-exact except
+#: the `session_id` value, zeroed for privacy: one line, the `result` event,
+#: with `is_error` true, the message in `result`, and no `errors` key at all.
+CLAUDE_UNKNOWN_MODEL = ("There's an issue with the selected model (no-such-model-xyz). It may not "
+                        "exist or you may not have access to it. Run --model to pick a different model.")
+CLAUDE_LIVE_STDOUT = (
+    '{"duration_api_ms":0,"stop_reason":"stop_sequence","session_id":"00000000-0000-0000-0000-00000'
+    '0000000","total_cost_usd":0,"usage":{"output_tokens_details":{"thinking_tokens":0},"input_toke'
+    'ns":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_to'
+    'ol_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_crea'
+    'tion":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterat'
+    'ions":[],"speed":"standard","fallback_credit":null},"modelUsage":{},"permission_denials":[],"t'
+    'erminal_reason":"api_error","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_re'
+    'quired","subagent_stats":{"spawned":0,"requested":{"background":0,"foreground":0,"unset":0},"s'
+    'tarted_in_background":0,"max_depth":0,"spawned_by_subagents":0,"completed":0,"failed":0,"kille'
+    'd":{"parent":0,"user":0,"system":0},"refused":{"depth_limit":0,"concurrency_limit":0,"budget":'
+    '0},"by_type":{}},"safety_stops":0,"is_error":true,"num_turns":1,"subtype":"success","api_error'
+    '_status":404,"api_error_type":"not_found_error","result":"There\'s an issue with the selected m'
+    'odel (no-such-model-xyz). It may not exist or you may not have access to it. Run --model to pi'
+    'ck a different model.","type":"result","duration_ms":802,"uuid":"70c69f4b-ba42-457a-89f3-204e2'
+    '6cb889d","queued_turn_count":0,"result_index":0,"credential_expires_at":"2026-12-23T23:19:55.0'
+    '06Z"}\n'
+)
+CLAUDE_LIVE_STDERR = (
+    '[claude-code:unrecognized_model] {"model":"no-such-model-xyz","query_source":"sdk"}\n'
+)
+#: Live `claude -p --output-format stream-json --verbose --max-turns 1` stdout
+#: (reforge probe maxturns.out, CLI 2.1.332; exit 1, EMPTY stderr, decision
+#: table A03): the final `result` event carries its message only in `errors` --
+#: there is no `result` key at all. Trimmed for privacy: the `system` init line
+#: keeps only `type`, `subtype` and `claude_code_version`, the
+#: `rate_limit_event` line only its `type` (selection ignores both types), and
+#: every `session_id`/`request_id` value is zeroed. Otherwise the assistant,
+#: user and result lines are byte-exact from probe/maxturns.out.
+CLAUDE_MAX_TURNS_STDOUT = (
+    '{"type":"system","subtype":"init","claude_code_version":"2.1.332"}\n'
+    '{"type":"assistant","message":{"model":"claude-haiku-5-5","id":"msg_011ChPBTjJzwr79TjZLgLwQU",'
+    '"type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01KesAByEty6y5oG'
+    'zNLZC2iZ","name":"Bash","input":{"command":"echo probe","description":"Echo probe string to st'
+    'dout"},"caller":{"type":"direct"}}],"container":null,"stop_reason":null,"stop_sequence":null,"'
+    'stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":22499,"cache_read_i'
+    'nput_tokens":11837,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens"'
+    ':22499},"output_tokens":16,"service_tier":"standard","inference_geo":"global","speed":"standar'
+    'd"},"input_transformations":[],"diagnostics":null,"context_management":null},"parent_tool_use_'
+    'id":null,"session_id":"00000000-0000-0000-0000-000000000000","uuid":"de621ab6-711b-4fd6-a500-8'
+    '6832a29fb00","timestamp":"2026-11-25T06:34:36.886Z","request_id":"req_000000000000000000000000'
+    '","wire_tool_inputs":{"toolu_01KesAByEty6y5oGzNLZC2iZ":{"command":"echo probe","description":"'
+    'Echo probe string to stdout"}}}\n'
+    '{"type":"rate_limit_event"}\n'
+    '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01KesAByEty6y5oGzNLZC'
+    '2iZ","type":"tool_result","content":"probe","is_error":false}]},"parent_tool_use_id":null,"ses'
+    'sion_id":"00000000-0000-0000-0000-000000000000","uuid":"3b68aa22-4370-40cb-943c-5add68366ba6",'
+    '"timestamp":"2026-11-25T06:34:38.691Z","tool_use_result":{"stdout":"probe","stderr":"","interr'
+    'upted":false,"isImage":false,"noOutputExpected":false},"tool_result_meta":[{"id":"toolu_01KesA'
+    'ByEty6y5oGzNLZC2iZ","permission_decision":{"decision":"accept","source":"config","reason_type"'
+    ':"classifier"}}]}\n'
+    '{"duration_api_ms":1794,"stop_reason":"tool_use","session_id":"00000000-0000-0000-0000-0000000'
+    '00000","total_cost_usd":0.004658370000000001,"usage":{"input_tokens":2,"cache_creation_input_t'
+    'okens":22499,"cache_read_input_tokens":11837,"output_tokens":80,"output_tokens_details":{"thin'
+    'king_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_ti'
+    'er":"standard","cache_creation":{"ephemeral_1h_input_tokens":22499,"ephemeral_5m_input_tokens"'
+    ':0},"inference_geo":"global","iterations":[{"input_tokens":2,"output_tokens":80,"cache_read_in'
+    'put_tokens":11837,"cache_creation_input_tokens":22499,"cache_creation":{"ephemeral_5m_input_to'
+    'kens":0,"ephemeral_1h_input_tokens":22499},"type":"message"}],"speed":"standard","fallback_cre'
+    'dit":null},"modelUsage":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":80,"cacheReadInput'
+    'Tokens":11837,"cacheCreationInputTokens":22499,"webSearchRequests":0,"costUSD":0.0046583700000'
+    '00001,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":0,"cacheCreationEpheme'
+    'ral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":22499,"canonicalModel":"claude-haiku'
+    '-5-5","provider":"firstParty","costBasis":"list"}},"permission_denials":[],"terminal_reason":"'
+    'max_turns","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subagent'
+    '_stats":{"spawned":0,"requested":{"background":0,"foreground":0,"unset":0},"started_in_backgro'
+    'und":0,"max_depth":0,"spawned_by_subagents":0,"completed":0,"failed":0,"killed":{"parent":0,"u'
+    'ser":0,"system":0},"refused":{"depth_limit":0,"concurrency_limit":0,"budget":0},"by_type":{}},'
+    '"safety_stops":0,"is_error":true,"num_turns":2,"subtype":"error_max_turns","errors":["Reached '
+    'maximum number of turns (1)"],"type":"result","duration_ms":3547,"uuid":"fc7b118b-c08d-4e8f-82'
+    '54-d23f25deb2da","queued_turn_count":0,"result_index":0,"model_usage_since_last_result":{"clau'
+    'de-haiku-5-5":{"inputTokens":2,"outputTokens":80,"cacheReadInputTokens":11837,"cacheCreationIn'
+    'putTokens":22499,"webSearchRequests":0,"costUSD":0.004658370000000001,"contextWindow":1000000,'
+    '"maxOutputTokens":128000,"thinkingTokens":0,"cacheCreationEphemeral5mInputTokens":0,"cacheCrea'
+    'tionEphemeral1hInputTokens":22499,"canonicalModel":"claude-haiku-5-5","provider":"firstParty",'
+    '"costBasis":"list"}},"credential_expires_at":"2026-12-23T23:19:55.006Z"}\n'
+)
+
+_CAPPED = "a" * 10 + "\x00" + "b" * 3988 + "\n" + "TAIL" * 50
+_LONG = "é" * 3000 + "MID" + "x" * 2000
+
+#: (id, name, family, native stdout, expected `error`) -- one row per clause.
+DECISION_TABLE = [
+    ("V01", "each_line_is_parsed_alone", "codex",
+     stream("not json at all", tf("T"), '{"type":"turn.failed","error":{"mess'), "T"),
+    ("V02", "non_object_values_are_skipped", "codex", stream("[1]", '"s"', "7", tf("T")), "T"),
+    # V01 as amended (operator, 2026-11-25): a line counts when jq accepts it.
+    # jq reads a leading-zero number that strict JSON rejects; stated residual.
+    ("V01j", "a_line_jq_accepts_is_an_event", "codex",
+     stream(tf("T"), '{"type":"turn.failed","error":"later","x":01}'), "later"),
+    ("V04", "nul_and_trailing_newline_at_the_cap_survive", "codex",
+     stream(cx_error(_CAPPED)), _CAPPED[:4000]),
+    ("V05", "the_cap_keeps_the_first_4000_code_points", "codex",
+     stream(cx_error(_LONG)), _LONG[:4000]),
+    ("C01", "only_turn_failed_is_the_primary_type", "codex",
+     stream(tf("T"), {"type": "item.failed", "error": {"message": "decoy"}}), "T"),
+    ("C02", "the_last_turn_failed_is_chosen", "codex", stream(tf("T1"), tf("T2")), "T2"),
+    ("C03", "an_unusable_last_turn_failed_falls_through_not_back", "codex",
+     stream(cx_error("E"), tf("T-old"), tf(5)), "E"),
+    ("C04", "turn_failed_error_message_is_read", "codex",
+     stream(cx_error("E-decoy"), tf("T")), "T"),
+    ("C05", "a_string_turn_failed_error_is_the_message", "codex",
+     stream(cx_error("E-decoy"), {"type": "turn.failed", "error": "S"}), "S"),
+    ("C06", "an_empty_turn_failed_message_falls_through", "codex",
+     stream(cx_error("E"), tf("")), "E"),
+    ("C07", "an_empty_string_turn_failed_error_falls_through", "codex",
+     stream(cx_error("E"), {"type": "turn.failed", "error": ""}), "E"),
+    ("C08", "turn_failed_beats_an_older_error", "codex", stream(cx_error("E"), tf("T")), "T"),
+    ("C09", "turn_failed_beats_a_newer_error", "codex", stream(tf("T"), cx_error("E")), "T"),
+    ("C10", "only_error_is_the_fallback_type", "codex",
+     stream(cx_error("E"), {"type": "item.completed", "message": "decoy"}), "E"),
+    ("C11", "the_last_error_is_chosen", "codex", stream(cx_error("E1"), cx_error("E2")), "E2"),
+    ("C12", "an_unusable_last_error_gives_null_not_an_older_one", "codex",
+     stream(cx_error("E-old"), cx_error(5)), None),
+    ("C13", "an_empty_error_message_is_unusable", "codex", stream(cx_error("")), None),
+    ("L01", "only_result_events_count", "claude",
+     stream(failed_result(result="real"),
+            {"type": "assistant", "is_error": True, "result": "decoy"}), "real"),
+    ("L02", "only_is_error_true_results_count", "claude",
+     stream(failed_result(result="X"),
+            {"type": "result", "subtype": "success", "is_error": False, "result": "ok"},
+            {"type": "result", "subtype": "success", "is_error": 1, "result": "decoy"}), "X"),
+    ("L03", "the_last_error_result_is_chosen", "claude",
+     stream(failed_result(result="X1"), failed_result(result="X2")), "X2"),
+    ("L04", "an_unusable_last_error_result_gives_null_not_an_older_one", "claude",
+     stream(failed_result(result="X-old"), failed_result(result=5)), None),
+    ("L05", "errors_win_over_result_on_one_event", "claude",
+     stream(failed_result(errors=["from errors"], result="from result")), "from errors"),
+    ("L06", "only_non_empty_string_errors_are_joined", "claude",
+     stream(failed_result(errors=["", "a", 7, "b"])), "a; b"),
+    ("L07", "errors_with_no_usable_entry_fall_through_to_result", "claude",
+     stream(failed_result(errors=["", 3], result="R")), "R"),
+    ("L08", "an_empty_result_is_unusable", "claude", stream(failed_result(result="")), None),
+    ("L09", "the_live_max_turns_failure_is_read_from_errors", "claude",
+     CLAUDE_MAX_TURNS_STDOUT, "Reached maximum number of turns (1)"),
+    ("L10", "a_non_array_errors_contributes_nothing", "claude",
+     stream(failed_result(errors={"k": "decoy"}, result="R")), "R"),
+    ("N01", "no_usable_message_is_null_for_codex", "codex",
+     stream({"type": "thread.started", "thread_id": "t"}, {"type": "turn.started"}), None),
+    ("N01", "no_usable_message_is_null_for_claude", "claude",
+     stream({"type": "system", "subtype": "init"},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "ok"}), None),
+]
+
+
+class TestProcessErrorDecisionTable(unittest.TestCase):
+    """harmonic-forge#1557: a `process-error` envelope's `error` is the
+    reviewer's own failure message, selected by the posted decision table."""
+
+    def assert_envelope(self, env: dict, family: str, expected) -> None:
+        self.assertEqual(set(env), ENVELOPE_KEYS)
+        self.assertEqual((env["family"], env["status"], env["exit_code"]),
+                         (family, "process-error", 1))
+        self.assertIsNone(env["report"])
+        self.assertIsNone(env["native"])
+        self.assertEqual(env["error"], expected)
+
+    def test_row_V03_a_missing_native_file_falls_back_to_todays_envelope(self):
+        env = emit_failure("codex", None, "boom\n")
+        self.assert_envelope(env, "codex", None)
+        self.assertEqual(env["stderr"], "boom")
+
+    def test_row_A01_live_codex_usage_limit_stream(self):
+        """AC4, and S01 (AC2): stderr is still recorded exactly as today."""
+        env = emit_failure("codex", CODEX_LIVE_STDOUT, CODEX_LIVE_STDERR)
+        self.assert_envelope(env, "codex", USAGE_LIMIT)
+        self.assertEqual(env["stderr"], CODEX_LIVE_STDERR.rstrip("\n"))
+
+    def test_row_A02_live_claude_unknown_model_stream(self):
+        env = emit_failure("claude", CLAUDE_LIVE_STDOUT, CLAUDE_LIVE_STDERR)
+        self.assert_envelope(env, "claude", CLAUDE_UNKNOWN_MODEL)
+        self.assertEqual(env["stderr"], CLAUDE_LIVE_STDERR.rstrip("\n"))
+
+    def test_row_A03_live_claude_max_turns_has_empty_stderr(self):
+        env = emit_failure("claude", CLAUDE_MAX_TURNS_STDOUT, "")
+        self.assert_envelope(env, "claude", "Reached maximum number of turns (1)")
+        self.assertIsNone(env["stderr"])
+
+    def test_row_A04_malformed_stdout_never_breaks_the_envelope(self):
+        """AC3: non-JSON, empty and truncated stdout, for both families."""
+        truncated = {"codex": '{"type":"turn.failed","error":{"mess',
+                     "claude": '{"type":"result","is_error":true,"resu'}
+        for family in ("codex", "claude"):
+            for label, text in (("non-JSON", "not json\n"), ("empty", ""),
+                                ("truncated", truncated[family])):
+                with self.subTest(family=family, stdout=label):
+                    env = emit_failure(family, text, "warning\n")
+                    self.assert_envelope(env, family, None)
+                    self.assertEqual(env["stderr"], "warning")
+
+
+def _table_row(family: str, native: str, expected):
+    def test(self: TestProcessErrorDecisionTable) -> None:
+        self.assert_envelope(emit_failure(family, native), family, expected)
+    return test
+
+
+for _id, _name, _family, _native, _expected in DECISION_TABLE:
+    setattr(TestProcessErrorDecisionTable, f"test_row_{_id}_{_name}",
+            _table_row(_family, _native, _expected))
+
+
 class TestVerifyContractCarriesReadOnlyBoundary(unittest.TestCase):
     """The reviewer's gh-mutation boundary is prose only, so the prose must
     actually be there (harmonic-forge#448, operator decision 2026-09-03).

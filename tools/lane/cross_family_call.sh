@@ -412,9 +412,47 @@ emit_envelope() {
     if [ -n "$stderr_file" ] && [ -s "$stderr_file" ]; then
       stderr_text="$(tail -c 4000 "$stderr_file")"
     fi
+    # harmonic-forge#1557 (reforge): both reviewer CLIs report their own
+    # failure on STDOUT as typed JSON events, where stderr may hold only an
+    # unrelated warning (a Codex usage limit was read as a trust problem,
+    # twice). ONE program reads the native file and emits the whole envelope,
+    # so the message never passes through a shell variable or argv (#466).
+    # The selection contract is the decision table posted on the issue: each
+    # line is parsed on its own, and a line is an event when jq's parser
+    # accepts it (V01 as amended, operator decision 2026-11-25). jq is more
+    # lenient than strict JSON (it reads `01` as 1), so a line that is not
+    # strict JSON but that jq accepts is used: a stated residual, since neither
+    # reviewer CLI emits such lines. The LATEST event of a type is chosen first and
+    # its message extracted second, so an older event never stands in; a
+    # message is usable only as a non-empty string; the first 4000 code points
+    # are kept. Codex: last `turn.failed` (`.error.message`, else `.error`),
+    # else last `error` (`.message`). Claude: last `result` with
+    # `is_error == true` (its usable `errors` joined "; ", else `.result`).
+    if jq -n --arg family "$family" --arg posture "$posture" --argjson exit_code "$exit_code" \
+         --arg stderr "$stderr_text" --rawfile native "$native_file" '
+      def usable: if type == "string" and length > 0 then . else null end;
+      [$native | split("\n")[] | (try fromjson catch null) | objects] as $events
+      | (if $family == "codex" then
+           ([$events[] | select(.type == "turn.failed")] | last
+            | (.error | if type == "object" then (.message | usable) else null end)
+              // (.error | usable))
+           // ([$events[] | select(.type == "error")] | last | .message | usable)
+         elif $family == "claude" then
+           ([$events[] | select(.type == "result" and .is_error == true)] | last
+            | ([.errors | arrays | .[] | usable | values]
+               | if length > 0 then join("; ") else null end)
+              // (.result | usable))
+         else null end) as $message
+      | {family:$family, posture:$posture, status:"process-error", exit_code:$exit_code,
+         report:null, native:null, stderr:(if $stderr == "" then null else $stderr end),
+         error:(if $message == null then null else $message[:4000] end)}' 2>/dev/null; then
+      return
+    fi
+    # The program could not run (an unreadable native file): today's
+    # envelope, with `error` null (harmonic-forge#467's guarantee).
     jq -n --arg family "$family" --arg posture "$posture" --argjson exit_code "$exit_code" \
       --arg stderr "$stderr_text" \
-      '{family:$family, posture:$posture, status:"process-error", exit_code:$exit_code, report:null, native:null, stderr:(if $stderr == "" then null else $stderr end)}'
+      '{family:$family, posture:$posture, status:"process-error", exit_code:$exit_code, report:null, native:null, stderr:(if $stderr == "" then null else $stderr end), error:null}'
     return
   fi
 
