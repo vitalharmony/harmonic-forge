@@ -351,6 +351,17 @@ def _link_blocker(repo: str, issue: int, blocker: str) -> bool:
     return True
 
 
+def _post_comment(repo: str, issue: str, body: str) -> subprocess.CompletedProcess:
+    """POST one issue comment. A gh that cannot be started is a failed post,
+    never an exception, so the post-create steps after it still run
+    (harmonic-forge#1382 post-verdict finding 0)."""
+    try:
+        return _run(["gh", "api", f"repos/{repo}/issues/{issue}/comments",
+                     "-X", "POST", "-f", f"body={body}"], check=False)
+    except OSError as exc:
+        return subprocess.CompletedProcess([], 1, "", f"could not start gh: {exc}")
+
+
 def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     """Apply an R-0039 filing-bar exception, if one was claimed. True on OK.
 
@@ -380,8 +391,7 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
         f"assumed — this comment is that record (R-0352's deferral shape).\n\n"
         f"**Reason given at filing time:** {reason}\n"
     )
-    result = _run(["gh", "api", f"repos/{args.repo}/issues/{issue}/comments",
-                   "-X", "POST", "-f", f"body={comment}"], check=False)
+    result = _post_comment(args.repo, issue, comment)
     if result.returncode != 0:
         print(f"[GH] ERROR: --handoff-exception was claimed but its reason "
               f"could not be posted to {issue_url}:\n{result.stderr}\n"
@@ -420,8 +430,7 @@ def _post_deferral(args, issue: int, issue_url: str) -> bool:
         f"**Owner:** {args.deferral_owner.strip()}\n"
         f"**Record:** this comment.\n"
     )
-    result = _run(["gh", "api", f"repos/{args.repo}/issues/{issue}/comments",
-                   "-X", "POST", "-f", f"body={comment}"], check=False)
+    result = _post_comment(args.repo, issue, comment)
     if result.returncode != 0:
         retry = handoff_owed.discharge_command(
             args.repo, issue, {"kind": "deferral", "trigger": args.deferral_trigger,
@@ -1263,7 +1272,15 @@ def main() -> int:
         project_owner, project_number = args.project_owner, args.project_number
         print(f"[GH] Board overridden explicitly: {project_owner}/#{project_number}")
     else:
-        project_owner, project_number = resolve_board_for_repo(args.repo)
+        try:
+            project_owner, project_number = resolve_board_for_repo(args.repo)
+        except SystemExit as exc:
+            # Post-verdict finding 4: an unmapped repo is one more unfinished
+            # step, reported with the others, not an exit that hides them.
+            print(str(exc), file=sys.stderr)
+            unfinished.append("board resolution: map the repo in projects.toml or pass "
+                              "--project-owner/--project-number")
+            return _post_create_exit(issue_url, unfinished)
 
     if not project_owner or not project_number:
         print("[GH] No project board configured — skipping board-add.")
@@ -1290,7 +1307,7 @@ def main() -> int:
 
     if not add_to_board(issue_url, project_owner, project_number, tier,
                         args.theme, args.venture, route_path):
-        unfinished.append("board add or field write: the repair command printed above")
+        unfinished.append("board add or field write: see the [GH] lines above for the step that failed")
     return _post_create_exit(issue_url, unfinished)
 
 

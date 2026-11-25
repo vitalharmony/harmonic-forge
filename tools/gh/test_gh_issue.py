@@ -596,24 +596,29 @@ class TestPostCreateFailureTable(unittest.TestCase):
         "_issue_number",               # pure parse of the URL
         "_route_at_filing",            # fail-open by contract (harmonic-forge#1232)
         "_record_escape",              # fail-open by contract (harmonic-forge#1248)
-        "resolve_board_for_repo",      # a lookup; no board is its own exit path
+        "resolve_board_for_repo",      # a lookup; an unmapped repo is a reported unfinished step
         "handoff_owed.discharge_command",  # builds repair text
         "_post_create_exit",           # the single exit
     }
 
-    def _drive(self, argv, fail):
+    def _drive(self, argv, fail, run_error=None, resolve_error=None):
         posts: list[list[str]] = []
 
         def run(cmd, check=False):
             posts.append(cmd)
+            if run_error is not None:
+                raise run_error
             return _completed("", returncode=1 if fail == "post" else 0)
+
+        resolve = ({"side_effect": resolve_error} if resolve_error is not None
+                   else {"return_value": ("o", "1")})
 
         with patch.object(sys, "argv", ["gh_issue.py", "--title", "t"] + argv + self.BOARD_ARGS), \
              patch("gh_issue.fetch_milestones", return_value=FORGE_MILESTONES), \
              patch("gh_issue.apply_project_identity"), \
              patch("gh_issue.create_issue", return_value="https://github.com/o/r/issues/42"), \
              patch("gh_issue._route_at_filing", return_value=None) as route, \
-             patch("gh_issue.resolve_board_for_repo", return_value=("o", "1")), \
+             patch("gh_issue.resolve_board_for_repo", **resolve), \
              patch("gh_issue._run", side_effect=run), \
              patch("gh_issue.handoff_owed.record", return_value=fail != "record") as record, \
              patch("gh_issue.handoff_owed.discharge") as discharge, \
@@ -641,6 +646,26 @@ class TestPostCreateFailureTable(unittest.TestCase):
                     self.assertIn("post-create step(s) did not finish", err)
                 else:
                     ran["board"].assert_not_called()
+
+    def test_a_gh_that_cannot_start_is_a_failed_post_not_a_crash(self):
+        """Post-verdict finding 0: an OSError from spawning gh, on either the
+        deferral or the exception post, still lets the board run, exit 1."""
+        for argv in (self.PARKING, self.EXCEPTION):
+            with self.subTest(argv=argv[3]):
+                code, err, ran = self._drive(argv, None, run_error=OSError("could not start gh"))
+                self.assertEqual(code, 1, err)
+                self.assertIn("could not start gh", err)
+                ran["board"].assert_called_once()
+
+    def test_an_unmapped_board_is_an_unfinished_step(self):
+        """Post-verdict finding 4: an unmapped repo is listed with the earlier
+        failures in the one summary, not an exit that hides them."""
+        code, err, _ran = self._drive(self.PARKING, "post",
+                                      resolve_error=SystemExit("[GH] No project board mapped"))
+        self.assertEqual(code, 1, err)
+        self.assertIn("2 post-create step(s) did not finish", err)
+        self.assertIn("board resolution", err)
+        self.assertIn("R-0352 deferral", err)
 
     def test_every_post_create_step_has_a_row(self):
         """The enumeration: each gh_issue/handoff_owed call `main()` makes
@@ -740,9 +765,13 @@ class TestUnmappedRepoFailsLoudly(unittest.TestCase):
                 return exc, created
 
     def test_unmapped_repo_exits_rather_than_guessing(self):
-        result, _ = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
-        self.assertIsInstance(result, SystemExit)
-        self.assertIn("No project board mapped", str(result))
+        """Still loud and non-zero; since the harmonic-forge#1382 post-verdict
+        check it is reported with the other unfinished steps, not raised."""
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            result, _ = self._main(["gh_issue.py", "--repo", "o/r", "--title", "t"])
+        self.assertEqual(result, 1)
+        self.assertIn("No project board mapped", err.getvalue())
+        self.assertIn("board resolution", err.getvalue())
 
     def test_issue_is_still_created_before_the_failure(self):
         """harmonic-forge#263 AC2 -- a filed issue with a missing field beats
