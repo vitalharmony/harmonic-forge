@@ -5176,7 +5176,7 @@ class DeferralTriggerTests(unittest.TestCase):
     # AC3
     def test_a_go_after_the_deferral_queues_from_an_empty_candidate_set(self):
         self.record()
-        for body in ("go", "go R", "go E3", "Go."):
+        for body in ("go", "go R", "go E3", "go H2766", "go #2766", "Go."):
             with self.subTest(body=body), \
                  patch("watch_lane_posts._fetch_all_comments", return_value=self.thread(self.c(101, body))), \
                  patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
@@ -5198,7 +5198,7 @@ class DeferralTriggerTests(unittest.TestCase):
 
     def test_wording_outside_the_grammar_queues_nothing(self):
         self.record()
-        for body in ("go ahead and file it", "ok go", "## go"):
+        for body in ("go ahead and file it", "ok go", "## go", "go later", "go ahead", "go E3x"):
             with self.subTest(body=body):
                 self.assertFalse(self.queued(self.thread(self.c(101, body))))
 
@@ -5418,7 +5418,7 @@ class DeferralTriggerPureTests(unittest.TestCase):
         self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
 
     def test_the_release_grammar_is_one_constant(self):
-        self.assertEqual(watch_lane_posts.RELEASE_RE.pattern, r"(?i)^go(\s+[A-Za-z0-9#-]+)?[.!]?$")
+        self.assertEqual(watch_lane_posts.RELEASE_RE.pattern, r"(?i)^go(\s+(?:[a-z]\d*|#?\d+))?[.!]?$")
 
     def test_the_heading_text_is_the_one_gh_issue_posts(self):
         import gh_issue  # noqa: PLC0415

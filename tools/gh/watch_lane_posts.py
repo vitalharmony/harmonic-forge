@@ -103,7 +103,7 @@ CLI `record_deferral.py`) records the deferral in
 deferral to Lane 1's candidate set (`read_deferrals`, no GitHub call), and
 `discover_queue` queues `queued-for-l1 kind=deferral-trigger owes=handoff`
 for a later unclassified comment whose first visible line is `go`, optionally
-followed by one token (`RELEASE_RE`), posted by the entry's recorded
+followed by one group or issue token (`RELEASE_RE`), posted by the entry's recorded
 `operator_login`. Only a post stamped `posted-by=LANE1` (a `lane-comment`
 from a `LANE=1` session) clears it; a handoff discharges it, at the writer
 (`l1_post.py`) and, as the backfill fallback, on the thread
@@ -641,7 +641,10 @@ _DEFERRAL_ANCHOR_RE = re.compile(
 #: decision 1): a comment's stripped first visible line is `go`, optionally
 #: followed by one group or issue token. One constant, so tightening the token
 #: class later is one edit. `deferral_store.RELEASE_SENTENCE` states it.
-RELEASE_RE = re.compile(r"(?i)^go(\s+[A-Za-z0-9#-]+)?[.!]?$")
+#: Operator decision 3 (2026-11-25): the token is a group (`R`, `E3`) or an
+#: issue (`H2766`, `#2766`, `2766`): one letter with optional digits, or
+#: digits with an optional `#`. A word (`go later`, `go ahead`) is not a release.
+RELEASE_RE = re.compile(r"(?i)^go(\s+(?:[a-z]\d*|#?\d+))?[.!]?$")
 #: One belt interval (the canonical `--interval 300`). A `filing` entry whose
 #: thread shows no deferral comment yet is kept this long: a just-filed issue
 #: can read as an empty thread before its comment count catches up.
