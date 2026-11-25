@@ -10,6 +10,7 @@ declaring the operator overlay). Every launch but the fallback case pins
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,8 +55,7 @@ class LauncherCheckoutFallback(unittest.TestCase):
 
     def test_the_launchers_own_checkout_is_used_and_no_notice_prints(self):
         with tll._FixtureTree() as tree:
-            (tree.forge / "tools").unlink()
-            tree.forge.rmdir()
+            shutil.rmtree(tree.forge)
             tree.lane_dir = tll.RegistryIntegrity._copy_lane_dir(None, tree.root)
             checkout = tree.lane_dir.parent.parent
             self.assertFalse(any((d / "sync_rules.py").exists() for d in (checkout, *checkout.parents)))
@@ -74,7 +74,8 @@ class RulesPullAtTheRoot(unittest.TestCase):
         with tll._FixtureTree() as tree:
             root = tree.root / "other-forge"
             root.mkdir()
-            (root / "tools").symlink_to((WORKTREE / "tools").resolve())
+            shutil.copytree(WORKTREE / "tools" / "hooks", root / "tools" / "hooks",
+                            ignore=shutil.ignore_patterns("__pycache__"))
             (root / "sync_rules.py").write_text(
                 "from pathlib import Path\n"
                 "Path(__file__).with_name('pulled').write_text('yes')\n")
@@ -87,6 +88,25 @@ class RulesPullAtTheRoot(unittest.TestCase):
             self.assertEqual(len(notices), 1, cell["stderr"])
             self.assertIn(f"forge root {root} (from HARMONIC_FORGE_ROOT)", notices[0])
             self.assertEqual(_roots(cell), {f"{root}/tools/hooks"})
+
+
+class RootRefusalLaunch(unittest.TestCase):
+    """Round 1 survivor 3: a root that does not resolve refuses the launch at
+    `_lane_forge_root.sh`'s own refusal line, before the pull or the build."""
+
+    def test_a_root_with_no_tools_hooks_launches_nothing(self):
+        with tll._FixtureTree() as tree:
+            for name in ("missing", "bare"):
+                root = tree.root / name
+                if name == "bare":
+                    root.mkdir()
+                with self.subTest(root=name):
+                    cell = tree.run("1", [], LANE_CLI="claude", HARMONIC_FORGE_ROOT=str(root))
+                    self.assertFalse(cell["launched"], cell["stderr"])
+                    self.assertNotEqual(cell["returncode"], 0)
+                    self.assertIn("the forge root could not be resolved", cell["stderr"])
+                    self.assertIn(f"forge root {str(root)!r} (from HARMONIC_FORGE_ROOT", cell["stderr"])
+                    self.assertNotIn("sync_rules.py --pull failed", cell["stderr"])
 
 
 class ForgeRootPin(unittest.TestCase):

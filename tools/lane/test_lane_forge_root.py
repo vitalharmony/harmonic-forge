@@ -72,7 +72,7 @@ class OutsideHome(_Tmp):
         core = hs.load_set(forge / "tools" / "lane" / "lane_hooks.json", forge_root=forge)
         effective = hs.load_effective(forge / "tools" / "lane" / "lane_hooks.json", "operator",
                                       forge_root=forge)
-        for data, count in ((core, 47), (effective, 56)):
+        for data, count in ((core, 48), (effective, 57)):
             commands = _commands(data)
             self.assertEqual(len(commands), count)
             for command in commands:

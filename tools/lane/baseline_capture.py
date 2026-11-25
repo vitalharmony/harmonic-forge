@@ -163,19 +163,19 @@ def write_codex_hooks(checkout: Path) -> None:
 
 
 def link_forge_tools(home: Path, tools: Path) -> Path:
-    """Make `<home>/harmonic-forge/tools` the checkout under test's `tools/`,
-    and return that fixture forge root (harmonic-forge#1307, #1526).
-
-    Every Claude launch validates the lane hook set's scripts under the forge
-    root, which a launch under test pins here (`pin_forge_root`). Only `tools/`
-    is linked, never the checkout itself: the root's `sync_rules.py --pull`
-    would otherwise run a real `git pull --ff-only` on the checkout under test.
-    """
+    """Make `<home>/harmonic-forge` a fixture forge root over the checkout under
+    test's `tools/` and return it (harmonic-forge#1307, #1526): `tools/hooks` is
+    copied, since a build refuses a target resolving outside the root (round 1),
+    and every other child is linked. Never the checkout itself: the root's
+    `sync_rules.py --pull` would run a real `git pull --ff-only` on it."""
     forge = home / "harmonic-forge"
-    forge.mkdir(parents=True, exist_ok=True)
-    link = forge / "tools"
-    if not link.exists():
-        link.symlink_to(tools.resolve())
+    if not (forge / "tools").exists():
+        (forge / "tools").mkdir(parents=True)
+        for child in tools.resolve().iterdir():
+            if child.name == "hooks":
+                shutil.copytree(child, forge / "tools" / "hooks", ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                (forge / "tools" / child.name).symlink_to(child)
     return forge
 
 

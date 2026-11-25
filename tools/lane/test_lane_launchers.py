@@ -82,12 +82,12 @@ def _lane_dir_in_forge(root: Path) -> Path:
     forge = root / "lanedir-forge"
     lane_dir = forge / "tools" / "lane"
     lane_dir.mkdir(parents=True)
-    shutil.copytree(LANE_DIR.parent / "onboard", forge / "tools" / "onboard",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    for copied in ("onboard", "hooks"):  # hooks: every target resolves under the root (#1526)
+        shutil.copytree(LANE_DIR.parent / copied, forge / "tools" / copied, ignore=shutil.ignore_patterns("__pycache__"))
     for sibling in LANE_DIR.parent.iterdir():
         # routing is never linked: _place_route_mod writes the mod at
         # lane_dir/../routing, and a link would write through into the checkout.
-        if sibling.is_dir() and sibling.name not in ("lane", "onboard", "routing"):
+        if sibling.is_dir() and sibling.name not in ("lane", "onboard", "hooks", "routing"):
             (forge / "tools" / sibling.name).symlink_to(sibling)
     (forge / "projects.toml").write_text(
         "[[project]]\n"
@@ -146,7 +146,7 @@ class _FixtureTree:
             ignore = shutil.ignore_patterns("__pycache__", ".pytest_cache")
             for entry in tools.iterdir():
                 dest = self.forge / "tools" / entry.name
-                if entry.name in ("lane", "onboard"):
+                if entry.name in ("lane", "onboard", "hooks"):  # hooks: targets resolve under the root
                     shutil.copytree(entry, dest, ignore=ignore)
                 else:
                     dest.symlink_to(entry)
@@ -2324,9 +2324,9 @@ class LaneHookSet(unittest.TestCase):
     SHAPES = (["-p", "two words here"], [], ["*.md"], ["--permission-mode", "plan"])
 
     def setUp(self):
-        # Core plus the operator overlay (harmonic-forge#1525), spelled as the
-        # fixture HOME's `harmonic-forge` link renders it (harmonic-forge#1526).
-        with unittest.mock.patch.object(lane_hookset, "spelling", return_value="${HOME}/harmonic-forge"):
+        # Core plus the operator overlay (#1525), as the fixture HOME's link renders it (#1526).
+        with unittest.mock.patch.object(lane_hookset, "render_checked",
+                                        lambda data, _root: lane_hookset.render(data, "${HOME}/harmonic-forge")):
             self.set_hooks = lane_hookset.load_effective(SET_FILE, "operator", forge_root=LANE_DIR.parent.parent)["hooks"]
 
     @needs_trusted_lane3_policy

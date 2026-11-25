@@ -642,11 +642,11 @@ def _lane_hookset_module():
 
 
 def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
-    """(set, error). The set is validated as the launcher's `build` validates
-    it, each script checked in THIS checkout, and rendered by
-    `spelling(_THIS_CHECKOUT)`, so `check_hooks` and `stale_worktree_hook_gaps`
-    compare rendered commands (harmonic-forge#1526). A set that does not load
-    is `({}, reason)`: every lane launch refuses then (harmonic-forge#1307).
+    """(set, error). The set is validated and rendered as the launcher's
+    `build` does, for the root a launch resolves (`resolve_forge_root` over
+    `platform_source()`, the launcher's checkout), never for this checkout, so
+    `check_hooks` and `stale_worktree_hook_gaps` compare the commands a lane
+    runs (harmonic-forge#1526). A set that does not load is `({}, reason)`.
 
     The set is the effective one: the core set plus the overlay `instance.toml`
     declares (`lane_hook_overlay`). An undeclared or unknown overlay is the
@@ -654,11 +654,11 @@ def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
     hookset = _lane_hookset_module()
     try:
         overlay, _config = instance.lane_hook_overlay()
-    except ValueError as exc:
+        root, _source = instance.resolve_forge_root(platform_source())
+    except (ValueError, ManifestError) as exc:
         return {}, str(exc)
     try:
-        return hookset.load_effective(path or LANE_HOOK_SET, overlay,
-                                      forge_root=_THIS_CHECKOUT), None
+        return hookset.load_effective(path or LANE_HOOK_SET, overlay, forge_root=root), None
     except hookset.SetError as exc:
         return {}, str(exc)
 

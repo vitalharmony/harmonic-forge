@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 HOOK = HERE / "enforce_belt_arming.py"
@@ -738,8 +739,9 @@ def _effective_operator_set() -> dict:
     spec = importlib.util.spec_from_file_location("lane_hookset", root / "tools" / "lane" / "lane_hookset.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.spelling = lambda _root: "${HOME}/harmonic-forge"
-    return module.load_effective(root / "tools" / "lane" / "lane_hooks.json", "operator", forge_root=root)
+    with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+        (Path(home) / "harmonic-forge").symlink_to(root)  # the operator layout: HOME links the root
+        return module.load_effective(root / "tools" / "lane" / "lane_hooks.json", "operator", forge_root=root)
 
 
 def _write_grant_file(arming, session_id, age_seconds=0.0, **extra):

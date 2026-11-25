@@ -101,8 +101,22 @@ class Precedence(_Config):
                             ({"HARMONIC_FORGE_ROOT": str(self.tmp / "bare")}, "HARMONIC_FORGE_ROOT")):
             with self.subTest(source=source), self.assertRaises(ValueError) as raised:
                 self.resolve(**env)
-            self.assertIn(f"forge root {self.tmp / 'bare'} (from {source}) has no tools/hooks/",
-                          str(raised.exception))
+            self.assertIn(f"forge root {str(self.tmp / 'bare')!r} (from {source}; resolves to "
+                          f"{str(self.tmp / 'bare')!r}) has no tools/hooks/", str(raised.exception))
+
+    def test_the_refusal_names_the_value_as_written(self):
+        """Round 1 survivor 6: the value the operator entered, not only its
+        normalized form, with its source."""
+        (self.tmp / "bare").mkdir()
+        (self.tmp / "blink").symlink_to(self.tmp / "bare")
+        written = f"{self.tmp}/x/../blink"
+        path = self.declare(f'forge_root = "{written}"\n')
+        for env, source in (({}, f"{path} forge_root"),
+                            ({"HARMONIC_FORGE_ROOT": written}, "HARMONIC_FORGE_ROOT")):
+            with self.subTest(source=source), self.assertRaises(ValueError) as raised:
+                self.resolve(**env)
+            self.assertIn(f"forge root {written!r} (from {source}; resolves to "
+                          f"{str(self.tmp / 'bare')!r})", str(raised.exception))
 
     def test_a_relative_environment_root_refuses_naming_it(self):
         with self.assertRaisesRegex(ValueError, "HARMONIC_FORGE_ROOT must be an absolute path, got 'rel/x'"):

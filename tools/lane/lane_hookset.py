@@ -61,7 +61,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent / "settings"))
 from hookset_root import (FORBIDDEN, PLACEHOLDER, STORED_RE, SetError,  # noqa: E402,F401
-                          render, spelling, stored_form)
+                          render, render_checked, spelling, stored_form, stored_paths)
 import instance  # noqa: E402
 
 DEFAULT_SET = _HERE / "lane_hooks.json"
@@ -159,11 +159,11 @@ def validate(data: dict, *, forge_root: Path) -> None:
                 if "timeout" in handler and (isinstance(timeout, bool) or not isinstance(timeout, int)
                                              or timeout <= 0):
                     raise SetError(f"hooks.{event}: timeout is not a positive integer: {handler!r}")
-                # Change 4: an unmatched command is never existence-checked, and
-                # a guarded form then fails open at runtime.
-                if not STORED_RE.search(command) or any(w in command for w in FORBIDDEN):
-                    raise SetError(f"hooks.{event}: command does not name a forge hook script "
-                                   f"as {PLACEHOLDER}/tools/hooks/<name>.py: {command}")
+                # Change 4: an unchecked command fails open at runtime (`stored_paths`).
+                try:
+                    stored_paths(command)
+                except SetError as exc:
+                    raise SetError(f"hooks.{event}: {exc}") from None
                 count += 1
     if not count:
         raise SetError("`hooks` holds no handler")
@@ -175,7 +175,7 @@ def validate(data: dict, *, forge_root: Path) -> None:
     if stray:
         raise SetError(f"`lane_only` names no set entry: {', '.join(stray)}")
     missing = sorted({str(Path(forge_root) / rel) for _e, _m, h in handlers(hooks)
-                      for rel in STORED_RE.findall(h["command"])
+                      for rel in stored_paths(h["command"])
                       if not (Path(forge_root) / rel).is_file()})
     if missing:
         raise SetError(f"named script(s) do not exist under forge root {forge_root}: {', '.join(missing)}")
@@ -186,7 +186,7 @@ def load_set(path: Path, *, forge_root: Path, stored: bool = False) -> dict:
     unless `stored` (harmonic-forge#1526)."""
     data = load_json_object(path, "lane hook set")
     validate(data, forge_root=forge_root)
-    return data if stored else render(data, spelling(forge_root))
+    return data if stored else render_checked(data, forge_root)
 
 
 def _scripts(data: dict) -> set[str]:
@@ -276,7 +276,7 @@ def load_effective(set_path: Path, overlay: str, *, forge_root: Path) -> dict:
     if overlay != "none":
         path = Path(set_path).parent / OVERLAY_FILES[overlay]
         data = merge(data, load_overlay(path, data, forge_root=forge_root), forge_root=forge_root)
-    return render(data, spelling(forge_root))
+    return render_checked(data, forge_root)
 
 
 def _overlay_from_config() -> tuple[str, Path]:
@@ -500,7 +500,7 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", type=Path)
     p = sub.add_parser("doubled")
     p.add_argument("--set", type=Path, default=DEFAULT_SET)
-    p.add_argument("--forge-root", type=Path, default=_HERE.parent.parent)
+    p.add_argument("--forge-root", type=Path)  # default: the root a launch resolves (#1526)
     p.add_argument("--settings", type=Path, action="append", default=[])
     p.add_argument("--user-settings", type=Path,
                    default=Path.home() / ".claude" / "settings.json",
@@ -535,14 +535,12 @@ def _main(argv: list[str] | None = None) -> int:
             print(json.dumps(value, separators=(",", ":")))
             return 0
         if args.cmd == "doubled":
-            set_data = load_effective(args.set, _overlay_from_config()[0], forge_root=args.forge_root)
+            root = args.forge_root or instance.resolve_forge_root(_HERE.parent.parent)[0]
+            set_data = load_effective(args.set, _overlay_from_config()[0], forge_root=root)
             files = list(args.settings)
             if str(args.user_settings) not in ("", "."):
                 files.append(args.user_settings)
-            settings = {}
-            for path in files:
-                if path.is_file():
-                    settings[str(path)] = load_json_object(path, "settings file")
+            settings = {str(f): load_json_object(f, "settings file") for f in files if f.is_file()}
             doubles, removable = doubled(set_data, settings)
             for line in doubles:
                 print(f"DOUBLED {line}")

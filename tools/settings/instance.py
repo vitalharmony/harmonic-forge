@@ -116,10 +116,10 @@ def lane_hook_overlay() -> tuple[str, Path]:
     return value, path
 
 
-def _path_setting(key: str, environ: Mapping[str, str] | None = None) -> Path | None:
-    """An optional path key: None when the file or the key is missing. The
-    value must be a non-empty string that is absolute or starts with `~/`;
-    anything else raises ValueError. Existence is not checked here."""
+def _written_setting(key: str, environ: Mapping[str, str] | None = None) -> str | None:
+    """An optional path key exactly as written: None when the file or the key
+    is missing. The value must be a non-empty string that is absolute or
+    starts with `~/`; anything else raises ValueError. Existence is not checked."""
     path, data = _read(environ)
     if data is None or key not in data:
         return None
@@ -127,7 +127,13 @@ def _path_setting(key: str, environ: Mapping[str, str] | None = None) -> Path | 
     if (not isinstance(value, str) or not value
             or not (value.startswith("/") or value.startswith("~/"))):
         raise ValueError(f"{path}: `{key}` must be an absolute path, got {value!r}")
-    return Path(value).expanduser()
+    return value
+
+
+def _path_setting(key: str, environ: Mapping[str, str] | None = None) -> Path | None:
+    """`_written_setting`, `~/` expanded."""
+    value = _written_setting(key, environ)
+    return None if value is None else Path(value).expanduser()
 
 
 def forge_root(environ: Mapping[str, str] | None = None) -> Path | None:
@@ -150,21 +156,23 @@ def resolve_forge_root(launcher_checkout: Path,
     `launcher_checkout`. A root with no `tools/hooks/` raises ValueError naming
     the root and its source: a hook set built from it would run nothing
     (harmonic-forge#1526). The launcher compares the source label
-    `LAUNCHER_CHECKOUT` as a literal, so it never changes alone."""
+    `LAUNCHER_CHECKOUT` as a literal, so it never changes alone. A refusal
+    names the value as written, its source, then the resolved form."""
     env = os.environ if environ is None else environ
     from_env = env.get("HARMONIC_FORGE_ROOT", "")
     if from_env:
         if not Path(from_env).is_absolute():
             raise ValueError(f"HARMONIC_FORGE_ROOT must be an absolute path, got {from_env!r}")
-        root, source = Path(from_env), "HARMONIC_FORGE_ROOT"
-    elif (declared := forge_root(env)) is not None:
-        root, source = declared, f"{config_path(env)} forge_root"
+        written, source = from_env, "HARMONIC_FORGE_ROOT"
+    elif (declared := _written_setting("forge_root", env)) is not None:
+        written, source = declared, f"{config_path(env)} forge_root"
     else:
-        root, source = Path(launcher_checkout), LAUNCHER_CHECKOUT
-    root = root.resolve()
+        written, source = str(launcher_checkout), LAUNCHER_CHECKOUT
+    root = Path(written).expanduser().resolve()
+    named = f"forge root {written!r} (from {source}; resolves to {str(root)!r})"
     if "\t" in str(root) or "\n" in str(root):
-        raise ValueError(f"forge root {str(root)!r} (from {source}) contains a tab or newline")
+        raise ValueError(f"{named} contains a tab or newline")
     if not (root / "tools" / "hooks").is_dir():
-        raise ValueError(f"forge root {root} (from {source}) has no tools/hooks/ -- "
+        raise ValueError(f"{named} has no tools/hooks/ -- "
                          f"refusing to build a hook set that would run nothing")
     return root, source
