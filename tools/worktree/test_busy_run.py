@@ -56,6 +56,15 @@ def final_step(task: str) -> str:
     return steps[-1]
 
 
+def first_step(task: str) -> str:
+    """The script of the task's first check step: the first line calling a
+    `tools/...py` other than the lock, integrity and receipt scripts. In the
+    shipped order it runs after `begin`."""
+    steps = [path for line in run_string(task).splitlines() if not line.lstrip().startswith("#")
+             for path in re.findall(r"tools/[\w/.-]+\.py", line) if path not in REAL]
+    return steps[0]
+
+
 class RunString(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -141,6 +150,16 @@ class Outcomes(RunString):
         made inside that step is still inside the integrity window."""
         for task in self.each_task():
             rc, err = self.run_task(task, "echo b > a.txt; echo a > a.txt", at=final_step(task))
+            self.assertNotEqual(rc, 0, err)
+            self.assertIn("changed during check", err)
+            self.assertFalse(self.receipt().exists())
+
+    def test_an_edit_at_the_first_step_fails_with_no_receipt(self):
+        """Post-verdict 3 gap (operator 2026-11-25): `begin` must precede the
+        first check step, so an edit made inside that step is inside the
+        integrity window too."""
+        for task in self.each_task():
+            rc, err = self.run_task(task, "echo b > a.txt; echo a > a.txt", at=first_step(task))
             self.assertNotEqual(rc, 0, err)
             self.assertIn("changed during check", err)
             self.assertFalse(self.receipt().exists())
