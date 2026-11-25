@@ -412,6 +412,12 @@ count = 1
 
 [[finding]]
 rule = "forge-root"
+path = "tools/lane/lane_hooks.json"
+text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
+count = 1
+
+[[finding]]
+rule = "forge-root"
 path = "tools/lane/lanes-claude"
 text = "if ! python3 \"${HOME}/harmonic-forge/tools/precheck/gate_receipt.py\" consume --tool tools/lane/lanes-claude -- \"${lanes_claude_args[@]}\"; then"
 count = 1
@@ -2508,6 +2514,12 @@ count = 1
 rule = "project-name"
 path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"python3 \\\"${HOME}/harmonic-forge/tools/hooks/remind_gate_readiness_sweep.py\\\"\","
+count = 1
+
+[[finding]]
+rule = "project-name"
+path = "tools/lane/lane_hooks.json"
+text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
 count = 1
 
 [[finding]]

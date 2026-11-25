@@ -78,6 +78,7 @@ python3 tools/rules/hardcode_scan.py --check
 description = "Verification gate — depends on ci-check (the CI-runnable subset), plus the machine-local steps a CI runner cannot execute (harmonic-forge#802)."
 run = """
 set -e
+wroot=$(git rev-parse --show-toplevel); lock=$(python3 tools/worktree/busy_lock.py path --root "$wroot") || lock=; fd=; if [ -n "$lock" ] && mkdir -p "$(dirname "$lock")" && command exec 9>"$lock"; then fd=9; fi; begun=$(python3 tools/worktree/busy_lock.py begin --root "$wroot" --fd "$fd" --pid $$); eval "$begun"  # worktree-busy lock (harmonic-forge#1560)
 # harmonic-forge#975: HEAD at the start, so the receipt below covers only the
 # commit every step tested. ci-check runs inline (not as a dependency) so it
 # falls inside that window.
@@ -108,6 +109,7 @@ python3 tools/rules/check_cross_registry.py
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
 # harmonic-forge#975: reached only when every step above passed (set -e);
 # the pre-push gate reads this receipt for Tooling Exception branches.
+rc=0; python3 tools/worktree/busy_lock.py end --root "$wroot" --head "$head" --nonce "$nonce" || rc=$?; if [ "$rc" -eq 3 ]; then exit 0; elif [ "$rc" -ne 0 ]; then exit "$rc"; fi  # worktree-busy integrity (harmonic-forge#1560)
 python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"
 """
 
@@ -115,12 +117,14 @@ python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"
 description = "The machine-local steps of `check` only (harmonic-forge#1343), the ones CI cannot run; records a `local-check` receipt that pre-push accepts for a Tooling Exception branch. CI stays the merge gate."
 run = """
 set -e
+wroot=$(git rev-parse --show-toplevel); lock=$(python3 tools/worktree/busy_lock.py path --root "$wroot") || lock=; fd=; if [ -n "$lock" ] && mkdir -p "$(dirname "$lock")" && command exec 9>"$lock"; then fd=9; fi; begun=$(python3 tools/worktree/busy_lock.py begin --root "$wroot" --fd "$fd" --pid $$); eval "$begun"  # worktree-busy lock (harmonic-forge#1560)
 head=$(git rev-parse HEAD)
 python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
 ! command -v claude > /dev/null || claude plugin test tools/routing/mod
 python3 tools/onboard/platform_link_report.py --project .
 python3 tools/rules/check_cross_registry.py
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
+rc=0; python3 tools/worktree/busy_lock.py end --root "$wroot" --head "$head" --nonce "$nonce" || rc=$?; if [ "$rc" -eq 3 ]; then exit 0; elif [ "$rc" -ne 0 ]; then exit "$rc"; fi  # worktree-busy integrity (harmonic-forge#1560)
 python3 tools/hooks/check_receipt.py record --repo-root . --head "$head" --source local-check
 """
 

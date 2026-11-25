@@ -716,7 +716,7 @@ class LaneHookSetCheckTests(unittest.TestCase):
     def test_a_project_hook_counts_as_project_specific(self) -> None:
         check = fo.check_hooks(self._project("own", {"hooks": self.OWN}))
         self.assertEqual(check.status, fo.OK, check.detail)
-        self.assertIn("56 from the Forge set, 1 project-specific, 0 removable", check.detail)
+        self.assertIn("57 from the Forge set, 1 project-specific, 0 removable", check.detail)
 
     def test_a_byte_identical_class_a_entry_is_counted_removable(self) -> None:
         event, block = self._set_entry("require_ci_plan.py")
@@ -879,7 +879,7 @@ class SnapshotFloorTests(unittest.TestCase):
     def test_the_forge_snapshot_names_its_source(self) -> None:
         snapshot = fo.frozen_hook_snapshot(self.FORGE)
         self.assertEqual(snapshot["source"]["path"], ".claude/settings.json")
-        self.assertEqual(len(snapshot["entries"]), 56)
+        self.assertEqual(len(snapshot["entries"]), 60)
         self.assertEqual(len(snapshot["project_specific"]), 7)
 
 

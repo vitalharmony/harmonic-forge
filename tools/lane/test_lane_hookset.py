@@ -225,14 +225,15 @@ class Build(_Tmp):
                 self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
                 self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
 
-    def test_the_core_set_holds_47_entries(self):
+    def test_the_core_set_holds_48_entries(self):
         # +1: TaskCreate tasklist_hold (harmonic-forge#1477); +1: UserPromptSubmit
         # surface_dry_run_failures (harmonic-forge#1544); -9: the operator
-        # overlay (harmonic-forge#1525)
-        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 47)
+        # overlay (harmonic-forge#1525); +1: PreToolUse worktree_busy_guard
+        # (harmonic-forge#1560)
+        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 48)
 
-    def test_the_effective_operator_set_holds_56_entries(self):
-        self.assertEqual(sum(1 for _ in hs.handlers(_effective()["hooks"])), 56)
+    def test_the_effective_operator_set_holds_57_entries(self):
+        self.assertEqual(sum(1 for _ in hs.handlers(_effective()["hooks"])), 57)
 
 
 class Policy(_Tmp):
@@ -636,7 +637,12 @@ class Overlay(_Tmp):
     def test_effective_operator_set_equals_f61ac37(self):
         want = json.loads(F61AC37.read_text(encoding="utf-8"))
         data = _effective()
-        self.assertEqual(_tuples(data), sorted(want["handlers"], key=_tuple_key))
+        # harmonic-forge#1560 adds exactly one PreToolUse row, worktree_busy_guard,
+        # after f61ac37; every other handler is f61ac37's.
+        added = [t for t in _tuples(data) if "worktree_busy_guard.py" in t[2]]
+        self.assertEqual([t[0] for t in added], ["PreToolUse"])
+        self.assertEqual([t for t in _tuples(data) if t not in added],
+                         sorted(want["handlers"], key=_tuple_key))
         self.assertEqual(sorted(data["lane_only"]), want["lane_only"])
         snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
         self.assertEqual(hs.snapshot_gaps(data, snapshot), [])
@@ -785,7 +791,7 @@ class Overlay(_Tmp):
         proc = self.cli("build", "--set", str(SET_FILE))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(_named(json.loads(proc.stdout)) & SIX, SIX)
-        self.assertIn("47 core + 9 operator", proc.stderr)
+        self.assertIn("48 core + 9 operator", proc.stderr)
         self.assertIn(str(config), proc.stderr)
 
 

@@ -135,6 +135,11 @@
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_store_guard.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "timeout": 10
           }
         ]
       },
