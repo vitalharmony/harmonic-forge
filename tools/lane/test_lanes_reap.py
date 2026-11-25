@@ -28,10 +28,29 @@ def _write_stale_lock(path: Path, pid: int = 999999, session_pid: int = 999998) 
                                  "session_pid": session_pid}))
 
 
-def _wait_for_proc(pid: int, timeout: float = 5.0) -> None:
+def _read_cmdline(pid: int) -> list[str]:
+    try:
+        raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return []
+    return raw.decode("utf-8", "replace").split("\0")
+
+
+def _wait_for_proc(pid: int, expect: list[str], timeout: float = 5.0,
+                   read=_read_cmdline) -> None:
+    """Return once the child's cmdline carries `expect` as a contiguous run
+    (harmonic-forge#1546). `/proc/<pid>` exists from fork, but until exec its
+    cmdline is the parent's, so a scan in that window sees no fake argv --
+    probed: 189/200 reads taken right after Popen lacked the child's argv."""
     deadline = time.time() + timeout
-    while time.time() < deadline and not (Path("/proc") / str(pid)).exists():
-        time.sleep(0.05)
+    last: list[str] = []
+    while True:
+        last = read(pid)
+        if any(last[i:i + len(expect)] == expect for i in range(len(last) - len(expect) + 1)):
+            return
+        if time.time() >= deadline:
+            raise AssertionError(f"pid {pid} never showed {expect!r} in its cmdline; last read {last!r}")
+        time.sleep(0.02)
 
 
 def _alive(pid: int) -> bool:
@@ -47,12 +66,13 @@ def _spawn_fake_process(*extra_argv: str, cwd: Path | None = None):
     verbatim -- python3 -c passes trailing args through as sys.argv, so this
     fakes a uvicorn/vite/process-compose/Codex command line without needing
     any of them installed."""
-    proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)", *extra_argv],
-        cwd=str(cwd) if cwd else None,
-    )
-    _wait_for_proc(proc.pid)
+    argv = ["-c", _SLEEPER, *extra_argv]
+    proc = subprocess.Popen([sys.executable, *argv], cwd=str(cwd) if cwd else None)
+    _wait_for_proc(proc.pid, argv)
     return proc
+
+
+_SLEEPER = "import time; time.sleep(30)"
 
 
 _REAL_LISTDIR = os.listdir
@@ -268,9 +288,9 @@ class LanesReapTests(unittest.TestCase):
         # Simulate a live Codex Lane 2 session: any live process whose cwd is
         # inside the worktree and isn't part of the dev-server stack itself.
         foreign = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"], cwd=str(root),
+            [sys.executable, "-c", _SLEEPER], cwd=str(root),
         )
-        _wait_for_proc(foreign.pid)
+        _wait_for_proc(foreign.pid, ["-c", _SLEEPER])
 
         def must_not_be_called(unit: str) -> bool:
             raise AssertionError("stop_unit must not be called for a busy worktree")
@@ -380,6 +400,30 @@ class LanesReapTests(unittest.TestCase):
                 if p.poll() is None:
                     p.kill()
                     p.wait()
+
+
+class WaitForProcTests(unittest.TestCase):
+    """harmonic-forge#1546: the helper waits for the child's argv, not the pid."""
+
+    def test_waits_through_pre_exec_reads(self):
+        parent = ["python3", "-m", "unittest"]
+        child = ["/usr/bin/python3", "-c", _SLEEPER, "uvicorn"]
+        reads = iter([parent, parent, parent, child])
+        calls = []
+
+        def read(pid):
+            calls.append(pid)
+            return next(reads)
+
+        _wait_for_proc(42, ["-c", _SLEEPER, "uvicorn"], read=read)
+        self.assertEqual(len(calls), 4)
+
+    def test_raises_when_the_argv_never_appears(self):
+        start = time.time()
+        with self.assertRaises(AssertionError) as caught:
+            _wait_for_proc(42, ["uvicorn"], timeout=0.2, read=lambda pid: ["python3"])
+        self.assertLess(time.time() - start, 2.0)
+        self.assertIn("pid 42", str(caught.exception))
 
 
 if __name__ == "__main__":
