@@ -65,12 +65,13 @@ def _known_projects(manifest: Path) -> set[str]:
 
 
 
-def _present_without_index(project: str, checkout) -> bool:
+def _present_checkout(project: str, checkout) -> bool:
+    """Is another project's checkout present? `contracts.resolve` answers
+    `unmeasured` for a present checkout only when its index is missing,
+    unreadable, malformed or invalid, none of which can vouch for an id."""
     if project == contracts.OWN_PROJECT:
         return False
-    base = (checkout or contracts.project_checkout)(project)
-    return base is not None and not any(
-        (base / name).is_file() for name in ("contracts.toml", "tools/registry/contracts.toml"))
+    return (checkout or contracts.project_checkout)(project) is not None
 
 
 def consumers_refusal(section: str, *, index: Path | None = None,
@@ -91,12 +92,13 @@ def consumers_refusal(section: str, *, index: Path | None = None,
                 bad.append(f"`{cid}` is not a contract id (<project>.<name>)")
             elif cid.split(".", 1)[0] not in known:
                 bad.append(f"`{cid}` names no known project")
-            elif contracts.resolve(cid, own, checkout=checkout) == contracts.UNRESOLVED:
+            elif (state := contracts.resolve(cid, own, checkout=checkout)) == contracts.UNRESOLVED:
                 bad.append(f"`{cid}` is not in the contract index")
-            elif _present_without_index(cid.split(".", 1)[0], checkout):
-                # AC5 lets only an ABSENT checkout pass unmeasured; a present one with
-                # no index cannot vouch for any id (sticky-wicket PATCH).
-                bad.append(f"`{cid}`: that project's checkout has no contract index yet")
+            elif state == contracts.UNMEASURED and _present_checkout(cid.split(".", 1)[0], checkout):
+                # AC5 lets only an ABSENT checkout pass unmeasured; a present one whose
+                # index is missing or cannot be read cannot vouch for any id
+                # (sticky-wicket PATCH item 4; post-verdict finding 3: malformed).
+                bad.append(f"`{cid}`: that project's checkout has no readable contract index")
         if bad:
             return "Consumers and Equivalents: " + "; ".join(bad)
         return None

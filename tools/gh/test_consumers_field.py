@@ -60,7 +60,29 @@ class FormTests(unittest.TestCase):
         other = self.tmp / "hrse"
         other.mkdir()
         msg = self.check("Contract: hrse.anything", checkout=lambda _project: other)
-        self.assertIn("no contract index yet", msg)
+        self.assertIn("no readable contract index", msg)
+
+    def test_a_present_checkout_with_a_malformed_index_refuses(self) -> None:
+        """Post-verdict finding 3: a malformed foreign index cannot vouch for
+        an id, so a present checkout carrying one refuses like a missing one."""
+        other = self.tmp / "hrse-bad"
+        other.mkdir()
+        (other / "contracts.toml").write_text("this is [not toml\n", encoding="utf-8")
+        msg = self.check("Contract: hrse.anything", checkout=lambda _project: other)
+        self.assertIn("no readable contract index", msg)
+        self.assertIn("hrse.anything", msg)
+
+    def test_a_present_checkout_with_a_valid_index_resolves_and_passes(self) -> None:
+        """The refusal above is for an unreadable index only: an id the
+        present checkout's valid index carries passes."""
+        other = self.tmp / "hrse-good"
+        other.mkdir()
+        (other / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        (other / "contracts.toml").write_text(
+            '[[contract]]\nid = "hrse.date-contract"\nscope = "s"\nowner = "a.py: f"\nmodules = ["a.py"]\n'
+            'authority = "a.py"\nexample_caller = "a.py:1"\nguard = ["a.py"]\nexceptions = "none"\n'
+            'scan_roots = ["."]\nblind_spots = "none"\nstatus = "canonical"\n', encoding="utf-8")
+        self.assertIsNone(self.check("Contract: hrse.date-contract", checkout=lambda _project: other))
 
     def test_backticks_inside_an_id_are_not_stripped(self) -> None:
         self.assertIn("not a contract id", self.check("Contract: harmonic-forge.gh`-argv-parser"))
