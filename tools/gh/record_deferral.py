@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Record open R-0352 deferrals for Lane 1's belt, by explicit key "
                     "(local write, no gh call).")
     parser.add_argument("--repo", required=True,
-                        help="owner/name, e.g. vitalharmony/hrse (no default)")
+                        help="owner/name of the deferred issues' repo (no default)")
     parser.add_argument("--issue", type=int, action="append", required=True,
                         help="an issue number carrying a deferral comment; repeat for each "
                              f"(at most {belt_candidates.MAX_BACKFILL_KEYS})")
