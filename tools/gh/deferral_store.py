@@ -153,19 +153,18 @@ def _canonical(repo: object) -> str | None:
 
     The one repo-key normalizer for the writer and every reader
     (harmonic-forge#1564 post-verdict #3). `normalize_repo` lowercases after
-    removing a lowercase `.git`, so one pass maps `owner/repo.GIT` to
-    `owner/repo.git` and a second pass to `owner/repo`; it is applied to a
-    fixed point, so every spelling and its stored key land on one key."""
+    removing one lowercase `.git`, so `owner/repo.GIT.GIT` takes three passes.
+    It runs to a true fixed point with no cap (final post-verdict #2): after
+    the first pass the key is lowercase, so every later pass that changes it
+    strictly shortens it, and the loop ends; any spelling the manifest
+    normalizer accepts lands on one key."""
     try:
         key = normalize_manifest_repo(repo)
-        for _ in range(8):
-            again = normalize_manifest_repo(key)
-            if again == key:
-                return key
+        while (again := normalize_manifest_repo(key)) != key:
             key = again
     except (ManifestError, AttributeError, TypeError):
         return None
-    return None
+    return key
 
 
 def valid_key(repo: object, issue: object) -> tuple[str, int] | None:

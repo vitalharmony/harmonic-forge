@@ -1409,6 +1409,11 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str
 #: count of the thread comes from it (harmonic-forge#1393): a page's ETag changes only
 #: when that page does, so a comment that opens page 2 is found only through the count.
 _ISSUE_COMMENTS: dict[tuple[str, int], int] = {}
+#: `(repo, issue)` -> the state `_fetch_all_comments`' own issue read reported
+#: (harmonic-forge#1564 final post-verdict #5). `discover_queue` clears it before
+#: an issue's first read and consults it after the thread read, so a closed
+#: state from any read this call made wins over an earlier failed read.
+_READ_STATE: dict[tuple[str, int], str] = {}
 
 
 def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
@@ -1513,6 +1518,8 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     # read conditionally. An edited comment does not change the issue's ETag but does
     # change its page's, so the pages are read even when the issue read was a 304.
     state, *_ = _issue_meta(repo, issue)
+    if state is not None:
+        _READ_STATE[(repo, issue)] = state
     if state is None or state == "missing":
         return None  # no readable issue, so no readable thread (never `[]`: that reads as no work)
     comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
@@ -1523,7 +1530,8 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
             # between two page reads shifts every boundary): refresh the count once and
             # read the pages again (harmonic-forge#1393 AC3). A thread still off after
             # that is returned for this tick but not memoized; the next tick re-reads it.
-            _read_issue_meta(repo, issue)
+            if (refreshed := _read_issue_meta(repo, issue)[0]) is not None:
+                _READ_STATE[(repo, issue)] = refreshed
             comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
             if comments is not None and len(comments) != _ISSUE_COMMENTS.get((repo, issue)):
                 return comments
@@ -1689,7 +1697,28 @@ def discover_queue(repo: str, lane: str,
     fetch_failed = False
     failed_issues: set[int] = set()
     unread_issues: set[int] = set()
+
+    def retire(issue: int, state: str) -> None:
+        # Marked at detection, which depends only on this issue's own
+        # state read: another issue's failed comment fetch below still
+        # reports the repo unreliable, but no longer stops this mark
+        # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
+        # after the store was read.
+        belt_candidates.retire_candidate(repo, issue, read_before=read_before)
+        # harmonic-forge#1564: a closed or missing issue's deferral is over.
+        # Lane 1's store, so Lane 1's belt only (preclose #1, #13).
+        if lane == "l1" and deferral_store.discharge_deferral(repo, issue, state) \
+                and retired_out is not None:
+            retired_out.add(issue)
+        if state == "closed":
+            _retire_imc(repo, issue)
+        # Not a `read_out` item: a closed or missing issue leaves by its
+        # own rules (`retired_out` here, the closed mark on the next
+        # successful cycle, harmonic-forge#854), which this leaves as is.
+        unread_issues.add(issue)
+
     for issue in candidates:
+        _READ_STATE.pop((repo, issue), None)
         # harmonic-forge#854 (REFORGE): a closed issue is queued to no lane,
         # checked before the label exclusion so closed epics and Tooling
         # Exception issues are retired too. No in-process cache decides this:
@@ -1700,23 +1729,7 @@ def discover_queue(repo: str, lane: str,
         state, labels, *rest = _issue_meta(repo, issue)
         milestone = rest[0] if rest else None
         if state in ("closed", "missing"):
-            # Marked at detection, which depends only on this issue's own
-            # state read: another issue's failed comment fetch below still
-            # reports the repo unreliable, but no longer stops this mark
-            # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
-            # after the store was read.
-            belt_candidates.retire_candidate(repo, issue, read_before=read_before)
-            # harmonic-forge#1564: a closed or missing issue's deferral is over.
-            # Lane 1's store, so Lane 1's belt only (preclose #1, #13).
-            if lane == "l1" and deferral_store.discharge_deferral(repo, issue, state) \
-                    and retired_out is not None:
-                retired_out.add(issue)
-            if state == "closed":
-                _retire_imc(repo, issue)
-            # Not a `read_out` item: a closed or missing issue leaves by its
-            # own rules (`retired_out` here, the closed mark on the next
-            # successful cycle, harmonic-forge#854), which this leaves as is.
-            unread_issues.add(issue)
+            retire(issue, state)
             continue
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
@@ -1762,6 +1775,13 @@ def discover_queue(repo: str, lane: str,
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
             failed_issues.add(issue)
+            continue
+        if (later := _READ_STATE.get((repo, issue))) in ("closed", "missing"):
+            # harmonic-forge#1564 final post-verdict #5: a closed state from any
+            # read wins. The thread read's own issue read can report closed after
+            # the read above failed (and was taken as open, AC4); the issue is
+            # retired here and never classified, queued or offered.
+            retire(issue, later)
             continue
         sticky = lane == "l1" and _sticky_wicket_owed(repo, issue, comments)
         for comment in comments:

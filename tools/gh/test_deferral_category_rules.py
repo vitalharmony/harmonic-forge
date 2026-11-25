@@ -152,11 +152,29 @@ class ValidKeyRuleTests(unittest.TestCase):
                 self.assertEqual(deferral_store.read_deferrals([spelling]), {(spelling, 1)})
                 self.assertIsNotNone(deferral_store.deferral_entry(spelling, 1))
 
-    def _store_raw(self, issue):
+    def test_the_repo_normalizer_runs_to_a_true_fixed_point(self):
+        """Final post-verdict #2: three passes, and nine suffixes the manifest
+        normalizer accepts, each land on the one key."""
+        for spelling in ("vitalharmony/repo.GIT.GIT", "vitalharmony/repo" + ".git" * 9,
+                         "vitalharmony/Repo" + ".GIT" * 9):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(deferral_store.normalize_manifest_repo(spelling))
+                self.assertEqual(deferral_store.valid_key(spelling, 1), ("vitalharmony/repo", 1))
+
+    def _store_raw(self, issue, repo=REPO):
         path = deferral_store._deferral_path(REPO, 5, None)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"repo": REPO, "issue": issue, "operator_login": OP}),
+        path.write_text(json.dumps({"repo": repo, "issue": issue, "operator_login": OP}),
                         encoding="utf-8")
+
+    def test_the_direct_reader_returns_only_the_requested_key(self):
+        """Final post-verdict #3: a valid payload for another key, stored under
+        the requested key's file, is not the requested entry."""
+        for repo, issue in ((REPO, 6), ("vitalharmony/other", 5)):
+            with self.subTest(repo=repo, issue=issue):
+                self._store_raw(issue, repo)
+                self.assertEqual(deferral_store.read_deferrals([repo]), {(repo, issue)})
+                self.assertIsNone(deferral_store.deferral_entry(REPO, 5))
 
     def test_the_direct_reader_rejects_a_stored_float_or_string_issue(self):
         """Post-verdict #4: the direct reader validates the stored payload
@@ -178,9 +196,26 @@ class ValidKeyRuleTests(unittest.TestCase):
         self._store_raw(5)
         self.assertEqual(deferral_store.read_deferrals([REPO]), {(REPO, 5)})
 
+    def test_the_bulk_reader_rejects_a_stored_boolean_issue(self):
+        """Final post-verdict #6: a stored `true` is never issue 1."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._store_raw(True)
+            self.assertEqual(deferral_store.read_deferrals([REPO]), set())
+
     def test_the_login_is_stored_casefolded(self):
         deferral_store.record_deferral(REPO, N, "backfill", operator_login="VitalHarmony")
         self.assertEqual(deferral_store.deferral_entry(REPO, N)["operator_login"], OP)
+
+
+class Offers:
+    """The `OfferState` surface `queue_cycle` uses, in memory."""
+    def __init__(self, keys=()):
+        self.entries = {k: {} for k in keys}
+    def keys(self): return list(self.entries)
+    def get(self, key): return self.entries.get(key)
+    def remove(self, key): self.entries.pop(key, None)
+    def suppresses(self, *_): return False
+    def record(self, key, _marker, comment_id, *_): self.entries[key] = {"comment_id": comment_id}
 
 
 class CarryForwardRuleTests(unittest.TestCase):
@@ -240,6 +275,58 @@ class CarryForwardRuleTests(unittest.TestCase):
         self.assertEqual(queue[(REPO, OTHER)], "handoff owes=review")
         self.assertEqual(err.getvalue().count(f"{REPO}#{N} left-queue-for-l1"), 1)
         self.assertNotIn(f"{REPO}#{OTHER} left-queue-for-l1", err.getvalue())
+
+
+    def mixed(self, last, thread, offers=None):
+        """A mixed-fetch tick: N's thread reads, OTHER's fetch fails."""
+        err = io.StringIO()
+        with patch("watch_lane_posts._fetch_all_comments",
+                   side_effect=lambda repo, issue: thread if issue == N else None), \
+             contextlib.redirect_stderr(err):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                [REPO], "l1", last, "t", candidate_pairs={(REPO, OTHER)}, offers=offers)
+        self.assertEqual(ok, set())
+        return queue, lines, err.getvalue()
+
+    def test_a_read_release_queues_fresh_on_a_mixed_fetch_tick(self):
+        """Final post-verdict #4: N's own read queues and offers it."""
+        offers = Offers()
+        queue, lines, _ = self.mixed({(REPO, OTHER): "handoff owes=review"},
+                                     [c(100, DEFERRAL), c(101, "go")], offers)
+        self.assertEqual(queue[(REPO, N)], MARKER)
+        self.assertEqual(lines, [f"{REPO}#{N} queued-for-l1 kind={MARKER}"])
+        self.assertEqual(offers.get((REPO, N)), {"comment_id": 101})
+
+    def test_a_persisted_offer_whose_read_cleared_retracts_on_a_mixed_fetch_tick(self):
+        """Final post-verdict #4: an offer an earlier process made, with no
+        `last_queue` entry, retracts by N's completed read; OTHER's stays."""
+        offers = Offers([(REPO, N), (REPO, OTHER)])
+        queue, _, err = self.mixed({}, [c(100, DEFERRAL), c(101, "go"), c(102, LANE1)], offers)
+        self.assertNotIn((REPO, N), queue)
+        self.assertEqual(offers.keys(), [(REPO, OTHER)])
+        self.assertEqual(err.count(f"{REPO}#{N} left-queue-for-l1"), 1)
+
+    def test_a_closed_state_from_the_thread_read_wins_on_a_mixed_fetch_tick(self):
+        """Final post-verdict #5: N's first issue read fails and the thread
+        read's own issue read reports it closed. N is never queued or offered,
+        and its deferral is discharged."""
+        thread = [c(100, DEFERRAL), c(101, "go")]
+        states = iter([(None, None, None), ("closed", set(), None)])
+        offers = Offers()
+        with patch("watch_lane_posts._issue_meta", side_effect=lambda repo, issue:
+                   next(states) if issue == N else (None, None, None)), \
+             patch("watch_lane_posts._read_thread_pages", return_value=thread), \
+             patch("watch_lane_posts._retire_imc"), \
+             patch.object(watch_lane_posts, "_TICK_READS_ON", False), \
+             patch.dict(watch_lane_posts._ISSUE_COMMENTS, {(REPO, N): len(thread)}), \
+             contextlib.redirect_stderr(io.StringIO()):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                [REPO], "l1", {(REPO, OTHER): "handoff owes=review"}, "t",
+                candidate_pairs={(REPO, OTHER)}, offers=offers)
+        self.assertEqual((ok, lines), (set(), []))
+        self.assertNotIn((REPO, N), queue)
+        self.assertIsNone(offers.get((REPO, N)))
+        self.assertIsNone(deferral_store.deferral_entry(REPO, N))
 
 
 if __name__ == "__main__":
