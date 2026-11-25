@@ -363,6 +363,38 @@ class TestTwoPassPatch(ScratchRepo):
         self.check_fails_naming("[import-unresolved] tools/hooks/fs.py",
                                 "tools/hooks/fs2.py imports operator file tools/telemetry/emit.py")
 
+    def test_post_verdict_2_shell_forms_are_edges_or_unresolved(self):
+        """Operator ruling (a): `source --`, an assignment prefix, a quoted
+        eval and a glob operand are never clean."""
+        self.write("tools/lane/g.sh", '#!/bin/bash\nsource -- "../telemetry/env.sh"\n')
+        self.write("tools/lane/h.sh", '#!/bin/bash\nLC_ALL=C source "../telemetry/env.sh"\n')
+        self.write("tools/lane/i.sh", "#!/bin/bash\neval 'source \"../telemetry/env.sh\"'\n")
+        self.write("tools/lane/j.sh", "#!/bin/bash\nsource ../telemetry/en?.sh\n")
+        self.track()
+        self.check_fails_naming(
+            "tools/lane/g.sh imports operator file tools/telemetry/env.sh",
+            "tools/lane/h.sh imports operator file tools/telemetry/env.sh",
+            "[import-unresolved] tools/lane/i.sh", "[import-unresolved] tools/lane/j.sh")
+
+    def test_post_verdict_2_python_forms_are_edges_or_unresolved(self):
+        """Operator ruling (a): a reassigned path, an annotated alias,
+        runpy.run_path and a package named to import_module or by a dotted
+        import are never clean."""
+        self.write("tools/telemetry/emit.py", "X = 1\n")
+        self.write("tools/hooks/k.py", "from importlib.util import spec_from_file_location\n"
+                   'path = "../telemetry/emit.py"\nspec_from_file_location("e", path)\n'
+                   'path = "core.py"\n')
+        self.write("tools/hooks/l.py", "import importlib\nload: object = importlib.import_module\n")
+        self.write("tools/hooks/m.py", 'import runpy\nrunpy.run_path("../telemetry/emit.py")\n')
+        self.write("tools/hooks/n.py", 'import importlib\nimportlib.import_module("telemetry")\n')
+        self.write("tools/hooks/o.py", "import tools.telemetry\n")
+        self.track()
+        self.check_fails_naming(
+            "[import-unresolved] tools/hooks/k.py", "[import-unresolved] tools/hooks/l.py",
+            "tools/hooks/m.py imports operator file tools/telemetry/emit.py",
+            "tools/hooks/n.py imports operator file tools/telemetry/",
+            "tools/hooks/o.py imports operator file tools/telemetry/")
+
     def test_a_lowered_count_is_stale_and_update_lowers_it(self):
         self.write("tools/hooks/core_hook.py", CORE + PLANT + PLANT)
         self.track()

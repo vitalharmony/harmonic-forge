@@ -286,14 +286,19 @@ def normalize(line: str) -> str:
 # --- import edges ------------------------------------------------------------
 
 def _assigns(tree: ast.AST) -> dict[str, ast.AST]:
-    """Each simple `name = value` in the file (the last one wins)."""
+    """Each name bound exactly once in the file by a simple `name = value`. A
+    name bound more than once, or by an annotated, augmented, loop or `with`
+    target, is left out, so a path through it never resolves (operator ruling
+    (a): a later rebinding can no longer hide the load it follows)."""
     out: dict[str, ast.AST] = {}
+    seen: dict[str, int] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    out[t.id] = node.value
-    return out
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            seen[node.id] = seen.get(node.id, 0) + 1
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            out[node.targets[0].id] = node.value
+    return {k: v for k, v in out.items() if seen.get(k) == 1}
 
 
 def _literal_tail(node: ast.AST | None, assigns: dict[str, ast.AST], depth: int = 0) -> str | None:
@@ -328,6 +333,15 @@ def _literal_tail(node: ast.AST | None, assigns: dict[str, ast.AST], depth: int 
     return None
 
 
+#: Operator ruling (a): every function that loads code by name or path.
+LOADER_NAMES = frozenset({"import_module", "__import__", "spec_from_file_location", "run_path",
+                          "run_module", "load_source", "SourceFileLoader", "exec", "execfile",
+                          "load_module"})
+#: The path-taking loaders and the index of their path argument.
+PATH_LOADERS = {"spec_from_file_location": 1, "run_path": 0, "load_source": 1,
+                "SourceFileLoader": 1}
+
+
 def python_targets(source: str, dirs: frozenset[str] = frozenset()
                    ) -> tuple[list[list[str]], list[int]]:
     """(one candidate group per import: module names, `file:` basenames or
@@ -340,7 +354,7 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
     assigns = _assigns(tree)
     # `from importlib import import_module as load` binds a loader under
     # another name (post-verdict cross-family finding 2).
-    loaders = {n: n for n in ("import_module", "__import__", "spec_from_file_location")}
+    loaders = {n: n for n in LOADER_NAMES}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for a in node.names:
@@ -354,11 +368,14 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
                                             else node.value.attr]
     found: list[list[str]] = []
     unresolved: list[int] = []
+    resolved_funcs: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
                 parts = a.name.split(".")
-                found.append([parts[-1], "pkg:" + parts[0]])
+                # every dotted part may be the operator package
+                # (`import tools.telemetry`, operator ruling (a))
+                found.append([parts[-1]] + ["pkg:" + part for part in parts])
         elif isinstance(node, ast.ImportFrom):
             parts = node.module.split(".") if node.module else []
             if parts:
@@ -370,28 +387,40 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
             name = fn.attr if isinstance(fn, ast.Attribute) else (
                 fn.id if isinstance(fn, ast.Name) else "")
             name = loaders.get(name, name) if isinstance(fn, ast.Name) else name
-            if name in ("import_module", "__import__"):
+            if name in ("import_module", "__import__", "run_module"):
                 arg = node.args[0] if node.args else None
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    found.append([arg.value.split(".")[-1]])
-                else:
-                    unresolved.append(node.lineno)
-            elif name == "spec_from_file_location":
-                arg = node.args[1] if len(node.args) > 1 else next(
-                    (k.value for k in node.keywords if k.arg == "location"), None)
+                    parts = arg.value.split(".")
+                    found.append([parts[-1]] + ["pkg:" + part for part in parts])
+                    resolved_funcs.add(id(fn))
+            elif name in PATH_LOADERS:
+                index = PATH_LOADERS[name]
+                arg = node.args[index] if len(node.args) > index else next(
+                    (k.value for k in node.keywords if k.arg in ("location", "path", "path_name")),
+                    None)
                 tail = _literal_tail(arg, assigns)
                 if tail:
                     found.append(["file:" + tail])
-                else:
-                    unresolved.append(node.lineno)
-    return found, unresolved
+                    resolved_funcs.add(id(fn))
+    # Operator ruling (a): every other reference to a loader -- an unresolved
+    # call, an alias, an annotated or passed-around reference, exec -- is an
+    # unresolved row. Detection over-approximates; resolution never guesses.
+    for node in ast.walk(tree):
+        if id(node) in resolved_funcs:
+            continue
+        name = (node.id if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                else node.attr if isinstance(node, ast.Attribute) else None)
+        if name is not None and (name in LOADER_NAMES or loaders.get(name) in LOADER_NAMES):
+            unresolved.append(node.lineno)
+    return found, sorted(set(unresolved))
 
 
-# A `source`/`.` in command position: line start, after a separator or pipe,
-# or after a keyword that starts a command list.
-SOURCE_CMD_RE = re.compile(
-    r"(?:^|&&|\|\||[;|({!]|\b(?:then|do|else|elif|if|while|until))\s*"
-    r"(?:(?:command|builtin|eval)\s+(?:--\s+)?)*(?:source|\.)\s+")
+# Operator ruling (a): a `source` or `.` word anywhere on a line is a load
+# (after any separator, keyword, prefix, assignment or quote), resolved by its
+# operand's trailing literal filename. Over-approximate on purpose.
+SOURCE_CMD_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))(?:source|\.)\s+(?:--\s+)?""")
+#: A line that evaluates text can load without a visible `source`.
+EVAL_RE = re.compile(r"""(?:^|(?<=[\s;&|({!`'"]))eval\s""")
 
 
 def _shell_word(text: str, i: int) -> str:
@@ -428,10 +457,13 @@ def shell_targets(lines: list[str]) -> tuple[list[list[str]], list[str]]:
     found: list[list[str]] = []
     unresolved: list[str] = []
     for line in lines:
+        if EVAL_RE.search(line) and SOURCE_CMD_RE.search(line):
+            unresolved.append(line)  # the eval'd text decides what loads
+            continue
         for m in SOURCE_CMD_RE.finditer(line):
             word = _shell_word(line, m.end()).replace('"', "").replace("'", "")
             tail = word.rstrip("/").rsplit("/", 1)[-1]
-            if tail and "$" not in tail and "(" not in tail and ")" not in tail:
+            if tail and not any(c in tail for c in "$()`*?[]{}~"):
                 found.append(["file:" + tail])
             else:
                 unresolved.append(line)

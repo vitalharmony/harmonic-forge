@@ -1223,6 +1223,12 @@ count = 1
 [[finding]]
 rule = "import-unresolved"
 path = "tools/precheck/replay_harness.py"
+text = "module = load_module(layer[\"module\"]) if layer[\"module\"] is not None else None"
+count = 1
+
+[[finding]]
+rule = "import-unresolved"
+path = "tools/precheck/replay_harness.py"
 text = "spec = importlib.util.spec_from_file_location(f\"_precheck_layer_{Path(path).stem}\", path)"
 count = 1
 
