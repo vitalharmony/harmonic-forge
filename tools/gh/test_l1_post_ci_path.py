@@ -188,8 +188,42 @@ class DryRunDecides(unittest.TestCase):
     def test_a_pending_with_red_dry_run_runs_the_full_check(self):
         """harmonic-forge#894 post-verdict finding 2 (fourth check): the dry
         run's step, not only `_check_path`, sends a red job beside a running
-        `verify` to the full check."""
-        self.assertEqual(self._dry(L.PENDING_WITH_RED), ["full"])
+        `verify` to the full check.
+
+        Sixth post-verdict check: the classification is stored by the
+        production step, not seeded into `_DRY_RUN_CI` by hand. The dry run's
+        real CI step (`_publish_checks`' `ci`, through the real
+        `_refuse_if_ci_red`, `ci_conclusion` and `_judge_runs`; only the run
+        read is stubbed) stores the read, and `_dry_run_check` decides from
+        what it stored. A step that stored plain `pending` would take the
+        local path and fail here."""
+        verify = {"name": "verify", "status": "in_progress", "conclusion": None,
+                  "workflow_status": "in_progress", "workflow_event": "pull_request",
+                  "workflow_path": ".github/workflows/ci.yml"}
+        red = {"name": "frontend", "status": "completed", "conclusion": "failure"}
+        for runs, stored, want in (([verify, red], L.PENDING_WITH_RED, ["full"]),
+                                   ([verify], "pending", ["local"])):
+            seen = []
+
+            def static(sha, branch, dry_run=False, _seen=seen, **kw):
+                _seen.append(kw.get("mode", "full"))
+                return [], None, {"result": "pass"}
+            with self.subTest(stored=stored), \
+                 mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+                 mock.patch.object(L, "_ci_reader", return_value=None), \
+                 mock.patch.object(L.gate_ci, "_read_check_runs", return_value=(runs, None)), \
+                 mock.patch.object(L, "static_checks", side_effect=static):
+                L._DRY_RUN_CI.pop(SHA, None)
+                try:
+                    steps = L._publish_checks("o/r", 1, "ready-for-l3", SHA, "feat/1-x",
+                                              ack_overlap=None, ack_no_pr_required=None,
+                                              grant_on_main=False)
+                    steps[1]()  # the production CI step stores the classification
+                    self.assertEqual(L._DRY_RUN_CI[SHA], stored)
+                    L._dry_run_check(SHA, "feat/1-x")
+                finally:
+                    L._DRY_RUN_CI.pop(SHA, None)
+                self.assertEqual(seen, want)
 
     def test_the_dry_run_never_draws_the_audit_sample(self):
         with mock.patch.object(L, "_audit_sampled", side_effect=AssertionError("drawn")):
@@ -226,6 +260,33 @@ class EveryCiReadGoesThroughS0(unittest.TestCase):
             self.assertEqual(L._refuse_if_ci_red("o/r", 1, SHA, None), "green")
         made.assert_called_once_with("o/r")
         self.assertIs(read.call_args.kwargs["reader"], sentinel)
+
+    def test_the_reader_is_built_for_the_source_repo_not_the_tracker(self):
+        """harmonic-forge#894 sixth post-verdict check: with a distinct issue
+        tracker (`repo`) and source repo (the checkout's origin), the S0
+        reader is built for the repo CI is queried in. A reader built for the
+        tracker while CI is read in the source repo fails here."""
+        sentinel = object()
+        with mock.patch.object(L, "_cwd_repo_from_git", return_value="source/code"), \
+             mock.patch.object(L, "_ci_reader", return_value=sentinel) as made, \
+             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "x")) as read:
+            self.assertEqual(L._refuse_if_ci_red("tracker/issues", 1, SHA, None), "green")
+        made.assert_called_once_with("source/code")
+        self.assertEqual(read.call_args.args[0], "source/code")
+        self.assertIs(read.call_args.kwargs["reader"], sentinel)
+        # Through the real `_ci_reader`: the reader handed to the CI read is
+        # gate_ci's S0 reader for the source repo.
+        built = []
+
+        def s0(repo):
+            built.append(repo)
+            return f"reader:{repo}"
+        with mock.patch.object(L, "_cwd_repo_from_git", return_value="source/code"), \
+             mock.patch.object(L.gate_ci, "s0_reader", side_effect=s0), \
+             mock.patch.object(L.gate_ci, "ci_conclusion", return_value=("green", "x")) as read:
+            L._refuse_if_ci_red("tracker/issues", 1, SHA, None)
+        self.assertEqual(built, ["source/code"])
+        self.assertEqual(read.call_args.kwargs["reader"], "reader:source/code")
 
     def test_a_red_job_beside_a_running_verify_takes_the_full_check(self):
         """harmonic-forge#894 post-verdict finding 1, through the real
