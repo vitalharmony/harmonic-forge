@@ -86,7 +86,7 @@ class FileTools(Busy):
         self.assertIsNotNone(reason)
         self.assertIn(self.W, reason)
         self.assertIn("cafef00d", reason)
-        self.assertIn(f"kill {self.child.pid}", reason)
+        self.assertIn(f"kill -- -{self.child.pid}", reason)
         self.assertIn(f"shell_pid {self.child.pid}", reason)
         self.assertIn("a full check is running in this worktree (R-0376)", reason)
         self.assertIn("task-stop tool", reason)
@@ -126,74 +126,15 @@ class FileTools(Busy):
         self.assertIsNone(guard.guard({"tool_name": "Read", "tool_input": {"file_path": f"{self.W}/x"}}))
 
 
-class BashDenied(Busy):
-    """AC2: a command naming W that writes there."""
+class BashAlwaysAllowed(Busy):
+    """Amendment AC3: Bash is never denied by this hook, even a write naming a
+    busy W; the check's integrity step catches that instead."""
 
-    def test_writes_denied(self):
-        for command in (f"git -C {self.W} commit -m x",
-                        f"cd {self.W} && git checkout x",
-                        f"echo x > {self.W}/f",
-                        f"git -C {self.W} log > {self.W}/x",
-                        f"git -C {self.W} diff --output {self.W}/x",
-                        f"git -C {self.W} diff --output={self.W}/x",
-                        f"git -C {self.W} status; rm {self.W}/x",
-                        f"git -C {self.W} status ;rm {self.W}/x",
-                        f"git -C {self.W} status || rm {self.W}/x",
-                        f"git -C {self.W} status | tee {self.W}/x",
-                        f"git -C {self.W} status & rm {self.W}/x",
-                        f"git -C {self.W} status $(rm {self.W}/x)",
-                        f"git -C {self.W} status `rm {self.W}/x`",
-                        f"git -C {self.W} status\nrm {self.W}/x",
-                        f"cd {self.W} && git status && rm x",
-                        f"cd {self.W} && rm x",
-                        f"rm -rf {self.W}",
-                        f"rm '{self.W}'",
-                        f"(cd {self.W})",
-                        f"sed -i s/a/b/ {self.W}/f",
-                        f"cat {self.W}/x > /tmp/y",
-                        f"bash {XF} --caller claude --families 2 --posture verify "
-                        f"--brief /tmp/b.md --cwd {self.W} > {self.W}/out",
-                        f"bash {XF} --caller claude --families 2 --posture probe "
-                        f"--brief /tmp/b.md --cwd {self.W}"):
-            with self.subTest(command=command):
-                self.assertIsNotNone(self.bash(command))
-
-
-class BashAllowed(Busy):
-    def test_reads_allowed(self):
-        """AC2 allowlist."""
-        for command in (f"cat {self.W}/x",
-                        f"grep -rn x {self.W}/tools",
-                        f"rg -n x {self.W}",
-                        f"ls {self.W}",
-                        f"git -C {self.W} status",
-                        f"git -C {self.W} status --short",
-                        f"git -C {self.W} log --oneline tools",
-                        f"git -C {self.W} diff HEAD~1",
-                        f"git -C {self.W} show HEAD:mise.toml",
-                        f"git -C {self.W} rev-parse HEAD",
-                        f"git -C {self.W} ls-files tools",
-                        f"cd {self.W} && git status",
-                        f"cd {self.W} && git diff --stat"):
+    def test_bash_writes_into_a_busy_worktree_are_allowed(self):
+        for command in (f"git -C {self.W} commit -m x", f"cd {self.W} && git checkout x",
+                        f"echo x > {self.W}/f", f"rm -rf {self.W}"):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command))
-
-    def test_cross_family_verify_shape_allowed(self):
-        """AC2: the R-0358 shape, direct and bash-prefixed, either caller."""
-        for command in (f"bash {XF} --caller claude --families 2 --posture verify "
-                        f"--brief /tmp/b.md --cwd {self.W}",
-                        f"{XF} --caller codex --families 2 --posture verify "
-                        f"--brief /tmp/b.md --cwd {self.W}"):
-            with self.subTest(command=command):
-                self.assertIsNone(self.bash(command))
-
-    def test_command_not_naming_W_allowed(self):
-        self.assertIsNone(self.bash("gh issue view 1560"))
-        self.assertIsNone(self.bash("echo x > /tmp/f"))
-
-    def test_payload_cwd_is_not_consulted(self):
-        payload = {"tool_name": "Bash", "cwd": self.W, "tool_input": {"command": "echo x > f"}}
-        self.assertIsNone(guard.guard(payload))
 
 
 class FailOpen(unittest.TestCase):

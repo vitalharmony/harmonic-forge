@@ -29,6 +29,23 @@ CLI:
   busy_lock.py path --root R              print R's lock path
   busy_lock.py sidecar --root R --head H  record the sidecar for the caller's
                                           parent shell (the task shell)
+  busy_lock.py held --root R              the lock could not be taken: name the
+                                          holder (a live task shell, or the
+                                          processes still holding a leaked fd)
+                                          and exit 1, so the check refuses
+  busy_lock.py stamp --root R             record the start stamp: R's
+                                          `git status --porcelain` and the time
+  busy_lock.py verify --root R --head H   fail (exit 1) when HEAD moved, the
+                                          porcelain changed, or a tracked file
+                                          was modified since the stamp
+
+The integrity step (design amendment issuecomment-7169440744, AC2) is what
+catches a Bash write into a busy worktree: the guard hook allows Bash, and
+`verify` fails the check before `check_receipt.py record` can run. A tree
+dirty at the start is not a failure; `record` already refuses a dirty tree,
+so that check passes with no receipt. The stamp lives in the store, outside
+the worktree, and is written only after the lock is taken (or on the
+fail-open path), so a refused second run never overwrites the holder's stamp.
 """
 from __future__ import annotations
 
@@ -38,7 +55,9 @@ import fcntl
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 DEFAULT_STATE = Path("~/.claude/state/worktree-busy")
@@ -60,6 +79,82 @@ def lock_path(root: str | os.PathLike) -> Path:
 
 def sidecar_path(root: str | os.PathLike) -> Path:
     return state_dir() / f"{key(root)}.json"
+
+
+def stamp_path(root: str | os.PathLike) -> Path:
+    return state_dir() / f"{key(root)}.stamp.json"
+
+
+def _git(root: str | os.PathLike, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                          check=True).stdout
+
+
+def write_stamp(root: str | os.PathLike) -> Path:
+    path = stamp_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"root": os.path.realpath(root), "stamp_ns": time.time_ns(),
+              "porcelain": _git(root, "status", "--porcelain", "--untracked-files=all")}
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    scratch.write_text(json.dumps(record), encoding="utf-8")
+    os.replace(scratch, path)
+    return path
+
+
+def changed_since_stamp(root: str | os.PathLike, head: str) -> str | None:
+    """Why the worktree changed during the check, or None. No stamp (the
+    store was unavailable) reads unchanged: the lock path already failed
+    open with a warning."""
+    try:
+        stamp = json.loads(stamp_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if _git(root, "rev-parse", "HEAD").strip() != head:
+        return "HEAD moved"
+    if _git(root, "status", "--porcelain", "--untracked-files=all") != stamp.get("porcelain"):
+        return "the working tree changed (git status --porcelain differs from the start)"
+    since = int(stamp.get("stamp_ns", 0))
+    for name in _git(root, "ls-files", "-z").split("\0"):
+        if not name:
+            continue
+        try:
+            if os.lstat(os.path.join(str(root), name)).st_mtime_ns > since:
+                return f"tracked file {name} was modified during the check"
+        except FileNotFoundError:
+            return f"tracked file {name} was removed during the check"
+    return None
+
+
+def fd_holders(lock: Path) -> list[int]:
+    """Pids whose open fds point at `lock` (a leaked fd 9 after its task shell exited)."""
+    target = os.path.realpath(lock)
+    holders: list[int] = []
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            fds = list((proc / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.path.realpath(os.readlink(fd)) == target:
+                    holders.append(int(proc.name))
+                    break
+            except OSError:
+                continue
+    return sorted(holders)
+
+
+def held_message(root: str | os.PathLike) -> str:
+    record = read_sidecar(root) or {}
+    if is_busy(root):
+        pid = record.get("shell_pid", "?")
+        return (f"worktree-busy: a check is already running in {os.path.realpath(root)} "
+                f"(shell_pid {pid}, pgid {pid}, started {record.get('started_at', '?')}); "
+                f"wait for it or stop it with `kill -- -{pid}`. Refusing (R-0376).")
+    holders = fd_holders(lock_path(root))
+    return (f"worktree-busy: the lock for {os.path.realpath(root)} is held by a leaked fd "
+            f"after its check exited; holders: {', '.join(map(str, holders)) or 'unknown'}. "
+            f"Stop them, then rerun. Refusing (R-0376).")
 
 
 def process_start(pid: int) -> str | None:
@@ -163,9 +258,33 @@ def main(argv: list[str] | None = None) -> int:
     p_side = sub.add_parser("sidecar", help="record the sidecar for the calling task shell")
     p_side.add_argument("--root", required=True)
     p_side.add_argument("--head", required=True)
+    p_held = sub.add_parser("held", help="name the lock's holder and refuse")
+    p_held.add_argument("--root", required=True)
+    p_stamp = sub.add_parser("stamp", help="record the start stamp")
+    p_stamp.add_argument("--root", required=True)
+    p_verify = sub.add_parser("verify", help="fail if the worktree changed during the check")
+    p_verify.add_argument("--root", required=True)
+    p_verify.add_argument("--head", required=True)
     args = parser.parse_args(argv)
     if args.command == "path":
         print(lock_path(args.root))
+        return 0
+    if args.command == "held":
+        print(held_message(args.root), file=sys.stderr)
+        return 1
+    if args.command == "stamp":
+        try:
+            write_stamp(args.root)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"worktree-busy: start stamp not recorded: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if args.command == "verify":
+        why = changed_since_stamp(args.root, args.head)
+        if why:
+            print(f"worktree-busy: {os.path.realpath(args.root)} changed during check (R-0376); "
+                  f"rerun. {why}.", file=sys.stderr)
+            return 1
         return 0
     try:
         record_sidecar(args.root, args.head, os.getppid())

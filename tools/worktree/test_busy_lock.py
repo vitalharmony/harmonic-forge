@@ -226,15 +226,100 @@ class MisePrelude(Store):
         _out, err = child.communicate(timeout=30)
         self.assertEqual(child.returncode, 0, err)
 
-    def test_nested_check_in_the_same_worktree_proceeds(self):
+    def test_a_second_check_in_the_same_worktree_refuses(self):
+        """Amendment AC6 (inverted from the first design): a live holder makes
+        a second check exit non-zero, naming the holder's shell pid."""
         repo = self.repo()
-        self.run_prelude("check", repo, "sleep 20")
+        outer = self.run_prelude("check", repo, "sleep 20")
         self.assertTrue(wait_for(lambda: busy_lock.is_busy(repo)))
         inner = self.run_prelude("check", repo, "echo inner-ran")
         _out, err = inner.communicate(timeout=30)
-        self.assertEqual(inner.returncode, 0, err)
-        self.assertIn("worktree-busy: lock not taken", err)
+        self.assertNotEqual(inner.returncode, 0, err)
+        self.assertIn("already running", err)
+        self.assertIn(f"kill -- -{outer.pid}", err)
         self.assertTrue(busy_lock.is_busy(repo), "the outer check still holds the lock")
+
+    def test_a_leaked_fd_refuses_naming_its_holder(self):
+        """Amendment AC6: the task shell is gone but a child still holds fd 9."""
+        repo = self.repo()
+        lock = busy_lock.lock_path(repo)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        leaked = subprocess.Popen(["bash", "-c", f"exec 9>{lock}; flock 9; sleep 20"])
+        self.addCleanup(self._stop, leaked)
+        self.assertTrue(wait_for(lambda: busy_lock._lock_held(lock)))
+        inner = self.run_prelude("check", repo, "echo inner-ran")
+        _out, err = inner.communicate(timeout=30)
+        self.assertNotEqual(inner.returncode, 0, err)
+        self.assertIn("leaked fd", err)
+        self.assertIn(str(leaked.pid), err)
+
+
+class Integrity(Store):
+    """Amendment AC2: `verify` fails when the worktree changed during the check."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.base / "w"
+        self.root.mkdir()
+        g = ["git", "-C", str(self.root), "-c", "user.email=t@t", "-c", "user.name=t"]
+        self.git = lambda *a: subprocess.run([*g, *a], check=True, capture_output=True, text=True)
+        (self.root / "a.txt").write_text("a\n")
+        (self.root / "b.txt").write_text("b\n")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.git("add", "a.txt", "b.txt")
+        self.git("commit", "-q", "-m", "x")
+        self.head = self.git("rev-parse", "HEAD").stdout.strip()
+        time.sleep(0.01)
+
+    def verify(self) -> int:
+        return busy_lock.main(["verify", "--root", str(self.root), "--head", self.head])
+
+    def stamp(self):
+        self.assertEqual(busy_lock.main(["stamp", "--root", str(self.root)]), 0)
+        time.sleep(0.01)
+
+    def test_unchanged_passes(self):
+        self.stamp()
+        self.assertEqual(self.verify(), 0)
+
+    def test_dirty_at_start_and_unchanged_passes(self):
+        (self.root / "a.txt").write_text("dirty\n")
+        self.stamp()
+        self.assertEqual(self.verify(), 0)
+
+    def test_head_moved_fails(self):
+        self.stamp()
+        self.git("commit", "-q", "--allow-empty", "-m", "y")
+        self.assertEqual(self.verify(), 1)
+
+    def test_partial_commit_of_a_dirty_tree_fails(self):
+        (self.root / "a.txt").write_text("a2\n")
+        (self.root / "b.txt").write_text("b2\n")
+        self.stamp()
+        self.git("commit", "-q", "-m", "part", "a.txt")
+        self.git("reset", "-q", "--soft", self.head)  # HEAD back, porcelain differs
+        self.assertEqual(self.verify(), 1)
+
+    def test_untracked_file_created_mid_run_fails(self):
+        self.stamp()
+        (self.root / "new.txt").write_text("n\n")
+        self.assertEqual(self.verify(), 1)
+
+    def test_edit_then_revert_fails(self):
+        self.stamp()
+        (self.root / "a.txt").write_text("a\n")  # same content, newer mtime
+        self.assertEqual(self.verify(), 1)
+
+    def test_checkout_away_and_back_fails(self):
+        self.git("branch", "other")
+        self.stamp()
+        self.git("checkout", "-q", "other")
+        self.git("checkout", "-q", "-")
+        (self.root / "a.txt").touch()
+        self.assertEqual(self.verify(), 1)
+
+    def test_no_stamp_passes(self):
+        self.assertEqual(self.verify(), 0)
 
 
 if __name__ == "__main__":

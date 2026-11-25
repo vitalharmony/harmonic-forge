@@ -78,7 +78,7 @@ python3 tools/rules/hardcode_scan.py --check
 description = "Verification gate — depends on ci-check (the CI-runnable subset), plus the machine-local steps a CI runner cannot execute (harmonic-forge#802)."
 run = """
 set -e
-lock=$(python3 tools/worktree/busy_lock.py path --root "$(git rev-parse --show-toplevel)") || lock=; if [ -n "$lock" ]; then mkdir -p "$(dirname "$lock")" && command exec 9>"$lock" && flock -w 5 9 && python3 tools/worktree/busy_lock.py sidecar --root "$(git rev-parse --show-toplevel)" --head "$(git rev-parse HEAD)" || echo "worktree-busy: lock not taken" >&2; fi  # worktree-busy lock (harmonic-forge#1560)
+wroot=$(git rev-parse --show-toplevel); lock=$(python3 tools/worktree/busy_lock.py path --root "$wroot") || lock=; if [ -n "$lock" ] && command -v flock > /dev/null && mkdir -p "$(dirname "$lock")" && command exec 9>"$lock"; then if flock -w 5 9; then python3 tools/worktree/busy_lock.py sidecar --root "$wroot" --head "$(git rev-parse HEAD)" || echo "worktree-busy: sidecar not recorded" >&2; else python3 tools/worktree/busy_lock.py held --root "$wroot"; exit 1; fi; else echo "worktree-busy: lock not taken" >&2; fi; python3 tools/worktree/busy_lock.py stamp --root "$wroot" || true  # worktree-busy lock (harmonic-forge#1560)
 # harmonic-forge#975: HEAD at the start, so the receipt below covers only the
 # commit every step tested. ci-check runs inline (not as a dependency) so it
 # falls inside that window.
@@ -109,6 +109,7 @@ python3 tools/rules/check_cross_registry.py
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
 # harmonic-forge#975: reached only when every step above passed (set -e);
 # the pre-push gate reads this receipt for Tooling Exception branches.
+python3 tools/worktree/busy_lock.py verify --root "$wroot" --head "$head"  # worktree-busy integrity (harmonic-forge#1560)
 python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"
 """
 
@@ -116,13 +117,14 @@ python3 tools/hooks/check_receipt.py record --repo-root . --head "$head"
 description = "The machine-local steps of `check` only (harmonic-forge#1343), the ones CI cannot run; records a `local-check` receipt that pre-push accepts for a Tooling Exception branch. CI stays the merge gate."
 run = """
 set -e
-lock=$(python3 tools/worktree/busy_lock.py path --root "$(git rev-parse --show-toplevel)") || lock=; if [ -n "$lock" ]; then mkdir -p "$(dirname "$lock")" && command exec 9>"$lock" && flock -w 5 9 && python3 tools/worktree/busy_lock.py sidecar --root "$(git rev-parse --show-toplevel)" --head "$(git rev-parse HEAD)" || echo "worktree-busy: lock not taken" >&2; fi  # worktree-busy lock (harmonic-forge#1560)
+wroot=$(git rev-parse --show-toplevel); lock=$(python3 tools/worktree/busy_lock.py path --root "$wroot") || lock=; if [ -n "$lock" ] && command -v flock > /dev/null && mkdir -p "$(dirname "$lock")" && command exec 9>"$lock"; then if flock -w 5 9; then python3 tools/worktree/busy_lock.py sidecar --root "$wroot" --head "$(git rev-parse HEAD)" || echo "worktree-busy: sidecar not recorded" >&2; else python3 tools/worktree/busy_lock.py held --root "$wroot"; exit 1; fi; else echo "worktree-busy: lock not taken" >&2; fi; python3 tools/worktree/busy_lock.py stamp --root "$wroot" || true  # worktree-busy lock (harmonic-forge#1560)
 head=$(git rev-parse HEAD)
 python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" --skip-if-absent
 ! command -v claude > /dev/null || claude plugin test tools/routing/mod
 python3 tools/onboard/platform_link_report.py --project .
 python3 tools/rules/check_cross_registry.py
 python3 tools/memory/context_budget_ratchet.py --repo . --gate
+python3 tools/worktree/busy_lock.py verify --root "$wroot" --head "$head"  # worktree-busy integrity (harmonic-forge#1560)
 python3 tools/hooks/check_receipt.py record --repo-root . --head "$head" --source local-check
 """
 

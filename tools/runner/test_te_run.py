@@ -1730,7 +1730,8 @@ class CheckSteps(unittest.TestCase):
                 if not line or line.startswith("#") or line in ("set -e",
                                                                 "head=$(git rev-parse HEAD)"):
                     continue
-                if line.endswith("# worktree-busy lock (harmonic-forge#1560)"):  # te_run runs in a clone
+                if line.endswith(("# worktree-busy lock (harmonic-forge#1560)",
+                                  "# worktree-busy integrity (harmonic-forge#1560)")):  # te_run runs in a clone
                     continue
                 if line.startswith("python3 tools/lane/heavy_slot.py run"):  # harmonic-forge#1271: te_run is out of its scope
                     line = line.split(" -- ", 1)[1]
