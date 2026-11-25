@@ -99,6 +99,8 @@ def read(path: Path) -> dict | None:
     if not os.path.lexists(path):
         return None
     try:
+        if os.path.islink(path.parent):  # a symlinked .claude/ is refused too
+            raise OSError("the overlay's directory is a symlink")
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):

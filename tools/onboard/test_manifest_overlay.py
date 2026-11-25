@@ -666,6 +666,15 @@ class GitTopology(OverlayCase):
         (repo / ".claude" / "forge.toml").symlink_to(outside)
         self.raises(repo, self.base(), "cannot read")
 
+    def test_a_symlinked_claude_directory_is_refused_not_followed(self) -> None:
+        # harmonic-forge#1527 one-line post-verdict: the parent directory too.
+        repo = self.repo("app", APP_URL)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "forge.toml").write_text('[project]\nrepo = "acme/app"\n', encoding="utf-8")
+        (repo / ".claude").symlink_to(elsewhere, target_is_directory=True)
+        self.raises(repo, self.base(), "cannot read")
+
 
 class RemainingGuardsArePinned(OverlayCase):
     """Sticky-wicket R5: one killing test per guard round 2 found unpinned."""
