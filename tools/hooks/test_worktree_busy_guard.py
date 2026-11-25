@@ -190,5 +190,33 @@ class HookProcess(Busy):
         self.assertIn(self.W, out["permissionDecisionReason"])
 
 
+class Wiring(unittest.TestCase):
+    """The hook row in both hook files uses the guarded idiom, so a checkout of
+    ~/harmonic-forge that lacks the script allows every call instead of
+    exiting 2 (which would block every Bash and file-tool call)."""
+
+    def commands(self, path: Path) -> list[str]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        found = []
+        for groups in data["hooks"].values():
+            for group in groups:
+                for hook in group.get("hooks", []):
+                    if "worktree_busy_guard.py" in hook.get("command", ""):
+                        found.append(hook["command"])
+        return found
+
+    def test_hook_rows_are_guarded_and_allow_when_the_script_is_absent(self):
+        checkout = HERE.parents[1]
+        for path in (checkout / ".claude" / "settings.json", checkout / "tools" / "lane" / "lane_hooks.json"):
+            commands = self.commands(path)
+            self.assertEqual(len(commands), 1, path)
+            with tempfile.TemporaryDirectory() as home:
+                done = subprocess.run(["sh", "-c", commands[0]], capture_output=True, text=True,
+                                      input=json.dumps({"tool_name": "Bash",
+                                                        "tool_input": {"command": "true"}}),
+                                      env=dict(os.environ, HOME=home), timeout=30)
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, ""), f"{path}: {done.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main()

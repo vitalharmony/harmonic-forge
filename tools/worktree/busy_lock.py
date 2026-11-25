@@ -34,10 +34,15 @@ CLI:
                                           processes still holding a leaked fd)
                                           and exit 1, so the check refuses
   busy_lock.py stamp --root R             record the start stamp: R's
-                                          `git status --porcelain` and the time
-  busy_lock.py verify --root R --head H   fail (exit 1) when HEAD moved, the
-                                          porcelain changed, or a tracked file
-                                          was modified since the stamp
+                                          `git status --porcelain`, the tracked
+                                          paths already absent, and the time
+  busy_lock.py verify --root R --head H [--stamped]
+                                          fail (exit 1) when HEAD moved, the
+                                          porcelain changed, or a tracked file's
+                                          inode changed (`st_ctime_ns`) since
+                                          the stamp; with --stamped (the
+                                          prelude's stamp call succeeded) a
+                                          missing or unreadable stamp fails too
 
 The integrity step (design amendment issuecomment-7169440744, AC2) is what
 catches a Bash write into a busy worktree: the guard hook allows Bash, and
@@ -46,6 +51,19 @@ dirty at the start is not a failure; `record` already refuses a dirty tree,
 so that check passes with no receipt. The stamp lives in the store, outside
 the worktree, and is written only after the lock is taken (or on the
 fail-open path), so a refused second run never overwrites the holder's stamp.
+
+AC2(c) is checked on `st_ctime_ns`, not the `st_mtime_ns` the amendment names:
+a tool can set or preserve mtime (`touch -d`, `cp -p`, `rsync -a`, `tar x`, a
+move aside and back), but every write, rename or chmod sets ctime to now and
+no userland call sets it back. A tracked path already absent at the stamp (an
+unstaged delete, a skip-worktree or sparse path) is listed in the stamp and is
+not read as "removed during the check".
+
+A missing stamp fails closed only when the prelude says it wrote one: the
+prelude sets `stamped=--stamped` after a successful `stamp` and passes
+`$stamped` to `verify`. When the stamp call itself failed, that run already
+printed a warning, and `verify` skips the integrity checks rather than read a
+stale stamp from an earlier run.
 """
 from __future__ import annotations
 
@@ -90,46 +108,65 @@ def _git(root: str | os.PathLike, *args: str) -> str:
                           check=True).stdout
 
 
+def _tracked(root: str | os.PathLike) -> list[str]:
+    return [name for name in _git(root, "ls-files", "-z").split("\0") if name]
+
+
 def write_stamp(root: str | os.PathLike) -> Path:
     path = stamp_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"root": os.path.realpath(root), "stamp_ns": time.time_ns(),
-              "porcelain": _git(root, "status", "--porcelain", "--untracked-files=all")}
+    stamp_ns = time.time_ns()
+    porcelain = _git(root, "status", "--porcelain", "--untracked-files=all")
+    absent = [name for name in _tracked(root) if not os.path.lexists(os.path.join(str(root), name))]
+    record = {"root": os.path.realpath(root), "stamp_ns": stamp_ns, "porcelain": porcelain,
+              "absent": absent}
     scratch = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     scratch.write_text(json.dumps(record), encoding="utf-8")
     os.replace(scratch, path)
     return path
 
 
-def changed_since_stamp(root: str | os.PathLike, head: str) -> str | None:
-    """Why the worktree changed during the check, or None. No stamp (the
-    store was unavailable) reads unchanged: the lock path already failed
-    open with a warning."""
+def changed_since_stamp(root: str | os.PathLike, head: str, stamped: bool = False) -> str | None:
+    """Why the worktree changed during the check, or None.
+
+    With `stamped` false (the prelude's stamp call failed and already warned),
+    a stamp is not read at all and this reads unchanged. With `stamped` true, a
+    missing or unreadable stamp is itself a failure: something removed it
+    during the check."""
+    if not stamped:
+        return None
     try:
         stamp = json.loads(stamp_path(root).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+        if not isinstance(stamp, dict):
+            raise ValueError("stamp is not an object")
+    except (OSError, ValueError) as exc:
+        return f"the start stamp {stamp_path(root)} is missing or unreadable ({exc})"
     if _git(root, "rev-parse", "HEAD").strip() != head:
         return "HEAD moved"
     if _git(root, "status", "--porcelain", "--untracked-files=all") != stamp.get("porcelain"):
         return "the working tree changed (git status --porcelain differs from the start)"
     since = int(stamp.get("stamp_ns", 0))
-    for name in _git(root, "ls-files", "-z").split("\0"):
-        if not name:
-            continue
+    absent_at_start = set(stamp.get("absent") or ())
+    for name in _tracked(root):
         try:
-            if os.lstat(os.path.join(str(root), name)).st_mtime_ns > since:
+            if os.lstat(os.path.join(str(root), name)).st_ctime_ns > since:
                 return f"tracked file {name} was modified during the check"
         except FileNotFoundError:
-            return f"tracked file {name} was removed during the check"
+            if name not in absent_at_start:
+                return f"tracked file {name} was removed during the check"
     return None
 
 
 def fd_holders(lock: Path) -> list[int]:
-    """Pids whose open fds point at `lock` (a leaked fd 9 after its task shell exited)."""
+    """Pids whose open fds point at `lock` (a leaked fd 9 after its task shell
+    exited). The caller and its parent (the refusing task shell, which opened
+    fd 9 itself) are not holders and are left out."""
     target = os.path.realpath(lock)
+    own = {os.getpid(), os.getppid()}
     holders: list[int] = []
     for proc in Path("/proc").glob("[0-9]*"):
+        if int(proc.name) in own:
+            continue
         try:
             fds = list((proc / "fd").iterdir())
         except OSError:
@@ -265,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
     p_verify = sub.add_parser("verify", help="fail if the worktree changed during the check")
     p_verify.add_argument("--root", required=True)
     p_verify.add_argument("--head", required=True)
+    p_verify.add_argument("--stamped", action="store_true",
+                          help="the prelude's stamp call succeeded, so a missing stamp fails")
     args = parser.parse_args(argv)
     if args.command == "path":
         print(lock_path(args.root))
@@ -280,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     if args.command == "verify":
-        why = changed_since_stamp(args.root, args.head)
+        why = changed_since_stamp(args.root, args.head, args.stamped)
         if why:
             print(f"worktree-busy: {os.path.realpath(args.root)} changed during check (R-0376); "
                   f"rerun. {why}.", file=sys.stderr)

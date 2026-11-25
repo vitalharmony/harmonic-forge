@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE))
 import busy_lock  # noqa: E402
 
 MARK = "# worktree-busy lock (harmonic-forge#1560)"
+INTEGRITY = "# worktree-busy integrity (harmonic-forge#1560)"
 SCRIPT = HERE / "busy_lock.py"
 
 
@@ -252,6 +253,91 @@ class MisePrelude(Store):
         self.assertNotEqual(inner.returncode, 0, err)
         self.assertIn("leaked fd", err)
         self.assertIn(str(leaked.pid), err)
+        holders = err.split("holders:", 1)[1].split(".", 1)[0]
+        self.assertNotIn(str(inner.pid), [p.strip() for p in holders.split(",")],
+                         "the refusing task shell is not a holder")
+
+    def test_fd_holders_leaves_out_the_caller_and_its_parent(self):
+        lock = busy_lock.lock_path(self.root)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "w"):
+            self.assertNotIn(os.getpid(), busy_lock.fd_holders(lock))
+        probe = self.base / "probe.py"
+        probe.write_text("import pathlib, sys\n"
+                         f"sys.path.insert(0, {str(HERE)!r})\n"
+                         "import busy_lock\n"
+                         "print(busy_lock.fd_holders(pathlib.Path(sys.argv[1])))\n")
+        done = subprocess.run(["bash", "-c", f"exec 9>{shlex.quote(str(lock))}; "
+                               f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))} "
+                               f"{shlex.quote(str(lock))}; true"],
+                              capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "[]"),
+                         f"neither the caller nor its parent shell is a holder: {done.stderr}")
+
+
+class MiseWiring(Store):
+    """The integrity step is wired: each prelude stamps and sets `stamped`, and
+    the integrity line passes it to `verify` immediately before `record`."""
+
+    def task_lines(self, task: str) -> list[str]:
+        tasks = tomllib.loads((CHECKOUT / "mise.toml").read_text(encoding="utf-8"))["tasks"]
+        return [line.strip() for line in tasks[task]["run"].splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+
+    def test_stamp_in_prelude_and_verify_right_before_record(self):
+        for task in ("check", "local-check"):
+            lines = self.task_lines(task)
+            prelude = [l for l in lines if l.endswith(MARK)]
+            self.assertEqual(len(prelude), 1, task)
+            self.assertIn('busy_lock.py stamp --root "$wroot" && stamped=--stamped', prelude[0], task)
+            integrity = [i for i, l in enumerate(lines) if l.endswith(INTEGRITY)]
+            self.assertEqual(len(integrity), 1, task)
+            self.assertIn('busy_lock.py verify --root "$wroot" --head "$head" $stamped',
+                          lines[integrity[0]], task)
+            self.assertEqual(integrity[0], len(lines) - 2, f"{task}: verify is the step before record")
+            self.assertTrue(lines[-1].startswith("python3 tools/hooks/check_receipt.py record"), task)
+
+    def run_task(self, task: str, repo: Path, middle: str) -> subprocess.CompletedProcess:
+        lines = tomllib.loads((CHECKOUT / "mise.toml").read_text(encoding="utf-8"))["tasks"][task]["run"]
+        lines = lines.splitlines()
+        prelude = next(l for l in lines if l.rstrip().endswith(MARK))
+        integrity = next(l for l in lines if l.rstrip().endswith(INTEGRITY))
+        script = f"set -e\n{prelude}\nhead=$(git rev-parse HEAD)\n{middle}\n{integrity}\necho recorded"
+        return subprocess.run(["sh", "-c", script], cwd=repo, env=dict(os.environ),
+                              capture_output=True, text=True, timeout=60)
+
+    def repo(self) -> Path:
+        repo = self.base / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "a.txt").write_text("a\n")
+        subprocess.run(["git", "-C", str(repo), "add", "a.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "x"], check=True)
+        (repo / "tools").symlink_to(CHECKOUT / "tools")
+        return repo
+
+    def test_the_wired_steps_pass_an_unchanged_tree(self):
+        repo = self.repo()
+        for task in ("check", "local-check"):
+            done = self.run_task(task, repo, "true")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("recorded", done.stdout)
+
+    def test_the_wired_steps_fail_a_write_mid_run(self):
+        repo = self.repo()
+        for task in ("check", "local-check"):
+            done = self.run_task(task, repo, "sleep 0.02; echo b > a.txt; echo a > a.txt")
+            self.assertNotEqual(done.returncode, 0, task)
+            self.assertIn("changed during check", done.stderr)
+            self.assertNotIn("recorded", done.stdout)
+
+    def test_the_wired_steps_fail_a_stamp_removed_mid_run(self):
+        repo = self.repo()
+        stamp = busy_lock.stamp_path(repo)
+        done = self.run_task("check", repo, f"rm {shlex.quote(str(stamp))}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("missing or unreadable", done.stderr)
 
 
 class Integrity(Store):
@@ -271,8 +357,9 @@ class Integrity(Store):
         self.head = self.git("rev-parse", "HEAD").stdout.strip()
         time.sleep(0.01)
 
-    def verify(self) -> int:
-        return busy_lock.main(["verify", "--root", str(self.root), "--head", self.head])
+    def verify(self, stamped: bool = True) -> int:
+        return busy_lock.main(["verify", "--root", str(self.root), "--head", self.head]
+                              + (["--stamped"] if stamped else []))
 
     def stamp(self):
         self.assertEqual(busy_lock.main(["stamp", "--root", str(self.root)]), 0)
@@ -318,8 +405,52 @@ class Integrity(Store):
         (self.root / "a.txt").touch()
         self.assertEqual(self.verify(), 1)
 
-    def test_no_stamp_passes(self):
+    def test_restore_preserving_mtime_fails(self):
+        """`cp -p`, `rsync -a`, `tar x` and a move aside and back keep the old
+        mtime; ctime still moves, and userland cannot set it back."""
+        path = self.root / "a.txt"
+        before = os.stat(path)
+        self.stamp()
+        path.write_text("a\n")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(os.stat(path).st_mtime_ns, before.st_mtime_ns)
+        self.assertEqual(self.verify(), 1)
+
+    def test_tracked_path_absent_at_start_passes(self):
+        (self.root / "b.txt").unlink()  # ' D b.txt', unstaged
+        self.stamp()
         self.assertEqual(self.verify(), 0)
+
+    def test_skip_worktree_path_absent_at_start_passes(self):
+        self.git("update-index", "--skip-worktree", "b.txt")
+        (self.root / "b.txt").unlink()
+        self.stamp()
+        self.assertEqual(self.verify(), 0)
+
+    def test_tracked_path_removed_mid_run_fails(self):
+        self.git("update-index", "--skip-worktree", "b.txt")
+        self.stamp()
+        (self.root / "b.txt").unlink()  # invisible to the porcelain under skip-worktree
+        self.assertEqual(self.verify(), 1)
+
+    def test_missing_stamp_fails_when_one_was_written(self):
+        self.stamp()
+        busy_lock.stamp_path(self.root).unlink()
+        self.assertEqual(self.verify(), 1)
+
+    def test_unreadable_stamp_fails_when_one_was_written(self):
+        self.stamp()
+        busy_lock.stamp_path(self.root).write_text("[]")
+        self.assertEqual(self.verify(), 1)
+
+    def test_no_stamp_passes_when_the_stamp_call_failed(self):
+        """The prelude's stamp call failed and warned, so `$stamped` is empty."""
+        self.assertEqual(self.verify(stamped=False), 0)
+
+    def test_a_stale_stamp_is_not_read_when_the_stamp_call_failed(self):
+        self.stamp()
+        (self.root / "new.txt").write_text("n\n")
+        self.assertEqual(self.verify(stamped=False), 0)
 
 
 if __name__ == "__main__":

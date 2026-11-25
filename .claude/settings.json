@@ -138,7 +138,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"",
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
