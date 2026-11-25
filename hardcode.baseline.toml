@@ -257,6 +257,12 @@ count = 1
 [[finding]]
 rule = "forge-root"
 path = "tools/lane/lane_hooks.json"
+text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/surface_dry_run_failures.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
+count = 1
+
+[[finding]]
+rule = "forge-root"
+path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
 count = 5
 
@@ -1499,7 +1505,7 @@ count = 1
 [[finding]]
 rule = "org"
 path = "tools/lane/baseline_capture.py"
-text = "origin = root / \"github.com\" / \"vitalharmony\" / \"lane-fixture.git\""
+text = "origin = root / \"github.com\" / \"vitalharmony\" / \"harmonic-forge.git\""
 count = 1
 
 [[finding]]
@@ -2260,6 +2266,12 @@ count = 1
 
 [[finding]]
 rule = "project-name"
+path = "tools/lane/baseline_capture.py"
+text = "origin = root / \"github.com\" / \"vitalharmony\" / \"harmonic-forge.git\""
+count = 1
+
+[[finding]]
+rule = "project-name"
 path = "tools/lane/ci_plan.py"
 text = "return Path(override) if override else Path.home() / \".cache\" / \"harmonic-forge\" / \"ci_plan\""
 count = 1
@@ -2364,6 +2376,12 @@ count = 1
 rule = "project-name"
 path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/require_probed_operator_commands.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
+count = 1
+
+[[finding]]
+rule = "project-name"
+path = "tools/lane/lane_hooks.json"
+text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/surface_dry_run_failures.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
 count = 1
 
 [[finding]]
@@ -2829,6 +2847,12 @@ text = "{ script = \"tasklist_hold.py\", events = [\"PreToolUse\"], wired_in = [
 count = 1
 
 [[finding]]
+rule = "project-name"
+path = "tools/settings/instance.py"
+text = "path = base / \"harmonic-forge\" / FILE_NAME"
+count = 1
+
+[[finding]]
 rule = "projects-root"
 path = "tools/gh/l1_tools_env.sh"
 text = "local wt_root=\"${L1_TOOLS_WORKTREE_ROOT:-$HOME/Harmonic_Projects/.worktrees}\""
@@ -3186,4 +3210,10 @@ count = 1
 rule = "systemd"
 path = "tools/registry/effects.toml"
 text = "gap = \"no dry run; runs each CLI's update command and appends the shared log; forge-cli-update.timer runs it\""
+count = 1
+
+[[finding]]
+rule = "timezone"
+path = "tools/settings/instance.py"
+text = "DEFAULT_TIMEZONE = \"America/Los_Angeles\""
 count = 1
