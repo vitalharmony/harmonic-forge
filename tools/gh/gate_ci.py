@@ -971,6 +971,12 @@ def _judge_runs(runs: list[dict], sha: str,
         return "absent", f"{sha[:8]} has no check runs at all"
 
     runs = _latest_per_name(runs)
+    # PATCH P1 (C4 condition 3 over every visible job): a red job outside the
+    # required set still demotes a scoped `pending`, so ready-for-l3 never
+    # takes the local path on CI already known red. It never turns a green
+    # verdict red, so readers that ignore unrequired jobs are unchanged.
+    visible_bad = sorted(f"{r['name']}:{r.get('conclusion')}" for r in runs
+                         if (r.get("conclusion") or "").lower() in _BAD)
     if required:
         scoped = [r for r in runs if r.get("name") in required]
         missing = sorted(required - {r.get("name") for r in runs})
@@ -1009,6 +1015,9 @@ def _judge_runs(runs: list[dict], sha: str,
         return "red", ", ".join(sorted(bad))
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
     if pending:
+        if required and visible_bad:
+            return "absent", (f"{sha[:8]} has a visible red job ({', '.join(visible_bad)}) "
+                              f"while {', '.join(sorted(pending))} is still running")
         return "pending", f"still running: {', '.join(sorted(pending))}"
     unknown = [f"{r['name']}:{r.get('conclusion')}" for r in runs
                if (r.get("conclusion") or "").lower() not in _GOOD]
@@ -1199,6 +1208,44 @@ def ci_outage_grant(repo: str, issue: int | None, source_repo: str, sha: str) ->
     except Exception:  # noqa: BLE001 - GrantRefused or an unreadable store: no release
         return None
     return grant if _check_full_receipt_holds(source_repo, sha) else None
+
+
+def ci_outage_spent(repo: str, issue: int | None, sha: str) -> dict | None:
+    """PATCH P2: the issue's ci-outage grant when it was consumed for `sha`,
+    else None. A consumed grant is never re-used (A3); this only lets the AE
+    gate say that a new FORCE line is needed instead of waiting on CI."""
+    if issue is None or len(sha) != 40:
+        return None
+    try:
+        _cr, force_grant, imc_waiver = _outage_modules()
+        key = imc_waiver.issue_key(repo, issue)
+        grant = force_grant.read_grant(key) if key else None
+    except Exception:  # noqa: BLE001
+        return None
+    if (grant and grant.get("mode") == "ci-outage" and grant.get("status") == "consumed"
+            and grant.get("consumed_sha") == sha):
+        return grant
+    return None
+
+
+def ci_outage_pass_refusal(repo: str, issue: int | None, sha: str,
+                           ci_override: str | None) -> str | None:
+    """PATCH P3: why the AE's named grant cannot release this PASS when the
+    issue's grant slot no longer holds it (a later FORCE line replaced it),
+    else None. The PASS stays refused either way; this names the remedy."""
+    if issue is None or not ci_override:
+        return None
+    try:
+        _cr, force_grant, imc_waiver = _outage_modules()
+        key = imc_waiver.issue_key(repo, issue)
+        grant = force_grant.read_grant(key) if key else None
+    except Exception:  # noqa: BLE001
+        return None
+    if grant and str(grant.get("comment_id")) == str(ci_override):
+        return None
+    return (f"[GATE] REFUSED: the consumed ci-outage grant {ci_override} the AE named was "
+            f"replaced by a later FORCE line for {key}; re-issue `FORCE {key} ci-outage {sha}: "
+            "<reason>`, then re-post the AE and sweep")
 
 
 def ci_outage_release(repo: str, issue: int | None, source_repo: str, sha: str) -> str | None:

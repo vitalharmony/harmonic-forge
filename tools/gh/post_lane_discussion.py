@@ -608,6 +608,8 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
 
 #: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
 CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
+#: The opening of l1_post's attestation footer line.
+FOOTER_PREFIX = "<" + "!-- l1-post v1;"
 
 
 def ci_override_id(repo: str, issue: int, body: str) -> str | None:
@@ -626,7 +628,11 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
         return None
     if not check_lane3_ready.same_sha(check_lane3_ready.footer_sha(authority), sha):
         return None
-    found = CI_OVERRIDE_FIELD.findall(authority.get("body", ""))
+    # PATCH P5: only the AE's own footer line (the l1-post v1 HTML comment)
+    # names the grant; prose anywhere else in the AE never does.
+    footer = [line for line in authority.get("body", "").splitlines()
+              if line.lstrip().startswith(FOOTER_PREFIX)]
+    found = [m for line in footer for m in CI_OVERRIDE_FIELD.findall(line)]
     return found[-1] if len(found) == 1 else None
 
 
@@ -732,6 +738,11 @@ def require_green_ci(
         override = ci_override_id(repo, issue, body)
         if override is not None:
             ok, message = check_gate_result(repo, body, issue=issue, ci_override=override)
+            if not ok:  # PATCH P3: name the remedy when the grant was replaced
+                from gate_ci import ci_outage_pass_refusal  # noqa: PLC0415
+                sha = gated_sha(body)
+                message = (ci_outage_pass_refusal(repo, issue, sha or "", override)
+                           or message)
     if not ok:
         fail(message)
     # Only the acknowledged override is recorded as one in the footer: the

@@ -3319,6 +3319,15 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
          "— the full local check was not started")
 
 
+def imc_waiver_key(repo: str, issue: int) -> str:
+    """The repo-prefixed key (F894) a FORCE line names."""
+    try:
+        import imc_waiver  # noqa: PLC0415
+        return imc_waiver.issue_key(repo, issue) or f"<KEY for {repo}#{issue}>"
+    except Exception:  # noqa: BLE001
+        return f"<KEY for {repo}#{issue}>"
+
+
 #: harmonic-forge#894 PATCH A3: the usable ci-outage grant the AE gate found,
 #: by SHA, which `_post_kind` consumes immediately before publication.
 _CI_OUTAGE: dict[str, dict] = {}
@@ -3383,6 +3392,13 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
         print(f"[l1-post] CI is {state} on {sha[:12]}; released by ci-outage grant "
               f"{grant.get('comment_url') or '(recorded)'} with its check-full receipt")
         return "ci-outage-grant"
+    if state != "red" and (spent := gate_ci.ci_outage_spent(repo, issue, sha)):
+        # PATCH P2: a grant consumed by an AE that never published is spent;
+        # waiting on CI would never end, so refuse and name the remedy.
+        key = imc_waiver_key(repo, issue)
+        fail(f"the ci-outage grant {spent.get('comment_url') or spent.get('comment_id')} for "
+             f"{sha[:12]} was consumed at {spent.get('consumed_at')} but no AE was published; "
+             f"a new grant is needed: `FORCE {key} ci-outage {sha}: <reason>`")
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
               file=sys.stderr)

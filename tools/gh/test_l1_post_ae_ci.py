@@ -376,5 +376,127 @@ class PassReleasesOnlyAConsumedNamedGrant(unittest.TestCase):
             rel.assert_not_called()
 
 
+class RealStoreTwoPassPatch(unittest.TestCase):
+    """Two-pass PATCH P2/P4 (issuecomment-7151924845): against a real grant
+    store, never a mocked consume."""
+
+    def setUp(self):
+        import tempfile  # noqa: PLC0415
+        import force_grant  # noqa: PLC0415
+        import imc_waiver  # noqa: PLC0415
+        self.fg, self.iw = force_grant, imc_waiver
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        p = mock.patch.object(force_grant, "FORCE_STATE_DIR", Path(tmp.name))
+        p.start()
+        self.addCleanup(p.stop)
+        receipt = mock.patch.object(L.gate_ci, "_check_full_receipt_holds", return_value=True)
+        receipt.start()
+        self.addCleanup(receipt.stop)
+        self.key = imc_waiver.issue_key(REPO, 894)
+        grant = force_grant.write_pending(self.key, REPO, 894, None, "outage", "s", "line",
+                                          mode="ci-outage", sha_prefix=SHA)
+        imc_waiver.write_json_atomic(force_grant.grant_path(self.key),
+                                     {**grant, "status": "usable", "comment_id": "777",
+                                      "comment_url": "u"})
+
+    def test_a_consumed_grant_is_single_use(self):
+        """P4: the real consume spends it; a second read and a second consume refuse."""
+        grant = L.gate_ci.ci_outage_grant(REPO, 894, "o/r", SHA)
+        self.assertIsNotNone(grant)
+        L.gate_ci.consume_ci_outage_grant(REPO, 894, SHA, grant)
+        self.assertIsNone(L.gate_ci.ci_outage_grant(REPO, 894, "o/r", SHA))
+        with self.assertRaises(self.fg.GrantRefused):
+            L.gate_ci.consume_ci_outage_grant(REPO, 894, SHA, grant)
+
+    def test_a_spent_unposted_grant_refuses_with_the_force_line(self):
+        """P2: exit 1 naming the new FORCE line, never the exit-3 CI wait."""
+        grant = L.gate_ci.ci_outage_grant(REPO, 894, "o/r", SHA)
+        L.gate_ci.consume_ci_outage_grant(REPO, 894, SHA, grant)
+        with mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+             mock.patch.object(L, "_ci_reader", return_value="R"), \
+             mock.patch.object(L.gate_ci, "required_checks", return_value={"verify"}), \
+             mock.patch.object(L.gate_ci, "authorizing_conclusion", return_value=("pending", "d")), \
+             mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=False), \
+             mock.patch("sys.stderr"), self.assertRaises(SystemExit) as ctx:
+            L._ae_ci_gate(REPO, 894, SHA, None)
+        self.assertNotEqual(ctx.exception.code, L._carry_forward.WAIT_EXIT)
+        self.assertIn(f"FORCE {self.key} ci-outage {SHA}", str(ctx.exception))
+
+    def test_a_second_ae_under_one_grant_does_not_post(self):
+        """P4: two real AE posts under one grant; only the first publishes."""
+        posted = []
+
+        def comment(repo, issue, text):
+            posted.append(text)
+            return "https://github.com/o/r/issues/1#issuecomment-1", 1
+
+        def post():
+            with mock.patch.object(L, "comment_body", side_effect=comment), \
+                 mock.patch.object(L, "world_checks", return_value=([], [])), \
+                 mock.patch.object(L, "require_open_pr", return_value=(["pr-open #7"], [], [])), \
+                 mock.patch.object(L, "validate_sticky_wicket"), \
+                 mock.patch.object(L, "write_receipt"), \
+                 mock.patch.object(L, "record_overlap_rulings"), \
+                 mock.patch.object(L, "active_worktree_branches", return_value=[]), \
+                 mock.patch.object(L, "_afk_toggle", None), \
+                 mock.patch.object(L, "_tasklist_owed", None), \
+                 mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+                 mock.patch.object(L, "_ci_reader", return_value="R"), \
+                 mock.patch.object(L.gate_ci, "required_checks", return_value={"verify"}), \
+                 mock.patch.object(L.gate_ci, "authorizing_conclusion",
+                                   return_value=("pending", "d")), \
+                 mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=False), \
+                 mock.patch("builtins.print"), mock.patch("sys.stderr"):
+                L._post_kind(REPO, 894, "ae", "## AE\n", SHA, "feat/894-x")
+        post()
+        with self.assertRaises(SystemExit):
+            post()
+        self.assertEqual(len(posted), 1)
+        self.assertIn(" ci-override=777;", posted[0])
+
+
+class P6InventoryChecksTheValue(unittest.TestCase):
+    """P6: every reader= is _ci_reader(...) or a name bound from it."""
+
+    def test_reader_values_are_the_s0_reader(self):
+        tree = ast.parse(Path(L.__file__).read_text(encoding="utf-8"))
+        bound = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                 and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name)
+                 and n.value.func.id == "_ci_reader" for t in n.targets if isinstance(t, ast.Name)}
+        bad = []
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and isinstance(n.func.value, ast.Name) and n.func.value.id == "gate_ci"):
+                continue
+            for k in n.keywords:
+                if k.arg != "reader":
+                    continue
+                v = k.value
+                ok = ((isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+                       and v.func.id == "_ci_reader") or (isinstance(v, ast.Name) and v.id in bound))
+                if not ok:
+                    bad.append(n.lineno)
+        self.assertEqual(bad, [])
+
+    def test_the_failed_check_snapshot_reads_through_s0(self):
+        seen = []
+
+        def conclusion(repo, sha, required=None, run=None, reader=None):
+            seen.append(reader)
+            return ("green", "x")
+        with mock.patch.object(L, "orphan_report"), mock.patch.object(L, "refresh_main"), \
+             mock.patch.object(L, "world_checks", return_value=([], [])), \
+             mock.patch.object(L, "_refuse_if_ci_red", return_value="absent"), \
+             mock.patch.object(L, "static_checks",
+                               return_value=([], None, {"result": "fail", "output": "x"})), \
+             mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+             mock.patch.object(L, "_ci_reader", return_value="SENTINEL"), \
+             mock.patch.object(L.gate_ci, "ci_conclusion", side_effect=conclusion), \
+             mock.patch.object(L, "_emit_attempt"), self.assertRaises(SystemExit):
+            L._post_kind("o/r", 1, "ready-for-l3", "## r\n", SHA, "feat/1-x", attempt={})
+        self.assertEqual(seen, ["SENTINEL"])
+
+
 if __name__ == "__main__":
     unittest.main()

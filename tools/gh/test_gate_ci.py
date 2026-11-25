@@ -863,6 +863,20 @@ class CiConclusionStatesTests(unittest.TestCase):
                                          run=lambda cmd: (0, "{not json"))
         self.assertEqual(state, "unknown")
 
+    def test_a_red_unrequired_job_demotes_a_scoped_pending(self):
+        """Two-pass PATCH P1: verify exists and runs, frontend failed: absent,
+        never pending (C4 condition 3 over every visible job)."""
+        runs = [{"name": "verify", "status": "in_progress", "conclusion": None,
+                 "workflow_status": "in_progress", "workflow_event": "pull_request",
+                 "workflow_path": ".github/workflows/ci.yml"},
+                {"name": "frontend", "status": "completed", "conclusion": "failure"}]
+        state, detail = gate_ci._judge_runs(runs, "a" * 40, {"verify"})
+        self.assertEqual(state, "absent", detail)
+        self.assertIn("frontend:failure", detail)
+        green = [{"name": "verify", "status": "completed", "conclusion": "success"},
+                 {"name": "frontend", "status": "completed", "conclusion": "failure"}]
+        self.assertEqual(gate_ci._judge_runs(green, "a" * 40, {"verify"})[0], "green")
+
     def test_a_red_sibling_wins_over_pending(self):
         """harmonic-forge#894 PATCH A4 (C4 condition 3): a visible failure is
         red even while another job runs. `pending` now releases ready-for-l3

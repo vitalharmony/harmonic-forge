@@ -384,6 +384,36 @@ class GateCheckIsActuallyWiredTests(unittest.TestCase):
         resolve.assert_called_once_with(None)
 
 
+class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
+    """Two-pass PATCH P5: the real ci_override_id, with the thread read and the
+    authority decision stubbed."""
+
+    SHA = "cccccccccccccccccccccccccccccccccccccccc"
+    PASS = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {SHA}\n"
+
+    def ae(self, body, sha=None, kind="ae"):
+        foot = f"<!-- l1-post v1; kind={kind}; sha={sha or self.SHA}; ci-override=777; checks=x -->"
+        return {"body": body + "\n\n" + foot}
+
+    def override(self, authority):
+        with mock.patch.object(P.check_lane3_ready, "fetch_comments", return_value=[]), \
+             mock.patch.object(P.check_lane3_ready, "resolve_gate_authority",
+                               return_value=(authority, "ok")):
+            return P.ci_override_id("vitalharmony/harmonic-forge", 894, self.PASS)
+
+    def test_the_ae_footer_names_the_grant(self):
+        self.assertEqual(self.override(self.ae("## AE")), "777")
+
+    def test_prose_never_names_it(self):
+        prose = {"body": "## AE\nci-override=777; in prose\n\n<!-- l1-post v1; kind=ae; sha="
+                         + self.SHA + "; checks=x -->"}
+        self.assertIsNone(self.override(prose))
+
+    def test_another_kind_or_sha_never_names_it(self):
+        self.assertIsNone(self.override(self.ae("## x", kind="sweep")))
+        self.assertIsNone(self.override(self.ae("## AE", sha="d" * 40)))
+
+
 class CallerRelativeFileResolutionTests(unittest.TestCase):
     def test_compatibility_shim_root_wins_over_platform_root(self):
         with tempfile.TemporaryDirectory() as tmp:
