@@ -548,6 +548,26 @@ class Doubled(unittest.TestCase):
             self.assertIn("DOUBLED", proc.stdout)
             self.assertIn("batch_gate.py runs twice", proc.stdout)
 
+    def test_the_cli_compares_against_the_declared_effective_set(self):
+        """Reforged pass 1 survivor (harmonic-forge#1525): with the operator
+        overlay declared, `doubled` reports a double of an OPERATOR script, which
+        only the effective set (core plus overlay) names."""
+        with tempfile.TemporaryDirectory() as tmp:
+            user = Path(tmp) / "settings.json"
+            user.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+                {"type": "command",
+                 "command": "python3 /x/harmonic-forge/tools/hooks/enforce_belt_arming.py"}]}]}}))
+            env = dict(os.environ, HOME=str(Path(tmp) / "home"),
+                       XDG_CONFIG_HOME=str(Path(tmp) / "home" / ".config"))
+            (Path(tmp) / "home" / "harmonic-forge").mkdir(parents=True)
+            _declare_operator(Path(tmp) / "home")
+            (Path(tmp) / "home" / "harmonic-forge" / "tools").symlink_to(ROOT / "tools")
+            proc = subprocess.run([sys.executable, "-I", str(HERE / "lane_hookset.py"), "doubled",
+                                   "--user-settings", str(user)],
+                                  capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertIn("enforce_belt_arming.py runs twice", proc.stdout)
+
     def test_the_cli_reads_home_user_settings_by_default(self):
         """Pass 1 survivor 4: with no --user-settings, `doubled` reads
         `~/.claude/settings.json` -- here a temporary HOME's, never the real one."""

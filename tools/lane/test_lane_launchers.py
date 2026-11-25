@@ -2601,7 +2601,8 @@ class LaneHookSet(unittest.TestCase):
                 cell["stderr"].startswith(f"lane1: XDG_CONFIG_HOME is set to '{other}'"),
                 cell["stderr"])
             self.assertIn("harmonic-forge#1525", cell["stderr"])
-            for ok in (f"{tree.home}/.config", f"{tree.home}/.config/", "rel/config"):
+            for ok in (f"{tree.home}/.config", f"{tree.home}/.config/",
+                       f"{tree.home}/.config//", "rel/config"):
                 with self.subTest(ok=ok):
                     cell = tree.run("1", [], LANE_CLI="claude", XDG_CONFIG_HOME=ok)
                     self.assertTrue(cell["launched"], cell.get("stderr"))

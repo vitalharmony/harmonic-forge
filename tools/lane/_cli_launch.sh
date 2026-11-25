@@ -265,8 +265,12 @@ if [ -n "$_lane_has_hook_set" ]; then
   if [ -n "${CLAUDE_CONFIG_DIR+x}" ] && [ "${CLAUDE_CONFIG_DIR%/}" != "$HOME/.claude" ]; then
     _lane_launch_die "CLAUDE_CONFIG_DIR is set to '$CLAUDE_CONFIG_DIR' -- it relocates the user settings, so the user-level hooks would not load (only $HOME/.claude is accepted, harmonic-forge#1307). Unset it. Nothing was launched."
   fi
+  # Every trailing slash goes, as config_path's Path() drops them (pass 1 of the
+  # harmonic-forge#1525 reforge: `.config//` refused though it names the same file).
+  _lane_xdg="${XDG_CONFIG_HOME:-}"
+  while [ "${_lane_xdg%/}" != "$_lane_xdg" ]; do _lane_xdg="${_lane_xdg%/}"; done
   if [ -n "${XDG_CONFIG_HOME:-}" ] && [ "${XDG_CONFIG_HOME#/}" != "$XDG_CONFIG_HOME" ] \
-      && [ "${XDG_CONFIG_HOME%/}" != "$HOME/.config" ]; then
+      && [ "$_lane_xdg" != "$HOME/.config" ]; then
     _lane_launch_die "XDG_CONFIG_HOME is set to '$XDG_CONFIG_HOME' -- it relocates instance.toml, which declares the lane hook overlay, so the operator hooks could be dropped (only $HOME/.config is accepted, harmonic-forge#1525). Unset it. Nothing was launched."
   fi
   _lane_settings_env_allowed="$(registry_lookup AGENT_SETTINGS_ENV_ALLOWED "$_lane_agent")"
