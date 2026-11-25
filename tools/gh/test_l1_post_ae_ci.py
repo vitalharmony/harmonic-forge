@@ -272,8 +272,11 @@ class B2RealPostPath(unittest.TestCase):
         return seen["mode"]
 
     def test_the_real_post_path_follows_ci(self):
+        # PENDING_WITH_RED: a red job beside a running verify (harmonic-forge#894
+        # post-verdict finding 4, third check) takes the full check on the real post.
         for state, want in (("green", "local"), ("pending", "local"), ("absent", "full"),
-                            ("unknown", "full"), (None, "full")):
+                            ("unknown", "full"), (None, "full"),
+                            (L.PENDING_WITH_RED, "full")):
             with self.subTest(state=state):
                 self.assertEqual(self.path(state), want)
 

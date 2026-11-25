@@ -608,6 +608,8 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
 
 #: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
 CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
+#: Any l1-post comment opener, closed or not (the AE footer binding counts them).
+_L1_POST_OPENER = re.compile(r"<!--\s*l1-post\s+v\d+;", re.I)
 #: The first line of `gate_ci.check_gate_result`'s unfinished-CI refusal; the
 #: P3 diagnostic replaces only that refusal, never a red one.
 UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
@@ -624,22 +626,22 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
     authority, _message = check_lane3_ready.resolve_gate_authority(comments, sha)
     if authority is None:
         return None
-    # PATCH P5 and post-verdict findings 3 and 1 (second check): the grant id,
-    # the kind and the SHA all come from ONE footer -- the last closed l1-post
-    # comment, which must end the body (harmonic-forge#1358's rule for the
-    # body digest). An unclosed lookalike, a second footer, a fenced copy, or
-    # text after the comment closes never names the grant.
+    # PATCH P5 and post-verdict findings (second and third checks): the grant
+    # id, the kind and the SHA all come from ONE footer. l1_post refuses a body
+    # that already carries its reserved marker, so a genuine AE holds exactly
+    # one l1-post comment: on one line, ending the body (harmonic-forge#1358's
+    # rule for the body digest). Two of them (a carry-forward quoting an AE
+    # footer, a decoy above the real one), an unclosed lookalike, a line break
+    # inside it, or text after it never names the grant -- and the one footer
+    # is the same one `resolve_gate_authority` read the kind from.
     text = authority.get("body", "") or ""
-    last = None
-    for last in check_lane3_ready._ANY_FOOTER.finditer(text):
-        pass
+    if len(_L1_POST_OPENER.findall(text)) != 1:
+        return None
+    last = check_lane3_ready._ANY_FOOTER.search(text)
     if last is None or text[last.end():].strip():
         return None
     footer = last.group(0)
-    # l1_post writes its footer as one line holding one comment. `_ANY_FOOTER`
-    # is DOTALL, so an unclosed lookalike above the real footer would join it
-    # into one span; such a span is not a footer.
-    if "\n" in footer or footer.count("<!--") != 1:
+    if "\n" in footer or "\r" in footer:
         return None
     kind = check_lane3_ready.FOOTER_KIND.search(footer)
     if not kind or kind.group(1).lower() != "ae":

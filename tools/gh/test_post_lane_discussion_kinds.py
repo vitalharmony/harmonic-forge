@@ -435,6 +435,12 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
             "a fenced copy": "## AE\n```\n" + decoy + "\n```\n\n" + real,
             "text after the footer": "## AE\n\n" + real.replace("checks=x", "ci-override=777; checks=x")
                                      + "\nci-override=777;",
+            # Third check: a carry-forward whose own footer comes first and an
+            # AE footer (with an id) ends the body; and a CR inside the footer.
+            "a carry-forward quoting an AE footer":
+                f"## carry\n<!-- l1-post v1; kind=carry-forward; sha={self.SHA}; checks=x -->\n\n"
+                + real.replace("checks=x", "ci-override=777; checks=x"),
+            "a CR inside the footer": "## AE\n\n" + real.replace("checks=x", "ci-override=777;\rchecks=x"),
         }
         for name, body in cases.items():
             with self.subTest(name):
@@ -498,8 +504,10 @@ class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):
     def test_a_red_second_read_keeps_its_own_message(self):
         """A red read is never masked, even when a check name in its detail
         carries the unfinished-CI phrase (post-verdict finding 2, second check)."""
+        # The detail carries the WHOLE unfinished-CI first line, so only a
+        # match anchored at the start keeps this red (third check, finding 3).
         red = ("[GATE] REFUSED: CI is RED for the SHA this PASS names.\n"
-               "  cccccccc: CI has not completed:failure\n")
+               "  cccccccc: " + P.UNFINISHED_CI_REFUSAL)
         self.assertEqual(self.caller_message(red), red)
 
 
