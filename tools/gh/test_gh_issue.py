@@ -380,6 +380,67 @@ FORGE_MILESTONES = {"0.3": 1, "Later": 2}
 DEFER = ["--deferral-trigger", "0.4 planning", "--deferral-owner", "operator"]
 
 
+class TestDeferExisting(unittest.TestCase):
+    """harmonic-forge#1382 cluster verdict C2: `--defer-existing N` retries the
+    deferral on the existing issue, never files a second one, and is idempotent."""
+
+    def _defer(self, milestone="Later", comments="", post_rc=0, read_rc=0):
+        calls: list[list[str]] = []
+
+        def run(cmd, check=False):
+            calls.append(cmd)
+            joined = " ".join(cmd)
+            if "/comments?" in joined:
+                return _completed(comments)
+            if "/comments" in joined:
+                return _completed("", returncode=post_rc)
+            return _completed(f"https://github.com/{FORGE}/issues/42\t{milestone}\n",
+                              returncode=read_rc)
+        argv = ["gh_issue.py", "--repo", FORGE, "--defer-existing", "42"] + DEFER
+        with patch.object(sys, "argv", argv), \
+             patch("gh_issue.fetch_milestones", return_value=FORGE_MILESTONES), \
+             patch("gh_issue.apply_project_identity"), \
+             patch("gh_issue.create_issue") as created, \
+             patch("gh_issue._run", side_effect=run), \
+             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            try:
+                code = gh_issue.main()
+            except SystemExit as exc:
+                code = exc.code
+        posts = [c for c in calls if "-X" in c and "POST" in c]
+        return code, created, discharge, posts
+
+    def test_a_retry_posts_the_deferral_and_clears_with_no_second_filing(self):
+        code, created, discharge, posts = self._defer()
+        self.assertEqual(code, 0)
+        created.assert_not_called()
+        self.assertEqual(len(posts), 1)
+        discharge.assert_called_once_with(FORGE, 42)
+
+    def test_a_deferral_already_present_clears_without_posting(self):
+        code, _created, discharge, posts = self._defer(
+            comments="## R-0352 deferral: parked in `Later`\n**Trigger:** x\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(posts, [])
+        discharge.assert_called_once_with(FORGE, 42)
+
+    def test_a_current_release_issue_is_refused_and_the_obligation_stands(self):
+        for milestone in ("0.3", ""):
+            with self.subTest(milestone=milestone):
+                code, _created, discharge, posts = self._defer(milestone=milestone)
+                self.assertEqual(code, 1)
+                self.assertEqual(posts, [])
+                discharge.assert_not_called()
+
+    def test_a_failed_retry_post_leaves_the_obligation(self):
+        code, _created, discharge, posts = self._defer(post_rc=1)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(posts), 1)
+        discharge.assert_not_called()
+
+
 class TestParkingMilestoneDeferral(unittest.TestCase):
     """harmonic-forge#1382: a filing into a parking milestone owes no handoff
     and requires an R-0352 deferral, posted before the obligation clears."""
@@ -453,6 +514,17 @@ class TestParkingMilestoneDeferral(unittest.TestCase):
         self.assertEqual(code, 1)
         record.assert_called_once()
         discharge.assert_not_called()
+
+    def test_a_failed_post_prints_the_retry_and_records_the_route(self):
+        """Cluster verdict C2: the obligation carries the deferral route, and the
+        failure names the --defer-existing retry, never a second filing."""
+        code, _created, record, _discharge, _posts, err = self._main(
+            ["--repo", FORGE, "--milestone", "Later"] + DEFER, FORGE_MILESTONES, post_rc=1)
+        self.assertEqual(code, 1)
+        route = record.call_args.kwargs["route"]
+        self.assertEqual((route["kind"], route["milestone"], route["owner"]),
+                         ("deferral", "Later", "operator"))
+        self.assertIn("--defer-existing 42", err)
 
     def test_current_release_filing_still_records_an_obligation(self):
         """AC3: `0.3` is the current release, so it owes a handoff as today."""

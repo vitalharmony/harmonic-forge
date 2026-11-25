@@ -46,6 +46,27 @@ class _TempStore(unittest.TestCase):
         return reason if verdict == "block" else ""
 
 
+class DeferralRouteText(_TempStore):
+    """harmonic-forge#1382 C2: a parking filing's block names the deferral retry,
+    never a handoff command R-0404 would refuse."""
+
+    def test_a_deferral_entry_names_the_retry_not_a_handoff(self) -> None:
+        handoff_owed.record(REPO, 77, "u", key="s-def",
+                            route={"kind": "deferral", "milestone": "Later",
+                                   "trigger": "0.4 planning", "owner": "operator"})
+        reason = self.block_reason("s-def")
+        self.assertIn("--defer-existing 77", reason)
+        self.assertIn("--deferral-trigger '0.4 planning'", reason)
+        self.assertNotIn("--kind handoff", reason)
+        self.assertIn("Route 2 below does not apply", reason)
+
+    def test_an_ordinary_entry_still_names_the_handoff(self) -> None:
+        handoff_owed.record(REPO, 78, "u", key="s-plain")
+        reason = self.block_reason("s-plain")
+        self.assertIn("--kind handoff", reason)
+        self.assertNotIn("--defer-existing", reason)
+
+
 class AC4BoardWriteFailure(_TempStore):
     """A run that creates the issue and THEN fails must still owe a handoff."""
 

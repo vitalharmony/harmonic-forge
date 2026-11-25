@@ -87,7 +87,7 @@ def _describe(entry: dict) -> str:
     url = str(entry.get("url") or "")
     head = f"{repo}#{issue}" + (f" — {url}" if url else "")
     try:
-        command = discharge_command(repo, int(issue))
+        command = discharge_command(repo, int(issue), entry.get("route"))
     except (TypeError, ValueError):
         return f"  - {head}"
     return f"  - {head}\n      {command}"
@@ -114,6 +114,16 @@ def decide(payload: dict) -> tuple[str, str]:
         return "allow", ""
     plural = "issue" if len(owed) == 1 else "issues"
     listing = "\n".join(_describe(e) for e in owed)
+    # harmonic-forge#1382 C2: a parking filing's obligation is discharged by
+    # its deferral, never by a handoff (R-0404 refuses one) or an exception.
+    deferral = any(isinstance(e.get("route"), dict)
+                   and e["route"].get("kind") == "deferral" for e in owed)
+    deferral_note = (
+        "\n\nFor a parking-milestone issue the command shown is the R-0352 "
+        "deferral retry (gh_issue.py --defer-existing): it posts the deferral "
+        "comment, or finds one already posted, and clears the obligation. "
+        "Route 2 below does not apply to a parking issue."
+        if deferral else "")
     return "block", (
         f"You filed {len(owed)} {plural} this turn and have not posted a "
         f"handoff for {'it' if len(owed) == 1 else 'them'}.\n\n"
@@ -121,9 +131,10 @@ def decide(payload: dict) -> tuple[str, str]:
         f"An un-handoffable issue is a failed filing-bar test — the split "
         f"state you are in now is not a partial success, it is the failure "
         f"mode the rule names.\n\n"
-        f"Owed:\n{listing}\n\n"
+        f"Owed:\n{listing}{deferral_note}\n\n"
         f"Three ways to discharge this, and only these:\n"
-        f"  1. Post the handoff with the command shown above.\n"
+        f"  1. Run the command shown above (the handoff, or for a parking issue "
+        f"the deferral retry).\n"
         f"  2. If R-0039's filing bar genuinely exempts it, re-run with "
         f"`--handoff-exception <parent-epic|deferred-design-record|"
         f"blocked-on-prerequisite> --handoff-exception-reason \"<why>\"`, "
