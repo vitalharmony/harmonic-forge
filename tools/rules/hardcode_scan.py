@@ -37,6 +37,22 @@ is a tracked directory, and an import of a package directory under `tools/`
 whose files are operator-side is an edge to that directory. A module loaded by `spec_from_file_location`
 resolves from a literal path argument; a computed path is out of scope and
 counted in the output (`--list-dynamic` names each one).
+
+harmonic-forge#1556: detection recognizes the canonical spellings the tracked
+tree uses: `source`/`.`/`eval` as written, and a direct call of a loader name
+or a single-assignment alias. A load spelled otherwise is a stated residual:
+quoting or backslash-splitting the command word, redirection glued to it,
+escapes in the operand, any loader alias form beyond the single-assignment
+table (whose last binding of a name wins, so a name bound to two loaders
+resolves to the later one), a loader passed as an argument, or a string-keyed
+lookup. A load that cannot be resolved is an `import-unresolved` row. A source
+on an eval line keeps its own edge, so `eval "source ../x.sh"` and
+`eval "$X"; source "$Y"` count where they did not before. A qualified
+`from a.b import c` makes every dotted part a `pkg:` candidate, which can add
+a false edge (`from opentelemetry.telemetry import api` reads as
+`tools/telemetry/`). Closing detection fully would mean ratcheting
+operator-target mentions in core lines instead (cost measured in the
+harmonic-forge#1556 sticky-wicket verdict).
 """
 from __future__ import annotations
 
@@ -382,9 +398,10 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
         elif isinstance(node, ast.ImportFrom):
             parts = node.module.split(".") if node.module else []
             if parts:
-                found.append([parts[-1], "pkg:" + parts[0]])
+                # every dotted part may be the operator package (harmonic-forge#1556 form 4)
+                found.append([parts[-1]] + ["pkg:" + part for part in parts])
             if node.level or (parts and parts[-1] in dirs):
-                found.extend([a.name] for a in node.names)
+                found.extend([a.name, "pkg:" + a.name] for a in node.names)
         elif isinstance(node, ast.Call):
             fn = node.func
             name = fn.attr if isinstance(fn, ast.Attribute) else (
@@ -467,8 +484,9 @@ def shell_targets(lines: list[str]) -> tuple[list[list[str]], list[str]]:
             joined.append(line)
     for line in joined:
         if EVAL_RE.search(line):
-            unresolved.append(line)  # the eval'd text decides what loads
-            continue
+            # the eval'd text decides what loads; a separate source on the same
+            # line still gets its own edge (harmonic-forge#1556 form 3)
+            unresolved.append(line)
         for m in SOURCE_CMD_RE.finditer(line):
             word = _shell_word(line, m.end()).replace('"', "").replace("'", "")
             tail = word.rstrip("/").rsplit("/", 1)[-1]

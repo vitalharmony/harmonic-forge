@@ -446,6 +446,102 @@ class TestTwoPassPatch(ScratchRepo):
         self.assertEqual(self.run_scan("--check")[0], 0)
 
 
+class TestF1556Forms(ScratchRepo):
+    """harmonic-forge#1556 (amended scope): form 3, a source on an eval line
+    keeps its own edge; form 4, a qualified from-import names every dotted
+    part as a package candidate."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("tools/telemetry/env.sh", "X=1\n")
+        self.write("tools/telemetry/emit.py", "X = 1\n")
+        self.track()
+        self.baseline_now()
+
+    def check_fails_naming(self, *needles):
+        rc, out = self.run_scan("--check")
+        self.assertEqual(rc, 1, out)
+        for n in needles:
+            self.assertIn(n, out)
+
+    def test_a_source_on_an_eval_line_keeps_its_edge(self):
+        for spelling in ("source", "."):
+            with self.subTest(spelling=spelling):
+                self.write("tools/lane/ev.sh", f'#!/bin/bash\neval ":"; {spelling} ../telemetry/env.sh\n')
+                self.track()
+                self.check_fails_naming(
+                    "tools/lane/ev.sh imports operator file tools/telemetry/env.sh",
+                    "[import-unresolved] tools/lane/ev.sh")
+
+    def test_a_source_inside_the_eval_text_is_an_edge(self):
+        self.write("tools/lane/ei.sh", '#!/bin/bash\neval "source ../telemetry/env.sh"\n')
+        self.track()
+        self.check_fails_naming("tools/lane/ei.sh imports operator file tools/telemetry/env.sh",
+                                "[import-unresolved] tools/lane/ei.sh")
+
+    def test_an_eval_and_an_unresolved_source_count_twice(self):
+        self.write("tools/lane/e2.sh", "#!/bin/bash\neval $X; source $Y\n")
+        self.track()
+        rc, text = self.run_scan("--print")
+        self.assertIn('text = "eval $X; source $Y"\ncount = 2', text)
+
+    def test_the_quoted_eval_and_source_spelling_ac1_names_counts_twice(self):
+        # harmonic-forge#1556 pass-1 survivor: AC1 names the quoted spelling,
+        # so the quoted operands are pinned too, not only the unquoted ones.
+        self.write("tools/lane/e3.sh", '#!/bin/bash\neval "$X"; source "$Y"\n')
+        self.track()
+        rc, text = self.run_scan("--print")
+        self.assertIn('text = "eval \\"$X\\"; source \\"$Y\\""\ncount = 2', text)
+
+    def test_a_qualified_from_import_names_every_dotted_part(self):
+        self.write("tools/hooks/fq.py", "from tools.telemetry import *\n")
+        self.track()
+        self.check_fails_naming("tools/hooks/fq.py imports operator file tools/telemetry/")
+
+    def test_an_imported_name_of_a_tracked_package_is_a_package_candidate(self):
+        self.write("tools/hooks/fn.py", "from tools import telemetry\n")
+        self.track()
+        self.check_fails_naming("tools/hooks/fn.py imports operator file tools/telemetry/")
+
+    def test_every_dotted_part_position_is_a_package_candidate(self):
+        """Sticky-wicket PATCH (harmonic-forge#1556, issuecomment-7175238692):
+        one case per position of the operator package in the module path,
+        with made-up stems so nothing resolves to a real fixture file."""
+        cases = {"first": "from telemetry.zz.yy import *\n",
+                 "middle": "from tools.telemetry.yy import *\n",
+                 "last": "from tools.zz.telemetry import *\n"}
+        for position, line in cases.items():
+            with self.subTest(position=position):
+                self.write(f"tools/hooks/dp_{position}.py", line)
+                self.track()
+                self.check_fails_naming(
+                    f"tools/hooks/dp_{position}.py imports operator file tools/telemetry/")
+
+    def test_every_branch_of_the_imported_name_condition_is_pinned(self):
+        """Sticky-wicket PATCH: each branch of main's condition that makes an
+        imported name a package candidate, and a name after the first."""
+        cases = {"relative_no_module": "from .. import telemetry\n",
+                 "relative_untracked_module": "from ..zzlib import telemetry\n",
+                 "tracked_directory": "from tools import telemetry\n",
+                 "second_name": "from tools import zz, telemetry\n"}
+        for branch, line in cases.items():
+            with self.subTest(branch=branch):
+                self.write(f"tools/hooks/in_{branch}.py", line)
+                self.track()
+                self.check_fails_naming(
+                    f"tools/hooks/in_{branch}.py imports operator file tools/telemetry/")
+
+    def test_an_imported_name_of_an_untracked_module_is_not_a_package_candidate(self):
+        # harmonic-forge#1556 pass-1 survivor: AC2 keeps main's condition, so a
+        # name imported from a module that is not a tracked directory (and not
+        # relative) never becomes an operator-package candidate.
+        self.baseline_now()
+        self.write("tools/hooks/fs.py", "from somelib import telemetry\n")
+        self.track()
+        rc, out = self.run_scan("--check")
+        self.assertNotIn("tools/telemetry/", out)
+
+
 class TestWiring(unittest.TestCase):
     def test_ci_check_runs_scan(self):
         mise = (HERE.parents[1] / "mise.toml").read_text(encoding="utf-8")
