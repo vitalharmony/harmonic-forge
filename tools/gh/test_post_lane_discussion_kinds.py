@@ -451,11 +451,13 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
             "an unclosed lookalike on the footer line":
                 self.signed("## AE", ae_fields, joiner="\n\n<!-- l1-post v1; ci-override=777; "),
             "an earlier unrelated footer": self.signed("## AE\n" + decoy, ae_fields),
-            # Kill run: an AE-SHAPED decoy (same kind and SHA, its own id) above
-            # the real signed footer. Only "the first footer ends the body"
-            # refuses it: kind, SHA and the last footer's digest all pass.
+            # Kill run: an AE-SHAPED decoy (same kind and SHA, its own id, and a
+            # body-sha256 field of its own) above the real signed footer. Only
+            # "the first footer ends the body" refuses it: kind, SHA, digest
+            # presence and the LAST footer's digest all pass.
             "an AE-shaped footer above the real one": self.signed(
-                f"## AE\n<!-- l1-post v1; kind=ae; sha={self.SHA}; ci-override=999; checks=x -->",
+                f"## AE\n<!-- l1-post v1; kind=ae; sha={self.SHA}; ci-override=999; "
+                f"body-sha256={'0' * 64}; checks=x -->",
                 f"kind=ae; sha={self.SHA};"),
             "a fenced copy above": self.signed("## AE\n```\n" + decoy + "\n```", ae_fields),
             "a carry-forward quoting an AE footer": self.signed("## carry\n" + carry, ae_fields),
