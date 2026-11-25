@@ -420,7 +420,7 @@
     ]
    ]
   ],
-  "gh issue close 395 --repo vitalharmony/hrse --duplicate-of '\u00b2'": [
+  "gh issue close 395 --repo vitalharmony/hrse --duplicate-of '²'": [
    "intended",
    "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
    [
@@ -1332,77 +1332,105 @@
   ]
  },
  "preclose": {
-  "/bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  "GH_HOST=`h` gh pr merge 7 -R o/r": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "1476",
-      false
-     ]
-    ],
-    []
-   ]
-  ],
-  "/bin/bash -lc 'gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "1476",
-      false
-     ]
-    ],
-    []
-   ]
-  ],
-  "bash -c 'gh pr merge 1486 -R vitalharmony/hrse --match-head-commit abc123'": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1499 amendment change 2)",
    [
     "refuse",
     "refuse",
     [
      [
       "pr",
-      "vitalharmony/hrse",
-      "1486",
+      "o/r",
+      "7",
       false
      ]
     ],
-    []
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "command /bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  "GH_HOST=other.example gh pr merge 9 --repo o/r --squash --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; gh_argv reads an inline GH_HOST naming another host as unbound (the gate checks github.com only), so the hook denies it as an unnumbered merge before any read, where main bound it to github.com (harmonic-forge#1499)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      "o/r",
+      "9",
+      false
+     ]
+    ],
+    [
+     [
+      "pr",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=$O/r gh issue close 12": [
+   "intended",
+   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1499 amendment change 2)",
    [
     "refuse",
     "refuse",
     [
      [
       "issue",
-      "vitalharmony/hrse",
-      "1476",
+      null,
+      "12",
       false
      ]
     ],
-    []
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "echo gh pr merge 1": [
+  "GH_REPO=a/b gh issue close 12": [
+   "old-defect",
+   "main ignored the inline GH_REPO and named no repo; gh reads GH_REPO, and the hook binds it",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "12",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      "a/b",
+      "12",
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh -R o/r issue close 5": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "tightening against main: main read this literal gh call as not-a-close; the adapter cannot prove it is not a close or merge, so the hook denies it before any read (harmonic-forge#1499)",
    [
     "not-a-close",
     "refuse",
@@ -1410,50 +1438,9 @@
     []
    ]
   ],
-  "env /bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "1476",
-      false
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -F state=closed -F state_reason=not_planned": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ]
-   ]
-  ],
   "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -H state_reason=not_planned": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
@@ -1465,60 +1452,19 @@
       false
      ]
     ],
-    []
-   ]
-  ],
-  "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=duplicate": [
-   "intended",
-   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
-   [
-    "pass",
-    "refuse",
     [
      [
       "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ]
-   ]
-  ],
-  "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=not_planned": [
-   "intended",
-   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
-   [
-    "pass",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
+      null,
+      null,
+      false
      ]
     ]
    ]
   ],
   "gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=open": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "tightening against main: main read this REST write as not-a-close; gh_argv binds every issue or pull-request REST write it cannot prove is not a close or merge, so the label check runs (harmonic-forge#1499)",
    [
     "not-a-close",
     "refuse",
@@ -1528,7 +1474,7 @@
   ],
   "gh api -X PUT repos/o/r/pulls/7": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "tightening against main: main read this REST write as not-a-close; gh_argv binds every issue or pull-request REST write it cannot prove is not a close or merge, so the label check runs (harmonic-forge#1499)",
    [
     "not-a-close",
     "refuse",
@@ -1538,7 +1484,7 @@
   ],
   "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -H -f -H sha=abc123": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
@@ -1550,132 +1496,83 @@
       false
      ]
     ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh api graphql --input body.json -X POST": [
+   "intended",
+   "tightening against main: main read this literal gh call as not-a-close; the adapter cannot prove it is not a close or merge, so the hook denies it before any read (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
     []
    ]
   ],
-  "gh issue close 1269 --repo vitalharmony/hrse --reason 'not planned'": [
+  "gh issue close": [
    "intended",
-   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
    [
-    "pass",
+    "not-a-close",
     "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "1269",
-      true
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "1269",
-      true
-     ]
-    ]
+    [],
+    []
    ]
   ],
-  "gh issue close 1433 --repo vitalharmony/harmonic-forge --duplicate-of 1400": [
+  "gh issue close \"$N\"": [
    "intended",
-   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
    [
-    "pass",
+    "not-a-close",
     "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ]
+    [],
+    []
    ]
   ],
-  "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason 'not planned'": [
+  "gh issue close \"$N\" --repo o/r": [
    "intended",
-   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
+   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
    [
-    "pass",
+    "not-a-close",
     "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ]
+    [],
+    []
    ]
   ],
-  "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason='not planned'": [
+  "gh issue close 5 --repo o/r --bogus": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
     [
      [
       "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
+      "o/r",
+      "5",
       false
      ]
     ],
     [
      [
       "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 1433 --repo vitalharmony/harmonic-forge -r duplicate": [
-   "intended",
-   "tightening: the preclose hook's own canonical exemption stays with the adopter (F1499); gh_argv's exemption is wider, so the verdict column never trusts it",
-   [
-    "pass",
-    "refuse",
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/harmonic-forge",
-      "1433",
-      true
+      null,
+      null,
+      false
      ]
     ]
    ]
   ],
   "gh pr merge 1486 -R vitalharmony/hrse --squash -- --match-head-commit=abc123": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; gh's grammar leaves a second positional (after `--`, or once a value flag took the flag-shaped word as its value), so the merge is unbound and denied as `gh pr merge` with no number, where main named the PR (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
@@ -1699,7 +1596,7 @@
   ],
   "gh pr merge 1486 -R vitalharmony/hrse --squash --subject --match-head-commit abc123": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; gh's grammar leaves a second positional (after `--`, or once a value flag took the flag-shaped word as its value), so the merge is unbound and denied as `gh pr merge` with no number, where main named the PR (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
@@ -1723,7 +1620,7 @@
   ],
   "gh pr merge 1486 -R vitalharmony/hrse --squash --unknown --match-head-commit=abc123": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
@@ -1735,23 +1632,157 @@
       false
      ]
     ],
-    []
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "nohup /bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  "gh pr merge 5 --repo o/r --bogus": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
    [
     "refuse",
     "refuse",
     [
      [
-      "issue",
-      "vitalharmony/hrse",
-      "1476",
+      "pr",
+      "o/r",
+      "5",
       false
      ]
     ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gha vh \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh issue close 849 -R o/r'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh gh issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh gh pr merge 7 -R o/r --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
     []
    ]
   ]
