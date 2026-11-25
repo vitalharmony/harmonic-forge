@@ -103,7 +103,9 @@ class StaticChecksLocalMode(unittest.TestCase):
         with mock.patch.object(L, "cheap_static_checks"), \
              mock.patch.object(L, "run", side_effect=run), \
              mock.patch.object(L, "_receipt_matches", return_value=receipt) as matches, \
-             mock.patch.object(L, "_declares_local_check", return_value=declared):
+             mock.patch.object(L, "_declares_local_check", return_value=declared), \
+             mock.patch.object(L._scratch, "scratch_dir",
+                               side_effect=AssertionError("a scratch worktree was made")):
             out = L.static_checks(SHA, "feat/1-x", mode=mode)
         return out, calls, matches
 
