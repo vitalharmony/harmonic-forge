@@ -608,8 +608,9 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
 
 #: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
 CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
-#: The opening of l1_post's attestation footer line.
-FOOTER_PREFIX = "<" + "!-- l1-post v1;"
+#: The first line of `gate_ci.check_gate_result`'s unfinished-CI refusal; the
+#: P3 diagnostic replaces only that refusal, never a red one.
+UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
 
 
 def ci_override_id(repo: str, issue: int, body: str) -> str | None:
@@ -623,20 +624,31 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
     authority, _message = check_lane3_ready.resolve_gate_authority(comments, sha)
     if authority is None:
         return None
-    kind = check_lane3_ready.FOOTER_KIND.search(authority.get("body", ""))
+    # PATCH P5 and post-verdict findings 3 and 1 (second check): the grant id,
+    # the kind and the SHA all come from ONE footer -- the last closed l1-post
+    # comment, which must end the body (harmonic-forge#1358's rule for the
+    # body digest). An unclosed lookalike, a second footer, a fenced copy, or
+    # text after the comment closes never names the grant.
+    text = authority.get("body", "") or ""
+    last = None
+    for last in check_lane3_ready._ANY_FOOTER.finditer(text):
+        pass
+    if last is None or text[last.end():].strip():
+        return None
+    footer = last.group(0)
+    # l1_post writes its footer as one line holding one comment. `_ANY_FOOTER`
+    # is DOTALL, so an unclosed lookalike above the real footer would join it
+    # into one span; such a span is not a footer.
+    if "\n" in footer or footer.count("<!--") != 1:
+        return None
+    kind = check_lane3_ready.FOOTER_KIND.search(footer)
     if not kind or kind.group(1).lower() != "ae":
         return None
-    if not check_lane3_ready.same_sha(check_lane3_ready.footer_sha(authority), sha):
+    footer_sha = check_lane3_ready.FOOTER_SHA.search(footer)
+    if not footer_sha or not check_lane3_ready.same_sha(footer_sha.group(1), sha):
         return None
-    # PATCH P5: only the AE's own footer line (the l1-post v1 HTML comment)
-    # names the grant; prose anywhere else in the AE never does.
-    # Post-verdict finding 3: only the text INSIDE the comment, up to its first
-    # `-->`; anything after the comment closes on the same line is prose.
-    footer = [line.lstrip()[len(FOOTER_PREFIX):].split("-->", 1)[0]
-              for line in authority.get("body", "").splitlines()
-              if line.lstrip().startswith(FOOTER_PREFIX)]
-    found = [m for inside in footer for m in CI_OVERRIDE_FIELD.findall(inside)]
-    return found[-1] if len(found) == 1 else None
+    found = CI_OVERRIDE_FIELD.findall(footer)
+    return found[0] if len(found) == 1 else None
 
 
 def post_merge_readonly_claim(repo: str, issue: int, body: str) -> str | None:
@@ -742,9 +754,10 @@ def require_green_ci(
         if override is not None:
             ok, message = check_gate_result(repo, body, issue=issue, ci_override=override)
             # PATCH P3: name the remedy when the grant was replaced -- only while
-            # the refusal is still "CI has not completed", so a red read keeps
-            # its own message (post-verdict finding 2).
-            if not ok and "CI has not completed" in message:
+            # the refusal is still the unfinished-CI one, matched on its first
+            # line, so a red read keeps its own message even when a check name
+            # carries the phrase (post-verdict findings 2, both checks).
+            if not ok and message.startswith(UNFINISHED_CI_REFUSAL):
                 from gate_ci import ci_outage_pass_refusal  # noqa: PLC0415
                 sha = gated_sha(body)
                 message = (ci_outage_pass_refusal(repo, issue, sha or "", override)

@@ -239,6 +239,10 @@ class EveryCiReadGoesThroughS0(unittest.TestCase):
                 got = L._refuse_if_ci_red("o/r", 1, SHA, None)
                 self.assertEqual(got, want)
                 self.assertEqual(L._check_path(got, real_post=False)[0], path)
+                # The real post too, with the audit sample held off so the
+                # local path is reachable (post-verdict finding 3, second check).
+                with mock.patch.object(L, "_audit_sampled", return_value=False):
+                    self.assertEqual(L._check_path(got, real_post=True), (path, False))
 
     def test_an_unreadable_ci_fails_open_to_none(self):
         with mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \

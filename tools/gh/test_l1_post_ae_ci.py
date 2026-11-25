@@ -421,7 +421,8 @@ class RealStoreTwoPassPatch(unittest.TestCase):
              mock.patch("sys.stderr"), self.assertRaises(SystemExit) as ctx:
             L._ae_ci_gate(REPO, 894, SHA, None)
         self.assertNotEqual(ctx.exception.code, L._carry_forward.WAIT_EXIT)
-        self.assertIn(f"FORCE {self.key} ci-outage {SHA}", str(ctx.exception))
+        # The whole literal line, through `: <reason>` (post-verdict finding 5).
+        self.assertIn(f"`FORCE {self.key} ci-outage {SHA}: <reason>`", str(ctx.exception))
 
     def test_a_second_ae_under_one_grant_does_not_post(self):
         """P4: two real AE posts under one grant; only the first publishes."""

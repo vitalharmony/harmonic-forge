@@ -424,6 +424,26 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
                           + "; ci-override=777; checks=x -->"}
         self.assertEqual(self.override(inside), "777")
 
+    def test_only_the_last_footer_ending_the_body_names_it(self):
+        """Post-verdict finding 1 (second check): the id, kind and SHA come
+        from one footer, the last closed one, which must end the body."""
+        real = f"<!-- l1-post v1; kind=ae; sha={self.SHA}; checks=x -->"
+        decoy = f"<!-- l1-post v1; kind=sweep; sha={'d' * 40}; ci-override=777; checks=x -->"
+        cases = {
+            "unclosed lookalike": "## AE\n<!-- l1-post v1; ci-override=777;\n\n" + real,
+            "an earlier unrelated footer": "## AE\n" + decoy + "\n\n" + real,
+            "a fenced copy": "## AE\n```\n" + decoy + "\n```\n\n" + real,
+            "text after the footer": "## AE\n\n" + real.replace("checks=x", "ci-override=777; checks=x")
+                                     + "\nci-override=777;",
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(self.override({"body": body}))
+        # Non-vacuous: the decoy's id DOES name the grant when it is the real
+        # footer, so each case above refuses for the binding, not the regex.
+        self.assertEqual(self.override({"body": "## AE\n\n" + real.replace(
+            "checks=x", "ci-override=777; checks=x")}), "777")
+
 
 class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):
     """Post-verdict finding 2: the real ci_outage_pass_refusal, with only the
@@ -450,21 +470,37 @@ class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):
         self.assertIn("replaced by a later FORCE line", message)
         self.assertIn(f"FORCE F894 ci-outage {self.SHA}", message)
 
-    def test_a_red_second_read_keeps_its_own_message(self):
-        """The caller lifts the P3 text only while the refusal still says CI
-        has not completed; a red read is never masked."""
+    REPLACED = "[GATE] REFUSED: ... replaced by a later FORCE line"
+
+    def caller_message(self, second_read):
+        """require_green_ci's final refusal when the first read is unfinished CI
+        and the second (with the AE's override) is `second_read`; only
+        check_gate_result, the claim, the override id and the grant-store
+        diagnostic are stubbed."""
         body = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {self.SHA}\n"
-        reads = iter([(False, "[GATE] REFUSED: CI has not completed on cccccccc"),
-                      (False, "[GATE] REFUSED: CI is red on cccccccc")])
+        reads = iter([(False, P.UNFINISHED_CI_REFUSAL + "  cccccccc: pending"),
+                      (False, second_read)])
         with mock.patch.object(P, "check_gate_result", side_effect=lambda *a, **k: next(reads)), \
              mock.patch.object(P, "post_merge_readonly_claim", return_value=None), \
              mock.patch.object(P, "ci_override_id", return_value="777"), \
-             mock.patch("gate_ci.ci_outage_pass_refusal",
-                        return_value="[GATE] REFUSED: ... replaced by a later FORCE line"), \
+             mock.patch("gate_ci.ci_outage_pass_refusal", return_value=self.REPLACED), \
              mock.patch.object(P, "fail", side_effect=SystemExit) as failed:
             with self.assertRaises(SystemExit):
                 P.require_green_ci("gate-result", "vitalharmony/harmonic-forge", body, issue=894)
-        self.assertIn("CI is red", failed.call_args.args[0])
+        return failed.call_args.args[0]
+
+    def test_an_unfinished_second_read_gets_the_replacement_remedy(self):
+        """Post-verdict finding 4 (second check): the diagnostic IS applied on
+        the unfinished-CI refusal."""
+        self.assertEqual(self.caller_message(P.UNFINISHED_CI_REFUSAL + "  cccccccc: pending"),
+                         self.REPLACED)
+
+    def test_a_red_second_read_keeps_its_own_message(self):
+        """A red read is never masked, even when a check name in its detail
+        carries the unfinished-CI phrase (post-verdict finding 2, second check)."""
+        red = ("[GATE] REFUSED: CI is RED for the SHA this PASS names.\n"
+               "  cccccccc: CI has not completed:failure\n")
+        self.assertEqual(self.caller_message(red), red)
 
 
 class CallerRelativeFileResolutionTests(unittest.TestCase):
