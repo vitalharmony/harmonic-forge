@@ -413,6 +413,55 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
         self.assertIsNone(self.override(self.ae("## x", kind="sweep")))
         self.assertIsNone(self.override(self.ae("## AE", sha="d" * 40)))
 
+    def test_text_after_the_footer_closes_never_names_it(self):
+        """Post-verdict finding 3: an id written after `-->` on the footer line
+        is prose, not the footer."""
+        after = {"body": "## AE\n\n<!-- l1-post v1; kind=ae; sha=" + self.SHA
+                         + "; checks=x --> ci-override=777"}
+        self.assertIsNone(self.override(after))
+
+
+class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):
+    """Post-verdict finding 2: the real ci_outage_pass_refusal, with only the
+    grant store read stubbed."""
+
+    SHA = "c" * 40
+
+    def refusal(self, slot):
+        import gate_ci  # noqa: PLC0415
+        fg = mock.Mock(read_grant=mock.Mock(return_value=slot))
+        iw = mock.Mock(issue_key=mock.Mock(return_value="F894"))
+        with mock.patch.object(gate_ci, "_outage_modules", return_value=(None, fg, iw)):
+            return gate_ci.ci_outage_pass_refusal("vitalharmony/harmonic-forge", 894,
+                                                  self.SHA, "777")
+
+    def test_an_empty_slot_is_not_called_replaced(self):
+        self.assertIsNone(self.refusal(None))
+
+    def test_the_named_grant_still_in_the_slot_is_not_replaced(self):
+        self.assertIsNone(self.refusal({"comment_id": 777, "mode": "ci-outage"}))
+
+    def test_a_different_grant_in_the_slot_is_named(self):
+        message = self.refusal({"comment_id": 888, "mode": "plain"})
+        self.assertIn("replaced by a later FORCE line", message)
+        self.assertIn(f"FORCE F894 ci-outage {self.SHA}", message)
+
+    def test_a_red_second_read_keeps_its_own_message(self):
+        """The caller lifts the P3 text only while the refusal still says CI
+        has not completed; a red read is never masked."""
+        body = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {self.SHA}\n"
+        reads = iter([(False, "[GATE] REFUSED: CI has not completed on cccccccc"),
+                      (False, "[GATE] REFUSED: CI is red on cccccccc")])
+        with mock.patch.object(P, "check_gate_result", side_effect=lambda *a, **k: next(reads)), \
+             mock.patch.object(P, "post_merge_readonly_claim", return_value=None), \
+             mock.patch.object(P, "ci_override_id", return_value="777"), \
+             mock.patch("gate_ci.ci_outage_pass_refusal",
+                        return_value="[GATE] REFUSED: ... replaced by a later FORCE line"), \
+             mock.patch.object(P, "fail", side_effect=SystemExit) as failed:
+            with self.assertRaises(SystemExit):
+                P.require_green_ci("gate-result", "vitalharmony/harmonic-forge", body, issue=894)
+        self.assertIn("CI is red", failed.call_args.args[0])
+
 
 class CallerRelativeFileResolutionTests(unittest.TestCase):
     def test_compatibility_shim_root_wins_over_platform_root(self):

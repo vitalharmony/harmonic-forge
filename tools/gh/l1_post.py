@@ -3003,6 +3003,12 @@ def _audit_sampled() -> bool:
     return secrets.randbelow(AUDIT_RATE) == 0
 
 
+#: harmonic-forge#894 post-verdict finding 1: `verify` still running beside a
+#: visible red job. Not a gate_ci state: `_refuse_if_ci_red` returns it only to
+#: `_check_path`, which runs the full check for it.
+PENDING_WITH_RED = "pending-with-red"
+
+
 def _check_path(ci_state: str | None, *, real_post: bool) -> tuple[str, bool]:
     """`(path, audit_sampled)` for a ready-for-l3 (harmonic-forge#894 step 3).
 
@@ -3298,11 +3304,18 @@ def _refuse_if_ci_red(repo: str, issue: int, sha: str, attempt: dict | None, *,
         source_repo = _cwd_repo_from_git(None)
         if not source_repo:
             return None
+        visible_bad: list[str] = []
         state, detail = gate_ci.ci_conclusion(source_repo, sha, required={"verify"},
-                                              reader=_ci_reader(source_repo))
+                                              reader=_ci_reader(source_repo),
+                                              visible_bad_out=visible_bad)
     except Exception:  # noqa: BLE001 - fail open
         return None
-    if note_unconcluded and state in ("pending", "absent"):
+    if state == "pending" and visible_bad:
+        # harmonic-forge#894 post-verdict finding 1: a red job beside a running
+        # `verify` sends this post to the full check. The label is local to the
+        # check-path decision; no gate reader ever sees it.
+        state = PENDING_WITH_RED
+    if note_unconcluded and state in ("pending", PENDING_WITH_RED, "absent"):
         print(f"[l1-post] dry run: CI on {sha[:12]} has not concluded ({state}: {detail}); "
               "the real post re-reads CI, refuses if it is red, and re-decides its check path",
               file=sys.stderr)

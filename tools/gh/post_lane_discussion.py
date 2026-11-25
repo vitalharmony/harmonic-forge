@@ -630,9 +630,12 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
         return None
     # PATCH P5: only the AE's own footer line (the l1-post v1 HTML comment)
     # names the grant; prose anywhere else in the AE never does.
-    footer = [line for line in authority.get("body", "").splitlines()
+    # Post-verdict finding 3: only the text INSIDE the comment, up to its first
+    # `-->`; anything after the comment closes on the same line is prose.
+    footer = [line.lstrip()[len(FOOTER_PREFIX):].split("-->", 1)[0]
+              for line in authority.get("body", "").splitlines()
               if line.lstrip().startswith(FOOTER_PREFIX)]
-    found = [m for line in footer for m in CI_OVERRIDE_FIELD.findall(line)]
+    found = [m for inside in footer for m in CI_OVERRIDE_FIELD.findall(inside)]
     return found[-1] if len(found) == 1 else None
 
 
@@ -738,7 +741,10 @@ def require_green_ci(
         override = ci_override_id(repo, issue, body)
         if override is not None:
             ok, message = check_gate_result(repo, body, issue=issue, ci_override=override)
-            if not ok:  # PATCH P3: name the remedy when the grant was replaced
+            # PATCH P3: name the remedy when the grant was replaced -- only while
+            # the refusal is still "CI has not completed", so a red read keeps
+            # its own message (post-verdict finding 2).
+            if not ok and "CI has not completed" in message:
                 from gate_ci import ci_outage_pass_refusal  # noqa: PLC0415
                 sha = gated_sha(body)
                 message = (ci_outage_pass_refusal(repo, issue, sha or "", override)

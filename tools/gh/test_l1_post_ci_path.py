@@ -221,6 +221,25 @@ class EveryCiReadGoesThroughS0(unittest.TestCase):
         made.assert_called_once_with("o/r")
         self.assertIs(read.call_args.kwargs["reader"], sentinel)
 
+    def test_a_red_job_beside_a_running_verify_takes_the_full_check(self):
+        """harmonic-forge#894 post-verdict finding 1, through the real
+        `ci_conclusion` and `_judge_runs` (only the run read is stubbed): a red
+        job beside a running `verify` reads PENDING_WITH_RED, which runs the
+        full check; the same snapshot without it reads `pending`, the local path."""
+        verify = {"name": "verify", "status": "in_progress", "conclusion": None,
+                  "workflow_status": "in_progress", "workflow_event": "pull_request",
+                  "workflow_path": ".github/workflows/ci.yml"}
+        red = {"name": "frontend", "status": "completed", "conclusion": "failure"}
+        for runs, want, path in (([verify, red], L.PENDING_WITH_RED, "full"),
+                                 ([verify], "pending", "local")):
+            with self.subTest(want=want), \
+                 mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
+                 mock.patch.object(L, "_ci_reader", return_value=None), \
+                 mock.patch.object(L.gate_ci, "_read_check_runs", return_value=(runs, None)):
+                got = L._refuse_if_ci_red("o/r", 1, SHA, None)
+                self.assertEqual(got, want)
+                self.assertEqual(L._check_path(got, real_post=False)[0], path)
+
     def test_an_unreadable_ci_fails_open_to_none(self):
         with mock.patch.object(L, "_cwd_repo_from_git", return_value="o/r"), \
              mock.patch.object(L.gate_ci, "ci_conclusion", side_effect=RuntimeError("x")):

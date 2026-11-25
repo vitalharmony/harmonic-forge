@@ -864,15 +864,27 @@ class CiConclusionStatesTests(unittest.TestCase):
         self.assertEqual(state, "unknown")
 
     def test_a_red_unrequired_job_demotes_a_scoped_pending(self):
-        """Two-pass PATCH P1: verify exists and runs, frontend failed: absent,
-        never pending (C4 condition 3 over every visible job)."""
+        """P1 after the post-verdict check: verify runs, frontend failed. The
+        state stays `pending` (never `absent`, which the no-PR and post-merge
+        exceptions release on); the red job is reported only to a caller that
+        passes `visible_bad_out`."""
         runs = [{"name": "verify", "status": "in_progress", "conclusion": None,
                  "workflow_status": "in_progress", "workflow_event": "pull_request",
                  "workflow_path": ".github/workflows/ci.yml"},
                 {"name": "frontend", "status": "completed", "conclusion": "failure"}]
-        state, detail = gate_ci._judge_runs(runs, "a" * 40, {"verify"})
-        self.assertEqual(state, "absent", detail)
-        self.assertIn("frontend:failure", detail)
+        seen: list[str] = []
+        state, detail = gate_ci._judge_runs(runs, "a" * 40, {"verify"}, seen)
+        self.assertEqual(state, "pending", detail)
+        self.assertEqual(seen, ["frontend:failure"])
+        self.assertEqual(gate_ci._judge_runs(runs, "a" * 40, {"verify"})[0], "pending")
+        quiet: list[str] = []
+        self.assertEqual(gate_ci._judge_runs(runs[:1], "a" * 40, {"verify"}, quiet)[0],
+                         "pending")
+        self.assertEqual(quiet, [])
+        # Post-verdict finding 1: the state this snapshot yields must not be one
+        # the no-PR acknowledgment (and the post-merge claim, same `absent` test)
+        # can stand on.
+        self.assertFalse(gate_ci._no_pr_state_eligible("o/r", "a" * 40, {"verify"}, state))
         green = [{"name": "verify", "status": "completed", "conclusion": "success"},
                  {"name": "frontend", "status": "completed", "conclusion": "failure"}]
         self.assertEqual(gate_ci._judge_runs(green, "a" * 40, {"verify"})[0], "green")

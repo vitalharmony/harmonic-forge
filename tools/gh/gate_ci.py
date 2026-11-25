@@ -713,7 +713,8 @@ def _required_checks_all_skipped(repo: str, sha: str, required: set[str],
 
 
 def ci_conclusion(repo: str, sha: str, run=None,
-                  required: set[str] | None = None, reader=None) -> tuple[str, str]:
+                  required: set[str] | None = None, reader=None,
+                  visible_bad_out: list[str] | None = None) -> tuple[str, str]:
     """`(state, detail)` for a commit's checks.
 
     `state` is one of `green`, `red`, `pending`, `absent`, `unknown`.
@@ -728,7 +729,7 @@ def ci_conclusion(repo: str, sha: str, run=None,
     runs, failure = _read_check_runs(repo, sha, run=run, reader=reader)
     if failure is not None:
         return failure
-    return _judge_runs(runs, sha, required)
+    return _judge_runs(runs, sha, required, visible_bad_out)
 
 
 def _with_run(job: dict, wf: dict) -> dict:
@@ -965,16 +966,23 @@ def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[s
 
 
 def _judge_runs(runs: list[dict], sha: str,
-                required: set[str] | None) -> tuple[str, str]:
-    """Judge one snapshot (see `ci_conclusion`)."""
+                required: set[str] | None,
+                visible_bad_out: list[str] | None = None) -> tuple[str, str]:
+    """Judge one snapshot (see `ci_conclusion`).
+
+    `visible_bad_out`, when given, receives the red jobs outside the scope that
+    were visible beside a scoped `pending` (harmonic-forge#894 post-verdict
+    finding 1). The state stays `pending`: `absent` is a release to the no-PR
+    and post-merge exceptions, so no reader's state may change here. Only the
+    ready-for-l3 check-path decision reads the list."""
     if not runs:
         return "absent", f"{sha[:8]} has no check runs at all"
 
     runs = _latest_per_name(runs)
-    # PATCH P1 (C4 condition 3 over every visible job): a red job outside the
-    # required set still demotes a scoped `pending`, so ready-for-l3 never
-    # takes the local path on CI already known red. It never turns a green
-    # verdict red, so readers that ignore unrequired jobs are unchanged.
+    # PATCH P1 (C4 condition 3 over every visible job), reworked after the
+    # post-verdict check: a red job outside the required set is reported to a
+    # caller that asks, so ready-for-l3 never takes the local path on CI
+    # already known red. No returned state changes.
     visible_bad = sorted(f"{r['name']}:{r.get('conclusion')}" for r in runs
                          if (r.get("conclusion") or "").lower() in _BAD)
     if required:
@@ -1016,8 +1024,10 @@ def _judge_runs(runs: list[dict], sha: str,
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
     if pending:
         if required and visible_bad:
-            return "absent", (f"{sha[:8]} has a visible red job ({', '.join(visible_bad)}) "
-                              f"while {', '.join(sorted(pending))} is still running")
+            if visible_bad_out is not None:
+                visible_bad_out.extend(visible_bad)
+            return "pending", (f"still running: {', '.join(sorted(pending))}; "
+                               f"visible red job(s): {', '.join(visible_bad)}")
         return "pending", f"still running: {', '.join(sorted(pending))}"
     unknown = [f"{r['name']}:{r.get('conclusion')}" for r in runs
                if (r.get("conclusion") or "").lower() not in _GOOD]
@@ -1241,7 +1251,9 @@ def ci_outage_pass_refusal(repo: str, issue: int | None, sha: str,
         grant = force_grant.read_grant(key) if key else None
     except Exception:  # noqa: BLE001
         return None
-    if grant and str(grant.get("comment_id")) == str(ci_override):
+    # Post-verdict finding 2: only a slot that holds a DIFFERENT grant was
+    # replaced. An empty or unreadable slot gets the caller's own message.
+    if not grant or str(grant.get("comment_id")) == str(ci_override):
         return None
     return (f"[GATE] REFUSED: the consumed ci-outage grant {ci_override} the AE named was "
             f"replaced by a later FORCE line for {key}; re-issue `FORCE {key} ci-outage {sha}: "
