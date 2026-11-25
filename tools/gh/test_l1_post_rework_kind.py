@@ -8,6 +8,7 @@ next" before any evidence, the same case sweep/ae already made. What stays
 bare is the heading requirement: still no mandated `## Rework` string, only
 the lead-field content.
 """
+import os
 import subprocess
 import sys
 import unittest
@@ -18,6 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import l1_post as L  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parent / "l1_post.py"
+#: harmonic-forge#1555: the spawned l1_post is a test writer, so it never
+#: records a dry-run failure in the operator's real store.
+CHILD_ENV = {**os.environ, "HARMONIC_FORGE_TESTING": "1"}
 
 
 class ReworkKindTests(unittest.TestCase):
@@ -27,7 +31,7 @@ class ReworkKindTests(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--issue", "1", "--kind", "rework",
              "--rework-kind", "correction",  # harmonic-forge#1247
              "--sha", "HEAD", "--branch", "nope", "--file", "/nonexistent"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=CHILD_ENV,
         )
         self.assertNotIn("invalid choice", result.stderr,
                          "`rework` must be a valid --kind")
@@ -39,7 +43,7 @@ class ReworkKindTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--issue", "1", "--kind", "reworkk",
              "--sha", "HEAD", "--branch", "nope", "--file", "/nonexistent"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=CHILD_ENV,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("invalid choice", result.stderr)

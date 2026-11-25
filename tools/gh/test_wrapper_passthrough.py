@@ -85,7 +85,9 @@ class Passthrough(unittest.TestCase):
         (self.root / "mise.toml").write_text(blocks)
         self.env = {**os.environ, "GH_REPO": "vitalharmony/harmonic-forge",
                     "HARMONIC_FORGE_ROOT": str(REPO),
-                    "MISE_TRUSTED_CONFIG_PATHS": str(self.root)}
+                    "MISE_TRUSTED_CONFIG_PATHS": str(self.root),
+                    # harmonic-forge#1555: the spawned l1_post is a test writer.
+                    "HARMONIC_FORGE_TESTING": "1"}
         for key in ("MISE_TASK_NAME", "MISE_ORIGINAL_CWD", "MISE_PROJECT_ROOT",
                     "MISE_CONFIG_ROOT"):
             self.env.pop(key, None)
