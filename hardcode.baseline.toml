@@ -136,6 +136,12 @@ count = 1
 
 [[finding]]
 rule = "forge-root"
+path = "tools/hooks/handoff_owed.py"
+text = "return (f\"python3 \\\"${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/gh_issue.py\\\" \""
+count = 1
+
+[[finding]]
+rule = "forge-root"
 path = "tools/hooks/install_advisory_subagent_symlinks.sh"
 text = "FORGE_ROOT=\"$HOME/harmonic-forge\""
 count = 1
@@ -2158,6 +2164,12 @@ count = 1
 
 [[finding]]
 rule = "project-name"
+path = "tools/hooks/handoff_owed.py"
+text = "return (f\"python3 \\\"${{HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}}/tools/gh/gh_issue.py\\\" \""
+count = 1
+
+[[finding]]
+rule = "project-name"
 path = "tools/hooks/install_advisory_subagent_symlinks.sh"
 text = "FORGE_ROOT=\"$HOME/harmonic-forge\""
 count = 1
@@ -2801,7 +2813,7 @@ count = 1
 [[finding]]
 rule = "project-name"
 path = "tools/rules/registry.toml"
-text = "statement = \"A handoff or rework is posted only for an issue in the current release milestone (a repo with no milestones, such as harmonic-forge, is exempt), because the belt ignores milestones. A Later issue never appears as a next action or as \\\"waiting on\\\".\""
+text = "statement = \"A handoff or rework is posted only for an issue in the current release milestone (a repo with no milestones, such as openclaw-projects, is exempt), because the belt ignores milestones. A Later issue never appears as a next action or as \\\"waiting on\\\".\""
 count = 1
 
 [[finding]]
