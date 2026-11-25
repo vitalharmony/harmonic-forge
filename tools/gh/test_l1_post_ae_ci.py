@@ -423,7 +423,10 @@ class RealStoreTwoPassPatch(unittest.TestCase):
              mock.patch.object(L.gate_ci, "no_pr_ack_release", return_value=False), \
              mock.patch("sys.stderr"), self.assertRaises(SystemExit) as ctx:
             L._ae_ci_gate(REPO, 894, SHA, None)
-        self.assertNotEqual(ctx.exception.code, L._carry_forward.WAIT_EXIT)
+        # A refusal through `fail()`: SystemExit(<message>), which exits 1 --
+        # never the wait (3) or any other integer code (post-verdict finding 3,
+        # fourth check).
+        self.assertIsInstance(ctx.exception.code, str)
         # The whole literal line, through `: <reason>` (post-verdict finding 5).
         self.assertIn(f"`FORCE {self.key} ci-outage {SHA}: <reason>`", str(ctx.exception))
 

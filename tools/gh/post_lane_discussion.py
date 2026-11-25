@@ -608,6 +608,8 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
 
 #: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
 CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
+#: Any l1-post comment opener, closed or not: a genuine AE body holds one.
+_L1_POST_OPENER = re.compile(r"<!--\s*l1-post\s+v\d+;", re.I)
 #: The first line of `gate_ci.check_gate_result`'s unfinished-CI refusal; the
 #: P3 diagnostic replaces only that refusal, never a red one.
 UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
@@ -624,22 +626,26 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
     authority, _message = check_lane3_ready.resolve_gate_authority(comments, sha)
     if authority is None:
         return None
-    # PATCH P5 and post-verdict findings (second and third checks): the grant
-    # id, the kind and the SHA all come from ONE footer. l1_post refuses a body
-    # that already carries its reserved marker, so a genuine AE holds exactly
-    # one l1-post comment: on one line, ending the body (harmonic-forge#1358's
-    # rule for the body digest). The FIRST l1-post comment -- the one
-    # `resolve_gate_authority` reads the kind from -- must therefore be that
-    # footer: when it does not end the body (a carry-forward quoting an AE
-    # footer, a decoy above the real one) or spans a line break (an unclosed
-    # lookalike, which the DOTALL pattern joins to the next footer), nothing
-    # names the grant.
+    # PATCH P5 and post-verdict findings (second to fourth checks): the grant
+    # id, the kind and the SHA all come from the AE's OWN footer, proven by its
+    # body digest rather than by parsing around lookalikes. l1_post refuses a
+    # body that carries its reserved marker and stamps every AE footer with
+    # `body-sha256`, so a genuine AE holds exactly one l1-post opener, its
+    # footer is one line ending the body, and `verify_body_sha256` accepts it
+    # (harmonic-forge#1358). Anything else -- an edited body, a second footer,
+    # an unclosed lookalike on the same line or above, a CR/LF inside the
+    # footer, text after it, a footer with no digest -- names no grant.
     text = authority.get("body", "") or ""
+    if len(_L1_POST_OPENER.findall(text)) != 1:
+        return None
     last = check_lane3_ready._ANY_FOOTER.search(text)
     if last is None or text[last.end():].strip():
         return None
     footer = last.group(0)
-    if "\n" in footer or "\r" in footer:
+    if "\n" in footer or "\r" in footer or footer.count("<!--") != 1:
+        return None
+    if (check_lane3_ready.FOOTER_BODY_SHA.search(footer) is None
+            or not check_lane3_ready.verify_body_sha256(authority)):
         return None
     kind = check_lane3_ready.FOOTER_KIND.search(footer)
     if not kind or kind.group(1).lower() != "ae":

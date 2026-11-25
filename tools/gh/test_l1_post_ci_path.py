@@ -185,6 +185,12 @@ class DryRunDecides(unittest.TestCase):
         self.assertEqual(self._dry("absent"), ["full"])
         self.assertEqual(self._dry(None), ["full"])
 
+    def test_a_pending_with_red_dry_run_runs_the_full_check(self):
+        """harmonic-forge#894 post-verdict finding 2 (fourth check): the dry
+        run's step, not only `_check_path`, sends a red job beside a running
+        `verify` to the full check."""
+        self.assertEqual(self._dry(L.PENDING_WITH_RED), ["full"])
+
     def test_the_dry_run_never_draws_the_audit_sample(self):
         with mock.patch.object(L, "_audit_sampled", side_effect=AssertionError("drawn")):
             self.assertEqual(self._dry("pending"), ["local"])

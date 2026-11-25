@@ -391,9 +391,17 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
     SHA = "cccccccccccccccccccccccccccccccccccccccc"
     PASS = f"## Lane 3 Gate Results\n\n**Verdict:** PASS\nHead-SHA: {SHA}\n"
 
+    @staticmethod
+    def signed(prefix: str, fields: str, joiner: str = "\n\n") -> str:
+        """`prefix` + a footer carrying a GENUINE body-sha256 of `prefix`, the
+        way l1_post computes it (footer_digest.marker_verifies with no prod-run
+        token: sha256 of the rstripped text before the footer), so a case below
+        is refused only by the rule it names, never by a bad digest."""
+        digest = hashlib.sha256(prefix.rstrip("\n").encode()).hexdigest()
+        return f"{prefix}{joiner}<!-- l1-post v1; {fields} body-sha256={digest}; checks=x -->"
+
     def ae(self, body, sha=None, kind="ae"):
-        foot = f"<!-- l1-post v1; kind={kind}; sha={sha or self.SHA}; ci-override=777; checks=x -->"
-        return {"body": body + "\n\n" + foot}
+        return {"body": self.signed(body, f"kind={kind}; sha={sha or self.SHA}; ci-override=777;")}
 
     def override(self, authority):
         with mock.patch.object(P.check_lane3_ready, "fetch_comments", return_value=[]), \
@@ -405,9 +413,17 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
         self.assertEqual(self.override(self.ae("## AE")), "777")
 
     def test_prose_never_names_it(self):
-        prose = {"body": "## AE\nci-override=777; in prose\n\n<!-- l1-post v1; kind=ae; sha="
-                         + self.SHA + "; checks=x -->"}
+        prose = {"body": self.signed("## AE\nci-override=777; in prose", f"kind=ae; sha={self.SHA};")}
         self.assertIsNone(self.override(prose))
+
+    def test_the_footer_must_carry_a_verifying_digest(self):
+        """Fourth check: the AE's own footer is proven by its body digest. No
+        digest, or a body edited after posting, names no grant."""
+        bare = {"body": f"## AE\n\n<!-- l1-post v1; kind=ae; sha={self.SHA}; ci-override=777; checks=x -->"}
+        self.assertIsNone(self.override(bare))
+        edited = self.ae("## AE")
+        edited["body"] = edited["body"].replace("## AE", "## AE (edited)")
+        self.assertIsNone(self.override(edited))
 
     def test_another_kind_or_sha_never_names_it(self):
         self.assertIsNone(self.override(self.ae("## x", kind="sweep")))
@@ -416,39 +432,36 @@ class CiOverrideIdReadsTheFooterOnly(unittest.TestCase):
     def test_text_after_the_footer_closes_never_names_it(self):
         """Post-verdict finding 3: an id written after `-->` on the footer line
         is prose, not the footer."""
-        after = {"body": "## AE\n\n<!-- l1-post v1; kind=ae; sha=" + self.SHA
-                         + "; checks=x --> ci-override=777; prose"}
+        after = {"body": self.signed("## AE", f"kind=ae; sha={self.SHA};") + " ci-override=777; prose"}
         self.assertIsNone(self.override(after))
-        # Non-vacuous: the same text inside the comment does name the grant.
-        inside = {"body": "## AE\n\n<!-- l1-post v1; kind=ae; sha=" + self.SHA
-                          + "; ci-override=777; checks=x -->"}
-        self.assertEqual(self.override(inside), "777")
+        # Non-vacuous: the same field inside the signed comment names the grant.
+        self.assertEqual(self.override(self.ae("## AE")), "777")
 
-    def test_only_the_last_footer_ending_the_body_names_it(self):
-        """Post-verdict finding 1 (second check): the id, kind and SHA come
-        from one footer, the last closed one, which must end the body."""
-        real = f"<!-- l1-post v1; kind=ae; sha={self.SHA}; checks=x -->"
+    def test_only_the_one_signed_footer_ending_the_body_names_it(self):
+        """Post-verdict findings 1 (second to fourth checks): the id, kind and
+        SHA come from the AE's one signed footer. Every case carries a GENUINE
+        digest of the text before its last footer, so each is refused by the
+        structural rule it names, not by the digest."""
+        ae_fields = f"kind=ae; sha={self.SHA}; ci-override=777;"
         decoy = f"<!-- l1-post v1; kind=sweep; sha={'d' * 40}; ci-override=777; checks=x -->"
+        carry = f"<!-- l1-post v1; kind=carry-forward; sha={self.SHA}; checks=x -->"
         cases = {
-            "unclosed lookalike": "## AE\n<!-- l1-post v1; ci-override=777;\n\n" + real,
-            "an earlier unrelated footer": "## AE\n" + decoy + "\n\n" + real,
-            "a fenced copy": "## AE\n```\n" + decoy + "\n```\n\n" + real,
-            "text after the footer": "## AE\n\n" + real.replace("checks=x", "ci-override=777; checks=x")
-                                     + "\nci-override=777;",
-            # Third check: a carry-forward whose own footer comes first and an
-            # AE footer (with an id) ends the body; and a CR inside the footer.
-            "a carry-forward quoting an AE footer":
-                f"## carry\n<!-- l1-post v1; kind=carry-forward; sha={self.SHA}; checks=x -->\n\n"
-                + real.replace("checks=x", "ci-override=777; checks=x"),
-            "a CR inside the footer": "## AE\n\n" + real.replace("checks=x", "ci-override=777;\rchecks=x"),
+            "an unclosed lookalike above": self.signed("## AE\n<!-- l1-post v1; ci-override=777;", ae_fields),
+            # Fourth check: the lookalike opener on the SAME line as the footer.
+            "an unclosed lookalike on the footer line":
+                self.signed("## AE", ae_fields, joiner="\n\n<!-- l1-post v1; ci-override=777; "),
+            "an earlier unrelated footer": self.signed("## AE\n" + decoy, ae_fields),
+            "a fenced copy above": self.signed("## AE\n```\n" + decoy + "\n```", ae_fields),
+            "a carry-forward quoting an AE footer": self.signed("## carry\n" + carry, ae_fields),
+            "text after the footer": self.signed("## AE", ae_fields) + "\nci-override=777;",
+            "a CR inside the footer": self.signed("## AE", ae_fields.replace("ci-override=777;",
+                                                                             "ci-override=777;\r")),
         }
         for name, body in cases.items():
             with self.subTest(name):
                 self.assertIsNone(self.override({"body": body}))
-        # Non-vacuous: the decoy's id DOES name the grant when it is the real
-        # footer, so each case above refuses for the binding, not the regex.
-        self.assertEqual(self.override({"body": "## AE\n\n" + real.replace(
-            "checks=x", "ci-override=777; checks=x")}), "777")
+        # Non-vacuous: the same fields in one signed footer name the grant.
+        self.assertEqual(self.override({"body": self.signed("## AE", ae_fields)}), "777")
 
 
 class CiOutagePassRefusalNamesOnlyAReplacedGrant(unittest.TestCase):

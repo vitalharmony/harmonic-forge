@@ -3406,12 +3406,14 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
               f"{grant.get('comment_url') or '(recorded)'} with its check-full receipt")
         return "ci-outage-grant"
     if state != "red" and (spent := gate_ci.ci_outage_spent(repo, issue, sha)):
-        # PATCH P2: a grant consumed by an AE that never published is spent;
-        # waiting on CI would never end, so refuse and name the remedy.
+        # PATCH P2: a consumed grant is spent, whether or not its AE published
+        # (this read cannot tell); waiting on CI would never end, so refuse and
+        # name the remedy (post-verdict finding 4, fourth check: the message no
+        # longer claims no AE was published).
         key = imc_waiver_key(repo, issue)
         fail(f"the ci-outage grant {spent.get('comment_url') or spent.get('comment_id')} for "
-             f"{sha[:12]} was consumed at {spent.get('consumed_at')} but no AE was published; "
-             f"a new grant is needed: `FORCE {key} ci-outage {sha}: <reason>`")
+             f"{sha[:12]} was already consumed at {spent.get('consumed_at')}; a grant releases "
+             f"one AE only, so a new grant is needed: `FORCE {key} ci-outage {sha}: <reason>`")
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
               file=sys.stderr)
