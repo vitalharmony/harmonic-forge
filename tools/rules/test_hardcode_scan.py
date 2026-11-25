@@ -331,6 +331,38 @@ class TestTwoPassPatch(ScratchRepo):
         self.track()
         self.check_fails_naming("tools/hooks/broken.py: does not parse as Python")
 
+    def test_a_source_behind_command_or_builtin_is_an_edge(self):
+        """Post-verdict cross-family finding 1."""
+        self.write("tools/lane/e.sh", '#!/bin/bash\ncommand source "$(dirname -- '
+                   '"${BASH_SOURCE[0]}")/../telemetry/env.sh"\n')
+        self.write("tools/lane/f.sh", '#!/bin/bash\nbuiltin . "$D/env.sh"\n')
+        self.track()
+        self.check_fails_naming("tools/lane/e.sh imports operator file tools/telemetry/env.sh",
+                                "tools/lane/f.sh imports operator file tools/telemetry/env.sh")
+
+    def test_an_aliased_loader_is_still_a_load(self):
+        """Post-verdict cross-family finding 2."""
+        self.write("tools/hooks/al.py", "from importlib import import_module as load\n\n\n"
+                   "def go(name):\n    return load(name)\n")
+        self.write("tools/hooks/al2.py", "import importlib\nloader = importlib.import_module\n\n\n"
+                   "def go(name):\n    return loader(name)\n")
+        self.track()
+        self.check_fails_naming("[import-unresolved] tools/hooks/al.py",
+                                "[import-unresolved] tools/hooks/al2.py")
+
+    def test_an_interpolated_filename_is_unresolved_not_its_extension(self):
+        """Post-verdict cross-family finding 3."""
+        self.write("tools/hooks/fs.py", "from importlib.util import spec_from_file_location\n\n\n"
+                   "def go(stem):\n"
+                   '    return spec_from_file_location("p", f"../telemetry/{stem}.py")\n')
+        self.write("tools/telemetry/emit.py", "X = 1\n")
+        self.write("tools/hooks/fs2.py", "from importlib.util import spec_from_file_location\n\n\n"
+                   "def go(root):\n"
+                   '    return spec_from_file_location("p", f"{root}/telemetry/emit.py")\n')
+        self.track()
+        self.check_fails_naming("[import-unresolved] tools/hooks/fs.py",
+                                "tools/hooks/fs2.py imports operator file tools/telemetry/emit.py")
+
     def test_a_lowered_count_is_stale_and_update_lowers_it(self):
         self.write("tools/hooks/core_hook.py", CORE + PLANT + PLANT)
         self.track()

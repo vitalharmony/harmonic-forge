@@ -308,7 +308,15 @@ def _literal_tail(node: ast.AST | None, assigns: dict[str, ast.AST], depth: int 
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _literal_tail(node.right, assigns, depth)
     if isinstance(node, ast.JoinedStr) and node.values:
-        return _literal_tail(node.values[-1], assigns, depth)
+        # Only a last literal piece that carries a "/" (or is the whole string)
+        # names a whole filename; `f"{stem}.py"` names only an extension, so
+        # it is unresolved (post-verdict cross-family finding 3).
+        last = node.values[-1]
+        if not (isinstance(last, ast.Constant) and isinstance(last.value, str)):
+            return None
+        if len(node.values) > 1 and "/" not in last.value:
+            return None
+        return _literal_tail(last, assigns, depth)
     if isinstance(node, ast.Call) and node.args:
         fn = node.func
         name = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
@@ -330,6 +338,20 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
     (harmonic-forge#1524 two-pass sticky-wicket PATCH)."""
     tree = ast.parse(source)
     assigns = _assigns(tree)
+    # `from importlib import import_module as load` binds a loader under
+    # another name (post-verdict cross-family finding 2).
+    loaders = {n: n for n in ("import_module", "__import__", "spec_from_file_location")}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name in loaders and a.asname:
+                    loaders[a.asname] = a.name
+        elif (isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute))
+              and (node.value.id if isinstance(node.value, ast.Name) else node.value.attr) in loaders):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    loaders[t.id] = loaders[node.value.id if isinstance(node.value, ast.Name)
+                                            else node.value.attr]
     found: list[list[str]] = []
     unresolved: list[int] = []
     for node in ast.walk(tree):
@@ -347,6 +369,7 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
             fn = node.func
             name = fn.attr if isinstance(fn, ast.Attribute) else (
                 fn.id if isinstance(fn, ast.Name) else "")
+            name = loaders.get(name, name) if isinstance(fn, ast.Name) else name
             if name in ("import_module", "__import__"):
                 arg = node.args[0] if node.args else None
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
@@ -367,7 +390,8 @@ def python_targets(source: str, dirs: frozenset[str] = frozenset()
 # A `source`/`.` in command position: line start, after a separator or pipe,
 # or after a keyword that starts a command list.
 SOURCE_CMD_RE = re.compile(
-    r"(?:^|&&|\|\||[;|({!]|\b(?:then|do|else|elif|if|while|until))\s*(?:source|\.)\s+")
+    r"(?:^|&&|\|\||[;|({!]|\b(?:then|do|else|elif|if|while|until))\s*"
+    r"(?:(?:command|builtin|eval)\s+(?:--\s+)?)*(?:source|\.)\s+")
 
 
 def _shell_word(text: str, i: int) -> str:
