@@ -114,6 +114,69 @@ class PathSafety(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
 
 
+class LaneHookOverlay(unittest.TestCase):
+    """`lane_hook_overlay()` has no default (harmonic-forge#1525)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.tmp.name, "HOME": self.tmp.name})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.path = Path(self.tmp.name) / "harmonic-forge" / "instance.toml"
+
+    def _write(self, text: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(text, encoding="utf-8")
+
+    def _refusal(self) -> str:
+        with self.assertRaises(ValueError) as raised:
+            I.lane_hook_overlay()
+        message = str(raised.exception)
+        self.assertIn(str(self.path), message)
+        return message
+
+    def test_each_declared_value_is_returned_with_its_path(self):
+        for value in ("operator", "none"):
+            with self.subTest(value=value):
+                self._write(f'lane_hook_overlay = "{value}"\n')
+                self.assertEqual(I.lane_hook_overlay(), (value, self.path))
+
+    def test_a_missing_file_refuses_as_not_declared(self):
+        message = self._refusal()
+        self.assertIn("not declared", message)
+        self.assertIn('lane_hook_overlay = "operator"', message)
+        self.assertIn('lane_hook_overlay = "none"', message)
+        self.assertIn("harmonic-forge#1525", message)
+
+    def test_a_missing_key_refuses_as_not_declared(self):
+        self._write('timezone = "America/New_York"\n')
+        self.assertIn("not declared", self._refusal())
+
+    def test_any_other_value_refuses_naming_the_choices(self):
+        for literal in ('"yes"', '""', '"Operator"', '"operator "', "true", "1", '["operator"]'):
+            with self.subTest(literal=literal):
+                self._write(f"lane_hook_overlay = {literal}\n")
+                message = self._refusal()
+                self.assertIn("must be one of operator, none", message)
+
+    def test_the_path_errors_timezone_raises_also_refuse_the_overlay(self):
+        self.path.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "not a file"):
+            I.lane_hook_overlay()
+
+    def test_an_unparseable_file_refuses(self):
+        self._write("lane_hook_overlay = \n")
+        with self.assertRaisesRegex(ValueError, "cannot read"):
+            I.lane_hook_overlay()
+
+    def test_timezone_is_unchanged_by_the_overlay_key(self):
+        self._write('lane_hook_overlay = "operator"\n')
+        self.assertEqual(I.timezone(), (ZoneInfo("America/Los_Angeles"), True))
+        self._write('lane_hook_overlay = "none"\ntimezone = "Europe/Berlin"\n')
+        self.assertEqual(I.timezone(), (ZoneInfo("Europe/Berlin"), False))
+
+
 class ZoneLiteralCheck(unittest.TestCase):
     def _tree(self, files: dict[str, str]) -> Path:
         tmp = tempfile.TemporaryDirectory()

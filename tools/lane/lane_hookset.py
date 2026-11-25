@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """The Forge lane hook set: build, check and freeze it (harmonic-forge#1307).
 
-`tools/lane/lane_hooks.json` is the one declared set of lane hooks. Every
-Claude `lane1`/`lane2`/`lane3` launch passes it to the session as ONE inline
-`--settings` JSON value, built here by `build` after the launcher's rules pull,
-so a lane session runs the same guards in any project and nothing in that
-project can remove, narrow or disable them:
+`tools/lane/lane_hooks.json` is the core set of lane hooks. The lane set is
+that core plus the overlay the per-user `instance.toml` declares
+(`lane_hook_overlay`, harmonic-forge#1525): `"operator"` appends
+`tools/lane/lane_hooks.operator.json` (the belt and memory hooks), `"none"`
+adds nothing. There is no default: an undeclared or unknown overlay refuses,
+so no path builds a core-only set silently. Every Claude `lane1`/`lane2`/`lane3`
+launch passes the set to the session as ONE inline `--settings` JSON value,
+built here by `build` after the launcher's rules pull, so a lane session runs
+the same guards in any project and nothing in that project can remove, narrow
+or disable them:
 
   * a caller's own `--settings` (and `--bare`, `--safe-mode`,
     `--setting-sources`, `--restricted`) is refused by the launcher;
@@ -31,7 +36,11 @@ Subcommands:
   freeze  --repo R --commit C [--project-specific SNAPSHOT]   AC4 snapshot
   running [--project DIR]                       live lane processes without the set
 
-Run as `python3 -I -E`: no environment variable or cwd file changes what it runs.
+Run as `python3 -I -E`, which drops the cwd and the `PYTHON*` variables. `HOME`
+and an absolute `XDG_CONFIG_HOME` still choose which `instance.toml` declares
+the overlay: the launcher refuses an `XDG_CONFIG_HOME` other than
+`$HOME/.config` before calling `build` (harmonic-forge#1525), and any other
+caller owns that environment.
 """
 from __future__ import annotations
 
@@ -48,7 +57,9 @@ _HERE = Path(__file__).resolve().parent
 # -I drops the script's directory from sys.path; the shared helper is named
 # explicitly, by this file's own resolved location.
 sys.path.insert(0, str(_HERE.parent / "onboard"))
+sys.path.insert(0, str(_HERE.parent / "settings"))
 from hook_targets import _PLATFORM_HOOK_PATH, unresolvable_hook_targets  # noqa: E402
+import instance  # noqa: E402
 
 DEFAULT_SET = _HERE / "lane_hooks.json"
 SET_KEYS = frozenset({"schema", "disableAllHooks", "lane_only", "hooks"})
@@ -62,6 +73,11 @@ KNOWN_EVENTS = frozenset({
     "SessionEnd", "Notification", "PreCompact",
 })
 SCRIPT_RE = re.compile(r"tools/hooks/([A-Za-z0-9_]+\.py)")
+# The declared overlay maps through this fixed table to a file beside the set,
+# in the same checkout: the declaration never carries a path (harmonic-forge#1525).
+OVERLAY_FILES = {"operator": "lane_hooks.operator.json"}
+OVERLAY_CHOICES = instance.OVERLAY_CHOICES
+OVERLAY_KEYS = frozenset({"schema", "lane_only", "hooks"})
 
 
 class SetError(ValueError):
@@ -180,16 +196,80 @@ def load_set(path: Path, *, forge_root: Path | None = None) -> dict:
     return data
 
 
+def _scripts(data: dict) -> set[str]:
+    return {s for _e, _m, h in handlers(data.get("hooks") or {})
+            for s in SCRIPT_RE.findall(h.get("command") or "")}
+
+
+def load_overlay(path: Path, core: dict, *, forge_root: Path | None = None) -> dict:
+    """The operator overlay at `path`, validated as a set of its own and
+    disjoint from `core`: it may only add hooks, never carry
+    `disableAllHooks` or name a script the core set wires."""
+    data = load_json_object(path, "operator hook overlay")
+    if "disableAllHooks" in data:
+        raise SetError(f"operator hook overlay carries `disableAllHooks`, which only "
+                       f"the core set may declare: {path}")
+    extra = sorted(set(data) - OVERLAY_KEYS)
+    if extra:
+        raise SetError(f"operator hook overlay has unknown top-level key(s) "
+                       f"{', '.join(extra)}: {path}")
+    try:
+        validate({**data, "disableAllHooks": False}, forge_root=forge_root)
+    except SetError as exc:
+        raise SetError(f"operator hook overlay {path}: {exc}") from None
+    shared = sorted(_scripts(data) & _scripts(core))
+    if shared:
+        raise SetError(f"overlay names core script(s) {', '.join(shared)}: "
+                       f"an overlay only adds hooks: {path}")
+    return data
+
+
+def merge(core: dict, overlay: dict, *, forge_root: Path | None = None) -> dict:
+    """`core` with `overlay` appended: per event, every core block and then
+    every overlay block (never into an existing block); `lane_only` is the
+    union. The result is validated again."""
+    merged = json.loads(json.dumps(core))
+    hooks = merged.setdefault("hooks", {})
+    for event, blocks in (overlay.get("hooks") or {}).items():
+        hooks.setdefault(event, []).extend(json.loads(json.dumps(blocks)))
+    merged["lane_only"] = list(core.get("lane_only") or []) + list(overlay.get("lane_only") or [])
+    validate(merged, forge_root=forge_root)
+    return merged
+
+
+def load_effective(set_path: Path, overlay: str, *, forge_root: Path | None = None) -> dict:
+    """The lane set for a declared overlay: the core set alone for `"none"`,
+    the core set plus `OVERLAY_FILES[overlay]` beside it otherwise."""
+    if overlay not in OVERLAY_CHOICES:
+        raise SetError(f"unknown lane hook overlay {overlay!r}: must be one of "
+                       f"{', '.join(OVERLAY_CHOICES)}")
+    core = load_set(set_path, forge_root=forge_root)
+    if overlay == "none":
+        return core
+    path = Path(set_path).parent / OVERLAY_FILES[overlay]
+    return merge(core, load_overlay(path, core, forge_root=forge_root), forge_root=forge_root)
+
+
+def _overlay_from_config() -> tuple[str, Path]:
+    """The overlay `instance.toml` declares, and its path. Every declaration
+    error is a SetError, so the build refuses (harmonic-forge#1525)."""
+    try:
+        return instance.lane_hook_overlay()
+    except ValueError as exc:
+        raise SetError(str(exc)) from None
+
+
 def build(set_path: Path, policy: Path | None = None,
-          manifest: Path | None = None) -> dict:
+          manifest: Path | None = None, *, overlay: str) -> dict:
     """The one `--settings` object: the set, plus the Lane 3 policy when given.
 
-    The policy is read ONCE: its digest is checked against the manifest's
+    `overlay` is the declared overlay (`load_effective`). The policy is read
+    ONCE: its digest is checked against the manifest's
     `policy_sha256` and those same bytes are merged, so nothing can swap it
     between the launcher's ownership check and here. Neither source may carry
     the other's keys, so neither can override the other.
     """
-    data = load_set(set_path)
+    data = load_effective(set_path, overlay)
     value = {"disableAllHooks": False, "hooks": data["hooks"]}
     if policy is None:
         return value
@@ -399,11 +479,20 @@ def _main(argv: list[str] | None = None) -> int:
         if args.cmd == "build":
             if (args.policy is None) != (args.manifest is None):
                 raise SetError("--policy and --manifest go together")
-            value = build(args.set, args.policy, args.manifest)
+            overlay, config = _overlay_from_config()
+            value = build(args.set, args.policy, args.manifest, overlay=overlay)
+            if overlay == "none":
+                print(f'lane_hookset: hook overlay "none" (from {config}): core set only '
+                      f'-- the operator hooks (belt, memory) are NOT wired', file=sys.stderr)
+            else:
+                core_n = sum(1 for _ in handlers(load_set(args.set)["hooks"]))
+                total = sum(1 for _ in handlers(value["hooks"]))
+                print(f'lane_hookset: hook overlay "{overlay}" (from {config}): '
+                      f'{core_n} core + {total - core_n} operator handler(s)', file=sys.stderr)
             print(json.dumps(value, separators=(",", ":")))
             return 0
         if args.cmd == "doubled":
-            set_data = load_set(args.set)
+            set_data = load_effective(args.set, _overlay_from_config()[0])
             files = list(args.settings)
             if str(args.user_settings) not in ("", "."):
                 files.append(args.user_settings)

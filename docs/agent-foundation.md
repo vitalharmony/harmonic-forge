@@ -78,15 +78,27 @@ project at once, not a local one.
 
 ## Per-user instance settings (harmonic-forge#1505)
 
-Forge is a public repo, so per-user values never live in it. The operator's
-timezone is read from `~/.config/harmonic-forge/instance.toml` (or
-`$XDG_CONFIG_HOME/harmonic-forge/instance.toml`), which holds one key:
+Forge is a public repo, so per-user values never live in it. They are read
+from `~/.config/harmonic-forge/instance.toml` (or
+`$XDG_CONFIG_HOME/harmonic-forge/instance.toml`), which holds two keys:
 
 ```toml
 timezone = "America/Los_Angeles"
+lane_hook_overlay = "operator"
 ```
 
-Read it only through `tools/settings/instance.py` `timezone()`. A missing file or
+`lane_hook_overlay` (harmonic-forge#1525) chooses the lane hook set every
+Claude lane launch builds. `"operator"` merges
+`tools/lane/lane_hooks.operator.json` (the belt and memory hooks) into the core
+`tools/lane/lane_hooks.json`; `"none"` builds the core set only and prints, on
+every launch, that the operator hooks are not wired. Read it only through
+`tools/settings/instance.py` `lane_hook_overlay()`. It has no default: a missing
+file, a missing key or any other value refuses every Claude lane launch, so a
+new adopter declares it before the first launch. The launcher accepts
+`XDG_CONFIG_HOME` only as `$HOME/.config` (or unset, empty or relative), so the
+declaration cannot be relocated through the environment.
+
+Read the timezone only through `timezone()`. A missing file or
 key returns `America/Los_Angeles`, reported as defaulted; an invalid zone is an
 error. Every current timestamp stays UTC. `tools/settings/check_zone_literals.py`
 refuses a hardcoded `ZoneInfo("...")` anywhere else in `tools/` or `skills/`.

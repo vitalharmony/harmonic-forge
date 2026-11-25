@@ -57,11 +57,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# The per-user instance settings accessor (harmonic-forge#1505), by this file's
+# own resolved location; appended, so nothing there shadows a lane module.
+sys.path.append(str(Path(__file__).resolve().parent.parent / "settings"))
+import instance  # noqa: E402
 
 LANES = ("1", "2", "3")
 AGENTS = ("claude", "codex")
@@ -275,6 +281,24 @@ def build_fixture_tree(
     return main, stub_bin
 
 
+def write_overlay_declaration(home: Path, value: str = "operator") -> Path:
+    """Write `<home>/.config/harmonic-forge/instance.toml` declaring
+    `lane_hook_overlay` (harmonic-forge#1525) and return its path.
+
+    Every Claude launch now refuses without the declaration, so a fixture HOME
+    holds one, and `capture_cell` pins XDG_CONFIG_HOME to `<home>/.config` so
+    the launch reads it rather than the operator's. Refuses the real home
+    directory: a fixture never writes the operator's settings.
+    """
+    real = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    if Path(home).resolve() == real:
+        raise ValueError(f"refusing to write the lane hook overlay declaration under the real home {real}")
+    path = instance.config_path({"XDG_CONFIG_HOME": str(Path(home) / ".config")})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'lane_hook_overlay = "{value}"\n', encoding="utf-8")
+    return path
+
+
 def capture_cell(
     lane_dir: Path,
     main: Path,
@@ -307,12 +331,16 @@ def capture_cell(
                     "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE",
                     "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS",
                     # Pinned to $HOME/.claude, and the capture's HOME differs.
-                    "CLAUDE_CONFIG_DIR"):
+                    "CLAUDE_CONFIG_DIR",
+                    # harmonic-forge#1525: pinned to $HOME/.config below, so
+                    # the overlay declaration read is the fixture HOME's.
+                    "XDG_CONFIG_HOME"):
             env.pop(key, None)
         env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
         env["LANE_CAPTURE_OUT"] = str(out)
         env["HOME"] = env.get("HOME", str(main))
         env.update(env_overrides or {})
+        env.setdefault("XDG_CONFIG_HOME", f"{env['HOME']}/.config")
 
         proc = subprocess.run(
             ["bash", str(lane_dir / f"lane{lane}"), *launch_args],
@@ -396,6 +424,7 @@ def capture_all(lane_dir: Path) -> dict:
         write_codex_hooks(home / "Harmonic_Projects" / "HRSE2")
         write_lane_slots(home)
         link_forge_tools(home, lane_dir.parent)
+        write_overlay_declaration(home)
         for lane in LANES:
             for agent in AGENTS:
                 for shape, args in ARG_SHAPES.items():

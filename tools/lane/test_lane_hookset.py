@@ -3,7 +3,9 @@
 
 Hermetic: the set is validated against THIS checkout (`forge_root`), or under a
 fixture HOME whose `harmonic-forge/tools` links to it, never against the
-operator's `~/harmonic-forge`. The launcher half (the set reaches every Claude
+operator's `~/harmonic-forge`. Every CLI run pins `XDG_CONFIG_HOME` to the
+fixture HOME's `.config`, so the overlay declaration it reads is the fixture's,
+never the operator's `instance.toml` (harmonic-forge#1525). The launcher half (the set reaches every Claude
 lane as one `--settings`) is `test_lane_launchers.py`'s LaneHookSet class.
 """
 from __future__ import annotations
@@ -25,6 +27,11 @@ sys.path.insert(0, str(HERE))
 import lane_hookset as hs  # noqa: E402
 
 SET_FILE = HERE / "lane_hooks.json"
+OVERLAY_FILE = HERE / "lane_hooks.operator.json"
+F61AC37 = HERE / "testdata" / "lane_hooks_f61ac37_tuples.json"
+# The six operator hooks that left the core set for the overlay (harmonic-forge#1525).
+SIX = {"belt_wakeup.py", "enforce_belt_arming.py", "deny_retired_belt_sweep.py",
+       "grant_loop_override.py", "gate_feedback_memory_write.py", "memory_fold_notice.py"}
 SNAPSHOT = HERE / "testdata" / "hrse2_hooks_snapshot.json"
 POLICY = HERE / "policies" / "claude-lane3.json"
 
@@ -39,6 +46,25 @@ CLASS_A = {
 
 def _set() -> dict:
     return json.loads(SET_FILE.read_text(encoding="utf-8"))
+
+
+def _effective() -> dict:
+    """The operator's lane set: the core set plus the operator overlay."""
+    return hs.load_effective(SET_FILE, "operator", forge_root=ROOT)
+
+
+def _tuple_key(t: list) -> tuple:
+    return t[0], t[1] or "", t[2], t[3] or 0
+
+
+def _tuples(data: dict) -> list:
+    """The (event, matcher, command, timeout) multiset, sorted."""
+    return sorted(([e, m, h["command"], h.get("timeout")] for e, m, h in hs.handlers(data["hooks"])),
+                  key=_tuple_key)
+
+
+def _named(data: dict) -> set[str]:
+    return {s for _e, _m, h in hs.handlers(data["hooks"]) for s in hs.SCRIPT_RE.findall(h["command"])}
 
 
 class _Tmp(unittest.TestCase):
@@ -61,8 +87,28 @@ class _Tmp(unittest.TestCase):
 
     def build(self, data, **kw) -> dict:
         path = self.write("set.json", data)
+        kw.setdefault("overlay", "none")
         with mock.patch.dict(os.environ, {"HOME": str(self.fixture_home())}):
             return hs.build(path, **kw)
+
+    def declare(self, text: str | None) -> Path:
+        """Write the fixture HOME's instance.toml (None: no file) and return
+        its path. The CLI env from `cli_env` reads exactly this file."""
+        path = self.fixture_home() / ".config" / "harmonic-forge" / "instance.toml"
+        if path.exists():
+            path.unlink()
+        if text is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return path
+
+    def cli_env(self) -> dict:
+        home = self.fixture_home()
+        return dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
+
+    def cli(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-I", "-E", str(HERE / "lane_hookset.py"), *args],
+                              capture_output=True, text=True, env=self.cli_env(), timeout=60)
 
 
 class Build(_Tmp):
@@ -78,7 +124,7 @@ class Build(_Tmp):
 
     def test_a_missing_set_refuses(self):
         with self.assertRaisesRegex(hs.SetError, "missing"):
-            hs.build(self.tmp / "absent.json")
+            hs.build(self.tmp / "absent.json", overlay="none")
 
     def test_an_empty_set_refuses(self):
         for data in ("", "{}", "[]"):
@@ -157,7 +203,7 @@ class Build(_Tmp):
         path = self.write("set.json", _set())
         with mock.patch.dict(os.environ, {"HOME": str(self.tmp / "empty-home")}):
             with self.assertRaisesRegex(hs.SetError, "do not exist"):
-                hs.build(path)
+                hs.build(path, overlay="none")
 
     def test_build_refuses_an_unmatched_command(self):
         """Change 4: a command the platform-path pattern does not match is never
@@ -173,14 +219,20 @@ class Build(_Tmp):
                     self.build(data)
 
     def test_no_set_command_uses_the_project_dir(self):
-        for _e, _m, handler in hs.handlers(_set()["hooks"]):
-            self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
-            self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
+        overlay = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
+        for data in (_set(), overlay):
+            for _e, _m, handler in hs.handlers(data["hooks"]):
+                self.assertNotIn("CLAUDE_PROJECT_DIR", handler["command"])
+                self.assertIn("${HOME}/harmonic-forge/tools/hooks/", handler["command"])
 
-    def test_the_set_holds_56_entries(self):
+    def test_the_core_set_holds_47_entries(self):
         # +1: TaskCreate tasklist_hold (harmonic-forge#1477); +1: UserPromptSubmit
-        # surface_dry_run_failures (harmonic-forge#1544)
-        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 56)
+        # surface_dry_run_failures (harmonic-forge#1544); -9: the operator
+        # overlay (harmonic-forge#1525)
+        self.assertEqual(sum(1 for _ in hs.handlers(_set()["hooks"])), 47)
+
+    def test_the_effective_operator_set_holds_56_entries(self):
+        self.assertEqual(sum(1 for _ in hs.handlers(_effective()["hooks"])), 56)
 
 
 class Policy(_Tmp):
@@ -222,12 +274,13 @@ class Policy(_Tmp):
             self.build(_set(), policy=policy)
 
     def test_the_cli_prints_nothing_on_a_refusal(self):
-        proc = subprocess.run([sys.executable, "-I", "-E", str(HERE / "lane_hookset.py"),
-                               "build", "--set", str(self.tmp / "absent.json")],
-                              capture_output=True, text=True)
+        # The declaration is read before the set, so an undeclared fixture
+        # refuses first (harmonic-forge#1525).
+        self.declare(None)
+        proc = self.cli("build", "--set", str(self.tmp / "absent.json"))
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(proc.stdout, "")
-        self.assertIn("missing", proc.stderr)
+        self.assertIn("not declared", proc.stderr)
 
 
 class Snapshot(unittest.TestCase):
@@ -246,10 +299,10 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(len(self.snapshot["project_specific"]), 10)
 
     def test_every_snapshot_entry_is_in_the_set_or_named_project_specific(self):
-        self.assertEqual(hs.snapshot_gaps(_set(), self.snapshot), [])
+        self.assertEqual(hs.snapshot_gaps(_effective(), self.snapshot), [])
 
     def _mutated(self, script: str, mutate) -> list[str]:
-        data = _set()
+        data = _effective()
         for _e, _m, handler in hs.handlers(data["hooks"]):
             if script in handler["command"]:
                 break
@@ -280,7 +333,7 @@ class Snapshot(unittest.TestCase):
         self.assertTrue(gaps)
 
     def test_a_dropped_deny_hook_fails_the_snapshot(self):
-        data = _set()
+        data = _effective()
         data["hooks"]["PreToolUse"] = [b for b in data["hooks"]["PreToolUse"]
                                        if b.get("matcher") != "SendMessage"]
         self.assertTrue(any("deny_cross_session_contact.py" in g
@@ -290,7 +343,7 @@ class Snapshot(unittest.TestCase):
         snapshot = copy.deepcopy(self.snapshot)
         snapshot["project_specific"].append(
             {"event": "Stop", "matcher": None, "command": "python3 gone.py", "reason": "x"})
-        self.assertEqual(len(hs.snapshot_gaps(_set(), snapshot)), 1)
+        self.assertEqual(len(hs.snapshot_gaps(_effective(), snapshot)), 1)
 
     def test_freeze_reproduces_entries_from_a_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,7 +368,7 @@ class LaneOnly(_Tmp):
     def test_lane_only_names_only_set_scripts(self):
         """Every `lane_only` name is a set script, and it is exactly the plan's
         class A: no class B script (one that acts without LANE) is in it."""
-        data = _set()
+        data = _effective()
         self.assertEqual(set(data["lane_only"]), CLASS_A)
         named = {s for _e, _m, h in hs.handlers(data["hooks"])
                  for s in hs.SCRIPT_RE.findall(h["command"])}
@@ -412,7 +465,7 @@ sys.stderr.write("\nPROBE " + json.dumps({"code": code, "hits": hits}) + "\n")
                    XDG_CACHE_HOME=str(home / ".cache"), XDG_STATE_HOME=str(home / ".state"),
                    **self._LANE_ENV)
         seen = set()
-        for event, matcher, handler in hs.handlers(_set()["hooks"]):
+        for event, matcher, handler in hs.handlers(_effective()["hooks"]):
             for script in hs.SCRIPT_RE.findall(handler["command"]):
                 if script not in CLASS_A or (script, event, matcher) in seen:
                     continue
@@ -428,6 +481,12 @@ sys.stderr.write("\nPROBE " + json.dumps({"code": code, "hits": hits}) + "\n")
                     self.assertIn(proc.stdout.strip(), ("", "{}"))
                     self.assertEqual(report["hits"], [])
         self.assertEqual({s for s, _e, _m in seen}, CLASS_A)
+
+
+def _declare_operator(home: Path) -> None:
+    config = home / ".config" / "harmonic-forge"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "instance.toml").write_text('lane_hook_overlay = "operator"\n', encoding="utf-8")
 
 
 class Doubled(unittest.TestCase):
@@ -446,7 +505,7 @@ class Doubled(unittest.TestCase):
 
     def test_forge_settings_double_no_set_script(self):
         settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        doubles, _removable = hs.doubled(_set(), {"forge": settings})
+        doubles, _removable = hs.doubled(_effective(), {"forge": settings})
         self.assertEqual(doubles, [])
 
     def test_doubled_reports_a_different_string_and_a_different_timeout(self):
@@ -477,8 +536,10 @@ class Doubled(unittest.TestCase):
             user = Path(tmp) / "settings.json"
             user.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
                 {"type": "command", "command": "python3 /x/harmonic-forge/tools/hooks/batch_gate.py"}]}]}}))
-            env = dict(os.environ, HOME=str(Path(tmp) / "home"))
+            env = dict(os.environ, HOME=str(Path(tmp) / "home"),
+                       XDG_CONFIG_HOME=str(Path(tmp) / "home" / ".config"))
             (Path(tmp) / "home" / "harmonic-forge").mkdir(parents=True)
+            _declare_operator(Path(tmp) / "home")
             (Path(tmp) / "home" / "harmonic-forge" / "tools").symlink_to(ROOT / "tools")
             proc = subprocess.run([sys.executable, "-I", str(HERE / "lane_hookset.py"), "doubled",
                                    "--user-settings", str(user)],
@@ -498,7 +559,8 @@ class Doubled(unittest.TestCase):
             user = home / ".claude" / "settings.json"
             user.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
                 {"type": "command", "command": "python3 /x/harmonic-forge/tools/hooks/batch_gate.py"}]}]}}))
-            env = dict(os.environ, HOME=str(home))
+            env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
+            _declare_operator(home)
             cli = [sys.executable, "-I", str(HERE / "lane_hookset.py"), "doubled"]
             proc = subprocess.run(cli, capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
@@ -520,6 +582,107 @@ class Doubled(unittest.TestCase):
         self.assertEqual(doubles, [])
         self.assertEqual(len(removable), 1)
         self.assertIn("require_ci_plan.py", removable[0])
+
+
+class Overlay(_Tmp):
+    """harmonic-forge#1525: the core set carries none of the six operator
+    hooks; the declared overlay merges them back, and nothing builds a
+    core-only set without a literal `"none"`."""
+
+    def _pair(self, core: dict, overlay) -> Path:
+        """A set and its overlay side by side in the tmp dir; overlay None
+        leaves the overlay file absent."""
+        path = self.write("lane_hooks.json", core)
+        if overlay is not None:
+            self.write("lane_hooks.operator.json", overlay)
+        return path
+
+    # Test Case 1 (A-AC2, core half)
+    def test_core_set_names_no_operator_script(self):
+        overlay = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(_named(overlay), SIX)
+        self.assertEqual(_named(hs.load_set(SET_FILE, forge_root=ROOT)) & _named(overlay), set())
+        core = _set()
+        moved = next(b for b in overlay["hooks"]["SessionStart"]
+                     if any("belt_wakeup.py" in h["command"] for h in b["hooks"]))
+        core["hooks"]["SessionStart"].append(
+            {"matcher": moved["matcher"],
+             "hooks": [h for h in moved["hooks"] if "belt_wakeup.py" in h["command"]]})
+        path = self._pair(core, overlay)
+        with self.assertRaisesRegex(hs.SetError, "an overlay only adds hooks"):
+            hs.load_effective(path, "operator", forge_root=ROOT)
+
+    # Test Case 2 (A-AC2, operator half)
+    def test_effective_operator_set_equals_f61ac37(self):
+        want = json.loads(F61AC37.read_text(encoding="utf-8"))
+        data = _effective()
+        self.assertEqual(_tuples(data), sorted(want["handlers"], key=_tuple_key))
+        self.assertEqual(sorted(data["lane_only"]), want["lane_only"])
+        snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(hs.snapshot_gaps(data, snapshot), [])
+
+    def test_none_is_the_core_set_and_unknown_refuses(self):
+        self.assertEqual(hs.load_effective(SET_FILE, "none", forge_root=ROOT), _set())
+        for bad in ("yes", "", "Operator", None, True):
+            with self.subTest(bad=bad), self.assertRaisesRegex(hs.SetError, "operator, none"):
+                hs.load_effective(SET_FILE, bad, forge_root=ROOT)
+
+    def test_merge_appends_overlay_blocks_after_core_blocks(self):
+        data = _effective()
+        core = _set()
+        for event, blocks in core["hooks"].items():
+            self.assertEqual(data["hooks"][event][:len(blocks)], blocks)
+        self.assertEqual(data["lane_only"][:len(core["lane_only"])], core["lane_only"])
+
+    # Test Case 3 (A-AC3, undeclared)
+    def test_an_undeclared_or_unknown_overlay_refuses_the_cli_build(self):
+        for text, reason in ((None, "not declared"),
+                             ('timezone = "America/Los_Angeles"\n', "not declared"),
+                             ('lane_hook_overlay = "yes"\n', "operator, none"),
+                             ("lane_hook_overlay = true\n", "operator, none")):
+            with self.subTest(text=text):
+                config = self.declare(text)
+                proc = self.cli("build", "--set", str(SET_FILE))
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                self.assertEqual(proc.stdout, "")
+                self.assertIn(str(config), proc.stderr)
+                self.assertIn(reason, proc.stderr)
+
+    # Test Case 4 (A-AC3, declared but broken overlay)
+    def test_a_declared_operator_overlay_that_is_broken_refuses(self):
+        overlay = json.loads(OVERLAY_FILE.read_text(encoding="utf-8"))
+        missing_script = copy.deepcopy(overlay)
+        missing_script["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
+            'f="${HOME}/harmonic-forge/tools/hooks/no_such_hook.py"; [ -f "$f" ] && python3 "$f" || true')
+        self.declare('lane_hook_overlay = "operator"\n')
+        for name, data in (("absent", None),
+                           ("disableAllHooks", {**overlay, "disableAllHooks": True}),
+                           ("unknown key", {**overlay, "permissions": {}}),
+                           ("missing script", missing_script)):
+            with self.subTest(name=name):
+                for stale in self.tmp.glob("lane_hooks*.json"):
+                    stale.unlink()
+                path = self._pair(_set(), data)
+                proc = self.cli("build", "--set", str(path))
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                self.assertEqual(proc.stdout, "")
+                self.assertIn(str(path.parent / "lane_hooks.operator.json"), proc.stderr)
+
+    # Test Case 5 (A-AC3, "none" is loud)
+    def test_none_builds_core_only_and_says_so(self):
+        config = self.declare('lane_hook_overlay = "none"\n')
+        proc = self.cli("build", "--set", str(SET_FILE))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        value = json.loads(proc.stdout)
+        self.assertEqual(_named(value) & SIX, set())
+        self.assertIn("NOT wired", proc.stderr)
+        self.assertIn(str(config), proc.stderr)
+        config = self.declare('lane_hook_overlay = "operator"\n')
+        proc = self.cli("build", "--set", str(SET_FILE))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(_named(json.loads(proc.stdout)) & SIX, SIX)
+        self.assertIn("47 core + 9 operator", proc.stderr)
+        self.assertIn(str(config), proc.stderr)
 
 
 class Running(_Tmp):

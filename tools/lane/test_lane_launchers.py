@@ -34,6 +34,7 @@ import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lane_hookset  # noqa: E402
 from _lane3_policy import lane3_policy_untrusted, needs_trusted_lane3_policy  # noqa: E402
 
 import baseline_capture as bc  # noqa: E402
@@ -63,8 +64,12 @@ def _place_route_mod(lane_dir: Path) -> None:
 def _place_hook_set(lane_dir: Path) -> None:
     """A copied lane dir carries the Forge lane hook set (harmonic-forge#1307).
     The builder is linked, not copied: it imports `../onboard/hook_targets.py`
-    relative to its own resolved path, which is the real checkout's."""
+    relative to its own resolved path, which is the real checkout's. The
+    operator overlay is copied beside it: the fixture HOME declares
+    `"operator"`, which reads it from the set's own directory (harmonic-forge#1525)."""
     (lane_dir / "lane_hooks.json").write_text((LANE_DIR / "lane_hooks.json").read_text())
+    (lane_dir / "lane_hooks.operator.json").write_text(
+        (LANE_DIR / "lane_hooks.operator.json").read_text())
     (lane_dir / "lane_hookset.py").symlink_to(LANE_DIR / "lane_hookset.py")
 
 
@@ -114,6 +119,9 @@ class _FixtureTree:
         bc.write_lane_slots(self.home)
         # harmonic-forge#1307 change 3: the lane hook set's scripts resolve.
         bc.link_forge_tools(self.home, LANE_DIR.parent)
+        # harmonic-forge#1525: every Claude launch reads this declaration
+        # (XDG_CONFIG_HOME is pinned to $HOME/.config by run and run_script).
+        self.instance_toml = bc.write_overlay_declaration(self.home)
         self.lane2 = self.root / "proj-lane2"
         self.lane3 = self.root / "proj-lane3"
         self.lane_dir = LANE_DIR
@@ -247,11 +255,14 @@ exit 0
                     "GH_CONFIG_DIR",
                     # harmonic-forge#1014: a run inside a lane pane must never
                     # retitle it, nor inherit a label.
-                    "TMUX", "TMUX_PANE", "LANE_LABEL"):
+                    "TMUX", "TMUX_PANE", "LANE_LABEL",
+                    # harmonic-forge#1525: pinned below to the fixture HOME's.
+                    "XDG_CONFIG_HOME"):
             env.pop(key, None)
         env["PATH"] = f"{self.stub_bin}{os.pathsep}{env['PATH']}"
         env["HOME"] = str(self.home)
         env.update(env_overrides)
+        env.setdefault("XDG_CONFIG_HOME", f"{env['HOME']}/.config")
         return subprocess.run(
             ["bash", str(self.lane_dir / script), *(args or [])],
             cwd=self.main, env=env, capture_output=True, text=True)
@@ -2290,7 +2301,8 @@ def _settings_value(cell: dict) -> dict:
 
 def _copied_forge_tools(tree: _FixtureTree) -> Path:
     """A real copy of tools/lane beside links to the siblings it reaches
-    (onboard for lane_hookset's import, routing for the mod, hooks for Codex),
+    (onboard and settings for lane_hookset's imports, routing for the mod,
+    hooks for Codex),
     so a test can change the copy's lane_hooks.json without touching the
     checkout. Returns the copied lane dir."""
     # harmonic-forge#1507: inside a `<root>/tools/` so _gh_config_dir.sh finds
@@ -2300,7 +2312,7 @@ def _copied_forge_tools(tree: _FixtureTree) -> Path:
     tools.mkdir(parents=True)
     shutil.copytree(LANE_DIR, tools / "lane",
                     ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    for sibling in ("onboard", "routing", "hooks"):
+    for sibling in ("onboard", "routing", "hooks", "settings"):
         (tools / sibling).symlink_to(LANE_DIR.parent / sibling)
     return tools / "lane"
 
@@ -2312,7 +2324,10 @@ class LaneHookSet(unittest.TestCase):
     SHAPES = (["-p", "two words here"], [], ["*.md"], ["--permission-mode", "plan"])
 
     def setUp(self):
-        self.set_hooks = json.loads(SET_FILE.read_text())["hooks"]
+        # The fixture HOME declares "operator" (harmonic-forge#1525), so a
+        # launch carries the effective set: core plus the operator overlay.
+        self.set_hooks = lane_hookset.load_effective(
+            SET_FILE, "operator", forge_root=LANE_DIR.parent.parent)["hooks"]
 
     @needs_trusted_lane3_policy
     def test_every_claude_lane_passes_the_set_exactly_once(self):
@@ -2549,6 +2564,55 @@ class LaneHookSet(unittest.TestCase):
             # Codex reads no Claude settings, so it is not refused.
             self.assertTrue(tree.run("2", [], LANE_CLI="codex",
                                      CLAUDE_CONFIG_DIR=str(other))["launched"])
+
+    def test_xdg_config_home_elsewhere_refuses(self):
+        """Test Case 10 (harmonic-forge#1525): a relocated XDG_CONFIG_HOME
+        relocates instance.toml, whose overlay declaration chooses the hook
+        set, so only $HOME/.config is accepted at a Claude lane."""
+        with _FixtureTree() as tree:
+            other = tree.root / "elsewhere"
+            (other / "harmonic-forge").mkdir(parents=True)
+            (other / "harmonic-forge" / "instance.toml").write_text('lane_hook_overlay = "none"\n')
+            cell = tree.run("1", [], LANE_CLI="claude", XDG_CONFIG_HOME=str(other))
+            self.assertFalse(cell["launched"])
+            self.assertTrue(
+                cell["stderr"].startswith(f"lane1: XDG_CONFIG_HOME is set to '{other}'"),
+                cell["stderr"])
+            self.assertIn("harmonic-forge#1525", cell["stderr"])
+            for ok in (f"{tree.home}/.config", f"{tree.home}/.config/", "rel/config"):
+                with self.subTest(ok=ok):
+                    cell = tree.run("1", [], LANE_CLI="claude", XDG_CONFIG_HOME=ok)
+                    self.assertTrue(cell["launched"], cell.get("stderr"))
+            # Codex builds no hook set, so it is not refused.
+            self.assertTrue(tree.run("1", [], LANE_CLI="codex",
+                                     XDG_CONFIG_HOME=str(other))["launched"])
+
+    def test_the_declared_overlay_chooses_the_launched_set(self):
+        """Test Case 6 (harmonic-forge#1525): "operator" launches the
+        effective set, "none" launches the core set and says so, and no
+        declaration launches nothing."""
+        six = ("belt_wakeup.py", "enforce_belt_arming.py", "deny_retired_belt_sweep.py",
+               "grant_loop_override.py", "gate_feedback_memory_write.py",
+               "memory_fold_notice.py")
+        with _FixtureTree() as tree:
+            cell = tree.run("1", [], LANE_CLI="claude")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            hooks = _settings_value(cell)["hooks"]
+            self.assertEqual(hooks, self.set_hooks)
+            self.assertTrue(any("enforce_belt_arming.py" in h["command"]
+                                for _e, _m, h in lane_hookset.handlers({"PreToolUse": hooks["PreToolUse"]})))
+
+            tree.instance_toml.write_text('lane_hook_overlay = "none"\n')
+            cell = tree.run("1", [], LANE_CLI="claude")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            text = json.dumps(_settings_value(cell))
+            self.assertEqual([s for s in six if s in text], [])
+            self.assertIn("NOT wired", cell["stderr"])
+
+            tree.instance_toml.unlink()
+            cell = tree.run("1", [], LANE_CLI="claude")
+            self.assertFalse(cell["launched"])
+            self.assertIn("harmonic-forge#1525", cell["stderr"])
 
     def test_lane3_passes_one_settings_holding_policy_and_set(self):
         """Kill check 5: the Lane 3 policy and the set reach the session as one

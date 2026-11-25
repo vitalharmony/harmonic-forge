@@ -32,5 +32,8 @@ globs = [
     "tools/hooks/deny_retired_belt_sweep.py",
     "tools/hooks/enforce_belt_arming.py",
     "tools/hooks/gate_feedback_memory_write.py",
+    "tools/hooks/grant_loop_override.py",
     "tools/hooks/memory_fold_notice.py",
+    # lane hook overlay
+    "tools/lane/lane_hooks.operator.json",
 ]

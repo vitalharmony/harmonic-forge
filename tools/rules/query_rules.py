@@ -59,6 +59,9 @@ _WIRING_LOCATIONS = {
     # harmonic-forge#1307: the Forge lane hook set every Claude lane launch
     # passes as `--settings`, in any project. Read from THIS checkout.
     "forge-lane-set": _PLATFORM_ROOT / "tools" / "lane" / "lane_hooks.json",
+    # harmonic-forge#1525: the operator overlay merged into that set when
+    # instance.toml declares `lane_hook_overlay = "operator"`.
+    "forge-lane-overlay": _PLATFORM_ROOT / "tools" / "lane" / "lane_hooks.operator.json",
 }
 
 _SCRIPT_RE = re.compile(r"([\w./-]+\.py)")

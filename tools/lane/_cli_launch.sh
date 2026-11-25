@@ -221,7 +221,7 @@ if [ -n "$_lane_refused_env" ]; then
 fi
 
 # harmonic-forge#1307: what reaches the session must leave the Forge lane hook
-# set running. Three checks, at an agent with a hook set:
+# set running. Four checks, at an agent with a hook set:
 #
 #  1. The variables that switch hooks off, in the launcher's own environment
 #     (AGENT_HOOKS_REFUSED_ENV, a name list measured from the CLI binary).
@@ -232,6 +232,9 @@ fi
 #     AGENT_SETTINGS_ENV_ALLOWED. A name list cannot cover these blocks: they
 #     reach every hook process, so a `PATH` there swaps the interpreter every
 #     set hook runs under. The files read are the ones the CLI reads.
+#  4. XDG_CONFIG_HOME, when absolute, is pinned to $HOME/.config. Set elsewhere,
+#     it relocates instance.toml, whose lane_hook_overlay declaration (and
+#     #1526's forge_root) chooses the hook set (harmonic-forge#1525).
 #
 # What no launch check reaches, stated rather than implied (the residual):
 #  - settings edits made after launch: the CLI hot-reloads `hooks` and `env`
@@ -240,7 +243,11 @@ fi
 #    interpreter, which the session and the branch's code can make;
 #  - a branch's own code running in a gate, as the operator's user;
 #  - projects with no frozen hook snapshot (only HRSE2 and harmonic-forge carry
-#    one): nothing fails when a project-only deny hook leaves their settings.
+#    one): nothing fails when a project-only deny hook leaves their settings;
+#  - a same-user write of lane_hook_overlay = "none" to
+#    ~/.config/harmonic-forge/instance.toml, which drops the operator overlay at
+#    the next launch; every launch prints which overlay it built, on stderr
+#    only (harmonic-forge#1525).
 # The set guarantees what reaches the launch, and that its wiring cannot be
 # dropped or narrowed without the snapshot test failing. It does not guarantee
 # that the session's later environment leaves the hooks working.
@@ -257,6 +264,10 @@ if [ -n "$_lane_has_hook_set" ]; then
   done
   if [ -n "${CLAUDE_CONFIG_DIR+x}" ] && [ "${CLAUDE_CONFIG_DIR%/}" != "$HOME/.claude" ]; then
     _lane_launch_die "CLAUDE_CONFIG_DIR is set to '$CLAUDE_CONFIG_DIR' -- it relocates the user settings, so the user-level hooks would not load (only $HOME/.claude is accepted, harmonic-forge#1307). Unset it. Nothing was launched."
+  fi
+  if [ -n "${XDG_CONFIG_HOME:-}" ] && [ "${XDG_CONFIG_HOME#/}" != "$XDG_CONFIG_HOME" ] \
+      && [ "${XDG_CONFIG_HOME%/}" != "$HOME/.config" ]; then
+    _lane_launch_die "XDG_CONFIG_HOME is set to '$XDG_CONFIG_HOME' -- it relocates instance.toml, which declares the lane hook overlay, so the operator hooks could be dropped (only $HOME/.config is accepted, harmonic-forge#1525). Unset it. Nothing was launched."
   fi
   _lane_settings_env_allowed="$(registry_lookup AGENT_SETTINGS_ENV_ALLOWED "$_lane_agent")"
   _lane_settings_hit="$(python3 - "$_lane_settings_env_allowed" \
@@ -640,7 +651,7 @@ if [ -n "$_lane_hook_set" ]; then
     _lane_build+=(--policy "$_lane_policy_path" --manifest "$(dirname "$_lane_policy_path")/manifest.json")
   fi
   _lane_settings_value="$("${_lane_build[@]}")" \
-    || _lane_launch_die "the lane hook set $_lane_dir/$_lane_hook_set could not be built -- refusing to start a session with no guards (harmonic-forge#1307). Nothing was launched."
+    || _lane_launch_die "the lane hook set $_lane_dir/$_lane_hook_set could not be built (see the reason above; an undeclared lane_hook_overlay in instance.toml refuses, harmonic-forge#1525) -- refusing to start a session with no guards (harmonic-forge#1307). Nothing was launched."
   [ -n "$_lane_settings_value" ] \
     || _lane_launch_die "the lane hook set $_lane_dir/$_lane_hook_set built to nothing -- refusing to start a session with no guards (harmonic-forge#1307). Nothing was launched."
   cli_args=("${cli_args[@]:0:$_lane_settings_at}"

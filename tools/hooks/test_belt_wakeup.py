@@ -141,9 +141,11 @@ class TestSessionStartSourceCoverage(unittest.TestCase):
         self.assertLessEqual(self.REQUIRED_SOURCES, set(matcher.split("|")))
 
     def test_the_lane_hook_set_wakes_on_clear_and_fork(self):
-        """harmonic-forge#1307: the set every lane launch carries, same sources."""
+        """harmonic-forge#1307: the set every lane launch carries, same sources.
+        belt_wakeup is an operator hook, wired by the operator overlay merged
+        into that set (harmonic-forge#1525)."""
         hooks = json.loads((Path(__file__).resolve().parents[2] / "tools" / "lane"
-                            / "lane_hooks.json").read_text(encoding="utf-8"))["hooks"]
+                            / "lane_hooks.operator.json").read_text(encoding="utf-8"))["hooks"]
         matchers = [b.get("matcher", "") for b in hooks["SessionStart"]
                     if any("belt_wakeup.py" in h["command"] for h in b["hooks"])]
         self.assertEqual(len(matchers), 1)

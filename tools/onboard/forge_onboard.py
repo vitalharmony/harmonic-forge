@@ -41,10 +41,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The per-user instance settings (harmonic-forge#1505); appended, so nothing
+# there shadows a module of this directory.
+sys.path.append(str(Path(__file__).resolve().parents[1] / "settings"))
 
 import forge_onboard_gh_shim  # noqa: E402
 import forge_onboard_identity  # noqa: E402
 import forge_onboard_skills  # noqa: E402
+import instance  # noqa: E402
 import lane_tasks  # noqa: E402
 from required_hooks import REQUIRED_HOOKS, required_hook_gaps  # noqa: E402,F401
 from hook_targets import (  # noqa: E402,F401  (moved by harmonic-forge#1307)
@@ -642,10 +646,19 @@ def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
     it, with each script checked in THIS checkout rather than under `$HOME`, so
     the answer does not depend on which machine runs the report. A set that
     does not load is `({}, reason)`: every lane launch refuses then, so every
-    project's hooks check fails with it (harmonic-forge#1307)."""
+    project's hooks check fails with it (harmonic-forge#1307).
+
+    The set is the effective one: the core set plus the overlay `instance.toml`
+    declares (`lane_hook_overlay`). An undeclared or unknown overlay is the
+    error, since the launcher's `build` refuses it too (harmonic-forge#1525)."""
     hookset = _lane_hookset_module()
     try:
-        return hookset.load_set(path or LANE_HOOK_SET, forge_root=_THIS_CHECKOUT), None
+        overlay, _config = instance.lane_hook_overlay()
+    except ValueError as exc:
+        return {}, str(exc)
+    try:
+        return hookset.load_effective(path or LANE_HOOK_SET, overlay,
+                                      forge_root=_THIS_CHECKOUT), None
     except hookset.SetError as exc:
         return {}, str(exc)
 
