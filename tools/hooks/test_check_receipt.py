@@ -241,6 +241,33 @@ class LocalCheck(Record):
         self.assertEqual(C.main(["x", "record", "--source", "bogus"]), 2)
 
 
+class CheckFull(LocalCheck.__base__):
+    """harmonic-forge#1586: hrse's `check-full` records its own receipt source."""
+    _source = LocalCheck._source
+
+    def test_main_accepts_check_full_and_still_refuses_an_unknown_source(self):  # TC1-2, AC1
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            self.assertEqual(C.main(["x", "record", "--repo-root", d, "--source", "check-full"]), 0)
+            self.assertEqual(self._source(head), "check-full")
+        self.assertEqual(C.main(["x", "record", "--source", "bogus"]), 2)
+
+    def test_check_full_replaces_a_local_check_or_check_receipt(self):  # TC3, AC2
+        for first in (C.LOCAL_CHECK_SOURCE, "check"):
+            with self.subTest(first=first), TemporaryDirectory() as d:
+                head = self._repo(Path(d))
+                C.record(d, source=first)
+                C.record(d, source=C.CHECK_FULL_SOURCE)
+                self.assertEqual(self._source(head), "check-full")
+
+    def test_the_l1_post_override_never_relabels_check_full(self):  # TC4, AC3
+        with TemporaryDirectory() as d:
+            head = self._repo(Path(d))
+            with mock.patch.dict(os.environ, {C.SOURCE_ENV: C.L1_POST_SOURCE}):
+                C.record(d, source=C.CHECK_FULL_SOURCE)
+            self.assertEqual(self._source(head), "check-full")
+
+
 class ScratchLocal(Record):
     """harmonic-forge#894 C1."""
 
