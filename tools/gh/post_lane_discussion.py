@@ -608,8 +608,6 @@ def footer(kind: str, body: str, posted_by: str, ack_no_pr_required: str | None 
 
 #: harmonic-forge#894 PATCH A3: the footer field a ci-outage AE carries.
 CI_OVERRIDE_FIELD = re.compile(r"\bci-override=(\d+);")
-#: Any l1-post comment opener, closed or not (the AE footer binding counts them).
-_L1_POST_OPENER = re.compile(r"<!--\s*l1-post\s+v\d+;", re.I)
 #: The first line of `gate_ci.check_gate_result`'s unfinished-CI refusal; the
 #: P3 diagnostic replaces only that refusal, never a red one.
 UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
@@ -630,13 +628,13 @@ def ci_override_id(repo: str, issue: int, body: str) -> str | None:
     # id, the kind and the SHA all come from ONE footer. l1_post refuses a body
     # that already carries its reserved marker, so a genuine AE holds exactly
     # one l1-post comment: on one line, ending the body (harmonic-forge#1358's
-    # rule for the body digest). Two of them (a carry-forward quoting an AE
-    # footer, a decoy above the real one), an unclosed lookalike, a line break
-    # inside it, or text after it never names the grant -- and the one footer
-    # is the same one `resolve_gate_authority` read the kind from.
+    # rule for the body digest). The FIRST l1-post comment -- the one
+    # `resolve_gate_authority` reads the kind from -- must therefore be that
+    # footer: when it does not end the body (a carry-forward quoting an AE
+    # footer, a decoy above the real one) or spans a line break (an unclosed
+    # lookalike, which the DOTALL pattern joins to the next footer), nothing
+    # names the grant.
     text = authority.get("body", "") or ""
-    if len(_L1_POST_OPENER.findall(text)) != 1:
-        return None
     last = check_lane3_ready._ANY_FOOTER.search(text)
     if last is None or text[last.end():].strip():
         return None
