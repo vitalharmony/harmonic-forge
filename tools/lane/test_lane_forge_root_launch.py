@@ -109,6 +109,30 @@ class RootRefusalLaunch(unittest.TestCase):
                     self.assertNotIn("sync_rules.py --pull failed", cell["stderr"])
 
 
+class BuildRefusalNamesTheValueAsWritten(unittest.TestCase):
+    """Sticky-wicket C1 (and D1's build refusal under a non-default source): a
+    root that resolves but lacks a target refuses at the build, naming the
+    `forge_root` value exactly as written, then its source, then its
+    resolved form."""
+
+    def test_a_home_relative_forge_root_is_named_as_written(self):
+        with tll._FixtureTree() as tree:
+            tree.lane_dir = tll.RegistryIntegrity._copy_lane_dir(None, tree.root)
+            (tree.home / "fx").mkdir()
+            fx2 = tree.home / "fx2"
+            shutil.copytree(WORKTREE / "tools" / "hooks", fx2 / "tools" / "hooks",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            (fx2 / "tools" / "hooks" / "block_blind_repeat.py").unlink()
+            with tree.instance_toml.open("a", encoding="utf-8") as fh:
+                fh.write('forge_root = "~/fx/../fx2"\n')
+            cell = tree.run("1", [], LANE_CLI="claude", HARMONIC_FORGE_ROOT="")
+            self.assertFalse(cell["launched"], cell["stderr"])
+            self.assertIn("could not be built", cell["stderr"])
+            self.assertIn(f"forge root '~/fx/../fx2' (from {tree.instance_toml} forge_root; "
+                          f"resolves to {str(fx2)!r})", cell["stderr"])
+            self.assertIn("block_blind_repeat.py", cell["stderr"])
+
+
 class ForgeRootPin(unittest.TestCase):
     """Test Case 8: an empty root over a lane dir inside a checkout holding
     `sync_rules.py` raises before any subprocess, at both launch helpers."""

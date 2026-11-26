@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """The onboarding hooks readers render the lane hook set for the root a lane
 launch resolves, never for the checkout the report runs from
-(harmonic-forge#1526 round 1 survivor 2).
+(harmonic-forge#1526 round 1 survivor 2), from one launch view for both the
+set and the root (sticky-wicket B1), with the root pinned in every onboarding
+fixture (sticky-wicket B2).
 
 Hermetic: HOME and XDG_CONFIG_HOME are temporary, and the redirected root is a
 copy of this checkout's `tools/hooks`.
@@ -21,7 +23,9 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import forge_onboard as fo  # noqa: E402
+import instance  # noqa: E402
 import manifest as mf  # noqa: E402
+from test_forge_onboard import _hermetic_home  # noqa: E402
 
 SET = HERE.parent / "lane" / "lane_hooks.json"
 SCRIPT = "require_ci_plan.py"
@@ -95,6 +99,39 @@ class LaunchRootRendering(unittest.TestCase):
             check = fo.check_hooks(self.project("unlinked"))
         self.assertEqual(check.status, fo.FAIL, check.detail)
         self.assertIn(f"{SCRIPT} runs twice", check.detail)
+
+    def test_the_set_and_the_root_both_come_from_the_launch_view(self):
+        """Sticky-wicket B1: the report reads the set the launcher passes (the
+        platform checkout's), never this checkout's, with the same root."""
+        launcher = self.copy
+        (launcher / "tools" / "lane").mkdir()
+        shutil.copy(SET.parent / "lane_hooks.operator.json", launcher / "tools" / "lane")
+        data = json.loads(SET.read_text(encoding="utf-8"))
+        handler = data["hooks"]["Stop"][0]["hooks"][0]
+        handler["timeout"] = handler.get("timeout", 10) + 7  # differs by one handler
+        (launcher / "tools" / "lane" / "lane_hooks.json").write_text(json.dumps(data), encoding="utf-8")
+        with self.environ(launcher, ""), mock.patch.object(fo, "platform_source", return_value=launcher):
+            got, error = fo._lane_set()
+            hookset = fo._lane_hookset_module()
+            want = hookset.load_effective(launcher / "tools" / "lane" / "lane_hooks.json", "operator",
+                                          forge_root=launcher)
+            here = hookset.load_effective(SET, "operator", forge_root=launcher)
+        self.assertIsNone(error)
+        self.assertEqual(got, want)
+        self.assertNotEqual(got, here)
+
+
+class HermeticRoot(unittest.TestCase):
+    """Sticky-wicket B2 sentinel: `_hermetic_home` pins HARMONIC_FORGE_ROOT, so
+    an exported one never reaches the onboarding suite."""
+
+    def test_the_resolved_root_is_the_checkout_under_test(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"HARMONIC_FORGE_ROOT": "/nonexistent/elsewhere"}):
+            _hermetic_home(self, Path(tmp).resolve())
+            self.assertEqual(instance.launch_view(fo.platform_source())[1], fo._THIS_CHECKOUT)
+            self.assertIsNone(fo._lane_set()[1])
+            self.doCleanups()
 
 
 if __name__ == "__main__":

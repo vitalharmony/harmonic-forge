@@ -3,8 +3,10 @@
 #
 # Sourced by tools/lane/_cli_launch.sh only, immediately before the lane's
 # settings are built, at every agent. Split out of _cli_launch.sh so that file
-# stays within the line cap. Sets _lane_forge_root and _lane_forge_root_source,
-# which _cli_launch.sh passes to `lane_hookset.py build` and then unsets.
+# stays within the line cap. Sets _lane_view_set, _lane_forge_root,
+# _lane_forge_root_source and _lane_forge_root_written (`instance.launch_view`,
+# the one view the onboarding report shares), which _cli_launch.sh passes to
+# `lane_hookset.py build` and then unsets.
 #
 ## The forge root (harmonic-forge#1526)
 #
@@ -15,7 +17,7 @@
 # substitution inside `[`.
 _lane_root_out="$(python3 -I -E "$_lane_dir/lane_hookset.py" root --launcher-checkout "$_lane_dir/../..")" \
   || _lane_launch_die "the forge root could not be resolved (see the reason above) -- refusing to launch (harmonic-forge#1526). Nothing was launched."
-IFS=$'\t' read -r _lane_forge_root _lane_forge_root_source <<<"$_lane_root_out"
+IFS=$'\t' read -r _lane_view_set _lane_forge_root _lane_forge_root_source _lane_forge_root_written <<<"$_lane_root_out"
 # The root notice: one stderr line for any root not taken from the launcher
 # checkout, before the pull so it precedes any pull output. It changes no argv.
 # "launcher checkout" is instance.LAUNCHER_CHECKOUT, compared as a literal.

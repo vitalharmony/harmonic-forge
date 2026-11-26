@@ -116,6 +116,16 @@ class Spelling(_Tmp):
                 self.link(f"ok{len(name)}{ord(name[1])}", forge)
                 self.assertTrue(hs.spelling(forge).startswith("${HOME}/ok"))
 
+    def test_a_home_link_whose_name_is_not_shell_safe_is_never_used(self):
+        """Sticky-wicket D1 pins `HOME_NAME_RE`: a link name holding a space or
+        a shell metacharacter would be written into the command, so it is
+        skipped and the absolute root renders instead."""
+        forge = self.tmp / "forge-x"
+        forge.mkdir()
+        for name in ("a b", "a$b", 'a"b'):
+            self.link(name, forge)
+        self.assertEqual(hs.spelling(forge), str(forge))
+
     def test_render_replaces_only_the_placeholder_and_copies(self):
         stored = json.loads(SET_FILE.read_text(encoding="utf-8"))
         rendered = hs.render(stored, "/r")
@@ -142,8 +152,11 @@ class BuildRefuses(_Tmp):
 
     def test_a_root_without_tools_hooks_refuses_naming_root_and_source(self):
         (self.tmp / "bare").mkdir()
-        with self.assertRaisesRegex(hs.SetError, rf"forge root {self.tmp}/bare \(from src-x\) has no tools/hooks/"):
-            hs.build(SET_FILE, self.tmp / "bare", "src-x", overlay="none")
+        bare = str(self.tmp / "bare")
+        with self.assertRaises(hs.SetError) as raised:
+            hs.build(SET_FILE, self.tmp / "bare", "src-x", overlay="none", written="~/as/written")
+        self.assertEqual(str(raised.exception), f"forge root '~/as/written' (from src-x; resolves to {bare!r}) "
+                                                f"has no tools/hooks/")
 
 
 class RootCommand(_Tmp):
@@ -177,12 +190,15 @@ class RootCommand(_Tmp):
                 self.assertIn(value, proc.stderr)
 
     def test_each_source_prints_root_and_label(self):
+        """Each line is the launch view: set, root, source, the root as written."""
         forge = self.copy(self.tmp / "declared")
-        self.assertEqual(self.run_root(None).stdout, f"{ROOT}\tlauncher checkout\n")
-        proc = self.run_root(f'forge_root = "{forge}"\n')
-        self.assertEqual(proc.stdout, f"{forge}\t{self.tmp}/xdg/harmonic-forge/instance.toml forge_root\n")
+        view = f"{ROOT}/tools/lane/lane_hooks.json\t"
+        self.assertEqual(self.run_root(None).stdout, f"{view}{ROOT}\tlauncher checkout\t{ROOT}\n")
+        proc = self.run_root(f'forge_root = "{forge}/tools/.."\n')
+        self.assertEqual(proc.stdout, f"{view}{forge}\t{self.tmp}/xdg/harmonic-forge/instance.toml forge_root"
+                                      f"\t{forge}/tools/..\n")
         proc = self.run_root(None, HARMONIC_FORGE_ROOT=str(forge))
-        self.assertEqual(proc.stdout, f"{forge}\tHARMONIC_FORGE_ROOT\n")
+        self.assertEqual(proc.stdout, f"{view}{forge}\tHARMONIC_FORGE_ROOT\t{forge}\n")
 
 
 class HookTargetsBasename(_Tmp):
@@ -194,6 +210,21 @@ class HookTargetsBasename(_Tmp):
         here = f'python3 "{forge}/tools/hooks/batch_gate.py"'
         hooks = {"Stop": [{"hooks": [{"type": "command", "command": c} for c in (gone, here)]}]}
         self.assertEqual(unresolvable_hook_targets(hooks), [f"{forge}/tools/hooks/gone.py"])
+
+    def test_a_home_anchor_is_expanded_whole_never_dropped(self):
+        """Sticky-wicket A3: `${HOME}<abs>/forge-x/...` names a path under HOME.
+        That the same path exists absolutely must not satisfy the check."""
+        forge = self.copy(self.tmp / "forge-x")
+        for command in (f'python3 "${{HOME}}{forge}/tools/hooks/batch_gate.py"',
+                        f'f="${{HOME}}{forge}/tools/hooks/batch_gate.py"; [ -f "$f" ] && python3 "$f" || true'):
+            with self.subTest(command=command):
+                hooks = {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}
+                self.assertEqual(unresolvable_hook_targets(hooks),
+                                 [f"{self.home}{forge}/tools/hooks/batch_gate.py"])
+        self.link("hf", forge)
+        hooks = {"Stop": [{"hooks": [{"type": "command", "command": c} for c in (
+            'python3 "${HOME}/hf/tools/hooks/batch_gate.py"', "python3 ~/hf/tools/hooks/batch_gate.py")]}]}
+        self.assertEqual(unresolvable_hook_targets(hooks), [])
 
 
 if __name__ == "__main__":

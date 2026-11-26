@@ -5,10 +5,13 @@ Its own module for the same reason `required_hooks.py` is: the lane launcher's
 `tools/lane/lane_hookset.py` validates the Forge lane hook set with
 `unresolvable_hook_targets` at every launch, and must not import
 `forge_onboard.py` and its manifest stack to do it. `forge_onboard.py`
-re-imports the three names, so its callers and tests are unchanged.
+re-imports two names, so its callers and tests are unchanged.
 
-The forge checkout's directory name is not assumed: any one path component
-before `/tools/` is the checkout (harmonic-forge#1526).
+The path is never decomposed (harmonic-forge#1526 sticky-wicket A3): each
+quoted or bare word ending in `.py` that contains `/tools/` is expanded whole
+(`~` when bare, then `$VAR`/`${VAR}` unless single-quoted) and checked as a
+file. No root/component split: the checkout may have any name and a `${HOME}`
+anchor is never dropped.
 """
 from __future__ import annotations
 
@@ -32,7 +35,9 @@ def _hook_commands(hooks: dict) -> list[str]:
     return found
 
 
-_PLATFORM_HOOK_PATH = re.compile(r'["\']?(\$\{HOME\}|~|/[^"\'\s]*?)/([^"\'\s/]+/tools/[^"\'\s]+\.py)')
+# A double-quoted, single-quoted or bare word that names a `/tools/...py` path.
+_TOOLS_WORD = re.compile(r'"([^"]*/tools/[^"]*\.py)"|\'([^\']*/tools/[^\']*\.py)\''
+                         r'|(?<![^\s;=])([^\s"\';]*/tools/[^\s"\';]*\.py)(?![^\s;])')
 
 
 def unresolvable_hook_targets(hooks: dict) -> list[str]:
@@ -54,11 +59,13 @@ def unresolvable_hook_targets(hooks: dict) -> list[str]:
     """
     missing: list[str] = []
     for command in _hook_commands(hooks):
-        match = _PLATFORM_HOOK_PATH.search(command)
-        if not match:
-            continue
-        candidate = Path(os.path.expandvars(os.path.expanduser(
-            f"{match.group(1)}/{match.group(2)}")))
-        if not candidate.is_file():
-            missing.append(str(candidate))
+        for match in _TOOLS_WORD.finditer(command):
+            double, single, bare = match.groups()
+            # As the shell does: `~` expands only bare, nothing in single quotes.
+            candidate = Path(single if single is not None else os.path.expandvars(
+                os.path.expanduser(bare) if bare is not None else double))
+            # A word that does not expand to an absolute path (`./x`, an unset
+            # `${CLAUDE_PROJECT_DIR}`) is the project's own, not a platform path.
+            if candidate.is_absolute() and not candidate.is_file():
+                missing.append(str(candidate))
     return sorted(set(missing))

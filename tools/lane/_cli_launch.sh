@@ -645,8 +645,8 @@ source "$_lane_dir/_lane_forge_root.sh" \
 # would only drop a bad entry with a warning and start, so the refusal is here.
 _lane_hook_set="$(registry_lookup AGENT_HOOK_SET "$_lane_agent")"
 if [ -n "$_lane_hook_set" ]; then
-  _lane_build=(python3 -I -E "$_lane_dir/lane_hookset.py" build --set "$_lane_dir/$_lane_hook_set"
-               --forge-root "$_lane_forge_root" --forge-root-source "$_lane_forge_root_source")
+  _lane_build=(python3 -I -E "$_lane_dir/lane_hookset.py" build --set "$_lane_view_set" --forge-root "$_lane_forge_root"
+               --forge-root-source "$_lane_forge_root_source" --forge-root-as-written "$_lane_forge_root_written")
   if [ -n "$_lane_policy_path" ]; then
     _lane_build+=(--policy "$_lane_policy_path" --manifest "$(dirname "$_lane_policy_path")/manifest.json")
   fi
@@ -664,4 +664,4 @@ elif [ -n "$_lane_policy_path" ]; then
             "${cli_args[@]:$_lane_settings_at}")
 fi
 unset _lane_hook_set _lane_build _lane_settings_value _lane_settings_at _lane_policy_path \
-      _lane_policy_flag _lane_agent _lane_dir _lane_forge_root _lane_forge_root_source
+      _lane_policy_flag _lane_agent _lane_dir _lane_forge_root _lane_forge_root_source _lane_view_set _lane_forge_root_written

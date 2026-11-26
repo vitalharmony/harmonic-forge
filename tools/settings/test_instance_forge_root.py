@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests for the forge root accessors in `instance.py` (harmonic-forge#1526):
-`forge_root()`, `projects_root()` and the one precedence
-`resolve_forge_root()` the lane launcher reads.
+`forge_root()`, `projects_root()`, the one precedence `resolve_forge_root()`
+the lane launcher reads, and `launch_view()`, which the launcher and the
+onboarding report share (sticky-wicket B1).
 
 Hermetic: every call names its own `environ`, whose `XDG_CONFIG_HOME` is a
 temporary directory, so the operator's `instance.toml` is never read.
@@ -108,6 +109,7 @@ class Precedence(_Config):
         """Round 1 survivor 6: the value the operator entered, not only its
         normalized form, with its source."""
         (self.tmp / "bare").mkdir()
+        (self.tmp / "x").mkdir()  # strict resolution walks `x` before `..` (A2)
         (self.tmp / "blink").symlink_to(self.tmp / "bare")
         written = f"{self.tmp}/x/../blink"
         path = self.declare(f'forge_root = "{written}"\n')
@@ -117,6 +119,33 @@ class Precedence(_Config):
                 self.resolve(**env)
             self.assertIn(f"forge root {written!r} (from {source}; resolves to "
                           f"{str(self.tmp / 'bare')!r})", str(raised.exception))
+
+    def test_a_dotdot_over_a_missing_directory_refuses(self):
+        """Sticky-wicket A2: `<root>/absent/..` is `<root>` lexically, and the
+        kernel refuses it. Strict resolution agrees with the kernel."""
+        written = f"{self.launcher}/absent/.."
+        for env in ({"HARMONIC_FORGE_ROOT": written}, {}):
+            if not env:
+                self.declare(f'forge_root = "{written}"\n')
+            with self.subTest(env=env), self.assertRaises(ValueError) as raised:
+                self.resolve(**env)
+            self.assertIn(f"forge root {written!r}", str(raised.exception))
+            self.assertIn("does not resolve", str(raised.exception))
+
+    def test_a_home_relative_forge_root_expands_from_home(self):
+        """Sticky-wicket D1: `~/` in `forge_root` is expanded from HOME."""
+        home = self.tmp / "home"
+        (home / "fx" / "tools" / "hooks").mkdir(parents=True)
+        path = self.declare('forge_root = "~/fx"\n')
+        with mock.patch.dict("os.environ", {"HOME": str(home)}):
+            self.assertEqual(self.resolve(), (home / "fx", f"{path} forge_root"))
+
+    def test_the_launch_view_carries_the_set_and_the_value_as_written(self):
+        declared = self.forge("declared")
+        path = self.declare(f'forge_root = "{declared}/tools/.."\n')
+        self.assertEqual(instance.launch_view(self.launcher, self.env),
+                         (self.launcher / "tools" / "lane" / "lane_hooks.json", declared,
+                          f"{path} forge_root", f"{declared}/tools/.."))
 
     def test_a_relative_environment_root_refuses_naming_it(self):
         with self.assertRaisesRegex(ValueError, "HARMONIC_FORGE_ROOT must be an absolute path, got 'rel/x'"):

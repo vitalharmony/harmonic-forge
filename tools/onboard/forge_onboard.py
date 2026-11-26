@@ -51,8 +51,7 @@ import forge_onboard_skills  # noqa: E402
 import instance  # noqa: E402
 import lane_tasks  # noqa: E402
 from required_hooks import REQUIRED_HOOKS, required_hook_gaps  # noqa: E402,F401
-from hook_targets import (  # noqa: E402,F401  (moved by harmonic-forge#1307)
-    _PLATFORM_HOOK_PATH, _hook_commands, unresolvable_hook_targets)
+from hook_targets import _hook_commands, unresolvable_hook_targets  # noqa: E402,F401  (#1307)
 from manifest import (  # noqa: E402
     ManifestError, Project, check_prefix_agreement, load, prefixes,
 )
@@ -60,8 +59,6 @@ from manifest import (  # noqa: E402
 #: The checkout this module happens to live in. Fine for reading; NEVER the
 #: source to point another repo's symlinks at.
 _THIS_CHECKOUT = Path(__file__).resolve().parents[2]
-#: The Forge lane hook set every Claude lane launch passes (harmonic-forge#1307).
-LANE_HOOK_SET = _THIS_CHECKOUT / "tools" / "lane" / "lane_hooks.json"
 
 
 def platform_source() -> Path:
@@ -641,12 +638,14 @@ def _lane_hookset_module():
     return module
 
 
-def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
+def _lane_set() -> tuple[dict, str | None]:
     """(set, error). The set is validated and rendered as the launcher's
-    `build` does, for the root a launch resolves (`resolve_forge_root` over
-    `platform_source()`, the launcher's checkout), never for this checkout, so
-    `check_hooks` and `stale_worktree_hook_gaps` compare the commands a lane
-    runs (harmonic-forge#1526). A set that does not load is `({}, reason)`.
+    `build` does, from the one launch view (`instance.launch_view` over
+    `platform_source()`, the launcher's checkout) for both the set file and
+    the root, never this checkout's set, so `check_hooks` and
+    `stale_worktree_hook_gaps` compare the commands a lane runs
+    (harmonic-forge#1526 sticky-wicket B1). A set that does not load is
+    `({}, reason)`.
 
     The set is the effective one: the core set plus the overlay `instance.toml`
     declares (`lane_hook_overlay`). An undeclared or unknown overlay is the
@@ -654,12 +653,9 @@ def _lane_set(path: Path | None = None) -> tuple[dict, str | None]:
     hookset = _lane_hookset_module()
     try:
         overlay, _config = instance.lane_hook_overlay()
-        root, _source = instance.resolve_forge_root(platform_source())
-    except (ValueError, ManifestError) as exc:
-        return {}, str(exc)
-    try:
-        return hookset.load_effective(path or LANE_HOOK_SET, overlay, forge_root=root), None
-    except hookset.SetError as exc:
+        set_path, root, _source, _written = instance.launch_view(platform_source())
+        return hookset.load_effective(set_path, overlay, forge_root=root), None
+    except (ValueError, ManifestError) as exc:  # SetError is a ValueError
         return {}, str(exc)
 
 

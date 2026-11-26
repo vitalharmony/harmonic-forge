@@ -22,7 +22,8 @@ any other value raises ValueError, so a lane launch refuses rather than guess.
 `forge_root()` and `projects_root()` read two optional absolute paths
 (harmonic-forge#1526), and `resolve_forge_root()` is the one precedence the
 lane launcher and the hooks share: `HARMONIC_FORGE_ROOT`, then `forge_root`,
-then the launcher's own checkout.
+then the launcher's own checkout. `launch_view()` adds the set path and the
+root as written, the one view a launch and the onboarding report share.
 """
 from __future__ import annotations
 
@@ -147,17 +148,30 @@ def projects_root(environ: Mapping[str, str] | None = None) -> Path | None:
 
 
 LAUNCHER_CHECKOUT = "launcher checkout"
+#: The lane hook set a launch passes, relative to the launcher checkout.
+LANE_HOOK_SET = Path("tools") / "lane" / "lane_hooks.json"
 
 
-def resolve_forge_root(launcher_checkout: Path,
-                       environ: Mapping[str, str] | None = None) -> tuple[Path, str]:
-    """(resolved forge root, its source). A non-empty `HARMONIC_FORGE_ROOT`
-    (absolute, else ValueError), then `instance.toml` `forge_root`, then
-    `launcher_checkout`. A root with no `tools/hooks/` raises ValueError naming
-    the root and its source: a hook set built from it would run nothing
-    (harmonic-forge#1526). The launcher compares the source label
-    `LAUNCHER_CHECKOUT` as a literal, so it never changes alone. A refusal
-    names the value as written, its source, then the resolved form."""
+def named_root(written: str, source: str, resolved: object = None) -> str:
+    """How every forge-root refusal names the root: the value as written, its
+    source, then the resolved form (sticky-wicket C1)."""
+    tail = "" if resolved is None else f"; resolves to {str(resolved)!r}"
+    return f"forge root {written!r} (from {source}{tail})"
+
+
+def launch_view(launcher_checkout: Path, environ: Mapping[str, str] | None = None
+                ) -> tuple[Path, Path, str, str]:
+    """(set path, resolved forge root, its source, the root as written): the one
+    view of what a lane launch runs (sticky-wicket B1). The launcher's `root`
+    subcommand prints it and the onboarding readers call it, so neither renders
+    a set or a root the other does not.
+
+    The root is a non-empty `HARMONIC_FORGE_ROOT` (absolute, else ValueError),
+    then `instance.toml` `forge_root`, then `launcher_checkout`, resolved
+    strictly: a missing component, a loop, or a root with no `tools/hooks/`
+    raises ValueError via `named_root` (a hook set built from it would run
+    nothing, harmonic-forge#1526). The launcher compares the source label
+    `LAUNCHER_CHECKOUT` as a literal, so it never changes alone."""
     env = os.environ if environ is None else environ
     from_env = env.get("HARMONIC_FORGE_ROOT", "")
     if from_env:
@@ -168,11 +182,24 @@ def resolve_forge_root(launcher_checkout: Path,
         written, source = declared, f"{config_path(env)} forge_root"
     else:
         written, source = str(launcher_checkout), LAUNCHER_CHECKOUT
-    root = Path(written).expanduser().resolve()
-    named = f"forge root {written!r} (from {source}; resolves to {str(root)!r})"
-    if "\t" in str(root) or "\n" in str(root):
+    if "\t" in written or "\n" in written:
+        raise ValueError(f"{named_root(written, source)} contains a tab or newline")
+    try:
+        root = Path(written).expanduser().resolve(strict=True)
+        set_path = Path(launcher_checkout).resolve(strict=True) / LANE_HOOK_SET
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"{named_root(written, source)} does not resolve: {exc}") from None
+    named = named_root(written, source, root)
+    if "\t" in str(root) or "\n" in str(root) or "\t" in str(set_path) or "\n" in str(set_path):
         raise ValueError(f"{named} contains a tab or newline")
     if not (root / "tools" / "hooks").is_dir():
         raise ValueError(f"{named} has no tools/hooks/ -- "
                          f"refusing to build a hook set that would run nothing")
+    return set_path, root, source, written
+
+
+def resolve_forge_root(launcher_checkout: Path,
+                       environ: Mapping[str, str] | None = None) -> tuple[Path, str]:
+    """(resolved forge root, its source): `launch_view` without the set."""
+    _set, root, source, _written = launch_view(launcher_checkout, environ)
     return root, source

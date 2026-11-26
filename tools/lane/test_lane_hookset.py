@@ -731,14 +731,14 @@ class Overlay(_Tmp):
                                     del data["hooks"][event][bi]
                                 if not data["hooks"][event]:
                                     del data["hooks"][event]
-                                # Dropped coherently, so `validate`'s own
-                                # lane_only check cannot be what refuses.
+                                # Dropped coherently: `validate`'s lane_only check cannot be what refuses.
                                 if script not in _named(data):
                                     data["lane_only"] = [n for n in data["lane_only"] if n != script]
                             elif how == "timeout changed":
                                 entries[hi]["timeout"] = entries[hi].get("timeout", 10) + 1
-                            else:
-                                entries[hi]["command"] += " "
+                            else:  # the other stored template (#1526 A1): valid, but not the recorded string
+                                rel, c = hs.stored_paths(entries[hi]["command"])[0], entries[hi]["command"]
+                                entries[hi]["command"] = (f'python3 "@FORGE_ROOT@/{rel}"' if c.startswith("f=") else f'f="@FORGE_ROOT@/{rel}"; [ -f "$f" ] && python3 "$f" || true')
                             path = self._pair(_set(), data)
                             with self.assertRaises(hs.SetError) as raised:
                                 hs.load_effective(path, "operator", forge_root=ROOT)

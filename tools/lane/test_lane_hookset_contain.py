@@ -2,8 +2,8 @@
 """Every built hook target resolves under the forge root (harmonic-forge#1526
 round 1 survivors 1, 4 and 5).
 
-One rule: the build checks the whole quoted path the shell expands (never a
-regex prefix of it), expands `${HOME}` from `HOME` as the shell does (an unset
+One rule: a stored command fullmatches one of two fixed templates (sticky-wicket
+A1), never a regex search of shell text, expands `${HOME}` from `HOME` as the shell does (an unset
 or empty `HOME` refuses), and refuses unless that path's realpath is a file
 under the realpath of the root.
 
@@ -63,7 +63,7 @@ class WholeQuotedPath(_Tmp):
         root = self.forge("forge-x")
         for suffix in ("_disabled", "c", ".bak", "~"):
             (root / "tools" / "hooks" / f"{SCRIPT}{suffix}").write_text("")
-            with self.subTest(suffix=suffix), self.assertRaisesRegex(hs.SetError, "one whole double-quoted"):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(hs.SetError, "stored command templates"):
                 self.build(root, f'python3 "@FORGE_ROOT@/tools/hooks/{SCRIPT}{suffix}"')
 
     def test_an_unquoted_placeholder_refuses(self):
@@ -72,6 +72,22 @@ class WholeQuotedPath(_Tmp):
                         f'python3 "@FORGE_ROOT@/tools/hooks/{SCRIPT}" @FORGE_ROOT@/x'):
             with self.subTest(command=command), self.assertRaises(hs.SetError):
                 self.build(root, command)
+
+    def test_only_the_two_templates_are_accepted(self):
+        """Sticky-wicket A1: every stored command fullmatches one of the two
+        fixed templates. Any other text naming the placeholder refuses."""
+        root = self.forge("forge-x")
+        (root / "tools" / "hooks" / f"{SCRIPT}.bak").write_text("")
+        path = f"@FORGE_ROOT@/tools/hooks/{SCRIPT}"
+        guarded = f'f="{path}"; [ -f "$f" ] && python3 "$f" || true'
+        for command in (f'python3 "{path}"_disabled', f'python3 "{path}"x', f'python3 "{path}.bak"',
+                        f"python3 {path}", f'python3 "{path}"; rm -rf x', f'{guarded}; rm -rf x',
+                        f' python3 "{path}"', f'python3  "{path}"', f'f="{path}"x; [ -f "$f" ] && python3 "$f" || true'):
+            with self.subTest(command=command), self.assertRaisesRegex(hs.SetError, "stored command templates"):
+                self.build(root, command)
+        for command in (f'python3 "{path}"', guarded):
+            with self.subTest(command=command):
+                self.assertTrue(self.build(root, command)["hooks"])
 
     def test_the_whole_path_builds(self):
         root = self.forge("forge-x")

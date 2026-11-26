@@ -15,12 +15,14 @@ script as `@FORGE_ROOT@/tools/hooks/<name>.py`, never a home-relative path.
     `ABSOLUTE_RE`: the root is inserted into double-quoted shell text, so a
     space or a shell metacharacter refuses rather than gets quoted.
 
-Containment (round 1 survivors 1, 4, 5): every placeholder in a stored
-command is one whole double-quoted path that fullmatches `STORED_RE`
-(nothing after `.py`), and `render_checked` expands each rendered path the way
-the shell does (`${HOME}` from `HOME`, never the account record) and refuses
-unless its realpath is a file under the realpath of the root. A symlinked
-hooks directory, a `.py_disabled` sibling or an unset `HOME` refuses the build.
+Containment (harmonic-forge#1526 sticky-wicket A1, A2): a stored command is
+never parsed as shell text. It must fullmatch one of the two `TEMPLATES`,
+whose only variable is the script name, so the shell's reading of it is known
+by construction. `render_checked` expands each rendered path the way the shell
+does (`${HOME}` from `HOME`, never the account record) and refuses unless its
+strict realpath is a regular file under the strict realpath of the root. A
+symlinked hooks directory, a `.py_disabled` sibling, a `dir/..` component over
+a missing directory or an unset `HOME` refuses the build.
 
 Its own module so `lane_hookset.py` stays within the line cap; `lane_hookset`
 re-exports every name here.
@@ -30,19 +32,18 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from pathlib import Path
 
 PLACEHOLDER = "@FORGE_ROOT@"
-# A stored script path; `stored_paths` fullmatches it against each whole
-# quoted path, never searches for it as a prefix.
-STORED_RE = re.compile(r"@FORGE_ROOT@/(tools/hooks/[A-Za-z0-9_]+\.py)")
-QUOTED_RE = re.compile(r'"([^"]*)"')
+# The two stored command shapes (sticky-wicket A1). Nothing else is accepted.
+TEMPLATES = tuple(re.compile(t) for t in (
+    r'python3 "@FORGE_ROOT@/tools/hooks/(?P<n>[A-Za-z0-9_]+)\.py"',
+    r'f="@FORGE_ROOT@/tools/hooks/(?P<n>[A-Za-z0-9_]+)\.py"; \[ -f "\$f" \] && python3 "\$f" \|\| true'))
 HOME_NAME_RE = re.compile(r"[A-Za-z0-9._@+-]+")
 ABSOLUTE_RE = re.compile(r"/[A-Za-z0-9._/@+-]+")
 # A command recorded before #1526 named its script under a `$HOME` child.
 RECORDED_RE = re.compile(r"\$\{HOME\}/[A-Za-z0-9._@+-]+/(tools/hooks/)")
-# A stored command names no home-relative or project-relative root.
-FORBIDDEN = ("CLAUDE_PROJECT_DIR", "$HOME", "${HOME}", "~/")
 
 
 class SetError(ValueError):
@@ -61,24 +62,20 @@ def shell_home() -> Path:
 
 
 def stored_paths(command: str) -> list[str]:
-    """Each `tools/hooks/<name>.py` a stored command names. Every placeholder
-    must sit in one whole double-quoted path fullmatching `STORED_RE`;
-    anything else (a suffix after `.py`, an unquoted or partial path, a
-    `FORBIDDEN` home- or project-relative root) raises."""
-    quoted = [q for q in QUOTED_RE.findall(command) if PLACEHOLDER in q]
-    good = [m.group(1) for q in quoted if (m := STORED_RE.fullmatch(q))]
-    if (not good or len(good) != len(quoted) or command.count(PLACEHOLDER) != len(good)
-            or any(w in command for w in FORBIDDEN)):
-        raise SetError(f"command does not name a forge hook script as {PLACEHOLDER}/tools/"
-                       f"hooks/<name>.py, one whole double-quoted path: {command}")
-    return good
+    """`[tools/hooks/<name>.py]` for a stored command that fullmatches one of
+    `TEMPLATES`; any other text raises."""
+    for template in TEMPLATES:
+        if (match := template.fullmatch(command)):
+            return [f"tools/hooks/{match.group('n')}.py"]
+    raise SetError(f"command does not name a forge hook script as {PLACEHOLDER}/tools/"
+                   f"hooks/<name>.py in one of the two stored command templates: {command}")
 
 
 def render_checked(data: dict, root: Path) -> dict:
     """`render(data, spelling(root))`, refusing unless every rendered path, as
     the shell expands it, resolves to a file under the realpath of `root`."""
-    prefix = spelling(root)
-    real_root = os.path.realpath(root)
+    prefix = spelling(root)  # resolves `root` strictly, or raises
+    real_root = os.path.realpath(root, strict=True)
     bad = []
     for blocks in (data.get("hooks") or {}).values():
         for block in blocks:
@@ -87,9 +84,12 @@ def render_checked(data: dict, root: Path) -> dict:
                     text = f"{prefix}/{rel}"
                     if text.startswith("${HOME}/"):
                         text = str(shell_home()) + text[len("${HOME}"):]
-                    real = os.path.realpath(text)
-                    if (not os.path.isfile(real)
-                            or os.path.commonpath([real, real_root]) != real_root):
+                    try:
+                        real = os.path.realpath(text, strict=True)
+                        regular = stat.S_ISREG(os.stat(real).st_mode)
+                    except OSError:
+                        real, regular = "(does not resolve)", False
+                    if not regular or os.path.commonpath([real, real_root]) != real_root:
                         bad.append(f"{prefix}/{rel} -> {real}")
     if bad:
         raise SetError(f"hook target(s) do not resolve to a file under forge root "
@@ -99,7 +99,10 @@ def render_checked(data: dict, root: Path) -> dict:
 
 def spelling(root: Path) -> str:
     """The text that replaces `PLACEHOLDER` for `root` (module docstring)."""
-    target = Path(root).resolve()
+    try:
+        target = Path(root).resolve(strict=True)
+    except OSError as exc:
+        raise SetError(f"forge root {root} does not resolve: {exc}") from None
     home = shell_home()
     names = []
     try:
@@ -110,7 +113,7 @@ def spelling(root: Path) -> str:
         if not HOME_NAME_RE.fullmatch(child.name):
             continue
         try:
-            if child.resolve() == target:
+            if child.resolve(strict=True) == target:
                 names.append(child.name)
         except (OSError, RuntimeError):
             continue

@@ -26,14 +26,13 @@ guards.
 
 Hook identity, measured on 2.1.322: a hook runs once per event when its
 command STRING is identical across settings sources, whatever the matcher or
-timeout, and twice when the strings differ. So a project entry that names a
-set script must be byte-identical to the set's entry; `doubled` reports any
-that is not.
+timeout, and twice when the strings differ. So a project entry naming a set
+script must be byte-identical to the set's entry; `doubled` reports any not.
 
 Subcommands:
-  build   --set F --forge-root R --forge-root-source S [--policy P --manifest M]
-  doubled --set F [--forge-root R] [--settings S ...]   doubled/removable entries
-  root    --launcher-checkout DIR               print "<root>\t<source>" (#1526)
+  build   --set F --forge-root R --forge-root-source S --forge-root-as-written W [--policy P --manifest M]
+  doubled [--set F --forge-root R] [--settings S ...]   doubled/removable entries
+  root    --launcher-checkout DIR       print "<set>\t<root>\t<source>\t<as written>" (#1526)
   freeze  --repo R --commit C [--project-specific SNAPSHOT]   AC4 snapshot
   running [--project DIR]                       live lane processes without the set
 
@@ -60,11 +59,10 @@ _HERE = Path(__file__).resolve().parent
 # explicitly, by this file's own resolved location.
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent / "settings"))
-from hookset_root import (FORBIDDEN, PLACEHOLDER, STORED_RE, SetError,  # noqa: E402,F401
+from hookset_root import (PLACEHOLDER, TEMPLATES, SetError,  # noqa: E402,F401
                           render, render_checked, spelling, stored_form, stored_paths)
 import instance  # noqa: E402
 
-DEFAULT_SET = _HERE / "lane_hooks.json"
 SET_KEYS = frozenset({"schema", "disableAllHooks", "lane_only", "hooks"})
 BLOCK_KEYS = frozenset({"matcher", "hooks"})
 HANDLER_KEYS = frozenset({"type", "command", "timeout"})
@@ -289,22 +287,23 @@ def _overlay_from_config() -> tuple[str, Path]:
 
 
 def build(set_path: Path, forge_root: Path, source: str, policy: Path | None = None,
-          manifest: Path | None = None, *, overlay: str) -> dict:
+          manifest: Path | None = None, *, overlay: str, written: str | None = None) -> dict:
     """The one `--settings` object: the set, plus the Lane 3 policy when given.
 
-    `forge_root` (from `source`) holds every script; one with no `tools/hooks/`
-    refuses (harmonic-forge#1526). `overlay` is the declared overlay
+    `forge_root` (from `source`, as `written`) holds every script; one with no
+    `tools/hooks/` refuses, named by `instance.named_root` (harmonic-forge#1526). `overlay` is the declared overlay
     (`load_effective`). The policy is read ONCE: its digest is checked against
     the manifest's `policy_sha256` and those same bytes are merged, so nothing
     can swap it between the launcher's ownership check and here. Neither
     source may carry the other's keys, so neither can override the other.
     """
+    named = instance.named_root(str(forge_root) if written is None else written, source, forge_root)  # C1
     if not (Path(forge_root) / "tools" / "hooks").is_dir():
-        raise SetError(f"forge root {forge_root} (from {source}) has no tools/hooks/")
+        raise SetError(f"{named} has no tools/hooks/")
     try:
         data = load_effective(set_path, overlay, forge_root=forge_root)
     except SetError as exc:
-        raise SetError(f"forge root {forge_root} (from {source}): {exc}") from None
+        raise SetError(f"{named}: {exc}") from None
     value = {"disableAllHooks": False, "hooks": data["hooks"]}
     if policy is None:
         return value
@@ -496,11 +495,12 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("--set", type=Path, required=True)
     p.add_argument("--forge-root", type=Path, required=True)
     p.add_argument("--forge-root-source", required=True)
+    p.add_argument("--forge-root-as-written")
     p.add_argument("--policy", type=Path)
     p.add_argument("--manifest", type=Path)
     p = sub.add_parser("doubled")
-    p.add_argument("--set", type=Path, default=DEFAULT_SET)
-    p.add_argument("--forge-root", type=Path)  # default: the root a launch resolves (#1526)
+    p.add_argument("--set", type=Path)  # default: the set and root a launch resolves (#1526)
+    p.add_argument("--forge-root", type=Path)
     p.add_argument("--settings", type=Path, action="append", default=[])
     p.add_argument("--user-settings", type=Path,
                    default=Path.home() / ".claude" / "settings.json",
@@ -516,14 +516,14 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.cmd == "root":
-            print("%s\t%s" % instance.resolve_forge_root(args.launcher_checkout))
+            print("\t".join(map(str, instance.launch_view(args.launcher_checkout))))
             return 0
         if args.cmd == "build":
             if (args.policy is None) != (args.manifest is None):
                 raise SetError("--policy and --manifest go together")
             overlay, config = _overlay_from_config()
             value = build(args.set, args.forge_root, args.forge_root_source, args.policy,
-                          args.manifest, overlay=overlay)
+                          args.manifest, overlay=overlay, written=args.forge_root_as_written)
             if overlay == "none":
                 print(f'lane_hookset: hook overlay "none" (from {config}): core set only '
                       f'-- the operator hooks (belt, memory) are NOT wired', file=sys.stderr)
@@ -535,8 +535,8 @@ def _main(argv: list[str] | None = None) -> int:
             print(json.dumps(value, separators=(",", ":")))
             return 0
         if args.cmd == "doubled":
-            root = args.forge_root or instance.resolve_forge_root(_HERE.parent.parent)[0]
-            set_data = load_effective(args.set, _overlay_from_config()[0], forge_root=root)
+            view = instance.launch_view(_HERE.parent.parent)  # the launch's set and root (B1)
+            set_data = load_effective(args.set or view[0], _overlay_from_config()[0], forge_root=args.forge_root or view[1])
             files = list(args.settings)
             if str(args.user_settings) not in ("", "."):
                 files.append(args.user_settings)
