@@ -9,6 +9,8 @@ and not under that HOME. The launcher half is `test_lane_forge_root_launch.py`.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -158,6 +160,30 @@ class BuildRefuses(_Tmp):
         self.assertEqual(str(raised.exception), f"forge root '~/as/written' (from src-x; resolves to {bare!r}) "
                                                 f"has no tools/hooks/")
 
+    def test_a_policy_read_failure_is_named(self):
+        """Post-verdict survivor 3: a policy refusal carries the same prefix."""
+        with self.assertRaises(hs.SetError) as raised:
+            hs.build(SET_FILE, ROOT, "src-x", self.tmp / "absent.json", self.tmp / "manifest.json",
+                     overlay="none", written="~/as/written")
+        self.assertTrue(str(raised.exception).startswith(
+            f"forge root '~/as/written' (from src-x; resolves to {str(ROOT)!r}): policy cannot be read"),
+            str(raised.exception))
+
+    def test_an_undeclared_overlay_is_named_at_the_cli(self):
+        """Post-verdict survivor 3: the overlay-declaration refusal, read
+        before `build`, carries the same prefix."""
+        xdg = self.tmp / "xdg"
+        (xdg / "harmonic-forge").mkdir(parents=True)
+        (xdg / "harmonic-forge" / "instance.toml").write_text("", encoding="utf-8")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}), contextlib.redirect_stderr(err):
+            rc = hs._main(["build", "--set", str(SET_FILE), "--forge-root", str(ROOT),
+                           "--forge-root-source", "src-x", "--forge-root-as-written", "~/as/written"])
+        self.assertEqual(rc, 1, err.getvalue())
+        self.assertIn(f"lane_hookset: forge root '~/as/written' (from src-x; resolves to {str(ROOT)!r}): ",
+                      err.getvalue())
+        self.assertIn("lane_hook_overlay", err.getvalue())
+
 
 class RootCommand(_Tmp):
     """AC2 / Test Case 2: `lane_hookset.py root`, as the launcher runs it."""
@@ -190,15 +216,15 @@ class RootCommand(_Tmp):
                 self.assertIn(value, proc.stderr)
 
     def test_each_source_prints_root_and_label(self):
-        """Each line is the launch view: set, root, source, the root as written."""
+        """The launch view: set, root, source, the root as written, each NUL-ended."""
         forge = self.copy(self.tmp / "declared")
-        view = f"{ROOT}/tools/lane/lane_hooks.json\t"
-        self.assertEqual(self.run_root(None).stdout, f"{view}{ROOT}\tlauncher checkout\t{ROOT}\n")
+        view = f"{ROOT}/tools/lane/lane_hooks.json\0"
+        self.assertEqual(self.run_root(None).stdout, f"{view}{ROOT}\0launcher checkout\0{ROOT}\0")
         proc = self.run_root(f'forge_root = "{forge}/tools/.."\n')
-        self.assertEqual(proc.stdout, f"{view}{forge}\t{self.tmp}/xdg/harmonic-forge/instance.toml forge_root"
-                                      f"\t{forge}/tools/..\n")
+        self.assertEqual(proc.stdout, f"{view}{forge}\0{self.tmp}/xdg/harmonic-forge/instance.toml forge_root"
+                                      f"\0{forge}/tools/..\0")
         proc = self.run_root(None, HARMONIC_FORGE_ROOT=str(forge))
-        self.assertEqual(proc.stdout, f"{view}{forge}\tHARMONIC_FORGE_ROOT\t{forge}\n")
+        self.assertEqual(proc.stdout, f"{view}{forge}\0HARMONIC_FORGE_ROOT\0{forge}\0")
 
 
 class HookTargetsBasename(_Tmp):
@@ -225,6 +251,21 @@ class HookTargetsBasename(_Tmp):
         hooks = {"Stop": [{"hooks": [{"type": "command", "command": c} for c in (
             'python3 "${HOME}/hf/tools/hooks/batch_gate.py"', "python3 ~/hf/tools/hooks/batch_gate.py")]}]}
         self.assertEqual(unresolvable_hook_targets(hooks), [])
+
+    def test_words_split_where_the_shell_splits_them(self):
+        """Post-verdict survivor 1: a shell operator right after a bare path
+        ends the word, and `${HOME}` joined to a quoted path is one word."""
+        forge = self.copy(self.tmp / "forge-x")
+        gone = f"{forge}/tools/hooks/gone.py"
+        joined = f"{self.home}{forge}/tools/hooks/batch_gate.py"
+        for command, missing in ((f"python3 {gone};true", gone), (f"python3 {gone}&&true", gone),
+                                 (f"python3 {gone}||true", gone), (f"python3 {gone}|cat", gone),
+                                 (f"python3 {gone}&", gone),
+                                 (f'python3 ${{HOME}}"{forge}/tools/hooks/batch_gate.py"', joined),
+                                 (f'python3 $HOME"{forge}/tools/hooks/batch_gate.py"', joined)):
+            with self.subTest(command=command):
+                hooks = {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}
+                self.assertEqual(unresolvable_hook_targets(hooks), [missing])
 
 
 if __name__ == "__main__":

@@ -13,11 +13,15 @@
 # HARMONIC_FORGE_ROOT, then instance.toml forge_root, then this launcher's own
 # checkout (`instance.resolve_forge_root`). A bad value, or a root with no
 # tools/hooks/, refuses the launch naming the value and its source. The
-# assignment-then-`||` form is required: `set -e` ignores a failing
-# substitution inside `[`.
-_lane_root_out="$(python3 -I -E "$_lane_dir/lane_hookset.py" root --launcher-checkout "$_lane_dir/../..")" \
+# view arrives as four NUL-ended fields, so a tab or newline in any of them
+# (the instance.toml path in the source) cannot shift the others (post-verdict
+# survivor 2); `root`'s exit status follows as a fifth, since a process
+# substitution's status is otherwise lost.
+mapfile -d '' -t _lane_root_out < <(python3 -I -E "$_lane_dir/lane_hookset.py" root --launcher-checkout "$_lane_dir/../.."; printf '%s\0' "$?")
+{ [ "${#_lane_root_out[@]}" -eq 5 ] && [ "${_lane_root_out[4]}" = 0 ]; } \
   || _lane_launch_die "the forge root could not be resolved (see the reason above) -- refusing to launch (harmonic-forge#1526). Nothing was launched."
-IFS=$'\t' read -r _lane_view_set _lane_forge_root _lane_forge_root_source _lane_forge_root_written <<<"$_lane_root_out"
+_lane_view_set="${_lane_root_out[0]}" _lane_forge_root="${_lane_root_out[1]}"
+_lane_forge_root_source="${_lane_root_out[2]}" _lane_forge_root_written="${_lane_root_out[3]}"
 # The root notice: one stderr line for any root not taken from the launcher
 # checkout, before the pull so it precedes any pull output. It changes no argv.
 # "launcher checkout" is instance.LAUNCHER_CHECKOUT, compared as a literal.

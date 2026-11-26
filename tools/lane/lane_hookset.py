@@ -32,7 +32,7 @@ script must be byte-identical to the set's entry; `doubled` reports any not.
 Subcommands:
   build   --set F --forge-root R --forge-root-source S --forge-root-as-written W [--policy P --manifest M]
   doubled [--set F --forge-root R] [--settings S ...]   doubled/removable entries
-  root    --launcher-checkout DIR       print "<set>\t<root>\t<source>\t<as written>" (#1526)
+  root    --launcher-checkout DIR       print set, root, source, as written: each NUL-ended (#1526)
   freeze  --repo R --commit C [--project-specific SNAPSHOT]   AC4 snapshot
   running [--project DIR]                       live lane processes without the set
 
@@ -286,24 +286,36 @@ def _overlay_from_config() -> tuple[str, Path]:
         raise SetError(str(exc)) from None
 
 
+def _named(forge_root: Path, source: str, written: str | None) -> str:
+    """The prefix every build SetError carries: `instance.named_root`, the
+    shared formatter (sticky-wicket C1; post-verdict survivor 3)."""
+    return instance.named_root(str(forge_root) if written is None else written, source, forge_root)
+
+
 def build(set_path: Path, forge_root: Path, source: str, policy: Path | None = None,
           manifest: Path | None = None, *, overlay: str, written: str | None = None) -> dict:
     """The one `--settings` object: the set, plus the Lane 3 policy when given.
 
     `forge_root` (from `source`, as `written`) holds every script; one with no
-    `tools/hooks/` refuses, named by `instance.named_root` (harmonic-forge#1526). `overlay` is the declared overlay
+    `tools/hooks/` refuses. Every SetError is named by `_named` (harmonic-forge#1526). `overlay` is the declared overlay
     (`load_effective`). The policy is read ONCE: its digest is checked against
     the manifest's `policy_sha256` and those same bytes are merged, so nothing
     can swap it between the launcher's ownership check and here. Neither
     source may carry the other's keys, so neither can override the other.
     """
-    named = instance.named_root(str(forge_root) if written is None else written, source, forge_root)  # C1
+    named = _named(forge_root, source, written)  # C1
     if not (Path(forge_root) / "tools" / "hooks").is_dir():
         raise SetError(f"{named} has no tools/hooks/")
     try:
-        data = load_effective(set_path, overlay, forge_root=forge_root)
+        return _build(set_path, forge_root, policy, manifest, overlay=overlay)
     except SetError as exc:
         raise SetError(f"{named}: {exc}") from None
+
+
+def _build(set_path: Path, forge_root: Path, policy: Path | None, manifest: Path | None,
+           *, overlay: str) -> dict:
+    """`build`'s body, unnamed: the set, then the policy."""
+    data = load_effective(set_path, overlay, forge_root=forge_root)
     value = {"disableAllHooks": False, "hooks": data["hooks"]}
     if policy is None:
         return value
@@ -516,12 +528,18 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.cmd == "root":
-            print("\t".join(map(str, instance.launch_view(args.launcher_checkout))))
+            # NUL-ended, so a tab or newline in any field (the instance.toml
+            # path in the source) survives the launcher's read (post-verdict 2).
+            sys.stdout.write("".join(f"{field}\0" for field in instance.launch_view(args.launcher_checkout)))
             return 0
         if args.cmd == "build":
-            if (args.policy is None) != (args.manifest is None):
-                raise SetError("--policy and --manifest go together")
-            overlay, config = _overlay_from_config()
+            try:  # named like every build refusal (post-verdict survivor 3)
+                if (args.policy is None) != (args.manifest is None):
+                    raise SetError("--policy and --manifest go together")
+                overlay, config = _overlay_from_config()
+            except SetError as exc:
+                raise SetError(f"{_named(args.forge_root, args.forge_root_source, args.forge_root_as_written)}: "
+                               f"{exc}") from None
             value = build(args.set, args.forge_root, args.forge_root_source, args.policy,
                           args.manifest, overlay=overlay, written=args.forge_root_as_written)
             if overlay == "none":

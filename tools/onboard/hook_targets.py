@@ -8,10 +8,13 @@ Its own module for the same reason `required_hooks.py` is: the lane launcher's
 re-imports two names, so its callers and tests are unchanged.
 
 The path is never decomposed (harmonic-forge#1526 sticky-wicket A3): each
-quoted or bare word ending in `.py` that contains `/tools/` is expanded whole
-(`~` when bare, then `$VAR`/`${VAR}` unless single-quoted) and checked as a
-file. No root/component split: the checkout may have any name and a `${HOME}`
-anchor is never dropped.
+shell word ending in `.py` that contains `/tools/` is expanded whole and
+checked as a file. No root/component split: the checkout may have any name
+and a `${HOME}` anchor is never dropped. Words split as the shell splits them
+(`_words`): unquoted blanks and the operators `;`, `&`, `|` end a word, and
+quoted and unquoted parts joined with no blank are one word. Only `$HOME`,
+`${HOME}` and a leading `~` are expanded; a word holding any other `$` is not
+decided here (post-verdict survivor 1).
 """
 from __future__ import annotations
 
@@ -35,9 +38,72 @@ def _hook_commands(hooks: dict) -> list[str]:
     return found
 
 
-# A double-quoted, single-quoted or bare word that names a `/tools/...py` path.
-_TOOLS_WORD = re.compile(r'"([^"]*/tools/[^"]*\.py)"|\'([^\']*/tools/[^\']*\.py)\''
-                         r'|(?<![^\s;=])([^\s"\';]*/tools/[^\s"\';]*\.py)(?![^\s;])')
+_BREAK = " \t\n;&|"  # an unquoted one of these ends a shell word
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_HOME_VAR = re.compile(r"\$(?:HOME(?![A-Za-z0-9_])|\{HOME\})")
+
+
+def _words(command: str) -> list[str]:
+    """Each shell word of `command` with `$HOME`, `${HOME}` and a leading `~`
+    expanded, quotes removed. A word with any other `$` (or an unterminated
+    quote) is dropped: its expansion is not known here. An assignment word
+    (`f=...`) yields its value."""
+    home = os.environ.get("HOME", "")
+    words: list[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        if command[i] in _BREAK:
+            i += 1
+            continue
+        if (assign := _ASSIGN.match(command, i)):
+            i = assign.end()
+        parts: list[str] = []
+        known = True
+        if command.startswith("~", i) and (i + 1 == n or command[i + 1] in "/" + _BREAK):
+            parts.append(os.path.expanduser("~"))
+            i += 1
+        while i < n and command[i] not in _BREAK:
+            c = command[i]
+            if c == "'":
+                end = command.find("'", i + 1)
+                if end < 0:
+                    known, i = False, n
+                    break
+                parts.append(command[i + 1:end])
+                i = end + 1
+            elif c == '"':
+                i += 1
+                while i < n and command[i] != '"':
+                    if command[i] == "\\" and i + 1 < n and command[i + 1] in '$`"\\':
+                        parts.append(command[i + 1])
+                        i += 2
+                    elif command[i] == "$":
+                        if (var := _HOME_VAR.match(command, i)):
+                            parts.append(home)
+                            i = var.end()
+                        else:
+                            known, i = False, i + 1
+                    else:
+                        parts.append(command[i])
+                        i += 1
+                if i >= n:
+                    known = False
+                i += 1
+            elif c == "\\":
+                parts.append(command[i + 1:i + 2])
+                i += 2
+            elif c == "$":
+                if (var := _HOME_VAR.match(command, i)):
+                    parts.append(home)
+                    i = var.end()
+                else:
+                    known, i = False, i + 1
+            else:
+                parts.append(c)
+                i += 1
+        if known:
+            words.append("".join(parts))
+    return words
 
 
 def unresolvable_hook_targets(hooks: dict) -> list[str]:
@@ -59,13 +125,11 @@ def unresolvable_hook_targets(hooks: dict) -> list[str]:
     """
     missing: list[str] = []
     for command in _hook_commands(hooks):
-        for match in _TOOLS_WORD.finditer(command):
-            double, single, bare = match.groups()
-            # As the shell does: `~` expands only bare, nothing in single quotes.
-            candidate = Path(single if single is not None else os.path.expandvars(
-                os.path.expanduser(bare) if bare is not None else double))
-            # A word that does not expand to an absolute path (`./x`, an unset
-            # `${CLAUDE_PROJECT_DIR}`) is the project's own, not a platform path.
-            if candidate.is_absolute() and not candidate.is_file():
-                missing.append(str(candidate))
+        for word in _words(command):
+            # A word that does not expand to an absolute path (`./x`,
+            # `${CLAUDE_PROJECT_DIR}/...`) is the project's own, not a platform path.
+            if "/tools/" in word and word.endswith(".py"):
+                candidate = Path(word)
+                if candidate.is_absolute() and not candidate.is_file():
+                    missing.append(word)
     return sorted(set(missing))

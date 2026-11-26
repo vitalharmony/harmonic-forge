@@ -132,6 +132,28 @@ class BuildRefusalNamesTheValueAsWritten(unittest.TestCase):
                           f"resolves to {str(fx2)!r})", cell["stderr"])
             self.assertIn("block_blind_repeat.py", cell["stderr"])
 
+    def test_a_tab_in_the_instance_toml_path_keeps_every_field(self):
+        """Post-verdict survivor 2: the launch view crosses into the launcher
+        NUL-ended, so a tab in the source's instance.toml path (under a HOME
+        holding one) cannot shift the value as written into the source."""
+        with tll._FixtureTree() as tree:
+            tree.lane_dir = tll.RegistryIntegrity._copy_lane_dir(None, tree.root)
+            fx2 = tree.root / "fx2"
+            shutil.copytree(WORKTREE / "tools" / "hooks", fx2 / "tools" / "hooks",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            (fx2 / "tools" / "hooks" / "block_blind_repeat.py").unlink()
+            home = tree.root / "ho\tme"
+            shutil.copytree(tree.home, home, symlinks=True)
+            toml = home / ".config" / "harmonic-forge" / "instance.toml"
+            written = f"{fx2}/tools/.."
+            with toml.open("a", encoding="utf-8") as fh:
+                fh.write(f'forge_root = "{written}"\n')
+            cell = tree.run("1", [], LANE_CLI="claude", HARMONIC_FORGE_ROOT="", HOME=str(home))
+            self.assertFalse(cell["launched"], cell["stderr"])
+            self.assertIn("could not be built", cell["stderr"])
+            self.assertIn(f"forge root {written!r} (from {toml} forge_root; resolves to {str(fx2)!r})",
+                          cell["stderr"])
+
 
 class ForgeRootPin(unittest.TestCase):
     """Test Case 8: an empty root over a lane dir inside a checkout holding
