@@ -1,0 +1,41 @@
+# harmonic-forge#1500: hook symbols allowed to recognize a gh close/merge kind
+# outside tools/hooks/gh_argv_adapters.py. Shrink-only: tools/rules/
+# check_gh_recognizers.py refuses a stale, duplicate, incomplete or out-of-scope
+# entry and any entry past its CEILING (pinned equal to this count). Growth is
+# two hand edits (an entry here and CEILING there) that review sees.
+
+[[exception]]
+path = "tools/hooks/batch_auth.py"
+symbol = "_bound_repo"
+reason = "The harmonic-forge#1339 closed shape that binds a BATCH grant to one canonical argv and never guesses a repo."
+contract = "harmonic-forge#1339: a BATCH merge grant binds exactly one canonical argv"
+
+[[exception]]
+path = "tools/hooks/batch_auth.py"
+symbol = "_pinned_head"
+reason = "The canonical pinned merge shape, so the hook and gh cannot read the pin differently."
+contract = "harmonic-forge#1339: the pinned head a BATCH merge is bound to"
+
+[[exception]]
+path = "tools/hooks/block_missing_preclose_inspection.py"
+symbol = "_canonical_cli_close"
+reason = "The closed-world not-planned/duplicate exemption, applied only on top of the adapter's bound result."
+contract = "harmonic-forge#1433: closed-world not-planned/duplicate close exemption"
+
+[[exception]]
+path = "tools/hooks/block_missing_preclose_inspection.py"
+symbol = "_canonical_rest_close"
+reason = "The REST form of the closed-world not-planned/duplicate exemption, applied only on top of the adapter's bound result."
+contract = "harmonic-forge#1433: closed-world not-planned/duplicate close exemption"
+
+[[exception]]
+path = "tools/hooks/block_route_tightened_merge.py"
+symbol = "BOUND_MERGE"
+reason = "A route grant releases exactly one bound merge form."
+contract = "harmonic-forge#1244: a route grant releases one bound form"
+
+[[exception]]
+path = "tools/hooks/block_gate_and_write_same_command.py"
+symbol = "write_of"
+reason = "Classifies a write by argv words, not by target; reading the merge kind through gh_argv_adapters is harmonic-forge#1622."
+contract = "R-0419/harmonic-forge#1337: a gate and a write never share one command"

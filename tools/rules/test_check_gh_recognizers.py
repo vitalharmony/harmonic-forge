@@ -145,6 +145,72 @@ class TC3NeverGreenOnNothing(unittest.TestCase):
         self.assertNotIn("clean", out)
 
 
+#: Seven recognizers in one home module, so seven entries can all be valid.
+SEVEN = "".join(f'def r{i}(t):\n    return t[{i}] == "close"\n' for i in range(1, 8))
+HOME7 = "tools/hooks/home7.py"
+
+
+class TC4ExceptionsAreRefused(unittest.TestCase):
+    """AC4: an incomplete, empty, duplicate, stale or over-ceiling list is refused."""
+
+    def run_entries(self, *entries: str) -> tuple[int, str]:
+        return run_root({HOME7: SEVEN, EXCEPTIONS: "\n".join(entries)})
+
+    def assert_refused(self, why: str, *entries: str):
+        code, out = self.run_entries(*entries)
+        self.assertEqual(code, 1, out)
+        self.assertIn(why, out)
+
+    def test_a_valid_list_excepts_its_symbols(self):
+        code, out = self.run_entries(*(entry(HOME7, f"r{i}") for i in range(1, 7)))
+        self.assertEqual(code, 1, out)  # r7 is not excepted
+        self.assertIn("home7.py:14: r7 [G1b]", out)
+        self.assertNotIn("REFUSED", out)
+        self.assertNotRegex(out, r": r[1-6] \[")
+
+    def test_a_missing_field_is_refused(self):
+        for field in check.FIELDS:
+            with self.subTest(field=field):
+                body = "".join(line + "\n" for line in entry(HOME7, "r1").splitlines()
+                               if not line.startswith(f"{field} ="))
+                self.assert_refused(f"missing field {field!r}", body)
+
+    def test_an_empty_field_is_refused(self):
+        for field in check.FIELDS:
+            with self.subTest(field=field):
+                body = entry(HOME7, "r1").replace(f'{field} = "', f'{field} = "" #"')
+                self.assert_refused(f"empty field {field!r}", body)
+
+    def test_a_duplicate_is_refused(self):
+        self.assert_refused("duplicates an earlier entry", entry(HOME7, "r1"), entry(HOME7, "r1"))
+
+    def test_a_stale_entry_is_refused(self):
+        self.assert_refused("stale, matches no hit", entry(HOME7, "no_such_symbol"))
+
+    def test_a_path_outside_the_scan_set_is_refused(self):
+        self.assert_refused("outside the scan set", entry(check.ADAPTERS[1], "classify"))
+
+    def test_a_seventh_entry_over_the_ceiling_is_refused(self):
+        self.assert_refused(f"7 entries exceed CEILING = {check.CEILING}",
+                            *(entry(HOME7, f"r{i}") for i in range(1, 8)))
+
+
+class TC5RealTree(unittest.TestCase):
+    """AC1: the real tree is clean with exactly the pinned exceptions."""
+
+    def test_the_real_tree_is_clean_with_six_entries(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = check.main([], root=REPO)
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("6 excepted symbols, 0 violations", out.getvalue())
+
+    def test_the_ceiling_equals_the_entry_count(self):
+        entries = check.load_exceptions(REPO)
+        self.assertEqual(len(entries), 6)
+        self.assertEqual(check.CEILING, len(entries))
+
+
 class TC6NoFalsePositives(unittest.TestCase):
     """Prose, docstrings and action labels are never hits."""
 
