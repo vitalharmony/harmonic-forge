@@ -4,6 +4,7 @@ it removes nothing."""
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import os
 import sys
@@ -48,6 +49,8 @@ class SweepTableTests(unittest.TestCase):
         link = self.root / "tmplinkxyz0"
         link.symlink_to(target, target_is_directory=True)
         os.utime(link, (self.now - OLD, self.now - OLD), follow_symlinks=False)
+        # Eligibility itself, not only the removal count: remove_tree refuses a symlink.
+        self.assertEqual(tmp_sweep.stale_matches(self.root, self.now, os.getuid()), [stale])
         removed = tmp_sweep.sweep(self.root, self.now, os.getuid(), False)
         self.assertEqual(removed, [stale])
         self.assertFalse(stale.exists())
@@ -78,6 +81,52 @@ class SweepTableTests(unittest.TestCase):
         self.assertIn("tmpstale_01", self.run_main("--dry-run"))
         self.assertEqual(self.run_main(), "tmp-sweep: removed 1\n")
         self.assertEqual(self.run_main(), "")
+
+    def locked_stale(self, name: str) -> Path:
+        """A stale match holding a mode-000 subdir with a file, as a test killed
+        between its chmod and its restore leaves behind."""
+        stale = self.entry(name)
+        locked = stale / "locked"
+        locked.mkdir()
+        (locked / "state.json").write_text("{}")
+        locked.chmod(0)
+        os.utime(stale, (self.now - OLD, self.now - OLD))
+        self.addCleanup(lambda: locked.chmod(0o700) if locked.exists() else None)
+        return stale
+
+    def test_mode_000_subdir_is_repaired_and_removed(self) -> None:
+        """Round-1 survivor 1: permissions are repaired before removal."""
+        stale = self.locked_stale("tmplocked01")
+        self.assertEqual(tmp_sweep.sweep(self.root, self.now, os.getuid(), False), [stale])
+        self.assertFalse(stale.exists())
+
+    def test_an_unremovable_dir_is_not_counted(self) -> None:
+        """Round-1 survivor 1: when repair is impossible the dir stays, the count
+        is 0, and the CLI prints nothing (AC3)."""
+        stale = self.locked_stale("tmplocked02")
+        with patch.object(Path, "chmod", side_effect=PermissionError(errno.EPERM, "denied")):
+            self.assertEqual(tmp_sweep.sweep(self.root, self.now, os.getuid(), False), [])
+            self.assertEqual(self.run_main(), "")
+        self.assertTrue(stale.exists())
+
+    def test_a_full_temp_dir_is_still_the_root(self) -> None:
+        """Round-1 survivor 3: ENOSPC on gettempdir()'s write probe in TMPDIR
+        must not move the sweep to another dir."""
+        real_open = os.open
+
+        def full(path, *args, **kwargs):
+            if str(path).startswith(str(self.root)):
+                raise OSError(errno.ENOSPC, "No space left on device", str(path))
+            return real_open(path, *args, **kwargs)
+
+        env = {k: v for k, v in os.environ.items() if k != tmp_sweep.REAL_TMPDIR_ENV}
+        env["TMPDIR"] = str(self.root)
+        with patch.dict(os.environ, env, clear=True), patch.object(tempfile, "tempdir", None), \
+                patch("os.open", side_effect=full):
+            self.assertEqual(tmp_sweep.sweep_root(), self.root)
+        del env["TMPDIR"]
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(tmp_sweep.sweep_root(), Path("/tmp"))
 
     def test_missing_root_is_silent(self) -> None:
         self.assertEqual(tmp_sweep.sweep(self.root / "absent", self.now, os.getuid(), False), [])

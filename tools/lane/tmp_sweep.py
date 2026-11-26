@@ -8,7 +8,8 @@ Lane 1's belt tick runs this sweep, which deletes a top-level entry only when
 all of these hold: its name is `tmp` plus exactly 8 of `[a-z0-9_]` (the
 `mkdtemp()` default), `os.lstat` says it is a directory (a symlink is never
 followed or removed), the current user owns it, and it was last modified
-more than 2 hours ago. Nothing below the top level is examined.
+more than 2 hours ago. Nothing below the top level is examined. Removal is
+kill_check's permission-repairing `remove_tree`; a match counts once gone.
 
 Usage:
     python3 ~/harmonic-forge/tools/lane/tmp_sweep.py [--dry-run]
@@ -21,12 +22,13 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import shutil
 import stat
 import sys
-import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
+from kill_check import remove_tree  # noqa: E402
 
 NAME = re.compile(r"tmp[a-z0-9_]{8}")
 STALE_SECONDS = 2 * 60 * 60
@@ -35,8 +37,8 @@ REAL_TMPDIR_ENV = "HF_REAL_TMPDIR"
 
 
 def sweep_root() -> Path:
-    """The real temp dir: the recorded one in a contained run, else gettempdir()."""
-    return Path(os.environ.get(REAL_TMPDIR_ENV) or tempfile.gettempdir())
+    """HF_REAL_TMPDIR, else TMPDIR, else /tmp: never gettempdir(), whose probe moves off a full dir."""
+    return Path(os.environ.get(REAL_TMPDIR_ENV) or os.environ.get("TMPDIR") or "/tmp")
 
 
 def stale_matches(root: Path, now: float, uid: int) -> list[Path]:
@@ -60,12 +62,13 @@ def stale_matches(root: Path, now: float, uid: int) -> list[Path]:
 
 
 def sweep(root: Path, now: float, uid: int, dry_run: bool) -> list[Path]:
-    """Remove (or with `dry_run`, only find) the stale owned matches; returns them."""
+    """With `dry_run`, the stale owned matches; else the ones actually removed."""
     matches = stale_matches(root, now, uid)
-    if not dry_run:
-        for path in matches:
-            shutil.rmtree(path, ignore_errors=True)
-    return matches
+    if dry_run:
+        return matches
+    for path in matches:
+        remove_tree(path)
+    return [path for path in matches if not os.path.lexists(path)]
 
 
 def main(argv: list[str] | None = None) -> int:
