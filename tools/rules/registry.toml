@@ -2988,14 +2988,14 @@ hooks = []
 id = "R-0438"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
-statement = "An operator-typed ! or / command waits until the running turn ends, so after handing the operator a command the session ends its turn promptly and never also runs it; taking over a handed step is said in one line (harmonic-forge#1599)."
-text_sha = "496aac56775fe6cc"
+statement = "An operator-typed ! or / command waits until the running turn ends, so after handing the operator a command the session ends its turn promptly and never also runs it (harmonic-forge#1599)."
+text_sha = "2cfa9c80c7456cf7"
 hooks = []
 
 [[rule]]
 id = "R-0439"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
-statement = "The UserPromptSubmit model-tier note is advisory: the session reads its own model id and, on an Opus or Fable model, proceeds without asking for /model; only a model_tier_gate.py PreToolUse deny on a non-high-tier model puts /model in the operator's actions (harmonic-forge#1599)."
-text_sha = "94079fd5ca9b04d3"
+statement = "The UserPromptSubmit model-tier note is advisory only on an Opus or Fable model: the session reads its own model id and, on those models, proceeds without asking for /model; on any other model it follows the note and asks the operator for /model before starting the work (harmonic-forge#1599)."
+text_sha = "134dbe05e923eeaf"
 hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPromptSubmit"], wired_in = ".claude/settings.json, tools/lane/lane_hooks.json" }]
