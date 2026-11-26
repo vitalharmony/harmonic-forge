@@ -95,8 +95,7 @@ def grant_path(key: str) -> Path:
 
 @contextlib.contextmanager
 def grant_lock(key: str):
-    """Serialize every read-modify-write of one key's grant file. Never held
-    across the GitHub post."""
+    """Serialize each read-modify-write of one key's grant file; never held across a post."""
     path = state_dir() / f"{key.upper()}.json.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as handle:
@@ -117,10 +116,8 @@ def ui_change_line(bodies) -> str | None:
 
 
 def _gh_lines(args: list[str], runner, caller: str | None = None) -> list[dict]:
-    """A paginated `gh api ... --jq '... | tojson'` read as a list of dicts;
-    raises RecordRefused on any failure. `caller` marks this one call as a
-    sanctioned gh-shim scan (harmonic-forge#964, #1356); every other call runs
-    with the caller's environment unchanged."""
+    """A paginated `gh api ... --jq '... | tojson'` read as dicts, else RecordRefused. `caller`
+    marks this one call a sanctioned gh-shim scan (harmonic-forge#964, #1356)."""
     extra = {"env": {**os.environ, "GH_SHIM_CALLER": caller}} if caller else {}
     result = runner(["gh", "api", "--paginate", *args], capture_output=True, text=True, check=False,
                     **extra)
@@ -153,8 +150,7 @@ def heading(key: str, mode: str = "merge") -> str:
 
 
 def marker(key: str, mode: str, granted_at: str, digest: str = "") -> str:
-    """The record's machine line. HRSE2's `scripts/ui_approval.py` reads a merge
-    record's by this exact shape; change both together."""
+    """The record's machine line; HRSE2's `scripts/ui_approval.py` reads this shape: change both."""
     return f"<!-- ui-grant key={key.upper()} mode={mode} granted_at={granted_at} digest={digest} -->"
 
 
@@ -171,7 +167,8 @@ def find_record(comments, key: str, mode: str) -> dict | None:
                        r"digest=[0-9a-f]* -->[ \t]*$")
     for comment in reversed(list(comments or [])):
         body = (comment.get("body") or "").replace("\r\n", "\n")
-        if comment.get("login") != project.account or body.split("\n", 1)[0] != want_heading:
+        if (not manifest_scope.same_login(comment.get("login"), project.account)
+                or body.split("\n", 1)[0] != want_heading):
             continue
         if shape.search(body):
             return comment
@@ -250,11 +247,12 @@ def write_pending(key: str, repo: str, issue: int, mode: str, digest: str | None
 # --- which PR a merge record goes on (reforge step 5) ---------------------------
 
 def opted_in_repos(owner: str, runner=subprocess.run) -> list[str]:
-    """Every registered repo under `owner` whose `main` carries the version file.
-    A 404 is "not opted in"; any other read failure refuses."""
+    """Every home repo under `owner` (harmonic-forge#1596) whose `main` carries the version
+    file. A 404 is "not opted in"; any other read failure refuses."""
     from batch_auth import REPO_PREFIXES  # noqa: PLC0415
     out = []
-    for repo in sorted(r for r in REPO_PREFIXES if r.split("/")[0].lower() == owner.lower()):
+    for repo in sorted(r for r in REPO_PREFIXES if r.split("/")[0].lower() == owner.lower()
+                       and imc_waiver.is_home_repo(r)):
         result = runner(["gh", "api", f"repos/{repo}/contents/{UI_VERSION_PATH}?ref=main",
                          "--jq", ".sha"], capture_output=True, text=True, check=False)
         if result.returncode == 0:
@@ -362,6 +360,8 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> l
                          f"`UI {key}: <reason>` or `UI {key} <digest>: <reason>` line creates one.")
     moment = now or imc_waiver._now()
     repo, issue = grant["repo"], int(grant["issue"])
+    if not imc_waiver.is_home_repo(repo):  # harmonic-forge#1596: re-checked before any post
+        raise SystemExit(f"ui-grant: {key} is on {repo}, no longer a home repo in projects.toml.")
     lines = []
     ui_change = None
     for mode in MODES:

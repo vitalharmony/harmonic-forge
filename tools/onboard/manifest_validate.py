@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 _VERSION_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
 
 _VERSION = re.compile(r"v(\d{4})\.(0[1-9]|1[0-2])\.(\d+)")
+#: GitHub login grammar, ASCII only (harmonic-forge#1596).
+_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 
 
 def check_min_version(value: object, label: str, name: str) -> None:
@@ -69,6 +71,10 @@ def validate(projects: list[Project], target: Path | str) -> None:
             seen_repo[project.repo] = project.name
             if not project.account:  # harmonic-forge#804: no repo without an identity
                 raise ManifestError(f"{target}: {project.name} declares a repo but no `account`")
+        if project.account is not None and not (  # harmonic-forge#1596: a login, or no account
+                isinstance(project.account, str) and _LOGIN.fullmatch(project.account)):
+            raise ManifestError(
+                f"{target}: {project.name} account {project.account!r} is not a GitHub login")
         if project.active_milestones and not project.milestones:  # harmonic-forge#952
             raise ManifestError(
                 f"{target}: {project.name} lists active_milestones but carries no milestones")

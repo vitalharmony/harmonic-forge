@@ -29,10 +29,16 @@ def home_project(repo: str, manifest: Path | None = None) -> _manifest.Project |
         project = _manifest.by_repo(manifest).get(key)
     except (ManifestError, OSError):
         return None
-    if project is None or not project.account or not project.account.isascii():
+    if project is None or not project.account:
         return None
-    # ASCII lower, never casefold: "ſ".casefold() is "s" (pitch revision 4).
-    return project if key.split("/")[0] == project.account.lower() else None
+    return project if same_login(key.split("/")[0], project.account) else None
+
+
+def same_login(a: object, b: object) -> bool:
+    """GitHub logins compare case-insensitively: ASCII lower on both sides, never
+    casefold ("ſ".casefold() is "s", pitch revision 4). A non-string is no login."""
+    return (isinstance(a, str) and isinstance(b, str) and a.isascii() and b.isascii()
+            and a.lower() == b.lower())
 
 
 def manifest_error(manifest: Path | None = None) -> str | None:
