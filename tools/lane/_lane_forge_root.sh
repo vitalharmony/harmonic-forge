@@ -22,6 +22,21 @@ mapfile -d '' -t _lane_root_out < <(python3 -I -E "$_lane_dir/lane_hookset.py" r
   || _lane_launch_die "the forge root could not be resolved (see the reason above) -- refusing to launch (harmonic-forge#1526). Nothing was launched."
 _lane_view_set="${_lane_root_out[0]}" _lane_forge_root="${_lane_root_out[1]}"
 _lane_forge_root_source="${_lane_root_out[2]}" _lane_forge_root_written="${_lane_root_out[3]}"
+# Every field is required: `launch_view` never prints an empty one, so an empty
+# field under exit 0 is a broken producer, and an empty root would run the pull
+# and the build from the current directory (post-verdict check 2, survivor 2).
+_lane_root_empty=""
+for _lane_root_field in "set:$_lane_view_set" "root:$_lane_forge_root" \
+    "source:$_lane_forge_root_source" "as-written:$_lane_forge_root_written"; do
+  [ -n "${_lane_root_field#*:}" ] || _lane_root_empty="$_lane_root_empty ${_lane_root_field%%:*}"
+done
+if [ -n "$_lane_root_empty" ]; then
+  _lane_root_named="the forge root (its value as written is empty too)"
+  [ -z "$_lane_forge_root_written" ] \
+    || _lane_root_named="forge root '$_lane_forge_root_written' (from ${_lane_forge_root_source:-an empty source})"
+  _lane_launch_die "$_lane_root_named: the root producer exited 0 with empty field(s):$_lane_root_empty -- refusing to launch (harmonic-forge#1526). Nothing was launched."
+fi
+unset _lane_root_empty _lane_root_field
 # The root notice: one stderr line for any root not taken from the launcher
 # checkout, before the pull so it precedes any pull output. It changes no argv.
 # "launcher checkout" is instance.LAUNCHER_CHECKOUT, compared as a literal.

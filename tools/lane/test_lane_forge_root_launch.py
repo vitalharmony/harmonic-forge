@@ -109,6 +109,44 @@ class RootRefusalLaunch(unittest.TestCase):
                     self.assertNotIn("sync_rules.py --pull failed", cell["stderr"])
 
 
+class EmptyRootFieldsRefuse(unittest.TestCase):
+    """Post-verdict check 2, survivor 2: a `root` producer that exits 0 with an
+    empty field refuses the launch at `_lane_forge_root.sh`, naming the value
+    as written where there is one, before the pull or any other hookset call."""
+
+    _STUB = ("import sys\nfrom pathlib import Path\n"
+             "if sys.argv[1:2] != ['root']:\n"
+             "    Path(__file__).with_name('called-past-root').write_text(' '.join(sys.argv[1:]))\n"
+             "    sys.exit(1)\n"
+             "sys.stdout.write(''.join(f'{f}\\0' for f in {fields!r}))\n")
+
+    def _launch(self, fields: list[str]) -> tuple[dict, Path]:
+        with tll._FixtureTree() as tree:
+            tree.lane_dir = tll.RegistryIntegrity._copy_lane_dir(None, tree.root)
+            stub = tree.lane_dir / "lane_hookset.py"
+            stub.unlink()
+            stub.write_text(self._STUB.replace("{fields!r}", repr(fields)))
+            cell = tree.run("1", [], LANE_CLI="claude", HARMONIC_FORGE_ROOT="")
+            return cell, (tree.lane_dir / "called-past-root").exists()
+
+    def test_four_empty_fields_refuse(self):
+        cell, past = self._launch(["", "", "", ""])
+        self.assertFalse(cell["launched"], cell["stderr"])
+        self.assertNotEqual(cell["returncode"], 0)
+        self.assertIn("the root producer exited 0 with empty field(s): set root source as-written",
+                      cell["stderr"])
+        self.assertNotIn("sync_rules.py --pull failed", cell["stderr"])
+        self.assertFalse(past, cell["stderr"])
+
+    def test_an_empty_root_names_the_value_as_written(self):
+        cell, past = self._launch(["/fx/lane_hooks.json", "", "HARMONIC_FORGE_ROOT", "/fx/as-written"])
+        self.assertFalse(cell["launched"], cell["stderr"])
+        self.assertIn("forge root '/fx/as-written' (from HARMONIC_FORGE_ROOT): the root producer "
+                      "exited 0 with empty field(s): root", cell["stderr"])
+        self.assertNotIn("forge root  (from", cell["stderr"])
+        self.assertFalse(past, cell["stderr"])
+
+
 class BuildRefusalNamesTheValueAsWritten(unittest.TestCase):
     """Sticky-wicket C1 (and D1's build refusal under a non-default source): a
     root that resolves but lacks a target refuses at the build, naming the
