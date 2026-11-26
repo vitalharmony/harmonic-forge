@@ -75,7 +75,7 @@ class TC1EachRuleFails(unittest.TestCase):
     PLANTS = {
         "a": ("G1", "import re\ndef f(t):\n    return t[1:3] == [\"issue\", \"close\"]\n", 3),
         "b": ("G3", "import gh_argv_adapters as A\ndef _parse_issue_close(t):\n    return A.close_target(t)\n", 2),
-        "c": ("G1b", "def f(t):\n    return t[2] == \"merge\"\n", 2),
+        "c": ("G1b", "def f(t):\n    return t[1] == \"pr\" and t[2] == \"merge\"\n", 2),
         "d": ("G2", "def f(t):\n    return _has_field(t, \"state=closed\")\n", 2),
         "e": ("G1", "import re\nPAT = re.compile(r\"gh pr merge \\d+\")\n", 2),
     }
@@ -110,7 +110,7 @@ class TC2ReexportsFail(unittest.TestCase):
 
     def test_attribute_through_a_module_alias_fails(self):
         self.assert_violation({
-            hook("batch_auth"): 'def _pinned_head(t):\n    return t[2] == "merge"\n',
+            hook("batch_auth"): 'def _pinned_head(t):\n    return t[1] == "pr" and t[2] == "merge"\n',
             hook("aa_use"): "import batch_auth as b\nx = b._pinned_head\n",
         }, "aa_use.py:2")
 
@@ -147,7 +147,7 @@ class TC3NeverGreenOnNothing(unittest.TestCase):
 
 
 #: Seven recognizers in one home module, so seven entries can all be valid.
-SEVEN = "".join(f'def r{i}(t):\n    return t[{i}] == "close"\n' for i in range(1, 8))
+SEVEN = "".join(f'def r{i}(t):\n    return t[0] == "issue" and t[{i}] == "close"\n' for i in range(1, 8))
 HOME7 = "tools/hooks/home7.py"
 #: Spelled out here, not read from check.FIELDS, so dropping a field there fails.
 REQUIRED = ("path", "symbol", "reason", "contract")
@@ -193,6 +193,9 @@ class TC4ExceptionsAreRefused(unittest.TestCase):
     def test_a_path_outside_the_scan_set_is_refused(self):
         self.assert_refused("outside the scan set", entry(check.ADAPTERS[1], "classify"))
 
+    def test_a_non_string_path_is_refused_by_message(self):
+        self.assert_refused("non-str field 'path'", entry(HOME7, "r1").replace(f'"{HOME7}"', f'["{HOME7}"]'))
+
     def test_a_seventh_entry_over_the_ceiling_is_refused(self):
         self.assert_refused(f"7 entries exceed CEILING = {check.CEILING}",
                             *(entry(HOME7, f"r{i}") for i in range(1, 8)))
@@ -237,6 +240,32 @@ class TC6NoFalsePositives(unittest.TestCase):
         code, out = run_root({hook("prose"): body})
         self.assertEqual(code, 0, out)
         self.assertIn("clean: 1 files scanned", out)
+
+
+class TC8WidenedShapes(unittest.TestCase):
+    """The sticky-wicket PATCH shapes (harmonic-forge#1500): each plant fails on its line and rule."""
+
+    PLANTS = {
+        "unpacked_locals": ("G1b", "def f(t):\n    s, v = t[1], t[2]\n    return s == 'pr' and v == 'merge'\n", 3),
+        "named_pair": ("G1", "ISSUE_CLOSE = ('issue', 'close')\n", 1),
+        "nested_pairs": ("G1", "KINDS = {('issue', 'close'), ('pr', 'merge')}\n", 1),
+        "match": ("G1", "def f(t):\n    match t:\n        case ['gh', 'pr', 'merge', *_]: return 1\n", 3),
+        "membership_any": ("G1b", "def f(t):\n    return 'pr' in t and any(w == 'merge' for w in t)\n", 2),
+        "re_alias": ("G1", "import re as _re\nPAT = _re.compile(r'gh pr merge')\n", 2),
+        "re_from": ("G1", "from re import compile as c\nPAT = c(r'gh pr merge')\n", 2),
+        "startswith": ("G1", "def f(c):\n    return c.startswith('gh pr merge')\n", 2),
+    }
+
+    def test_each_plant_fails_naming_path_line_and_rule(self):
+        for key, (rule, body, line) in self.PLANTS.items():
+            with self.subTest(plant=key):
+                code, out = run_root({hook("zz_plant"): body})
+                self.assertEqual(code, 1, out)
+                self.assertRegex(out, rf"VIOLATION tools/hooks/zz_plant\.py:{line}: \S+ \[{rule}\]")
+
+    def test_a_verb_with_no_paired_noun_is_clean(self):
+        code, out = run_root({hook("ev"): "def f(event):\n    return event['action'] == 'close'\n"})
+        self.assertEqual(code, 0, out)
 
 
 HOOKS = REPO / "tools" / "hooks"

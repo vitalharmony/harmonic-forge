@@ -11,6 +11,8 @@ incomplete, outside the scan set, duplicated or stale, or a list above
 CEILING, is refused. There is no write mode: growth is two hand edits.
 Exit 0 clean; 1 a violation, a refusal, a moved scan root or an empty scan;
 2 a file that cannot be read or parsed (UNMEASURED), never reported clean.
+A tripwire for accidental reintroduction of the shapes in TC1, TC2 and TC8,
+not a semantic proof; every other shape is a named blind spot in the contract.
 """
 from __future__ import annotations
 
@@ -29,7 +31,6 @@ CEILING = 6
 ADAPTERS = (f"{HOOKS}/gh_argv.py", f"{HOOKS}/gh_argv_adapters.py")
 TEXT = re.compile(r"issue(\s|\\s[+*]?)+close|pr(\s|\\s[+*]?)+merge|state=closed|/merge\b")
 PAIRS = {("issue", "close"), ("pr", "merge")}
-VERBS = {"close", "merge"}
 RE_FUNCS = {"compile", "match", "search", "fullmatch", "findall", "finditer", "sub", "split"}
 DYNAMIC = {"spec_from_file_location", "import_module", "__import__"}
 #: F1497/F1498/F1499 removed these; naming one again is a reintroduction.
@@ -72,13 +73,21 @@ def _symbol(top: ast.stmt) -> str:
 def direct_hits(tree: ast.Module) -> list[tuple[int, str, str]]:
     """(line, symbol, rule) in one module. G1: a string constant (or a tuple/list/set
     of them) holding an adjacent issue/close or pr/merge pair or matching TEXT, as a
-    Compare operand, a `re.<fn>` first argument or a startswith/endswith argument.
-    G1b: a Compare of a Subscript with "close"/"merge", alone or in a sequence.
+    Compare operand, a match-case constant, the first argument of a re function
+    (`re.`, `import re as X`, `from re import fn`) or a startswith/endswith argument;
+    or an assigned tuple/list/set (or a collection of them) holding a pair. G1b:
+    "close"/"merge" compared (any Compare, a generator's included) with a non-constant
+    operand, or a match-case constant, in a symbol that compares "issue"/"pr" so too.
     G2: any other whitespace-free string constant matching TEXT. G3: a def, class,
     assignment, import, name or attribute naming a RETIRED recognizer."""
     skip, hits = _skipped(tree), set()
+    imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    re_mods = {"re"} | {a.asname for n in imports if isinstance(n, ast.Import) for a in n.names
+                        if a.name == "re" and a.asname}
+    re_fns = {a.asname or a.name for n in imports if isinstance(n, ast.ImportFrom) and n.module == "re"
+              for a in n.names if a.name in RE_FUNCS}
     for top in tree.body:
-        symbol, used = _symbol(top), set()
+        symbol, used, words = _symbol(top), set(), {}
         for node in ast.walk(top):
             if isinstance(node, ast.Compare):
                 operands = [node.left, *node.comparators]
@@ -86,16 +95,34 @@ def direct_hits(tree: ast.Module) -> list[tuple[int, str, str]]:
                     if id(operand) not in skip and _recognizes(_strings(operand)):
                         hits.add((node.lineno, symbol, "G1"))
                         used.add(id(operand))
-                if any(isinstance(o, ast.Subscript) for o in operands) and any(
-                        VERBS & set(_strings(o)) for o in operands if not isinstance(o, ast.Subscript)):
-                    hits.add((node.lineno, symbol, "G1b"))
-            elif isinstance(node, ast.Call) and node.args and isinstance(node.func, ast.Attribute):
+                if any(not _strings(o) for o in operands):
+                    for word in (w for o in operands for w in _strings(o)):
+                        words.setdefault(word, node.lineno)
+            elif isinstance(node, (ast.MatchValue, ast.MatchSequence)):
+                consts = [p.value for p in getattr(node, "patterns", [node]) if isinstance(p, ast.MatchValue)]
+                values = [c.value for c in consts if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+                if _recognizes(values):
+                    hits.add((node.lineno, symbol, "G1"))
+                for word in values:
+                    words.setdefault(word, node.lineno)
+                used.update(id(c) for c in consts)
+            elif isinstance(node, ast.Call) and node.args:
                 func, first = node.func, node.args[0]
-                is_re = func.attr in RE_FUNCS and isinstance(func.value, ast.Name) and func.value.id == "re"
-                if (is_re or func.attr in ("startswith", "endswith")) and id(first) not in skip \
+                attr, base = getattr(func, "attr", None), getattr(func, "value", None)
+                is_re = (attr in RE_FUNCS and isinstance(base, ast.Name) and base.id in re_mods) \
+                    or (isinstance(func, ast.Name) and func.id in re_fns)
+                if (is_re or attr in ("startswith", "endswith")) and id(first) not in skip \
                         and _recognizes(_strings(first)):
                     hits.add((node.lineno, symbol, "G1"))
                     used.add(id(first))
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                seqs = [v for v in (node.value, *getattr(node.value, "elts", ()))
+                        if isinstance(v, (ast.Tuple, ast.List, ast.Set))]
+                if any(PAIRS & set(zip(_strings(v), _strings(v)[1:])) for v in seqs):
+                    hits.add((node.lineno, symbol, "G1"))
+        for noun, verb in PAIRS:
+            if verb in words and noun in words:
+                hits.add((words[verb], symbol, "G1b"))
         for node in ast.walk(top):
             if (isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in skip
                     and id(node) not in used and not re.search(r"\s", node.value) and TEXT.search(node.value)):
@@ -176,15 +203,16 @@ def refusals(entries: object, scanned: list[str], hits: dict, unmeasured: set[st
     for i, e in enumerate(entries, 1):
         e = e if isinstance(e, dict) else {}
         key = (e.get("path"), e.get("symbol"))
-        bad = [f"{'empty' if f in e else 'missing'} field {f!r}" for f in FIELDS
-               if not (isinstance(e.get(f), str) and e[f].strip())]
+        bad = [f"{'missing' if f not in e else 'empty' if isinstance(e[f], str) else 'non-str'} field {f!r}"
+               for f in FIELDS if not (isinstance(e.get(f), str) and e[f].strip())]
         if not bad and key[0] not in scanned:
             bad = ["path is outside the scan set"]
         elif not bad and key in seen:
             bad = ["duplicates an earlier entry"]
         elif not bad and key[0] not in unmeasured and key[1] not in {h[1] for h in hits.get(key[0], ())}:
             bad = ["stale, matches no hit; delete it and lower CEILING"]
-        seen.add(key)
+        if all(isinstance(k, str) for k in key):
+            seen.add(key)
         out += [f"entry {i} {key}: {why}" for why in bad]
     return out
 
