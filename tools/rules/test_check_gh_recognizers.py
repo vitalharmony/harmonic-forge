@@ -149,6 +149,8 @@ class TC3NeverGreenOnNothing(unittest.TestCase):
 #: Seven recognizers in one home module, so seven entries can all be valid.
 SEVEN = "".join(f'def r{i}(t):\n    return t[{i}] == "close"\n' for i in range(1, 8))
 HOME7 = "tools/hooks/home7.py"
+#: Spelled out here, not read from check.FIELDS, so dropping a field there fails.
+REQUIRED = ("path", "symbol", "reason", "contract")
 
 
 class TC4ExceptionsAreRefused(unittest.TestCase):
@@ -170,14 +172,14 @@ class TC4ExceptionsAreRefused(unittest.TestCase):
         self.assertNotRegex(out, r": r[1-6] \[")
 
     def test_a_missing_field_is_refused(self):
-        for field in check.FIELDS:
+        for field in REQUIRED:
             with self.subTest(field=field):
                 body = "".join(line + "\n" for line in entry(HOME7, "r1").splitlines()
                                if not line.startswith(f"{field} ="))
                 self.assert_refused(f"missing field {field!r}", body)
 
     def test_an_empty_field_is_refused(self):
-        for field in check.FIELDS:
+        for field in REQUIRED:
             with self.subTest(field=field):
                 body = entry(HOME7, "r1").replace(f'{field} = "', f'{field} = "" #"')
                 self.assert_refused(f"empty field {field!r}", body)
