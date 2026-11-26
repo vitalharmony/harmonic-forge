@@ -84,10 +84,18 @@ diff that already landed unreviewed got past the merge gate first, which
 fails open on a branch outside `BRANCH_ISSUE` (`issues_closed_by_pr` returns
 `[]`). That is pre-existing, filed separately, and not widened here.
 
-**It does not and cannot prevent the merge or close.** Fail-open by design,
-same rationale as every sibling hook here: it sees nothing of `gh api
-graphql` mutations, heredoc bodies, the GitHub web UI, or a merge/close
-issued from Python or curl. Its audience is the honest-but-careless agent.
+**It does not and cannot prevent the merge or close.** Its reads fail open,
+as every sibling hook's do, but a literal gh call it reads and cannot name or
+prove is not a close or merge is denied before any read (harmonic-forge#1499).
+It reads no gh call in a segment holding a `bash|sh|zsh -c` word pair anywhere:
+that segment is read only as the shell's payload, so `gh issue close 5 -c sh -c
+x` passes, as on main. It sees nothing behind a runner or expansion main's
+predicate does not strip (`sudo`, `xargs`, `$G`), heredoc bodies, the web UI,
+Python or curl; some of those also skip the gh shim (harmonic-forge#1577). It
+never models the shell environment: a call whose argv names no repo, in a command
+naming GH_REPO or GH_HOST anywhere, is undecided; setting either without naming
+it (BASH_ENV, `source`, `eval`, `cd`) behaves as on main (harmonic-forge#1577).
+Its audience is the honest-but-careless agent.
 """
 from __future__ import annotations
 
@@ -106,6 +114,7 @@ from hook_identity import (  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import gh_argv_adapters as A  # noqa: E402
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
 
 #: harmonic-forge#1433 (sticky-wicket PATCH, issuecomment-7002145817): the
@@ -185,25 +194,15 @@ PRECLOSE_LABEL = "preclose-inspected"
 #: are gated -- see "What this guarantees" above for why gating on the
 #: *absence* of a Lane 3 trail was wrong.
 TOOLING_EXCEPTION_LABEL = "tooling-exception"
-
-#: `gh pr merge` flags that consume the following token. Every other flag is
-#: valueless, so a bare number after it IS the PR/issue number. The inherited
-#: "skip any token whose predecessor starts with -" heuristic silently dropped
-#: the number in `gh pr merge --squash 1486`, because pr-merge's dominant flags
-#: (--squash/--merge/--rebase/--admin/--delete-branch) take no value -- the gate
-#: parsed to no target and allowed every such merge (hrse#1487 review finding 3).
-VALUE_TAKING_FLAGS = frozenset({
-    "--repo", "-R", "--comment", "-c", "--reason", "--body", "-b",
-    "--body-file", "-F", "--subject", "-t", "--title", "--match-head-commit",
-    "--author-email", "-A", "--duplicate-of",  # harmonic-forge#1447 pass 1
-})
-
-API_ISSUE_PATH = re.compile(r"(?:^|/)repos/([\w.-]+/[\w.-]+)/issues/(\d+)(?:/|$)")
-ISSUE_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
-PR_URL = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
-ENV_ASSIGNMENT = re.compile(r"^\w+=")
-ISSUE_NUMBER = re.compile(r"^#?(\d+)$")
-REPO_FLAGS = ("--repo", "-R")
+#: harmonic-forge#1499 sticky-wicket PATCH: the hook never models the shell
+#: environment. A gated call whose argv names no repo, in a command where any
+#: token at any depth names one of these, is undecided (gh may read it).
+_GH_ENV = ("GH_REPO", "GH_HOST")
+#: gh's own api placeholder grammar (cli/cli pkg/cmd/api/api.go): a path holding
+#: one is filled from GH_REPO or the checkout, so it never names the repo. Go's
+#: regexp `\b` is ASCII, so re.ASCII: `:repoé` is a placeholder to gh too.
+_PLACEHOLDER = re.compile(r":(?:owner|repo|branch)\b|\{[a-z]+\}", re.ASCII)
+_UNDECIDED = (None, "", "issue", False)
 
 
 def _allow() -> None:
@@ -256,138 +255,51 @@ def _gh(*args: str, cwd: str | None = None, repo: str | None = None) -> str | No
     return result.stdout
 
 
-def _flag_value(tokens: list[str], index: int, names: tuple[str, ...]) -> str | None:
-    token = tokens[index]
-    for name in names:
-        if token == name and index + 1 < len(tokens):
-            return tokens[index + 1]
-        if token.startswith(f"{name}="):
-            return token.split("=", 1)[1]
-    return None
+def _mentions_gh_env(segments: list[list[str]], depth: int = 0) -> bool:
+    """True when any token of `segments`, at any depth, holds GH_REPO or GH_HOST.
+    Each token is re-tokenized as a command of its own, so a `-c` payload's
+    `export GH_RE""PO=x` is seen after quote removal (harmonic-forge#1499)."""
+    for token in (t for tokens in segments for t in tokens):
+        if any(name in token for name in _GH_ENV):
+            return True
+        try:
+            inner = command_segments(token)
+        except ValueError:
+            continue
+        if inner != [[token]] and (depth >= 8 or _mentions_gh_env(inner, depth + 1)):
+            return True
+    return False
 
 
-def _parse_positional_target(
-    rest: list[str], url_pattern: re.Pattern[str],
-) -> tuple[str | None, str | None]:
-    """(repo, number) from `gh <cmd> <sub> ...`'s remaining tokens."""
-    repo: str | None = None
-    number: str | None = None
+def _gh_reading(raw_tokens: list[str]) -> tuple[list[str], A.Result] | None:
+    """One segment's literal gh call and the adapter's reading of it; None when
+    the segment is not a literal gh call (harmonic-forge#1499).
 
-    for i, token in enumerate(rest):
-        value = _flag_value(rest, i, REPO_FLAGS)
-        if value:
-            repo = value
-        if number is None and not token.startswith("-"):
-            previous = rest[i - 1] if i else ""
-            # Only skip a token that is genuinely a preceding flag's VALUE.
-            # Testing `previous.startswith("-")` alone drops the real number
-            # after any valueless flag -- see VALUE_TAKING_FLAGS.
-            if previous in VALUE_TAKING_FLAGS:
-                continue
-            url = url_pattern.search(token)
-            if url:
-                repo, number = url.group(1), url.group(2)
-                continue
-            match = ISSUE_NUMBER.match(token)
-            if match:
-                number = match.group(1)
-
-    return repo, number
-
-
-def _parse_issue_close(tokens: list[str]) -> tuple[str | None, str, str] | None:
-    """`gh issue close ...` -> (repo, issue_number, kind='issue')."""
-    if len(tokens) < 4 or tokens[1] != "issue" or tokens[2] != "close":
-        return None
-    repo, number = _parse_positional_target(tokens[3:], ISSUE_URL)
-    return (repo, number, "issue") if number else None
-
-
-def _parse_pr_merge(tokens: list[str]) -> tuple[str | None, str, str] | None:
-    """`gh pr merge ...` -> (repo, pr_number, kind='pr').
-
-    hrse#1487's own preclose-inspection: gating only the close enforces the
-    review after the diff has already landed on main, which is the opposite
-    of what `agents/preclose-inspection.md` specifies.
+    Recognition is main's, unchanged: `shell_parse.strip_invocation_prefix` plus
+    a basename test (design amendment, F1498's sticky-wicket PATCH). The adapter
+    owns only target and flag grammar, and always reads an empty environment:
+    the repo is argv's or none (the checkout's, as on main). An api path holding
+    a gh placeholder names no repo, so a gated one is undecided. Any fault after
+    recognition is undecided: a deny, never a pass. Shared by
+    `find_gated_targets_exempt` and `merge_head_commits`.
     """
-    if len(tokens) < 3 or tokens[1] != "pr" or tokens[2] != "merge":
+    tokens = strip_invocation_prefix(raw_tokens)
+    if not tokens or os.path.basename(tokens[0]) != "gh":
         return None
-    repo, number = _parse_positional_target(tokens[3:], PR_URL)
-    # `gh pr merge` with no positional argument merges the current branch's
-    # PR. Resolving that needs the branch, which the payload does not carry
-    # reliably, so never guess. hrse#1487 failed open here; harmonic-forge#1077
-    # pass 2 found that lets an unbound merge through, so it now returns an
-    # empty number, which main() denies: name the PR explicitly.
-    return (repo, number or "", "pr")
+    try:
+        result = A.classify_argv(tokens[1:], {})
+        if result.gated and tokens[1] == "api" and _PLACEHOLDER.search(A.gh_argv.parse(tokens[1:]).positionals[0]):
+            return tokens, A.Result(A.UNPROVABLE, reason="a gh placeholder in the api path names no repo")
+        return tokens, result
+    except Exception as exc:  # noqa: BLE001 - any parser fault denies, never passes
+        return tokens, A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
 
 
-def _parse_api_merge(tokens: list[str]) -> tuple[str, str, str] | None:
-    """`gh api ... -X PUT .../pulls/N/merge` -> (repo, pr_number, kind='pr').
-
-    harmonic-forge#549 AC4. This hook parsed exactly three shapes -- `gh issue
-    close`, `gh pr merge`, and `gh api PATCH ... state=closed` -- so the REST
-    merge form matched none of them and passed unexamined. `batch_auth` has
-    always handled both merge forms (`classify_pr_merge` checks
-    `API_MERGE_PATH` plus `_method_is(rest, "PUT")`), which is why BATCH
-    stopped a live `gh api -X PUT` merge on 2026-09-09 while this guard did
-    not look at it at all. Two hooks parsing the same command class to
-    different depths is the gap.
-
-    `API_MERGE_PATH` is imported from `batch_auth` rather than re-declared: a
-    second copy of the pattern is what drifts, and the two hooks disagreeing
-    about what counts as a merge is the defect being fixed.
-    """
-    if len(tokens) < 3 or tokens[1] != "api":
-        return None
-
-    from batch_auth import API_MERGE_PATH  # noqa: PLC0415
-
-    joined = tokens[2:]
-    is_put = False
-    target: tuple[str, str] | None = None
-
-    for i, token in enumerate(joined):
-        upper = token.upper()
-        if upper in ("-XPUT", "--METHOD=PUT", "-X=PUT"):
-            is_put = True
-        if token in ("-X", "--method") and i + 1 < len(joined):
-            if joined[i + 1].upper() == "PUT":
-                is_put = True
-        match = API_MERGE_PATH.search(token)
-        if match:
-            target = (match.group(1), match.group(2))
-
-    if is_put and target:
-        return (target[0], target[1], "pr")
-    return None
-
-
-def _parse_api_close(tokens: list[str]) -> tuple[str, str, str] | None:
-    """`gh api ... PATCH ... state=closed` -> (repo, issue, kind='issue')."""
-    if len(tokens) < 3 or tokens[1] != "api":
-        return None
-
-    joined = tokens[2:]
-    is_patch = False
-    closes = False
-    target: tuple[str, str] | None = None
-
-    for i, token in enumerate(joined):
-        upper = token.upper()
-        if upper in ("-XPATCH", "--METHOD=PATCH", "-X=PATCH"):
-            is_patch = True
-        if token in ("-X", "--method") and i + 1 < len(joined):
-            if joined[i + 1].upper() == "PATCH":
-                is_patch = True
-        if token.replace(" ", "") == "state=closed":
-            closes = True
-        match = API_ISSUE_PATH.search(token)
-        if match:
-            target = (match.group(1), match.group(2))
-
-    if is_patch and closes and target:
-        return (target[0], target[1], "issue")
-    return None
+def _shell_payload(raw_tokens: list[str]) -> str | None:
+    """The command string of a `bash|sh|zsh -c|-lc|--command` segment, else None (main's)."""
+    return next((raw_tokens[i + 2] for i, token in enumerate(raw_tokens)
+                 if Path(token).name in {"bash", "sh", "zsh"} and i + 2 < len(raw_tokens)
+                 and raw_tokens[i + 1] in {"-c", "-lc", "--command"}), None)
 
 
 def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None:
@@ -402,7 +314,15 @@ def find_gated_targets(command: str) -> list[tuple[str | None, str, str]] | None
 def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, bool]] | None:
     """`find_gated_targets`, each target carrying its own exempt bit: True
     only for an issue close in an exact not-planned / duplicate shape
-    (`_canonical_not_planned_close`). harmonic-forge#1433: never one bit per command."""
+    (`_canonical_not_planned_close`). harmonic-forge#1433: never one bit per command.
+
+    Target and flag grammar is `gh_argv`'s, through `gh_argv_adapters`
+    (harmonic-forge#1499), read through `VERDICT["preclose"]`: a close or merge
+    the adapter cannot name (unbound) or cannot prove is not one (unparseable,
+    unprovable) is a target with an empty number, which `decide_targets` denies.
+    One undecided segment is exactly one `(None, "", "issue", False)` target, and
+    so is a target whose argv names no repo in a command that mentions
+    GH_REPO/GH_HOST anywhere (`_mentions_gh_env`)."""
     try:
         segments = command_segments(command)
     except ValueError:
@@ -410,26 +330,26 @@ def find_gated_targets_exempt(command: str) -> list[tuple[str | None, str, str, 
 
     targets: list[tuple[str | None, str, str, bool]] = []
     for raw_tokens in segments:
-        shell_index = next((i for i, token in enumerate(raw_tokens)
-                            if Path(token).name in {"bash", "sh", "zsh"}
-                            and i + 2 < len(raw_tokens)
-                            and raw_tokens[i + 1] in {"-c", "-lc", "--command"}), None)
-        if shell_index is not None:
-            nested_targets = find_gated_targets_exempt(raw_tokens[shell_index + 2])
+        payload = _shell_payload(raw_tokens)
+        if payload is not None:
+            nested_targets = find_gated_targets_exempt(payload)
             if nested_targets is None:
                 return None
             targets.extend(nested_targets)
             continue
-        tokens = strip_invocation_prefix(raw_tokens)
-        if not tokens:
+        reading = _gh_reading(raw_tokens)
+        if reading is None:
             continue
-        if os.path.basename(tokens[0]) != "gh":
-            continue
-        parsed = (_parse_issue_close(tokens) or _parse_pr_merge(tokens)
-                  or _parse_api_merge(tokens) or _parse_api_close(tokens))
-        if parsed:
-            exempt = parsed[2] == "issue" and _canonical_not_planned_close(tokens)
-            targets.append((*parsed, exempt))
+        tokens, result = reading
+        if result.outcome in (A.UNPARSEABLE, A.UNPROVABLE):
+            targets.append(_UNDECIDED)
+        elif result.gated and result.kind == "issue":
+            exempt = result.exempt and _canonical_not_planned_close(tokens)
+            targets.append((result.repo, result.number or "", "issue", exempt))
+        elif result.gated and result.kind == "pr":
+            targets.append((result.repo, result.number or "", "pr", False))
+    if any(target[0] is None for target in targets) and _mentions_gh_env(segments):
+        return [_UNDECIDED if target[0] is None else target for target in targets]
     return targets
 
 
@@ -744,40 +664,37 @@ def merge_head_commits(command: str, number: str) -> list[str | None]:
     (harmonic-forge#1077 AC5). The REST merge form is always None: where gh
     puts its `sha=` field depends on other flags (`--input` moves it to the
     query string), so it is never accepted as bound (pass-2 sticky-wicket)."""
-    found: list[str | None] = []
     try:
         segments = command_segments(command)
     except ValueError:
         return [None]
+    found: list[str | None] = []
     for raw_tokens in segments:
-        shell_index = next((i for i, token in enumerate(raw_tokens)
-                            if Path(token).name in {"bash", "sh", "zsh"}
-                            and i + 2 < len(raw_tokens)
-                            and raw_tokens[i + 1] in {"-c", "-lc", "--command"}), None)
-        if shell_index is not None:
-            found.extend(merge_head_commits(raw_tokens[shell_index + 2], number))
-            continue
-        tokens = strip_invocation_prefix(raw_tokens)
-        if not tokens or os.path.basename(tokens[0]) != "gh":
-            continue
-        cli = _parse_pr_merge(tokens)
-        api = None if cli else _parse_api_merge(tokens)
-        parsed = cli or api
-        if not parsed or parsed[1] != number:
-            continue
-        found.append(_bound_sha(tokens, True) if cli else None)
+        payload = _shell_payload(raw_tokens)
+        found.extend(merge_head_commits(payload, number) if payload is not None
+                     else _segment_heads(raw_tokens, number))
     return found or [None]
 
 
+def _segment_heads(raw_tokens: list[str], number: str) -> list[str | None]:
+    """The head one segment binds when it is a bound merge of PR `number`:
+    `_bound_sha` (the harmonic-forge#1077 allow-list) for a CLI merge, None for
+    the REST form; `[]` for any other segment. Recognition and target are
+    `_gh_reading`'s, the same reading `find_gated_targets_exempt` acts on."""
+    reading = _gh_reading(raw_tokens)
+    if reading is None:
+        return []
+    tokens, result = reading
+    if result.outcome != A.BOUND or result.kind != "pr" or result.number != number:
+        return []
+    return [_bound_sha(tokens, True) if tokens[1:2] != ["api"] else None]
+
+
 def merge_head_commits_from_tokens(tokens: list[str], number: str) -> list[str | None]:
-    """`merge_head_commits` for one already-split argv (the gh shim's,
-    harmonic-forge#1447)."""
-    cli = _parse_pr_merge(tokens)
-    api = None if cli else _parse_api_merge(tokens)
-    parsed = cli or api
-    if not parsed or parsed[1] != number:
-        return [None]
-    return [_bound_sha(tokens, True) if cli else None]
+    """`merge_head_commits` for one already-split argv: a whole segment, `gh`
+    and any prefix included (`["gh", "pr", "merge", "7", ...]`), read as the
+    shell segment it is (harmonic-forge#1447, #1499)."""
+    return _segment_heads(tokens, number) or [None]
 
 
 def _match_head_message(repo: str, issue: str, pr: str, head_sha: str) -> str:
@@ -881,6 +798,13 @@ def decide_targets(targets, cwd: str | None, heads_for, *, strict_repo: bool = F
               "which this hook cannot bind to a reviewed head (harmonic-forge#1077). Name "
               "the PR explicitly, e.g.:\n"
               "  gh pr merge <N> --repo <owner/repo> --squash --match-head-commit <sha>"), None
+    if any(not number for _, number, _kind, _exempt in targets):
+        # harmonic-forge#1499: before any repo or label read, whose fail-open
+        # paths must not run first.
+        return ("Blocked: this hook cannot name or prove the issue this command closes "
+                "(an unbound, unparseable or unprovable gh call), so it cannot check the "
+                f"{TOOLING_EXCEPTION_LABEL!r} label (harmonic-forge#1499). Name it as:\n"
+                "  gh issue close <N> --repo <owner/repo>"), None
 
     resolved: dict[str | None, str | None] = {}
     for explicit_repo, number, kind, exempt in targets:

@@ -102,9 +102,12 @@ class FindTargetsTests(unittest.TestCase):
         open before)."""
         self.assertEqual(hook.find_gated_targets("gh pr merge --squash"), [(None, "", "pr")])
 
-    def test_state_open_is_not_a_close(self) -> None:
+    def test_state_open_is_an_issue_mutation_target(self) -> None:
+        """Changed by harmonic-forge#1499: corpus row `preclose` / `gh api -X
+        PATCH .../issues/1476 -f state=open`, classified `intended`. gh_argv
+        binds every issue REST mutation it cannot prove state-free."""
         self.assertEqual(hook.find_gated_targets(
-            f"gh api -X PATCH repos/{REPO}/issues/1476 -f state=open"), [])
+            f"gh api -X PATCH repos/{REPO}/issues/1476 -f state=open"), [(REPO, "1476", "issue")])
 
     def test_unrelated_commands(self) -> None:
         for command in ("git status", "gh issue view 1476", "gh pr view 1486",
@@ -673,26 +676,17 @@ class ApiMergeFormTests(unittest.TestCase):
         self.assertEqual(
             hook.find_gated_targets("gh api -X GET repos/o/r/pulls/7/merge"), [])
 
-    def test_put_elsewhere_is_not_a_merge(self):
+    def test_put_elsewhere_is_a_pr_mutation_target(self):
+        """Changed by harmonic-forge#1499: corpus row `preclose` / `gh api -X PUT
+        repos/o/r/pulls/7`, classified `intended`: gh_argv binds a PR write."""
         self.assertEqual(
-            hook.find_gated_targets("gh api -X PUT repos/o/r/pulls/7"), [])
+            hook.find_gated_targets("gh api -X PUT repos/o/r/pulls/7"), [("o/r", "7", "pr")])
 
     def test_cli_and_rest_forms_agree(self):
         """The whole point: both spellings of one action reach one verdict."""
         cli = hook.find_gated_targets("gh pr merge 7 --repo o/r --squash")
         rest = hook.find_gated_targets("gh api -X PUT repos/o/r/pulls/7/merge")
         self.assertEqual(cli, rest)
-
-    def test_the_pattern_is_batch_auths_not_a_second_copy(self):
-        """A second copy of the regex is what drifts, so assert the identity."""
-        import batch_auth
-
-        self.assertIsNotNone(
-            batch_auth.API_MERGE_PATH.search("repos/o/r/pulls/7/merge"))
-        self.assertEqual(
-            batch_auth.classify_pr_merge(
-                ["gh", "api", "-X", "PUT", "repos/o/r/pulls/7/merge"]),
-            ("o/r", 7))
 
 
 class PreCloseReceiptOkIntegrationTests(unittest.TestCase):

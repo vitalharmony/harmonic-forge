@@ -58,13 +58,15 @@ def commands() -> list[str]:
     return sorted(set(found))
 
 
-def main_outputs(cmds: list[str]) -> dict:
+def main_outputs(cmds: list[str], evaluator: str = _EVAL) -> dict:
+    """`evaluator` run on 178ba5f's hooks over `cmds` (shared with
+    preclose_main_table.py, harmonic-forge#1499)."""
     archive = subprocess.run(["git", "-C", str(HOOKS.parent.parent), "archive", BASE, "tools"],
                              capture_output=True, check=True).stdout
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(fileobj=BytesIO(archive)) as tar:
             tar.extractall(tmp, filter="data")
-        done = subprocess.run([sys.executable, "-I", "-c", _EVAL, str(Path(tmp) / "tools" / "hooks")],
+        done = subprocess.run([sys.executable, "-I", "-c", evaluator, str(Path(tmp) / "tools" / "hooks")],
                               input=json.dumps(cmds), capture_output=True, text=True, check=True,
                               cwd=tmp, env={"PATH": "/usr/bin:/bin", "HOME": tmp})
     return json.loads(done.stdout)

@@ -1,0 +1,6077 @@
+{
+ "! \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "! gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "! gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "\"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "\"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "\"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "\"$X/gh\" api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "\"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "\"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "\"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "\"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "/bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "/bin/bash -lc 'gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "/usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "/usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "/usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "/usr/bin/gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "/usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "/usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "/usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "/usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=/usr/bin/gh gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "A=v \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "A=v /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "A=v dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "A=v gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "A=v gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "A=v gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_HOST=`h` gh pr merge 7 -R o/r": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_HOST=h gh issue close 5 -r 'not planned'": [
+  [
+   null,
+   "5",
+   "issue",
+   true
+  ]
+ ],
+ "GH_HOST=other.example gh pr merge 9 --repo o/r --squash --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  [
+   "o/r",
+   "9",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=$O/r gh issue close 12": [
+  [
+   null,
+   "12",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=a/b gh issue close 12": [
+  [
+   null,
+   "12",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -i gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=d/x env -u GH_REPO gh pr merge 7 -R o/r --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=decoy/x env --unset GH_REPO gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=decoy/x env --unset=GH_REPO gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=decoy/x env -u GH_REPO gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=decoy/x env -u GH_REPO gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=decoy/x env -uGH_REPO gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y bash -c 'gh issue close 5'": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y bash -c 'unset GH_REPO; gh issue close 5'": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y dash -c 'GH_REPO=o/r gh issue close 5'": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y dash -c 'GH_REPO=o/r; gh issue close 5'": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y env --chdir=/t gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y env -i HOME=/h gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y env -i gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "GH_REPO=x/y env GH_REPO=o/r gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y exec -c gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y exec -cl gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y exec -lx gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y gh api -X PATCH repos/:owner/:repo/issues/5 -f state=closed": [],
+ "GH_REPO=x/y gh api -X PATCH repos/o/r/issues/5 -f state=closed": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y gh issue close https://github.com/o/r/issues/5": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y ksh -c 'gh issue close 5'": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y time GH_REPO=o/r gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "GH_REPO=x/y time GH_REPO=o/r gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "bash -c 'export GH_RE\"\"PO=x; gh issue close 5'": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "bash -c 'gh pr merge 1486 -R vitalharmony/hrse --match-head-commit abc123'": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "command -p \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "command -p gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command -p gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "command /bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "dash -c 'gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "echo gh pr merge 1": [],
+ "echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "env \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset GH_REPO gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset GH_REPO gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env --unset=GH_REPO gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "env -u GH_REPO \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "env -u GH_REPO /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "env -u GH_REPO dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "env -u GH_REPO gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh issue close 12": [
+  [
+   null,
+   "12",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh issue close 5 --repo o/r": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -u GH_REPO gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env -uGH_REPO gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env -uGH_REPO gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env /bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "env /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env 1=x \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [],
+ "env 1=x \"$X/gh\" issue close 849": [],
+ "env 1=x \"$X/gh\" issue close 849 -R o/r": [],
+ "env 1=x \"$X/gh\" pr merge 7 --match-head-commit abc123": [],
+ "env 1=x \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [],
+ "env 1=x /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [],
+ "env 1=x /usr/bin/gh issue close 849": [],
+ "env 1=x /usr/bin/gh issue close 849 -R o/r": [],
+ "env 1=x /usr/bin/gh pr merge 7 --match-head-commit abc123": [],
+ "env 1=x /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [],
+ "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env 1=x dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [],
+ "env 1=x dash -c 'gh issue close 849 -R o/r'": [],
+ "env 1=x dash -c 'gh issue close 849'": [],
+ "env 1=x dash -c 'gh pr merge 7 --match-head-commit abc123'": [],
+ "env 1=x dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [],
+ "env 1=x gh api -X PATCH repos/o/r/issues/849 -f state=closed": [],
+ "env 1=x gh issue close 849": [],
+ "env 1=x gh issue close 849 -R o/r": [],
+ "env 1=x gh pr merge 7 --match-head-commit abc123": [],
+ "env 1=x gh pr merge 7 -R o/r --match-head-commit abc123": [],
+ "env bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env env gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env env gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "env gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "env gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec -a GH_REPO=decoy/x gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "exec /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "exec gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "exec gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_RE\"\"PO=x; gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "export GH_REPO=x/y; \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "export GH_REPO=x/y; /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "export GH_REPO=x/y; dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "export GH_REPO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "export GH_REPO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh -R o/r issue close 12": [],
+ "gh -R o/r issue close 5": [],
+ "gh api --method PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh api --method PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh api --method PUT repos/vitalharmony/hrse/pulls/1486/merge -fsha=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X GET repos/o/r/pulls/7/merge": [],
+ "gh api -X PATCH 'repos/{owner}/{repo}/issues/5' -f state=closed": [],
+ "gh api -X PATCH repos/:owner/:repo/issues/5 -f state=closed": [],
+ "gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "gh api -X PATCH repos/o/r/issues/5 -F state=closed -F state_reason=not_planned": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/o/r/issues/5 -f state=closed": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -F state=closed -F state_reason=not_planned": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed --jq state_reason=not_planned": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -H state_reason=not_planned": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=duplicate": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   true
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=not_planned": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   true
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/harmonic-forge/issues/1433 -f state=closed -f state_reason=not_planned -f state_reason=completed": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=open": [],
+ "gh api -X PATCH repos/{owner}/{repo}/issues/5 -f state=closed": [],
+ "gh api -X PUT 'repos/{owner}/{repo}/pulls/5/merge'": [
+  [
+   "{owner}/{repo}",
+   "5",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/o/:repo/pulls/7/merge": [
+  [
+   "o/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/o/r/pulls/5/merge": [
+  [
+   "o/r",
+   "5",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/o/r/pulls/7": [],
+ "gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/o/r/pulls/7/merge -f merge_method=squash": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge --field=sha=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -H -f -H sha=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -f commit_message=-fsha=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -f sha=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -f sha=abc123 --input body.json": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh api -XPUT repos/o/r/pulls/8/merge": [
+  [
+   "o/r",
+   "8",
+   "pr",
+   false
+  ]
+ ],
+ "gh api graphql --input body.json -X POST": [],
+ "gh api repos/:owner/:repo/issues/5": [],
+ "gh api repos/:owner/:repo\u00e9/issues/5 -X PATCH -f state=closed": [],
+ "gh api repos/o/:repo\u00e9/issues/5 -X PATCH -f state=closed": [],
+ "gh api repos/o/r/issues/5": [],
+ "gh issue close": [],
+ "gh issue close \"$N\"": [],
+ "gh issue close \"$N\" --repo o/r": [],
+ "gh issue close '$N'": [],
+ "gh issue close 12 --bogus": [
+  [
+   null,
+   "12",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 12 --repo o/r": [
+  [
+   "o/r",
+   "12",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1269 --repo vitalharmony/hrse --reason 'not planned'": [
+  [
+   "vitalharmony/hrse",
+   "1269",
+   "issue",
+   true
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge --duplicate-of 1400": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   true
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason 'not planned'": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   true
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason completed": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge --reason='not planned'": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -c --duplicate-of": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -c state_reason=duplicate": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -r 'Not Planned'": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -r 'not planned' -c done": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -r 'not planned' -r completed": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -r duplicate": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   true
+  ]
+ ],
+ "gh issue close 1433 --repo vitalharmony/harmonic-forge -r duplicate --duplicate-of 1400": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1433",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1476": [
+  [
+   null,
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1476 --comment 'x": null,
+ "gh issue close 1476 --repo vitalharmony/hrse": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1476 --repo vitalharmony/hrse --comment 'closes 219 rows'": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 1476 -R vitalharmony/hrse": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 5 --repo o/r --bogus": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 5 --repo o/r --reason='not planned'": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 5 --repo o/r -r 'not planned'": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   true
+  ]
+ ],
+ "gh issue close 5 --repo vitalharmony/harmonic-forge -r 'not planned'; gh issue close 6 --repo vitalharmony/harmonic-forge": [
+  [
+   "vitalharmony/harmonic-forge",
+   "5",
+   "issue",
+   true
+  ],
+  [
+   "vitalharmony/harmonic-forge",
+   "6",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 5 -R o/r": [
+  [
+   "o/r",
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 5 -c sh -c x": [],
+ "gh issue close 6 --repo vitalharmony/harmonic-forge; gh issue close 5 --repo vitalharmony/harmonic-forge -r 'not planned'": [
+  [
+   "vitalharmony/harmonic-forge",
+   "6",
+   "issue",
+   false
+  ],
+  [
+   "vitalharmony/harmonic-forge",
+   "5",
+   "issue",
+   true
+  ]
+ ],
+ "gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue close 99 --repo x/y": [
+  [
+   "x/y",
+   "99",
+   "issue",
+   false
+  ]
+ ],
+ "gh issue view 12": [],
+ "gh issue view 1476": [],
+ "gh issue view 5": [],
+ "gh pr create --title x": [],
+ "gh pr merge": [
+  [
+   null,
+   "",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge --match-head-commit 123456 7": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge --match-head-commit ABC123 1486 -R vitalharmony/hrse": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge --squash": [
+  [
+   null,
+   "",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge -R vitalharmony/hrse --squash": [
+  [
+   "vitalharmony/hrse",
+   "",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1440 --repo vitalharmony/harmonic-forge --squash": [
+  [
+   "vitalharmony/harmonic-forge",
+   "1440",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 --repo vitalharmony/hrse --squash": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --body-file --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --body='x --match-head-commit=abc123'": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --match-head-commit abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --match-head-commit abc123; gh pr merge 1486 -R vitalharmony/hrse": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ],
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash -- --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash --body --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash --match-head-commit abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash --match-head-commit def456": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash --subject --match-head-commit abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash --unknown --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash -b 'see --match-head-commit' --match-head-commit abc123 -d": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash -b --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse --squash; gh issue close 1476 -R vitalharmony/hrse": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ],
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh pr merge 1486 -R vitalharmony/hrse -t --match-head-commit=abc123": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 5 --repo o/r --bogus": [
+  [
+   "o/r",
+   "5",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 7 --repo o/r --squash": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr merge https://github.com/vitalharmony/hrse/pull/1486 --squash": [
+  [
+   "vitalharmony/hrse",
+   "1486",
+   "pr",
+   false
+  ]
+ ],
+ "gh pr view 1486": [],
+ "gh repo view": [],
+ "gh triage-done 12 --repo o/r": [],
+ "gh(){ GH_REPO=x command gh \"$@\"; }; gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vh gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vh gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "gh-as vitalharmony gh pr merge 5 --repo o/r": [
+  [
+   "o/r",
+   "5",
+   "pr",
+   false
+  ]
+ ],
+ "gha vh \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [],
+ "gha vh \"$X/gh\" issue close 849": [],
+ "gha vh \"$X/gh\" issue close 849 -R o/r": [],
+ "gha vh \"$X/gh\" pr merge 7 --match-head-commit abc123": [],
+ "gha vh \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [],
+ "gha vh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [],
+ "gha vh /usr/bin/gh issue close 849": [],
+ "gha vh /usr/bin/gh issue close 849 -R o/r": [],
+ "gha vh /usr/bin/gh pr merge 7 --match-head-commit abc123": [],
+ "gha vh /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [],
+ "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "gha vh dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [],
+ "gha vh dash -c 'gh issue close 849 -R o/r'": [],
+ "gha vh dash -c 'gh issue close 849'": [],
+ "gha vh dash -c 'gh pr merge 7 --match-head-commit abc123'": [],
+ "gha vh dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [],
+ "gha vh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [],
+ "gha vh gh issue close 849": [],
+ "gha vh gh issue close 849 -R o/r": [],
+ "gha vh gh pr merge 7 --match-head-commit abc123": [],
+ "gha vh gh pr merge 7 -R o/r --match-head-commit abc123": [],
+ "git status": [],
+ "grep -rn 'gh issue close' tools/": [],
+ "nice -n5 \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nice -n5 gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nice -n5 gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "nohup \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup /bin/bash -lc 'echo ok && gh-as vitalharmony gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=closed'": [
+  [
+   "vitalharmony/hrse",
+   "1476",
+   "issue",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "nohup /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup GH_REPO=a/b gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [],
+ "nohup dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh api -X PUT repos/o/r/pulls/7/merge'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [],
+ "nohup gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+  [
+   ":owner/:repo",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup gh api -X PUT repos/o/r/pulls/7/merge": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "nohup gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "nohup gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "stdbuf -oL gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "stdbuf -oL gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "sudo gh pr merge 5": [],
+ "then \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "then gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "then gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "time gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "time gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout -s GH_REPO=decoy/x 5 gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 \"$X/gh\" issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 \"$X/gh\" issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 /usr/bin/gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 /usr/bin/gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 dash -c 'gh issue close 849 -R o/r'": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 dash -c 'gh issue close 849'": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 gh issue close 849": [
+  [
+   null,
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 gh issue close 849 -R o/r": [
+  [
+   "o/r",
+   "849",
+   "issue",
+   false
+  ]
+ ],
+ "timeout 5 gh pr merge 7 --match-head-commit abc123": [
+  [
+   null,
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "timeout 5 gh pr merge 7 -R o/r --match-head-commit abc123": [
+  [
+   "o/r",
+   "7",
+   "pr",
+   false
+  ]
+ ],
+ "unset GH_REPO; gh issue close 5": [
+  [
+   null,
+   "5",
+   "issue",
+   false
+  ]
+ ],
+ "x": [],
+ "xargs -n1 gh issue close": []
+}

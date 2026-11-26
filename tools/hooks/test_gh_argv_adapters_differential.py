@@ -33,9 +33,9 @@ from shell_parse import command_segments  # noqa: E402
 from test_gh_argv_adapters import ASK, CONSUMERS, NOT_A_CLOSE, PASS, REFUSE, ROWS, SCOPE, verdict  # noqa: E402
 
 CLASSES = {"old-defect", "adapter-defect", "intended"}
+MENTION_DENY, UNDECIDED_SET = ("tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST, so the target is denied before any read where main bound the checkout"), frozenset({('issue', None, None, False)})
 
-#: (consumer, row) -> (class, reason, observation). The observation is
-#: (old verdict, new verdict, old targets, new targets), exactly as observed.
+#: (consumer, row) -> (class, reason, observation): (old verdict, new verdict, old targets, new targets), as observed.
 DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
     ('batch', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
         (ASK, ASK, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
@@ -75,37 +75,33 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('migration', 'unprovable_placeholder_merge'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
-        (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset({('issue', 'a/b', '12', False)}))),
+    ('preclose', 'bound_inline_repo'): ('intended', MENTION_DENY, (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), UNDECIDED_SET)),
     ('preclose', 'unbound_issue_no_arg'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unbound_variable'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unparseable_flag'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-        (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset())),
+    ('preclose', 'unparseable_flag'): ('intended', 'verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)',
+        (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset({('issue', None, None, False)}))),
     ('preclose', 'unprovable_alias'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unprovable_env_unset'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-        (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset())),
+    ('preclose', 'unprovable_env_unset'): ('intended', MENTION_DENY, (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), UNDECIDED_SET)),
     ('preclose', 'unprovable_flag_before_root'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unprovable_graphql_input'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unprovable_placeholder_close'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unprovable_placeholder_merge'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-        (REFUSE, REFUSE, frozenset({('pr', '{owner}/{repo}', '5', False)}), frozenset())),
-    ('preclose', 'unprovable_sudo'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
-        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'unprovable_xargs'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
-        (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('preclose', 'unprovable_placeholder_merge'): ('intended', 'verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)',
+        (REFUSE, REFUSE, frozenset({('pr', '{owner}/{repo}', '5', False)}), frozenset({('issue', None, None, False)}))),
 }
 
 
+#: Preclose `unprovable_sudo`/`unprovable_xargs` agree with main ([]): stated
+#: residuals of F1499's amendment change 3, tracked in harmonic-forge#1577.
 PLANTED = ["gh", "issue", "close", "99", "--repo", "x/y"]
-MIGRATION_MAIN_FIXTURE = HERE / "testdata" / "migration_main_178ba5f.json"
-MIGRATION_MAIN = (json.loads(MIGRATION_MAIN_FIXTURE.read_text(encoding="utf-8"))
-                  if MIGRATION_MAIN_FIXTURE.exists() else {})
+#: Main's frozen recognizers (migration: F1498 survivor 3; preclose: F1499 amendment change 4): never the hook under test.
+MAIN_FIXTURES = {c: HERE / "testdata" / f"{c}_main_178ba5f.json" for c in ("migration", "preclose")}
+MAIN = {c: json.loads(f.read_text(encoding="utf-8")) if f.exists() else {} for c, f in MAIN_FIXTURES.items()}
 
 
 def _norm(kind: str, repo, number) -> tuple:
@@ -123,18 +119,23 @@ def _old_targets(consumer: str, tokens: list[str] | None, command: str | None = 
         if (merge := batch_auth.classify_pr_merge(tokens)) is not None:
             found.add(_norm("pr", *merge))
         return frozenset(found)
+    if command not in MAIN[consumer]:
+        raise AssertionError(f"{command!r} is not in {MAIN_FIXTURES[consumer].name}; "
+                             f"regenerate it: python3 tools/hooks/testdata/{consumer}_main_table.py")
+    found = MAIN[consumer][command]
     if consumer == "migration":
-        # Main's recognizer, frozen (reforged pass 1 survivor 3): the hook under
-        # test cannot be its own baseline, or no loosening against main shows.
-        if command not in MIGRATION_MAIN:
-            raise AssertionError(f"{command!r} is not in {MIGRATION_MAIN_FIXTURE.name}; "
-                                 "regenerate it: python3 tools/hooks/testdata/migration_main_table.py")
-        found = MIGRATION_MAIN[command]
         return None if found is None else frozenset(_norm("issue", r, n) for r, n in found)
     # The preclose hook decides on find_gated_targets_exempt: the exemption bit is
     # part of what it acts on, so it is part of the observation.
-    found = block_missing_preclose_inspection.find_gated_targets_exempt(command)
     return None if found is None else frozenset(_norm(k, r, n) + (bool(e),) for r, n, k, e in found)
+
+
+def _hook_targets(consumer: str, command: str) -> frozenset:
+    """The hook's own reading, measured against main (F1498 survivor 3, F1499)."""
+    if consumer == "migration":
+        return frozenset(_norm("issue", r, n) for r, n in block_data_migration_close.find_close_targets(command) or [])
+    found = block_missing_preclose_inspection.find_gated_targets_exempt(command) or []
+    return frozenset(_norm(k, r, n) + (bool(e),) for r, n, k, e in found)
 
 
 def _old_verdict(consumer: str, targets: frozenset) -> str:
@@ -153,12 +154,9 @@ def _strictest(verdicts: list[str]) -> str:
 
 
 def observe(consumer: str, segments: list[list[str]], old: frozenset, command: str | None = None) -> tuple:
-    if consumer == "migration" and command is not None:
-        # The hook's own reading, so its text-side fallback is measured against
-        # main (reforged pass 1 survivor 3), not the bare adapter.
-        found = block_data_migration_close.find_close_targets(command) or []
-        new_verdict = REFUSE if found else NOT_A_CLOSE
-        new = frozenset(_norm("issue", r, n) for r, n in found)
+    if consumer in MAIN and command is not None:
+        new = _hook_targets(consumer, command)
+        new_verdict = _old_verdict(consumer, new)
     else:
         results = [A.classify(tokens, {}) for tokens in segments]
         new_verdict = _strictest([verdict(consumer, r) for r in results])
@@ -219,7 +217,7 @@ def recorded(test_module: str, hooks: list[tuple[object, str]]) -> list:
             return _original(arg, *args, **kwargs)
         setattr(module, name, wrapper)
     try:
-        suite = unittest.defaultTestLoader.loadTestsFromName(test_module)
+        suite = unittest.defaultTestLoader.loadTestsFromNames(test_module.split(","))
         outcome = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
     finally:
         for module, name, original in saved:
@@ -299,7 +297,7 @@ class CorpusReplay(unittest.TestCase):
                     [(block_data_migration_close, "find_close_targets")])
 
     def test_preclose_hook_corpus(self):
-        self._check("preclose", "test_block_missing_preclose_inspection",
+        self._check("preclose", "test_block_missing_preclose_inspection,test_block_missing_preclose_inspection_adapter",
                     [(block_missing_preclose_inspection, "find_gated_targets"),
                      (block_missing_preclose_inspection, "find_gated_targets_exempt")])
 
