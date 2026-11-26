@@ -324,13 +324,41 @@ class Round1Survivors(unittest.TestCase):
 
 #: Sticky verdict P2: an entry is "<step>: <what did not happen>; <repair>".
 ENTRY = re.compile(r"^(?P<step>[^:;]+): (?P<what>[^;]+); (?P<repair>.+)$")
-#: The closed set: every `python3` in a repair starts one of these four commands.
-CLOSED = (re.compile(r"python3 -c 'import sys; sys\.path\.insert\(0, \"[^\"]+\"\); import handoff_owed; "
-                     r"sys\.exit\(handoff_owed\.discharge\(\"[^\"]+\", \d+\) < 0\)'"),
-          re.compile(r"python3 \"\$\{HARMONIC_FORGE_ROOT:-\$HOME/harmonic-forge\}/tools/gh/gh_issue\.py\" "
-                     r"--repo \S+ --defer-existing \d+ "),
-          re.compile(r"python3 tools/gh/record_deferral\.py --repo \S+ --issue \d+ --operator-login \w"),
-          re.compile(r"python3 -c .*?route_store\.record_if_not_looser\("))
+#: One shlex-quoted word: bare safe characters, or '...' with shlex's '"'"' for a quote.
+_WORD = r"(?:[\w@%+=:,./-]+|'(?:[^']|'\"'\"')*')"
+_REPO = r"[\w.-]+/[\w.-]+"
+#: The closed set, each matched whole: the discharge and route `python3 -c`
+#: programs (checked by `_program_ok`), the `--defer-existing` retry, and the
+#: deferral watch record (a command when the login was read, else in words).
+CLOSED = re.compile(
+    rf"python3 -c (?P<prog>{_WORD})"
+    rf"|python3 \"\$\{{HARMONIC_FORGE_ROOT:-\$HOME/harmonic-forge\}}/tools/gh/gh_issue\.py\" "
+    rf"--repo {_REPO} --defer-existing \d+ --deferral-trigger {_WORD} --deferral-owner {_WORD}"
+    rf"|(?:python3 tools/gh/|run )record_deferral\.py --repo {_REPO} --issue \d+ --operator-login(?: {_WORD})?")
+#: The only calls a closed-set program makes, and the one it exists to make.
+_CALLS = {"sys.path.insert", "sys.exit", "gates.Route"}
+_TARGETS = {"handoff_owed.discharge", "route_store.record_if_not_looser"}
+#: What the rest of a repair, once its closed-set commands are cut, must not hold:
+#: a shell metacharacter or quote, a flag, a script, or a command word (a prose
+#: `;` stays: a command after one is still caught by its word or flag).
+NOT_WORDS = re.compile(r"[`$|&<>\"'\\]|(?<![\w])--?[A-Za-z]|\S\.(?:py|sh)\b"
+                       r"|\b(?:gh|git|mise|python3?|bash|sh|zsh|curl|wget|rm|mv|cp|sudo|cd|echo|jq"
+                       r"|l[123]-post)\b")
+
+
+def _program_ok(word: str) -> bool:
+    """A `python3 -c` program is a closed-set repair only when its statements are
+    imports and calls, and every call is the discharge or route record or a helper."""
+    import ast  # noqa: PLC0415
+    import shlex  # noqa: PLC0415
+    tree = ast.parse(shlex.split(word)[0])
+    if not all(isinstance(s, (ast.Import, ast.Expr)) for s in tree.body):
+        return False
+    if any(a.name not in {"sys", "handoff_owed", "gates", "route_store"}
+           for s in tree.body if isinstance(s, ast.Import) for a in s.names):
+        return False
+    calls = [ast.unparse(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    return set(calls) <= _CALLS | _TARGETS and sum(c in _TARGETS for c in calls) == 1
 
 
 def _entries(err: str) -> list[str]:
@@ -347,11 +375,17 @@ class P2RepairsAreAClosedSet(unittest.TestCase):
         repair = match["repair"]
         self.assertNotRegex(entry, r"<[\w .-]+>", "a <placeholder>")
         self.assertNotIn("route_store.record(", entry)
-        self.assertNotRegex(repair, r"\bgh api\b|mise run|l1-post")
-        if "gh_issue.py" in repair:
-            self.assertIn("--defer-existing", repair)
-        for at in (m.start() for m in re.finditer(r"python3 ", repair)):
-            self.assertTrue(any(c.match(repair, at) for c in CLOSED), repair[at:])
+        rest = []
+        at = 0
+        for command in CLOSED.finditer(repair):
+            if command["prog"] is not None:
+                self.assertTrue(_program_ok(command["prog"]), command[0])
+            rest.append(repair[at:command.start()])
+            at = command.end()
+        rest = " ".join(rest + [repair[at:]])
+        # The review finding: a shell command outside the four passed, since only a
+        # `python3` was checked. Anything not cut above must be plain words.
+        self.assertNotRegex(rest, NOT_WORDS, f"not one of the four commands or plain words: {repair}")
 
     def _board(self, **edges):
         defaults = {"_run_board": {"return_value": base._completed('{"id": "IT_1"}')},
@@ -427,12 +461,16 @@ class P3NotAttemptedListsComeFromOneHelper(unittest.TestCase):
 
 class P4AnUnparseableIssueNumberIsAnEntry(unittest.TestCase):
     def test_a_url_with_no_issue_number_exits_one_naming_the_skipped_steps(self):
-        code, err, mocks = _drive(PARKING, create_issue={"return_value": "https://github.com/o/r/pull/7"})
+        code, err, mocks = _drive(PARKING, create_issue={"return_value": "https://github.com/o/r/pull/7"},
+                                  _post_deferral={"return_value": True})
         self.assertEqual(code, 1, err)
         self.assertIn("- issue number: none could be read from https://github.com/o/r/pull/7, so the "
                       "obligation record, the route filing checkpoint and the R-0352 deferral were "
                       "not attempted", err)
+        # The review finding: the entry says these were skipped, so a call to any is a lie.
         mocks["record"].assert_not_called()
+        mocks["_route_at_filing"].assert_not_called()
+        mocks["_post_deferral"].assert_not_called()
         mocks["add_to_board"].assert_called_once()
 
 
