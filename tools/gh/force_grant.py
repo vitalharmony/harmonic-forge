@@ -27,9 +27,7 @@ the route recheck, and every other merge hook still decides that merge.
 Like BATCH and IMC, this trusts the operator-typed line and the session. The grant file
 and the public comment are an audit trail, not proof against a session that writes it.
 
-Run:
-    python3 tools/gh/force_grant.py record --key F1166
-    python3 tools/gh/force_grant.py status --key F1166
+Run: `python3 tools/gh/force_grant.py record|status --key F1166`
 """
 from __future__ import annotations
 
