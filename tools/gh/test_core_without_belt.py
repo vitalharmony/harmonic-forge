@@ -70,8 +70,8 @@ class OperatorBlocker(importlib.abc.MetaPathFinder):
 # --- checks (each child appends below its own issue's heading) -------------------
 
 # harmonic-forge#1590: `_etag_cache.conditional_get` reached `gh_as_raw` in the belt.
-@check
-def etag_conditional_get() -> object:
+# Both shapes run: with a counter (the belt's) and without one (gate_ci.s0_reader's).
+def _etag_reads(with_counter: bool) -> dict:
     import _etag_cache
 
     requests = []
@@ -100,14 +100,25 @@ def etag_conditional_get() -> object:
         def record_headers(self, account, headers):
             self.headers += 1
 
-    counter = Counter()
+    counter = Counter() if with_counter else None
     real, subprocess.run = subprocess.run, fake_run
     try:
         reads = [list(_etag_cache.conditional_get("acct", "repos/o/r/issues/1", counter))
                  for _ in range(2)]
     finally:
         subprocess.run = real
-    return {"reads": reads, "requests": requests, "counter": vars(counter)}
+    return {"reads": reads, "requests": requests,
+            "counter": vars(counter) if counter else None}
+
+
+@check
+def etag_conditional_get() -> object:
+    return _etag_reads(True)
+
+
+@check
+def etag_conditional_get_no_counter() -> object:
+    return _etag_reads(False)
 
 
 # --- child entry point and the tests ----------------------------------------------
@@ -158,6 +169,14 @@ class CoreWithoutBeltTests(unittest.TestCase):
         self.assertEqual(result["reads"], [[200, '{"n": 1}', False], [304, '{"n": 1}', True]])
         self.assertEqual(result["requests"][-1][3], 'W/"v1"')
         self.assertEqual(result["counter"]["calls_304"], 1)
+
+    def test_etag_conditional_get_without_a_counter_runs_with_the_belt_blocked(self):
+        # gate_ci.s0_reader's shape: no counter (the harmonic-forge#1590 round 1 survivor).
+        proc = _run(True, "check", "etag_conditional_get_no_counter")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["reads"], [[200, '{"n": 1}', False], [304, '{"n": 1}', True]])
+        self.assertIsNone(result["counter"])
 
 
 if __name__ == "__main__":
