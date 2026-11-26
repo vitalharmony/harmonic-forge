@@ -263,6 +263,12 @@ count = 1
 [[finding]]
 rule = "forge-root"
 path = "tools/lane/lane_hooks.json"
+text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
+count = 1
+
+[[finding]]
+rule = "forge-root"
+path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"python3 \\\"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\\\"\""
 count = 1
 
@@ -408,12 +414,6 @@ count = 1
 rule = "forge-root"
 path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"python3 \\\"${HOME}/harmonic-forge/tools/hooks/remind_gate_readiness_sweep.py\\\"\","
-count = 1
-
-[[finding]]
-rule = "forge-root"
-path = "tools/lane/lane_hooks.json"
-text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
 count = 1
 
 [[finding]]
@@ -912,12 +912,6 @@ count = 1
 rule = "gh-slot"
 path = "tools/run_tests.py"
 text = "default_home = Path.home() / \".config\" / \"gh-accounts\""
-count = 1
-
-[[finding]]
-rule = "import"
-path = "tools/gh/_etag_cache.py"
-text = "tools/gh/belt_mechanics.py"
 count = 1
 
 [[finding]]
@@ -2369,6 +2363,12 @@ count = 1
 [[finding]]
 rule = "project-name"
 path = "tools/lane/lane_hooks.json"
+text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
+count = 1
+
+[[finding]]
+rule = "project-name"
+path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"python3 \\\"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\\\"\""
 count = 1
 
@@ -2514,12 +2514,6 @@ count = 1
 rule = "project-name"
 path = "tools/lane/lane_hooks.json"
 text = "\"command\": \"python3 \\\"${HOME}/harmonic-forge/tools/hooks/remind_gate_readiness_sweep.py\\\"\","
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/lane/lane_hooks.json"
-text = "\"command\": \"f=\\\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\\\"; [ -f \\\"$f\\\" ] && python3 \\\"$f\\\" || true\","
 count = 1
 
 [[finding]]

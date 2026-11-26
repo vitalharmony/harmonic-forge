@@ -33,14 +33,14 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from belt_mechanics import CallCounter, gh_as_raw  # noqa: E402
 
 PRUNE_AFTER_SECONDS = 24 * 3600
 _ETAG = re.compile(r"(?im)^etag:\s*(.+?)\s*$")
@@ -63,7 +63,90 @@ def _account_dir(account: str) -> Path:
     return cache_root() / (_UNSAFE.sub("_", account).strip("_") or "x")
 
 
-def credential_identity(account: str, counter: Optional[CallCounter] = None) -> Optional[str]:
+def _strip_headers(stdout: str) -> tuple[Optional[str], str]:
+    """`(last header block, body)`. A followed redirect prints one block per
+    response (watch_lane_posts.py `_http_status`), so blocks are stripped
+    while the text starts with a status line, and the last one is the final
+    response's. No separator: `(None, stdout)` unchanged."""
+    last: Optional[str] = None
+    rest = stdout
+    while rest.startswith("HTTP/"):
+        for sep in ("\r\n\r\n", "\n\n"):
+            idx = rest.find(sep)
+            if idx != -1:
+                last, rest = rest[:idx], rest[idx + len(sep):]
+                break
+        else:
+            return (None, stdout) if last is None else (last, rest)
+    return last, rest
+
+
+_STATUS_LINE = re.compile(r"^HTTP/[\d.]+\s+(\d{3})\b")
+_SECONDARY_LIMIT = re.compile(r"secondary rate limit", re.I)
+
+
+@dataclass
+class RawResponse:
+    """One `gh api --include` response, whatever its status (harmonic-forge#1393).
+
+    `status` is None when no status line could be read (a timeout, `gh-as` missing,
+    garbled output): the caller treats that as a failure and never as "not
+    modified". `body` is the text after the last header block."""
+
+    status: Optional[int]
+    headers: Optional[str]
+    body: str
+    stderr: str
+    returncode: int
+
+
+def gh_as_raw(
+    account: str,
+    argv: list[str],
+    *,
+    counter: Optional[object] = None,
+    conditional: bool = False,
+    timeout: int = 60,
+) -> RawResponse:
+    """The raw variant of `gh_as` (harmonic-forge#1393): `gh api --include` run
+    through `gh-as <account>` that returns the status, headers and body and never
+    raises on a non-zero exit. `gh` exits 1 on a 304, which `gh_as` would raise on.
+
+    It counts like `gh_as` (one request through `counter.record`, rate-limit headers
+    recorded from the final block, a 304 included, because the rate-limited-calls
+    figure depends on it) and adds `calls_304`, `calls_conditional` (when the caller
+    sent `If-None-Match`) and `calls_403_secondary`. A 403 or 429 naming a secondary
+    rate limit is counted and named on stderr, never retried here. `argv` is the
+    `gh` argument list starting with `api`; `--include` is added."""
+    if counter is not None:
+        counter.record(argv)
+        if conditional:
+            counter.calls_conditional += 1
+    run_argv = ["api", "--include", *argv[1:]]
+    try:
+        proc = subprocess.run(["gh-as", account, "gh", *run_argv],
+                              capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return RawResponse(None, None, "", f"{type(exc).__name__}: {exc}", -1)
+    headers, body = _strip_headers(proc.stdout)
+    status: Optional[int] = None
+    if headers is not None:
+        first = headers.splitlines()[0] if headers.splitlines() else ""
+        match = _STATUS_LINE.match(first.strip())
+        status = int(match.group(1)) if match else None
+        if counter is not None:
+            counter.record_headers(account, headers)
+    if counter is not None and status == 304:
+        counter.calls_304 += 1
+    if status in (403, 429) and _SECONDARY_LIMIT.search(f"{body}\n{proc.stderr}"):
+        if counter is not None:
+            counter.calls_403_secondary += 1
+        print(f"[belt_mechanics] secondary rate limit from {account} on "
+              f"{' '.join(argv[1:3])}: not retried this tick", file=sys.stderr)
+    return RawResponse(status, headers, body, proc.stderr, proc.returncode)
+
+
+def credential_identity(account: str, counter: Optional[object] = None) -> Optional[str]:
     """The login behind `gh-as <account>`, read once per process, or None when it
     cannot be read (then nothing is cached for the account)."""
     if account in _IDENTITY:
@@ -124,7 +207,7 @@ def _touch(entry: Path) -> None:
         pass
 
 
-def conditional_get(account: str, path: str, counter: Optional[CallCounter] = None) -> Response:
+def conditional_get(account: str, path: str, counter: Optional[object] = None) -> Response:
     """One read of `path`, conditional when an entry exists. See the module docstring."""
     login = credential_identity(account, counter)
     entry = _entry_path(account, login, path) if login else None
