@@ -15,10 +15,8 @@ head the force covers. Nothing can use it yet:
   and only then rewrites the grant as `usable` with the comment id. A crash
   between the post and that rewrite leaves it `pending`; a retry posts again
   and completes it (the IMC waiver's two-step shape, `imc_waiver.record`).
-- `require()` answers whether a usable, unexpired, unconsumed grant covers
-  exactly this repo#issue at this head, and names which test failed if not.
-- `consume()` marks it spent. `--complete --force` and the route recheck
-  consume; `--plan --force` only checks.
+- `require()` names why no usable, unexpired grant covers this repo#issue at this head.
+- `consume()` re-checks home and marks it spent; `--plan --force` only checks.
 
 Each mode authorizes only its own action. Nothing here touches `imc_refusal`:
 an issue holding an IMC receipt is refused before any preclose grant is
@@ -26,9 +24,8 @@ consulted (operator ruling 2026-10-22). A route grant is not refused on an IMC
 receipt (operator ruling on harmonic-forge#1244's handoff): it releases only
 the route recheck, and every other merge hook still decides that merge.
 
-Like BATCH and IMC, this trusts the operator-typed line and the session. The
-grant file and the public comment are an audit trail, not proof against a
-session that writes this directory itself.
+Like BATCH and IMC, this trusts the operator-typed line and the session. The grant file
+and the public comment are an audit trail, not proof against a session that writes it.
 
 Run:
     python3 tools/gh/force_grant.py record --key F1166
@@ -225,6 +222,8 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> d
         raise SystemExit(f"force-grant: the FORCE grant for {key} is already consumed.")
     if grant.get("status") == "usable":
         return grant
+    if not imc_waiver.is_home_repo(grant["repo"]):  # harmonic-forge#1596: re-checked before the post
+        raise SystemExit(f"force-grant: {key} is on {grant['repo']}, no longer a home repo in projects.toml.")
     url = imc_waiver.post_and_confirm(grant["repo"], int(grant["issue"]), comment_body(grant), runner)
     # The post ran outside the lock. Mark usable only the grant this run
     # posted, and only if it is still pending (preclose pass 1, findings 2, 5).
@@ -271,16 +270,14 @@ def _bound(grant: dict) -> str:
 
 
 def _scope(grant: dict) -> str:
-    """What a grant is bound to, for the CLI: a reforge binds a prefix and a
-    cluster grant may bind nothing, so `sha` alone printed None (F1174)."""
+    """What a grant is bound to, for the CLI (a cluster grant may bind nothing, F1174)."""
     bound = _bound(grant)
     return f"({_mode(grant)}) at {bound[:12]}" if bound else f"({_mode(grant)})"
 
 
 def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str,
                      gate: dict | None = None) -> str | None:
-    """Why this grant does not cover a `mode` force at `head_sha` (for a gate
-    grant: the call's tool, mode and argument fingerprint in `gate`), or None."""
+    """Why this grant does not cover a `mode` force at `head_sha` (or `gate`'s call), or None."""
     if _mode(grant) != mode:
         return (f"the FORCE grant for {key} authorizes a {_mode(grant)} force, not a {mode} one; "
                 f"the operator types `FORCE {key}{'' if mode == 'plain' else ' ' + mode} ...: <reason>`")
@@ -315,6 +312,8 @@ def require(repo: str, issue: int, head_sha: str, now: datetime | None = None,
                            f"`FORCE {key}{typed}: <reason>` as the first line of a prompt")
     if grant.get("repo", "").lower() != repo.lower() or int(grant.get("issue") or 0) != issue:
         raise GrantRefused(f"the FORCE grant for {key} names {grant.get('repo')}#{grant.get('issue')}")
+    if not imc_waiver.is_home_repo(grant["repo"]):  # harmonic-forge#1596: re-checked at use
+        raise GrantRefused(f"{grant['repo']} is no longer a home repo in projects.toml")
     status = grant.get("status")
     if status == "consumed":
         raise GrantRefused(f"the FORCE grant for {key} is consumed (single use)")
@@ -331,9 +330,8 @@ def require(repo: str, issue: int, head_sha: str, now: datetime | None = None,
 
 def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | None = None,
             mode: str = "plain", gate: dict | None = None) -> dict:
-    """Spend exactly the grant `require()` returned: same `granted_at`, still
-    usable and unexpired, bound to this head. Anything else refuses (preclose
-    pass 1, finding 1), so a newer grant is never spent in an older one's place."""
+    """Spend exactly the grant `require()` returned: same `granted_at`, usable, unexpired, bound
+    to this head; anything else refuses, so a newer grant never stands in (pass 1, finding 1)."""
     moment = now or imc_waiver._now()
     with grant_lock(key):
         grant = imc_waiver.read_json(grant_path(key))
@@ -344,6 +342,8 @@ def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | N
                                f"{grant.get('granted_at')}, not {expected_granted_at})")
         if grant.get("status") != "usable":
             raise GrantRefused(f"the FORCE grant for {key} is {grant.get('status')}, not usable")
+        if not imc_waiver.is_home_repo(grant.get("repo", "")):  # harmonic-forge#1596: every spend path
+            raise GrantRefused(f"{grant.get('repo')} is no longer a home repo in projects.toml")
         if _expired(grant, moment):
             raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
         refusal = _binding_refusal(grant, key, head_sha, mode, gate)

@@ -260,7 +260,7 @@ def _release_text(repo: str, issue: str, head: str, refusal: str) -> str:
     the operator may type. Empty where FORCE fails closed (a cross-account repo)."""
     waiver = _force_grant().imc_waiver
     key = waiver.issue_key(repo, int(issue))
-    if key is None or not repo.lower().startswith(waiver.VITALHARMONY):
+    if key is None or not waiver.is_home_repo(repo):
         return ""
     return (f"\n\n  route grant: {refusal}\nThe operator may release this one merge by typing, "
             f"as a prompt's first line: `FORCE {key} route {head}: <reason>` (harmonic-forge#1244).")

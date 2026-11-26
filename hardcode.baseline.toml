@@ -1180,24 +1180,6 @@ count = 1
 
 [[finding]]
 rule = "org"
-path = "tools/gh/imc_waiver.py"
-text = "VITALHARMONY = \"vitalharmony/\""
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/gh/imc_waiver.py"
-text = "if not repo.lower().startswith(VITALHARMONY):"
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/gh/imc_waiver.py"
-text = "raise SystemExit(f\"imc-waiver: {key} is on {repo}, not a vitalharmony repo; IMC never \""
-count = 1
-
-[[finding]]
-rule = "org"
 path = "tools/gh/item_list_cache.py"
 text = "PROJECT_OWNER = \"vitalharmony\""
 count = 1
@@ -1236,12 +1218,6 @@ count = 1
 rule = "org"
 path = "tools/gh/l1_post.py"
 text = "EXEMPT_MILESTONES = {\"vitalharmony/hrse\": frozenset({\"Platform\"})}"
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/gh/l1_post.py"
-text = "if not repo.lower().startswith(ui_grant.imc_waiver.VITALHARMONY):"
 count = 1
 
 [[finding]]
@@ -1288,12 +1264,6 @@ count = 1
 
 [[finding]]
 rule = "org"
-path = "tools/gh/ui_grant.py"
-text = "APPROVER = \"vitalharmony\""
-count = 1
-
-[[finding]]
-rule = "org"
 path = "tools/gh/watch_lane_posts.py"
 text = "\"1\": [\"--all-worktrees\", \"--account-repos\", \"vitalharmony,harmonicarchitect\","
 count = 2
@@ -1324,62 +1294,8 @@ count = 1
 
 [[finding]]
 rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"kenekted/kenekted-ai\": \"Y\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"kenekted/kenekted-docs\": \"D\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"kenekted/kenekted-platform\": \"K\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/cymagraph-infra\": \"I\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/harmonic-forge\": \"F\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/hrse\": \"H\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/openclaw-projects\": \"O\","
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/batch_auth.py"
-text = "if not repo or not number or not str(repo).lower().startswith(\"vitalharmony/\"):"
-count = 1
-
-[[finding]]
-rule = "org"
 path = "tools/hooks/block_lane1_status_claims.py"
 text = "HRSE_REPO = \"vitalharmony/hrse\""
-count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/block_route_tightened_merge.py"
-text = "if key is None or not repo.lower().startswith(waiver.VITALHARMONY):"
 count = 1
 
 [[finding]]
@@ -1387,12 +1303,6 @@ rule = "org"
 path = "tools/hooks/expand_lane_shorthand.py"
 text = "if not STRIP_MARKDOWN.sub(\"\", account).strip().lower().startswith(\"vitalharmony\"):"
 count = 1
-
-[[finding]]
-rule = "org"
-path = "tools/hooks/expand_lane_shorthand.py"
-text = "if not repo.lower().startswith(imc.VITALHARMONY):"
-count = 3
 
 [[finding]]
 rule = "org"
@@ -1902,48 +1812,6 @@ count = 1
 rule = "project-name"
 path = "tools/gh/wrapper_parity.py"
 text = "return os.environ.get(\"HARMONIC_FORGE_ROOT\") or str(Path.home() / \"harmonic-forge\")"
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"kenekted/kenekted-ai\": \"Y\","
-count = 2
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"kenekted/kenekted-docs\": \"D\","
-count = 2
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"kenekted/kenekted-platform\": \"K\","
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/cymagraph-infra\": \"I\","
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/harmonic-forge\": \"F\","
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/hrse\": \"H\","
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/batch_auth.py"
-text = "\"vitalharmony/openclaw-projects\": \"O\","
 count = 1
 
 [[finding]]

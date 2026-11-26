@@ -512,31 +512,31 @@ def directive_lines(prompt: str):
 _FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 
 
+def _valid_prefixes() -> set[str]:
+    """The BATCH key letters: `projects.toml`'s prefixes, empty when it cannot be read."""
+    try:
+        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
+        return {p.upper() for p in REPO_PREFIXES.values()}
+    except Exception:  # noqa: BLE001 - fail closed: no letter is a key
+        return set()
+
+
 def _scan_batch(prompt: str) -> tuple[int, list[str]] | None:
     """The first BATCH line's index and keys, BEFORE any provenance test.
 
-    Private on purpose. `batch_keys()` is the public answer and is gated; a
-    caller that wants the raw parse has to say so, and the only one that does
-    is `authorize_batch()`, which needs the keys in order to name them in its
-    refusal.
+    Private on purpose. `batch_keys()` is the public answer and is gated; a caller that
+    wants the raw parse has to say so, and the only one that does is `authorize_batch()`,
+    which needs the keys in order to name them in its refusal.
     """
-    try:
-        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
-
-        valid = {p.upper() for p in REPO_PREFIXES.values()}
-    except Exception:
-        valid = set()
-
+    valid = _valid_prefixes()
     for index, line in directive_lines(prompt):
         match = _BATCH_RE.match(line)
         if not match:
             continue
         keys = [k.upper() for k in _BATCH_KEY_RE.findall(line[match.end():])]
-        # Only letters that are real repo prefixes. `BATCH F495 before Q4`
-        # otherwise wrote a `Q4` grant no command could ever consume, which
-        # then sat pending for 12h.
-        if valid:
-            keys = [k for k in keys if k[0] in valid]
+        # Only real repo prefixes, none on an empty map (harmonic-forge#1596): `BATCH F495
+        # before Q4` otherwise wrote a `Q4` grant no command could consume, pending 12h.
+        keys = [k for k in keys if k[0] in valid]
         if keys:
             return index, list(dict.fromkeys(keys))
     return None
@@ -610,7 +610,11 @@ def authorize_batch(prompt: str, state_path: Path | None = None,
     """
     scan = _scan_batch(prompt)
     if scan is None:
-        return ""
+        if _valid_prefixes() or not any(_BATCH_RE.match(text) for _, text in directive_lines(prompt)):
+            return ""
+        why = getattr(sys.modules.get("batch_auth"), "REPO_PREFIXES_ERROR", None) or "no repo maps"
+        return (f"BATCH REFUSED: projects.toml could not be read ({why}), so no prefix is a "
+                "BATCH key. Nothing was authorized (harmonic-forge#1596).")
     line_index, keys = scan
     refusal = _provenance_refusal(prompt, line_index)
     if refusal is not None:
@@ -729,13 +733,9 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
         if _IMC_ANY_CASE_RE.search(line):
             notes.append("IMC REFUSED: `imc` must be uppercase IMC. No waiver recorded.")
         return " ".join(dict.fromkeys(notes))
-    try:
-        from batch_auth import REPO_PREFIXES  # noqa: PLC0415
-        valid = {p.upper() for p in REPO_PREFIXES.values()}
-    except Exception:  # noqa: BLE001
-        valid = set()
+    valid = _valid_prefixes()
     keys = [k.upper() for k in _BATCH_KEY_RE.findall(line[imc.end():])]
-    keys = list(dict.fromkeys(k for k in keys if not valid or k[0] in valid))
+    keys = list(dict.fromkeys(k for k in keys if k[0] in valid))
     if not keys:
         notes.append("IMC REFUSED: no issue keys follow IMC on the BATCH line.")
         return " ".join(notes)
@@ -766,7 +766,7 @@ def _authorize_imc(prompt, session_id, lane, label_reader, now) -> str:
             refused.append(f"{key}: no repo maps to its prefix")
             continue
         repo, number = target
-        if not repo.lower().startswith(imc.VITALHARMONY):
+        if not imc.is_home_repo(repo):
             refused.append(f"{key}: {repo} is a cross-account repo, and IMC fails closed there")
             continue
         labels, why = label_reader(repo, number)
@@ -902,7 +902,7 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     if target is None:
         return f"FORCE REFUSED for {key}: no repo maps to its prefix. No grant written."
     repo, number = target
-    if not repo.lower().startswith(imc.VITALHARMONY):
+    if not imc.is_home_repo(repo):
         return (f"FORCE REFUSED for {key}: {repo} is a cross-account repo, and FORCE fails closed "
                 "there. No grant written.")
     grants = _force_module()
@@ -1112,7 +1112,7 @@ def _authorize_ui(prompt, session_id, lane, now) -> str:
     if target is None:
         return f"UI REFUSED for {key}: no repo maps to its prefix. No grant written."
     repo, number = target
-    if not repo.lower().startswith(imc.VITALHARMONY):
+    if not imc.is_home_repo(repo):
         return (f"UI REFUSED for {key}: {repo} is a cross-account repo, and UI fails closed "
                 "there. No grant written.")
     entry, replaced = grants.write_pending(key, repo, number, mode, digest, reason, session_id,

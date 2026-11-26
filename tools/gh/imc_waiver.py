@@ -65,18 +65,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 sys.path.insert(0, str(HERE.parent / "onboard"))
 
-#: The one place the state directory is named. `None` means
-#: `~/.claude/state/imc`, resolved at CALL time through `state_dir()` -- so a
-#: test patching this global, or `HOME`, never reaches the live store.
+#: The one place the state directory is named. `None` means `~/.claude/state/imc`,
+#: resolved at CALL time (`state_dir()`): a test patching it or `HOME` never reaches it.
 IMC_STATE_DIR: Path | None = None
 STATE_RELPATH = Path(".claude") / "state" / "imc"
-#: Bumped whenever the hook record's shape changes.
-HOOK_VERSION = "1"
-#: BATCH's own TTL (`batch_auth.DEFAULT_TTL_HOURS`); restated so this module
-#: imports nothing from the hook path just to read a number.
+HOOK_VERSION = "1"  # bumped whenever the hook record's shape changes
+#: BATCH's own TTL (`batch_auth.DEFAULT_TTL_HOURS`), restated: no hook import for a number.
 TTL_HOURS = 12.0
 RULE_ID = "R-0384"
-VITALHARMONY = "vitalharmony/"
 _KEY = re.compile(r"^([A-Za-z])(\d+)$")
 
 
@@ -130,6 +126,12 @@ def write_json_atomic(path: Path, data: dict) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def is_home_repo(repo: str) -> bool:
+    """Registered in projects.toml, owner == account (harmonic-forge#1596)."""
+    import manifest_scope  # noqa: PLC0415
+    return manifest_scope.home_project(repo) is not None
 
 
 def key_target(key: str) -> tuple[str, int] | None:
@@ -281,24 +283,22 @@ def post_and_confirm(repo: str, issue: int, body: str, runner=subprocess.run) ->
 
 def record(key: str, *, branch: str | None = None, now: datetime | None = None,
            batch_state_path: Path | None = None, runner=subprocess.run) -> dict:
-    """AC5: refuse unless every precondition holds; then write a PENDING
-    receipt (preclose enforcement starts here), post and refetch, and rewrite
-    the receipt as recorded. A pending receipt from a crashed run for the same
-    `granted_at` is simply overwritten by the retry. Returns the receipt."""
+    """AC5: refuse unless every precondition holds; then write a PENDING receipt (preclose
+    enforcement starts here), post and refetch, and rewrite the receipt as recorded. A
+    crashed run's pending receipt for the same `granted_at` is overwritten by the retry."""
     key = key.strip().upper()
     lane = os.environ.get("LANE", "")
     if lane != "1":
-        # The hook records only in LANE=1; the waiver is posted only there too
-        # (harmonic-forge#895 preclose pass 1).
+        # The hook records only in LANE=1; so is the waiver (harmonic-forge#895 pass 1).
         raise SystemExit(f"imc-waiver: LANE is {lane!r}; an IMC waiver is recorded only in a "
                          "LANE=1 session.")
     target = key_target(key)
     if target is None:
         raise SystemExit(f"imc-waiver: {key} is not a repo-prefixed issue key.")
     repo, issue = target
-    if not repo.lower().startswith(VITALHARMONY):
-        raise SystemExit(f"imc-waiver: {key} is on {repo}, not a vitalharmony repo; IMC never "
-                         "crosses an account boundary.")
+    if not is_home_repo(repo):
+        raise SystemExit(f"imc-waiver: {key} is on {repo}, not a home repo in projects.toml "
+                         "(registered, owner == account); IMC never crosses an account boundary.")
     moment = now or _now()
     record_data = read_json(hook_record_path(key))
     if record_data is None:

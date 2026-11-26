@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 _VERSION_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
 
 _VERSION = re.compile(r"v(\d{4})\.(0[1-9]|1[0-2])\.(\d+)")
+#: GitHub login grammar, ASCII only (harmonic-forge#1596).
+_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 
 
 def check_min_version(value: object, label: str, name: str) -> None:
@@ -47,16 +49,17 @@ def validate(projects: list[Project], target: Path | str) -> None:
         if not isinstance(project.onboarded, bool):
             raise ManifestError(
                 f"{target}: {project.name} onboarded must be boolean")
-        if len(project.prefix) != 1 or not project.prefix.isalpha():
+        # harmonic-forge#1596: one ASCII letter (`ı` is alpha), unique in any case.
+        if not isinstance(project.prefix, str) or not re.fullmatch(r"[A-Za-z]", project.prefix):
             raise ManifestError(
                 f"{target}: {project.name} prefix {project.prefix!r} must be a "
-                "single letter")
-        clash = seen_prefix.get(project.prefix)
+                "single letter, ASCII A-Z")
+        clash = seen_prefix.get(project.prefix.upper())
         if clash:
             raise ManifestError(
                 f"{target}: prefix {project.prefix!r} claimed by both {clash} "
                 f"and {project.name}")
-        seen_prefix[project.prefix] = project.name
+        seen_prefix[project.prefix.upper()] = project.name
         if project.repo:
             if project.repo.count("/") != 1:
                 raise ManifestError(
@@ -68,6 +71,10 @@ def validate(projects: list[Project], target: Path | str) -> None:
             seen_repo[project.repo] = project.name
             if not project.account:  # harmonic-forge#804: no repo without an identity
                 raise ManifestError(f"{target}: {project.name} declares a repo but no `account`")
+        if project.account is not None and not (  # harmonic-forge#1596: a login, or no account
+                isinstance(project.account, str) and _LOGIN.fullmatch(project.account)):
+            raise ManifestError(
+                f"{target}: {project.name} account {project.account!r} is not a GitHub login")
         if project.active_milestones and not project.milestones:  # harmonic-forge#952
             raise ManifestError(
                 f"{target}: {project.name} lists active_milestones but carries no milestones")

@@ -25,10 +25,9 @@ This module owns what the operator types and its public record:
   nothing and posting nothing. The comment fires the PR's `issue_comment`
   event, and the workflow recomputes the digest and turns the status green.
 
-The head digest is read from that PR head's `ui-approval` status, written by
-the workflow (creator `github-actions[bot]`), which computes it with
-`scope`'s rule at the head; the workflow re-checks it against its own
-computation, so a wrong one here only produces a record that never matches.
+The head digest is read from that PR head's `ui-approval` status, written by the
+workflow (creator `github-actions[bot]`) with `scope`'s rule at the head; the workflow
+re-checks it, so a wrong one here only produces a record that never matches.
 
 `expand_lane_shorthand.py` writes the pending entry with R-0117 provenance,
 as it does FORCE (`force_grant.py`, whose shape this copies). Local state is
@@ -36,9 +35,8 @@ only that pending entry, one per mode, so each mode is independent; `record`
 posts it, refetches it, and moves it to `recorded`. An expired pending entry
 is dropped with a note and never blocks the other mode.
 
-Like FORCE, this trusts the operator-typed line and the session. The grant
-file and the public comment are an audit trail, not proof against a session
-that writes this directory itself.
+Like FORCE, this trusts the operator-typed line and the session. The grant file and the
+public comment are an audit trail, not proof against a session that writes this directory.
 
 Run:
     python3 tools/gh/ui_grant.py record --key H2615
@@ -61,8 +59,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import imc_waiver  # noqa: E402  (key, time and atomic-write helpers, one copy)
 
-#: `None` means `~/.claude/state/ui-grant`, resolved at call time, so a test
-#: that patches this global or `HOME` never reaches the live store.
+#: `None` means `~/.claude/state/ui-grant` at call time: a test patching it or `HOME` never reaches it.
 UI_STATE_DIR: Path | None = None
 STATE_RELPATH = Path(".claude") / "state" / "ui-grant"
 TTL_DAYS = 7
@@ -75,8 +72,6 @@ DIGEST_PREFIX_RE = re.compile(r"^[0-9a-f]{12,64}$")
 STATUS_CONTEXT = "ui-approval"
 STATUS_CREATOR = "github-actions[bot]"
 _STATUS_DIGEST = re.compile(r"\bdigest ([0-9a-f]{64})\b")
-#: The account `record` posts as, and the only author a record is read from.
-APPROVER = "vitalharmony"
 #: The handoff lead line AC7 requires, in `l1_post.LEAD_LABEL`'s form.
 UI_CHANGE_RE = re.compile(
     r"(?im)^[ \t]*\**[ \t]*UI change[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(?P<text>\S.*)$")
@@ -100,8 +95,7 @@ def grant_path(key: str) -> Path:
 
 @contextlib.contextmanager
 def grant_lock(key: str):
-    """Serialize every read-modify-write of one key's grant file. Never held
-    across the GitHub post."""
+    """Serialize each read-modify-write of one key's grant file; never held across a post."""
     path = state_dir() / f"{key.upper()}.json.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as handle:
@@ -122,10 +116,8 @@ def ui_change_line(bodies) -> str | None:
 
 
 def _gh_lines(args: list[str], runner, caller: str | None = None) -> list[dict]:
-    """A paginated `gh api ... --jq '... | tojson'` read as a list of dicts;
-    raises RecordRefused on any failure. `caller` marks this one call as a
-    sanctioned gh-shim scan (harmonic-forge#964, #1356); every other call runs
-    with the caller's environment unchanged."""
+    """A paginated `gh api ... --jq '... | tojson'` read as dicts, else RecordRefused. `caller`
+    marks this one call a sanctioned gh-shim scan (harmonic-forge#964, #1356)."""
     extra = {"env": {**os.environ, "GH_SHIM_CALLER": caller}} if caller else {}
     result = runner(["gh", "api", "--paginate", *args], capture_output=True, text=True, check=False,
                     **extra)
@@ -158,20 +150,25 @@ def heading(key: str, mode: str = "merge") -> str:
 
 
 def marker(key: str, mode: str, granted_at: str, digest: str = "") -> str:
-    """The record's machine line. HRSE2's `scripts/ui_approval.py` reads a merge
-    record's by this exact shape; change both together."""
+    """The record's machine line; HRSE2's `scripts/ui_approval.py` reads this shape: change both."""
     return f"<!-- ui-grant key={key.upper()} mode={mode} granted_at={granted_at} digest={digest} -->"
 
 
 def find_record(comments, key: str, mode: str) -> dict | None:
-    """The newest comment that is the posted `mode` record for `key`: author
-    `APPROVER`, first line exactly the heading, the marker on its own line."""
+    """The newest posted `mode` record for `key`: author the `account` of the key's home
+    repo (harmonic-forge#1596; an org account cannot comment, so it never records), first
+    line exactly the heading, the marker on its own line. None off a home repo."""
+    import manifest_scope  # noqa: PLC0415 - tools/onboard, on the path imc_waiver set
+    target = imc_waiver.key_target(key)
+    if (project := manifest_scope.home_project(target[0]) if target else None) is None:
+        return None
     want_heading, key = heading(key, mode), key.upper()
     shape = re.compile(rf"(?m)^<!-- ui-grant key={re.escape(key)} mode={mode} granted_at=\S* "
                        r"digest=[0-9a-f]* -->[ \t]*$")
     for comment in reversed(list(comments or [])):
         body = (comment.get("body") or "").replace("\r\n", "\n")
-        if comment.get("login") != APPROVER or body.split("\n", 1)[0] != want_heading:
+        if (not manifest_scope.same_login(comment.get("login"), project.account)
+                or body.split("\n", 1)[0] != want_heading):
             continue
         if shape.search(body):
             return comment
@@ -250,11 +247,12 @@ def write_pending(key: str, repo: str, issue: int, mode: str, digest: str | None
 # --- which PR a merge record goes on (reforge step 5) ---------------------------
 
 def opted_in_repos(owner: str, runner=subprocess.run) -> list[str]:
-    """Every registered repo under `owner` whose `main` carries the version file.
-    A 404 is "not opted in"; any other read failure refuses."""
+    """Every home repo under `owner` (harmonic-forge#1596) whose `main` carries the version
+    file. A 404 is "not opted in"; any other read failure refuses."""
     from batch_auth import REPO_PREFIXES  # noqa: PLC0415
     out = []
-    for repo in sorted(r for r in REPO_PREFIXES if r.split("/")[0].lower() == owner.lower()):
+    for repo in sorted(r for r in REPO_PREFIXES if r.split("/")[0].lower() == owner.lower()
+                       and imc_waiver.is_home_repo(r)):
         result = runner(["gh", "api", f"repos/{repo}/contents/{UI_VERSION_PATH}?ref=main",
                          "--jq", ".sha"], capture_output=True, text=True, check=False)
         if result.returncode == 0:
@@ -362,6 +360,8 @@ def record(key: str, *, now: datetime | None = None, runner=subprocess.run) -> l
                          f"`UI {key}: <reason>` or `UI {key} <digest>: <reason>` line creates one.")
     moment = now or imc_waiver._now()
     repo, issue = grant["repo"], int(grant["issue"])
+    if not imc_waiver.is_home_repo(repo):  # harmonic-forge#1596: re-checked before any post
+        raise SystemExit(f"ui-grant: {key} is on {repo}, no longer a home repo in projects.toml.")
     lines = []
     ui_change = None
     for mode in MODES:
