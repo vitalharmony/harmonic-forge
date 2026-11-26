@@ -21,7 +21,7 @@ from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
-from manifest import ManifestError, require_onboarded_repo  # noqa: E402
+from manifest_invoking import ManifestError, require_onboarded  # noqa: E402
 from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
 import manifest_scope  # noqa: E402  (harmonic-forge#1596: the home-repo rule)
 
@@ -492,7 +492,7 @@ def _spec_body(repo: str, spec_comment, issue: int) -> str:
 
 
 def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
-    """Resolve an explicit repo or the invoking checkout through projects.toml."""
+    """Resolve an explicit repo or the invoking checkout (projects.toml, else its forge.toml)."""
     candidate = value
     if candidate is None:
         origin = run("git", "remote", "get-url", "origin", cwd=cwd or Path.cwd())
@@ -500,7 +500,7 @@ def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
             fail("--repo was omitted and the invoking checkout has no readable origin")
         candidate = origin.stdout.strip()
     try:
-        project = require_onboarded_repo(candidate)
+        project = require_onboarded(candidate, cwd)
     except ManifestError as exc:
         fail(str(exc))
     assert project.repo is not None
@@ -1646,7 +1646,7 @@ def resolve_project_board(repo: str, cwd: Path) -> tuple[str, str] | None:
     """
     del cwd
     try:
-        return require_onboarded_repo(repo).board
+        return require_onboarded(repo).board
     except ManifestError as exc:
         fail(str(exc))
 

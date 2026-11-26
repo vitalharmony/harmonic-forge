@@ -1,10 +1,13 @@
 """An app repo's `.claude/forge.toml`, resolved for one checkout (harmonic-forge#1527).
 
-**Two consumers, no others (harmonic-forge#1527 sticky-wicket R1).** The
-overlay is read only by the launcher's `manifest_identity.account_for_origin(...,
-checkout=)` and by `tools/lane/ci_plan.resolve_project` (protocol `*_task` keys,
-in the repo's own `mise.toml` trust domain). Every gate, hook, credential slot,
-gh target, belt workspace and prefix map resolves exactly as origin/main did:
+**Three consumers, no others (harmonic-forge#1527 sticky-wicket R1, amended by
+operator ruling in harmonic-forge#1579).** The overlay is read only by the
+launcher's `manifest_identity.account_for_origin(..., checkout=)`, by
+`tools/lane/ci_plan.resolve_project` (protocol `*_task` keys, in the repo's own
+`mise.toml` trust domain), and by `manifest_invoking`, so the lane posting
+entrypoints (never a hook) can act on an overlay-only repo from inside its own
+checkout. Every other gate, hook, credential slot, gh target, belt workspace and
+prefix map resolves exactly as origin/main did:
 `project_for_path`, `repo_for_path_or_none`, `workspace_for`, `slot_env`,
 `manifest.load()` and every global lookup read `projects.toml` alone. A later
 change that lets the overlay reach one of them breaches this rule; it is not
@@ -13,7 +16,7 @@ fixed by a new guard here (R6).
 **Discovery: an explicit root, never a process cwd.** `project_for_checkout(root)`
 is the only reader, and `root` is required. `path_project` passes it the
 checkout root of the path being resolved; a path in no checkout consults no
-overlay.
+overlay. `manifest_invoking` is the one caller that passes the process cwd's root.
 
 **Which copy.** Always the MAIN checkout's, never a linked worktree's own: a
 worktree is the code under test, and its edit must not reconfigure what checks
@@ -58,10 +61,9 @@ base does not register is validated together with the base and returned with
 Project, and in no prefix map. A BATCH key needs `projects.toml` plus
 `rules/lane-shorthand.md`.
 
-**Scope limit.** An overlay-only repo resolves only through this resolver's two
-consumers. The lane posting entrypoints resolve identity by
-repo key (`apply_project_identity`, `require_onboarded_repo`) and refuse it
-until the follow-up child resolves their identity from the invoking checkout.
+**Scope limit.** An overlay-only repo resolves only through these three
+consumers. The posting entrypoints reach it through `manifest_invoking`, keyed
+on the explicit repo plus the process cwd's checkout (harmonic-forge#1579).
 
 Protocol `*_task` keys an overlay sets run as `mise run <task>`: the same trust
 domain as the repo's own `mise.toml`, read from the same main checkout. No
