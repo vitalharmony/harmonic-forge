@@ -2727,18 +2727,41 @@ class GhArgvAdoptionTests(StateFixture):
                 self.assertIn("Cannot prove", result[1])
         self.assertIsNone(ba.decide("echo gh triage-done 12", state_path=self.state_path))
 
-    def test_a_rest_reopen_is_not_a_close(self):
-        """Survivor 9: main's `state=closed` predicate, read on gh_argv's parsed fields."""
+    def test_every_gated_rest_issue_patch_is_a_close_and_asks(self):
+        """TC3 (sticky-wicket round 2, issuecomment-7184370067, survivor (a)): a
+        gated REST issue PATCH is a close whatever its `state` value, a reopen
+        and a shell-expanded value included, as the F1447 shim gates it. Main's
+        literal `state=closed` predicate read each of these as not-a-close."""
         for cmd in ("gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=open",
-                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=open"):
-            with self.subTest(cmd=cmd):
-                self.assertIsNone(ba.classify_issue_close(cmd.split()))
-                self.assertIsNone(ba.decide(cmd, state_path=self.state_path))
-        # An unread body stays a close.
-        for cmd in ("gh api repos/vitalharmony/hrse/issues/5 -X PATCH --input body.json",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=open",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=$S",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=$'closed'",
+                    'gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f "state=${S}"',
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=clos?d",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --input body.json",
                     "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -F state=@s.txt"):
             with self.subTest(cmd=cmd):
-                self.assertEqual(ba.classify_issue_close(cmd.split()), ("vitalharmony/hrse", "5"))
+                self.assertEqual(ba.classify_issue_close(shlex.split(cmd)), ("vitalharmony/hrse", "5"))
+                self.assertEqual(ba.decide(cmd, state_path=self.state_path), ("ask", ba.ASK_ISSUE_CLOSE))
+
+    def test_a_url_target_with_a_matching_repo_flag_names_no_number(self):
+        """Survivor (b): a CLI number counts only when gh_argv's parsed
+        positional is a bare number (main's rule, read from the parser), so a
+        URL target plus `--repo`/`-R` is `(None, None)` as on main and the phase
+        hook's URL fallback names it; pflag, not a token scan, picks the
+        positional, so a flag value never supplies it."""
+        for flag in ("--repo", "-R"):
+            with self.subTest(flag=flag):
+                self.assertEqual(ba.classify_issue_close(
+                    f"gh issue close https://github.com/vitalharmony/hrse/issues/12 {flag} vitalharmony/hrse".split()),
+                    (None, None))
+                self.assertEqual(ba.classify_pr_merge(
+                    f"gh pr merge https://github.com/vitalharmony/hrse/pull/12 {flag} vitalharmony/hrse".split()),
+                    (None, None))
+        # The number is the parsed positional, never the `-c` value; the repo is
+        # `_bound_repo`'s closed shape, which a `-c` flag leaves unbound.
+        self.assertEqual(ba.classify_issue_close("gh issue close -c 13 12 --repo vitalharmony/hrse".split()),
+                         (None, "12"))
 
     def test_a_url_target_is_never_rebound_by_an_equal_flag_value(self):
         """Survivor 2: a URL target plus a flag value equal to its number."""

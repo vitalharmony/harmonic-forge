@@ -292,6 +292,26 @@
   "issue": null,
   "pr": null
  },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=$S'": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=$closed'": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=${S}'": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=clos?d'": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed": {
   "decide": "ask",
   "issue": [
@@ -414,6 +434,14 @@
   "issue": [
    null,
    "1291"
+  ],
+  "pr": null
+ },
+ "gh issue close -c 13 12 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "12"
   ],
   "pr": null
  },
@@ -650,6 +678,22 @@
   "pr": null
  },
  "gh issue close https://github.com/other/repo/issues/5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue close https://github.com/vitalharmony/hrse/issues/12 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue close https://github.com/vitalharmony/hrse/issues/12 -R vitalharmony/hrse": {
   "decide": "ask",
   "issue": [
    null,
@@ -1124,6 +1168,22 @@
   ]
  },
  "gh pr merge https://github.com/vitalharmony/hrse/pull/12 --body 12": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   null
+  ]
+ },
+ "gh pr merge https://github.com/vitalharmony/hrse/pull/12 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   null
+  ]
+ },
+ "gh pr merge https://github.com/vitalharmony/hrse/pull/12 -R vitalharmony/hrse": {
   "decide": "ask",
   "issue": null,
   "pr": [

@@ -947,34 +947,17 @@ def _gh_reading(tokens: list[str]) -> tuple[list[str], "A.Result"] | None:
         return tokens, A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
 
 
-def _rest_reopen(rest: list[str]) -> bool:
-    """A gated REST issue PATCH that is not a close: its body is read in full
-    and never sets `state=closed` (main's `_has_field` predicate, applied to
-    gh_argv's parsed fields so `--raw-field=state=closed` and `-fstate=closed`
-    still count). An `--input` body, a keyless or `@file` field, or a query
-    string is unread, so the call stays a close (harmonic-forge#1497)."""
-    try:
-        parsed = A.gh_argv.parse(rest)
-        fields = A.gh_argv._api_fields(parsed)
-    except Exception:  # noqa: BLE001 - unread, so not provably a reopen
-        return False
-    if parsed.has("--input") or any("?" in p for p in parsed.positionals) or any(
-            f.key is None or f.from_file for f in fields):
-        return False
-    return not _has_field([f"{f.base}={f.value}" for f in fields], "state=closed")
-
-
 def _adapter_target(tokens: list[str], kind: str, verb: tuple[str, str]) -> tuple[str | None, str | None] | None:
     """`(repo, number)` for a literal gh call the adapter reads as a gated `kind`
     ("issue" close or "pr" merge), bound or unbound; None otherwise, an
     unparseable or unprovable call included (main's contract: None is "not a
     close or merge this reader can name"; `decide()` alone asks on those).
     The repo is a `gh api` call's REST path, else `_bound_repo`'s closed shape,
-    never the adapter's. A REST issue PATCH whose body is read in full and
-    never sets `state=closed` is a reopen, not a close (`_rest_reopen`). With
-    an empty environment the adapter's repo comes only
-    from `-R`/`--repo` or a URL, so a repo with no such token is a URL target:
-    `(None, None)`, as on main, so cwd never supplies its repo."""
+    never the adapter's. Every gated REST issue PATCH is a close, a reopen
+    included, as the F1447 shim gates it (TC3). A CLI number counts only when
+    gh_argv's parsed positional is a bare number (main's rule, read from the
+    parser); a URL target gives `(_bound_repo, None)`, which is `(None, None)`
+    as on main, so neither cwd nor a flag value supplies its number."""
     reading = _gh_reading(tokens)
     if reading is None:
         return None
@@ -983,11 +966,10 @@ def _adapter_target(tokens: list[str], kind: str, verb: tuple[str, str]) -> tupl
         return None
     rest = tokens[1:]
     if rest[:1] == ["api"]:
-        if kind == "issue" and _rest_reopen(rest):
-            return None
         return result.repo, result.number
-    if result.repo and not any(t.startswith(("--repo", "-R")) for t in rest):
-        return None, None
+    positionals = A.gh_argv.parse(rest).positionals
+    if not (positionals and positionals[0].isdigit()):
+        return _bound_repo(rest, verb), None
     return _bound_repo(rest, verb), result.number
 
 

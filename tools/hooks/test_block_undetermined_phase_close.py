@@ -281,6 +281,18 @@ class DecisionTests(unittest.TestCase):
                 called = pr_read if "merge" in command else labels
                 self.assertEqual(called.call_args[0][:2], want)
 
+    def test_a_url_target_with_its_own_repo_flag_reaches_the_url_fallback(self) -> None:
+        """harmonic-forge#1497 sticky-wicket round 2, survivor (b): a URL target
+        plus a matching `--repo`/`-R` gets no number from batch_auth (main's
+        rule, read from gh_argv's parsed positional), so this hook's URL
+        fallback names the target and allows an unrelated issue, as on main."""
+        for flag in ("--repo", "-R"):
+            for verb, path in (("issue close", "issues"), ("pr merge", "pull")):
+                command = f"gh {verb} https://github.com/{REPO}/{path}/191 {flag} {REPO}"
+                with self.subTest(command=command):
+                    self.assertFalse(denied(self._decide(command, labels={"bug"}, closed_issues=set())))
+                    self.assertFalse(denied(self._decide(command, labels={"bug"})))
+
     def test_pr_merge_no_keyword_target_allows(self) -> None:
         cmd = f"gh pr merge 1813 --repo {REPO} --squash"
         self.assertFalse(denied(self._decide(cmd, labels={"phase"}, closed_issues=set())))

@@ -377,6 +377,66 @@
     ],
     []
    ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=open": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=open": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=$S'": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=$closed'": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=${S}'": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=clos?d'": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
   ]
  },
  "migration": {
