@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import io
+import subprocess
 import os
 import sys
 import tempfile
@@ -127,6 +128,27 @@ class SweepTableTests(unittest.TestCase):
         del env["TMPDIR"]
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(tmp_sweep.sweep_root(), Path("/tmp"))
+
+    def test_import_and_sweep_never_probe_temp_space(self) -> None:
+        """Round-2 survivor: with /tmp full, any import-time `gettempdir()` probe
+        (kill_check's import chain had two) kills the sweeper before it scans.
+        An isolated interpreter whose probe raises must import and sweep cleanly."""
+        stale = self.entry("tmpprobe_01")
+        code = (
+            "import sys, tempfile\n"
+            "def probe(*a, **k):\n"
+            "    raise RuntimeError('temp-space probe called')\n"
+            "tempfile._get_default_tempdir = probe\n"
+            f"sys.path.insert(0, {str(Path(tmp_sweep.__file__).resolve().parent)!r})\n"
+            "import tmp_sweep\n"
+            "sys.exit(tmp_sweep.main([]))\n"
+        )
+        env = {**os.environ, tmp_sweep.REAL_TMPDIR_ENV: str(self.root)}
+        result = subprocess.run([sys.executable, "-I", "-c", code], env=env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "tmp-sweep: removed 1\n")
+        self.assertFalse(stale.exists())
 
     def test_missing_root_is_silent(self) -> None:
         self.assertEqual(tmp_sweep.sweep(self.root / "absent", self.now, os.getuid(), False), [])

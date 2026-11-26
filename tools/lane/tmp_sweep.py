@@ -1,34 +1,19 @@
 #!/usr/bin/env python3
-"""Remove the operator's own stale test temp dirs from the real temp dir (harmonic-forge#1600).
+"""Remove the user's stale `mkdtemp()` dirs from the real temp dir (harmonic-forge#1600).
 
-A test run outside `tools/run_tests.py`'s containment (a session or subagent
-running a test file directly) leaks every `tempfile.mkdtemp()` dir its
-fixtures never clean up. On 2026-11-25 48,923 of them filled /tmp's inode cap.
-Lane 1's belt tick runs this sweep, which deletes a top-level entry only when
-all of these hold: its name is `tmp` plus exactly 8 of `[a-z0-9_]` (the
-`mkdtemp()` default), `os.lstat` says it is a directory (a symlink is never
-followed or removed), the current user owns it, and it was last modified
-more than 2 hours ago. Nothing below the top level is examined. Removal is
-kill_check's permission-repairing `remove_tree`; a match counts once gone.
-
-Usage:
-    python3 ~/harmonic-forge/tools/lane/tmp_sweep.py [--dry-run]
-
-Prints `tmp-sweep: removed N` only when N > 0, so a tick that removes nothing
-prints nothing; `--dry-run` lists each match and removes nothing.
-"""
+Only a top-level entry named `tmp` + 8 of `[a-z0-9_]`, a dir per `os.lstat`, user-owned
+and over 2 hours old. Stdlib only, never probing temp space: it must run with /tmp full.
+Prints `tmp-sweep: removed N` only when N > 0; `--dry-run` lists and removes nothing."""
 from __future__ import annotations
 
 import argparse
 import os
 import re
+import shutil
 import stat
 import sys
 import time
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
-from kill_check import remove_tree  # noqa: E402
 
 NAME = re.compile(r"tmp[a-z0-9_]{8}")
 STALE_SECONDS = 2 * 60 * 60
@@ -41,6 +26,23 @@ def sweep_root() -> Path:
     return Path(os.environ.get(REAL_TMPDIR_ENV) or os.environ.get("TMPDIR") or "/tmp")
 
 
+def remove_tree(directory: Path) -> str | None:
+    """Private copy of tools/gh/kill_check.py's remove_tree: repair permissions, then remove."""
+    if not directory.exists():
+        return None
+    try:
+        directory.chmod(stat.S_IRWXU)
+        for root, dirs, _files in os.walk(directory, topdown=True, followlinks=False):
+            for name in dirs:
+                child = Path(root) / name
+                if not child.is_symlink():
+                    child.chmod(stat.S_IRWXU)
+        shutil.rmtree(directory)
+    except OSError as exc:
+        return str(exc)
+    return None if not directory.exists() else f"{directory} still exists"
+
+
 def stale_matches(root: Path, now: float, uid: int) -> list[Path]:
     """Every top-level entry of `root` this sweep may remove, sorted."""
     matches: list[Path] = []
@@ -48,9 +50,7 @@ def stale_matches(root: Path, now: float, uid: int) -> list[Path]:
         names = sorted(os.listdir(root))
     except OSError:
         return matches
-    for name in names:
-        if not NAME.fullmatch(name):
-            continue
+    for name in filter(NAME.fullmatch, names):
         path = root / name
         try:
             info = os.lstat(path)
