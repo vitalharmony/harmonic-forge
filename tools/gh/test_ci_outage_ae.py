@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""harmonic-forge#1565 AE side (AC1): TCs 1-10, 36, 37 and TC 40's AE half.
+"""harmonic-forge#1565, Option A (design amendment issuecomment-7197572224):
+the AE-only ci-outage release. AC1 (one AE, one SHA, beside a sidecar, never
+reused), AC2 (Lane 3's PASS is unchanged: pending CI still refuses) and AC3
+(the closed allow-set and the --prod-run refusal, real post and --dry-run).
 
 Real stores throughout: a temp FORCE_STATE_DIR, a temp check_receipt.STORE, a
 temp forge root for `check_receipt.forge_sha()` and a temp hrse source repo
 whose HEAD is the AE's SHA. Only GitHub is stubbed: `comment_body`, the S0 CI
 reader, and the PR/world/sticky reads, which are not this issue's rules.
-`World` is a mixin, imported by test_ci_outage_pass.py.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
-import io
 import json
 import os
 import subprocess
@@ -26,10 +28,13 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
 import l1_post as L  # noqa: E402
+import post_lane_discussion as P  # noqa: E402
 import check_receipt  # noqa: E402
 import ci_outage  # noqa: E402
 import force_grant  # noqa: E402
+import gate_ci  # noqa: E402
 import imc_waiver  # noqa: E402
+from test_gate_ci import check, fake_gh  # noqa: E402
 
 REPO, ISSUE, KEY, SLUG = "vitalharmony/hrse", 12, "H12", "vitalharmony__hrse"
 S2 = "6" * 40
@@ -140,10 +145,6 @@ class World:
     def sweep(self, sha: str | None = None, tier: str = "W") -> dict:
         return self.add(self.footered(f"## Gate-readiness sweep — {KEY}\n\nWrite tier: {tier}\n", "sweep", sha or self.S))
 
-    def records(self) -> list[dict]:
-        folder = self.state / "ci-outage"
-        return [json.loads(p.read_text()) for p in sorted(folder.glob("*.json"))] if folder.is_dir() else []
-
     def ci(self, stack: ExitStack, reader) -> None:
         for target, attr, value in ((L, "_cwd_repo_from_git", lambda _: REPO), (L, "_ci_reader", lambda _: reader),
                                     (L.gate_ci, "required_checks", lambda *a, **k: {"verify"}),
@@ -151,7 +152,7 @@ class World:
                                     (L, "require_open_pr", lambda *a, **k: (["pr-open #7"], [], []))):
             stack.enter_context(mock.patch.object(target, attr, value))
 
-    def post_ae(self, reader=ABSENT, fail_post: bool = False, before_reserve=None):
+    def post_ae(self, reader=ABSENT, fail_post: bool = False, before_reserve=None, prod_run=None):
         cid = self.next_id
 
         def comment(repo, issue, text):
@@ -165,7 +166,8 @@ class World:
                                 ("active_worktree_branches", lambda: []), ("_afk_toggle", None),
                                 ("_tasklist_owed", self.tasklist)):
                 stack.enter_context(mock.patch.object(L, attr, value))
-            return L._post_kind(REPO, ISSUE, "ae", f"## Lane 1 AE — {KEY}\n\nAuthorized.\n", self.S, "feat/12-x")
+            return L._post_kind(REPO, ISSUE, "ae", f"## Lane 1 AE — {KEY}\n\nAuthorized.\n", self.S, "feat/12-x",
+                                prod_run=prod_run)
 
     def exits(self, **kw) -> tuple[object, str]:
         with self.assertRaises(SystemExit) as ctx:
@@ -177,18 +179,15 @@ class AeSide(World, unittest.TestCase):
     def setUp(self) -> None:
         self.build()
 
-    def test_01_a_grant_beside_a_current_sidecar_posts_and_binds(self) -> None:
+    def test_01_a_grant_beside_a_current_sidecar_posts_one_ae_and_consumes(self) -> None:
         self.grant()
         self.check_full()
-        url, cid = self.post_ae()
-        text = self.comments[0]["body"]
-        self.assertIn("ci-outage-grant", text.rsplit("checks=", 1)[1])
-        self.assertIn(f"**CI substitute:** check-full receipt for {self.S} (forge {self.forge[:12]})", text)
-        [record] = self.records()
-        self.assertEqual((record["ae_comment_id"], record["ae_url"], record["sha"]), (cid, url, self.S))
-        self.assertEqual(record["posted_sha256"], hashlib.sha256(text.rstrip("\n").encode()).hexdigest())
-        self.assertEqual(record["receipt"], {"source_slug": SLUG, "forge_sha": self.forge})
+        self.post_ae()
+        [comment] = self.comments
+        self.assertIn("ci-outage-grant", comment["body"].rsplit("checks=", 1)[1])
+        self.assertIn(f"**CI substitute:** check-full receipt for {self.S} (forge {self.forge[:12]})", comment["body"])
         self.assertEqual(force_grant.read_grant(KEY)["status"], "consumed")
+        self.assertFalse((self.state / "ci-outage").exists())  # no release record (Option A)
 
     def refused(self, needle: str, **kw) -> None:
         code, message = self.exits(**kw)
@@ -222,35 +221,41 @@ class AeSide(World, unittest.TestCase):
                 self.grant(prefix=prefix)
                 self.refused("CI is absent")
 
-    def test_06_red_or_unknown_ci_under_a_grant_refuses(self) -> None:
-        """E4 (`gate_ci.OUTAGE_STATES`, operator D10): `unknown` here is an unrecognised
-        conclusion on a complete, red-free read, so E4 alone refuses it."""
+    def test_06a_red_ci_under_a_grant_refuses(self) -> None:
+        """AC3's closed allow-set: gate_ci reads `red`, which is not pending or absent."""
         self.grant()
         self.check_full()
-        self.refused("CI is unknown; a ci-outage release needs pending or absent",
-                     reader=s0([job("verify", "stale")]))
-        self.refused("CI is red", reader=RED_STATUS)
+        self.refused("CI is red on", reader=RED_STATUS)
+        self.assertIn("a ci-outage release needs pending or absent", self.exits(reader=RED_STATUS)[1])
         self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
 
-    def test_07_a_second_ae_under_the_same_grant_exits_1_naming_the_bound_ae(self) -> None:
+    def test_06b_unknown_ci_under_a_grant_refuses(self) -> None:
+        """Operator D10: an unrecognised conclusion reads `unknown`, which never releases."""
         self.grant()
         self.check_full()
-        url, _ = self.post_ae(reader=PENDING)
+        self.refused("CI is unknown on", reader=s0([job("verify", "stale")]))
+        self.assertIn("a ci-outage release needs pending or absent",
+                      self.exits(reader=s0([job("verify", "stale")]))[1])
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
+    def test_07_a_second_ae_under_the_same_grant_exits_1_naming_a_new_force_line(self) -> None:
+        self.grant()
+        self.check_full()
+        self.post_ae(reader=PENDING)
         code, message = self.exits(reader=PENDING)
         self.assertNotEqual(code, L._carry_forward.WAIT_EXIT)
-        self.assertIn(f"it is bound to the AE {url}", message)
+        self.assertIn("already consumed", message)
         self.assertIn(f"`FORCE {KEY} ci-outage {self.S}:", message)
         self.assertEqual(len(self.comments), 1)
 
-    def test_08_a_failed_post_after_reserve_leaves_no_ae_bound(self) -> None:
+    def test_08_a_failed_post_after_reserve_leaves_the_grant_spent(self) -> None:
         self.grant()
         self.check_full()
         self.exits(reader=PENDING, fail_post=True)
-        self.assertEqual((force_grant.read_grant(KEY)["status"], self.records()), ("consumed", []))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "consumed")
         code, message = self.exits(reader=PENDING)
         self.assertNotEqual(code, L._carry_forward.WAIT_EXIT)
-        self.assertIn("no AE was bound", message)
-        self.assertIn(f"`FORCE {KEY} ci-outage {self.S}:", message)
+        self.assertIn("already consumed", message)
 
     def test_09_a_force_line_replacing_the_slot_before_reserve_posts_nothing(self) -> None:
         self.grant()
@@ -259,17 +264,36 @@ class AeSide(World, unittest.TestCase):
         self.refused("could not be consumed", before_reserve=later)
         self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
 
-    def test_10_the_dry_run_never_consumes_and_the_post_binds_once(self) -> None:
+    def dry_run(self, reader=ABSENT, prod_run=None) -> None:
+        with ExitStack() as stack:
+            self.ci(stack, reader)
+            for step in L._publish_checks(REPO, ISSUE, "ae", self.S, "feat/12-x", ack_overlap=None,
+                                          ack_no_pr_required=None, grant_on_main=False, prod_run=prod_run):
+                step()
+
+    def test_10_the_dry_run_never_consumes_and_the_post_consumes_once(self) -> None:
         self.grant()
         self.check_full()
-        with ExitStack() as stack:
-            self.ci(stack, ABSENT)
-            for step in L._publish_checks(REPO, ISSUE, "ae", self.S, "feat/12-x", ack_overlap=None,
-                                          ack_no_pr_required=None, grant_on_main=False):
-                step()
+        self.dry_run()
         self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
         self.post_ae()
-        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "consumed")
+
+    def test_41_prod_run_refuses_the_release_on_the_real_post(self) -> None:
+        """AC3: a production step is R-0374's grant path, never this one."""
+        self.grant()
+        self.check_full()
+        self.refused("declares --prod-run", prod_run={"script": "x"})
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
+    def test_42_prod_run_refuses_the_release_on_the_dry_run(self) -> None:
+        """R-0419: the dry run refuses what the real post refuses."""
+        self.grant()
+        self.check_full()
+        with self.assertRaises(SystemExit) as ctx:
+            self.dry_run(prod_run={"script": "x"})
+        self.assertIn("declares --prod-run", str(ctx.exception))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
 
     def test_36_a_dirty_forge_refuses_naming_why(self) -> None:
         self.grant()
@@ -278,51 +302,35 @@ class AeSide(World, unittest.TestCase):
         self.sidecar(self.S, None, body_forge=None)  # what an unguarded reader would find
         self.refused("forge tree dirty: f")
 
-    def test_37_a_failed_bind_prints_and_the_post_completes(self) -> None:
-        self.grant()
-        self.check_full()
-        self.state.mkdir(exist_ok=True)
-        (self.state / "ci-outage").write_text("not a directory")
-        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            url, _ = self.post_ae()
-        self.receipts.assert_called_once()
-        self.tasklist.record_post.assert_called_once_with(REPO, ISSUE, "ae")
-        for needle in (url, "release was not recorded", f"`FORCE {KEY} ci-outage {self.S}:"):
-            self.assertIn(needle, err.getvalue())
-        self.sweep()
-        body = f"## Lane 3 Gate Results — {KEY}\n\n**Verdict:** PASS\n**Head-SHA:** {self.S}\n"
-        with mock.patch.object(ci_outage.check_lane3_ready, "fetch_comments", lambda r, i: self.comments):
-            self.assertIsNone(ci_outage.pass_release(REPO, ISSUE, body))
 
 
-class AeVisibleRed(World, unittest.TestCase):
-    """TC 40, AE half: a required check running beside a failed job (pending), and a
-    required check not yet created beside a failed job (absent)."""
-    SHAPES = {"pending": s0([job("verify", None, "in_progress"), job("lint", "failure")]),
-              "absent": s0([job("lint", "failure")])}
+class PassUnchanged(World, unittest.TestCase):
+    """AC2: a consumed ci-outage grant and its AE at S, CI pending at S: Lane 3's PASS
+    refuses with gate_ci's unfinished-CI refusal and never reads the grant."""
 
-    def setUp(self) -> None:
+    def test_43_a_pass_on_pending_ci_refuses_after_an_outage_ae(self) -> None:
         self.build()
-        self.check_full()
-
-    def test_40_no_grant_waits_or_refuses_as_today(self) -> None:
-        for state, want in (("pending", L._carry_forward.WAIT_EXIT), ("absent", None)):
-            with self.subTest(state=state):
-                code, message = self.exits(reader=self.SHAPES[state])
-                if want is None:
-                    self.assertIn("CI is absent", message)
-                else:
-                    self.assertEqual(code, want)
-        self.assertEqual(self.comments, [])
-
-    def test_40_a_grant_refuses_a_visible_red_job(self) -> None:
         self.grant()
-        for state, reader in self.SHAPES.items():
-            with self.subTest(state=state):
-                code, message = self.exits(reader=reader)
-                self.assertNotEqual(code, L._carry_forward.WAIT_EXIT)
-                self.assertIn("visibly red (lint:failure)", message)
-        self.assertEqual(self.comments, [])
+        self.check_full()
+        self.post_ae(reader=PENDING)
+        self.sweep()
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "consumed")
+        before = force_grant.grant_path(KEY).read_bytes()
+        body = f"## Lane 3 Gate Results — {KEY}\n\n**Verdict:** PASS\n**Head-SHA:** {self.S}\n\nAll cases ran.\n"
+        run = fake_gh(required={"verify"}, checks=[check("verify", None, "in_progress")],
+                      pulls=[{"number": 7, "head": self.S, "ref": "feat/12-x", "base": "main", "state": "open"}])
+        with mock.patch.object(gate_ci, "_run", run), \
+             mock.patch.object(P.check_lane3_ready, "fetch_comments", lambda r, i: list(self.comments)):
+            with self.assertRaises(SystemExit) as ctx:
+                P.require_green_ci("gate-result", REPO, body, issue=ISSUE)
+        self.assertIn("CI has not completed for the SHA this PASS names", str(ctx.exception))
+        self.assertEqual(force_grant.grant_path(KEY).read_bytes(), before)
+        tree = ast.parse(Path(P.__file__).read_text())
+        imported = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                    for alias in node.names} | {node.module for node in ast.walk(tree)
+                                                if isinstance(node, ast.ImportFrom)}
+        self.assertNotIn("ci_outage", imported)
+        self.assertNotIn("ci_outage", vars(P))
 
 
 if __name__ == "__main__":

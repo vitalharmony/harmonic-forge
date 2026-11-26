@@ -304,7 +304,7 @@ mise_tasks = [{task = "l1-post", prefix = []}]
   name = "post (every --kind)"
   match = []
   class = "external-publish"
-  note = "an AE released by a ci-outage grant consumes it and writes a write-once release record under ~/.claude/state/force/ci-outage/ (harmonic-forge#1565)"
+  note = "an AE released by a ci-outage grant consumes it under ~/.claude/state/force/ (harmonic-forge#1565); nothing else is written"
   precheck = "--dry-run"
   binds = ["head_sha", "body_content", "args"]
   binds_cite = "tools/gh/l1_post.py:3448-3466"

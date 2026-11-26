@@ -47,7 +47,6 @@ from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_g
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
 # different rules.
 import check_lane3_ready
-import ci_outage  # harmonic-forge#1565: the ci-outage PASS release
 
 # harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
 # poster checks with the same one and the two cannot drift.
@@ -675,6 +674,13 @@ def require_green_ci(
     # meant the test asserting a red CI is refused passed against a function
     # that never called the checker at all.
     #
+    # Keyed on the BODY, not on `kind`. `kind` is the author declaring what
+    # they are posting; omitting `--kind gate-result` skipped the check
+    # entirely while `lane_state.py` still scored the comment `gate.pass` from
+    # its heading. 74 of 98 real `Lane 3 Gate Results` comments across both
+    # repos carry no `kind=gate-result` footer, so that was the majority path,
+    # not a corner. `kind` is kept as a second trigger for a gate report whose
+    # heading is non-standard.
     # `kind` is NOT consulted. It is the author declaring what they are
     # posting, and omitting `--kind gate-result` skipped the check entirely
     # while `lane_state.py` still scored the comment `gate.pass` from its
@@ -684,10 +690,7 @@ def require_green_ci(
     # `lane_state.py` does, and returns cleanly for anything that is not one;
     # asking it every time means the two can never disagree about what a gate
     # report IS.
-    # harmonic-forge#1565: with a ci-outage release record on the issue, its one CI read decides.
-    released = (ci_outage.pass_release(repo, issue, body)
-                if issue is not None and ack_no_pr_required is None else None)
-    ok, message = released or check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
+    ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
     # harmonic-forge#1495: only a refusal that says CI has not completed can be
     # lifted, only when `issue` is known and no acknowledgment was given (the
     # tip-plus-ack route decides alone then), and the AE is read once, on this

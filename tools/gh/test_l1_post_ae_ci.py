@@ -169,7 +169,7 @@ class GrantAndReadonlyAeNeverReachTheGate(unittest.TestCase):
         with mock.patch.object(L, "_ae_ci_gate", return_value="ci-green") as gate:
             steps = self.steps(grant_on_main=False)
             steps[-1]()
-        gate.assert_called_once_with("o/r", 1, SHA, None)
+        gate.assert_called_once_with("o/r", 1, SHA, None, None)  # no --prod-run (#1565)
 
     def test_grant_on_main_and_merged_readonly_skip_it(self):
         for kw in ({"grant_on_main": True}, {"grant_on_main": False, "merged_readonly": True}):
@@ -189,7 +189,7 @@ class PostKindRunsTheGate(unittest.TestCase):
             captured["text"] = text
             return "https://github.com/o/r/issues/1#issuecomment-1", 1
 
-        def gate(repo, issue, sha, applied):
+        def gate(repo, issue, sha, applied, prod_run=None):
             captured["applied"] = applied
             return gate_out
         with mock.patch.object(L, "comment_body", side_effect=comment), \

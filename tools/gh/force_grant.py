@@ -248,7 +248,7 @@ _AUTHORIZES = {"plain": "one plain `preclose_check.py --force`",
                "route": "one merge past the route recheck (block_route_tightened_merge.py)",
                "cluster": "one `preclose_check.py --cluster-verdict ... --force`",
                "gate": "one call past the precheck gate",
-               "ci-outage": "the pre-merge AE, and Lane 3's PASS, for exactly this SHA past a CI outage, only beside its check-full receipt, never a merge"}
+               "ci-outage": "one pre-merge AE at exactly this SHA on pending or absent CI, beside its check-full receipt, never a PASS, never a merge"}
 #: harmonic-forge#1291: what a gate grant is bound to; each must match the call.
 GATE_FIELDS = ("gate_tool", "gate_mode", "arg_fp")
 #: The modes bound to the operator-typed SHA prefix, not the covered head.
