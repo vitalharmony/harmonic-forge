@@ -40,6 +40,14 @@ class DischargeReportsAFailedWrite(unittest.TestCase):
         self._lock(0o000)
         self.assertEqual(handoff_owed.discharge(REPO, 2), -1)
 
+    def test_an_unreadable_obligation_file_returns_minus_one(self):
+        """Preclose round 1 survivor 7: never read as an empty record list."""
+        self.assertTrue(handoff_owed.record(REPO, 2, "u", key="s1"))
+        locked = self.store / "s1.json"
+        locked.chmod(0o000)
+        self.addCleanup(locked.chmod, 0o600)
+        self.assertEqual(handoff_owed.discharge(REPO, 2), -1)
+
     def test_a_missing_store_is_zero(self):
         self.assertEqual(handoff_owed.discharge(REPO, 2), 0)
 

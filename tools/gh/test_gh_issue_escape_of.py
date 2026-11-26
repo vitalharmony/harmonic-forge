@@ -99,7 +99,10 @@ class EscapeOf(unittest.TestCase):
 
     def test_emit_failure_never_fails_the_filing(self):
         err = io.StringIO()
-        with patch.object(emit, "emit", side_effect=RuntimeError("store down")), redirect_stderr(err):
+        # The route checkpoint shares this store and, since harmonic-forge#1578, its own
+        # failure is an unfinished step; it is stubbed so only the escape emit fails.
+        with patch.object(emit, "emit", side_effect=RuntimeError("store down")), redirect_stderr(err), \
+             patch("gh_issue._route_at_filing", return_value=None):
             result, create = self._main("--escape-of", "F1230")
         self.assertIn(result, (0, None))
         create.assert_called_once()

@@ -590,12 +590,12 @@ class TestPostCreateFailureTable(unittest.TestCase):
     #: need no row. A new call belongs in ROWS or here, with the reason.
     NOT_FAILURE_STEPS = {
         "_issue_number",               # pure parse of the URL
-        "_route_at_filing",            # fail-open by contract (harmonic-forge#1232)
+        "_route_at_filing",            # fail-open; appends its own unfinished checkpoint entry (#1578)
         "_record_escape",              # fail-open by contract (harmonic-forge#1248)
         "resolve_board_for_repo",      # a lookup; an unmapped repo is a reported unfinished step
         "handoff_owed.discharge_command",  # builds repair text
         "_post_create_exit",           # the single exit
-        "_contained", "_discharge_repair",  # the AC3 wrapper; repair text (harmonic-forge#1578)
+        "_contained", "_discharge_repair", "_repair",  # the AC3 wrapper; repair text (#1578)
     }
 
     def _drive(self, argv, fail, run_error=None, resolve_error=None):

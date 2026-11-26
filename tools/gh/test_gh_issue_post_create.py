@@ -206,5 +206,90 @@ class AC4SummaryMatchesWhatRan(unittest.TestCase):
         self.assertNotIn("every other step ran", err)
 
 
+class Round1Survivors(unittest.TestCase):
+    """Preclose round 1's eight survivors: each post-create step, Path and the
+    repair builds included, is its own entry with the repair for what ran."""
+    BLOCKED = ["--repo", FORGE, "--milestone", "0.3", "--handoff-exception", "blocked-on-prerequisite",
+               "--handoff-exception-reason", "waits", "--blocked-by", "o/b#1"]
+
+    def _board(self, select=lambda *a: True, ctx=None, fields=()):
+        ctx = ctx or {"return_value": {"project_id": "PVT_1", "fields": list(fields)}}
+        with patch("gh_issue._run_board", return_value=base._completed('{"id": "IT_1"}')), \
+             patch("gh_issue._fetch_project_context", **ctx), \
+             patch("gh_issue._set_single_select", side_effect=select) as sel:
+            code, err, _ = _drive(PARKING, add_to_board=None, _route_at_filing={"return_value": "2"})
+        return code, err, [c.args[3] for c in sel.call_args_list]
+
+    def test_1_a_raising_path_write_or_context_fetch_after_the_add_is_named(self):
+        def select(*a):
+            if a[3] == "Path":
+                raise OSError("could not start gh")
+            return True
+        code, err, fields = self._board(select)
+        self.assertEqual((code, fields), (1, ["Path", "Status", "Tier", "Theme", "Venture"]), err)
+        self.assertIn("- Path=2: set it on the board by hand", err)
+        code, err, _ = self._board(ctx={"side_effect": TypeError("list indices")})
+        self.assertEqual(code, 1, err)
+        self.assertIn("- board add: the item is on board #1 but its fields could not be read", err)
+        self.assertNotIn(f"add {URL} to board #1 by hand", err)
+
+    def test_2_a_missing_field_or_option_names_that_not_a_printed_command(self):
+        fields = [{"name": "Status", "id": "F1", "options": [{"name": "Todo", "id": "O1"}]},
+                  {"name": "Tier", "id": "F2", "options": [{"name": "fast", "id": "O2"}]},
+                  {"name": "Path", "id": "F3", "options": [{"name": "2", "id": "O3"}]},
+                  {"name": "Theme", "id": "F4", "options": [{"name": "Other", "id": "O4"}]}]
+        with patch("gh_issue._run_board", return_value=base._completed('{"id": "IT_1"}')), \
+             patch("gh_issue._fetch_project_context", return_value={"project_id": "P", "fields": fields}):
+            code, err, _ = _drive(PARKING, add_to_board=None)
+        self.assertEqual(code, 1, err)
+        self.assertIn("- Theme=Tooling not written: the Theme field has no 'Tooling' option", err)
+        self.assertIn("- Venture=Platform not written: the board has no Venture field", err)
+        self.assertNotIn("printed above", err)
+
+    def test_3_a_rejected_path_write_exits_one(self):
+        code, err, _ = self._board(lambda *a: a[3] != "Path")
+        self.assertEqual(code, 1, err)
+        self.assertIn("- Path=2 not written: the board has no Path field", err)
+
+    def test_4_an_unrecorded_filing_checkpoint_is_named_with_a_rerun_that_records_it(self):
+        import shlex
+        import subprocess
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "routing"))
+        import route_store  # noqa: PLC0415
+        import emit  # noqa: PLC0415
+        with patch.object(route_store, "record", side_effect=RuntimeError("store down")):
+            code, err, _ = _drive(PARKING, _route_at_filing=None)
+        self.assertEqual(code, 1, err)
+        rerun = next(e for e in err.splitlines() if "- route filing checkpoint: " in e).split(": ", 1)[1]
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {emit.STORE_ENV: tmp, emit.TESTING_ENV: "1"}):
+            subprocess.run(shlex.split(rerun), check=True, env=os.environ)
+            self.assertEqual(route_store.current(f"{FORGE}#42")["attrs"]["checkpoint"], "filing")
+
+    def test_5_a_failed_prerequisite_lookup_names_the_skipped_steps(self):
+        code, err, mocks = _drive(self.BLOCKED, _run={"return_value": base._completed("", returncode=1)})
+        self.assertEqual(code, 1, err)
+        self.assertIn("blocked_by link to o/b#1 was not written, so the exception comment and "
+                      "the obligation clear were not attempted; link it by hand", err)
+        self.assertNotIn("repair printed above", err)
+        mocks["discharge"].assert_not_called()
+
+    def test_6_a_raising_deferral_watch_is_its_own_step(self):
+        with patch("gh_issue.deferral_store.record_deferral", side_effect=OSError("disk")):
+            code, err, mocks = _drive(RECORDED, post_stdout=POSTED)
+        self.assertEqual(code, 1, err)
+        self.assertIn("deferral watch record raised OSError", err)
+        self.assertIn("- deferral watch record: python3 tools/gh/record_deferral.py", err)
+        self.assertNotIn("- R-0039 exception record", err)
+        mocks["discharge"].assert_called_once_with(FORGE, 42)
+
+    def test_8_a_raising_repair_build_is_still_one_entry(self):
+        with patch("gh_issue.handoff_owed.discharge_command", side_effect=ValueError("bad route")):
+            code, err, mocks = _drive(PARKING, **{"handoff_owed.record": {"return_value": False}})
+        self.assertEqual(code, 1, err)
+        self.assertIn("- obligation record: (the repair command could not be built: ValueError", err)
+        mocks["add_to_board"].assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
