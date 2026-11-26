@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import shlex
 import shutil
 import subprocess
 import sys
@@ -231,6 +232,71 @@ class TC6NoFalsePositives(unittest.TestCase):
         code, out = run_root({hook("prose"): body})
         self.assertEqual(code, 0, out)
         self.assertIn("clean: 1 files scanned", out)
+
+
+HOOKS = REPO / "tools" / "hooks"
+sys.path.insert(0, str(HOOKS))
+
+import batch_auth  # noqa: E402
+import block_data_migration_close  # noqa: E402
+import block_missing_preclose_inspection  # noqa: E402
+import test_gh_argv_adapters as table  # noqa: E402
+
+#: BATCH is read through decide() with no grant (classify_* return None on an
+#: undecided call by design; only decide() asks), as the differential does.
+NO_BATCH_STATE = HOOKS / "testdata" / "no-such-batch-state.json"
+_DECIDE = {None: table.NOT_A_CLOSE, "ask": table.ASK, "allow": table.PASS}
+_MAIN_KEPT = "main's recognition kept (block_data_migration_close.py:154-161)"
+_PREFIX = "harmonic-forge#1577: gh behind an unmodeled prefix is not recognized"
+
+#: Shrink-only: (consumer, row) -> (consumer's verdict, VERDICT's verdict, why).
+RESIDUAL = {
+    ("migration", "unprovable_env_unset"): (table.NOT_A_CLOSE, table.REFUSE, _MAIN_KEPT),
+    ("migration", "unprovable_sudo"): (table.NOT_A_CLOSE, table.REFUSE, _MAIN_KEPT),
+    ("migration", "unprovable_xargs"): (table.NOT_A_CLOSE, table.REFUSE, _MAIN_KEPT),
+    ("preclose", "unprovable_sudo"): (table.NOT_A_CLOSE, table.REFUSE, _PREFIX),
+    ("preclose", "unprovable_xargs"): (table.NOT_A_CLOSE, table.REFUSE, _PREFIX),
+    ("batch", "unprovable_sudo"): (table.NOT_A_CLOSE, table.ASK, _PREFIX),
+    ("batch", "unprovable_xargs"): (table.NOT_A_CLOSE, table.ASK, _PREFIX),
+}
+
+
+def consumer_verdict(consumer: str, command: str) -> str:
+    """The verdict of the consumer's real entry point for one command."""
+    if consumer == "batch":
+        result = batch_auth.decide(command, state_path=NO_BATCH_STATE)
+        return _DECIDE[result[0] if result else None]
+    if consumer == "migration":
+        return table.REFUSE if block_data_migration_close.find_close_targets(command) else table.NOT_A_CLOSE
+    found = block_missing_preclose_inspection.find_gated_targets_exempt(command) or []
+    if not found:
+        return table.NOT_A_CLOSE
+    return table.PASS if all(target[3] for target in found) else table.REFUSE
+
+
+class TC7ConsumersMatchTheVerdictTable(unittest.TestCase):
+    """Issue TC4: each shared row, through each consumer's real entry point, gives
+    that consumer's VERDICT column; every exception is a pinned RESIDUAL row."""
+
+    def test_every_row_matches_or_is_a_pinned_residual(self):
+        found = {}
+        for name, tokens in table.ROWS.items():
+            command = shlex.join(tokens)
+            for consumer in table.CONSUMERS:
+                got = consumer_verdict(consumer, command)
+                want = table.verdict(consumer, table.A.classify(tokens, {}))
+                if got != want:
+                    found[(consumer, name)] = (got, want)
+        pinned = {key: value[:2] for key, value in RESIDUAL.items()}
+        self.assertEqual({k: v for k, v in found.items() if pinned.get(k) != v}, {},
+                         "a consumer differs from VERDICT and no RESIDUAL row pins it")
+        self.assertEqual(sorted(set(pinned) - set(found)), [],
+                         "a RESIDUAL row no longer differs: delete it (shrink-only)")
+
+    def test_every_residual_names_its_reason(self):
+        for key, (_, _, why) in RESIDUAL.items():
+            with self.subTest(residual=key):
+                self.assertRegex(why, r"harmonic-forge#\d+|\.py:\d+")
 
 
 if __name__ == "__main__":
