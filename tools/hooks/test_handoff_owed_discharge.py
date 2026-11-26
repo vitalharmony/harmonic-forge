@@ -1,5 +1,6 @@
 """harmonic-forge#1578 AC1: `handoff_owed.discharge` reports a failed store
-write as -1 (the obligation may still stand), and a missing store as 0."""
+write as -1 (the obligation may still stand), and a missing store as 0.
+Sticky verdict P1: an unreadable file is never a whole-store -1."""
 from __future__ import annotations
 
 import os
@@ -40,13 +41,16 @@ class DischargeReportsAFailedWrite(unittest.TestCase):
         self._lock(0o000)
         self.assertEqual(handoff_owed.discharge(REPO, 2), -1)
 
-    def test_an_unreadable_obligation_file_returns_minus_one(self):
-        """Preclose round 1 survivor 7: never read as an empty record list."""
+    def test_an_unrelated_unreadable_file_does_not_fail_the_discharge(self):
+        """Sticky verdict P1 (round 2 survivor 1): another session's mode-0 file
+        is read as `outstanding()` reads it, never a whole-store -1 (residual R-a)."""
         self.assertTrue(handoff_owed.record(REPO, 2, "u", key="s1"))
-        locked = self.store / "s1.json"
+        self.assertTrue(handoff_owed.record(REPO, 9, "u", key="s2"))
+        locked = self.store / "s2.json"
         locked.chmod(0o000)
         self.addCleanup(locked.chmod, 0o600)
-        self.assertEqual(handoff_owed.discharge(REPO, 2), -1)
+        self.assertEqual(handoff_owed.discharge(REPO, 2), 1)
+        self.assertEqual(handoff_owed.outstanding("s1"), [])
 
     def test_a_missing_store_is_zero(self):
         self.assertEqual(handoff_owed.discharge(REPO, 2), 0)

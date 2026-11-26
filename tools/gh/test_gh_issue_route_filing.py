@@ -281,7 +281,7 @@ class RouteNoticeEveryExit(TempStore):
     def test_board_rejecting_path_prints_it_once_and_exits_one(self):
         code, err = self._drive(set_single_select=lambda item, project, fields, name, value: name != "Path")
         self.assertEqual(code, 1)
-        self.assertIn("- Path=2 not written: the board has no Path field", err)
+        self.assertIn("- Path=2: not written; the board has no Path field", err)
         self.assertEqual(err.count(self.NOTICE), 1)
 
     def test_a_later_hard_failure_after_a_written_path_prints_nothing(self):

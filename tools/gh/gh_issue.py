@@ -401,26 +401,30 @@ def _discharge_exception(args, issue: int, issue_url: str, unfinished: list | No
     `argparse` already refuses `--handoff-exception` without a reason, so by
     the time this runs the pair is either both-absent or both-present.
     harmonic-forge#1578: each step runs in `_contained`, and a step that does not
-    finish appends one entry to `unfinished` naming what it skipped and its repair.
+    finish appends one `<step>: <what did not happen>; <repair>` entry (P2).
     """
     if not getattr(args, "handoff_exception", None):
         return True
     u, step = (unfinished if unfinished is not None else []), "R-0039 exception record"
     clear = _repair(lambda: _discharge_repair(args.repo, issue))
-    rest = f"post the exception comment on {issue_url} by hand, then {clear}"
+    watch_words = (f"run record_deferral.py --repo {args.repo} --issue {issue} --operator-login "
+                   "with the login that posted the comment")
+    recorded_kind = args.handoff_exception in deferral_store.RECORDED_EXCEPTIONS
+    rest = (f"post the exception comment on {issue_url} by hand, "
+            + (f"{watch_words}, " if recorded_kind else "") + f"then {clear}")
     # harmonic-forge#1381 AC2: the link before the reason comment; a failed
     # link leaves the obligation standing and posts no discharge.
     blocker = getattr(args, "blocked_by", None)
     if args.handoff_exception == BLOCKED_ON_PREREQUISITE:
-        link = (f"link it by hand (gh api -X POST repos/{args.repo}/issues/{issue}/dependencies/"
-                f"blocked_by -F issue_id=<the REST id of {blocker}>), then {rest}")
+        link = f"confirm or add it, then {rest}"
         linked = _contained(u, f"blocked_by link to {blocker}", link, _link_blocker, args.repo, issue, blocker)
         if not linked:
             print(f"[GH] The handoff obligation on {issue_url} therefore STANDS.",
                   file=sys.stderr)
             if linked is False:
-                u.append(f"{step}: the blocked_by link to {blocker} was not written, so the "
-                         f"exception comment and the obligation clear were not attempted; {link}")
+                u.append(f"{step}: the blocked_by link to {blocker} is not confirmed on the issue "
+                         "(lookup, write or re-read failed, see the [GH] line), so the exception "
+                         f"comment and the obligation clear were not attempted; {link}")
             return False
     reason = args.handoff_exception_reason
     comment = (
@@ -430,7 +434,7 @@ def _discharge_exception(args, issue: int, issue_url: str, unfinished: list | No
         f"assumed — this comment is that record (R-0352's deferral shape).\n\n"
         f"**Reason given at filing time:** {reason}\n"
     )
-    if args.handoff_exception in deferral_store.RECORDED_EXCEPTIONS:
+    if recorded_kind:
         # harmonic-forge#1564: the release grammar, where the operator reads it.
         comment += f"\n{deferral_store.RELEASE_SENTENCE}\n"
     result = _contained(u, f"{step} comment", rest, _post_comment, args.repo, issue, comment)
@@ -443,22 +447,22 @@ def _discharge_exception(args, issue: int, issue_url: str, unfinished: list | No
               f"comment, or post the handoff.", file=sys.stderr)
         u.append(f"{step}: the comment was not posted, so the obligation stands; {rest}")
         return False
-    if args.handoff_exception in deferral_store.RECORDED_EXCEPTIONS:
+    if recorded_kind:
         # harmonic-forge#1564: Lane 1's belt watches this deferral for the
         # operator's `go`. The POST above carries no --jq, so its stdout is the
         # whole comment JSON, and its `user.login` is the filing login.
         login = _posted_login(result.stdout)
-        watch = (f"python3 tools/gh/record_deferral.py --repo {args.repo} "
-                 f"--issue {issue} --operator-login {login or '<login>'}")
-        # harmonic-forge#1578: its own step, so a raise is named with its retry.
+        # harmonic-forge#1578 P2: a command only when the login was read, else words.
+        watch = (f"python3 tools/gh/record_deferral.py --repo {args.repo} --issue {issue} "
+                 f"--operator-login {shlex.quote(login)}" if login else watch_words)
         recorded = _contained(u, "deferral watch record", watch, deferral_store.record_deferral,
                               args.repo, issue, "filing", operator_login=login)
         if recorded is False or (login is None and recorded is not None):
-            print("[GH] could not read the deferral comment's login from the POST response;"
-                  if login is None else "[GH] ERROR: the deferral watch entry was not written;",
-                  f"the belt will not watch {args.repo}#{issue} for a release until you run: {watch}",
-                  file=sys.stderr)
-            u.append(f"deferral watch record: {watch}")
+            what = ("the comment's login could not be read" if login is None
+                    else "the watch entry was not written")
+            print(f"[GH] ERROR: {what}; the belt will not watch {args.repo}#{issue} for a "
+                  f"release until you {watch if login is None else 'run: ' + watch}", file=sys.stderr)
+            u.append(f"deferral watch record: {what}, so the belt does not watch it; {watch}")
     cleared = _contained(u, "obligation clear", clear, _discharged, args.repo, issue, clear)
     if not cleared:
         if cleared is False:
@@ -887,13 +891,14 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int,
     try:
         route_store.record(f"{repo}#{issue_number}", route, decider=route.gate_id, checkpoint="filing")
     except Exception as exc:
+        # P2: tighten-only, so a stricter route recorded since is never loosened.
         rerun = _repair(lambda: "python3 -c " + shlex.quote(
             f"import sys; sys.path.insert(0, {str(Path(gates.__file__).parent)!r}); import gates, "
-            f"route_store; route_store.record({f'{repo}#{issue_number}'!r}, gates.{route!r}, "
-            f"decider={route.gate_id!r}, checkpoint='filing')"))
+            f"route_store; route_store.record_if_not_looser({f'{repo}#{issue_number}'!r}, "
+            f"gates.{route!r}, decider={route.gate_id!r}, checkpoint='filing')"))
         print(f"[GH] route: not recorded — {type(exc).__name__}: {exc}\n  {rerun}", file=sys.stderr)
         if unfinished is not None:
-            unfinished.append(f"route filing checkpoint: {rerun}")
+            unfinished.append(f"route filing checkpoint: not recorded; {rerun}")
     _ROUTE_STATE["path"] = str(route.path)
     return str(route.path)
 
@@ -907,13 +912,30 @@ _FIELD_REASONS = {"Path": "Path is the semantic route's board field (harmonic-fo
                   "Venture": "Venture is a required reporting-slice field (hrse#966)."}
 
 
+#: The board fields a filing writes, in write order (harmonic-forge#1578 P3).
+_BOARD_FIELDS = ("Path", "Status", "Tier", "Theme", "Venture")
+
+
+def _requested(route_path: str | None, tier: str | None, theme: str | None,
+               venture: str | None) -> dict[str, str]:
+    """This filing's board writes, `_BOARD_FIELDS` order: Path only when a route was computed."""
+    values = (route_path, STATUS_OPTION_NAME, tier, theme, venture)
+    return {name: v for name, v in zip(_BOARD_FIELDS, values, strict=True) if v is not None}
+
+
+def _not_attempted(requested) -> str:
+    """The one "not attempted" text for every board early return (P3)."""
+    return "/".join(f for f in _BOARD_FIELDS if f in requested) + " not attempted"
+
+
 def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None,
                   theme: str | None = None, venture: str | None = None,
                   route_path: str | None = None, failures: list[str] | None = None) -> bool:
     """True when every requested write landed. harmonic-forge#1578: each requested
     field is attempted, and each failure is printed and appended to `failures`."""
     local = failures if failures is not None else []
-    before, skipped = len(local), "; Status/Tier/Theme/Venture not attempted"
+    fields = _requested(route_path, tier, theme, venture)
+    before, skipped = len(local), _not_attempted(fields)
     # --format json returns the item id directly, no item-list scan.
     add_cmd = [
         "gh", "project", "item-add", project_number,
@@ -929,7 +951,8 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
         item_id = _find_existing_item(issue_url, project_owner, project_number)
         if item_id is None:
             print(f"[GH] Warning: created issue but failed to add to board:\n{add_result.stderr}", file=sys.stderr)
-            local.append(f"board add: add {issue_url} to board #{project_number} by hand{skipped}")
+            local.append(f"board add: not added, so {skipped}; add {issue_url} to board "
+                         f"#{project_number} and set them by hand")
             return False
         print(f"[GH] Already on board #{project_number} (added by another writer); setting fields on the existing item")
     else:
@@ -937,27 +960,25 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
             item_id = json.loads(add_result.stdout)["id"]
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             print(f"[GH] Warning: added to board but could not parse item id: {exc}", file=sys.stderr)
-            local.append(f"board add: the item id could not be read; set the fields on the board by hand{skipped}")
+            local.append(f"board add: the item id could not be read, so {skipped}; "
+                         "set them on the board by hand")
             return False
 
         print(f"[GH] Added issue to board #{project_number} (owner: {project_owner})")
 
     ctx = _contained(local, "board add", f"the item is on board #{project_number} but its fields "
-                     f"could not be read; set them by hand{skipped}",
+                     f"could not be read, so {skipped}; set them by hand",
                      _fetch_project_context, project_owner, project_number)
     if ctx is None:
         if len(local) == before:
             print("[GH] Warning: added to board but could not fetch project context — needs manual triage", file=sys.stderr)
-            local.append(f"board add: no project context; set the fields on the board by hand{skipped}")
+            local.append(f"board add: no project context, so {skipped}; set them on the board by hand")
         return False
 
     # harmonic-forge#1232: Path runs first, so a later write's failure cannot skip
     # it. harmonic-forge#1578: one failed (or raising) write never skips the next,
     # and each, Path included, is reported with the repair for what stopped it.
-    for name, value in (("Path", route_path), ("Status", STATUS_OPTION_NAME), ("Tier", tier),
-                        ("Theme", theme), ("Venture", venture)):
-        if value is None:
-            continue
+    for name, value in fields.items():
         call = ((_set_tier, item_id, ctx["project_id"], ctx["fields"], value) if name == "Tier"
                 else (_set_single_select, item_id, ctx["project_id"], ctx["fields"], name, value))
         done = _contained(local, f"{name}={value}", "set it on the board by hand", *call)
@@ -967,20 +988,20 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
             fix = _repair(_field_repair, ctx["fields"], name, value)
             print(f"[GH] ERROR: {name}={value} was requested but not written. "
                   f"{_FIELD_REASONS[name]} Repair: {fix}", file=sys.stderr)
-            local.append(f"{name}={value} not written: {fix}")
+            local.append(f"{name}={value}: not written; {fix}")
     return len(local) == before
 
 
 def _field_repair(fields: list[dict], name: str, value: str) -> str:
     """harmonic-forge#1578: the repair for an unwritten field, from the check that
-    stopped it. Only a failed item-edit prints a re-runnable command."""
+    stopped it, in words (P2)."""
     field = next((f for f in fields if f.get("name") == name), None)
     if field is None:
         return f"the board has no {name} field; add it, then set {name}={value} by hand"
     if not any(str(o.get("name", "")).strip().lower() == value.strip().lower()
                for o in field.get("options") or []):
         return f"the {name} field has no {value!r} option (listed above); set {name} by hand"
-    return "re-run the item-edit command printed above"
+    return f"the item-edit failed (see the [GH] line); set {name}={value} on the board by hand"
 
 
 def main() -> int:
@@ -1291,25 +1312,34 @@ def main() -> int:
     # can fail once the issue exists (hrse#1919). A failed creation records nothing.
     issue_number = _issue_number(issue_url)
     route_path = None
-    # harmonic-forge#1382 P1 and #1578: a post-create step that fails, or
-    # raises (`_contained`), is one "<step>: <repair>" entry here, the later
+    # harmonic-forge#1382 P1 and #1578: a post-create step that fails, or raises
+    # (`_contained`), is one "<step>: <what did not happen>; <repair>" entry, the later
     # steps still run, and `_post_create_exit` prints them all and exits 1.
     unfinished: list[str] = []
     if issue_number is None and args.escape_of is not None:
         print(f"[GH] escape-of: not recorded — no issue number in {issue_url}", file=sys.stderr)
-    if issue_number is not None:
+    if issue_number is None:
+        # harmonic-forge#1578 P4: an unparseable creation URL skips every numbered step.
+        skipped = ("R-0352 deferral" if parking else
+                   "R-0039 exception record" if args.handoff_exception else "")
+        unfinished.append(
+            f"issue number: none could be read from {issue_url}, so the obligation record, the "
+            f"route filing checkpoint{' and the ' + skipped if skipped else ''} were not "
+            "attempted; read the number from the URL and do them on that issue by hand")
+    else:
         owed_route = ({"kind": "deferral", "milestone": args.milestone,
                        "trigger": (args.deferral_trigger or "").strip(),
                        "owner": (args.deferral_owner or "").strip()} if parking else None)
-        # P2: the Stop hook cannot name an obligation that was never stored,
-        # so a failed write prints the discharge command itself, now.
-        repair = _repair(lambda: handoff_owed.discharge_command(args.repo, issue_number, owed_route))
+        # P2: the Stop hook cannot name an obligation that was never stored, so
+        # a failed write prints its discharge now: the deferral retry, else in words.
+        repair = (_repair(lambda: _deferral_retry(args, issue_number)) if parking else
+                  f"post the Lane 1 handoff, or the claimed R-0039 exception comment, on {issue_url} by hand")
         if _contained(unfinished, "obligation record", repair, handoff_owed.record,
                       args.repo, issue_number, issue_url, route=owed_route) is False:
             print(f"[GH] ERROR: the handoff obligation for {issue_url} could not "
                   f"be recorded, so no Stop hook will name it. Discharge it by "
                   f"hand:\n  {repair}", file=sys.stderr)
-            unfinished.append(f"obligation record: {repair}")
+            unfinished.append(f"obligation record: not stored, so no Stop hook will name it; {repair}")
         # harmonic-forge#1232: before `_discharge_exception`, which can return 1,
         # so the filing checkpoint is recorded on every exit below.
         route_path = _route_at_filing(args.repo, body, labels, issue_number, unfinished)
@@ -1318,7 +1348,8 @@ def main() -> int:
         if parking:
             if _contained(unfinished, "R-0352 deferral", repair, _post_deferral,
                           args, issue_number, issue_url) is False:
-                unfinished.append(f"R-0352 deferral: {repair}")
+                unfinished.append(f"R-0352 deferral: not posted or not cleared, so the obligation "
+                                  f"stands; {repair}")
         # The same early-return shape as the deferral (operator ruling on the
         # sticky-wicket PATCH, 2026-11-25): record it and let the board run.
         # `_discharge_exception` appends its own entry for each step it did not finish.
@@ -1326,13 +1357,14 @@ def main() -> int:
             before = len(unfinished)
             clear = _repair(lambda: _discharge_repair(args.repo, issue_number))
             if _contained(unfinished, "R-0039 exception record",
-                          f"confirm the --blocked-by link if one was given, post the exception "
-                          f"comment on {issue_url} if it is not there, then {clear}",
+                          f"confirm the blocked_by link if one was given and the exception "
+                          f"comment on {issue_url}, then {clear}",
                           _discharge_exception, args, issue_number, issue_url, unfinished) is False \
                     and len(unfinished) == before:
                 unfinished.append(f"R-0039 exception record: the exception was not recorded; "
                                   f"post the exception comment on {issue_url}, then {clear}")
 
+    board_fields = _requested(route_path, tier, args.theme, args.venture)  # P3
     # harmonic-forge#107: derive from --repo. An explicit override still wins.
     if args.project_owner and args.project_number:
         project_owner, project_number = args.project_owner, args.project_number
@@ -1345,8 +1377,9 @@ def main() -> int:
             # from the lookup, is one more unfinished step, not an exit that hides them.
             print(str(exc) if isinstance(exc, SystemExit) else
                   f"[GH] ERROR: board resolution raised {type(exc).__name__}: {exc}", file=sys.stderr)
-            unfinished.append("board resolution: map the repo in projects.toml or pass --project-owner/"
-                              "--project-number; board add and Tier/Theme/Venture not attempted")
+            unfinished.append(f"board resolution: the board for {args.repo} was not resolved (see the "
+                              f"[GH] line), so the board add and {_not_attempted(board_fields)}; map "
+                              f"the repo in projects.toml, then add {issue_url} to its board and set them by hand")
             return _post_create_exit(issue_url, unfinished)
 
     if not project_owner or not project_number:
@@ -1359,20 +1392,21 @@ def main() -> int:
         if requested:
             print(f"[GH] ERROR: {', '.join(requested)} was requested but these are board "
                   f"fields and no board is configured, so nothing was written. Issue "
-                  f"created: {issue_url}\n[GH] Repair by re-running with --project-owner/"
-                  f"--project-number, or set $GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
-                  file=sys.stderr)
-            unfinished.append("board fields: re-run with --project-owner/--project-number")
+                  f"created: {issue_url}", file=sys.stderr)
+            fields = "/".join(board_fields)
+            unfinished.append(f"board fields: no board is configured, so {fields} not written; "
+                              f"set {fields} on the board by hand")
         return _post_create_exit(issue_url, unfinished)
 
     board_failures: list[str] = []
-    ok = _contained(unfinished, "board add", f"add {issue_url} to board #{project_number} by hand "
-                    "if it is not there; Path/Status/Tier/Theme/Venture not attempted",
+    ok = _contained(unfinished, "board add", f"add {issue_url} to board #{project_number} if it is "
+                    f"not there, then set {'/'.join(board_fields)} by hand",
                     add_to_board, issue_url, project_owner, project_number, tier, args.theme,
                     args.venture, route_path, failures=board_failures)
     unfinished.extend(board_failures)
     if ok is False and not board_failures:
-        unfinished.append("board add or field write: see the [GH] lines above for the step that failed")
+        unfinished.append("board add or field write: did not finish (see the [GH] lines above); "
+                          "set the requested fields on the board by hand")
     return _post_create_exit(issue_url, unfinished)
 
 
@@ -1393,7 +1427,7 @@ def _contained(unfinished: list[str], step: str, repair: str, fn: Callable[..., 
         return fn(*args, **kw)
     except Exception as exc:  # noqa: BLE001
         print(f"[GH] ERROR: {step} raised {type(exc).__name__}: {exc}\n  {repair}", file=sys.stderr)
-        unfinished.append(f"{step}: {repair}")
+        unfinished.append(f"{step}: raised {type(exc).__name__}; {repair}")
         return None
 
 

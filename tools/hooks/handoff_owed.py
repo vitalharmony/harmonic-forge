@@ -220,8 +220,10 @@ def discharge(repo: str, issue: int) -> int:
     Cross-session on purpose -- see the module docstring. Returning a count
     rather than a bool lets a caller stay quiet when there was nothing to
     clear, which is the normal case for a handoff on an issue filed by hand.
-    -1 when a store file could not be read or written: the obligation may still
-    stand (harmonic-forge#1578). A missing store is 0, nothing to clear.
+    -1 when the store cannot be listed, or when a file that held this
+    obligation could not be rewritten: it may still stand (harmonic-forge#1578).
+    A missing store is 0. An unreadable or unparseable file is read exactly as
+    `outstanding()` reads it, so the filing and the Stop hook agree (R-a).
     """
     try:
         files = [f for f in OWED_DIR.iterdir() if f.is_file()]
@@ -231,9 +233,6 @@ def discharge(repo: str, issue: int) -> int:
         return -1
     cleared, failed = 0, False
     for path in files:
-        if not os.access(path, os.R_OK):  # may hold the obligation; never read as empty
-            failed = True
-            continue
         entries = _read(path)
         kept = [e for e in entries
                 if not (e.get("repo") == repo and e.get("issue") == issue)]

@@ -3,6 +3,7 @@
 mocked, no live gh/API calls. Run: python3 tools/gh/test_gh_issue.py"""
 
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -18,15 +19,26 @@ import gh_issue
 #: harmonic-forge#1032: every main()-level test predating the prior-owner
 #: search stubs it to "no candidates"; the tests for it use the original.
 _ORIGINAL_FIND_PRIOR_OWNERS = gh_issue.find_prior_owners
-_FIND_PATCHER = patch("gh_issue.find_prior_owners", return_value=[])
+#: harmonic-forge#1578 P4: an unparseable creation URL is now an unfinished step,
+#: so a filing fixture returns a numbered URL, and its obligation record and
+#: route checkpoint are stubbed by default (a test's own patch still wins).
+NUMBERED_URL = "https://github.com/o/r/issues/1"
+#: gh_issue's own functions, read before `setUpModule` swaps any for a mock.
+_GH_ISSUE_FUNCTIONS = frozenset(k for k, v in vars(gh_issue).items() if inspect.isfunction(v)
+                                and v.__module__ == gh_issue.__name__)
+_PATCHERS = (patch("gh_issue.find_prior_owners", return_value=[]),
+             patch("gh_issue.handoff_owed.record", return_value=True),
+             patch("gh_issue._route_at_filing", return_value=None))
 
 
 def setUpModule():
-    _FIND_PATCHER.start()
+    for patcher in _PATCHERS:
+        patcher.start()
 
 
 def tearDownModule():
-    _FIND_PATCHER.stop()
+    for patcher in reversed(_PATCHERS):
+        patcher.stop()
 
 
 def _completed(stdout="", returncode=0):
@@ -593,9 +605,9 @@ class TestPostCreateFailureTable(unittest.TestCase):
         "_route_at_filing",            # fail-open; appends its own unfinished checkpoint entry (#1578)
         "_record_escape",              # fail-open by contract (harmonic-forge#1248)
         "resolve_board_for_repo",      # a lookup; an unmapped repo is a reported unfinished step
-        "handoff_owed.discharge_command",  # builds repair text
         "_post_create_exit",           # the single exit
         "_contained", "_discharge_repair", "_repair",  # the AC3 wrapper; repair text (#1578)
+        "_deferral_retry", "_requested", "_not_attempted",  # repair and summary text (#1578 P2/P3)
     }
 
     def _drive(self, argv, fail, run_error=None, resolve_error=None):
@@ -677,8 +689,7 @@ class TestPostCreateFailureTable(unittest.TestCase):
                            and isinstance(n.func, ast.Name) and n.func.id == "create_issue")
 
         def name(f):
-            if isinstance(f, ast.Name) and inspect.isfunction(getattr(gh_issue, f.id, None)) \
-                    and getattr(gh_issue, f.id).__module__ == gh_issue.__name__:
+            if isinstance(f, ast.Name) and f.id in _GH_ISSUE_FUNCTIONS:
                 return f.id
             if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "handoff_owed":
                 return f"handoff_owed.{f.attr}"
@@ -758,7 +769,7 @@ class TestUnmappedRepoFailsLoudly(unittest.TestCase):
              patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
              patch("gh_issue.apply_project_identity"), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created:
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created:
             try:
                 return gh_issue.main(), created
             except SystemExit as exc:
@@ -801,7 +812,7 @@ class TestIdentityAppliedBeforeAnyGithubCall(unittest.TestCase):
              patch("gh_issue.add_to_board", return_value=True), \
              patch("gh_issue.apply_project_identity", order.identity), \
              patch("gh_issue.create_issue", order.create) as _:
-            order.create.return_value = "https://x/1"
+            order.create.return_value = NUMBERED_URL
             gh_issue.main()
         names = [c[0] for c in order.mock_calls]
         self.assertLess(names.index("identity"), names.index("create"))
@@ -820,7 +831,7 @@ class TestUnregisteredRepoRefusedBeforeFiling(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), \
              patch.object(sys, "argv", ["gh_issue.py", "--repo", "o/r", "--title", "t"]), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created:
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created:
             with self.assertRaises(Exception) as caught:
                 gh_issue.main()
         created.assert_not_called()
@@ -840,7 +851,7 @@ class TestHalfOverrideValidatedBeforeCreate(unittest.TestCase):
         stderr = io.StringIO()
         with patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created, \
              contextlib.redirect_stderr(stderr):
             try:
                 return gh_issue.main(), created, stderr.getvalue()
@@ -928,7 +939,7 @@ class TestBoardResolutionIgnoresAmbientEnv(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False), \
              patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1"), \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL), \
              patch("gh_issue.add_to_board", return_value=True) as add:
             gh_issue.main()
         return add
@@ -1071,7 +1082,7 @@ class TestNoBoardConfiguredHardFailsForThemeVenture(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), \
              patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1"), \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL), \
              patch("gh_issue.resolve_board_for_repo", return_value=("", "")):
             try:
                 return gh_issue.main()
@@ -1098,7 +1109,7 @@ class TestThemeVentureCliWiring(unittest.TestCase):
         with patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse",
                                         "--title", "t", "--theme", "Career", "--venture", "CymaGraph"]), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1"), \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL), \
              patch("gh_issue.add_to_board", return_value=True) as add:
             gh_issue.main()
         self.assertEqual(add.call_args[0][4], "Career")
@@ -1382,7 +1393,7 @@ class TestRetiredCitationWarningNeverBlocksFiling(unittest.TestCase):
                 "gh_issue.py", "--repo", "vitalharmony/harmonic-forge",
                 "--title", "t", "--body", body]), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created, \
              patch("gh_issue.resolve_board_for_repo", return_value=("", "")), \
              contextlib.redirect_stderr(stderr):
             result = gh_issue.main()
@@ -1475,7 +1486,7 @@ class TestToolingImplicationCliWiring(unittest.TestCase):
         with patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse",
                                         "--title", "t", "--labels", "bug,tooling-exception"]), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created, \
              patch("gh_issue.add_to_board", return_value=True):
             gh_issue.main()
         labels = created.call_args[0][3]
@@ -1487,7 +1498,7 @@ class TestToolingImplicationCliWiring(unittest.TestCase):
         with patch.object(sys, "argv", ["gh_issue.py", "--repo", "vitalharmony/hrse",
                                         "--title", "t", "--labels", "feature"]), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created, \
              patch("gh_issue.add_to_board", return_value=True):
             gh_issue.main()
         self.assertEqual(created.call_args[0][3], ["feature"])
@@ -1505,7 +1516,7 @@ class ToolingExceptionRequiresTheLabelTests(unittest.TestCase):
         stderr = io.StringIO()
         with patch.object(sys, "argv", argv), \
              patch("gh_issue.fetch_milestones", return_value={}), \
-             patch("gh_issue.create_issue", return_value="https://x/1") as created, \
+             patch("gh_issue.create_issue", return_value=NUMBERED_URL) as created, \
              contextlib.redirect_stderr(stderr):
             try:
                 return gh_issue.main(), created, stderr.getvalue()

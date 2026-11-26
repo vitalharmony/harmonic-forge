@@ -8,6 +8,7 @@ import io
 import itertools
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -117,7 +118,8 @@ class AC1FailedDischargeExitsOne(unittest.TestCase):
         with patch("gh_issue.deferral_store.record_deferral", return_value=False):
             code, err, mocks = _drive(RECORDED, post_stdout=POSTED)
         self.assertEqual(code, 1, err)
-        self.assertIn("deferral watch record: python3 tools/gh/record_deferral.py --repo "
+        self.assertIn("deferral watch record: the watch entry was not written, so the belt does "
+                      "not watch it; python3 tools/gh/record_deferral.py --repo "
                       f"{FORGE} --issue 42 --operator-login vitalharmony", err)
         mocks["add_to_board"].assert_called_once()
 
@@ -125,8 +127,10 @@ class AC1FailedDischargeExitsOne(unittest.TestCase):
         with patch("gh_issue.deferral_store.record_deferral", return_value=True):
             code, err, mocks = _drive(RECORDED, post_stdout="")
         self.assertEqual(code, 1, err)
-        self.assertIn("deferral watch record: python3 tools/gh/record_deferral.py --repo "
-                      f"{FORGE} --issue 42 --operator-login <login>", err)
+        self.assertIn("deferral watch record: the comment's login could not be read, so the belt "
+                      f"does not watch it; run record_deferral.py --repo {FORGE} --issue 42 "
+                      "--operator-login with the login that posted the comment", err)
+        self.assertNotIn("<login>", err)  # sticky verdict P2: no placeholder
         mocks["discharge"].assert_called_once_with(FORGE, 42)
 
 
@@ -145,8 +149,8 @@ class AC2EveryFieldIsAttempted(unittest.TestCase):
         tier.assert_called_once_with("IT_1", "PVT_1", [], "fast")
         self.assertEqual(fields, [("Status", gh_issue.STATUS_OPTION_NAME),
                                   ("Theme", "Tooling"), ("Venture", "Platform")])
-        self.assertIn(f"- Status={gh_issue.STATUS_OPTION_NAME} not written", err)
-        self.assertIn("- Theme=Tooling not written", err)
+        self.assertIn(f"- Status={gh_issue.STATUS_OPTION_NAME}: not written", err)
+        self.assertIn("- Theme=Tooling: not written", err)
 
     def test_a_raising_status_write_still_attempts_the_rest(self):
         def select(*a):
@@ -192,7 +196,7 @@ class AC4SummaryMatchesWhatRan(unittest.TestCase):
         code, err, mocks = _drive(PARKING, resolve_board_for_repo={
             "side_effect": SystemExit("[GH] No project board mapped")})
         self.assertEqual(code, 1, err)
-        self.assertIn("board add and Tier/Theme/Venture not attempted", err)
+        self.assertIn("board add and Status/Tier/Theme/Venture not attempted", err)
         self.assertNotIn("every other step ran", err)
         mocks["add_to_board"].assert_not_called()
 
@@ -201,8 +205,8 @@ class AC4SummaryMatchesWhatRan(unittest.TestCase):
              patch("gh_issue._find_existing_item", return_value=None):
             code, err, _ = _drive(PARKING, add_to_board=None)
         self.assertEqual(code, 1, err)
-        self.assertIn("- board add: add " + URL, err)
-        self.assertIn("Status/Tier/Theme/Venture not attempted", err)
+        self.assertIn("- board add: not added, so Status/Tier/Theme/Venture not attempted; add "
+                      + URL, err)
         self.assertNotIn("every other step ran", err)
 
 
@@ -227,10 +231,10 @@ class Round1Survivors(unittest.TestCase):
             return True
         code, err, fields = self._board(select)
         self.assertEqual((code, fields), (1, ["Path", "Status", "Tier", "Theme", "Venture"]), err)
-        self.assertIn("- Path=2: set it on the board by hand", err)
+        self.assertIn("- Path=2: raised OSError; set it on the board by hand", err)
         code, err, _ = self._board(ctx={"side_effect": TypeError("list indices")})
         self.assertEqual(code, 1, err)
-        self.assertIn("- board add: the item is on board #1 but its fields could not be read", err)
+        self.assertIn("- board add: raised TypeError; the item is on board #1 but its fields could not be read", err)
         self.assertNotIn(f"add {URL} to board #1 by hand", err)
 
     def test_2_a_missing_field_or_option_names_that_not_a_printed_command(self):
@@ -242,36 +246,62 @@ class Round1Survivors(unittest.TestCase):
              patch("gh_issue._fetch_project_context", return_value={"project_id": "P", "fields": fields}):
             code, err, _ = _drive(PARKING, add_to_board=None)
         self.assertEqual(code, 1, err)
-        self.assertIn("- Theme=Tooling not written: the Theme field has no 'Tooling' option", err)
-        self.assertIn("- Venture=Platform not written: the board has no Venture field", err)
+        self.assertIn("- Theme=Tooling: not written; the Theme field has no 'Tooling' option", err)
+        self.assertIn("- Venture=Platform: not written; the board has no Venture field", err)
         self.assertNotIn("printed above", err)
 
     def test_3_a_rejected_path_write_exits_one(self):
         code, err, _ = self._board(lambda *a: a[3] != "Path")
         self.assertEqual(code, 1, err)
-        self.assertIn("- Path=2 not written: the board has no Path field", err)
+        self.assertIn("- Path=2: not written; the board has no Path field", err)
 
-    def test_4_an_unrecorded_filing_checkpoint_is_named_with_a_rerun_that_records_it(self):
-        import shlex
-        import subprocess
+    def _route_rerun(self):
+        """The printed route repair for a Path 2 filing whose record failed."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "routing"))
         import route_store  # noqa: PLC0415
-        import emit  # noqa: PLC0415
         with patch.object(route_store, "record", side_effect=RuntimeError("store down")):
-            code, err, _ = _drive(PARKING, _route_at_filing=None)
+            code, err, _ = _drive(PARKING + ["--body", "edits `tools/hooks/x.py`"], _route_at_filing=None)
         self.assertEqual(code, 1, err)
-        rerun = next(e for e in err.splitlines() if "- route filing checkpoint: " in e).split(": ", 1)[1]
+        entry = next(e for e in err.splitlines() if "- route filing checkpoint: " in e)
+        return route_store, entry.split("- route filing checkpoint: not recorded; ", 1)[1]
+
+    def _run_rerun(self, rerun, before=None):
+        import shlex
+        import subprocess
+        import emit  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.dict(os.environ, {emit.STORE_ENV: tmp, emit.TESTING_ENV: "1"}):
+            if before is not None:
+                before()
             subprocess.run(shlex.split(rerun), check=True, env=os.environ)
-            self.assertEqual(route_store.current(f"{FORGE}#42")["attrs"]["checkpoint"], "filing")
+            import route_store  # noqa: PLC0415
+            return route_store.current(f"{FORGE}#42"), route_store.evaluated_path(f"{FORGE}#42")
+
+    def test_4_an_unrecorded_filing_checkpoint_is_named_with_a_rerun_that_records_it(self):
+        _, rerun = self._route_rerun()
+        current, path = self._run_rerun(rerun)
+        self.assertEqual((current["attrs"]["checkpoint"], path), ("filing", 2))
+
+    def test_4b_the_route_repair_never_loosens_a_stricter_route(self):
+        """Sticky verdict P2 (round 2 survivor 2): path 1 recorded since the
+        filing stays 1 after the printed repair runs (tighten-only)."""
+        route_store, rerun = self._route_rerun()
+        import gates  # noqa: PLC0415
+
+        def stricter():
+            route_store.record(f"{FORGE}#42", gates.Route(1, "handoff", "stricter"),
+                               decider="handoff", checkpoint="handoff")
+        _, path = self._run_rerun(rerun, before=stricter)
+        self.assertEqual(path, 1)
 
     def test_5_a_failed_prerequisite_lookup_names_the_skipped_steps(self):
         code, err, mocks = _drive(self.BLOCKED, _run={"return_value": base._completed("", returncode=1)})
         self.assertEqual(code, 1, err)
-        self.assertIn("blocked_by link to o/b#1 was not written, so the exception comment and "
-                      "the obligation clear were not attempted; link it by hand", err)
+        self.assertIn("the blocked_by link to o/b#1 is not confirmed on the issue (lookup, write "
+                      "or re-read failed, see the [GH] line), so the exception comment and the "
+                      "obligation clear were not attempted; confirm or add it", err)
         self.assertNotIn("repair printed above", err)
+        self.assertNotIn("gh api", err)
         mocks["discharge"].assert_not_called()
 
     def test_6_a_raising_deferral_watch_is_its_own_step(self):
@@ -279,7 +309,7 @@ class Round1Survivors(unittest.TestCase):
             code, err, mocks = _drive(RECORDED, post_stdout=POSTED)
         self.assertEqual(code, 1, err)
         self.assertIn("deferral watch record raised OSError", err)
-        self.assertIn("- deferral watch record: python3 tools/gh/record_deferral.py", err)
+        self.assertIn("- deferral watch record: raised OSError; python3 tools/gh/record_deferral.py", err)
         self.assertNotIn("- R-0039 exception record", err)
         mocks["discharge"].assert_called_once_with(FORGE, 42)
 
@@ -287,7 +317,122 @@ class Round1Survivors(unittest.TestCase):
         with patch("gh_issue.handoff_owed.discharge_command", side_effect=ValueError("bad route")):
             code, err, mocks = _drive(PARKING, **{"handoff_owed.record": {"return_value": False}})
         self.assertEqual(code, 1, err)
-        self.assertIn("- obligation record: (the repair command could not be built: ValueError", err)
+        self.assertIn("- obligation record: not stored, so no Stop hook will name it; "
+                      "(the repair command could not be built: ValueError", err)
+        mocks["add_to_board"].assert_called_once()
+
+
+#: Sticky verdict P2: an entry is "<step>: <what did not happen>; <repair>".
+ENTRY = re.compile(r"^(?P<step>[^:;]+): (?P<what>[^;]+); (?P<repair>.+)$")
+#: The closed set: every `python3` in a repair starts one of these four commands.
+CLOSED = (re.compile(r"python3 -c 'import sys; sys\.path\.insert\(0, \"[^\"]+\"\); import handoff_owed; "
+                     r"sys\.exit\(handoff_owed\.discharge\(\"[^\"]+\", \d+\) < 0\)'"),
+          re.compile(r"python3 \"\$\{HARMONIC_FORGE_ROOT:-\$HOME/harmonic-forge\}/tools/gh/gh_issue\.py\" "
+                     r"--repo \S+ --defer-existing \d+ "),
+          re.compile(r"python3 tools/gh/record_deferral\.py --repo \S+ --issue \d+ --operator-login \w"),
+          re.compile(r"python3 -c .*?route_store\.record_if_not_looser\("))
+
+
+def _entries(err: str) -> list[str]:
+    return [line.split("[GH]   - ", 1)[1] for line in err.splitlines() if line.startswith("[GH]   - ")]
+
+
+class P2RepairsAreAClosedSet(unittest.TestCase):
+    """Sticky verdict P2: every ROWS failure and every board early return ends in
+    an entry whose repair is one of four commands or words, never a placeholder."""
+
+    def assert_closed(self, entry: str) -> None:
+        match = ENTRY.match(entry)
+        self.assertIsNotNone(match, entry)
+        repair = match["repair"]
+        self.assertNotRegex(entry, r"<[\w .-]+>", "a <placeholder>")
+        self.assertNotIn("route_store.record(", entry)
+        self.assertNotRegex(repair, r"\bgh api\b|mise run|l1-post")
+        if "gh_issue.py" in repair:
+            self.assertIn("--defer-existing", repair)
+        for at in (m.start() for m in re.finditer(r"python3 ", repair)):
+            self.assertTrue(any(c.match(repair, at) for c in CLOSED), repair[at:])
+
+    def _board(self, **edges):
+        defaults = {"_run_board": {"return_value": base._completed('{"id": "IT_1"}')},
+                    "_find_existing_item": {"return_value": None},
+                    "_fetch_project_context": {"return_value": CTX},
+                    "_set_single_select": {"return_value": True},
+                    "_set_tier": {"return_value": True}}
+        return {"add_to_board": None, "_route_at_filing": {"return_value": "2"}, **defaults, **edges}
+
+    def test_every_summary_entry_is_in_the_closed_set(self):
+        oops = OSError("could not start gh")
+        scenarios = {}
+        for call, argv, *_rest in ROWS.values():
+            scenarios[f"{call} fails"] = (argv, {call: {"return_value": False}}, "")
+            scenarios[f"{call} raises"] = (argv, {call: {"side_effect": oops}}, "")
+        scenarios.update({
+            "board add rejected": (PARKING, self._board(_run_board={
+                "return_value": base._completed("", returncode=1)}), ""),
+            "item id unreadable": (PARKING, self._board(_run_board={"return_value": base._completed("x")}), ""),
+            "no project context": (PARKING, self._board(_fetch_project_context={"return_value": None}), ""),
+            "project context raises": (PARKING, self._board(_fetch_project_context={"side_effect": oops}), ""),
+            "field writes fail": (PARKING, self._board(_set_single_select={"return_value": False},
+                                                       _set_tier={"side_effect": oops}), ""),
+            "unmapped board": (PARKING, {"resolve_board_for_repo": {"side_effect": SystemExit("no board")},
+                                         "_route_at_filing": {"return_value": "2"}}, ""),
+            "no board configured": (PARKING, {"resolve_board_for_repo": {"return_value": ("", "")}}, ""),
+            "login unread": (RECORDED, {"handoff_owed.discharge": {"return_value": -1}}, ""),
+            "link fails": (Round1Survivors.BLOCKED, {"_run": {"return_value": base._completed("", 1)}}, ""),
+            "exception post fails": (EXCEPTION, {"_run": {"return_value": base._completed("", 1)}}, ""),
+            "deferral clear fails": (PARKING, {"handoff_owed.discharge": {"return_value": -1}}, ""),
+            "obligation record fails (exception)": (EXCEPTION, {"handoff_owed.record": {"return_value": False}}, ""),
+            "no issue number": (PARKING, {"create_issue": {"return_value": "https://github.com/o/r/pull/7"}}, ""),
+        })
+        for name, (argv, over, post) in scenarios.items():
+            with self.subTest(scenario=name), \
+                    patch("gh_issue.deferral_store.record_deferral", return_value=True):
+                code, err, _ = _drive(argv, post_stdout=post, **over)
+                entries = _entries(err)
+                self.assertEqual(code, 1, err)
+                self.assertTrue(entries, err)
+                for entry in entries:
+                    self.assert_closed(entry)
+
+    def test_the_route_entry_is_in_the_closed_set(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "routing"))
+        import route_store  # noqa: PLC0415
+        with patch.object(route_store, "record", side_effect=RuntimeError("store down")):
+            code, err, _ = _drive(PARKING + ["--body", "edits `tools/hooks/x.py`"], _route_at_filing=None)
+        self.assertEqual(code, 1, err)
+        route = [e for e in _entries(err) if e.startswith("route filing checkpoint")]
+        self.assertEqual(len(route), 1, err)
+        self.assert_closed(route[0])
+
+
+class P3NotAttemptedListsComeFromOneHelper(unittest.TestCase):
+    def test_an_unmapped_board_with_a_computed_route_names_path(self):
+        code, err, _ = _drive(PARKING, resolve_board_for_repo={"side_effect": SystemExit("no board")},
+                              _route_at_filing={"return_value": "2"})
+        self.assertEqual(code, 1, err)
+        self.assertIn("so the board add and Path/Status/Tier/Theme/Venture not attempted", err)
+
+    def test_a_board_early_return_with_a_route_names_path(self):
+        with patch("gh_issue._run_board", return_value=base._completed("", returncode=1)), \
+             patch("gh_issue._find_existing_item", return_value=None):
+            code, err, _ = _drive(PARKING, add_to_board=None, _route_at_filing={"return_value": "2"})
+        self.assertEqual(code, 1, err)
+        self.assertIn("- board add: not added, so Path/Status/Tier/Theme/Venture not attempted", err)
+
+    def test_only_requested_fields_are_listed(self):
+        self.assertEqual(gh_issue._not_attempted(gh_issue._requested(None, None, "T", None)),
+                         "Status/Theme not attempted")
+
+
+class P4AnUnparseableIssueNumberIsAnEntry(unittest.TestCase):
+    def test_a_url_with_no_issue_number_exits_one_naming_the_skipped_steps(self):
+        code, err, mocks = _drive(PARKING, create_issue={"return_value": "https://github.com/o/r/pull/7"})
+        self.assertEqual(code, 1, err)
+        self.assertIn("- issue number: none could be read from https://github.com/o/r/pull/7, so the "
+                      "obligation record, the route filing checkpoint and the R-0352 deferral were "
+                      "not attempted", err)
+        mocks["record"].assert_not_called()
         mocks["add_to_board"].assert_called_once()
 
 
