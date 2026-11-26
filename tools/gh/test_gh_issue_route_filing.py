@@ -182,7 +182,8 @@ class MainWiring(TempStore):
 
 
 class PathWrite(unittest.TestCase):
-    """Path is a soft write, attempted before the hard ones."""
+    """Path is attempted before the other fields; since harmonic-forge#1578 a
+    rejected Path write is reported and fails the filing like theirs."""
 
     def _board(self, set_single_select):
         ctx = {"project_id": "P", "fields": []}
@@ -192,9 +193,10 @@ class PathWrite(unittest.TestCase):
             ok = gh_issue.add_to_board(URL, "o", "1", None, route_path="2")
         return ok, setter
 
-    def test_rejected_path_write_does_not_fail_the_filing(self):
-        ok, _ = self._board(lambda item, project, fields, name, value: name != "Path")
-        self.assertTrue(ok)
+    def test_rejected_path_write_fails_the_filing(self):
+        ok, setter = self._board(lambda item, project, fields, name, value: name != "Path")
+        self.assertFalse(ok)
+        self.assertEqual([c.args[3] for c in setter.call_args_list], ["Path", "Status"])
 
     def test_path_is_written_before_status(self):
         _, setter = self._board(lambda *a: True)
@@ -276,9 +278,10 @@ class RouteNoticeEveryExit(TempStore):
         self.assertEqual(code, 1)
         self.assertEqual(err.count(self.NOTICE), 1)
 
-    def test_board_rejecting_path_prints_it_once_and_still_files(self):
+    def test_board_rejecting_path_prints_it_once_and_exits_one(self):
         code, err = self._drive(set_single_select=lambda item, project, fields, name, value: name != "Path")
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
+        self.assertIn("- Path=2: not written; the board has no Path field", err)
         self.assertEqual(err.count(self.NOTICE), 1)
 
     def test_a_later_hard_failure_after_a_written_path_prints_nothing(self):
