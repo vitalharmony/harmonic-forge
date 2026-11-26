@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""harmonic-forge#1565 AE side (AC1): TCs 1-10, 36, 37, and TC 40's AE half.
+"""harmonic-forge#1565 AE side (AC1): TCs 1-10, 36, 37, TC 40's AE half and TC 44.
 
 Real stores throughout: a temp FORCE_STATE_DIR, a temp check_receipt.STORE, a
 temp forge root for `check_receipt.forge_sha()` and a temp hrse source repo
@@ -69,7 +69,21 @@ def s0(jobs=(), statuses=()):
     return read
 
 
+def flaky(reader, good: int):
+    """`reader` for the first `good` runs-list reads, then a failed one (a 502)."""
+    seen = [0]
+
+    def read(path: str):
+        if "/actions/runs?" in path:
+            seen[0] += 1
+            if seen[0] > good:
+                return 502, None
+        return reader(path)
+    return read
+
+
 ABSENT, PENDING = s0(), s0([job("verify", None, "in_progress")])
+PENDING_RED = s0([job("verify", None, "in_progress"), job("lint", "failure")])
 RED_STATUS = s0(statuses=[{"context": "verify", "state": "failure", "updated_at": "2026-11-25T00:00:00Z",
                            "creator": {"login": "github-actions[bot]"}}])
 
@@ -111,7 +125,9 @@ class World:
         return usable
 
     def check_full(self) -> None:
-        self.assertEqual(check_receipt.record(str(self.src), source=check_receipt.CHECK_FULL_SOURCE), 0)
+        """`check-full` as hrse#2889 runs it: the forge HEAD captured at its start exported (P5)."""
+        with mock.patch.dict(os.environ, {check_receipt.FORGE_SHA_ENV: check_receipt.forge_sha() or ""}):
+            self.assertEqual(check_receipt.record(str(self.src), source=check_receipt.CHECK_FULL_SOURCE), 0)
 
     def sidecar(self, sha: str, forge, body_forge=_SAME) -> Path:
         path = check_receipt.check_full_path(SLUG, sha, forge)
@@ -216,11 +232,19 @@ class AeSide(World, unittest.TestCase):
                 self.grant(prefix=prefix)
                 self.refused("CI is absent")
 
-    def test_06_red_ci_under_a_grant_refuses_with_the_red_message(self) -> None:
+    def test_06a_ae_release_itself_releases_nothing_on_red(self) -> None:
+        """P1: `ci_outage`'s own rule, with no caller guard in front of it."""
         self.grant()
         self.check_full()
-        self.refused("a pre-merge AE needs green CI", reader=RED_STATUS)
-        self.assertIn("CI is red", self.exits(reader=RED_STATUS)[1])
+        self.assertIsNone(ci_outage.ae_release(REPO, ISSUE, REPO, self.S, "red", L.fail, reader=ABSENT))
+
+    def test_06b_the_ae_gate_refuses_red_even_if_ci_outage_would_release_it(self) -> None:
+        """P1: `_ae_ci_gate`'s own guard, with `RELEASE_STATES` held open (`red` added)."""
+        self.grant()
+        self.check_full()
+        with mock.patch.object(ci_outage, "RELEASE_STATES", ci_outage.RELEASE_STATES + ("red",)):
+            self.refused("a pre-merge AE needs green CI", reader=RED_STATUS)
+            self.assertIn("CI is red", self.exits(reader=RED_STATUS)[1])
 
     def test_07_a_second_ae_under_the_same_grant_exits_1_naming_the_bound_ae(self) -> None:
         self.grant()
@@ -285,6 +309,20 @@ class AeSide(World, unittest.TestCase):
             ok, why = ci_outage.pass_release(REPO, ISSUE, body, ci_outage.UNFINISHED_CI_REFUSAL + "  x")
         self.assertFalse(ok)
         self.assertIn("0 release record(s) are bound", why)
+
+    def test_44_a_failed_second_ci_read_refuses_rather_than_release_past_red(self) -> None:
+        """P4: CI pending with a visibly red job on the gate's read; ci_outage's re-read fails."""
+        self.grant()
+        self.check_full()
+        self.refused(ci_outage.UNREAD_CI, reader=flaky(PENDING_RED, self.runs_reads(PENDING_RED)))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
+    def runs_reads(self, reader) -> int:
+        """How many runs-list reads the gate's own CI read makes, so the next one fails."""
+        seen: list[str] = []
+        L.gate_ci.authorizing_conclusion(REPO, self.S, {"verify"},
+                                         reader=lambda path: (seen.append(path), reader(path))[1])
+        return sum("/actions/runs?" in path for path in seen)
 
 
 class AeVisibleRed(World, unittest.TestCase):

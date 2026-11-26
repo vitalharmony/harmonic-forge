@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """harmonic-forge#1565 PASS side (AC2) and #894's lookalike classes as
-regressions (AC3): TCs 11-27, 38, 39 and TC 40's PASS half.
+regressions (AC3): TCs 11-27, 38, 39, TC 40's PASS half, and TCs 45 and 47.
 
 Each case starts from TC 1's genuine bound AE at S (posted through the real
 `l1_post._post_kind` under a CI outage) plus a sweep, in real temp stores.
@@ -32,6 +32,21 @@ R5 = "is not an AE"
 R6 = "no check-full receipt"
 RED = "visibly red"
 ABSENT = fake_gh(required={"verify"})
+PENDING_RED = fake_gh(checks=[check("verify", None, "in_progress"), check("lint", "failure")],
+                      required={"verify"}, run_status="in_progress")
+
+
+def flaky(run, good: int):
+    """`run` for the first `good` runs-list reads, then a failed one (a 502)."""
+    seen = [0]
+
+    def wrapped(cmd: list[str]) -> tuple[int, str]:
+        if any("/actions/runs?" in a for a in cmd):
+            seen[0] += 1
+            if seen[0] > good:
+                return 1, "gh: HTTP 502"
+        return run(cmd)
+    return wrapped
 
 
 def pass_body(sha: str, extra: str = "") -> str:
@@ -48,15 +63,20 @@ class PassCase(World, unittest.TestCase):
         self.sweep()
 
     def gate(self, sha: str | None = None, run=ABSENT, body: str | None = None) -> tuple[bool, str]:
-        """`require_green_ci` end to end; on success, the release line read again."""
-        body = body or pass_body(sha or self.S)
-        with mock.patch.object(gate_ci, "_run", run), \
+        """`require_green_ci` end to end; on success, the release line it got. The real
+        `pass_release` runs; the pass-through only keeps its answer (a release is single-use, P6)."""
+        body, answers, real = body or pass_body(sha or self.S), [], ci_outage.pass_release
+
+        def keep(*args) -> tuple[bool, str]:
+            answers.append(real(*args))
+            return answers[-1]
+        with mock.patch.object(gate_ci, "_run", run), mock.patch.object(ci_outage, "pass_release", keep), \
              mock.patch.object(P.check_lane3_ready, "fetch_comments", lambda r, i: list(self.comments)):
             try:
                 P.require_green_ci("gate-result", REPO, body, issue=ISSUE)
             except SystemExit as exc:
                 return False, str(exc)
-            return True, ci_outage.pass_release(REPO, ISSUE, body, gate_ci.check_gate_result(REPO, body)[1])[1]
+            return True, answers[-1][1]
 
     def refused(self, needle: str, **kw) -> None:
         ok, message = self.gate(**kw)
@@ -78,6 +98,11 @@ class PassCase(World, unittest.TestCase):
         for path in (self.state / "ci-outage").glob("*.json"):
             path.unlink()
 
+    def unspend(self) -> None:
+        """Remove the P6 marker, so one bound record can be gated again."""
+        for path in (self.state / "ci-outage").glob("*.pass"):
+            path.unlink()
+
     def footer_of(self, comment: dict) -> str:
         return comment["body"][comment["body"].index("<!-- l1-post"):].rstrip("\n")
 
@@ -86,6 +111,7 @@ class PassRelease(PassCase):
     def test_11_a_bound_ae_releases_pending_or_absent_ci(self) -> None:
         pending = fake_gh(checks=[check("verify", None, "in_progress")], required={"verify"})
         for run in (ABSENT, pending):
+            self.unspend()
             ok, line = self.gate(run=run)
             self.assertTrue(ok, line)
             self.assertTrue(line.startswith(f"[GATE] ci-outage: {self.S[:8]} released"), line)
@@ -132,6 +158,22 @@ class PassRelease(PassCase):
         self.assertEqual(old.read_bytes(), before)
         self.assertTrue(check_receipt.check_full_path(SLUG, self.S, newer).exists())
         self.assertTrue(self.gate()[0])
+
+    def test_45_a_failed_second_ci_read_refuses_rather_than_release_past_red(self) -> None:
+        """P4: the gate's read shows pending with a red job; ci_outage's own re-read fails."""
+        seen: list[list[str]] = []
+        with mock.patch.object(gate_ci, "_run", lambda cmd: (seen.append(cmd), PENDING_RED(cmd))[1]):
+            gate_ci.check_gate_result(REPO, pass_body(self.S))
+        good = sum(any("/actions/runs?" in a for a in cmd) for cmd in seen)
+        self.refused(ci_outage.UNREAD_CI, run=flaky(PENDING_RED, good))
+
+    def test_47_a_second_pass_through_the_same_record_refuses(self) -> None:
+        """P6: one grant, one PASS; the first PASS spent the record."""
+        self.assertTrue(self.gate()[0])
+        ok, message = self.gate(body=pass_body(self.S, " A second PASS."))
+        self.assertFalse(ok)
+        for needle in ("already released a PASS", f"`FORCE {KEY} ci-outage {self.S}:", "a new AE and sweep"):
+            self.assertIn(needle, message)
 
 
 class Lookalikes(PassCase):

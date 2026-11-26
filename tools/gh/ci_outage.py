@@ -18,6 +18,7 @@ record bound to the round's AE comment id, at exactly the gated SHA, whose
 posted digest still matches the AE's current body, and whose forge snapshot's
 sidecar is present. It never reads the grant slot and never parses a grant id
 from comment text. A failed release-record write fails closed: the PASS refuses.
+A released PASS spends the record (`<record>.pass`, O_EXCL): one grant, one PASS.
 
 Like FORCE, IMC and BATCH, the grant store, the release records and the receipt
 store are an audit trail, not proof against a session that writes them itself
@@ -51,6 +52,7 @@ UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this P
 RELEASE_STATES = ("pending", "absent", "unknown")
 VERSION = 1
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
+UNREAD_CI = "cannot read CI to rule out a visibly red job; retry"
 #: What `ae_release` read, by SHA, for `substitute_line` and `reserve` in the same run.
 _RELEASES: dict[str, dict] = {}
 
@@ -71,13 +73,13 @@ def source_slug(source_repo: str) -> str | None:
     return check_receipt.repo_slug(f"https://github.com/{source_repo}")
 
 
-def visible_red(repo: str, sha: str, reader=None) -> list[str]:
+def visible_red(repo: str, sha: str, reader=None) -> list[str] | None:
     """Every job the CI read shows red (operator's visible-red ruling, 2026-11-25):
-    a red job means CI ran and failed, which is not an outage. A read that fails
-    shows no job, so it is not visible red (ruling Q2 releases `unknown`)."""
+    a red job means CI ran and failed, which is not an outage. None when the read
+    fails: it cannot rule out a red job, so both callers refuse (#1565 P4, fail closed)."""
     runs, failure = gate_ci._read_check_runs(repo, sha, reader=reader)
     if failure is not None:
-        return []
+        return None
     return sorted(f"{r.get('name')}:{r.get('conclusion')}" for r in gate_ci._latest_per_name(runs)
                   if (r.get("conclusion") or "").lower() in gate_ci._BAD)
 
@@ -110,6 +112,8 @@ def ae_release(repo: str, issue: int, source_repo: str, sha: str, state: str, fa
         return None
     key = grant["key"]
     red = visible_red(source_repo, sha, reader=reader)
+    if red is None:
+        fail(f"CI is {state} on {sha[:12]}, and the ci-outage grant for {key} {UNREAD_CI}; nothing was posted")
     if red:
         fail(f"CI is {state} on {sha[:12]} but job(s) are visibly red ({', '.join(red)}): CI ran "
              f"and failed, which is not an outage, so the ci-outage grant for {key} releases nothing")
@@ -186,7 +190,7 @@ def _records(repo: str, issue: int, ae_comment_id) -> list[dict]:
         if (record and str(record.get("repo", "")).lower() == repo.lower()
                 and str(record.get("issue")) == str(issue)
                 and str(record.get("ae_comment_id")) == str(ae_comment_id)):
-            found.append(record)
+            found.append({**record, "_path": str(path)})
     return found
 
 
@@ -216,10 +220,37 @@ def pass_release(repo: str, issue: int, body: str, message: str) -> tuple[bool, 
         return refuse(f"the AE {authority.get('html_url')} was edited after it was posted")  # R3
     snapshot = record.get("receipt") or {}
     forge = snapshot.get("forge_sha")
-    if not forge or check_receipt.check_full(snapshot.get("source_slug") or "", sha, forge) is None:  # R6
+    # R6's single owner is check_full, which refuses an empty forge (pitch change 1, #1565 P3).
+    if check_receipt.check_full(snapshot.get("source_slug") or "", sha, forge) is None:  # R6
         return refuse(f"no check-full receipt for {sha[:12]} against the recorded forge {str(forge)[:12]}")
     red = visible_red(repo, sha)
+    if red is None:
+        return refuse(UNREAD_CI)
     if red:
         return refuse(f"job(s) are visibly red ({', '.join(red)}), which is not an outage")
+    spent = _spend(record, sha, body)
+    if spent is not None:
+        return refuse(spent)
     return True, (f"[GATE] ci-outage: {sha[:8]} released by the consumed ci-outage grant "
                   f"{record.get('grant_comment_url')} bound to AE {record.get('ae_url')}")
+
+
+def _spend(record: dict, sha: str, body: str) -> str | None:
+    """Make the PASS release single-use (#1565 P6, the AE side's reserve shape):
+    create `<record>.pass` with O_EXCL before the PASS posts. None when this call
+    spent it, else why not. A post that fails after it leaves the release spent."""
+    marker = Path(record["_path"]).with_suffix(".pass")
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        first = imc_waiver.read_json(marker) or {}
+        return (f"this release record already released a PASS at {first.get('at')} (PASS body sha256 "
+                f"{str(first.get('pass_sha256'))[:12]}); one grant releases one PASS, so a PASS whose post "
+                f"failed after that spent it too. Recovery: the operator types "
+                f"{force_line(record.get('key', '?'), sha)}, then a new AE and sweep")
+    except OSError as exc:
+        return f"the release could not be marked spent ({type(exc).__name__}: {exc})"
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump({"pass_sha256": hashlib.sha256(body.rstrip("\n").encode()).hexdigest(),
+                   "at": imc_waiver._iso(imc_waiver._now())}, handle)
+    return None

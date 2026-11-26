@@ -99,10 +99,9 @@ def forge_unusable_reason() -> str | None:
 
 
 def _recorded_forge_sha() -> str | None:
-    """The forge identity to write: the value read before the check when
-    `l1_post` passed one, and only if forge is still there now; else HEAD now.
-    It brackets the check, so a forge edit made and reverted inside one run (ABA)
-    is not seen; a fresh check has the same exposure (#1134 Out of scope)."""
+    """The value read before the check (`FORGE_SHA_ENV`) if forge is still there
+    now, else HEAD now (the slot's #1134 fallback; a sidecar never takes it). An
+    edit made and reverted inside one run (ABA) is not seen (#1134 Out of scope)."""
     if FORGE_SHA_ENV not in os.environ:
         return forge_sha()
     before = os.environ[FORGE_SHA_ENV] or None
@@ -174,9 +173,11 @@ def record(repo_root: str = ".", head: str | None = None, source: str = "check")
 
 
 def _write_check_full(slug: str, sha: str, forge: str | None, data: str) -> None:
-    """harmonic-forge#1565: atomic (temp file, then `os.replace`); never for an empty forge."""
-    if not forge:
-        print(f"check-receipt: {forge_unusable_reason() or 'forge moved'}; no check-full sidecar recorded", file=sys.stderr)
+    """harmonic-forge#1565: atomic; only for the non-empty forge HEAD captured at check start (P5)."""
+    why = ((None if forge else forge_unusable_reason() or "forge moved") if os.environ.get(FORGE_SHA_ENV)
+           else f"{FORGE_SHA_ENV} (the forge HEAD at check start) is unset")
+    if why:
+        print(f"check-receipt: {why}; no check-full sidecar recorded", file=sys.stderr)
         return
     target = check_full_path(slug, sha, forge)
     handle = tempfile.NamedTemporaryFile("w", dir=target.parent, suffix=".tmp", delete=False, encoding="utf-8")
