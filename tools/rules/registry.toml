@@ -2996,6 +2996,6 @@ hooks = []
 id = "R-0439"
 file = "rules/universal-claude.md"
 anchor = "tool-use-safeguards"
-statement = "The model-tier note tier_model_trigger_check.py adds to the session's context (not its operator-only lines) is advisory only on an Opus or Fable model: the session reads its own model id and proceeds; on any other model it does not start the named issues and asks the operator for /model (harmonic-forge#1599)."
-text_sha = "fe046013ae0a39f4"
+statement = "The model-tier note tier_model_trigger_check.py adds to the session's context is advisory only on an Opus or Fable model: the session reads its own model id and proceeds; on any other model it does not start the named issues and asks the operator for /model (harmonic-forge#1599)."
+text_sha = "22446989f8c62043"
 hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPromptSubmit"], wired_in = ".claude/settings.json, tools/lane/lane_hooks.json" }]
