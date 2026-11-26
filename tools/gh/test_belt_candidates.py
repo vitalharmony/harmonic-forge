@@ -3,6 +3,8 @@
 
 Run: python3 tools/gh/test_belt_candidates.py
 """
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -12,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import belt_candidates as bc  # noqa: E402
+import deferral_store as ds  # noqa: E402  (harmonic-forge#1564)
 
 UTC = timezone.utc
 
@@ -299,6 +302,106 @@ class PostedAtOutTests(unittest.TestCase):
             self.assertEqual(bc.read_candidates(["vitalharmony/hrse"], "w", queue_kinds=kinds,
                                                 queue_posters=posters, base_dir=base, now=later,
                                                 max_age_days=1.5), {("vitalharmony/hrse", 1)})
+
+
+class DeferralStoreTests(unittest.TestCase):
+    """harmonic-forge#1564 AC2: the deferral store (`deferral_store.py`), one
+    directory below the candidate store, at the same basename."""
+
+    REPO = "vitalharmony/hrse"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+
+    def test_the_entry_lives_at_the_candidate_basename_one_directory_down(self):
+        ds.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
+        path = bc._candidate_path(ds._deferrals_dir(self.base), self.REPO, 2757)
+        self.assertEqual(path, self.base / "deferrals" / "vitalharmony__hrse__2757.json")
+        entry = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["source"], "filing")
+        self.assertNotIn("operator_login", entry)
+        self.assertEqual(ds.deferral_entry(self.REPO, 2757, base_dir=self.base), entry)
+
+    def test_the_operator_login_is_recorded(self):
+        ds.record_deferral(self.REPO, 2757, "filing", operator_login="vitalharmony", base_dir=self.base)
+        self.assertEqual(ds.deferral_entry(self.REPO, 2757, base_dir=self.base)["operator_login"],
+                         "vitalharmony")
+
+    def test_a_later_record_candidate_leaves_the_deferral_intact(self):
+        ds.record_deferral(self.REPO, 2757, "filing", base_dir=self.base)
+        before = ds.deferral_entry(self.REPO, 2757, base_dir=self.base)
+        bc.record_candidate(self.REPO, 2757, "plan", "l2", base_dir=self.base)
+        after = ds.deferral_entry(self.REPO, 2757, base_dir=self.base)
+        self.assertIsNotNone(after)
+        self.assertEqual(after.get("source"), "filing")
+        self.assertEqual(after.get("recorded_at"), before["recorded_at"])
+        # and the candidate store still sees only the candidate entry
+        self.assertEqual(bc.read_candidates([self.REPO], "l1", queue_kinds=_QUEUE_KINDS,
+                                            queue_posters=_QUEUE_POSTERS, base_dir=self.base),
+                         {(self.REPO, 2757)})
+
+    def test_read_deferrals_applies_no_age_cutoff(self):
+        ds.record_deferral(self.REPO, 2766, "backfill", base_dir=self.base)
+        path = bc._candidate_path(ds._deferrals_dir(self.base), self.REPO, 2766)
+        entry = json.loads(path.read_text(encoding="utf-8"))
+        entry["recorded_at"] = (datetime.now(UTC) - timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        path.write_text(json.dumps(entry), encoding="utf-8")
+        self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 2766)})
+
+    def test_read_deferrals_filters_repos_and_skips_malformed_files(self):
+        ds.record_deferral(self.REPO, 1, "filing", base_dir=self.base)
+        ds.record_deferral("vitalharmony/harmonic-forge", 2, "filing", base_dir=self.base)
+        (ds._deferrals_dir(self.base) / "junk.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 1)})
+
+    def test_a_malformed_issue_number_is_skipped_with_one_line(self):
+        """harmonic-forge#1564 preclose #10: an entry whose issue is
+        `Infinity` (`int` raises `OverflowError`), zero, or a word is skipped
+        with one stderr line naming its file; the good entry is still read."""
+        ds.record_deferral(self.REPO, 3, "filing", base_dir=self.base)
+        directory = ds._deferrals_dir(self.base)
+        bad = {"inf.json": float("inf"), "zero.json": 0, "word.json": "three"}
+        for name, issue in bad.items():
+            (directory / name).write_text(json.dumps({"repo": self.REPO, "issue": issue}),
+                                          encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(ds.read_deferrals([self.REPO], base_dir=self.base), {(self.REPO, 3)})
+        for name in bad:
+            self.assertEqual(err.getvalue().count(f"deferral entry {name} skipped"), 1, name)
+
+    def test_every_spelling_of_a_repo_lands_on_the_canonical_key(self):
+        """harmonic-forge#1564 AC11 (preclose #4, #9)."""
+        for spelling in ("vitalharmony/HRSE", "https://github.com/VitalHarmony/hrse.git"):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(ds.record_deferral(spelling, 7, "backfill", base_dir=self.base))
+                self.assertEqual(sorted(p.name for p in ds._deferrals_dir(self.base).glob("*.json")),
+                                 ["vitalharmony__hrse__7.json"])
+                self.assertEqual(ds.deferral_entry(self.REPO, 7, base_dir=self.base)["repo"], self.REPO)
+                self.assertIsNotNone(ds.deferral_entry(spelling, 7, base_dir=self.base))
+        self.assertEqual(ds.read_deferrals(["vitalharmony/HRSE"], base_dir=self.base),
+                         {("vitalharmony/HRSE", 7)})
+        self.assertTrue(ds.discharge_deferral("VitalHarmony/Hrse", 7, "closed", base_dir=self.base))
+        self.assertIsNone(ds.deferral_entry(self.REPO, 7, base_dir=self.base))
+
+    def test_a_malformed_key_never_raises(self):
+        """AC11: `ManifestError` is caught on every store path."""
+        ds.record_deferral(self.REPO, 8, "filing", base_dir=self.base)
+        bad = "not a repo"
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(ds.record_deferral(bad, 8, "filing", base_dir=self.base))
+            self.assertIsNone(ds.deferral_entry(bad, 8, base_dir=self.base))
+            self.assertFalse(ds.discharge_deferral(bad, 8, "closed", base_dir=self.base))
+            self.assertEqual(ds.read_deferrals([bad, self.REPO], base_dir=self.base), {(self.REPO, 8)})
+        self.assertIsNotNone(ds.deferral_entry(self.REPO, 8, base_dir=self.base))
+
+    def test_discharge_removes_the_entry(self):
+        ds.record_deferral(self.REPO, 5, "filing", base_dir=self.base)
+        self.assertTrue(ds.discharge_deferral(self.REPO, 5, "closed", base_dir=self.base))
+        self.assertIsNone(ds.deferral_entry(self.REPO, 5, base_dir=self.base))
+        self.assertFalse(ds.discharge_deferral(self.REPO, 5, "closed", base_dir=self.base))
 
 
 if __name__ == "__main__":

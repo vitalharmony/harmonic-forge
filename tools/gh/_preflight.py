@@ -58,6 +58,7 @@ regenerate; tools/registry/test_effects.py fails when the two differ.
 | `preclose_enrollment.py` | --enroll | shared-state | gap: writes the experiment file every preclose plan reads |
 | `preclose_enrollment.py` | --stop | shared-state | gap: writes the experiment file every preclose plan reads |
 | `receipt_runner.py` | --issue N -- <command> | shared-state | gap: writes the command receipt and, on failure, the issue lock l2_post reads |
+| `record_deferral.py` | record | shared-state | gap: no precheck; the belt re-verifies the deferral comment each tick |
 | `repo_hygiene.py` | --prune-worktrees | irreversible | precheck: `--prune-worktrees --dry-run` |
 | `sticky_receipt.py` | record | shared-state | gap: writes the sticky-wicket receipt |
 | `bounded_scan.py` | scan | shared-state | guard (operator grant): SCAN line: refuses with no live grant for this session, repo and scope (tools/gh/bounded_scan.py:152) |

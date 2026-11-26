@@ -2329,8 +2329,8 @@ exception_to = ["R-0091", "R-0115", "R-0141", "R-0223", "R-0224", "R-0252", "R-0
 id = "R-0352"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "A deferral is declared on the issue at filing time, in one comment naming the trigger, the owner (a named lane or the operator, never 'someone'), and the record. An issue with no such comment is not deferred, it is unfinished. Nothing watches for a fired trigger today -- a declared deferral is debt visible to the standing hygiene pass, and the rule states that rather than implying a sweep that does not exist."
-text_sha = "426eff48acc424e0"
+statement = "A deferral is declared on the issue at filing time, in one comment naming the trigger, the owner (a named lane or the operator, never 'someone'), and the record. An issue with no such comment is not deferred, it is unfinished. Lane 1's belt watches one trigger (harmonic-forge#1564): a comment whose first line is `go`, optionally followed by a group or issue token, posted by the deferral's filing login. A `lane-comment` from a `LANE=1` session clears it, and a handoff discharges it. A release worded any other way is not watched and still needs the chat relay. Every other trigger is still unwatched: there is no scheduled sweep for deferred artifacts, and a declared deferral is debt visible to the standing hygiene pass."
+text_sha = "12d609f0bad45007"
 hooks = []
 
 [[rule]]

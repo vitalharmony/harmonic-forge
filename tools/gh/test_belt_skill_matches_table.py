@@ -241,6 +241,7 @@ class ObligationsTableMatchesOwesTests(unittest.TestCase):
                     for owes in kinds.values()}
         expected.add(("l2", watch_lane_posts.PLAN_FIRST_OWES))
         expected.add(("l1", watch_lane_posts.STICKY_OWES))
+        expected.add(("l1", watch_lane_posts.DEFERRAL_OWES))  # harmonic-forge#1564
         self.assertEqual(documented, expected)
 
     #: Reforge ruling, fix 4: each row's action is bound to its `(lane, owes)`
@@ -257,6 +258,7 @@ class ObligationsTableMatchesOwesTests(unittest.TestCase):
         ("l1", "spec-review"): "Review Lane 3's spec",
         ("l1", "fail-review"): "Lane 2 never acts on a gate result",
         ("l1", "sticky-wicket"): "sticky_receipt.py record",
+        ("l1", "handoff"): "R-0352 deferral",
     }
     _FULL_ROW_RE = re.compile(r"^\s*\|\s*(l[123])\s*\|\s*`([\w-]+)`\s*\|(.*)\|\s*$", re.MULTILINE)
 

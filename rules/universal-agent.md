@@ -578,8 +578,15 @@ three things: **the trigger** (the observable event that ends the deferral),
 record** (the deferral comment itself, which is what a sweep can find). An
 issue carrying no such comment is not deferred; it is unfinished.
 
-**Nothing watches for a fired trigger today, and this rule says so rather than
-implying a watcher exists.** There is no scheduled sweep for deferred
+**Lane 1's belt watches one trigger: a comment whose first line is `go`,
+optionally followed by a group or issue token, posted by the deferral's
+filing login. A `lane-comment` from a `LANE=1` session clears it, and a
+handoff discharges it. A release worded any other way is not watched and
+still needs the chat relay.** (harmonic-forge#1564.) `gh_issue.py
+--handoff-exception` records each `blocked-on-prerequisite` and
+`deferred-design-record` deferral with its filing login, and the belt queues
+`queued-for-l1 kind=deferral-trigger owes=handoff` for the `go`. Every other
+trigger is still unwatched: there is no scheduled sweep for deferred
 artifacts. A declared deferral is debt visible to the standing hygiene pass,
 and its *absence* is what makes an unfinished issue findable — the same posture
 `3-lane-protocol.md` R-0151 takes about prose detectors: where a specific,

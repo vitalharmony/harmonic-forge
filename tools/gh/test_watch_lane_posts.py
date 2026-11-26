@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import belt_candidates
+import deferral_store  # harmonic-forge#1564
 import watch_lane_posts
 from belt_mechanics import SeenSet, Watermarks, query_since
 from watch_lane_posts import (
@@ -3771,6 +3772,18 @@ _CURRENT_RELEASE_PATCHER = patch.object(watch_lane_posts, "_current_release", re
 def setUpModule():
     _ISSUE_META_PATCHER.start()
     _CURRENT_RELEASE_PATCHER.start()
+    # harmonic-forge#1564: `queue_cycle` now reads the deferral store for Lane 1,
+    # so an unredirected test would read the operator's real entries (and
+    # `discover_queue` would fetch their threads). The kill-check runner
+    # bypasses tools/run_tests.py's redirect, so the module redirects itself;
+    # a test that needs its own store still patches over this one.
+    global _CANDIDATES_TMP, _CANDIDATES_PATCHERS
+    _CANDIDATES_TMP = tempfile.TemporaryDirectory()
+    _CANDIDATES_PATCHERS = [patch.object(module, "DEFAULT_CANDIDATES_DIR",
+                                         Path(_CANDIDATES_TMP.name))
+                            for module in (belt_candidates, deferral_store)]
+    for patcher in _CANDIDATES_PATCHERS:
+        patcher.start()
     # harmonic-forge#1393: no test may write the real `~/.claude/state/belt/etag` cache.
     global _ETAG_TMP, _ETAG_ROOT_PATCHER
     _ETAG_TMP = tempfile.TemporaryDirectory()
@@ -3781,6 +3794,9 @@ def setUpModule():
 
 
 def tearDownModule():
+    for patcher in _CANDIDATES_PATCHERS:
+        patcher.stop()
+    _CANDIDATES_TMP.cleanup()
     _CURRENT_RELEASE_PATCHER.stop()
     _ETAG_ROOT_PATCHER.stop()
     _ETAG_TMP.cleanup()
@@ -4215,6 +4231,23 @@ class MissingIssueRetiresTests(unittest.TestCase):
         self.assertEqual(queue, {})
         self.assertIn("closed_at", json.loads(path.read_text()))
         self.assertIn("readable as", err.getvalue())  # names the account queried
+
+    def test_410_with_a_readable_repo_is_missing_and_discharges_its_deferral(self):
+        """harmonic-forge#1564 preclose #4: a deleted issue answers 410. It is
+        missing, so Lane 1 discharges its recorded deferral and the repo's
+        read stays good, instead of failing every tick."""
+        path = self.write(2095)
+        with patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.dir):
+            deferral_store.record_deferral(self.REPO, 2095, "filing", operator_login="vitalharmony")
+            with patch("watch_lane_posts.gh_as", self.fake_gh(410, 200)), \
+                 patch("watch_lane_posts._fetch_all_comments", side_effect=AssertionError("no fetch")), \
+                 patch("sys.stderr", io.StringIO()):
+                when = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)
+                queue, ok = discover_queue(self.REPO, "l1", {2095}, when)
+            self.assertIsNone(deferral_store.deferral_entry(self.REPO, 2095))
+        self.assertTrue(ok)
+        self.assertEqual(queue, {})
+        self.assertIn("closed_at", json.loads(path.read_text()))
 
     def test_404_with_an_unreadable_repo_stays_unreadable(self):
         path = self.write(7)
@@ -5081,6 +5114,452 @@ class DiscussionCandidateWatchTests(unittest.TestCase):
         self.assertIn("sorted(discovered | static_pairs | set(discussion_candidates))", source)
         self.assertIn("live_candidates=live_candidates", source)
         self.assertIn("split_live_discussion_candidates(", source)
+
+
+class DeferralTriggerTests(unittest.TestCase):
+    """harmonic-forge#1564 (design amendment): Lane 1's belt queues a recorded
+    R-0352 deferral when its recorded `operator_login` posts `go`, optionally
+    with one token. Every case runs the real `discover_queue`, `_classify` and
+    `queue_cycle` on fixture threads; only the GitHub reads are patched, and
+    every store write goes to a temp directory."""
+
+    REPO = "vitalharmony/hrse"
+    N = 2764
+    OTHER = 2765
+    OP = "vitalharmony"
+    MARKER = "deferral-trigger owes=handoff"
+    LINE = f"vitalharmony/hrse#{N} queued-for-l1 kind=deferral-trigger owes=handoff"
+    DEFERRAL = ("## R-0039 filing-bar exception: `blocked-on-prerequisite`\n\n"
+                "No Lane 1 handoff accompanies this filing.\n\n"
+                "**Reason given at filing time:** waits on hrse#1810\n")
+    # l1_post stamps no posted-by (l1_post.py's footer); lane-comment does.
+    L1_HANDOFF = "## Handoff: H2764\n\nScope.\n\n" + _marker("handoff", None, " plan-first=false;")
+    L1_POST_DISCUSSION = "Noted.\n\n" + _marker("discussion", None)
+    L1_POST_REWORK = "## Rework — H2764\n\nFix.\n\n" + _marker("rework", None, " rework=correction;")
+    LANE1_DISCUSSION = "Not released yet.\n\n" + _marker("discussion", "LANE1")
+    LANE_UNSET_DISCUSSION = "Not released yet.\n\n" + _marker("discussion", "LANE-unset")
+    L2_FINDING = "Finding text.\n\n" + _marker("finding", "LANE2")
+    L2_PLAN = "## Plan\n\nSteps.\n\n" + _marker("plan", "LANE2")
+    UNVERIFIABLE = ("Checked.\n\n<!-- l1-post v1; kind=discussion; posted-by=LANE1; "
+                    "body-sha256=" + "0" * 64 + " -->")
+    IMC = "## IMC waiver — K2764\n\nWaived."
+    UI = "## UI grant — H2764\n\nGranted."
+    T0 = 1_800_000_000.0
+    SESSION = (4242, 987654)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        for patcher in (patch.object(belt_candidates, "DEFAULT_CANDIDATES_DIR", self.dir / "candidates"),
+                        patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.dir / "candidates"),
+                        patch("watch_lane_posts._sticky_wicket_owed", return_value=False),
+                        patch("watch_lane_posts._prune_batch")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def c(self, cid, body, login=None):
+        return {"id": cid, "body": body, "user": {"login": login or self.OP}}
+
+    def thread(self, *extra):
+        return [self.c(100, self.DEFERRAL), *extra]
+
+    def record(self, source="filing", recorded_at=None, login=OP):
+        deferral_store.record_deferral(self.REPO, self.N, source, operator_login=login)
+        if recorded_at is not None:
+            path = deferral_store._deferral_path(self.REPO, self.N, None)
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            entry["recorded_at"] = recorded_at
+            path.write_text(json.dumps(entry), encoding="utf-8")
+
+    def entry(self):
+        return deferral_store.deferral_entry(self.REPO, self.N)
+
+    def discover(self, comments, meta=("open", set(), None), active=None, lane="l1"):
+        ids: dict = {}
+        err = io.StringIO()
+        with patch("watch_lane_posts._fetch_all_comments", return_value=comments), \
+             patch("watch_lane_posts._issue_meta", return_value=meta), \
+             patch("watch_lane_posts._active_milestones", return_value=active), \
+             contextlib.redirect_stderr(err):
+            queue, ok = discover_queue(self.REPO, lane, {self.N}, marker_ids=ids)
+        self.assertTrue(ok)
+        self.stderr = err.getvalue()
+        return queue, ids
+
+    def queued(self, comments, **kw):
+        return self.discover(comments, **kw)[0] == {self.N: self.MARKER}
+
+    # AC3
+    def test_a_go_after_the_deferral_queues_from_an_empty_candidate_set(self):
+        self.record()
+        for body in ("go", "go R", "go E3", "go H2766", "go #2766", "Go."):
+            with self.subTest(body=body), \
+                 patch("watch_lane_posts._fetch_all_comments", return_value=self.thread(self.c(101, body))), \
+                 patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                _, lines, _ = watch_lane_posts.queue_cycle([self.REPO], "l1", {}, "t", candidate_pairs=set())
+                self.assertEqual(lines, [self.LINE])
+
+    def test_a_quote_reply_then_go_is_not_watched(self):
+        """N1 (inverted): a Quote reply ending in `go` is the accepted residual."""
+        self.record()
+        self.assertFalse(self.queued(self.thread(self.c(101, "> Waits on hrse#1810.\n\ngo"))))
+
+    # AC4
+    def test_tool_and_lane_posts_queue_nothing(self):
+        """Each lane or tool post appears twice: as written, and with `go` as
+        its first line, so the classified-comment exclusion itself is what
+        keeps it out, not just the grammar (preclose #12)."""
+        self.record()
+        for body in (self.L1_POST_DISCUSSION, self.L2_FINDING, self.UNVERIFIABLE, self.IMC, self.UI,
+                     "Prerequisite merged; unblocked.",
+                     *self.GO_FIRST_CLASSIFIED):
+            with self.subTest(body=body[:24]):
+                self.assertFalse(self.queued(self.thread(self.c(101, body))))
+
+    # The tool and lane posts the operator login also posts, each opening with `go`.
+    GO_FIRST_CLASSIFIED = (
+        "go\n\n" + _marker("discussion", "LANE2"),
+        "go\n\n" + _marker("finding", "LANE2"),
+        "go\n\n" + _marker("discussion", None),
+        "go\n\n" + _marker("discussion", "LANE-unset"),
+    )
+
+    def test_a_classified_comment_whose_first_line_is_go_queues_nothing(self):
+        """preclose #1: a `posted-by=LANE2` discussion, an l2 finding, an
+        `l1_post` discussion and a `LANE-unset` discussion, from the operator
+        login, each opening with `go`."""
+        self.record()
+        for body in self.GO_FIRST_CLASSIFIED:
+            with self.subTest(body=body[-40:]):
+                self.assertIsNotNone(watch_lane_posts._classify(body))
+                self.assertTrue(watch_lane_posts.RELEASE_RE.fullmatch(watch_lane_posts._first_raw_line(body)))
+                self.assertFalse(self.queued(self.thread(self.c(101, body))))
+
+    def test_a_quoted_heading_by_another_login_keeps_the_pending_release(self):
+        """preclose #7: the anchor is the recorded login's own deferral
+        comment, so a collaborator quoting the heading after the `go` neither
+        moves the anchor nor drops the release."""
+        self.record()
+        queue, ids = self.discover(self.thread(self.c(101, "go"),
+                                               self.c(102, self.DEFERRAL, login="kytxii")))
+        self.assertEqual(queue, {self.N: self.MARKER})
+        self.assertEqual(ids, {self.N: 101})
+
+    def test_wording_outside_the_grammar_queues_nothing(self):
+        self.record()
+        for body in ("go ahead and file it", "ok go", "## go", "go later", "go ahead", "go E3x"):
+            with self.subTest(body=body):
+                self.assertFalse(self.queued(self.thread(self.c(101, body))))
+
+    def test_a_go_by_another_login_queues_nothing(self):
+        """`kytxii` is hrse's second collaborator. The second thread carries a
+        copied deferral heading by that login as the newest anchor, so only the
+        recorded filing login, not the anchor's, keeps it out."""
+        self.record()
+        self.assertFalse(self.queued(self.thread(self.c(101, "go", login="kytxii"))))
+        self.assertFalse(self.queued(self.thread(self.c(101, self.DEFERRAL, login="kytxii"),
+                                                 self.c(102, "go", login="kytxii"))))
+
+    def test_a_go_on_an_entry_with_no_operator_login_queues_nothing(self):
+        self.record(login=None)
+        self.assertNotIn("operator_login", self.entry())
+        self.assertFalse(self.queued(self.thread(self.c(101, "go"))))
+
+    # AC5
+    def test_a_go_before_the_deferral_queues_nothing(self):
+        self.record()
+        self.assertFalse(self.queued([self.c(99, "go"), self.c(100, self.DEFERRAL)]))
+
+    # AC6
+    def test_a_lane_1_handoff_after_the_go_discharges_the_entry(self):
+        self.record()
+        queue, _ = self.discover(self.thread(self.c(101, "go"), self.c(102, self.L1_HANDOFF)))
+        self.assertEqual(queue, {})
+        self.assertIsNone(self.entry())
+
+    def test_a_lane1_lane_comment_clears_and_a_second_go_queues_under_its_id(self):
+        self.record()
+        cleared = self.thread(self.c(101, "go"), self.c(102, self.LANE1_DISCUSSION))
+        queue, _ = self.discover(cleared)
+        self.assertEqual(queue, {})
+        self.assertIsNotNone(self.entry())
+        queue, ids = self.discover(cleared + [self.c(103, "go")])
+        self.assertEqual(queue, {self.N: self.MARKER})
+        self.assertEqual(ids, {self.N: 103})
+
+    def test_a_lane_unset_discussion_does_not_clear(self):
+        self.record()
+        queue, ids = self.discover(self.thread(self.c(101, "go"), self.c(102, self.LANE_UNSET_DISCUSSION)))
+        self.assertEqual(queue, {self.N: self.MARKER})
+        self.assertEqual(ids, {self.N: 101})
+
+    def test_an_l1_post_kind_other_than_handoff_does_not_clear(self):
+        self.record()
+        for body in (self.L1_POST_DISCUSSION, self.L1_POST_REWORK):
+            with self.subTest(body=body[:24]):
+                queue, ids = self.discover(self.thread(self.c(101, "go"), self.c(102, body)))
+                self.assertEqual(queue, {self.N: self.MARKER})
+                self.assertEqual(ids, {self.N: 101})
+                self.assertIsNotNone(self.entry())
+
+    # AC7
+    def test_a_closed_issue_discharges_the_entry(self):
+        self.record()
+        queue, _ = self.discover(self.thread(self.c(101, "go")), meta=("closed", set(), None))
+        self.assertEqual(queue, {})
+        self.assertIsNone(self.entry())
+
+    def _discharge_lines(self):
+        return [line for line in self.stderr.splitlines()
+                if f"deferral discharged {self.REPO}#{self.N}" in line]
+
+    def test_a_backfill_entry_with_no_anchor_is_discharged_with_one_line(self):
+        self.record(source="backfill")
+        queue, _ = self.discover([self.c(101, "go")])
+        self.assertEqual(queue, {})
+        self.assertIsNone(self.entry())
+        self.assertEqual(len(self._discharge_lines()), 1)
+
+    def test_an_old_filing_entry_with_no_anchor_is_discharged_with_one_line(self):
+        old = (dt.datetime.now(dt.timezone.utc) - watch_lane_posts.DEFERRAL_NO_ANCHOR_GRACE
+               - dt.timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.record(recorded_at=old)
+        queue, _ = self.discover([])
+        self.assertEqual(queue, {})
+        self.assertIsNone(self.entry())
+        self.assertEqual(len(self._discharge_lines()), 1)
+
+    def test_a_fresh_filing_entry_with_an_empty_thread_is_kept(self):
+        self.record()
+        queue, _ = self.discover([])
+        self.assertEqual(queue, {})
+        self.assertIsNotNone(self.entry())
+        self.assertEqual(self._discharge_lines(), [])
+
+    # preclose #12
+    def test_a_closed_deferral_retracts_on_a_tick_whose_other_fetch_fails(self):
+        """The deferral closes on a tick where another candidate's thread read
+        fails; the item retracts and the next tick does not re-emit it."""
+        self.record()
+        key = (self.REPO, self.N)
+
+        def meta(_repo, issue):
+            return ("closed", set(), None) if issue == self.N else ("open", set(), None)
+
+        err = io.StringIO()
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None), \
+             contextlib.redirect_stderr(err):
+            queue1, lines1, ok1 = watch_lane_posts.queue_cycle(
+                [self.REPO], "l1", {key: self.MARKER}, "t", candidate_pairs={(self.REPO, self.OTHER)})
+        self.assertEqual(ok1, set())
+        self.assertIsNone(self.entry())
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=[]), \
+             contextlib.redirect_stderr(err):
+            queue2, lines2, _ = watch_lane_posts.queue_cycle(
+                [self.REPO], "l1", queue1, "t", candidate_pairs={(self.REPO, self.OTHER)})
+        self.assertNotIn(key, queue2)
+        self.assertEqual(lines1 + lines2, [])
+        self.assertEqual(err.getvalue().count(f"{self.REPO}#{self.N} left-queue-for-l1"), 1)
+
+    def test_a_closed_deferral_retracts_with_offer_state_on_a_failed_tick(self):
+        """preclose #0: the same retraction through `queue_cycle`'s `offers`
+        call site, the one `main()` runs. The closed deferral's queued item is
+        an owed plan review (AC8: it wins over the trigger), so only
+        `retired_out` retracts it: the fix (d) filter covers the deferral
+        kind alone (N4)."""
+        self.record()
+        key = (self.REPO, self.N)
+        marker = "plan owes=plan-review"
+        offers = watch_lane_posts.OfferState(self.dir / "offered.json", now=self.T0)
+        offers.record(key, marker, 101, self.SESSION, self.T0)
+
+        def meta(_repo, issue):
+            return ("closed", set(), None) if issue == self.N else ("open", set(), None)
+
+        err = io.StringIO()
+        with patch("watch_lane_posts._issue_meta", side_effect=meta), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None), \
+             contextlib.redirect_stderr(err):
+            queue, lines, ok = watch_lane_posts.queue_cycle(
+                [self.REPO], "l1", {key: marker}, "t", candidate_pairs={(self.REPO, self.OTHER)},
+                offers=offers, session=self.SESSION, now_ts=self.T0 + 60)
+        self.assertEqual(ok, set())
+        self.assertIsNone(self.entry())
+        self.assertNotIn(key, queue)
+        self.assertEqual(lines, [])
+        self.assertEqual(err.getvalue().count(f"{self.REPO}#{self.N} left-queue-for-l1"), 1)
+        self.assertIsNone(offers.get(key))
+
+    def test_a_writer_discharged_release_retracts_on_a_failed_tick(self):
+        """preclose #9: tick 1 queues the go; `l1_post` then discharges the
+        entry at the writer; tick 2's other read fails. The item is not
+        carried forward, and retracts once, in recorded-only mode too."""
+        key = (self.REPO, self.N)
+        for recorded_only in (False, True):
+            with self.subTest(recorded_only=recorded_only):
+                self.record()
+                err = io.StringIO()
+                with patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
+                     contextlib.redirect_stderr(err):
+                    with patch("watch_lane_posts._fetch_all_comments",
+                               return_value=self.thread(self.c(101, "go"))):
+                        queue1, lines1, _ = watch_lane_posts.queue_cycle(
+                            [self.REPO], "l1", {}, "t", candidate_pairs=set(),
+                            recorded_only=recorded_only)
+                    self.assertEqual(lines1, [self.LINE])
+                    self.assertTrue(deferral_store.discharge_deferral(self.REPO, self.N, "handoff posted"))
+                    with patch("watch_lane_posts._fetch_all_comments", return_value=None):
+                        queue2, lines2, ok2 = watch_lane_posts.queue_cycle(
+                            [self.REPO], "l1", queue1, "t",
+                            candidate_pairs={(self.REPO, self.OTHER)}, recorded_only=recorded_only)
+                self.assertEqual(ok2, set())
+                self.assertNotIn(key, queue2)
+                self.assertEqual(lines2, [])
+                self.assertEqual(err.getvalue().count(f"{self.REPO}#{self.N} left-queue-for-l1"), 1)
+
+    def test_a_failed_tick_still_carries_a_release_whose_entry_stands(self):
+        """The fix (d) filter is the entry's absence only: a non-deferral
+        item, and a deferral item whose entry stands, are carried."""
+        self.record()
+        key = (self.REPO, self.N)
+        other = (self.REPO, self.OTHER)
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
+             patch("watch_lane_posts._fetch_all_comments", return_value=None), \
+             contextlib.redirect_stderr(io.StringIO()):
+            queue, lines, _ = watch_lane_posts.queue_cycle(
+                [self.REPO], "l1", {key: self.MARKER, other: "handoff owes=review"}, "t",
+                candidate_pairs={other})
+        self.assertEqual(queue, {key: self.MARKER, other: "handoff owes=review"})
+        self.assertEqual(lines, [])
+
+    # preclose #1, #13: the store is Lane 1's only
+    def test_lane_2_never_reads_the_deferral_store_as_candidates(self):
+        self.record()
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)) as meta, \
+             patch("watch_lane_posts._fetch_all_comments", return_value=self.thread(self.c(101, "go"))), \
+             contextlib.redirect_stderr(io.StringIO()):
+            _, lines, _ = watch_lane_posts.queue_cycle([self.REPO], "l2", {}, "t", candidate_pairs=set())
+        self.assertEqual(lines, [])
+        meta.assert_not_called()
+
+    def test_lane_2_discover_queue_never_queues_a_deferral(self):
+        self.record()
+        queue, _ = self.discover(self.thread(self.c(101, "go")), lane="l2")
+        self.assertEqual(queue, {})
+        self.assertIsNotNone(self.entry())
+
+    def test_lane_2_leaves_a_closed_issues_deferral_intact(self):
+        self.record()
+        queue, _ = self.discover(self.thread(self.c(101, "go")), meta=("closed", set(), None), lane="l2")
+        self.assertEqual(queue, {})
+        self.assertIsNotNone(self.entry())
+
+    # AC8
+    def test_an_owed_plan_review_wins_over_the_trigger(self):
+        self.record()
+        queue, _ = self.discover(self.thread(self.c(101, "go"), self.c(102, self.L2_PLAN)))
+        self.assertEqual(queue, {self.N: "plan owes=plan-review"})
+
+    # AC9
+    def test_an_out_of_release_deferral_is_skipped(self):
+        self.record()
+        queue, _ = self.discover(self.thread(self.c(101, "go")), meta=("open", set(), "3.2"),
+                                 active=frozenset({"3.3"}))
+        self.assertEqual(queue, {})
+        self.assertIn(f"skipped-out-of-release {self.REPO}#{self.N} milestone=3.2", self.stderr)
+        self.assertIsNotNone(self.entry())
+
+    def test_a_failed_thread_read_carries_the_item_forward(self):
+        """Tick 1 queues the go; tick 2's thread read fails, so the item is
+        carried, neither re-emitted nor retracted, and the entry stays."""
+        self.record()
+        err = io.StringIO()
+        with patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
+             contextlib.redirect_stderr(err):
+            with patch("watch_lane_posts._fetch_all_comments", return_value=self.thread(self.c(101, "go"))):
+                queue1, lines1, _ = watch_lane_posts.queue_cycle(
+                    [self.REPO], "l1", {}, "t", candidate_pairs=set())
+            with patch("watch_lane_posts._fetch_all_comments", return_value=None):
+                queue2, lines2, ok2 = watch_lane_posts.queue_cycle(
+                    [self.REPO], "l1", queue1, "t", candidate_pairs=set())
+        self.assertEqual(lines1, [self.LINE])
+        self.assertEqual(queue2, {(self.REPO, self.N): self.MARKER})
+        self.assertEqual((lines2, ok2), ([], set()))
+        self.assertNotIn("left-queue-for-l1", err.getvalue())
+        self.assertIsNotNone(self.entry())
+
+    # AC10
+    def _cycle(self, comments, now_ts, session=SESSION):
+        offers = watch_lane_posts.OfferState(self.dir / "offered.json", now=now_ts)
+        with patch("watch_lane_posts._fetch_all_comments", return_value=comments), \
+             patch("watch_lane_posts._issue_meta", return_value=("open", set(), None)), \
+             contextlib.redirect_stderr(io.StringIO()):
+            _, lines, _ = watch_lane_posts.queue_cycle(
+                [self.REPO], "l1", {}, "t", candidate_pairs=set(), offers=offers,
+                session=session, now_ts=now_ts)
+        with contextlib.redirect_stdout(io.StringIO()):
+            watch_lane_posts.deliver_queue_lines(lines, offers)
+        return lines
+
+    def test_the_same_trigger_is_not_reoffered_to_the_same_session(self):
+        self.record()
+        first = self.thread(self.c(101, "go"))
+        self.assertEqual(self._cycle(first, self.T0), [self.LINE])
+        later = first + [self.c(102, "## L2 Finding\n\nUnrelated.")]
+        self.assertEqual(self._cycle(later, self.T0 + 1800), [])
+        self.assertEqual(self._cycle(later, self.T0 + 1800, session=(9999, 1)), [self.LINE])
+
+
+class DeferralTriggerPureTests(unittest.TestCase):
+    """`_deferral_trigger` itself (harmonic-forge#1564)."""
+
+    DEFERRAL = DeferralTriggerTests.DEFERRAL
+    OP = "vitalharmony"
+
+    def c(self, cid, body, login="vitalharmony"):
+        return {"id": cid, "body": body, "user": {"login": login}}
+
+    def test_the_last_anchor_is_used(self):
+        comments = [self.c(1, self.DEFERRAL), self.c(2, "go"), self.c(3, self.DEFERRAL)]
+        self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
+
+    def test_parent_epic_heading_is_no_anchor(self):
+        comments = [self.c(1, "## R-0039 filing-bar exception: `parent-epic`\n\nx"), self.c(2, "go")]
+        self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("no-anchor", None))
+
+    def test_the_newest_release_is_named(self):
+        comments = [self.c(1, self.DEFERRAL), self.c(2, "go"), self.c(3, "go E3!")]
+        self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("queued", 3))
+
+    def test_a_lazy_blockquote_continuation_is_no_release(self):
+        """The first raw line is the `>` line, so the `go` after it is no
+        release however it renders."""
+        comments = [self.c(1, self.DEFERRAL), self.c(2, "> Waits on hrse#1810.\ngo")]
+        self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
+
+    def test_a_go_after_an_html_comment_is_not_watched(self):
+        """N1 (inverted): a `go` after an HTML comment is the accepted residual."""
+        for body in ("<!-- note to self -->\ngo", "<!--\nhidden\n-->\n\ngo E3", "<!-- x --> go"):
+            with self.subTest(body=body):
+                comments = [self.c(1, self.DEFERRAL), self.c(2, body)]
+                self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
+
+    def test_a_fenced_go_is_no_release(self):
+        comments = [self.c(1, self.DEFERRAL), self.c(2, "```\ngo\n```")]
+        self.assertEqual(watch_lane_posts._deferral_trigger(comments, self.OP), ("cleared", None))
+
+    def test_the_release_grammar_is_one_constant(self):
+        self.assertEqual(watch_lane_posts.RELEASE_RE.pattern, r"(?i)^go(\s+(?:[a-z]\d*|#?\d+))?[.!]?$")
+
+    def test_the_heading_text_is_the_one_gh_issue_posts(self):
+        import gh_issue  # noqa: PLC0415
+        self.assertIs(gh_issue.deferral_store, deferral_store)
+        self.assertTrue(watch_lane_posts._DEFERRAL_ANCHOR_RE.fullmatch(
+            f"{deferral_store.DEFERRAL_HEADING} `deferred-design-record`"))
 
 
 if __name__ == "__main__":

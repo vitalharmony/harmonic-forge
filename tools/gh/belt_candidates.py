@@ -21,6 +21,13 @@ marker is ever written calls `record_candidate` on every successful post:
 
 `watch_lane_posts.py` (this repo) is the one reader: `read_candidates`.
 
+**A second store, one directory down: recorded R-0352 deferrals**
+(harmonic-forge#1564), in the core module `deferral_store.py`. Filing and
+posting are core and never import this operator-side file (harmonic-forge
+#1523), so the store's writers and reader import that module instead; this
+one imports from it the real-store literal and the test marker, so the two
+stores' guards share one definition of each.
+
 **Every mutation of the store happens under `_store_lock`** (harmonic-forge
 #854). The sites are three: `record_candidate`'s write, `retire_candidate`'s
 read-and-rewrite, and `_prune_if_stale`'s archive-and-unlink. A new mutation
@@ -81,18 +88,16 @@ from typing import Iterable
 
 UTC = timezone.utc
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 #: Real, production location -- the same directory the pre-rescope design
 #: used for its single JSONL file. Every writer and the reader default
-#: here; every test passes `base_dir` instead (AC4').
-REAL_CANDIDATES_DIR = Path.home() / ".claude" / "state" / "belt" / "candidates"
-#: One literal, so the guard's notion of "the real store" cannot drift from the
-#: default; `tools/run_tests.py` redirects by rebinding only this name.
+#: here; every test passes `base_dir` instead (AC4'). The literal lives in
+#: `deferral_store.py` (harmonic-forge#1564), so the guard's notion of "the
+#: real store" is one literal for both stores.
+from deferral_store import REAL_CANDIDATES_DIR, TESTING_ENV  # noqa: E402
+#: The default every writer and the reader use; `tools/run_tests.py`
+#: redirects by rebinding this name (and `deferral_store`'s).
 DEFAULT_CANDIDATES_DIR = REAL_CANDIDATES_DIR
-
-#: Set by the test runners (`tools/run_tests.py`,
-#: `tools/gh/run_lane1_transport_tests.py`, `tools/gh/kill_check.py`) and
-#: inherited by any writer a test spawns as a subprocess (harmonic-forge#865).
-TESTING_ENV = "HARMONIC_FORGE_TESTING"
 
 
 def _refuses_real_store(base: Path) -> bool:

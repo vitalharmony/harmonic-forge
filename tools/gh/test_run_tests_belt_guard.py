@@ -62,6 +62,20 @@ class RedirectedBeltCandidatesDirTests(unittest.TestCase):
                 self.assertEqual(belt_candidates.DEFAULT_CANDIDATES_DIR, redirect)
             self.assertEqual(belt_candidates.DEFAULT_CANDIDATES_DIR, original)
 
+    def test_the_deferral_store_is_redirected_and_restored_too(self):
+        # harmonic-forge#1564: the core deferral store has its own default.
+        import deferral_store
+        original = deferral_store.DEFAULT_CANDIDATES_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            redirect = Path(tmp) / "belt-candidates"
+            with run_tests.redirected_belt_candidates_dir(redirect):
+                self.assertEqual(deferral_store.DEFAULT_CANDIDATES_DIR, redirect)
+                deferral_store.record_deferral("vitalharmony/harmonic-forge", 1564, "filing")
+                self.assertEqual(
+                    [p.name for p in (redirect / "deferrals").glob("*.json")],
+                    ["vitalharmony__harmonic-forge__1564.json"])
+            self.assertEqual(deferral_store.DEFAULT_CANDIDATES_DIR, original)
+
     def test_restored_even_when_the_body_raises(self):
         original = belt_candidates.DEFAULT_CANDIDATES_DIR
         with tempfile.TemporaryDirectory() as tmp:

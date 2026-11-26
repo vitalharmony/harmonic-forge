@@ -94,6 +94,21 @@ successful post, and `read_queue_candidates` (a thin wrapper over
 candidate exists only because a session already handed it a number by
 posting on it.
 
+**Lane 1 has a fifth: recorded R-0352 deferrals (harmonic-forge#1564).** An
+issue filed with a `blocked-on-prerequisite` or `deferred-design-record`
+exception has no worktree and no candidate entry, and the operator's comment
+that releases it (`go`) carries no marker. `gh_issue.py` (and the backfill
+CLI `record_deferral.py`) records the deferral in
+`deferral_store.py`'s `deferrals/` store (core), `queue_cycle` adds every recorded
+deferral to Lane 1's candidate set (`read_deferrals`, no GitHub call), and
+`discover_queue` queues `queued-for-l1 kind=deferral-trigger owes=handoff`
+for a later unclassified comment whose first non-blank raw line is `go`, optionally
+followed by one group or issue token (`RELEASE_RE`), posted by the entry's recorded
+`operator_login`. Only a post stamped `posted-by=LANE1` (a `lane-comment`
+from a `LANE=1` session) clears it; a handoff discharges it, at the writer
+(`l1_post.py`) and, as the backfill fallback, on the thread
+(`_deferral_trigger`). Every store touch is Lane 1's only.
+
 **Kind- and poster-filtered, not just repo and age (harmonic-forge#691
 AC2').** The pre-rescope design recorded only `{repo, issue, posted_at}`,
 so every issue ANY writer had ever touched in 14 days stayed a candidate
@@ -224,6 +239,7 @@ import belt_batch_view  # noqa: E402
 import _etag_cache  # noqa: E402  (harmonic-forge#1393: conditional issue and thread reads)
 import release_milestone  # noqa: E402  (harmonic-forge#1382 C1: the one current-release definition)
 import belt_candidates  # noqa: E402
+import deferral_store  # noqa: E402  (harmonic-forge#1564: core, so filing never imports the belt)
 from retired_artifacts import RETIRED_ARTIFACTS  # noqa: E402
 #: harmonic-forge#851: the FAIL/PASS reader for a gate result is
 #: `lane_state.py`'s, imported rather than restated -- a second regex is how
@@ -609,6 +625,31 @@ PLAN_FIRST_OWES = "plan"
 #: The value a Lane 1 `gate-result` renders instead of `OWES["l1"]["gate-result"]`
 #: when `_sticky_wicket_owed` holds (harmonic-forge#997, #1099).
 STICKY_OWES = "sticky-wicket"
+
+#: harmonic-forge#1564. A recorded R-0352 deferral whose trigger an operator
+#: comment may have fired: a Lane 1 queue item like the sticky-wicket one, not
+#: an `OWES` entry (no marker carries this kind), so `_queue_owes` never
+#: indexes it. `skills/belt-and-suspenders/SKILL.md` rule 9 carries its row.
+DEFERRAL_KIND = "deferral-trigger"
+DEFERRAL_OWES = "handoff"
+DEFERRAL_MARKER = f"{DEFERRAL_KIND} owes={DEFERRAL_OWES}"
+#: The deferral comment's first line, `gh_issue.py`'s heading for a recorded
+#: exception, built from the one constant that writes it.
+_DEFERRAL_ANCHOR_RE = re.compile(
+    re.escape(deferral_store.DEFERRAL_HEADING) + r" `(?:"
+    + "|".join(re.escape(e) for e in deferral_store.RECORDED_EXCEPTIONS) + r")`")
+#: The release grammar (harmonic-forge#1564 design amendment, operator
+#: decision 1): a comment's first non-blank raw line is `go`, optionally
+#: followed by one group or issue token. One constant, so tightening the token
+#: class later is one edit. `deferral_store.RELEASE_SENTENCE` states it.
+#: Operator decision 3 (2026-11-25): the token is a group (`R`, `E3`) or an
+#: issue (`H2766`, `#2766`, `2766`): one letter with optional digits, or
+#: digits with an optional `#`. A word (`go later`, `go ahead`) is not a release.
+RELEASE_RE = re.compile(r"(?i)^go(\s+(?:[a-z]\d*|#?\d+))?[.!]?$")
+#: One belt interval (the canonical `--interval 300`). A `filing` entry whose
+#: thread shows no deferral comment yet is kept this long: a just-filed issue
+#: can read as an empty thread before its comment count catches up.
+DEFERRAL_NO_ANCHOR_GRACE = dt.timedelta(seconds=300)
 
 
 def _sticky_wicket_owed(repo: str, issue: int, comments: list[dict]) -> bool:
@@ -1036,6 +1077,100 @@ def _classify(body: str) -> tuple[str, str] | None:
     return None
 
 
+def _first_raw_line(body: str) -> str:
+    """harmonic-forge#1564 sticky-wicket fix (b): the deferral's one reading
+    rule, for the release and the anchor alike. The first non-blank line of
+    the raw body, stripped; `""` when that line is indented code (4 or more
+    leading spaces, or a tab). No rendering is modelled: a quote, fence, HTML
+    comment or prose ahead of it is that line, so the caller's fullmatch
+    fails, and the chat relay is the fallback (an accepted residual)."""
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        return "" if "\t" in indent or len(indent) >= 4 else line.strip()
+    return ""
+
+
+def _stamped_lane1(body: str) -> bool:
+    """Whether the comment's own footer reads `posted-by=LANE1` (only
+    `post_lane_discussion.py` stamps it). Read from the raw marker, not
+    `_classify`, which folds `LANE1`, `LANE-unset` and an absent field
+    together into `l1`."""
+    stamp = _POSTED_BY_RE.search(_own_marker(body) or "")
+    return bool(stamp and stamp.group(1) == "LANE1")
+
+
+def _deferral_trigger(comments: list[dict],
+                      operator_login: str | None) -> tuple[str, int | None]:
+    """harmonic-forge#1564: where a recorded R-0352 deferral stands on its
+    thread. Pure.
+
+    Sticky-wicket fix (a): every signal acted on is bound to the recorded
+    `operator_login` by `deferral_store.same_login` (casefolded). Fix (b):
+    the anchor and the release each fullmatch `_first_raw_line`.
+
+    The anchor is the LAST comment whose first raw line is exactly
+    `gh_issue.py`'s heading for a recorded exception, by the recorded login
+    (any login only for an entry without one: the anchor is the comment's
+    existence check, not a signal); with none, `("no-anchor", None)`. Each
+    later comment, in order:
+
+    - a verified Lane 1 `handoff` by the recorded login discharges the
+      deferral (`("discharged", None)`), the backfill fallback to
+      `l1_post.py`'s own discharge;
+    - a post stamped `posted-by=LANE1` by the same login clears a pending
+      release;
+    - an unclassified comment by the recorded login is a release when its
+      first raw line fullmatches `RELEASE_RE`.
+
+    Post-verdict #1: an entry with no recorded login binds no thread signal.
+    No handoff, clear or release on its thread acts on it, from any account;
+    it leaves by `l1_post.py`'s writer discharge, a closed or missing issue,
+    or a missing anchor.
+
+    `("queued", id)` names the newest release still pending; otherwise
+    `("cleared", None)`."""
+    def bound(comment: dict) -> bool:
+        login = (comment.get("user") or {}).get("login")
+        return deferral_store.same_login(login, operator_login)
+    anchor = None
+    for index, comment in enumerate(comments):
+        if (_DEFERRAL_ANCHOR_RE.fullmatch(_first_raw_line(comment.get("body") or ""))
+                and (not operator_login or bound(comment))):
+            anchor = index
+    if anchor is None:
+        return "no-anchor", None
+    pending: int | None = None
+    for comment in comments[anchor + 1:]:
+        body = comment.get("body") or ""
+        kind = _classify(body)
+        if kind == ("l1", "handoff") and bound(comment):
+            return "discharged", None
+        if _stamped_lane1(body) and bound(comment):
+            pending = None
+            continue
+        if kind is not None:
+            continue
+        if bound(comment) and RELEASE_RE.fullmatch(_first_raw_line(body)):
+            pending = comment.get("id")
+    if pending is not None:
+        return "queued", pending
+    return "cleared", None
+
+
+def _deferral_recorded_long_ago(entry: dict, now: "dt.datetime | None" = None) -> bool:
+    """Whether a deferral entry is a `backfill`, or was recorded more than
+    `DEFERRAL_NO_ANCHOR_GRACE` ago (an unparseable stamp counts as old)."""
+    if entry.get("source") == "backfill":
+        return True
+    try:
+        recorded = belt_candidates._parse_iso(entry["recorded_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return (now or dt.datetime.now(dt.timezone.utc)) - recorded > DEFERRAL_NO_ANCHOR_GRACE
+
+
 #: Retired lane tokens, and what replaced them. Read from the same registry
 #: `gh_issue.py` checks issue bodies against (harmonic-forge#379) rather than
 #: restated -- a second list is the drift this repo keeps paying for.
@@ -1274,6 +1409,24 @@ def _issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str
 #: count of the thread comes from it (harmonic-forge#1393): a page's ETag changes only
 #: when that page does, so a comment that opens page 2 is found only through the count.
 _ISSUE_COMMENTS: dict[tuple[str, int], int] = {}
+#: `(repo, issue)` -> the state `_fetch_all_comments`' own issue read reported
+#: (harmonic-forge#1564 final post-verdict #5). `discover_queue` clears it before
+#: an issue's first read and consults it after the thread read, so a closed
+#: state from any read this call made wins over an earlier failed read.
+_READ_STATE: dict[tuple[str, int], str] = {}
+#: The issue states that end an issue's tick (harmonic-forge#1564 terminal-state
+#: patch): once any read reports one, no later read in the tick replaces it.
+_TERMINAL_STATES = frozenset({"closed", "missing"})
+
+
+def _note_read_state(repo: str, issue: int, state: str | None) -> None:
+    """Record one issue read's state for this tick (harmonic-forge#1564
+    terminal-state patch). A failed read (`None`) records nothing, and a
+    closed or missing state already recorded is final: a later open read in
+    the same tick never overwrites it."""
+    if state is None or _READ_STATE.get((repo, issue)) in _TERMINAL_STATES:
+        return
+    _READ_STATE[(repo, issue)] = state
 
 
 def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None, str | None]:
@@ -1289,7 +1442,8 @@ def _read_issue_meta(repo: str, issue: int) -> tuple[str | None, set[str] | None
         # harmonic-forge#866: a 404 means the issue is gone only when this
         # account can see the repo itself; a private repo read with the wrong
         # account 404s too, and must stay unreadable, never retire a real issue.
-        if resp.status == 404 and _confirmed_missing(repo, issue):
+        # harmonic-forge#1564 preclose #4: a deleted issue answers 410 Gone.
+        if resp.status in _GONE_STATUSES and _confirmed_missing(repo, issue):
             print(f"[watch_lane_posts] {repo}#{issue} not found (repo readable as {account}): "
                   "retiring its candidate", file=sys.stderr)
             return "missing", None, None
@@ -1318,13 +1472,20 @@ def _fail_may_reach(repo: str, issue: int, lane: str) -> bool:
 _STATUS_LINE = re.compile(r"^HTTP/[\d.]+\s+(\d{3})\b")
 
 
+#: The issue-read statuses that can mean the issue is gone: 404, and 410 for
+#: a deleted issue (harmonic-forge#1564 preclose #4: a deleted deferral read
+#: as unreadable failed its repo's every tick).
+_GONE_STATUSES = (404, 410)
+
+
 def _confirmed_missing(repo: str, issue: int) -> bool:
-    """Whether `issue` is definitely gone: its read 404s AND `repos/{repo}`
-    reads 200 under the same account (harmonic-forge#866). A private repo
-    read with the wrong account 404s too, so a 404 alone is never enough.
-    Every issue reader that fails open on an unreadable issue asks this
-    first, so no reader keeps a missing issue alive that another retires."""
-    return (_http_status(repo, f"repos/{repo}/issues/{issue}") == 404
+    """Whether `issue` is definitely gone: its read 404s or 410s AND
+    `repos/{repo}` reads 200 under the same account (harmonic-forge#866). A
+    private repo read with the wrong account 404s too, so a 404 alone is
+    never enough. Every issue reader that fails open on an unreadable issue
+    asks this first, so no reader keeps a missing issue alive that another
+    retires."""
+    return (_http_status(repo, f"repos/{repo}/issues/{issue}") in _GONE_STATUSES
             and _http_status(repo, f"repos/{repo}") == 200)
 
 
@@ -1370,6 +1531,7 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
     # read conditionally. An edited comment does not change the issue's ETag but does
     # change its page's, so the pages are read even when the issue read was a 304.
     state, *_ = _issue_meta(repo, issue)
+    _note_read_state(repo, issue, state)
     if state is None or state == "missing":
         return None  # no readable issue, so no readable thread (never `[]`: that reads as no work)
     comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
@@ -1380,7 +1542,7 @@ def _fetch_all_comments(repo: str, issue: int) -> list[dict] | None:
             # between two page reads shifts every boundary): refresh the count once and
             # read the pages again (harmonic-forge#1393 AC3). A thread still off after
             # that is returned for this tick but not memoized; the next tick re-reads it.
-            _read_issue_meta(repo, issue)
+            _note_read_state(repo, issue, _read_issue_meta(repo, issue)[0])
             comments = _read_thread_pages(repo, issue, _ISSUE_COMMENTS.get((repo, issue)))
             if comments is not None and len(comments) != _ISSUE_COMMENTS.get((repo, issue)):
                 return comments
@@ -1483,6 +1645,8 @@ def discover_queue(repo: str, lane: str,
                    candidates_for_repo: set[int],
                    store_read_at: "dt.datetime | None" = None,
                    marker_ids: "dict[int, int | None] | None" = None,
+                   retired_out: "set[int] | None" = None,
+                   read_out: "dict[int, str | None] | None" = None,
                    ) -> tuple[dict[int, str], bool]:
     """`{issue: kind}` for every open issue currently queued to `lane` --
     an l1-post marker whose kind is one of `QUEUE_KINDS[lane]` is the
@@ -1502,7 +1666,18 @@ def discover_queue(repo: str, lane: str,
     harmonic-forge#1007: when `marker_ids` is a dict, it is filled with each
     queued issue's marker comment id -- the comment that set `last_kind`, or
     the newest comment for a markerless sticky-wicket item -- so the offer
-    state can tell a new marker of the same kind from a repeat."""
+    state can tell a new marker of the same kind from a repeat.
+
+    harmonic-forge#1564: when `retired_out` is a set, it receives each issue
+    whose recorded deferral this call discharged because the issue is closed
+    or missing, so `queue_cycle` retracts its item even on a cycle whose
+    other fetch failed (preclose #12).
+
+    harmonic-forge#1564 post-verdict #5: when `read_out` is a dict, it
+    receives every open candidate whose own read completed this call, mapped
+    to its fresh marker or None, even when another candidate's fetch failed and
+    the call returns `({}, False)`. `queue_cycle` decides each item from its
+    own read: a failed fetch on one issue never masks another's."""
     kinds = QUEUE_KINDS[lane]
     posters = QUEUE_POSTERS[lane]
     any_poster = QUEUE_ANY_POSTER_KINDS.get(lane, ())
@@ -1531,7 +1706,30 @@ def discover_queue(repo: str, lane: str,
     excluded = queue_qualifiers(repo, lane)
     queued: dict[int, str] = {}
     fetch_failed = False
+    failed_issues: set[int] = set()
+    unread_issues: set[int] = set()
+
+    def retire(issue: int, state: str) -> None:
+        # Marked at detection, which depends only on this issue's own
+        # state read: another issue's failed comment fetch below still
+        # reports the repo unreliable, but no longer stops this mark
+        # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
+        # after the store was read.
+        belt_candidates.retire_candidate(repo, issue, read_before=read_before)
+        # harmonic-forge#1564: a closed or missing issue's deferral is over.
+        # Lane 1's store, so Lane 1's belt only (preclose #1, #13).
+        if lane == "l1" and deferral_store.discharge_deferral(repo, issue, state) \
+                and retired_out is not None:
+            retired_out.add(issue)
+        if state == "closed":
+            _retire_imc(repo, issue)
+        # Not a `read_out` item: a closed or missing issue leaves by its
+        # own rules (`retired_out` here, the closed mark on the next
+        # successful cycle, harmonic-forge#854), which this leaves as is.
+        unread_issues.add(issue)
+
     for issue in candidates:
+        _READ_STATE.pop((repo, issue), None)
         # harmonic-forge#854 (REFORGE): a closed issue is queued to no lane,
         # checked before the label exclusion so closed epics and Tooling
         # Exception issues are retired too. No in-process cache decides this:
@@ -1540,16 +1738,10 @@ def discover_queue(repo: str, lane: str,
         # `read_candidates` skips and a fresh `record_candidate` clears. An
         # unreadable state is treated as open (AC4).
         state, labels, *rest = _issue_meta(repo, issue)
+        _note_read_state(repo, issue, state)
         milestone = rest[0] if rest else None
-        if state in ("closed", "missing"):
-            # Marked at detection, which depends only on this issue's own
-            # state read: another issue's failed comment fetch below still
-            # reports the repo unreliable, but no longer stops this mark
-            # (harmonic-forge#854 sticky-wicket ruling). Never an entry posted
-            # after the store was read.
-            belt_candidates.retire_candidate(repo, issue, read_before=read_before)
-            if state == "closed":
-                _retire_imc(repo, issue)
+        if state in _TERMINAL_STATES:
+            retire(issue, state)
             continue
         if labels is not None and labels & excluded:
             # `queue_qualifiers`' filter, restored per-issue (harmonic-forge#686
@@ -1579,6 +1771,17 @@ def discover_queue(repo: str, lane: str,
         last_body = ""
         last_id: int | None = None
         comments = _fetch_all_comments(repo, issue)
+        if (later := _READ_STATE.get((repo, issue))) in _TERMINAL_STATES:
+            # harmonic-forge#1564 terminal-state patch: a closed or missing state
+            # from ANY read of this issue this tick (the read above, the thread
+            # read's own issue read, its retry, the count-mismatch re-read) is
+            # terminal, and is checked before the fetch failure below: a thread
+            # that failed to read never carries a closed issue forward. The issue
+            # is retired exactly as an early closed state is, never classified,
+            # queued or offered (`_note_read_state` keeps a later open read from
+            # replacing it).
+            retire(issue, later)
+            continue
         if comments is None:
             # harmonic-forge#602 (found by an out-of-family review). `None` is
             # a FAILED fetch, distinct from `[]`. The note below was written
@@ -1594,6 +1797,7 @@ def discover_queue(repo: str, lane: str,
             # harmonic-forge#854: the loop still finishes, so a closed issue
             # later in the set is marked whatever this issue's fetch did.
             fetch_failed = True
+            failed_issues.add(issue)
             continue
         sticky = lane == "l1" and _sticky_wicket_owed(repo, issue, comments)
         for comment in comments:
@@ -1612,6 +1816,21 @@ def discover_queue(repo: str, lane: str,
                 last_body = comment.get("body", "")
                 last_id = comment.get("id")
         newest_id = comments[-1].get("id") if comments else None
+        deferral = deferral_store.deferral_entry(repo, issue) if lane == "l1" else None
+        if deferral is not None:
+            # harmonic-forge#1564: an operator comment on a recorded R-0352
+            # deferral. Set first, so every owed kind below overwrites it.
+            outcome, trigger_id = _deferral_trigger(comments, deferral.get("operator_login"))
+            if outcome == "discharged":
+                deferral_store.discharge_deferral(repo, issue, "a Lane 1 handoff followed it")
+            elif outcome == "no-anchor":
+                if _deferral_recorded_long_ago(deferral):
+                    deferral_store.discharge_deferral(
+                        repo, issue, "its thread carries no R-0039 deferral comment by its filing login")
+            elif outcome == "queued":
+                queued[issue] = DEFERRAL_MARKER
+                if marker_ids is not None:
+                    marker_ids[issue] = trigger_id
         if not last_kind:
             if sticky:
                 queued[issue] = f"gate-result owes={STICKY_OWES}"
@@ -1649,6 +1868,9 @@ def discover_queue(repo: str, lane: str,
         queued[issue] = f"{kind} owes={owes}"
         if marker_ids is not None:
             marker_ids[issue] = last_id
+    if read_out is not None:
+        for issue in candidates - failed_issues - unread_issues:
+            read_out[issue] = queued.get(issue)
     if fetch_failed:
         return {}, False
     return queued, True
@@ -2557,29 +2779,54 @@ def queue_cycle(
     #: to a search -- a silent fallback would reinstate the defect the moment
     #: a caller forgot the argument.
     candidate_pairs = candidate_pairs or set()
+    if lane == "l1":
+        #: harmonic-forge#1564: a recorded deferral has no worktree and no
+        #: candidate entry, so it is a candidate source of its own.
+        candidate_pairs = candidate_pairs | deferral_store.read_deferrals(repos)
     queue: dict[tuple[str, int], str] = {}
     ok_repos: set[str] = set()
     fresh_ids: dict[tuple[str, int], int | None] = {}
     checked_pairs: set[tuple[str, int]] = set()
+    #: harmonic-forge#1564 preclose #12: pairs whose deferral this cycle
+    #: discharged as closed or missing. Retracted whatever their repo's fetch
+    #: did, because nothing will ever check them again.
+    retired_pairs: set[tuple[str, int]] = set()
+    #: harmonic-forge#1564 post-verdict #5: pairs read successfully in a repo
+    #: whose other fetch failed. Each is retracted by its own read.
+    read_pairs: set[tuple[str, int]] = set()
     _prune_batch(batch_state_path)
     for repo in repos:
         prior = {issue: last_queue[(r, issue)] for (r, issue) in last_queue if r == repo}
         checked: set[int] | None = {n for r, n in candidate_pairs if r == repo}
         ids: dict[int, int | None] = {}
+        retired: set[int] = set()
+        read: dict[int, str | None] = {}
         if offers is None:
-            raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at)
+            raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
+                                           retired_out=retired, read_out=read)
         else:
             raw, fetch_ok = discover_queue(repo, lane, checked, store_read_at,
-                                           marker_ids=ids)
+                                           marker_ids=ids, retired_out=retired,
+                                           read_out=read)
+        retired_pairs.update((repo, n) for n in retired)
         found = dict(raw)
         if not fetch_ok:
-            # Carry this repo's previous queue forward untouched, and keep it
-            # OUT of `ok_repos` so the retraction pass below cannot see it.
+            # The repo stays OUT of `ok_repos`, but retraction is per item
+            # (harmonic-forge#1564 post-verdict #5): an issue whose own read
+            # completed is decided by that read, queued or retracted, and only
+            # an issue this cycle could not read carries forward untouched.
+            unread = {i: m for i, m in prior.items() if i not in read}
             print(f"[watch_lane_posts]   {repo}: fetch failed -- carrying "
-                  f"{len(prior)} previously-queued issue(s) forward, not retracting",
+                  f"{len(unread)} previously-queued issue(s) forward, not retracting",
                   file=sys.stderr)
-            for issue, marker in prior.items():
-                queue[(repo, issue)] = marker
+            for issue, marker in unread.items():
+                if issue not in retired:
+                    queue[(repo, issue)] = marker
+            for issue, marker in read.items():
+                read_pairs.add((repo, issue))
+                if marker is not None:
+                    queue[(repo, issue)] = marker
+                    fresh_ids[(repo, issue)] = ids.get(issue)
             continue
         ok_repos.add(repo)
         print(f"[watch_lane_posts]   {repo}: {len(found)} queued", file=sys.stderr)
@@ -2628,6 +2875,15 @@ def queue_cycle(
                         # forward), so it left the candidate set on purpose.
                         continue
                     queue[(repo, issue)] = marker
+    if lane == "l1":
+        #: harmonic-forge#1564 sticky-wicket fix (d): one rule for every
+        #: carry-forward branch. A deferral item is derived from the store,
+        #: re-read every tick, so one with no fresh read and no entry is stale
+        #: whichever branch carried it; retracted like a closed deferral.
+        for key in [k for k, m in queue.items() if m == DEFERRAL_MARKER
+                    and k not in fresh_ids and deferral_store.deferral_entry(*k) is None]:
+            del queue[key]
+            retired_pairs.add(key)
 
     lines: list[str] = []
     when = time.time() if now_ts is None else now_ts
@@ -2656,6 +2912,7 @@ def queue_cycle(
             offers.record(key, marker, fresh_ids[key], session, when)
         lines.append(f"{repo}#{issue} queued-for-{lane} kind={marker}")
     retract = {k for k in set(last_queue) - set(queue) if k[0] in ok_repos}
+    retract |= {k for k in retired_pairs | read_pairs if k in last_queue and k not in queue}
     if offers is not None:
         # AC5: an item an EARLIER process offered that has since cleared
         # retracts once. Only an item this cycle actually checked (or any
@@ -2663,7 +2920,12 @@ def queue_cycle(
         # an unchecked one is "unknown", the carry-forward's own rule, and
         # its entry simply ages out (AC5a).
         for key in offers.keys():
-            if key in queue or key[0] not in ok_repos:
+            if key in queue:
+                continue
+            if key in read_pairs:
+                retract.add(key)
+                continue
+            if key[0] not in ok_repos:
                 continue
             # harmonic-forge#1141: an unchecked offer the candidate store
             # already shows superseded retracts now, not after 14 days.

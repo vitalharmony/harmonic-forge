@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from retired_artifacts import RETIRED_ARTIFACTS, RETIRED_COMMAND_FRAGMENTS  # noqa: E402
+import deferral_store  # noqa: E402  (harmonic-forge#1564)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
@@ -362,6 +363,15 @@ def _post_comment(repo: str, issue: str, body: str) -> subprocess.CompletedProce
         return subprocess.CompletedProcess([], 1, "", f"could not start gh: {exc}")
 
 
+def _posted_login(stdout: str) -> str | None:
+    """The `user.login` of a comment POST's JSON response, or None."""
+    try:
+        login = json.loads(stdout)["user"]["login"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return login if isinstance(login, str) and login else None
+
+
 def _discharge_exception(args, issue: int, issue_url: str) -> bool:
     """Apply an R-0039 filing-bar exception, if one was claimed. True on OK.
 
@@ -385,12 +395,15 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
             return False
     reason = args.handoff_exception_reason
     comment = (
-        f"## R-0039 filing-bar exception: `{args.handoff_exception}`\n\n"
+        f"{deferral_store.DEFERRAL_HEADING} `{args.handoff_exception}`\n\n"
         f"No Lane 1 handoff accompanies this filing. R-0039 permits that for "
         f"this case, and requires the claim to be recorded rather than "
         f"assumed — this comment is that record (R-0352's deferral shape).\n\n"
         f"**Reason given at filing time:** {reason}\n"
     )
+    if args.handoff_exception in deferral_store.RECORDED_EXCEPTIONS:
+        # harmonic-forge#1564: the release grammar, where the operator reads it.
+        comment += f"\n{deferral_store.RELEASE_SENTENCE}\n"
     result = _post_comment(args.repo, issue, comment)
     if result.returncode != 0:
         print(f"[GH] ERROR: --handoff-exception was claimed but its reason "
@@ -398,6 +411,17 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
               f"[GH] The handoff obligation therefore STANDS. Re-run the "
               f"comment, or post the handoff.", file=sys.stderr)
         return False
+    if args.handoff_exception in deferral_store.RECORDED_EXCEPTIONS:
+        # harmonic-forge#1564: Lane 1's belt watches this deferral for the
+        # operator's `go`. The POST above carries no --jq, so its stdout is the
+        # whole comment JSON, and its `user.login` is the filing login.
+        login = _posted_login(result.stdout)
+        if login is None:
+            print(f"[GH] could not read the deferral comment's login from the POST "
+                  f"response; the belt will not watch {args.repo}#{issue} for a release "
+                  f"until you run: python3 tools/gh/record_deferral.py --repo {args.repo} "
+                  f"--issue {issue} --operator-login <login>", file=sys.stderr)
+        deferral_store.record_deferral(args.repo, issue, "filing", operator_login=login)
     handoff_owed.discharge(args.repo, issue)
     print(f"[GH] R-0039 exception '{args.handoff_exception}' recorded on "
           f"{issue_url}; no handoff owed.")
