@@ -224,8 +224,11 @@ class TC6NoFalsePositives(unittest.TestCase):
         body = (
             'def f(t):\n'
             '    """tokens[1:3] == ["issue","close"] and t[2] == "merge" and state=closed"""\n'
+            '    "repos/o/r/pulls/5/merge"\n'
             '    pr, repo = 5, "o/r"\n'
-            '    return f"gh pr merge {pr} --repo {repo} state=closed"\n'
+            '    return f"gh pr merge {pr} --repo {repo}", f"repos/{repo}/pulls/{pr}/merge"\n'
+            'def h():\n'
+            '    """state=closed"""\n'
             'def g(record):\n'
             '    return record.get("gh pr merge")\n'
         )
