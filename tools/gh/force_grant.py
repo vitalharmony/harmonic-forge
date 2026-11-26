@@ -247,11 +247,12 @@ _AUTHORIZES = {"plain": "one plain `preclose_check.py --force`",
                "reforge": "one `preclose_check.py --force --reforge`",
                "route": "one merge past the route recheck (block_route_tightened_merge.py)",
                "cluster": "one `preclose_check.py --cluster-verdict ... --force`",
-               "gate": "one call past the precheck gate"}
+               "gate": "one call past the precheck gate",
+               "ci-outage": "the pre-merge AE, and Lane 3's PASS, for exactly this SHA past a CI outage, only beside its check-full receipt, never a merge"}
 #: harmonic-forge#1291: what a gate grant is bound to; each must match the call.
 GATE_FIELDS = ("gate_tool", "gate_mode", "arg_fp")
 #: The modes bound to the operator-typed SHA prefix, not the covered head.
-_PREFIX_MODES = ("reforge", "route")
+_PREFIX_MODES = ("reforge", "route", "ci-outage")
 
 
 def _mode(grant: dict) -> str:
@@ -290,7 +291,7 @@ def _binding_refusal(grant: dict, key: str, head_sha: str, mode: str,
         return None
     if mode in _PREFIX_MODES:
         prefix = str(grant.get("sha_prefix") or "")
-        if len(prefix) < (40 if mode == "route" else 12) or not head_sha or not head_sha.startswith(prefix):
+        if len(prefix) < (12 if mode == "reforge" else 40) or not head_sha or not head_sha.startswith(prefix):
             return f"the {mode} grant for {key} names {prefix[:12] or '?'}, not {head_sha[:12]}"
         return None
     if not head_sha or str(grant.get("sha")) != head_sha:

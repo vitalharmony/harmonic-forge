@@ -47,6 +47,7 @@ from gate_ci import check_gate_result, gated_sha, lane3_artifact, looks_like_a_g
 # with `lane3-begin` so the gate cannot start, and a PASS cannot be posted, on
 # different rules.
 import check_lane3_ready
+import ci_outage  # harmonic-forge#1565: the ci-outage PASS release
 
 # harmonic-forge#947: auto-AE reads the spec's tier with this parser, so the
 # poster checks with the same one and the two cannot drift.
@@ -674,13 +675,6 @@ def require_green_ci(
     # meant the test asserting a red CI is refused passed against a function
     # that never called the checker at all.
     #
-    # Keyed on the BODY, not on `kind`. `kind` is the author declaring what
-    # they are posting; omitting `--kind gate-result` skipped the check
-    # entirely while `lane_state.py` still scored the comment `gate.pass` from
-    # its heading. 74 of 98 real `Lane 3 Gate Results` comments across both
-    # repos carry no `kind=gate-result` footer, so that was the majority path,
-    # not a corner. `kind` is kept as a second trigger for a gate report whose
-    # heading is non-standard.
     # `kind` is NOT consulted. It is the author declaring what they are
     # posting, and omitting `--kind gate-result` skipped the check entirely
     # while `lane_state.py` still scored the comment `gate.pass` from its
@@ -700,6 +694,8 @@ def require_green_ci(
         claim = post_merge_readonly_claim(repo, issue, body)
         if claim is not None:
             ok, message = check_gate_result(repo, body, post_merge_readonly=claim)
+    if not ok and issue is not None and ack_no_pr_required is None:  # harmonic-forge#1565
+        ok, message = ci_outage.pass_release(repo, issue, body, message)
     if not ok:
         fail(message)
     # Only the acknowledged override is recorded as one in the footer: the

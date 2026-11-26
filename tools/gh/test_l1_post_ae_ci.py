@@ -6,12 +6,13 @@ Pending waits (exit 3); every other non-green state, an unresolvable repo, an
 unreadable required set and a reader exception refuse. The no-PR
 acknowledgment releases only by `gate_ci.no_pr_ack_release`, the rule
 `check_gate_result` uses (A1), and only when `require_open_pr` applied it (A2).
-A CI outage has no override: it waits or refuses like any other non-green read
-(the operator's 2026-11-25 ruling on issuecomment-7151924845's tripwire).
+With no ci-outage grant (harmonic-forge#1565, test_ci_outage_ae.py) a CI outage
+waits or refuses like any other non-green read.
 `grant_on_main` and `merged_readonly` AEs never reach the gate (C2)."""
 import ast
 import itertools
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,19 @@ import l1_post as L  # noqa: E402
 
 SHA = "c" * 40
 REPO = "vitalharmony/harmonic-forge"
+
+
+def setUpModule():
+    """harmonic-forge#1565: a non-green read consults the ci-outage grant store;
+    an empty temp store, never the live one."""
+    global _STORE
+    _STORE = tempfile.TemporaryDirectory()
+    L.ci_outage.force_grant.FORCE_STATE_DIR = Path(_STORE.name)
+
+
+def tearDownModule():
+    L.ci_outage.force_grant.FORCE_STATE_DIR = None
+    _STORE.cleanup()
 
 
 class AeCiGate(unittest.TestCase):

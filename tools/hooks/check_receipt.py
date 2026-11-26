@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 STORE = Path.home() / ".cache" / "harmonic-forge" / "check-receipts"
@@ -60,6 +61,11 @@ def _git(*args: str, cwd: str | None = None) -> str:
 
 def receipt_path(slug: str, sha: str) -> Path:
     return STORE / slug / sha
+
+
+def check_full_path(slug: str, sha: str, forge: str) -> Path:
+    """harmonic-forge#1565: keyed by forge SHA too, so no later run replaces it."""
+    return STORE / slug / f"{sha}.check-full.{forge}"
 
 
 def forge_sha() -> str | None:
@@ -117,9 +123,8 @@ def lookup(slug: str, sha: str) -> dict | None:
 #: needs only what CI cannot run. It never replaces another source's receipt; a
 #: full `check` replaces it (the upgrade path).
 LOCAL_CHECK_SOURCE = "local-check"
-#: harmonic-forge#1586: a full `check-full` run (vitalharmony/hrse#2889), evidence
-#: harmonic-forge#1565's ci-outage override will read. Full-replace, own label;
-#: separate storage is #1565's decision.
+#: harmonic-forge#1586: a full `check-full` run (vitalharmony/hrse#2889), full-replace, own
+#: label. harmonic-forge#1565: also a sidecar only it writes (`check_full_path`), for ci_outage.
 CHECK_FULL_SOURCE = "check-full"
 SOURCES = ("check", LOCAL_CHECK_SOURCE, CHECK_FULL_SOURCE)
 #: harmonic-forge#894 C1: a `local-check` run inside l1_post's scratch worktree.
@@ -156,13 +161,41 @@ def record(repo_root: str = ".", head: str | None = None, source: str = "check")
         if source in NO_REPLACE_SOURCES and existing is not None:
             print(f"check-receipt: kept the existing {existing.get('source')} receipt")
             return 0
-        path.write_text(json.dumps({"repo": slug, "sha": sha, "forge_sha": _recorded_forge_sha(),
-                                    "source": source}) + "\n", encoding="utf-8")
+        forge = _recorded_forge_sha()
+        data = json.dumps({"repo": slug, "sha": sha, "forge_sha": forge, "source": source}) + "\n"
+        path.write_text(data, encoding="utf-8")
+        if source == CHECK_FULL_SOURCE:
+            _write_check_full(slug, sha, forge, data)
     except (OSError, subprocess.CalledProcessError) as exc:
         print(f"check-receipt: WARNING no receipt recorded ({exc})", file=sys.stderr)
         return 0
     print(f"check-receipt: recorded {slug} {sha[:12]}")
     return 0
+
+
+def _write_check_full(slug: str, sha: str, forge: str | None, data: str) -> None:
+    """harmonic-forge#1565: atomic (temp file, then `os.replace`); never for an empty forge."""
+    if not forge:
+        print(f"check-receipt: {forge_unusable_reason() or 'forge moved'}; no check-full sidecar recorded", file=sys.stderr)
+        return
+    target = check_full_path(slug, sha, forge)
+    handle = tempfile.NamedTemporaryFile("w", dir=target.parent, suffix=".tmp", delete=False, encoding="utf-8")
+    try:
+        with handle: handle.write(data)  # noqa: E701
+        os.replace(handle.name, target)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+
+
+def check_full(slug: str, sha: str, forge: str | None) -> dict | None:
+    """The (sha, forge) sidecar or None: one path read, both forge values non-empty."""
+    try:
+        data = json.loads(check_full_path(slug, sha, forge).read_text(encoding="utf-8")) if forge else None
+    except (OSError, ValueError):
+        return None
+    good = isinstance(data, dict) and data.get("source") == CHECK_FULL_SOURCE and data.get("sha") == sha
+    return data if good and data.get("forge_sha") and data["forge_sha"] == forge else None
 
 
 def labels(slug: str, issue: str) -> list[str] | None:
