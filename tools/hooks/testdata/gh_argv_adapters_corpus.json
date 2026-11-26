@@ -1332,105 +1332,19 @@
   ]
  },
  "preclose": {
-  "GH_HOST=`h` gh pr merge 7 -R o/r": [
+  "gh api -X PUT repos/o/r/pulls/7": [
    "intended",
-   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1499 amendment change 2)",
+   "tightening against main: main read this REST write as not-a-close; gh_argv binds every issue or pull-request REST write it cannot prove is not a close or merge, so the label check runs (harmonic-forge#1499)",
    [
+    "not-a-close",
     "refuse",
-    "refuse",
-    [
-     [
-      "pr",
-      "o/r",
-      "7",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      null,
-      null,
-      false
-     ]
-    ]
+    [],
+    []
    ]
   ],
-  "GH_HOST=other.example gh pr merge 9 --repo o/r --squash --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+  "gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=open": [
    "intended",
-   "verdict unchanged (refuse) against main; gh_argv reads an inline GH_HOST naming another host as unbound (the gate checks github.com only), so the hook denies it as an unnumbered merge before any read, where main bound it to github.com (harmonic-forge#1499)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "pr",
-      "o/r",
-      "9",
-      false
-     ]
-    ],
-    [
-     [
-      "pr",
-      null,
-      null,
-      false
-     ]
-    ]
-   ]
-  ],
-  "GH_REPO=$O/r gh issue close 12": [
-   "intended",
-   "verdict unchanged (refuse) against main; an inline GH_REPO/GH_HOST value with an expansion is not the repo or host gh will use, so the hook denies the call as undecided before any read (harmonic-forge#1499 amendment change 2)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      null,
-      "12",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      null,
-      null,
-      false
-     ]
-    ]
-   ]
-  ],
-  "GH_REPO=a/b gh issue close 12": [
-   "old-defect",
-   "main ignored the inline GH_REPO and named no repo; gh reads GH_REPO, and the hook binds it",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      null,
-      "12",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      "a/b",
-      "12",
-      false
-     ]
-    ]
-   ]
-  ],
-  "gh -R o/r issue close 5": [
-   "intended",
-   "tightening against main: main read this literal gh call as not-a-close; the adapter cannot prove it is not a close or merge, so the hook denies it before any read (harmonic-forge#1499)",
+   "tightening against main: main read this REST write as not-a-close; gh_argv binds every issue or pull-request REST write it cannot prove is not a close or merge, so the label check runs (harmonic-forge#1499)",
    [
     "not-a-close",
     "refuse",
@@ -1462,115 +1376,7 @@
     ]
    ]
   ],
-  "gh api -X PATCH repos/vitalharmony/hrse/issues/1476 -f state=open": [
-   "intended",
-   "tightening against main: main read this REST write as not-a-close; gh_argv binds every issue or pull-request REST write it cannot prove is not a close or merge, so the label check runs (harmonic-forge#1499)",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "gh api -X PUT repos/o/r/pulls/7": [
-   "intended",
-   "tightening against main: main read this REST write as not-a-close; gh_argv binds every issue or pull-request REST write it cannot prove is not a close or merge, so the label check runs (harmonic-forge#1499)",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -H -f -H sha=abc123": [
-   "intended",
-   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1486",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      null,
-      null,
-      false
-     ]
-    ]
-   ]
-  ],
-  "gh api graphql --input body.json -X POST": [
-   "intended",
-   "tightening against main: main read this literal gh call as not-a-close; the adapter cannot prove it is not a close or merge, so the hook denies it before any read (harmonic-forge#1499)",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "gh issue close": [
-   "intended",
-   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "gh issue close \"$N\"": [
-   "intended",
-   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "gh issue close \"$N\" --repo o/r": [
-   "intended",
-   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
-   [
-    "not-a-close",
-    "refuse",
-    [],
-    []
-   ]
-  ],
-  "gh issue close 5 --repo o/r --bogus": [
-   "intended",
-   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      "o/r",
-      "5",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      null,
-      null,
-      false
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1486 -R vitalharmony/hrse --squash -- --match-head-commit=abc123": [
+  "gh pr merge 1486 -R vitalharmony/hrse --squash --subject --match-head-commit abc123": [
    "intended",
    "verdict unchanged (refuse) against main; gh's grammar leaves a second positional (after `--`, or once a value flag took the flag-shaped word as its value), so the merge is unbound and denied as `gh pr merge` with no number, where main named the PR (harmonic-forge#1499)",
    [
@@ -1594,7 +1400,7 @@
     ]
    ]
   ],
-  "gh pr merge 1486 -R vitalharmony/hrse --squash --subject --match-head-commit abc123": [
+  "gh pr merge 1486 -R vitalharmony/hrse --squash -- --match-head-commit=abc123": [
    "intended",
    "verdict unchanged (refuse) against main; gh's grammar leaves a second positional (after `--`, or once a value flag took the flag-shaped word as its value), so the merge is unbound and denied as `gh pr merge` with no number, where main named the PR (harmonic-forge#1499)",
    [
@@ -1642,7 +1448,7 @@
     ]
    ]
   ],
-  "gh pr merge 5 --repo o/r --bogus": [
+  "gh api -X PUT repos/vitalharmony/hrse/pulls/1486/merge -H -f -H sha=abc123": [
    "intended",
    "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
    [
@@ -1651,8 +1457,8 @@
     [
      [
       "pr",
-      "o/r",
-      "5",
+      "vitalharmony/hrse",
+      "1486",
       false
      ]
     ],
@@ -1666,104 +1472,1060 @@
     ]
    ]
   ],
-  "gha vh \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  "bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh \"$X/gh\" issue close 849 -R o/r": [
+  "export GH_RE\"\"PO=x/y; gh issue close 849": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+  "bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  "export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh /usr/bin/gh issue close 849 -R o/r": [
+  "A=v bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+  "A=v bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+  "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh dash -c 'gh issue close 849 -R o/r'": [
+  "A=/usr/bin/gh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+  "env bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
-  "gha vh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+  "env bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
    "intended",
-   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
-    "not-a-close",
     "refuse",
-    [],
-    []
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env env bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env env bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env 1=x bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "time bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "time bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "timeout 5 bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "exec bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "exec bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "command -p bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "command -p bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nice -n5 bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "stdbuf -oL bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "then bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "then bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "! bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "! bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh-as vh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
    ]
   ],
   "gha vh gh issue close 849 -R o/r": [
@@ -1777,6 +2539,16 @@
    ]
   ],
   "gha vh gh pr merge 7 -R o/r --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
    "intended",
    "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
    [
@@ -1806,6 +2578,36 @@
     []
    ]
   ],
+  "gha vh /usr/bin/gh issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh pr merge 7 -R o/r --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh /usr/bin/gh api -X PATCH repos/o/r/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
   "gha vh /usr/bin/gh issue close 849": [
    "intended",
    "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
@@ -1817,6 +2619,36 @@
    ]
   ],
   "gha vh /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" issue close 849 -R o/r": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" pr merge 7 -R o/r --match-head-commit abc123": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh \"$X/gh\" api -X PATCH repos/o/r/issues/849 -f state=closed": [
    "intended",
    "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
    [
@@ -1846,6 +2678,36 @@
     []
    ]
   ],
+  "gha vh dash -c 'gh issue close 849 -R o/r'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh pr merge 7 -R o/r --match-head-commit abc123'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gha vh dash -c 'gh api -X PATCH repos/o/r/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
   "gha vh dash -c 'gh issue close 849'": [
    "intended",
    "tightening against main: `gha <account>` runs `gh` on its arguments, so this is `gh <path-or-shell> ...`, which main read as not-a-close; the adapter cannot prove it is not a close, so the hook denies it (harmonic-forge#1499)",
@@ -1866,9 +2728,2415 @@
     []
    ]
   ],
-  "GH_REPO=x/y env --chdir=/t gh issue close 5": [
+  "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
    "intended",
-   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gha vh bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -i bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; /usr/bin/gh issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; /usr/bin/gh pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; \"$X/gh\" issue close 849": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; \"$X/gh\" pr merge 7 --match-head-commit abc123": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; dash -c 'gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; dash -c 'gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh issue close 849'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "849",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh pr merge 7 --match-head-commit abc123'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "/usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "/usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "\"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "\"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "A=v gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "A=v gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "A=v /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "A=v /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "A=v \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "A=v \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "A=v dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "A=v dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "A=v bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "A=v bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "env -u GH_REPO gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "env -u GH_REPO /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "env -u GH_REPO \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "env -u GH_REPO dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "env -u GH_REPO bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "nohup gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "nohup /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "nohup \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "nohup dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "nohup bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "nohup bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "export GH_REPO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; /usr/bin/gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "export GH_REPO=x/y; /usr/bin/gh api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; \"$X/gh\" api -X PATCH repos/:owner/:repo/issues/849 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "export GH_REPO=x/y; \"$X/gh\" api -X PUT repos/:owner/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; dash -c 'gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "export GH_REPO=x/y; dash -c 'gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh api -X PATCH repos/:owner/:repo/issues/849 -f state=closed'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "export GH_REPO=x/y; bash -c 'export GH_RE\"\"PO=x/y; gh api -X PUT repos/:owner/:repo/pulls/7/merge'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      ":owner/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh -R o/r issue close 5": [
+   "intended",
+   "tightening against main: main read this literal gh call as not-a-close; the adapter cannot prove it is not a close or merge, so the hook denies it before any read (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "GH_REPO=a/b gh issue close 12": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "12",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=d/x env -u GH_REPO gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -1890,9 +5158,273 @@
     ]
    ]
   ],
-  "GH_REPO=x/y bash -c 'unset GH_REPO; gh issue close 5'": [
+  "export GH_REPO=x/y; gh issue close 5": [
    "intended",
-   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh(){ GH_REPO=x command gh \"$@\"; }; gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "bash -c 'export GH_RE\"\"PO=x; gh issue close 5'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "export GH_RE\"\"PO=x; gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env -uGH_REPO gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "env --unset=GH_REPO gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=$O/r gh issue close 12": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "12",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y env GH_REPO=o/r gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y env -i HOME=/h gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y exec -c gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y ksh -c 'gh issue close 5'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y bash -c 'gh issue close 5'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -1916,7 +5448,7 @@
   ],
   "GH_REPO=x/y dash -c 'GH_REPO=o/r; gh issue close 5'": [
    "intended",
-   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -1938,9 +5470,9 @@
     ]
    ]
   ],
-  "GH_REPO=x/y env GH_REPO=o/r gh issue close 5": [
-   "old-defect",
-   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+  "GH_REPO=x/y env --chdir=/t gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -1955,16 +5487,16 @@
     [
      [
       "issue",
-      "o/r",
-      "5",
+      null,
+      null,
       false
      ]
     ]
    ]
   ],
-  "GH_REPO=x/y time GH_REPO=o/r gh issue close 5": [
-   "old-defect",
-   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+  "exec -a GH_REPO=decoy/x gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -1979,80 +5511,8 @@
     [
      [
       "issue",
-      "o/r",
-      "5",
-      false
-     ]
-    ]
-   ]
-  ],
-  "GH_REPO=x/y dash -c 'GH_REPO=o/r gh issue close 5'": [
-   "old-defect",
-   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
       null,
-      "5",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      "o/r",
-      "5",
-      false
-     ]
-    ]
-   ]
-  ],
-  "GH_REPO=x/y ksh -c 'gh issue close 5'": [
-   "old-defect",
-   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
       null,
-      "5",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      "x/y",
-      "5",
-      false
-     ]
-    ]
-   ]
-  ],
-  "GH_REPO=x/y bash -c 'gh issue close 5'": [
-   "old-defect",
-   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
-   [
-    "refuse",
-    "refuse",
-    [
-     [
-      "issue",
-      null,
-      "5",
-      false
-     ]
-    ],
-    [
-     [
-      "issue",
-      "x/y",
-      "5",
       false
      ]
     ]
@@ -2060,7 +5520,7 @@
   ],
   "nohup GH_REPO=a/b gh issue close 5": [
    "intended",
-   "verdict unchanged (refuse); nohup runs a program named GH_REPO=a/b, so gh never starts, and the hook reads every assignment word the strip walks as setting the environment, which names no decoy (harmonic-forge#1499 round 1)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -2075,32 +5535,128 @@
     [
      [
       "issue",
-      "a/b",
-      "5",
+      null,
+      null,
       false
      ]
     ]
    ]
   ],
-  "GH_REPO=x/y time GH_REPO=o/r gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
-   "old-defect",
-   "main ignored GH_REPO and named no repo; the hook binds the GH_REPO gh starts with after every prefix word acts on it (env NAME=, time NAME=, a -c payload, an inherited value), never a leading decoy (harmonic-forge#1499 round 1)",
+  "GH_HOST=h gh issue close 5 -r 'not planned'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "pass",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      true
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y time GH_REPO=o/r gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
     [
      [
-      "pr",
+      "issue",
       null,
-      "7",
+      "5",
       false
      ]
     ],
     [
      [
-      "pr",
-      "o/r",
-      "7",
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y dash -c 'GH_REPO=o/r gh issue close 5'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y bash -c 'unset GH_REPO; gh issue close 5'": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "unset GH_REPO; gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
       false
      ]
     ]
@@ -2108,7 +5664,7 @@
   ],
   "GH_REPO=x/y exec -lx gh issue close 5": [
    "intended",
-   "verdict unchanged (refuse) against main; the environment gh starts with cannot be determined through this wrapper (an env or exec option outside the known set, or a -c payload of several commands that may reset GH_REPO), so the hook denies the call as undecided before any read (harmonic-forge#1499 round 1)",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
    [
     "refuse",
     "refuse",
@@ -2128,6 +5684,244 @@
       false
      ]
     ]
+   ]
+  ],
+  "timeout -s GH_REPO=decoy/x 5 gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y exec -cl gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=decoy/x env --unset GH_REPO gh issue close 5": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      null,
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "GH_REPO=x/y time GH_REPO=o/r gh pr merge 7 --match-head-commit cccccccccccccccccccccccccccccccccccccccc": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST at some depth, so the target is denied before any read where main bound the checkout",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      null,
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh api -X PATCH repos/:owner/:repo/issues/5 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "GH_REPO=x/y gh api -X PATCH repos/:owner/:repo/issues/5 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh api -X PUT repos/o/:repo/pulls/7/merge": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      "o/:repo",
+      "7",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh api -X PATCH repos/{owner}/{repo}/issues/5 -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 pitch change 1): the api path holds gh's :owner/:repo or {x} placeholder, which gh fills from GH_REPO or the checkout, so it names no repo; denied before any read where main bound the placeholder as a repo or read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close \"$N\"": [
+   "intended",
+   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close": [
+   "intended",
+   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close \"$N\" --repo o/r": [
+   "intended",
+   "tightening against main: main read this unbound literal gh close as not-a-close; the hook denies an empty-number target before any read (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh issue close 5 --repo o/r --bogus": [
+   "intended",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "issue",
+      "o/r",
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh pr merge 5 --repo o/r --bogus": [
+   "intended",
+   "verdict unchanged (refuse) against main; the hook reports the undecided call as the empty-number target it denies before any read, where main named a target (harmonic-forge#1499)",
+   [
+    "refuse",
+    "refuse",
+    [
+     [
+      "pr",
+      "o/r",
+      "5",
+      false
+     ]
+    ],
+    [
+     [
+      "issue",
+      null,
+      null,
+      false
+     ]
+    ]
+   ]
+  ],
+  "gh api graphql --input body.json -X POST": [
+   "intended",
+   "tightening against main: main read this literal gh call as not-a-close; the adapter cannot prove it is not a close or merge, so the hook denies it before any read (harmonic-forge#1499)",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
    ]
   ]
  }

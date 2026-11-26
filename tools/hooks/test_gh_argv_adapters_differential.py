@@ -33,9 +33,9 @@ from shell_parse import command_segments  # noqa: E402
 from test_gh_argv_adapters import ASK, CONSUMERS, NOT_A_CLOSE, PASS, REFUSE, ROWS, SCOPE, verdict  # noqa: E402
 
 CLASSES = {"old-defect", "adapter-defect", "intended"}
+MENTION_DENY, UNDECIDED_SET = ("tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST, so the target is denied before any read where main bound the checkout"), frozenset({('issue', None, None, False)})
 
-#: (consumer, row) -> (class, reason, observation). The observation is
-#: (old verdict, new verdict, old targets, new targets), exactly as observed.
+#: (consumer, row) -> (class, reason, observation): (old verdict, new verdict, old targets, new targets), as observed.
 DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
     ('batch', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
         (ASK, ASK, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
@@ -75,8 +75,7 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('migration', 'unprovable_placeholder_merge'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
-    ('preclose', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
-        (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset({('issue', 'a/b', '12', False)}))),
+    ('preclose', 'bound_inline_repo'): ('intended', MENTION_DENY, (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), UNDECIDED_SET)),
     ('preclose', 'unbound_issue_no_arg'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unbound_variable'): ('old-defect', 'an unbound issue close passes (fail-open) while BATCH asks on it',
@@ -85,6 +84,7 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
         (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), frozenset({('issue', None, None, False)}))),
     ('preclose', 'unprovable_alias'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
+    ('preclose', 'unprovable_env_unset'): ('intended', MENTION_DENY, (REFUSE, REFUSE, frozenset({('issue', None, '12', False)}), UNDECIDED_SET)),
     ('preclose', 'unprovable_flag_before_root'): ('old-defect', 'a real close the old reader does not recognize passes',
         (NOT_A_CLOSE, REFUSE, frozenset(), frozenset())),
     ('preclose', 'unprovable_graphql_input'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
@@ -99,8 +99,7 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
 #: Preclose `unprovable_sudo`/`unprovable_xargs` agree with main ([]): stated
 #: residuals of F1499's amendment change 3, tracked in harmonic-forge#1577.
 PLANTED = ["gh", "issue", "close", "99", "--repo", "x/y"]
-#: Main's frozen recognizers (migration: F1498 survivor 3; preclose: F1499
-#: amendment change 4): the hook under test is never its own baseline.
+#: Main's frozen recognizers (migration: F1498 survivor 3; preclose: F1499 amendment change 4): never the hook under test.
 MAIN_FIXTURES = {c: HERE / "testdata" / f"{c}_main_178ba5f.json" for c in ("migration", "preclose")}
 MAIN = {c: json.loads(f.read_text(encoding="utf-8")) if f.exists() else {} for c, f in MAIN_FIXTURES.items()}
 

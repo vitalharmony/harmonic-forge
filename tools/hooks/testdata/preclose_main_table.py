@@ -62,6 +62,9 @@ def commands() -> list[str]:
 
 
 if __name__ == "__main__":
-    table = main_outputs(commands(), _EVAL)
+    # A row is only ever added (harmonic-forge#1499 pitch change 4): an existing
+    # row stays though no test replays it, and the regeneration test proves all.
+    kept = json.loads(OUT.read_text(encoding="utf-8")) if OUT.exists() else {}
+    table = main_outputs(sorted(set(commands()) | set(kept)), _EVAL)
     _write(table)
     print(f"{OUT.name}: {len(table)} commands from 178ba5f")

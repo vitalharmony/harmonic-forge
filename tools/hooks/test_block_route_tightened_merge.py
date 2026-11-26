@@ -500,8 +500,8 @@ class RouteGrant(_Case):
         for command in (f"{pin}#x --match-head-commit {OTHER}", f"{pin} && gh pr merge 10 --repo {HRSE} --squash --match-head-commit {OTHER}",
                         f"{pin} --auto", f"{pin} --disable-auto", f"{pin} --admin", f"{pin} --rebase",
                         f"gh pr merge 9 --repo {HRSE} --merge --match-head-commit {HEAD}",
-                        # `GH_HOST=other.example` moved (harmonic-forge#1499): test_block_missing_preclose_inspection_adapter
-                        f"gh pr merge 9 --repo {HRSE} --match-head-commit {HEAD}"):
+                        f"gh pr merge 9 --repo {HRSE} --match-head-commit {HEAD}",
+                        f"GH_HOST=other.example {pin}"):
             with self.subTest(command=command):
                 self.grant()
                 result = self.run_hook(self.gh(), command=command)
