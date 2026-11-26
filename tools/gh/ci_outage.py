@@ -97,6 +97,9 @@ def ae_release(repo: str, issue: int, source_repo: str, sha: str, state: str, sn
         _consumed_refusal(repo, issue, sha, fail)
         return None
     key = grant["key"]
+    if source_repo.lower() != repo.lower():  # the PASS reads the issue repo's PR and CI only
+        fail(f"the ci-outage grant for {key} releases an AE whose CI is {repo}'s, not {source_repo}'s "
+             f"(a cross-repo AE); nothing was posted")
     eligible, why = gate_ci.outage_eligible(state, snapshot)
     if not eligible:
         fail(f"{sha[:12]}: {why}, so the ci-outage grant for {key} releases nothing; nothing was posted")
@@ -178,16 +181,17 @@ def _records(repo: str, issue: int, ae_comment_id=None) -> list[dict]:
     return found
 
 
-def pass_release(repo: str, issue: int, body: str, message: str) -> tuple[bool, str]:
-    """`(True, line)` when a bound release record passes R1-R6 and then
-    `check_gate_result(ci_outage=...)` releases the PASS on its own CI read, else
-    `(False, why)`. `message` is the refusal being answered; with no release
-    record on the issue at all it is returned as is, and nothing is read."""
+def pass_release(repo: str, issue: int, body: str) -> tuple[bool, str] | None:
+    """None, reading nothing, with no release record on the issue. Otherwise the PASS's
+    ONE CI read: `check_gate_result(ci_outage=...)` when a bound record passes R1-R6,
+    else a plain `check_gate_result` whose refusal names the record rule. A refusal is
+    never re-read (#1565 reforge round 1), and only a ci-outage release spends the record."""
     if not _records(repo, issue):
-        return False, message
+        return None
 
     def refuse(why: str) -> tuple[bool, str]:
-        return False, f"{message}\n[GATE] ci-outage: not released: {why}"
+        ok, gate = gate_ci.check_gate_result(repo, body)
+        return (ok, gate) if ok else (False, f"{gate}\n[GATE] ci-outage: not released: {why}")
     sha = gate_ci.gated_sha(body)
     if not sha or not _FULL_SHA.fullmatch(sha):  # R4a
         return refuse("the PASS must name the full 40-hex Head-SHA")
@@ -211,10 +215,10 @@ def pass_release(repo: str, issue: int, body: str, message: str) -> tuple[bool, 
         return refuse(f"no check-full receipt for {sha[:12]} against the recorded forge {str(forge)[:12]}")
     ok, gate = gate_ci.check_gate_result(repo, body, ci_outage=(
         f"the consumed ci-outage grant {record.get('grant_comment_url')} bound to AE {record.get('ae_url')}"))
-    if not ok:
-        return False, gate
+    if not ok or not gate.startswith("[GATE] ci-outage:"):  # a refusal, or green: nothing to spend
+        return ok, gate
     spent = _spend(record, sha, body)
-    return (True, gate) if spent is None else refuse(spent)
+    return (True, gate) if spent is None else (False, f"{gate}\n[GATE] ci-outage: not released: {spent}")
 
 
 def _spend(record: dict, sha: str, body: str) -> str | None:

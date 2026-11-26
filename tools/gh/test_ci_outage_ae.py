@@ -292,7 +292,7 @@ class AeSide(World, unittest.TestCase):
         self.sweep()
         body = f"## Lane 3 Gate Results — {KEY}\n\n**Verdict:** PASS\n**Head-SHA:** {self.S}\n"
         with mock.patch.object(ci_outage.check_lane3_ready, "fetch_comments", lambda r, i: self.comments):
-            self.assertEqual(ci_outage.pass_release(REPO, ISSUE, body, "refused"), (False, "refused"))
+            self.assertIsNone(ci_outage.pass_release(REPO, ISSUE, body))
 
 
 class AeVisibleRed(World, unittest.TestCase):

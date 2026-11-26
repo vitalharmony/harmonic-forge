@@ -3367,7 +3367,7 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
     """harmonic-forge#894 step 4: a pre-merge AE posts only on green CI; returns the footer's
     check name. `pending` waits (`WAIT_EXIT`); any other non-green read, an unresolvable repo,
     an unreadable required set or a reader exception refuses. Two releases: the no-PR ack
-    (`gate_ci.no_pr_ack_release`, only when `require_open_pr` applied it, #894 A1/A2), and a usable
+    (`gate_ci.no_pr_ack_release`, only when `require_open_pr` applied it, #894 A1/A2), or else a
     ci-outage grant on a `gate_ci.outage_eligible` snapshot beside its check-full receipt (#1565)."""
     source_repo = _cwd_repo_from_git(None)
     if not source_repo:
@@ -3390,7 +3390,7 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
         state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
     if state == "green":
         return "ci-green"
-    if name := ci_outage.ae_release(repo, issue, source_repo, sha, state, snapshot, fail):
+    if ack_no_pr_required is None and (name := ci_outage.ae_release(repo, issue, source_repo, sha, state, snapshot, fail)):
         return name
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",

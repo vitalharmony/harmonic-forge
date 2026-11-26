@@ -16,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_ci_outage_ae import KEY, L, World, force_grant, job, s0, status  # noqa: E402
-from test_ci_outage_pass import PassCase, RED  # noqa: E402
+from test_ci_outage_pass import PENDING, PassCase, RED  # noqa: E402
 from test_gate_ci import check  # noqa: E402
 
 E5 = "not confirmed as the head of an open PR"
@@ -66,6 +66,45 @@ class AeEligibility(World, unittest.TestCase):
         self.required = frozenset({"verify", "ui-approval"})
         self.refused_with("visibly red (ui-approval:failure)", s0(statuses=[status("ui-approval", "failure")]))
 
+    def test_rf1_a_no_pr_ack_never_takes_the_outage_release(self) -> None:
+        """Reforge round 1 (panel): with --ack-no-pr-required applied, CI is absent because no
+        PR exists, not because of an outage; the grant is never consulted, nor spent."""
+        with ExitStack() as stack:
+            self.ci(stack, s0())
+            stack.enter_context(mock.patch.object(L.gate_ci, "no_pr_ack_release", lambda *a, **k: False))
+            with self.assertRaises(SystemExit) as ctx:
+                L._ae_ci_gate("vitalharmony/hrse", 12, self.S, "no PR: a backfill")
+        self.assertNotIn("ci-outage", str(ctx.exception))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
+    def test_rf1_a_cross_repo_ae_refuses(self) -> None:
+        """Reforge round 1 (cross-family): the AE's CI is another repo's, while the PASS reads
+        the issue repo's PR, so the grant would be spent on a round that cannot complete."""
+        with ExitStack() as stack:
+            self.ci(stack, s0())
+            stack.enter_context(mock.patch.object(L, "_cwd_repo_from_git", lambda _: "vitalharmony/other"))
+            with self.assertRaises(SystemExit) as ctx:
+                L._ae_ci_gate("vitalharmony/hrse", 12, self.S, None)
+        self.assertIn("cross-repo AE", str(ctx.exception))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
+    def test_rf1_a_re_run_attempt_refuses(self) -> None:
+        """Reforge round 1 (panel): filter=latest returns only a re-run's newest attempt, so
+        a red first attempt is in no record; a re-run is never an outage (E3)."""
+        rerun = {**job("verify", None, "queued"), "run_attempt": 2}
+        self.refused_with("re-run (verify)", s0([rerun]))
+
+    def test_rf1_an_unprotected_branch_refuses(self) -> None:
+        """Reforge round 1 (cross-family): no required check means no status read at all, so
+        a failed `verify` status is never seen (E2)."""
+        self.required = frozenset()
+        self.refused_with("requires no check", s0(statuses=[status("verify", "failure")]))
+
+    def test_rf1_a_failed_unrequired_status_refuses(self) -> None:
+        """Reforge round 1 (cross-family): the status read kept required contexts only, so a
+        failed `lint` status beside an absent `verify` released (E3 scans every status)."""
+        self.refused_with("visibly red (lint:failure)", s0(statuses=[status("lint", "failure")]))
+
 
 class PassEligibility(PassCase):
     """PASS side: every case starts from TC 1's genuine bound AE at S plus a sweep."""
@@ -103,6 +142,35 @@ class PassEligibility(PassCase):
         self.assertTrue(ok, line)
         self.assertIn("released (CI is pending with no red record)", line)
         self.assertTrue(json.loads(next((self.state / "ci-outage").glob("*.pass")).read_text())["at"])
+
+    def test_rf1_an_incomplete_run_list_refuses(self) -> None:
+        """Reforge round 1 (cross-family): the runs list reports 2 runs and lists 1, so a red
+        run may be missing; the read is `unknown`, never released (E1, E4)."""
+        self.refused("may be incomplete", run=self.gh(checks=PENDING, total_count=2))
+
+    def test_rf1_an_open_pr_with_no_head_refuses(self) -> None:
+        """Reforge round 1 (cross-family): a PR entry with a null head never confirms S (E5)."""
+        self.refused(E5, run=self.gh(pulls=[{"number": 7, "head": None, "ref": "feat/12-x",
+                                             "base": "main", "state": "open"}]))
+
+    def test_rf1_a_refused_pass_spends_nothing(self) -> None:
+        """Reforge round 1 (panel): a refused PASS leaves no `.pass` marker, and the next
+        PASS on the same record is released."""
+        self.refused("CI is RED", run=self.gh(checks=[check("verify", "failure")]))
+        self.assertEqual(list((self.state / "ci-outage").glob("*.pass")), [])
+        self.assertTrue(self.gate()[0])
+
+    def test_rf1_one_ci_read_decides_the_pass(self) -> None:
+        """Reforge round 1 (cross-family): the first CI read is red and a second would read
+        pending; the PASS takes one read and refuses on it, never re-reading after a refusal."""
+        red, pending, reads = self.gh(checks=[check("verify", "failure")]), self.gh(checks=PENDING), []
+
+        def run(cmd):
+            if any("/actions/runs?" in a for a in cmd):
+                reads.append(cmd)
+            return (red if len(reads) <= 1 else pending)(cmd)
+        self.refused("CI is RED", run=run)
+        self.assertEqual(len(reads), 1)
 
 
 if __name__ == "__main__":

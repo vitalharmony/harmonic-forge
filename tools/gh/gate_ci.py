@@ -575,21 +575,20 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     `DEFAULT_REQUIRED_CHECKS` reported green. Every visible check is judged
     FIRST, so a red check with `verify` missing is `red`, never the `absent`
     a no-PR override could authorize. `snapshot`, when given, receives what the
-    read positively established, for `outage_eligible` (harmonic-forge#1565):
-    `jobs` once the Actions read succeeded, `merged` once every status read did."""
+    read positively established, for `outage_eligible` (#1565): `jobs` once the Actions read
+    did, `merged` once every status read did (never unprotected), `status_red` every failed status."""
     snapshot = {} if snapshot is None else snapshot
     runs, failure = _read_check_runs(repo, sha, run=run, reader=reader)
     if failure is not None:
         return failure
     snapshot["jobs"] = runs
     if required:
-        runs, failure = _merge_status_records(repo, sha, runs, required, run=run,
-                                              reader=reader)
+        runs, failure = _merge_status_records(repo, sha, runs, required, run=run, reader=reader,
+                                              red_out=snapshot.setdefault("status_red", []))
         if failure is not None:
             return failure
         snapshot["merged"] = runs
         return _judge_runs(runs, sha, required)
-    snapshot["merged"] = runs
     state, detail = _judge_runs(runs, sha, set())
     if state != "green":
         return state, detail
@@ -609,12 +608,16 @@ def outage_eligible(state: str, snapshot: dict, stale: bool | None = False) -> t
         return False, f"CI is {state}; a ci-outage release needs {' or '.join(OUTAGE_STATES)}"
     if "jobs" not in snapshot:  # E1
         return False, "the Actions read did not complete"
-    if "merged" not in snapshot:  # E2
-        return False, "the commit status read did not complete"
-    red = sorted({f"{r.get('name')}:{r.get('conclusion')}" for r in snapshot.get("jobs", []) + snapshot.get(
-        "merged", []) if (r.get("conclusion") or "").lower() in _BAD})  # E3: every record, before dedupe
-    if red:
+    if "merged" not in snapshot:  # E2 (an unprotected branch reads no status at all)
+        return False, "the commit status read did not complete (or the branch requires no check)"
+    red = sorted({f"{r.get('name')}:{r.get('conclusion')}" for r in snapshot.get("jobs", [])
+                  + snapshot.get("merged", []) + snapshot.get("status_red", [])
+                  if (r.get("conclusion") or "").lower() in _BAD})
+    if red:  # E3: every record, before dedupe, and every red status of any context
         return False, f"visibly red ({', '.join(red)}): CI ran and failed, which is not an outage"
+    rerun = sorted({str(r.get("name")) for r in snapshot.get("jobs", []) if (r.get("run_attempt") or 1) != 1})
+    if rerun:  # E3: filter=latest shows only a re-run's newest attempt, which hides an earlier red
+        return False, f"re-run ({', '.join(rerun)}): an earlier attempt is not in the snapshot"
     if stale is not False:  # E5
         return False, "the SHA is not confirmed as the head of an open PR"
     return True, f"CI is {state} with no red record"
@@ -767,7 +770,7 @@ def _jobless(wf: dict, run_id) -> dict:
     return {"name": wf.get("name") or f"run {run_id}",
             "status": wf.get("status"), "conclusion": wf.get("conclusion"),
             "started_at": wf.get("started_at") or wf.get("run_started_at"),
-            "jobless_run": True,
+            "jobless_run": True, "run_attempt": wf.get("run_attempt"),
             "workflow_status": wf.get("status"), "workflow_event": wf.get("event"),
             "workflow_path": wf.get("path")}
 
@@ -803,8 +806,8 @@ def _read_check_runs_s0(repo: str, sha: str, reader
 def _read_check_runs(repo: str, sha: str, run=None, reader=None
                      ) -> tuple[list[dict], tuple[str, str] | None]:
     """One snapshot of the commit's check runs: `(runs, None)`, or
-    `([], (state, detail))` when it could not be read. With `reader`, every
-    read goes through it (harmonic-forge#894 C3)."""
+    `([], (state, detail))` when it could not be read, or may be incomplete (#1565). With
+    `reader`, every read goes through it (harmonic-forge#894 C3)."""
     if reader is not None:
         return _read_check_runs_s0(repo, sha, reader)
     run = run or _run
@@ -822,13 +825,15 @@ def _read_check_runs(repo: str, sha: str, run=None, reader=None
         sha = full.strip()
     code, out = run(["gh", "api", "--paginate",
                      f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
-                     "--jq", ".workflow_runs[] | {id, name, status, conclusion, event, path, "
-                             "started_at: .run_started_at}"])
+                     "--jq", ".total_count as $t | .workflow_runs[] | {id, name, status, conclusion, "
+                             "event, path, run_attempt, started_at: .run_started_at, total_count: $t}"])
     if code != 0:
         return [], ("unknown", f"could not read checks for {sha[:8]}: {out.strip()[:200]}")
     runs = []
     try:
         wf_runs = [json.loads(line) for line in (out or "").splitlines() if line.strip()]
+        if ({wf.get("total_count", len(wf_runs)) for wf in wf_runs} - {len(wf_runs)}) or len(wf_runs) >= RUNS_LIST_CAP:
+            return [], ("unknown", f"the workflow run list for {sha[:8]} may be incomplete")
         for wf in wf_runs:
             run_id = wf["id"]
             before = len(runs)
@@ -867,7 +872,7 @@ _STATUS_AS_RUN = {
 }
 
 
-def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None
+def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None, red_out=None
                     ) -> tuple[list[dict], tuple[str, str] | None]:
     """Check-shaped records for the required contexts in `names` that a
     commit STATUS satisfies (harmonic-forge#1283).
@@ -876,28 +881,20 @@ def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None
     #1274) is not an Actions job. This reads the status LIST, because only it carries
     `creator` (the combined `commits/<sha>/status` does not; verified 2026-11-07).
 
-    - Only a status whose `creator.login` is `github-actions[bot]` counts: the
-      identity branch protection's app pin accepts. A user-token status is
-      ignored, so a lane session cannot post one to turn a check green.
-    - Newest per context, AFTER the creator filter. The list is newest first
-      (GitHub REST docs: "The first status in the list will be the latest
-      one"), so a newer user-token status cannot shadow an older bot one.
-    - `success` -> green, `failure`/`error` -> red, `pending` -> pending; any
-      other state keeps its raw value, which `_judge_runs` reports unknown.
-    - A failed or unparseable read is `unknown`, never `absent`.
-    - Token: a classic/OAuth token with `repo` reads this; a fine-grained one
-      would need "Commit statuses: read".
+    - Only a `github-actions[bot]` status counts (branch protection's app pin), so a
+      lane session's user-token status cannot turn a check green.
+    - Newest per context, AFTER the creator filter (the list is newest first, GitHub
+      REST docs), so a newer user-token status cannot shadow an older bot one.
+    - `success` -> green, `failure`/`error` -> red, `pending` -> pending; any other
+      state keeps its raw value, which `_judge_runs` reports unknown. A failed or
+      unparseable read is `unknown`, never `absent`. A fine-grained token needs
+      "Commit statuses: read"; a classic one with `repo` reads it.
+    - `red_out` (#1565 E3) receives every failed status, of any context or creator.
 
-    Residual, stated and not closed: a token with the `workflow` scope can
-    push a branch whose workflow writes a `success` status for any context as
-    `github-actions[bot]`. GitHub's branch protection accepts that status
-    too, so on a protected repo this reader matches GitHub and goes no
-    further. It is never called on an unprotected repo
-    (`authorizing_conclusion` calls it for a non-empty `required` only).
-
-    With `reader` (harmonic-forge#894 C3) the list is one S0 page; this
-    endpoint reports no `total_count`, so a full page (100) may be truncated
-    and reads `unknown`.
+    Residual, not closed: a `workflow`-scope token can push a workflow that writes a
+    bot `success` status for any context; branch protection accepts it too, so this
+    matches GitHub. Called for a non-empty `required` only. With `reader` (#894 C3)
+    the list is one S0 page with no `total_count`, so a full page (100) is `unknown`.
     """
     if reader is not None:
         full, failure = _s0_full_sha(reader, repo, sha)
@@ -936,6 +933,8 @@ def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None
                 continue
             entry = json.loads(line)
             context = entry["context"]
+            if red_out is not None and entry.get("state") in ("failure", "error"):  # #1565 E3
+                red_out.append({"name": context, "conclusion": "failure"})
             if context not in names or entry.get("creator") != STATUS_CREATOR:
                 continue
             if context in records:
@@ -950,7 +949,7 @@ def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None
 
 
 def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[str],
-                          run=None, reader=None) -> tuple[list[dict], tuple[str, str] | None]:
+                          run=None, reader=None, red_out=None) -> tuple[list[dict], tuple[str, str] | None]:
     """`runs` plus a status record for each required name no real JOB carries
     (harmonic-forge#1283). No call when jobs cover every required name.
 
@@ -964,7 +963,7 @@ def _merge_status_records(repo: str, sha: str, runs: list[dict], required: set[s
     missing = set(required) - carried
     if not missing:
         return runs, None
-    records, failure = _status_records(repo, sha, missing, run=run, reader=reader)
+    records, failure = _status_records(repo, sha, missing, run=run, reader=reader, red_out=red_out)
     if failure is not None:
         # Only real jobs the branch requires decide a red here (harmonic-forge#1283
         # preclose pass 1): a red unrequired job, or a job-less run record, must
@@ -1076,6 +1075,8 @@ def stale_against_pr(repo: str, sha: str, run=None,
         return None, "unparseable PR payload"
     if not pulls or not isinstance(pulls, list):
         return None, "no open PR contains the SHA"
+    if any(not isinstance(p, dict) or not p.get("head") for p in pulls):
+        return None, "an open PR has no head SHA"  # harmonic-forge#1565 E5: never read as current
     if branch:
         pulls = [p for p in pulls if p.get("ref") == branch] or pulls
     else:

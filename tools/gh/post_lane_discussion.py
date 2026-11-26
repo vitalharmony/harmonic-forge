@@ -684,7 +684,10 @@ def require_green_ci(
     # `lane_state.py` does, and returns cleanly for anything that is not one;
     # asking it every time means the two can never disagree about what a gate
     # report IS.
-    ok, message = check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
+    # harmonic-forge#1565: with a ci-outage release record on the issue, its one CI read decides.
+    released = (ci_outage.pass_release(repo, issue, body)
+                if issue is not None and ack_no_pr_required is None else None)
+    ok, message = released or check_gate_result(repo, body, ack_no_pr_required=ack_no_pr_required)
     # harmonic-forge#1495: only a refusal that says CI has not completed can be
     # lifted, only when `issue` is known and no acknowledgment was given (the
     # tip-plus-ack route decides alone then), and the AE is read once, on this
@@ -694,8 +697,6 @@ def require_green_ci(
         claim = post_merge_readonly_claim(repo, issue, body)
         if claim is not None:
             ok, message = check_gate_result(repo, body, post_merge_readonly=claim)
-    if not ok and issue is not None and ack_no_pr_required is None:  # harmonic-forge#1565
-        ok, message = ci_outage.pass_release(repo, issue, body, message)
     if not ok:
         fail(message)
     # Only the acknowledged override is recorded as one in the footer: the
