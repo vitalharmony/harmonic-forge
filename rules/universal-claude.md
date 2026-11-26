@@ -162,3 +162,9 @@ When the auto-mode classifier blocks an unattended-agent launcher (a `claude -p`
 <!-- R-0412 -->
 An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open, and leave that tab open.
 <!-- /R-0412 -->
+<!-- R-0438 -->
+A `!` or `/` command the operator types while a turn runs waits until that turn ends, so after handing the operator a command the session ends its turn promptly. It never hands a command and also runs it on its own initiative. If the operator then tells the session to run that command instead, the session first checks the command's effect (the comment, receipt or state it writes) to confirm the operator's copy has not already run, then runs it once from this session (R-0414).
+<!-- /R-0438 -->
+<!-- R-0439 -->
+The model-tier note `tier_model_trigger_check.py` adds to the session's context is advisory only on an Opus or Fable model. The session reads the model id in its own system prompt. On an Opus or Fable model it proceeds without asking for `/model`, whatever the note says. On any other model it does not start the issues the note names and asks the operator for `/model`.
+<!-- /R-0439 -->
