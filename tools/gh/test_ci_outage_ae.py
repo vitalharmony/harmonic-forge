@@ -286,6 +286,31 @@ class AeSide(World, unittest.TestCase):
         self.refused("declares --prod-run", prod_run={"script": "x"})
         self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
 
+    def test_44_a_no_pr_ack_never_takes_the_outage_release(self) -> None:
+        """Kept from reforge round 1: with --ack-no-pr-required applied, CI is absent because no
+        PR exists, not because of an outage; the grant is never consulted, nor spent."""
+        self.grant()
+        self.check_full()
+        with ExitStack() as stack:
+            self.ci(stack, ABSENT)
+            stack.enter_context(mock.patch.object(L.gate_ci, "no_pr_ack_release", lambda *a, **k: False))
+            with self.assertRaises(SystemExit) as ctx:
+                L._ae_ci_gate(REPO, ISSUE, self.S, "no PR: a backfill")
+        self.assertNotIn("ci-outage", str(ctx.exception))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
+    def test_45_a_cross_repo_ae_refuses(self) -> None:
+        """Kept from reforge round 1: the grant and the sidecar name the issue repo's SHA."""
+        self.grant()
+        self.check_full()
+        with ExitStack() as stack:
+            self.ci(stack, ABSENT)
+            stack.enter_context(mock.patch.object(L, "_cwd_repo_from_git", lambda _: "vitalharmony/other"))
+            with self.assertRaises(SystemExit) as ctx:
+                L._ae_ci_gate(REPO, ISSUE, self.S, None)
+        self.assertIn("cross-repo AE", str(ctx.exception))
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
+
     def test_42_prod_run_refuses_the_release_on_the_dry_run(self) -> None:
         """R-0419: the dry run refuses what the real post refuses."""
         self.grant()
