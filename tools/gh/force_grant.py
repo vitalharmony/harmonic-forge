@@ -15,10 +15,8 @@ head the force covers. Nothing can use it yet:
   and only then rewrites the grant as `usable` with the comment id. A crash
   between the post and that rewrite leaves it `pending`; a retry posts again
   and completes it (the IMC waiver's two-step shape, `imc_waiver.record`).
-- `require()` answers whether a usable, unexpired, unconsumed grant covers
-  exactly this repo#issue at this head, and names which test failed if not.
-- `consume()` marks it spent. `--complete --force` and the route recheck
-  consume; `--plan --force` only checks.
+- `require()` names why no usable, unexpired grant covers this repo#issue at this head.
+- `consume()` re-checks home and marks it spent; `--plan --force` only checks.
 
 Each mode authorizes only its own action. Nothing here touches `imc_refusal`:
 an issue holding an IMC receipt is refused before any preclose grant is
@@ -344,6 +342,8 @@ def consume(key: str, expected_granted_at: str, head_sha: str, now: datetime | N
                                f"{grant.get('granted_at')}, not {expected_granted_at})")
         if grant.get("status") != "usable":
             raise GrantRefused(f"the FORCE grant for {key} is {grant.get('status')}, not usable")
+        if not imc_waiver.is_home_repo(grant.get("repo", "")):  # harmonic-forge#1596: every spend path
+            raise GrantRefused(f"{grant.get('repo')} is no longer a home repo in projects.toml")
         if _expired(grant, moment):
             raise GrantRefused(f"the FORCE grant for {key} expired at {grant.get('expires_at')}")
         refusal = _binding_refusal(grant, key, head_sha, mode, gate)

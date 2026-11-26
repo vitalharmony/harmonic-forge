@@ -89,6 +89,29 @@ class RecheckedAtPostAndSpend(unittest.TestCase):
         self.assertEqual(out["calls"], [])
 
 
+    def test_sticky_patch_a_gate_grant_spend_refuses_once_the_repo_is_not_home(self) -> None:
+        out = probe(self, ADOPTER, (
+            "sys.path.insert(0, str(Path(m.__file__).resolve().parent.parent / 'precheck'))\n"
+            "import force_grant, gate_receipt, imc_waiver\n"
+            "force_grant.FORCE_STATE_DIR = tmp / 'force'\n"
+            "tool, mode = {'path': 'tools/gh/x.py'}, {'name': 'post'}\n"
+            "grant = {'key': 'Z5', 'repo': 'acme/app', 'issue': 5, 'mode': 'gate', 'status': 'usable',"
+            " 'granted_at': '2026-01-01T00:00:00Z', 'expires_at': '2999-01-01T00:00:00Z',"
+            " **gate_receipt.gate_binding(tool, mode, 'fp1')}\n"
+            "path = force_grant.grant_path('Z5')\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "imc_waiver.write_json_atomic(path, grant)\n" + DEMOTE +
+            "argv = ['--repo', 'acme/app', '--issue', '5']\n"
+            "demoted = gate_receipt.spend_gate_grant(tool, mode, argv, 'fp1')\n"
+            "status = imc_waiver.read_json(path)['status']\n"
+            "Path(os.environ['FORGE_PROJECTS_MANIFEST']).write_text('not [toml')\n"
+            "fallback = gate_receipt.spend_gate_grant(tool, mode, [], 'fp1')\n"
+            "print(json.dumps({'demoted': demoted, 'status': status, 'fallback': fallback,"
+            " 'after': imc_waiver.read_json(path)['status']}))\n"))
+        self.assertEqual(out, {"demoted": False, "status": "usable", "fallback": False,
+                               "after": "usable"})
+
+
 class OptedInRepos(unittest.TestCase):
     def test_item5b_a_sibling_under_the_owner_that_is_not_home_is_never_a_merge_target(self) -> None:
         sibling = '[[project]]\nname = "other"\nprefix = "W"\nrepo = "acme/other"\naccount = "bob"\n'
