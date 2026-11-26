@@ -228,6 +228,35 @@ def normalize_repo(value: str) -> str:
     return f"{owner.lower()}/{repo.lower()}"
 
 
+_PART = r"[A-Za-z0-9_.-]+"
+#: The origin shapes a lane may launch from (harmonic-forge#1507): a github.com
+#: host only, or an absolute local path ending in github.com/<o>/<r>.git (the
+#: offline bare repos the launcher tests use; a path has no host to spoof).
+_ORIGIN_SHAPES = (
+    re.compile(rf"https://github\.com/({_PART}/{_PART})/?"),
+    re.compile(rf"git@github\.com:({_PART}/{_PART})/?"),
+    re.compile(rf"ssh://git@github\.com/({_PART}/{_PART})/?"),
+    re.compile(rf"/(?:[^\0]*/)?github\.com/({_PART}/{_PART}\.git)"),
+)
+
+
+def origin_repo(url: str) -> str:
+    """The normalized `owner/name` an origin URL names (harmonic-forge#1507,
+    moved here by harmonic-forge#1527 so the overlay can bind to it). The raw
+    `owner/repo` is normalized exactly once; it is accepted only when that
+    equals the raw text with one trailing `.git` (any case) removed and
+    lowercased."""
+    raw = next((m.group(1) for shape in _ORIGIN_SHAPES if (m := shape.fullmatch(url))), None)
+    if raw is None:
+        raise ManifestError(f"origin {url!r} is not a github.com repo URL")
+    stripped = raw[:-4] if raw.lower().endswith(".git") else raw
+    key = normalize_repo(raw)
+    if key != stripped.lower():
+        raise ManifestError(f"origin {url!r} names {raw!r}, which normalizes to {key!r}; "
+                            "refusing an ambiguous repo key")
+    return key
+
+
 def lane_shorthand_prefixes(platform_root: Path | None = None) -> dict[str, str]:
     """Return the prefix table stated in ``rules/lane-shorthand.md``."""
     root = platform_root or Path(__file__).resolve().parents[2]

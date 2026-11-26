@@ -34,7 +34,7 @@ import subprocess
 from pathlib import Path
 
 from manifest import ManifestError, Project, by_repo, load
-from manifest_protocol import normalize_repo
+from manifest_protocol import normalize_repo, origin_repo
 
 #: Both take precedence over `GH_CONFIG_DIR` in `gh`, so both are removed.
 STRIPPED_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
@@ -65,35 +65,22 @@ def account_for(repo: str, path: Path | None = None) -> str:
     return project.account
 
 
-_PART = r"[A-Za-z0-9_.-]+"
-#: The origin shapes a lane may launch from (harmonic-forge#1507): a github.com
-#: host only, or an absolute local path ending in github.com/<o>/<r>.git (the
-#: offline bare repos the launcher tests use; a path has no host to spoof).
-_ORIGIN_SHAPES = (
-    re.compile(rf"https://github\.com/({_PART}/{_PART})/?"),
-    re.compile(rf"git@github\.com:({_PART}/{_PART})/?"),
-    re.compile(rf"ssh://git@github\.com/({_PART}/{_PART})/?"),
-    re.compile(rf"/(?:[^\0]*/)?github\.com/({_PART}/{_PART}\.git)"),
-)
-
-
-def account_for_origin(url: str, path: Path | None = None) -> str:
+def account_for_origin(url: str, path: Path | None = None, *, checkout: Path | None = None) -> str:
     """The account a lane checkout whose origin is `url` acts as
-    (harmonic-forge#1507 reforge). One normalization, one exact refusal rule,
-    one direct lookup: the raw `owner/repo` is normalized exactly once; it is
-    accepted only when that equals the raw text with one trailing `.git`
-    (any case) removed and lowercased; the key is looked up directly, never
-    through `account_for`, which would normalize again."""
-    raw = next((m.group(1) for shape in _ORIGIN_SHAPES if (m := shape.fullmatch(url))), None)
-    if raw is None:
-        raise ManifestError(f"origin {url!r} is not a github.com repo URL")
-    stripped = raw[:-4] if raw.lower().endswith(".git") else raw
-    key = normalize_repo(raw)
-    if key != stripped.lower():
-        raise ManifestError(f"origin {url!r} names {raw!r}, which normalizes to {key!r}; "
-                            "refusing an ambiguous repo key")
+    (harmonic-forge#1507 reforge). One normalization, one exact refusal rule
+    (`manifest_protocol.origin_repo`), one direct lookup: the key is looked up
+    directly, never through `account_for`, which would normalize again.
+
+    On a base miss, `checkout`'s main-checkout overlay may register this exact
+    key (harmonic-forge#1527). This is the launcher's call and one of the
+    overlay's only two consumers (the other is `ci_plan`); every other function
+    here reads `projects.toml` alone, so no gate, hook or slot sees an overlay."""
+    key = origin_repo(url)
     project = by_repo(path).get(key)
-    if project is None:
+    if project is None and checkout is not None:
+        import manifest_overlay  # noqa: PLC0415 -- R1: the overlay is reached from here only
+        project = manifest_overlay.path_project(Path(checkout).expanduser().resolve(), None, path)
+    if project is None or project.repo != key:
         raise ManifestError(f"no [[project]] entry for {key}; refusing to fall back to the "
                             "global gh login")
     if not project.account:

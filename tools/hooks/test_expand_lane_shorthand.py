@@ -14,6 +14,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import expand_lane_shorthand as m
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+from test_manifest_overlay import overlay_only_fixture, probe_from  # noqa: E402
+
 
 def _run(prompt: str) -> dict | None:
     """Run the hook end to end, with the authorization store REDIRECTED.
@@ -1019,6 +1022,22 @@ class ProductionStateIsolationTests(unittest.TestCase):
         source = inspect.getsource(_run)
         self.assertIn("STATE_PATH", source)
         self.assertIn("mkdtemp", source)
+
+
+
+class OverlayPrefixIsNoBatchKey(unittest.TestCase):
+    """harmonic-forge#1527 AC8 / TC17: `BATCH L3` typed inside an overlay-only checkout
+    whose overlay claims `L` yields no key: the letter is in no prefix map."""
+
+    CODE = ("import json, expand_lane_shorthand as m\n"
+            "print(json.dumps(m._scan_batch('BATCH L3')))\n")
+
+    def test_tc17_an_overlay_only_prefix_yields_no_batch_key(self):
+        for prefix in ("L", "o", "Z"):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                repo, base = overlay_only_fixture(root, prefix)
+                self.assertEqual(probe_from(repo, base, self.CODE).strip(), "null")
 
 
 if __name__ == "__main__":

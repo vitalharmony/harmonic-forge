@@ -30,6 +30,9 @@ HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 import batch_auth as ba  # noqa: E402
 
+sys.path.insert(0, str(HOOK_DIR.parent / "onboard"))
+from test_manifest_overlay import overlay_only_fixture, probe_from  # noqa: E402
+
 
 def consume_ok(command, state_path):
     """Consume as `batch_consume.py` does after a command actually ran.
@@ -2623,6 +2626,26 @@ class RepoFlagAnywhereTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
         self.assertEqual(calls, [])
+
+
+class OverlayNeverReachesBatchPrefixes(unittest.TestCase):
+    """harmonic-forge#1527 AC8 / TC17: an overlay-only repo's prefix is display-only.
+    From inside its checkout, the BATCH prefix map and `prefix_repos()` equal the
+    no-overlay map, whatever letter the overlay claims."""
+
+    CODE = ("import json, batch_auth, manifest\n"
+            "print(json.dumps([batch_auth._repo_prefixes(), manifest.prefix_repos()]))\n")
+
+    def test_tc17_prefix_maps_ignore_the_cwd_checkouts_overlay(self):
+        for prefix in ("L", "o", "Z"):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                repo, base = overlay_only_fixture(root, prefix)
+                (root / "outside").mkdir()
+                inside = probe_from(repo, base, self.CODE)
+                self.assertEqual(inside, probe_from(root / "outside", base, self.CODE))
+                self.assertNotIn("acme/app", inside)
+
 
 if __name__ == "__main__":
     unittest.main()

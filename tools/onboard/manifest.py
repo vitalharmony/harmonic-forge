@@ -22,7 +22,6 @@ and report clean. Both would look like success.
 from __future__ import annotations
 
 import os
-import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,10 +30,7 @@ from manifest_protocol import (
     ManifestError, Protocol, lane_shorthand_prefixes, load_protocol,
     normalize_repo,
 )
-
-#: A version-shaped milestone title, the shape of
-#: tools/gh/release_milestone.RELEASE_TITLE (tools/onboard does not import tools/gh).
-_VERSION_TITLE = re.compile(r"^\d+(?:\.\d+)*$")
+from manifest_validate import check_min_version, validate
 
 
 def manifest_path() -> Path:
@@ -67,6 +63,7 @@ class Project:
     onboarded: bool = False
     token_exception: str | None = None  # harmonic-forge#805
     workspace: str | None = None  # harmonic-forge#917
+    min_version: str | None = None  # harmonic-forge#1527: vYYYY.MM.N; S10's doctor enforces it
     protocol: Protocol | None = None
 
     @property
@@ -104,9 +101,8 @@ class Project:
         return None
 
 
-def load(path: Path | None = None) -> list[Project]:
-    """Every entry in declaration order, validated."""
-    target = path or manifest_path()
+def raw_entries(target: Path) -> list:
+    """The `[[project]]` tables `target` declares, parsed fresh on every call."""
     try:
         raw = tomllib.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -117,23 +113,27 @@ def load(path: Path | None = None) -> list[Project]:
     entries = raw.get("project")
     if not isinstance(entries, list) or not entries:
         raise ManifestError(f"{target} declares no [[project]] entries")
+    return entries
 
+
+def build_projects(entries: list, label: str) -> list[Project]:
+    """`entries` as validated Projects, in order; `label` names the source in errors."""
     projects: list[Project] = []
     known = {f.name for f in Project.__dataclass_fields__.values()}
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            raise ManifestError(f"{target}: [[project]] #{index + 1} is not a table")
+            raise ManifestError(f"{label}: [[project]] #{index + 1} is not a table")
         for required in ("name", "prefix"):
             if not entry.get(required):
                 raise ManifestError(
-                    f"{target}: [[project]] #{index + 1} is missing `{required}`")
+                    f"{label}: [[project]] #{index + 1} is missing `{required}`")
         # An unknown key is a typo, and a typo in a manifest is exactly the
         # silent drift this file exists to end: `board_num = 3` would parse,
         # load, and leave the project boardless with no complaint.
         unknown = set(entry) - known
         if unknown:
             raise ManifestError(
-                f"{target}: {entry['name']} has unknown key(s): "
+                f"{label}: {entry['name']} has unknown key(s): "
                 f"{', '.join(sorted(unknown))}")
         if entry.get("repo"):
             entry["repo"] = normalize_repo(str(entry["repo"]))
@@ -141,63 +141,23 @@ def load(path: Path | None = None) -> list[Project]:
             value = entry["active_milestones"]
             if not isinstance(value, list) or not all(isinstance(m, str) and m for m in value):
                 raise ManifestError(
-                    f"{target}: {entry['name']} active_milestones must be a list of milestone titles")
+                    f"{label}: {entry['name']} active_milestones must be a list of milestone titles")
             entry["active_milestones"] = tuple(value)
+        check_min_version(entry.get("min_version"), label, str(entry["name"]))
         protocol_entry = entry.pop("protocol", None)
-        protocol = load_protocol(protocol_entry, target, str(entry["name"]))
+        protocol = load_protocol(protocol_entry, label, str(entry["name"]))
         projects.append(Project(**entry, protocol=protocol))
 
-    _validate(projects, target)
+    validate(projects, label)
     return projects
 
 
-def _validate(projects: list[Project], target: Path) -> None:
-    seen_prefix: dict[str, str] = {}
-    seen_repo: dict[str, str] = {}
-    for project in projects:
-        if not isinstance(project.onboarded, bool):
-            raise ManifestError(
-                f"{target}: {project.name} onboarded must be boolean")
-        if len(project.prefix) != 1 or not project.prefix.isalpha():
-            raise ManifestError(
-                f"{target}: {project.name} prefix {project.prefix!r} must be a "
-                "single letter")
-        clash = seen_prefix.get(project.prefix)
-        if clash:
-            raise ManifestError(
-                f"{target}: prefix {project.prefix!r} claimed by both {clash} "
-                f"and {project.name}")
-        seen_prefix[project.prefix] = project.name
-        if project.repo:
-            if project.repo.count("/") != 1:
-                raise ManifestError(
-                    f"{target}: {project.name} repo {project.repo!r} is not owner/name")
-            dupe = seen_repo.get(project.repo)
-            if dupe:
-                raise ManifestError(
-                    f"{target}: {project.repo} declared twice ({dupe}, {project.name})")
-            seen_repo[project.repo] = project.name
-            if not project.account:  # harmonic-forge#804: no repo without an identity
-                raise ManifestError(f"{target}: {project.name} declares a repo but no `account`")
-        if project.active_milestones and not project.milestones:  # harmonic-forge#952
-            raise ManifestError(
-                f"{target}: {project.name} lists active_milestones but carries no milestones")
-        # harmonic-forge#1382 C1: the release is `@current-release`, resolved
-        # by the one definition R-0404 and the filing gate use; a version
-        # literal here drifts from them at the first turnover.
-        pinned = [m for m in project.active_milestones if _VERSION_TITLE.match(m)]
-        if pinned:
-            raise ManifestError(
-                f"{target}: {project.name} pins release milestone(s) {pinned} in "
-                "active_milestones; use \"@current-release\" (harmonic-forge#1382)")
-        if project.onboarded and not project.repo:
-            raise ManifestError(
-                f"{target}: {project.name} is onboarded but declares no repo")
-        if project.onboarded and not project.workspace:  # harmonic-forge#917
-            raise ManifestError(f"{target}: {project.name} is onboarded but declares no workspace")
-        if project.onboarded and project.protocol is None:
-            raise ManifestError(
-                f"{target}: {project.name} is onboarded but declares no [project.protocol]")
+def load(path: Path | None = None) -> list[Project]:
+    """Every entry in declaration order, validated. Reads `projects.toml` only:
+    an app repo's `.claude/forge.toml` is reached only by the per-checkout
+    resolver (harmonic-forge#1527), never from here."""
+    target = path or manifest_path()
+    return build_projects(raw_entries(target), str(target))
 
 
 def require_onboarded_repo(value: str, path: Path | None = None) -> Project:
