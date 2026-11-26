@@ -566,7 +566,7 @@ def _latest_per_name(runs: list[dict]) -> list[dict]:
 
 
 def authorizing_conclusion(repo: str, sha: str, required: set[str],
-                           run=None, reader=None) -> tuple[str, str]:
+                           run=None, reader=None, snapshot: dict | None = None) -> tuple[str, str]:
     """`ci_conclusion` for a caller that AUTHORIZES (#1103 reforge fix 1).
 
     ONE snapshot of the checks is read and every condition is judged against
@@ -574,20 +574,50 @@ def authorizing_conclusion(repo: str, sha: str, required: set[str],
     branch, or null/[] contexts) needs both: every observed check green AND
     `DEFAULT_REQUIRED_CHECKS` reported green. Every visible check is judged
     FIRST, so a red check with `verify` missing is `red`, never the `absent`
-    a no-PR override could authorize."""
+    a no-PR override could authorize. `snapshot`, when given, receives what the
+    read positively established, for `outage_eligible` (harmonic-forge#1565):
+    `jobs` once the Actions read succeeded, `merged` once every status read did."""
+    snapshot = {} if snapshot is None else snapshot
     runs, failure = _read_check_runs(repo, sha, run=run, reader=reader)
     if failure is not None:
         return failure
+    snapshot["jobs"] = runs
     if required:
         runs, failure = _merge_status_records(repo, sha, runs, required, run=run,
                                               reader=reader)
         if failure is not None:
             return failure
+        snapshot["merged"] = runs
         return _judge_runs(runs, sha, required)
+    snapshot["merged"] = runs
     state, detail = _judge_runs(runs, sha, set())
     if state != "green":
         return state, detail
     return _judge_runs(runs, sha, set(DEFAULT_REQUIRED_CHECKS))
+
+
+#: The CI states a ci-outage grant can release (harmonic-forge#1565, operator D10):
+#: no run yet, or one still in flight. Never `unknown`, which also covers a failed read.
+OUTAGE_STATES = ("pending", "absent")
+
+
+def outage_eligible(state: str, snapshot: dict, stale: bool | None = False) -> tuple[bool, str]:
+    """harmonic-forge#1565: the ONE ci-outage rule (l1_post's AE, the PASS branch below), true
+    only on what `authorizing_conclusion`'s own snapshot established; `stale` is the PASS's
+    `stale_against_pr` answer (the AE passes none: `require_open_pr` covers it)."""
+    if state not in OUTAGE_STATES:  # E4
+        return False, f"CI is {state}; a ci-outage release needs {' or '.join(OUTAGE_STATES)}"
+    if "jobs" not in snapshot:  # E1
+        return False, "the Actions read did not complete"
+    if "merged" not in snapshot:  # E2
+        return False, "the commit status read did not complete"
+    red = sorted({f"{r.get('name')}:{r.get('conclusion')}" for r in snapshot.get("jobs", []) + snapshot.get(
+        "merged", []) if (r.get("conclusion") or "").lower() in _BAD})  # E3: every record, before dedupe
+    if red:
+        return False, f"visibly red ({', '.join(red)}): CI ran and failed, which is not an outage"
+    if stale is not False:  # E5
+        return False, "the SHA is not confirmed as the head of an open PR"
+    return True, f"CI is {state} with no red record"
 
 
 #: GitHub returns at most this many workflow runs for a `head_sha` filter
@@ -717,15 +747,9 @@ def ci_conclusion(repo: str, sha: str, run=None,
                   visible_bad_out: list[str] | None = None) -> tuple[str, str]:
     """`(state, detail)` for a commit's checks.
 
-    `state` is one of `green`, `red`, `pending`, `absent`, `unknown`.
-
-    **`absent` is NOT green.** A commit with no workflow jobs has not passed CI;
-    it has not been asked. Treating an empty list as "nothing failing" is the
-    same mistake in miniature that this whole module exists to prevent, and I
-    made it in a wait-loop while implementing this issue: the loop tested
-    "every check completed", an empty list satisfied it vacuously, and it
-    reported done on a PR whose CI had not yet registered.
-    """
+    `state` is one of `green`, `red`, `pending`, `absent`, `unknown`. **`absent` is
+    NOT green**: a commit with no workflow jobs has not passed CI, it has not been
+    asked (an empty list once read as "every check completed" in a wait-loop)."""
     runs, failure = _read_check_runs(repo, sha, run=run, reader=reader)
     if failure is not None:
         return failure
@@ -784,17 +808,10 @@ def _read_check_runs(repo: str, sha: str, run=None, reader=None
     if reader is not None:
         return _read_check_runs_s0(repo, sha, reader)
     run = run or _run
-    # harmonic-forge#805: read the Actions runs for this SHA, then each run's jobs, instead of
-    # `commits/<sha>/check-runs`. A fine-grained PAT has no permission that can read check-runs
-    # (verified 403, harmonic-forge#805), while `actions/runs` and `actions/runs/<id>/jobs` are
-    # readable with the Actions permission and carry the same name / status / conclusion for every
-    # Actions-produced check, which is all any onboarded repo runs. Checks from a third-party app
-    # are no longer visible here.
-    #
-    # `--paginate`, because the default page is 30 and hrse's `main` tip already carries exactly
-    # thirty runs; a truncated list read as "nothing failing" is the error this module exists to
-    # prevent. `--jq` streams one object per line (`--slurp` is rejected together with `--jq`,
-    # gh 2.99.0), so the output is line-delimited and parsed per line. `filter=latest` keeps only
+    # harmonic-forge#805: Actions runs, then each run's jobs, not `commits/<sha>/check-runs`,
+    # which no fine-grained PAT permission can read (403); third-party-app checks are not seen.
+    # `--paginate` (the default page is 30; a truncated list is never "nothing failing"); `--jq`
+    # streams one object per line (gh 2.99.0 rejects `--slurp` with it); `filter=latest` keeps
     # each job's latest attempt, so a re-run replaces the failure it fixed.
     if len(sha) < 40:
         # `actions/runs?head_sha=` matches the FULL SHA only; a gate report usually names an
@@ -826,12 +843,10 @@ def _read_check_runs(repo: str, sha: str, run=None, reader=None
                 if line:
                     runs.append(_with_run(json.loads(line), wf))
             if len(runs) == before:
-                # A workflow run with NO jobs (`startup_failure`, awaiting approval, cancelled
-                # while queued) has no job to read. Read the run itself as the check, or a broken
-                # workflow is invisible and the commit reads green.
-                # `jobless_run` (harmonic-forge#1283): this record is a run, not a job, so it
-                # does not carry a required context; a bot commit status of the same name may
-                # replace it (`_merge_status_records`).
+                # A run with NO jobs (`startup_failure`, awaiting approval, cancelled while
+                # queued) is read as the check itself, or a broken workflow reads green.
+                # `jobless_run` (#1283): it carries no required context; a same-named bot
+                # status may replace it (`_merge_status_records`).
                 runs.append(_jobless(wf, run_id))
     except (ValueError, KeyError, TypeError):
         return [], ("unknown", f"unparseable job payload for {sha[:8]}")
@@ -857,11 +872,9 @@ def _status_records(repo: str, sha: str, names: set[str], run=None, reader=None
     """Check-shaped records for the required contexts in `names` that a
     commit STATUS satisfies (harmonic-forge#1283).
 
-    `_read_check_runs` sees Actions jobs only, so a required context GitHub
-    satisfies with a commit status (hrse's `ui-approval`, harmonic-forge#1274)
-    read as never run. This reads the status LIST,
-    `commits/<sha>/statuses`, because only it carries `creator`; the combined
-    `commits/<sha>/status` entries have none (verified live 2026-11-07).
+    A required context GitHub satisfies with a commit status (hrse's `ui-approval`,
+    #1274) is not an Actions job. This reads the status LIST, because only it carries
+    `creator` (the combined `commits/<sha>/status` does not; verified 2026-11-07).
 
     - Only a status whose `creator.login` is `github-actions[bot]` counts: the
       identity branch protection's app pin accepts. A user-token status is
@@ -1037,8 +1050,9 @@ def _judge_runs(runs: list[dict], sha: str,
 
 
 def stale_against_pr(repo: str, sha: str, run=None,
-                     branch: str | None = None) -> tuple[bool, str]:
-    """Is the gated SHA behind the head of the PR it belongs to?
+                     branch: str | None = None) -> tuple[bool | None, str]:
+    """Is the gated SHA behind the head of the PR it belongs to? None, never False, when
+    that was not decided: a failed or unparseable read, or no open PR (harmonic-forge#1565 E5).
 
     harmonic-forge#816: a negative-probe PR stacked on the gated head contains the SHA and always
     heads past it, and refusing a valid PASS for it blocked cymagraph-infra#389. A PR is ignored
@@ -1055,11 +1069,13 @@ def stale_against_pr(repo: str, sha: str, run=None,
                              "| {number, head: .head.sha, ref: .head.ref, "
                              "base: .base.ref}]"])
     if code != 0:
-        return False, "could not resolve the SHA to a PR"
+        return None, "could not resolve the SHA to a PR"
     try:
         pulls = json.loads(out or "[]") or []
     except ValueError:
-        return False, "unparseable PR payload"
+        return None, "unparseable PR payload"
+    if not pulls or not isinstance(pulls, list):
+        return None, "no open PR contains the SHA"
     if branch:
         pulls = [p for p in pulls if p.get("ref") == branch] or pulls
     else:
@@ -1181,44 +1197,29 @@ def no_pr_ack_release(repo: str, sha: str, required: set[str], state: str,
 
 def check_gate_result(
     repo: str, body: str, run=None, *, ack_no_pr_required: str | None = None,
-    post_merge_readonly: str | None = None,
+    post_merge_readonly: str | None = None, ci_outage: str | None = None,
 ) -> tuple[bool, str]:
     """May this gate report be posted? `(ok, message)`.
 
     Refuses only a PASS. FAIL and BLOCKED are reports of a problem and must
     always be publishable.
 
-    harmonic-forge#788: `ack_no_pr_required` is a narrow override for the one
-    case `l1_post.py`'s own `--ack-no-pr-required` already covers on its side
-    of this same protocol -- a `main`-branch action (a data-migration script,
-    e.g. hrse#2095's live backfill) that never has a PR at all, so CI can
-    never run for its SHA no matter how long anyone waits. It is consulted
-    ONLY at the final "CI has not completed" branch below, and ONLY when
-    `open_prs_for_sha` confirms zero PRs -- open OR closed -- contain the SHA.
-    A SHA that belongs to a real PR (open, pending CI, or even already
-    closed/merged) never reaches this branch via the override: the normal
-    stale/red/pending checks above still decide it, exactly as before this
-    change. This is deliberately not "was --ack-no-pr-required passed", to
-    match AC1's "never as a way to skip the check when a PR does exist".
-
-    harmonic-forge#1276: the override also covers a main tip whose required
-    check(s) were created and `skipped` in every run and attempt (hrse's
-    scheduled and `workflow_dispatch` CI skip `verify`), the same "CI cannot
-    run" evidence as a missing one, read by `_read_every_attempt`: every
-    attempt is judged, any unfinished workflow run vetoes, and a possibly
-    truncated run list refuses. A red, pending, unrecognised or mixed set
-    still refuses.
-
-    harmonic-forge#1495: `post_merge_readonly` is the reason a Lane 1 AE stated
-    on its `**Post-merge read-only:**` line (harmonic-forge#1494), for a Tier R
-    case gated at an ANCESTOR of `main` once main has moved past it. The caller
-    supplies it only after reading that AE and its verified Tier R sweep
-    (`post_lane_discussion.require_green_ci`); this function still checks the
-    SHA is on GitHub's `main`, no open PR contains it, and the required check
-    is `absent` or all-skipped. It is a second route past the same final
-    refusal, never a relaxation of the first: with `ack_no_pr_required` given
-    the tip-plus-ack branch alone decides, and red, pending and an unread
-    state are refused here exactly as before.
+    Three routes past the final "CI has not completed" refusal, never a
+    relaxation of the checks above it:
+    - harmonic-forge#788 `ack_no_pr_required`: a `main`-branch action that never
+      has a PR (e.g. hrse#2095's live backfill), so CI can never run for its SHA.
+      Only when the SHA is main's tip and no open PR contains it (AC1: never a way
+      to skip the check when a PR does exist). #1276: also a main tip whose
+      required check(s) were created and `skipped` in every run and attempt
+      (`_read_every_attempt`; any unfinished run or truncated list refuses).
+    - harmonic-forge#1495 `post_merge_readonly`: the reason on a Lane 1 AE's
+      `**Post-merge read-only:**` line (#1494), for a Tier R case gated at an
+      ANCESTOR of `main`, supplied only after `require_green_ci` read that AE and
+      its verified Tier R sweep; the SHA must be on `main` with no open PR, and
+      the required check `absent` or all-skipped. With `ack_no_pr_required` given
+      the tip-plus-ack branch alone decides.
+    - harmonic-forge#1565 `ci_outage`: a release record `ci_outage.pass_release`
+      verified; taken only when `outage_eligible` holds on this call's own reads.
     """
     global _SLOT_ENV
     _SLOT_ENV = _slot_env_for(repo)
@@ -1230,13 +1231,10 @@ def check_gate_result(
             "disagree has not stated one — say which it is.")
     if verdict is None:
         if may_be_a_gate_report(body):
-            # Fail CLOSED on a gate report whose verdict cannot be read.
-            # `L3P`, `Conditional PASS — 8/9 cases`, and `✅ PASS` all satisfy
-            # `validate_lead` (which requires the LINE, never its content) and
-            # all derived to None — so each posted with the CI check silently
-            # skipped, indistinguishable from a genuine green. Two of the
-            # twenty-three real reports in the corpus also carry no verdict
-            # word in the heading, so this is the live shape, not a corner.
+            # Fail CLOSED on a gate report whose verdict cannot be read: `L3P`,
+            # `Conditional PASS — 8/9 cases` and `✅ PASS` satisfy `validate_lead`
+            # (the LINE, never its content), derived to None and posted with the CI
+            # check silently skipped; 2 of 23 real reports carry no heading verdict.
             return False, (
                 "[GATE] REFUSED: this is a gate report and its verdict could "
                 "not be read. State it plainly as `**Verdict:** PASS` / `FAIL` "
@@ -1277,7 +1275,8 @@ def check_gate_result(
         # every check" -- it lets an unreported required check read green.
         return False, (
             f"[GATE] REFUSED: cannot read {repo}'s required checks; retry")
-    state, detail = authorizing_conclusion(repo, sha, required, run=run)
+    snapshot: dict = {}
+    state, detail = authorizing_conclusion(repo, sha, required, run=run, snapshot=snapshot)
     if state == "green":
         return True, f"[GATE] CI green for {sha[:8]} ({detail})"
     if state == "red":
@@ -1287,15 +1286,10 @@ def check_gate_result(
             "A green local gate is necessary and not sufficient — Lane 3 runs on "
             "the operator's machine, which is not the environment the merge has "
             "to survive. Post FAIL, or fix the failure and re-gate.")
-    # pending / absent / unknown all land here, and all mean the same thing:
-    # the second signal has not been read yet. AC3 says waiting is the correct
-    # behaviour, not a judgment call -- UNLESS no PR (open or closed) exists
-    # for this SHA at all, in which case there is no "yet" to wait for.
-    # Preclose finding: only `absent` -- the required check was never asked
-    # to run -- is the "CI structurally cannot run" case. `pending` is a run
-    # in flight and `unknown` is a failed or unreadable lookup; neither is
-    # evidence CI cannot exist, and letting the override through on them
-    # published "cannot run" over a build that was running, or unread.
+    # pending / absent / unknown: the second signal has not been read yet, so AC3 waits,
+    # UNLESS no PR exists for this SHA at all. Only `absent` (never asked to run) is the
+    # "CI structurally cannot run" case for the no-PR route; `pending` is in flight and
+    # `unknown` unread, and neither is evidence CI cannot exist.
     if ack_no_pr_required is not None and _no_pr_state_eligible(
             repo, sha, required, state, run=run):
         # AC1: never when an OPEN PR contains this SHA. A main-tip commit's
@@ -1329,6 +1323,11 @@ def check_gate_result(
                 f"required check never ran or was skipped). Claim: "
                 f"{post_merge_readonly}")
         # Not on main (False), a failed lookup (None) or an open PR: refuse.
+    elif ci_outage is not None:
+        eligible, why = outage_eligible(state, snapshot, stale)
+        if eligible:
+            return True, f"[GATE] ci-outage: {sha[:8]} released ({why}) by {ci_outage}"
+        detail = f"{detail}\n  ci-outage not released: {why}"
     return False, (
         f"[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
         f"  {sha[:8]}: {state} — {detail}\n"

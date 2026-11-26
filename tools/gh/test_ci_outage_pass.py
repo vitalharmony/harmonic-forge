@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """harmonic-forge#1565 PASS side (AC2) and #894's lookalike classes as
-regressions (AC3): TCs 11-27, 38, 39, TC 40's PASS half, and TCs 45 and 47.
+regressions (AC3): TCs 11-13, 15-27, 38, 39, TC 40's PASS half, and TC 47.
 
 Each case starts from TC 1's genuine bound AE at S (posted through the real
 `l1_post._post_kind` under a CI outage) plus a sweep, in real temp stores.
@@ -31,22 +31,7 @@ R4 = "the release record is for"
 R5 = "is not an AE"
 R6 = "no check-full receipt"
 RED = "visibly red"
-ABSENT = fake_gh(required={"verify"})
-PENDING_RED = fake_gh(checks=[check("verify", None, "in_progress"), check("lint", "failure")],
-                      required={"verify"}, run_status="in_progress")
-
-
-def flaky(run, good: int):
-    """`run` for the first `good` runs-list reads, then a failed one (a 502)."""
-    seen = [0]
-
-    def wrapped(cmd: list[str]) -> tuple[int, str]:
-        if any("/actions/runs?" in a for a in cmd):
-            seen[0] += 1
-            if seen[0] > good:
-                return 1, "gh: HTTP 502"
-        return run(cmd)
-    return wrapped
+PENDING = [check("verify", None, "in_progress")]
 
 
 def pass_body(sha: str, extra: str = "") -> str:
@@ -62,10 +47,16 @@ class PassCase(World, unittest.TestCase):
         self.ae = self.comments[0]
         self.sweep()
 
-    def gate(self, sha: str | None = None, run=ABSENT, body: str | None = None) -> tuple[bool, str]:
+    def gh(self, **kw):
+        """GitHub during an outage: `verify` required, S the head of its open PR (E5)."""
+        pull = {"number": 7, "head": self.S, "ref": "feat/12-x", "base": "main", "state": "open"}
+        return fake_gh(**{"required": {"verify"}, "pulls": [pull], **kw})
+
+    def gate(self, sha: str | None = None, run=None, body: str | None = None) -> tuple[bool, str]:
         """`require_green_ci` end to end; on success, the release line it got. The real
         `pass_release` runs; the pass-through only keeps its answer (a release is single-use, P6)."""
         body, answers, real = body or pass_body(sha or self.S), [], ci_outage.pass_release
+        run = run or self.gh()
 
         def keep(*args) -> tuple[bool, str]:
             answers.append(real(*args))
@@ -95,8 +86,8 @@ class PassCase(World, unittest.TestCase):
         return record
 
     def drop_records(self) -> None:
-        for path in (self.state / "ci-outage").glob("*.json"):
-            path.unlink()
+        """No record bound to this AE; one bound to another AE stays, so R1 decides."""
+        self.edit_record(ae_comment_id=1)
 
     def unspend(self) -> None:
         """Remove the P6 marker, so one bound record can be gated again."""
@@ -109,8 +100,7 @@ class PassCase(World, unittest.TestCase):
 
 class PassRelease(PassCase):
     def test_11_a_bound_ae_releases_pending_or_absent_ci(self) -> None:
-        pending = fake_gh(checks=[check("verify", None, "in_progress")], required={"verify"})
-        for run in (ABSENT, pending):
+        for run in (self.gh(), self.gh(checks=PENDING)):
             self.unspend()
             ok, line = self.gate(run=run)
             self.assertTrue(ok, line)
@@ -120,19 +110,8 @@ class PassRelease(PassCase):
         self.grant(mode="plain", cid="950", later=1)
         self.assertTrue(self.gate()[0])
 
-    def test_13_red_ci_and_a_red_detail_naming_the_unfinished_line_refuse(self) -> None:
-        self.refused("CI is RED", run=fake_gh(checks=[check("verify", "failure")]))
-        red = (f"[GATE] REFUSED: CI is RED for the SHA this PASS names.\n  {self.S[:8]}: "
-               f"{ci_outage.UNFINISHED_CI_REFUSAL}:failure")
-        with mock.patch.object(gate_ci, "_run", ABSENT), \
-             mock.patch.object(ci_outage.check_lane3_ready, "fetch_comments", lambda r, i: self.comments):
-            self.assertFalse(ci_outage.pass_release(REPO, ISSUE, pass_body(self.S), red)[0])
-
-    def test_14_the_constant_is_the_real_unfinished_refusal_first_line(self) -> None:
-        with mock.patch.object(gate_ci, "_run", ABSENT):
-            ok, message = gate_ci.check_gate_result(REPO, pass_body(self.S))
-        self.assertFalse(ok)
-        self.assertEqual(message.split("\n", 1)[0] + "\n", ci_outage.UNFINISHED_CI_REFUSAL)
+    def test_13_red_ci_is_refused_with_a_bound_record(self) -> None:
+        self.refused("CI is RED", run=self.gh(checks=[check("verify", "failure")]))
 
     def test_15_a_stale_head_is_refused_even_with_a_record(self) -> None:
         stale = fake_gh(required={"verify"}, pulls=[{"number": 7, "head": "7" * 40, "ref": "feat/12-x",
@@ -158,14 +137,6 @@ class PassRelease(PassCase):
         self.assertEqual(old.read_bytes(), before)
         self.assertTrue(check_receipt.check_full_path(SLUG, self.S, newer).exists())
         self.assertTrue(self.gate()[0])
-
-    def test_45_a_failed_second_ci_read_refuses_rather_than_release_past_red(self) -> None:
-        """P4: the gate's read shows pending with a red job; ci_outage's own re-read fails."""
-        seen: list[list[str]] = []
-        with mock.patch.object(gate_ci, "_run", lambda cmd: (seen.append(cmd), PENDING_RED(cmd))[1]):
-            gate_ci.check_gate_result(REPO, pass_body(self.S))
-        good = sum(any("/actions/runs?" in a for a in cmd) for cmd in seen)
-        self.refused(ci_outage.UNREAD_CI, run=flaky(PENDING_RED, good))
 
     def test_47_a_second_pass_through_the_same_record_refuses(self) -> None:
         """P6: one grant, one PASS; the first PASS spent the record."""
@@ -258,21 +229,20 @@ class Lookalikes(PassCase):
 class PassVisibleRed(PassCase):
     """TC 40, PASS half: (a) `verify` running beside a failed job reads pending,
     (b) `verify` not yet created beside a failed job reads absent."""
-    SHAPES = {"pending": fake_gh(checks=[check("verify", None, "in_progress"), check("lint", "failure")],
-                                 required={"verify"}, run_status="in_progress"),
-              "absent": fake_gh(checks=[check("lint", "failure")], required={"verify"})}
+    SHAPES = {"pending": dict(checks=PENDING + [check("lint", "failure")], run_status="in_progress"),
+              "absent": dict(checks=[check("lint", "failure")])}
 
     def test_40_a_bound_record_never_releases_a_visible_red_job(self) -> None:
-        for state, run in self.SHAPES.items():
+        for state, shape in self.SHAPES.items():
             with self.subTest(state=state):
-                self.refused(RED, run=run)
-                self.assertIn(f"{state} —", self.gate(run=run)[1])
+                self.refused(RED, run=self.gh(**shape))
+                self.assertIn(f"{state} —", self.gate(run=self.gh(**shape))[1])
 
     def test_40_no_record_refuses(self) -> None:
         self.drop_records()
-        for state, run in self.SHAPES.items():
+        for state, shape in self.SHAPES.items():
             with self.subTest(state=state):
-                self.refused(R1, run=run)
+                self.refused(R1, run=self.gh(**shape))
 
 
 if __name__ == "__main__":

@@ -3368,18 +3368,19 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
     check name. `pending` waits (`WAIT_EXIT`); any other non-green read, an unresolvable repo,
     an unreadable required set or a reader exception refuses. Two releases: the no-PR ack
     (`gate_ci.no_pr_ack_release`, only when `require_open_pr` applied it, #894 A1/A2), and a usable
-    ci-outage grant on a non-red read beside its check-full receipt (`ci_outage.ae_release`, #1565)."""
+    ci-outage grant on a `gate_ci.outage_eligible` snapshot beside its check-full receipt (#1565)."""
     source_repo = _cwd_repo_from_git(None)
     if not source_repo:
         fail(f"cannot resolve the source repo, so CI on {sha[:12]} cannot be read; "
              "a pre-merge AE needs green CI (harmonic-forge#894)")
+    snapshot: dict = {}
     try:
         reader = _ci_reader(source_repo)
         required = gate_ci.required_checks(source_repo, bare_404_ok=True)
         if required is None:
             state, detail = "unknown", f"cannot read {source_repo}'s required checks"
         else:
-            state, detail = gate_ci.authorizing_conclusion(source_repo, sha, required, reader=reader)
+            state, detail = gate_ci.authorizing_conclusion(source_repo, sha, required, reader=reader, snapshot=snapshot)
             # harmonic-forge#894 PATCH A1: the one no-PR rule check_gate_result
             # uses (eligible state, main's tip, no open PR containing the SHA).
             if state != "green" and ack_no_pr_required is not None and gate_ci.no_pr_ack_release(
@@ -3387,11 +3388,10 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
                 return "ci-no-pr-acknowledged"
     except Exception as exc:  # noqa: BLE001 - fail closed
         state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
-    if state not in ("green", "red") and (name := ci_outage.ae_release(
-            repo, issue, source_repo, sha, state, fail, reader=_ci_reader(source_repo))):
-        return name
     if state == "green":
         return "ci-green"
+    if name := ci_outage.ae_release(repo, issue, source_repo, sha, state, snapshot, fail):
+        return name
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
               file=sys.stderr)

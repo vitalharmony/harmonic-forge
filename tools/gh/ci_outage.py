@@ -5,18 +5,20 @@ at that SHA past a CI outage, and Lane 3's PASS on that AE, only beside a
 `check-full` receipt in its own sidecar storage
 (`check_receipt.check_full_path`, keyed by repo SHA and forge SHA).
 
-The AE side (l1_post): `ae_release` requires the usable grant, no visible red
-job, a non-empty forge HEAD and the sidecar keyed by it; `substitute_line`
+The CI half is one rule with one owner, `gate_ci.outage_eligible`, judged on the
+snapshot gate_ci itself read (sticky-wicket REFORGE, issuecomment-7182048369).
+
+The AE side (l1_post): `ae_release` requires the usable grant, an eligible CI
+snapshot, a non-empty forge HEAD and the sidecar keyed by it; `substitute_line`
 names the substitute above the footer; `reserve` consumes the grant right
 before the POST; `bind` writes a write-once release record after the
 confirmed post. The record binds the grant to the AE's comment id and to the
 SHA-256 of the AE's exact posted bytes, footer included.
 
-The PASS side (post_lane_discussion): `pass_release` lifts only
-`check_gate_result`'s unfinished-CI refusal, and only through a release
-record bound to the round's AE comment id, at exactly the gated SHA, whose
-posted digest still matches the AE's current body, and whose forge snapshot's
-sidecar is present. It never reads the grant slot and never parses a grant id
+The PASS side (post_lane_discussion): `pass_release` checks a release record
+bound to the round's AE comment id, at exactly the gated SHA, whose posted
+digest still matches the AE's current body, and whose forge snapshot's sidecar
+is present; then `check_gate_result(ci_outage=...)` alone decides CI. It never reads the grant slot and never parses a grant id
 from comment text. A failed release-record write fails closed: the PASS refuses.
 A released PASS spends the record (`<record>.pass`, O_EXCL): one grant, one PASS.
 
@@ -45,14 +47,8 @@ import imc_waiver  # noqa: E402
 
 MODE = "ci-outage"
 CHECK_NAME = "ci-outage-grant"
-#: The first line of `check_gate_result`'s unfinished-CI refusal (gate_ci.py),
-#: newline included. Job names appear only after it, so no job name can forge it.
-UNFINISHED_CI_REFUSAL = "[GATE] REFUSED: CI has not completed for the SHA this PASS names.\n"
-#: Operator ruling Q2 (2026-11-25): only `red` is negative evidence.
-RELEASE_STATES = ("pending", "absent", "unknown")
 VERSION = 1
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
-UNREAD_CI = "cannot read CI to rule out a visibly red job; retry"
 #: What `ae_release` read, by SHA, for `substitute_line` and `reserve` in the same run.
 _RELEASES: dict[str, dict] = {}
 
@@ -73,17 +69,6 @@ def source_slug(source_repo: str) -> str | None:
     return check_receipt.repo_slug(f"https://github.com/{source_repo}")
 
 
-def visible_red(repo: str, sha: str, reader=None) -> list[str] | None:
-    """Every job the CI read shows red (operator's visible-red ruling, 2026-11-25):
-    a red job means CI ran and failed, which is not an outage. None when the read
-    fails: it cannot rule out a red job, so both callers refuse (#1565 P4, fail closed)."""
-    runs, failure = gate_ci._read_check_runs(repo, sha, reader=reader)
-    if failure is not None:
-        return None
-    return sorted(f"{r.get('name')}:{r.get('conclusion')}" for r in gate_ci._latest_per_name(runs)
-                  if (r.get("conclusion") or "").lower() in gate_ci._BAD)
-
-
 def _consumed_refusal(repo: str, issue: int, sha: str, fail) -> None:
     """A ci-outage grant already spent on this SHA refuses loudly (exit 1, never
     the pending wait), naming the AE it bound or that none was bound."""
@@ -99,11 +84,12 @@ def _consumed_refusal(repo: str, issue: int, sha: str, fail) -> None:
          f"AE at this SHA needs a new grant: the operator types {force_line(key, sha)}")
 
 
-def ae_release(repo: str, issue: int, source_repo: str, sha: str, state: str, fail,
-               reader=None) -> str | None:
-    """`CHECK_NAME` when a usable ci-outage grant releases this AE, else None
-    (the caller's wait or refusal applies). Requires, never consumes."""
-    if state not in RELEASE_STATES or not _FULL_SHA.fullmatch(sha or ""):
+def ae_release(repo: str, issue: int, source_repo: str, sha: str, state: str, snapshot: dict,
+               fail) -> str | None:
+    """`CHECK_NAME` when a usable ci-outage grant releases this AE, else None (the
+    caller's wait or refusal applies). `state` and `snapshot` are the caller's one
+    `authorizing_conclusion` read. Requires, never consumes."""
+    if not _FULL_SHA.fullmatch(sha or ""):
         return None
     try:
         grant = force_grant.require(repo, issue, sha, mode=MODE)
@@ -111,12 +97,9 @@ def ae_release(repo: str, issue: int, source_repo: str, sha: str, state: str, fa
         _consumed_refusal(repo, issue, sha, fail)
         return None
     key = grant["key"]
-    red = visible_red(source_repo, sha, reader=reader)
-    if red is None:
-        fail(f"CI is {state} on {sha[:12]}, and the ci-outage grant for {key} {UNREAD_CI}; nothing was posted")
-    if red:
-        fail(f"CI is {state} on {sha[:12]} but job(s) are visibly red ({', '.join(red)}): CI ran "
-             f"and failed, which is not an outage, so the ci-outage grant for {key} releases nothing")
+    eligible, why = gate_ci.outage_eligible(state, snapshot)
+    if not eligible:
+        fail(f"{sha[:12]}: {why}, so the ci-outage grant for {key} releases nothing; nothing was posted")
     forge = check_receipt.forge_sha()
     if not forge:
         fail(f"the ci-outage grant for {key} needs the forge identity, and "
@@ -182,22 +165,25 @@ def bind(spent: dict, comment_id, url: str, posted: str) -> None:
               f"types {force_line(grant.get('key', '?'), sha)}, then post a new AE", file=sys.stderr)
 
 
-def _records(repo: str, issue: int, ae_comment_id) -> list[dict]:
-    """Release records for this repo and issue bound to exactly this AE id (R1, R2)."""
+def _records(repo: str, issue: int, ae_comment_id=None) -> list[dict]:
+    """Release records for this repo and issue bound to exactly this AE id (R1, R2);
+    with no id, every record for the issue."""
     found = []
     for path in sorted(records_dir().glob("*.json")) if records_dir().is_dir() else ():
         record = imc_waiver.read_json(path)
         if (record and str(record.get("repo", "")).lower() == repo.lower()
                 and str(record.get("issue")) == str(issue)
-                and str(record.get("ae_comment_id")) == str(ae_comment_id)):
+                and (ae_comment_id is None or str(record.get("ae_comment_id")) == str(ae_comment_id))):
             found.append({**record, "_path": str(path)})
     return found
 
 
 def pass_release(repo: str, issue: int, body: str, message: str) -> tuple[bool, str]:
-    """`(True, line)` when a bound release record lifts the unfinished-CI refusal
-    `message`, else `(False, message)` with the reason appended."""
-    if not message.startswith(UNFINISHED_CI_REFUSAL):  # R0
+    """`(True, line)` when a bound release record passes R1-R6 and then
+    `check_gate_result(ci_outage=...)` releases the PASS on its own CI read, else
+    `(False, why)`. `message` is the refusal being answered; with no release
+    record on the issue at all it is returned as is, and nothing is read."""
+    if not _records(repo, issue):
         return False, message
 
     def refuse(why: str) -> tuple[bool, str]:
@@ -223,16 +209,12 @@ def pass_release(repo: str, issue: int, body: str, message: str) -> tuple[bool, 
     # R6's single owner is check_full, which refuses an empty forge (pitch change 1, #1565 P3).
     if check_receipt.check_full(snapshot.get("source_slug") or "", sha, forge) is None:  # R6
         return refuse(f"no check-full receipt for {sha[:12]} against the recorded forge {str(forge)[:12]}")
-    red = visible_red(repo, sha)
-    if red is None:
-        return refuse(UNREAD_CI)
-    if red:
-        return refuse(f"job(s) are visibly red ({', '.join(red)}), which is not an outage")
+    ok, gate = gate_ci.check_gate_result(repo, body, ci_outage=(
+        f"the consumed ci-outage grant {record.get('grant_comment_url')} bound to AE {record.get('ae_url')}"))
+    if not ok:
+        return False, gate
     spent = _spend(record, sha, body)
-    if spent is not None:
-        return refuse(spent)
-    return True, (f"[GATE] ci-outage: {sha[:8]} released by the consumed ci-outage grant "
-                  f"{record.get('grant_comment_url')} bound to AE {record.get('ae_url')}")
+    return (True, gate) if spent is None else refuse(spent)
 
 
 def _spend(record: dict, sha: str, body: str) -> str | None:

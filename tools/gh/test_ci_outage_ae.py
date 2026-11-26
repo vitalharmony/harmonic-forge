@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""harmonic-forge#1565 AE side (AC1): TCs 1-10, 36, 37, TC 40's AE half and TC 44.
+"""harmonic-forge#1565 AE side (AC1): TCs 1-10, 36, 37 and TC 40's AE half.
 
 Real stores throughout: a temp FORCE_STATE_DIR, a temp check_receipt.STORE, a
 temp forge root for `check_receipt.forge_sha()` and a temp hrse source repo
@@ -69,23 +69,13 @@ def s0(jobs=(), statuses=()):
     return read
 
 
-def flaky(reader, good: int):
-    """`reader` for the first `good` runs-list reads, then a failed one (a 502)."""
-    seen = [0]
-
-    def read(path: str):
-        if "/actions/runs?" in path:
-            seen[0] += 1
-            if seen[0] > good:
-                return 502, None
-        return reader(path)
-    return read
+def status(context: str, state: str) -> dict:
+    return {"context": context, "state": state, "updated_at": "2026-11-25T00:00:00Z",
+            "creator": {"login": "github-actions[bot]"}}
 
 
 ABSENT, PENDING = s0(), s0([job("verify", None, "in_progress")])
-PENDING_RED = s0([job("verify", None, "in_progress"), job("lint", "failure")])
-RED_STATUS = s0(statuses=[{"context": "verify", "state": "failure", "updated_at": "2026-11-25T00:00:00Z",
-                           "creator": {"login": "github-actions[bot]"}}])
+RED_STATUS = s0(statuses=[status("verify", "failure")])
 
 
 class World:
@@ -232,19 +222,15 @@ class AeSide(World, unittest.TestCase):
                 self.grant(prefix=prefix)
                 self.refused("CI is absent")
 
-    def test_06a_ae_release_itself_releases_nothing_on_red(self) -> None:
-        """P1: `ci_outage`'s own rule, with no caller guard in front of it."""
+    def test_06_red_or_unknown_ci_under_a_grant_refuses(self) -> None:
+        """E4 (`gate_ci.OUTAGE_STATES`, operator D10): `unknown` here is an unrecognised
+        conclusion on a complete, red-free read, so E4 alone refuses it."""
         self.grant()
         self.check_full()
-        self.assertIsNone(ci_outage.ae_release(REPO, ISSUE, REPO, self.S, "red", L.fail, reader=ABSENT))
-
-    def test_06b_the_ae_gate_refuses_red_even_if_ci_outage_would_release_it(self) -> None:
-        """P1: `_ae_ci_gate`'s own guard, with `RELEASE_STATES` held open (`red` added)."""
-        self.grant()
-        self.check_full()
-        with mock.patch.object(ci_outage, "RELEASE_STATES", ci_outage.RELEASE_STATES + ("red",)):
-            self.refused("a pre-merge AE needs green CI", reader=RED_STATUS)
-            self.assertIn("CI is red", self.exits(reader=RED_STATUS)[1])
+        self.refused("CI is unknown; a ci-outage release needs pending or absent",
+                     reader=s0([job("verify", "stale")]))
+        self.refused("CI is red", reader=RED_STATUS)
+        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
 
     def test_07_a_second_ae_under_the_same_grant_exits_1_naming_the_bound_ae(self) -> None:
         self.grant()
@@ -306,23 +292,7 @@ class AeSide(World, unittest.TestCase):
         self.sweep()
         body = f"## Lane 3 Gate Results — {KEY}\n\n**Verdict:** PASS\n**Head-SHA:** {self.S}\n"
         with mock.patch.object(ci_outage.check_lane3_ready, "fetch_comments", lambda r, i: self.comments):
-            ok, why = ci_outage.pass_release(REPO, ISSUE, body, ci_outage.UNFINISHED_CI_REFUSAL + "  x")
-        self.assertFalse(ok)
-        self.assertIn("0 release record(s) are bound", why)
-
-    def test_44_a_failed_second_ci_read_refuses_rather_than_release_past_red(self) -> None:
-        """P4: CI pending with a visibly red job on the gate's read; ci_outage's re-read fails."""
-        self.grant()
-        self.check_full()
-        self.refused(ci_outage.UNREAD_CI, reader=flaky(PENDING_RED, self.runs_reads(PENDING_RED)))
-        self.assertEqual(force_grant.read_grant(KEY)["status"], "usable")
-
-    def runs_reads(self, reader) -> int:
-        """How many runs-list reads the gate's own CI read makes, so the next one fails."""
-        seen: list[str] = []
-        L.gate_ci.authorizing_conclusion(REPO, self.S, {"verify"},
-                                         reader=lambda path: (seen.append(path), reader(path))[1])
-        return sum("/actions/runs?" in path for path in seen)
+            self.assertEqual(ci_outage.pass_release(REPO, ISSUE, body, "refused"), (False, "refused"))
 
 
 class AeVisibleRed(World, unittest.TestCase):
