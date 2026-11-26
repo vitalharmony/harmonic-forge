@@ -210,6 +210,11 @@ class TC5RealTree(unittest.TestCase):
         self.assertEqual(len(entries), 6)
         self.assertEqual(check.CEILING, len(entries))
 
+    def test_ci_check_runs_the_check(self):
+        import tomllib
+        ci = tomllib.loads((REPO / "mise.toml").read_text(encoding="utf-8"))["tasks"]["ci-check"]["run"]
+        self.assertIn("\npython3 tools/rules/check_gh_recognizers.py\n", ci)
+
 
 class TC6NoFalsePositives(unittest.TestCase):
     """Prose, docstrings and action labels are never hits."""
