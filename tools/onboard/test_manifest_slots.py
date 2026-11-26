@@ -100,10 +100,29 @@ class Selection(Case):
             with self.subTest(account=account, lane=lane):
                 self.assertEqual(ms.selection(account, lane), (self.slots / account, None))
 
-    def test_without_the_table_no_account_has_lane_slots(self) -> None:
+    def test_without_the_table_and_no_lane_slot_on_disk_it_is_the_account_slot(self) -> None:
         self.write(PROJECTS)
-        self.lane_slot("2")
         self.assertEqual(ms.selection("lanes", "2"), (self.slots / "lanes", None))
+
+    def test_a_lane_slot_on_disk_without_the_flag_refuses(self) -> None:
+        """Preclose round 1, survivor 2: a deleted or misspelled table fails closed."""
+        self.lane_slot("3")
+        for text in (PROJECTS, PROJECTS + "\n[accounts.lane]\nlane_slots = true\n"):
+            self.write(text)
+            with self.subTest(text=text[-30:]), mock.patch.dict(os.environ, {"LANE": "2"}):
+                with self.assertRaises(ManifestError) as caught:
+                    ms.selection("lanes", "2")
+                self.assertIn("lane slots on disk", str(caught.exception))
+                self.assertIsNone(mi.slot_env_or_none("lanes/one"))
+        self.assertEqual(ms.selection("lanes", None), (self.slots / "lanes", None))
+
+    def test_the_table_lookup_ignores_case_and_refuses_a_case_duplicate(self) -> None:
+        slot = self.lane_slot("2")
+        self.write(PROJECTS + "\n[accounts.LANES]\nlane_slots = true\n")
+        self.assertEqual(ms.selection("lanes", "2"), (slot, "tok"))
+        self.write(PROJECTS + LANE_SLOTS + "\n[accounts.Lanes]\nlane_slots = false\n")
+        with self.assertRaises(ManifestError):
+            ms.accounts()
 
     def test_slot_env_follows_the_table(self) -> None:
         slot = self.lane_slot("2")
@@ -184,6 +203,14 @@ class LaunchIdentity(Case):
                 with self.assertRaises(ManifestError) as caught:
                     ms.launch_identity(f"https://github.com/{key}.git", repo, "1")
                 self.assertIn("declared in projects.toml", str(caught.exception))
+
+    def test_an_overlay_only_repo_under_a_registered_owner_refuses(self) -> None:
+        """Preclose round 1, survivor 1: `other` owns other/two, which runs as `plain`."""
+        repo = self.repo("other/new")
+        with self.assertRaises(ManifestError) as caught:
+            ms.launch_identity("https://github.com/other/new.git", repo, "2")
+        self.assertIn("declared in projects.toml", str(caught.exception))
+        self.assertIn("other", ms.declared())
 
     def test_an_unregistered_origin_refuses(self) -> None:
         repo = self.repo("acme/app", overlay=False)

@@ -86,11 +86,15 @@
 #                   on `<slot root>/<name>-lane<N>` and that slot's file token, never
 #                   on the shared account slot (harmonic-forge#1396/#1470). Supported
 #                   for vitalharmony only until gh_shim, gh-as, belt_mechanics and
-#                   projects_token read this table too.
+#                   projects_token read this table too. Names match ignoring case.
+#                   An account with a `<name>-lane<N>` slot on disk but no
+#                   `lane_slots = true` here refuses inside a lane, so deleting or
+#                   misspelling this table fails closed rather than downgrading lanes.
 # Every account a [[project]] declares is strict, with or without a table here: the
 # launcher refuses a missing slot or a login other than the account. An account only
 # an app repo's .claude/forge.toml declares runs on the ambient gh login, with one
-# line saying so. The overlay can never set this table: it refuses any top-level key
+# line saying so, unless it owns a repo registered here (kenekted, LeasePAL-ML):
+# such a repo refuses until it is registered. The overlay can never set this table: it refuses any top-level key
 # other than [project].
 #
 # ## [workspace_labels] (harmonic-forge#1014)

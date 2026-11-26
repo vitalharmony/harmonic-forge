@@ -14,7 +14,14 @@ slot and refuses a login other than the account. The only ambient path is an
 account declared nowhere in `projects.toml` (neither a `[[project]].account` nor
 an `[accounts]` key) whose repo registers itself through its own checkout, and
 only at launch (`launch_identity`). An unregistered `<declared account>/<new repo>`
-with its own forge.toml still refuses (pitch-inspection revision 1).
+with its own forge.toml still refuses (pitch-inspection revision 1), and so does
+one under the owner of any registered repo, whatever account that repo runs as
+(`kenekted/<new>` is harmonicarchitect's; preclose round 1).
+
+**A lane slot cannot be dropped silently.** The `[accounts]` lookup is
+case-insensitive, and an account that has a `<name>-lane<N>` slot on disk but no
+`lane_slots = true` refuses inside a lane instead of falling back to the shared
+slot (preclose round 1): deleting, misspelling or re-casing the table fails closed.
 
 The repo-to-account lookup stays `manifest_identity.account_for_origin`, whose
 two-call shape is the one place the per-checkout resolver is reached (R1).
@@ -43,6 +50,8 @@ def accounts(path: Path | None = None) -> dict[str, dict]:
     table = raw.get("accounts", {})
     if not isinstance(table, dict):
         raise ManifestError(f"{target}: [accounts] must be a table of [accounts.<name>] tables")
+    if len({name.casefold() for name in table}) != len(table):
+        raise ManifestError(f"{target}: [accounts] names an account twice, ignoring case")
     for name, entry in table.items():
         if not isinstance(entry, dict):
             raise ManifestError(f"{target}: [accounts.{name}] must be a table")
@@ -55,9 +64,19 @@ def accounts(path: Path | None = None) -> dict[str, dict]:
 
 
 def lane_slot(account: str, lane: str | None, path: Path | None = None) -> Path | None:
-    """The account's own slot for `lane`, or None when it runs on the account slot."""
-    if lane in LANES and accounts(path).get(account, {}).get("lane_slots"):
+    """The account's own slot for `lane`, or None when it runs on the account slot.
+    Refuses an account with lane slots on disk but no `lane_slots = true`."""
+    if lane not in LANES:
+        return None
+    table = {name.casefold(): entry for name, entry in accounts(path).items()}
+    if table.get(account.casefold(), {}).get("lane_slots"):
         return manifest_identity.slot_dir(f"{account}-lane{lane}")
+    on_disk = [manifest_identity.slot_dir(f"{account}-lane{n}") for n in LANES]
+    if any(slot.is_dir() for slot in on_disk):
+        raise ManifestError(
+            f"account '{account}' has lane slots on disk but projects.toml has no "
+            f"[accounts.{account}] lane_slots = true; refusing to fall back to the "
+            "shared slot (harmonic-forge#1396, #1528)")
     return None
 
 
@@ -71,8 +90,11 @@ def selection(account: str, lane: str | None, path: Path | None = None) -> tuple
 
 
 def declared(path: Path | None = None) -> set[str]:
-    """Every account `projects.toml` names, casefolded: the strict set."""
-    names = {p.account for p in load(path) if p.account} | set(accounts(path))
+    """Every account `projects.toml` names, plus the owner of every registered repo,
+    casefolded: the strict set. An owner counts whatever account its repos run as."""
+    projects = load(path)
+    names = ({p.account for p in projects if p.account} | set(accounts(path))
+             | {p.repo.split("/")[0] for p in projects if p.repo})
     return {name.casefold() for name in names}
 
 

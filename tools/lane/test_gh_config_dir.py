@@ -202,6 +202,15 @@ class GhConfigDir(unittest.TestCase):
                 self.assertTrue(out.startswith("rc=1 dir=UNSET tok=x"), out)
                 self.assertNotIn("ambient", err)
 
+    # Preclose round 1, survivor 1: a new repo under the owner of a registered repo
+    # refuses even when that owner is not itself an account (kenekted, LeasePAL-ML).
+    def test_an_overlay_only_repo_under_a_registered_owner_refuses(self) -> None:
+        for key in ("kenekted/new-app", "leasepal-ml/new-app"):
+            with self.subTest(key=key):
+                out, err = self.launch_at(self.overlay_repo(key), LANE="2", GH_TOKEN="x")
+                self.assertTrue(out.startswith("rc=1 dir=UNSET tok=x"), out)
+                self.assertNotIn("ambient", err)
+
     def test_a_relative_slot_root_refuses(self) -> None:
         _, out, err = self.launch("https://github.com/kenekted/kenekted-ai.git",
                                   {"GH_ACCT_HOME": "slots"})
@@ -255,6 +264,25 @@ class GhConfigDir(unittest.TestCase):
         _, out, err = self.launch("https://github.com/vitalharmony/hrse.git", {"LANE": "2"})
         self.assertTrue(out.startswith("rc=1 dir=UNSET"), out)
         self.assertIn("harmonic-forge#1396", err)
+
+    # Preclose round 1, survivor 2: dropping or re-casing [accounts.vitalharmony] never
+    # moves a lane onto the shared slot.
+    def test_a_dropped_lane_slots_table_refuses_and_a_recased_one_still_holds(self) -> None:
+        manifest = self.script.parents[2] / "projects.toml"
+        self.slot("vitalharmony")
+        lane = self.slot("vitalharmony-lane2", token="lane2tok")
+        for name, text in (("deleted", MANIFEST.replace("[accounts.vitalharmony]\nlane_slots = true\n", "")),
+                           ("misspelled", MANIFEST.replace("[accounts.vitalharmony]", "[accounts.vitalharmonyy]")),
+                           ("recased", MANIFEST.replace("[accounts.vitalharmony]", "[accounts.VitalHarmony]"))):
+            with self.subTest(name=name):
+                manifest.write_text(text)
+                _, out, err = self.launch("https://github.com/vitalharmony/hrse.git",
+                                          {"LANE": "2", "GH_TOKEN": "inherited"})
+                if name == "recased":
+                    self.assertEqual(out, f"rc=0 dir={lane} tok=lane2tok", err)
+                else:
+                    self.assertTrue(out.startswith("rc=1 dir=UNSET"), out)
+
 
 if __name__ == "__main__":
     unittest.main()
