@@ -79,6 +79,8 @@ export LANE_AGENT="$_lane_agent"
 # Code lane runs without them and its transcripts stay the usage source.
 if [ "$_lane_agent" = "claude" ]; then
   export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+  # harmonic-forge#1610: no lane starts in Code Mode until harmonic-forge#1609's acceptance passes; that issue removes this line.
+  export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0
 fi
 lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 

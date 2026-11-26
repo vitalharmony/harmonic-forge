@@ -327,6 +327,8 @@ def capture_cell(
                     # capture run from one read the session's value back
                     # instead of what the launcher set.
                     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
+                    # harmonic-forge#1610: a lane session exports it as 0.
+                    "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
                     # harmonic-forge#1307: each refuses every Claude launch.
                     "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE",
                     "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS",
