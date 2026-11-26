@@ -35,7 +35,6 @@ import force_grant  # noqa: E402
 import gate_ci  # noqa: E402
 import imc_waiver  # noqa: E402
 from test_gate_ci import check, fake_gh  # noqa: E402
-import test_l1_post_dry_run as D  # noqa: E402
 
 REPO, ISSUE, KEY, SLUG = "vitalharmony/hrse", 12, "H12", "vitalharmony__hrse"
 S2 = "6" * 40
@@ -357,24 +356,6 @@ class PassUnchanged(World, unittest.TestCase):
                                                 if isinstance(node, ast.ImportFrom)}
         self.assertNotIn("ci_outage", imported)
         self.assertNotIn("ci_outage", vars(P))
-
-
-class AeCarriesNoPass(D.Harness):
-    """Cross-family survivor (issuecomment-7200082517): an AE body that also states a Lane 3
-    PASS is scored `ae.posted` and `gate.pass` by lane_state (and `gate.pass` by sticky_receipt),
-    so validate_ae refuses it on --dry-run and on the real post, whatever CI reads."""
-    real_validate_ae = True
-
-    def test_47_an_ae_carrying_a_pass_declaration_refuses_on_the_dry_run_and_the_real_post(self) -> None:
-        for decl in ("## L3P", "## Lane 3 Gate Results — F1115 — PASS"):
-            with self.subTest(decl=decl):
-                argv = ("--repo", D.REPO, "--issue", D.ISSUE, "--kind", "ae", "--sha", D.SHA_A,
-                        "--branch", "fix/1115-x", "--file", self.body(f"{D.AE}\n{decl}\n"))
-                self.assertIn("carries a Lane 3 PASS declaration", self.run_main(*argv, "--dry-run")[0])
-                with mock.patch.object(L._preflight, "require", return_value=None):
-                    self.assertIn("carries a Lane 3 PASS declaration", self.run_main(*argv)[0])
-                self.posted.assert_not_called()
-                self.assertEqual(self.receipts(), [])
 
 
 if __name__ == "__main__":

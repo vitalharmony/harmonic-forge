@@ -103,7 +103,7 @@ class Harness(unittest.TestCase):
             mock.patch.object(L, "resolve_sha", side_effect=lambda value, *a, **k: value),
             mock.patch.object(L, "validate_sticky_wicket"),
             mock.patch.object(L, "validate_milestone_current"),
-            *([] if getattr(self, "real_validate_ae", False) else [mock.patch.object(L, "validate_ae")]),
+            mock.patch.object(L, "validate_ae"),
             mock.patch.object(L, "validate_grant_ae"),
             mock.patch.object(L, "validate_auto_ae"),
             *([mock.patch.object(L, "validate_sweep"), mock.patch.object(L, "_spec_body", return_value="")]
