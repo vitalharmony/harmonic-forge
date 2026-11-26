@@ -187,6 +187,39 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(cell["launched"], cell.get("stderr"))
         self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"])
 
+    @needs_trusted_lane3_policy
+    def test_claude_lane_turns_code_mode_off(self):
+        """harmonic-forge#1610 AC1: the shell's `1` is replaced, and unset becomes `0`."""
+        for lane in ("1", "2", "3"):
+            with self.subTest(lane=lane, shell="1"):
+                cell = self.tree.run(lane, [], LANE_CLI="claude",
+                                     LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
+                                     CLAUDE_CODE_EXPERIMENTAL_CODE_MODE="1")
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+                self.assertEqual(cell["extra_env"]["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"], "0")
+            with self.subTest(lane=lane, shell="unset"):
+                cell = self.tree.run(lane, [], LANE_CLI="claude",
+                                     LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_EXPERIMENTAL_CODE_MODE")
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+                self.assertEqual(cell["extra_env"]["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"], "0")
+
+    def test_codex_lane_leaves_code_mode_unset(self):
+        """harmonic-forge#1610 AC2: the export is Claude-only."""
+        cell = self.tree.run("2", [], LANE_CLI="codex",
+                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_EXPERIMENTAL_CODE_MODE")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"])
+
+    def test_capture_scrubs_the_session_code_mode_value(self):
+        # harmonic-forge#1610 AC3, the #1284 pattern: export the value a Claude
+        # Code lane session carries, so the capture's scrub is exercised from any
+        # shell, not only from a Claude session.
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0"}):
+            cell = self.tree.run("2", [], LANE_CLI="codex",
+                                 LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_EXPERIMENTAL_CODE_MODE")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"])
+
     def test_codex_gets_no_name(self):
         for agent in ("codex",):
             with self.subTest(agent=agent):
