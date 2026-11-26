@@ -47,16 +47,17 @@ def validate(projects: list[Project], target: Path | str) -> None:
         if not isinstance(project.onboarded, bool):
             raise ManifestError(
                 f"{target}: {project.name} onboarded must be boolean")
-        if len(project.prefix) != 1 or not project.prefix.isalpha():
+        # harmonic-forge#1596: one ASCII letter (`ı` is alpha), unique in any case.
+        if not isinstance(project.prefix, str) or not re.fullmatch(r"[A-Za-z]", project.prefix):
             raise ManifestError(
                 f"{target}: {project.name} prefix {project.prefix!r} must be a "
-                "single letter")
-        clash = seen_prefix.get(project.prefix)
+                "single letter, ASCII A-Z")
+        clash = seen_prefix.get(project.prefix.upper())
         if clash:
             raise ManifestError(
                 f"{target}: prefix {project.prefix!r} claimed by both {clash} "
                 f"and {project.name}")
-        seen_prefix[project.prefix] = project.name
+        seen_prefix[project.prefix.upper()] = project.name
         if project.repo:
             if project.repo.count("/") != 1:
                 raise ManifestError(

@@ -212,7 +212,7 @@ class RecordTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as refused:
             imc_waiver.record("K12", branch="fix/12-x", now=self.now,
                               batch_state_path=self.batch, runner=FakeGh())
-        self.assertIn("not a vitalharmony repo", str(refused.exception))
+        self.assertIn("not a home repo in projects.toml", str(refused.exception))
 
 
 class EndGh(FakeGh):

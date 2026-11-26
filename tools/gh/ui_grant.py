@@ -25,10 +25,9 @@ This module owns what the operator types and its public record:
   nothing and posting nothing. The comment fires the PR's `issue_comment`
   event, and the workflow recomputes the digest and turns the status green.
 
-The head digest is read from that PR head's `ui-approval` status, written by
-the workflow (creator `github-actions[bot]`), which computes it with
-`scope`'s rule at the head; the workflow re-checks it against its own
-computation, so a wrong one here only produces a record that never matches.
+The head digest is read from that PR head's `ui-approval` status, written by the
+workflow (creator `github-actions[bot]`) with `scope`'s rule at the head; the workflow
+re-checks it, so a wrong one here only produces a record that never matches.
 
 `expand_lane_shorthand.py` writes the pending entry with R-0117 provenance,
 as it does FORCE (`force_grant.py`, whose shape this copies). Local state is
@@ -36,9 +35,8 @@ only that pending entry, one per mode, so each mode is independent; `record`
 posts it, refetches it, and moves it to `recorded`. An expired pending entry
 is dropped with a note and never blocks the other mode.
 
-Like FORCE, this trusts the operator-typed line and the session. The grant
-file and the public comment are an audit trail, not proof against a session
-that writes this directory itself.
+Like FORCE, this trusts the operator-typed line and the session. The grant file and the
+public comment are an audit trail, not proof against a session that writes this directory.
 
 Run:
     python3 tools/gh/ui_grant.py record --key H2615
@@ -61,8 +59,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import imc_waiver  # noqa: E402  (key, time and atomic-write helpers, one copy)
 
-#: `None` means `~/.claude/state/ui-grant`, resolved at call time, so a test
-#: that patches this global or `HOME` never reaches the live store.
+#: `None` means `~/.claude/state/ui-grant` at call time: a test patching it or `HOME` never reaches it.
 UI_STATE_DIR: Path | None = None
 STATE_RELPATH = Path(".claude") / "state" / "ui-grant"
 TTL_DAYS = 7
@@ -75,8 +72,6 @@ DIGEST_PREFIX_RE = re.compile(r"^[0-9a-f]{12,64}$")
 STATUS_CONTEXT = "ui-approval"
 STATUS_CREATOR = "github-actions[bot]"
 _STATUS_DIGEST = re.compile(r"\bdigest ([0-9a-f]{64})\b")
-#: The account `record` posts as, and the only author a record is read from.
-APPROVER = "vitalharmony"
 #: The handoff lead line AC7 requires, in `l1_post.LEAD_LABEL`'s form.
 UI_CHANGE_RE = re.compile(
     r"(?im)^[ \t]*\**[ \t]*UI change[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(?P<text>\S.*)$")
@@ -164,14 +159,19 @@ def marker(key: str, mode: str, granted_at: str, digest: str = "") -> str:
 
 
 def find_record(comments, key: str, mode: str) -> dict | None:
-    """The newest comment that is the posted `mode` record for `key`: author
-    `APPROVER`, first line exactly the heading, the marker on its own line."""
+    """The newest posted `mode` record for `key`: author the `account` of the key's home
+    repo (harmonic-forge#1596; an org account cannot comment, so it never records), first
+    line exactly the heading, the marker on its own line. None off a home repo."""
+    import manifest_scope  # noqa: PLC0415 - tools/onboard, on the path imc_waiver set
+    target = imc_waiver.key_target(key)
+    if (project := manifest_scope.home_project(target[0]) if target else None) is None:
+        return None
     want_heading, key = heading(key, mode), key.upper()
     shape = re.compile(rf"(?m)^<!-- ui-grant key={re.escape(key)} mode={mode} granted_at=\S* "
                        r"digest=[0-9a-f]* -->[ \t]*$")
     for comment in reversed(list(comments or [])):
         body = (comment.get("body") or "").replace("\r\n", "\n")
-        if comment.get("login") != APPROVER or body.split("\n", 1)[0] != want_heading:
+        if comment.get("login") != project.account or body.split("\n", 1)[0] != want_heading:
             continue
         if shape.search(body):
             return comment

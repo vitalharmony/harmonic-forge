@@ -6,22 +6,19 @@ must say. This module records that the change is owed; `tasklist_hold.py`'s
 Stop hook refuses to end the turn until the entry has been rewritten. The
 entry shape itself lives in `tasklist_hold.py`'s docstring, not here.
 
-Modeled on `handoff_owed.py`: per-session files keyed on
-`CLAUDE_CODE_SESSION_ID` (a Stop hook can never be blocked by another
-session's record), prune by mtime after `PRUNE_AFTER_DAYS`, and every failure
-is silent -- `record()` never raises into a post that already succeeded.
+Modeled on `handoff_owed.py`: per-session files keyed on `CLAUDE_CODE_SESSION_ID`
+(a Stop hook can never be blocked by another session's record), prune by mtime after
+`PRUNE_AFTER_DAYS`, and `record()` never raises into a post that already succeeded.
 
-Layout: `~/.cache/harmonic-forge/tasklist_owed/<session>/<KEY>.json`, one file
-per issue key, holding `{key, kind, ts}`. Reforge epoch 4: a marker is cleared
-only by `tasklist_hold.py`'s PostToolUse hook, when a successful TaskCreate or
-TaskUpdate gives an entry carrying the key its subject; nothing compares task
-files against the marker.
+Layout: `~/.cache/harmonic-forge/tasklist_owed/<session>/<KEY>.json`, one file per
+issue key, holding `{key, kind, ts}`. Reforge epoch 4: a marker is cleared only by
+`tasklist_hold.py`'s PostToolUse hook, when a successful TaskCreate or TaskUpdate
+gives an entry carrying the key its subject; nothing compares task files to it.
 
-A flock on the session's task directory serializes the PreToolUse sibling
-check, and
-`<session>/.pending/<taskId>` records an entry whose removal was allowed on
-the strength of a sibling until that update reports back, so a parallel call
-never counts it as the survivor (epoch 3 pass 2, survivor 1).
+A flock on the session's task directory serializes the PreToolUse sibling check,
+and `<session>/.pending/<taskId>` records an entry whose removal was allowed on the
+strength of a sibling until that update reports back, so a parallel call never
+counts it as the survivor (epoch 3 pass 2, survivor 1).
 """
 from __future__ import annotations
 
@@ -56,17 +53,20 @@ def key_for(repo: str, issue: int | str) -> str | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import batch_auth  # noqa: PLC0415
     except Exception as exc:
-        # harmonic-forge#1221 AC6: a resolver that cannot load is a failure,
-        # not an unknown repo, so it is named; an unknown repo stays silent.
+        # harmonic-forge#1221 AC6: a resolver that cannot load is a failure, so it is named.
         print(f"[tasklist_owed] key resolver unavailable: {exc}", file=sys.stderr)
         return None
     try:
-        return batch_auth.issue_key(repo, issue)
+        key = batch_auth.issue_key(repo, issue)
     except Exception as exc:
-        # issue_key returns None for an unknown repo and never raises for one
-        # (batch_auth.py:347-348), so a raise here is a real failure (AC6).
+        # issue_key returns None for an unknown repo and never raises for one,
+        # so a raise here is a real failure (AC6).
         print(f"[tasklist_owed] key resolve failed for {repo}#{issue}: {exc}", file=sys.stderr)
         return None
+    if key is None and batch_auth.REPO_PREFIXES_ERROR:  # harmonic-forge#1596: never silent
+        print(f"[tasklist_owed] no key for {repo}#{issue}: projects.toml could not be read "
+              f"({batch_auth.REPO_PREFIXES_ERROR})", file=sys.stderr)
+    return key
 
 
 def read_entries(session: str, tasks_dir: Path | None = None) -> list[dict]:

@@ -253,26 +253,21 @@ def _locked_state(state_path: Path):
 # enforced where it belongs: every `gh` call for a repo runs as THAT repo's own slot
 # (harmonic-forge#804), so a key for a kenekted repo can only ever act as harmonicarchitect.
 # Pass `account` to restrict the map to one account.
+# harmonic-forge#1596: an unreadable or invalid manifest maps NO repo (a fallback table
+# granted the operator's keys on an adopter's machine); `REPO_PREFIXES_ERROR` says why.
+REPO_PREFIXES_ERROR: str | None = None
+
+
 def _repo_prefixes(account: str | None = None) -> dict[str, str]:
+    global REPO_PREFIXES_ERROR  # noqa: PLW0603 — the reason a BATCH refusal names
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "onboard"))
         import manifest as _manifest  # noqa: PLC0415 — optional, see below
         return {p.repo: p.prefix for p in _manifest.load()
                 if p.repo and (account is None or (p.account or account) == account)}
-    except Exception:  # noqa: BLE001 — a hook must never fail closed on import
-        # This runs as a PreToolUse hook on every matching command. If the
-        # manifest cannot be read, denying every BATCH would be worse than
-        # falling back to the last-known table -- the hook's job is to gate
-        # authorization, not to become an outage.
-        return {
-            "vitalharmony/hrse": "H",
-            "vitalharmony/harmonic-forge": "F",
-            "vitalharmony/cymagraph-infra": "I",
-            "vitalharmony/openclaw-projects": "O",
-            "kenekted/kenekted-platform": "K",
-            "kenekted/kenekted-ai": "Y",
-            "kenekted/kenekted-docs": "D",
-        }
+    except Exception as exc:  # noqa: BLE001 — fail closed: no repo is a BATCH key
+        REPO_PREFIXES_ERROR = f"{type(exc).__name__}: {exc}"
+        return {}
 
 
 REPO_PREFIXES = _repo_prefixes()
@@ -620,8 +615,8 @@ def cwd_repo(cwd: str | None, runner=subprocess.run) -> str | None:
 
 def closed_keys(command: str, cwd: str | None = None,
                 runner=subprocess.run) -> list[tuple[str, str, int]]:
-    """harmonic-forge#1124 AC2: `(key, repo, number)` for every vitalharmony
-    issue-close segment in `command` (`classify_issue_close`'s grammar). A
+    """harmonic-forge#1124 AC2: `(key, repo, number)` for every home-repo
+    (harmonic-forge#1596) issue-close segment in `command` (`classify_issue_close`'s grammar). A
     bare `gh issue close N` resolves its repo from `cwd`'s origin, as gh
     does; unresolvable still skips. No lock, no network: the caller confirms
     the close landed."""
@@ -649,7 +644,8 @@ def closed_keys(command: str, cwd: str | None = None,
             if not resolved:
                 resolved.append(cwd_repo(cwd, runner))
             repo = resolved[0]
-        if not repo or not number or not str(repo).lower().startswith("vitalharmony/"):
+        import manifest_scope  # noqa: PLC0415 — tools/onboard, on the path _repo_prefixes set
+        if not repo or not number or manifest_scope.home_project(repo) is None:
             continue
         key = issue_key(repo, number)
         if key:

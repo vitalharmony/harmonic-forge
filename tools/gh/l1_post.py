@@ -23,6 +23,7 @@ PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
 from manifest import ManifestError, require_onboarded_repo  # noqa: E402
 from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
+import manifest_scope  # noqa: E402  (harmonic-forge#1596: the home-repo rule)
 
 # harmonic-forge#219: shared item-list cache, consolidating 4 previously
 # independent duplicate `gh project item-list` fetches. Falls back to a
@@ -64,15 +65,12 @@ except ImportError:
     _deferral_store = None
 
 # a private-repo incident: R-0128 (harmonic-forge#496) fixed the READ side
-# (check_lane3_ready.py refuses to execute without the exact
-# `<PREFIX><N>` heading) but left the write side loose -- AE_HEADING/
-# SWEEP_HEADING below only ever required the leading keyword, not the
-# prefix+number, because the prefix "isn't otherwise threaded through"
-# these functions. Reuse the same repo->prefix table batch_auth already
-# derives from the manifest (never a second hand-maintained copy), with
-# the identical fail-open-to-a-fixed-table posture batch_auth itself
-# uses -- a missing/broken import here must not block a real post over
-# a heading-strictness nicety.
+# (check_lane3_ready.py refuses to execute without the exact `<PREFIX><N>` heading)
+# but left the write side loose -- AE_HEADING/SWEEP_HEADING below only required the
+# leading keyword, not the prefix+number. Reuse batch_auth's manifest-derived table;
+# on a broken manifest it maps nothing (harmonic-forge#1596), and only a failed
+# import falls back to the table below (a recorded residual), so a missing import
+# never blocks a real post over a heading-strictness nicety.
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "hooks"))
 import check_receipt  # noqa: E402  (harmonic-forge#1134: reuse a same-SHA scratch receipt)
 try:
@@ -2078,17 +2076,19 @@ def validate_ui_brand(body: str, repo: str, issue: int, globs=None, comments=Non
     """harmonic-forge#1274 AC6/AC7, reforged (comment 6699562919, step 6): a
     declaration that fails closed, not a recognizer that fails open.
 
-    Every handoff on an issue under the vitalharmony owner carries a
-    `**UI change:**` lead line: `none`, or in plain words what is replaced and
-    what goes away. Absent or unfilled: refuse. `none` passes on the
-    declaration alone: the Affected Files path scanner that cross-checked it
-    was deleted (sticky-wicket 6702216500, operator ruling 2026-11-07), because
-    a free-text recognizer failed open on every new row shape. Anything else
-    needs the operator's plan grant recorded on the issue (`## UI plan grant —
-    <KEY>`, `ui_grant.find_record`). The required `ui-approval` status is the
-    hard stop at merge. `globs` (unused, kept for callers) and `comments`
-    (tests) replace the reads."""
-    if not repo.lower().startswith(ui_grant.imc_waiver.VITALHARMONY):
+    Every handoff on an issue in a home repo (harmonic-forge#1596; an unreadable
+    projects.toml refuses, never skips) carries a `**UI change:**` lead line: `none`, or
+    in plain words what is replaced and what goes away. Absent or unfilled: refuse.
+    `none` passes on the declaration alone: the Affected Files path scanner that
+    cross-checked it was deleted (sticky-wicket 6702216500, operator ruling 2026-11-07),
+    because a free-text recognizer failed open on every new row shape. Anything else needs
+    the operator's plan grant recorded on the issue (`## UI plan grant — <KEY>`,
+    `ui_grant.find_record`). The required `ui-approval` status is the hard stop at merge.
+    `globs` (unused, kept for callers) and `comments` (tests) replace the reads."""
+    if not ui_grant.imc_waiver.is_home_repo(repo):
+        if (why := manifest_scope.manifest_error()) is not None:
+            fail(f"projects.toml could not be read ({why}), so whether {repo} owes a "
+                 "`**UI change:**` line is unknown (harmonic-forge#1596)")
         return
     key = ui_grant.imc_waiver.issue_key(repo, issue) or f"{repo}#{issue}"
     match = ui_grant.UI_CHANGE_RE.search(lead_region(body))

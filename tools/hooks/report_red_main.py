@@ -150,7 +150,7 @@ from pathlib import Path
 from hook_identity import slot_env as _slot_env  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from batch_auth import REPO_PREFIXES  # noqa: E402
+from batch_auth import REPO_PREFIXES, REPO_PREFIXES_ERROR  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gh"))
 import gate_ci  # noqa: E402
@@ -286,14 +286,12 @@ def handle(state_path: Path | None = None) -> dict:
         # own unknown/red split: a SessionStart hook must never fail a
         # session start over a reporting feature.
         return {}
-    if not reports:
+    if not reports and (REPO_PREFIXES or not REPO_PREFIXES_ERROR):
         return {}
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": _format(reports),
-        }
-    }
+    # harmonic-forge#1596: an unreadable manifest maps no repo; say so, never a silent pass.
+    text = _format(reports) if reports else (
+        f"[MAIN-CI] no repo checked: projects.toml could not be read ({REPO_PREFIXES_ERROR}).")
+    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
 
 
 def main() -> int:
