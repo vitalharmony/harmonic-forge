@@ -301,7 +301,7 @@ class D11OverlayOnlyIsAmbient(InvokingCase):
                 os.environ["LANE"] = lane
                 with self.probe({self.ambient: "acme"}), self.assertRaisesRegex(
                         SystemExit, "overlay-only posting is not available inside a lane until "
-                        r"the follow-up \(harmonic-forge#1579 ruling D14\)"):
+                        r"harmonic-forge#1627 \(ruling D14 on #1579\)"):
                     mi.apply_project_identity("acme/app")
                 self.assertEqual(self.seen, [])
                 self.assertEqual((os.environ["GH_CONFIG_DIR"], os.environ["GH_TOKEN"]),
@@ -372,7 +372,7 @@ class RequireOnboardedRefuses(InvokingCase):
                     minv.require_onboarded("vitalharmony/hrse", cwd=where)
 
 
-D13 = r"acme/app is registered only by its forge\.toml; board/CI support is the follow-up"
+D13 = r"acme/app is registered only by its forge\.toml; board/CI support is harmonic-forge#1625/#1626"
 
 
 class D13NoBoardNoCI(InvokingCase):

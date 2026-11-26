@@ -274,8 +274,8 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
         if os.environ.get("LANE") in manifest_slots.LANES:
             raise SystemExit(
                 f"identity: {normalize_repo(repo)} is registered only by its forge.toml; "
-                "overlay-only posting is not available inside a lane until the follow-up "
-                "(harmonic-forge#1579 ruling D14); post from outside a lane")
+                "overlay-only posting is not available inside a lane until "
+                "harmonic-forge#1627 (ruling D14 on #1579); post from outside a lane")
         try:
             login = _probe_login()
         except ProbeUnavailable as exc:

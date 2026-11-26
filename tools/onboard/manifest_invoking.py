@@ -82,9 +82,9 @@ class OverlayOnlyRefusal(ManifestError):
     """Ruling D13: a board or CI step on a repo known only from its forge.toml."""
 
 
-#: The one named refusal (ruling D13). "the follow-up" is filled in by Lane 1.
+#: The one named refusal (ruling D13); board support is harmonic-forge#1625, CI reads #1626.
 BOARD_CI_REFUSAL = ("{repo} is registered only by its forge.toml; board/CI support is "
-                    "the follow-up (harmonic-forge#1579 ruling D13), so its {step} refuses")
+                    "harmonic-forge#1625/#1626 (ruling D13 on #1579), so its {step} refuses")
 
 
 def refuse_board_ci(repo: str, step: str, cwd: str | Path | None = None,
