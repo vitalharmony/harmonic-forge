@@ -16,6 +16,11 @@ f-string parts are never inspected.
 - G2: any other string constant without whitespace that matches TEXT.
 - G3: a def, class, assignment, import, name or attribute naming a retired
   recognizer.
+- G4: `from X import s` or `alias.s` (through `import X [as alias]`) where `s` is
+  a flagged symbol of another scanned module X flags the enclosing symbol in
+  turn, iterated to a fixpoint. An excepted symbol stays flagged, so a
+  re-export of it still fails. `from X import *` is a violation in itself
+  (G4 cannot resolve it).
 
 Exit 0 is clean; 1 is a violation, a moved scan root or an empty scan; 2 is a
 file that could not be read or parsed (UNMEASURED), never reported clean.
@@ -122,6 +127,44 @@ def direct_hits(tree: ast.Module) -> list[tuple[int, str, str]]:
     return sorted(hits)
 
 
+def _g4(tree: ast.Module, modules: set[str], flagged: dict[str, set[str]]) -> set[tuple[int, str, str]]:
+    """G4 hits in one module against the current flagged symbols of the others."""
+    aliases = {a.asname or a.name: a.name.rsplit(".", 1)[-1] for n in ast.walk(tree)
+               if isinstance(n, ast.Import) for a in n.names}
+    hits = set()
+    for top in tree.body:
+        symbol = _symbol(top)
+        for node in ast.walk(top):
+            if isinstance(node, ast.ImportFrom):
+                source = (node.module or "").rsplit(".", 1)[-1]
+                for a in node.names:
+                    if a.name == "*":
+                        hits.add((node.lineno, symbol, "G4*"))
+                    elif source in modules and a.name in flagged[source]:
+                        hits.add((node.lineno, (a.asname or a.name) if node is top else symbol, "G4"))
+            elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                source = aliases.get(node.value.id)
+                if source in modules and node.attr in flagged[source]:
+                    hits.add((node.lineno, symbol, "G4"))
+    return hits
+
+
+def all_hits(trees: dict[str, ast.Module]) -> dict[str, set[tuple[int, str, str]]]:
+    """Direct hits per path, then G4 re-exports iterated until no symbol is newly flagged."""
+    stem = {path: Path(path).stem for path in trees}
+    hits = {path: set(direct_hits(tree)) for path, tree in trees.items()}
+    flagged = {stem[p]: {symbol for _, symbol, _ in found} for p, found in hits.items()}
+    changed = True
+    while changed:
+        changed = False
+        for path, tree in trees.items():
+            for hit in _g4(tree, set(flagged), flagged) - hits[path]:
+                hits[path].add(hit)
+                changed = changed or hit[1] not in flagged[stem[path]]
+                flagged[stem[path]].add(hit[1])
+    return hits
+
+
 def dynamic_loads(tree: ast.Module) -> int:
     """Dynamic module loads: counted as unmeasured, never followed."""
     return sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call)
@@ -157,15 +200,14 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     if not paths:
         print(f"{tag} 0 files scanned under {HOOKS}; nothing checked", file=sys.stderr)
         return 1
-    unmeasured, loads, violations = [], 0, []
+    unmeasured, trees = [], {}
     for path in paths:
         try:
-            tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
+            trees[path] = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
         except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
             unmeasured.append(f"UNMEASURED {path}: {type(exc).__name__}: {exc}")
-            continue
-        loads += dynamic_loads(tree)
-        violations += [(path, line, symbol, rule) for line, symbol, rule in direct_hits(tree)]
+    loads = sum(dynamic_loads(tree) for tree in trees.values())
+    violations = sorted((path, *hit) for path, found in all_hits(trees).items() for hit in found)
     for path, line, symbol, rule in violations:
         print(f"VIOLATION {path}:{line}: {symbol} [{rule}] private gh close/merge recognizer; "
               "read the kind through gh_argv_adapters (harmonic-forge#1500)")

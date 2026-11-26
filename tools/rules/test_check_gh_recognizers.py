@@ -60,6 +60,14 @@ def hook(name: str) -> str:
     return f"tools/hooks/{name}.py"
 
 
+EXCEPTIONS = "tools/rules/gh_recognizer_exceptions.toml"
+
+
+def entry(path: str, symbol: str, reason: str = "a reason", contract: str = "a contract") -> str:
+    return (f'[[exception]]\npath = "{path}"\nsymbol = "{symbol}"\n'
+            f'reason = "{reason}"\ncontract = "{contract}"\n')
+
+
 class TC1EachRuleFails(unittest.TestCase):
     """AC2: each plant fails the check and names its path, line and rule."""
 
@@ -78,6 +86,43 @@ class TC1EachRuleFails(unittest.TestCase):
                 self.assertEqual(code, 1, out)
                 self.assertIn(f"VIOLATION tools/hooks/zz_plant.py:{line}:", out)
                 self.assertRegex(out, rf"zz_plant\.py:{line}: \S+ \[{rule}\]")
+
+
+#: A home module holding one recognizer, as block_missing_preclose_inspection does.
+HOME = 'def _canonical_cli_close(t):\n    return t[1:3] == ["issue", "close"]\n'
+
+
+class TC2ReexportsFail(unittest.TestCase):
+    """G4: a re-export of a flagged symbol fails, to a fixpoint."""
+
+    def assert_violation(self, files, where, rule="G4"):
+        code, out = run_root(files)
+        self.assertEqual(code, 1, out)
+        self.assertRegex(out, rf"VIOLATION tools/hooks/{where}: \S+ \[{rule}\]")
+
+    def test_from_import_of_an_excepted_symbol_still_fails(self):
+        self.assert_violation({
+            hook("block_missing_preclose_inspection"): HOME,
+            hook("aa_shape"): "from block_missing_preclose_inspection import _canonical_cli_close as shape\n",
+            EXCEPTIONS: entry("tools/hooks/block_missing_preclose_inspection.py", "_canonical_cli_close"),
+        }, "aa_shape.py:1")
+
+    def test_attribute_through_a_module_alias_fails(self):
+        self.assert_violation({
+            hook("batch_auth"): 'def _pinned_head(t):\n    return t[2] == "merge"\n',
+            hook("aa_use"): "import batch_auth as b\nx = b._pinned_head\n",
+        }, "aa_use.py:2")
+
+    def test_a_two_hop_chain_fails(self):
+        # Sorted so that one pass over the modules cannot reach aa_use.
+        self.assert_violation({
+            hook("zz_rec"): HOME,
+            hook("mm_wrap"): "import zz_rec\ndef wrap(t):\n    return zz_rec._canonical_cli_close(t)\n",
+            hook("aa_use"): "from mm_wrap import wrap\n",
+        }, "aa_use.py:1")
+
+    def test_a_star_import_fails_whatever_it_imports(self):
+        self.assert_violation({hook("aa_star"): "from batch_auth import *\n"}, "aa_star.py:1", r"G4\*")
 
 
 class TC3NeverGreenOnNothing(unittest.TestCase):
