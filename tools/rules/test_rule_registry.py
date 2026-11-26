@@ -263,7 +263,7 @@ class HookInventory(unittest.TestCase):
         """`deny_advisory_subagent_gh_writes.py` is wired ONLY in agent
         frontmatter — a settings.json-only scan misses it entirely."""
         found = query._scripts_in_agent_frontmatter(_ROOT)
-        self.assertIn("deny_advisory_subagent_gh_writes.py", found)
+        self.assertIn("deny_advisory_subagent_gh_writes.py", {Path(script).name for script in found})
 
     def test_enforcement_is_derived_not_stored(self):
         self.assertEqual(query.enforcement_of({"hooks": [{"script": "x"}]}), "hook")
