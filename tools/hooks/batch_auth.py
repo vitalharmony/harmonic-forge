@@ -148,6 +148,7 @@ from hook_identity import slot_env as _slot_env  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shell_parse import command_segments, strip_invocation_prefix  # noqa: E402
+import gh_argv_adapters as A  # noqa: E402
 
 STATE_PATH = Path.home() / ".claude" / "state" / "batch-authorized.json"
 #: BATCH exists for UNATTENDED batches, and the default was 2.0 -- a
@@ -278,8 +279,6 @@ def _repo_prefixes(account: str | None = None) -> dict[str, str]:
 REPO_PREFIXES = _repo_prefixes()
 
 ISSUE_KEY = re.compile(r"^([A-Za-z])(\d+)$")
-API_ISSUE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/issues/(\d+)")
-API_MERGE_PATH = re.compile(r"repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge")
 
 ASK_ISSUE_CLOSE = (
     "Closing an issue directly. This always requires an explicit human "
@@ -913,42 +912,6 @@ def _advisory_repo_target(tokens: list[str]) -> str | None:
     return AMBIGUOUS if flagged else None
 
 
-#: `gh` flags that take a value and may sit before or inside a subcommand
-#: (harmonic-forge#1339). Any other leading value flag is an accepted
-#: residual: it leaves the segment unclassified, as before this change.
-_GH_VALUE_FLAGS = ("-R", "--repo", "--hostname")
-
-
-def _gh_words(rest: list[str]) -> list[str]:
-    """`rest` with each `gh` value flag and its value removed, wherever it
-    appears, so the subcommand words can be read (harmonic-forge#1339)."""
-    words: list[str] = []
-    skip = False
-    for token in rest:
-        if skip:
-            skip = False
-            continue
-        if token in _GH_VALUE_FLAGS:
-            skip = True
-            continue
-        if token.startswith(("--repo=", "--hostname=")) or (token.startswith("-R") and len(token) > 2):
-            continue
-        words.append(token)
-    return words
-
-
-def _method_is(tokens: list[str], want: str) -> bool:
-    want = want.upper()
-    for index, token in enumerate(tokens):
-        upper = token.upper()
-        if upper in (f"-X{want}", f"--METHOD={want}", f"-X={want}"):
-            return True
-        if token in ("-X", "--method") and index + 1 < len(tokens):
-            if tokens[index + 1].upper() == want:
-                return True
-    return False
-
-
 def _has_field(tokens: list[str], assignment: str) -> bool:
     return any(token.replace(" ", "") == assignment for token in tokens)
 
@@ -967,80 +930,70 @@ def _protected_graphql(tokens: list[str]) -> bool:
     return query is None or query.startswith("@") or "$" in query or bool(PROTECTED_GRAPHQL_MUTATIONS.search(query))
 
 
-#: `gh issue close` flags whose next token is a value, not the issue number.
-_ISSUE_CLOSE_VALUE_FLAGS = frozenset({"--duplicate-of", "--reason", "-r", "--comment", "-c"})
+def _gh_reading(tokens: list[str]) -> tuple[list[str], "A.Result"] | None:
+    """One segment's literal gh call and the adapter's reading of it, or None
+    when the segment is not a literal gh call (harmonic-forge#1497).
+
+    Recognition is main's: `strip_invocation_prefix` plus a `gh` basename (the
+    F1498 sticky-wicket design amendment, as F1499's `_gh_reading`); containment
+    is the F1447 shim's. The adapter reads only the argv after `gh`, with an
+    empty environment. A fault after recognition is unparseable, never a pass."""
+    tokens = strip_invocation_prefix(tokens)
+    if not tokens or Path(tokens[0]).name != "gh":
+        return None
+    try:
+        return tokens, A.classify_argv(tokens[1:], {})
+    except Exception as exc:  # noqa: BLE001 - any parser fault is undecided
+        return tokens, A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
+
+
+def _adapter_target(tokens: list[str], kind: str, verb: tuple[str, str]) -> tuple[str | None, str | None] | None:
+    """`(repo, number)` for a literal gh call the adapter reads as a gated `kind`
+    ("issue" close or "pr" merge), bound or unbound; None otherwise, an
+    unparseable or unprovable call included (main's contract: None is "not a
+    close or merge this reader can name"; `decide()` alone asks on those).
+    The repo is a `gh api` call's REST path, else `_bound_repo`'s closed shape,
+    never the adapter's. Every gated REST issue PATCH is a close, a reopen
+    included, as the F1447 shim gates it (TC3). A CLI number counts only when
+    gh_argv's parsed positional is a bare number (main's rule, read from the
+    parser); a URL target gives `(_bound_repo, None)`, which is `(None, None)`
+    as on main, so neither cwd nor a flag value supplies its number."""
+    reading = _gh_reading(tokens)
+    if reading is None:
+        return None
+    tokens, result = reading
+    if not result.gated or result.kind != kind:
+        return None
+    rest = tokens[1:]
+    if rest[:1] == ["api"]:
+        return result.repo, result.number
+    positionals = A.gh_argv.parse(rest).positionals
+    if not (positionals and positionals[0].isdigit()):
+        return _bound_repo(rest, verb), None
+    return _bound_repo(rest, verb), result.number
+
+
+def undecided(tokens: list[str]) -> str | None:
+    """The adapter's reason when this literal gh segment cannot be proved not to
+    be a close or merge (unparseable or unprovable), else None; a segment that
+    is not a literal gh call is never undecided (harmonic-forge#1497)."""
+    reading = _gh_reading(tokens)
+    if reading is None:
+        return None
+    return reading[1].reason if reading[1].outcome in (A.UNPARSEABLE, A.UNPROVABLE) else None
 
 
 def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | None:
-    """Is this segment ANY form of `gh issue close`? Returns (repo, number)
-    -- either may be None if unresolvable from this command alone -- or
-    None if this segment is not an issue-close invocation at all."""
-    tokens = strip_invocation_prefix(tokens)
-    if not tokens or Path(tokens[0]).name != "gh":
-        return None
-    rest = tokens[1:]
-
-    if rest[:1] == ["api"]:
-        api_match = next((API_ISSUE_PATH.search(t) for t in rest if API_ISSUE_PATH.search(t)), None)
-        if not api_match or not _method_is(rest, "PATCH") or not _has_field(rest, "state=closed"):
-            return None
-        return api_match.group(1), api_match.group(2)
-
-    words = _gh_words(rest)
-    if words[:2] == ["issue", "close"]:
-        repo = _bound_repo(rest, ("issue", "close"))
-        number = None
-        skip = False
-        for token in words[2:]:
-            if skip:
-                skip = False
-                continue
-            if token in _ISSUE_CLOSE_VALUE_FLAGS:
-                # harmonic-forge#1381 pass 1: `--duplicate-of 1290 1291` closes 1291
-                skip = True
-                continue
-            if token.isdigit():
-                number = token
-                break
-        return repo, number
-
-    return None
-
-
-#: `gh pr merge` flags whose next token is a value, not the PR number.
-_PR_MERGE_VALUE_FLAGS = frozenset({
-    "--match-head-commit", "--repo", "-R", "--body", "-b", "--body-file", "-F",
-    "--subject", "-t", "--author-email", "-A",
-})
+    """Is this segment ANY form of `gh issue close`? Returns (repo, number) --
+    either may be None if unresolvable from this command alone -- or None if
+    this segment is not an issue close the adapter can read."""
+    return _adapter_target(tokens, "issue", ("issue", "close"))
 
 
 def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None:
-    """Is this segment ANY form of `gh pr merge`? Returns (repo, number) --
-    either may be None if unresolvable -- or None if not a pr-merge
-    invocation at all."""
-    tokens = strip_invocation_prefix(tokens)
-    if not tokens or Path(tokens[0]).name != "gh":
-        return None
-    rest = tokens[1:]
-
-    if rest[:1] == ["api"]:
-        api_match = next((API_MERGE_PATH.search(t) for t in rest if API_MERGE_PATH.search(t)), None)
-        if not api_match or not _method_is(rest, "PUT"):
-            return None
-        return api_match.group(1), int(api_match.group(2))
-
-    words = _gh_words(rest)
-    if words[:2] == ["pr", "merge"]:
-        repo = _bound_repo(rest, ("pr", "merge"))
-        # harmonic-forge#1077: every gated merge now carries
-        # `--match-head-commit <sha>`; a SHA that happens to be all digits is
-        # that flag's value, never the PR number.
-        args = words[2:]
-        number_token = next((t for i, t in enumerate(args) if t.isdigit()
-                             and (i == 0 or args[i - 1] not in _PR_MERGE_VALUE_FLAGS)), None)
-        return repo, (int(number_token) if number_token else None)
-
-    return None
+    """`classify_issue_close` for `gh pr merge`; the number is an int."""
+    found = _adapter_target(tokens, "pr", ("pr", "merge"))
+    return None if found is None else (found[0], int(found[1]) if found[1] else None)
 
 
 def _ask_pr_merge_reason(tokens: list[str]) -> str:
@@ -1411,7 +1364,7 @@ def _diagnose(tokens: list[str], state: dict, now: datetime) -> str:
     """
     target_info = classify_pr_merge(tokens)
     repo, number = target_info if target_info else (None, None)
-    if repo is None and number is not None and any(
+    if repo is None and any(
             t.startswith(("--repo", "-R")) for t in strip_invocation_prefix(tokens)[1:]):
         # harmonic-forge#1339 reforge: a repo was named, but outside the one
         # shape `_bound_repo` binds.
@@ -1479,6 +1432,10 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
         for tokens in segments:
             if _protected_graphql(tokens):
                 return "ask", "GraphQL mutation is protected; use the reviewed CLI or REST authorization path."
+            reason = undecided(tokens)
+            if reason:  # never told it is an issue close
+                return "ask", ("[BATCH] Cannot prove this is not an issue close or a PR merge "
+                               f"({reason}); a merge binds only as `{CANONICAL_MERGE}`.")
             is_close = classify_issue_close(tokens) is not None
             is_merge = (not is_close) and classify_pr_merge(tokens) is not None
             if not is_close and not is_merge:

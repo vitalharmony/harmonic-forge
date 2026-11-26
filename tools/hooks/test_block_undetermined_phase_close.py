@@ -88,8 +88,12 @@ class ParseTests(unittest.TestCase):
 
     def test_differing_repo_flags_are_ambiguous(self) -> None:
         import batch_auth  # noqa: PLC0415
-        target = hook.classify_issue_close_target("gh -R a/b issue close 5 --repo c/d".split())
+        target = hook.classify_issue_close_target("gh issue close 5 -R a/b --repo c/d".split())
         self.assertIs(target[0], batch_auth.AMBIGUOUS)
+        # harmonic-forge#1497: a repo flag before the root is undecided, so this
+        # hook sees no close; F1499's preclose hook denies it (D13 pin in
+        # test_batch_auth's GhArgvAdoptionTests).
+        self.assertIsNone(hook.classify_issue_close_target("gh -R a/b issue close 5 --repo c/d".split()))
 
     def test_issue_close_url_form(self) -> None:
         self.assertEqual(
@@ -246,7 +250,9 @@ class DecisionTests(unittest.TestCase):
     def test_ambiguous_targets_deny_and_never_read_any_repo(self) -> None:
         # harmonic-forge#1339 operator ruling: each must deny naming the
         # ambiguity, and never phase-check cwd's or a guessed repo.
-        for command in ("gh -R a/b issue close 5 --repo c/d",
+        # harmonic-forge#1497: the leading-flag row moved to `-R` after the root;
+        # before the root it is undecided and F1499's preclose hook denies it.
+        for command in ("gh issue close 5 -R a/b --repo c/d",
                         "gh issue close 5 --repo o/r --comment x",
                         "gh pr merge 5 -r -R other/repo",
                         "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
@@ -274,6 +280,18 @@ class DecisionTests(unittest.TestCase):
                 hook.main()
                 called = pr_read if "merge" in command else labels
                 self.assertEqual(called.call_args[0][:2], want)
+
+    def test_a_url_target_with_its_own_repo_flag_reaches_the_url_fallback(self) -> None:
+        """harmonic-forge#1497 sticky-wicket round 2, survivor (b): a URL target
+        plus a matching `--repo`/`-R` gets no number from batch_auth (main's
+        rule, read from gh_argv's parsed positional), so this hook's URL
+        fallback names the target and allows an unrelated issue, as on main."""
+        for flag in ("--repo", "-R"):
+            for verb, path in (("issue close", "issues"), ("pr merge", "pull")):
+                command = f"gh {verb} https://github.com/{REPO}/{path}/191 {flag} {REPO}"
+                with self.subTest(command=command):
+                    self.assertFalse(denied(self._decide(command, labels={"bug"}, closed_issues=set())))
+                    self.assertFalse(denied(self._decide(command, labels={"bug"})))
 
     def test_pr_merge_no_keyword_target_allows(self) -> None:
         cmd = f"gh pr merge 1813 --repo {REPO} --squash"

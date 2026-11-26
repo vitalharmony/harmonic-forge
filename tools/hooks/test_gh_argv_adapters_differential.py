@@ -35,28 +35,26 @@ from test_gh_argv_adapters import ASK, CONSUMERS, NOT_A_CLOSE, PASS, REFUSE, ROW
 CLASSES = {"old-defect", "adapter-defect", "intended"}
 MENTION_DENY, UNDECIDED_SET = ("tightening against main to undecided (harmonic-forge#1499 sticky-wicket rule 2): argv names no repo and the command names GH_REPO/GH_HOST, so the target is denied before any read where main bound the checkout"), frozenset({('issue', None, None, False)})
 
+#: harmonic-forge#1497 sticky-wicket PATCH (issuecomment-7182907859): BATCH against main's frozen
+#: readers. The classifiers name a target only for a gated call of their own kind; an
+#: undecided literal gh call gets None from every reader and asks in `decide()` alone.
+BATCH_UNDECIDED = ("verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, "
+                   "so no reader names a target and decide() asks on it as undecided")
+BATCH_TIGHTER = ("tightening against main: a close or merge main's reader missed, or a literal gh call "
+                 "that cannot be proved not to be one, now asks")
+BATCH_UNBOUND = ("verdict unchanged (ask) against main; gh_argv's grammar binds no number here, "
+                 "where main's private reader picked a digit word")
 #: (consumer, row) -> (class, reason, observation): (old verdict, new verdict, old targets, new targets), as observed.
 DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
-    ('batch', 'bound_inline_repo'): ('old-defect', "the old reader drops the inline GH_REPO and binds the checkout's repo",
-        (ASK, ASK, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
-    ('batch', 'unparseable_flag'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+    ('batch', 'unparseable_flag'): ('intended', BATCH_UNDECIDED,
         (ASK, ASK, frozenset({('issue', None, '12')}), frozenset())),
-    ('batch', 'unprovable_alias'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
-        (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
-    ('batch', 'unprovable_env_unset'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-        (ASK, ASK, frozenset({('issue', None, '12')}), frozenset())),
-    ('batch', 'unprovable_flag_before_root'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+    ('batch', 'unprovable_alias'): ('intended', BATCH_TIGHTER, (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
+    ('batch', 'unprovable_flag_before_root'): ('intended', BATCH_UNDECIDED,
         (ASK, ASK, frozenset({('issue', 'o/r', '12')}), frozenset())),
-    ('batch', 'unprovable_graphql_input'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
-        (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
-    ('batch', 'unprovable_placeholder_close'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+    ('batch', 'unprovable_placeholder_close'): ('intended', BATCH_UNDECIDED,
         (ASK, ASK, frozenset({('issue', '{owner}/{repo}', '5')}), frozenset())),
-    ('batch', 'unprovable_placeholder_merge'): ('intended', "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+    ('batch', 'unprovable_placeholder_merge'): ('intended', BATCH_UNDECIDED,
         (ASK, ASK, frozenset({('pr', '{owner}/{repo}', '5')}), frozenset())),
-    ('batch', 'unprovable_sudo'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
-        (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
-    ('batch', 'unprovable_xargs'): ('intended', 'tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed',
-        (NOT_A_CLOSE, ASK, frozenset(), frozenset())),
     ('migration', 'bound_inline_repo'): ('old-defect', 'main ignored the inline GH_REPO and named no repo; gh reads GH_REPO, and the hook binds it',
         (REFUSE, REFUSE, frozenset({('issue', None, '12')}), frozenset({('issue', 'a/b', '12')}))),
     ('migration', 'unbound_issue_no_arg'): ('intended', 'tightening against main: main read this literal gh call as not-a-close; the hook denies an undecided literal gh call before any read (harmonic-forge#1498 reforge)',
@@ -99,9 +97,13 @@ DISAGREEMENTS: dict[tuple[str, str], tuple[str, str, tuple]] = {
 #: Preclose `unprovable_sudo`/`unprovable_xargs` agree with main ([]): stated
 #: residuals of F1499's amendment change 3, tracked in harmonic-forge#1577.
 PLANTED = ["gh", "issue", "close", "99", "--repo", "x/y"]
-#: Main's frozen recognizers (migration: F1498 survivor 3; preclose: F1499 amendment change 4): never the hook under test.
-MAIN_FIXTURES = {c: HERE / "testdata" / f"{c}_main_178ba5f.json" for c in ("migration", "preclose")}
+#: Main's frozen recognizers (migration: F1498 survivor 3; preclose: F1499 amendment change 4;
+#: batch: F1497 sticky-wicket PATCH step 6): never the hook under test.
+MAIN_FIXTURES = {c: HERE / "testdata" / f"{c}_main_178ba5f.json" for c in ("migration", "preclose", "batch")}
 MAIN = {c: json.loads(f.read_text(encoding="utf-8")) if f.exists() else {} for c, f in MAIN_FIXTURES.items()}
+#: BATCH's `decide()` is read with no grant, so it never reads CI (harmonic-forge#1497).
+NO_BATCH_STATE = HERE / "testdata" / "no-such-batch-state.json"
+_DECIDE = {None: NOT_A_CLOSE, "ask": ASK, "allow": PASS}
 
 
 def _norm(kind: str, repo, number) -> tuple:
@@ -112,17 +114,12 @@ def _old_targets(consumer: str, tokens: list[str] | None, command: str | None = 
     """What the old recognizer reports, as (kind, repo, number) targets; None when
     a text hook cannot tokenize the command."""
     command = command if command is not None else shlex.join(tokens)
-    if consumer == "batch":
-        found = set()
-        if (close := batch_auth.classify_issue_close(tokens)) is not None:
-            found.add(_norm("issue", *close))
-        if (merge := batch_auth.classify_pr_merge(tokens)) is not None:
-            found.add(_norm("pr", *merge))
-        return frozenset(found)
     if command not in MAIN[consumer]:
         raise AssertionError(f"{command!r} is not in {MAIN_FIXTURES[consumer].name}; "
                              f"regenerate it: python3 tools/hooks/testdata/{consumer}_main_table.py")
     found = MAIN[consumer][command]
+    if consumer == "batch":
+        return frozenset(_norm(kind, *found[kind]) for kind in ("issue", "pr") if found[kind] is not None)
     if consumer == "migration":
         return None if found is None else frozenset(_norm("issue", r, n) for r, n in found)
     # The preclose hook decides on find_gated_targets_exempt: the exemption bit is
@@ -136,6 +133,19 @@ def _hook_targets(consumer: str, command: str) -> frozenset:
         return frozenset(_norm("issue", r, n) for r, n in block_data_migration_close.find_close_targets(command) or [])
     found = block_missing_preclose_inspection.find_gated_targets_exempt(command) or []
     return frozenset(_norm(k, r, n) + (bool(e),) for r, n, k, e in found)
+
+
+def _batch_new(command: str) -> tuple[str, frozenset]:
+    """BATCH under test: `decide()`'s verdict with no grant, and the two
+    classifiers' targets over the command's segments (harmonic-forge#1497)."""
+    found = set()
+    for tokens in command_segments(command):
+        if (close := batch_auth.classify_issue_close(tokens)) is not None:
+            found.add(_norm("issue", *close))
+        if (merge := batch_auth.classify_pr_merge(tokens)) is not None:
+            found.add(_norm("pr", *merge))
+    result = batch_auth.decide(command, state_path=NO_BATCH_STATE)
+    return _DECIDE[result[0] if result else None], frozenset(found)
 
 
 def _old_verdict(consumer: str, targets: frozenset) -> str:
@@ -154,6 +164,11 @@ def _strictest(verdicts: list[str]) -> str:
 
 
 def observe(consumer: str, segments: list[list[str]], old: frozenset, command: str | None = None) -> tuple:
+    if consumer == "batch" and command is not None:
+        new_verdict, new = _batch_new(command)
+        old_verdict = _DECIDE[MAIN["batch"][command]["decide"]]
+        seen = old_verdict != NOT_A_CLOSE and new_verdict != NOT_A_CLOSE
+        return (old_verdict, new_verdict, old if seen else frozenset(), new if seen else frozenset())
     if consumer in MAIN and command is not None:
         new = _hook_targets(consumer, command)
         new_verdict = _old_verdict(consumer, new)

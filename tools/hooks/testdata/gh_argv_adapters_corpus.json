@@ -1,112 +1,32 @@
 {
  "batch": {
-  "command gh issue close 700 --repo vitalharmony/hrse": [
+  "gh issue close 395 --repo vitalharmony/hrse --reason": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
-    []
-   ]
-  ],
-  "command gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
-    []
-   ]
-  ],
-  "echo 'gh issue close 395' '>' notes.md": [
-   "intended",
-   "tightening (harmonic-forge#1496 containment): a segment with a gh word outside the allowed shapes is unprovable, so BATCH asks where the old reader passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
-  ],
-  "env -i gh issue close 700 --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
-    []
-   ]
-  ],
-  "env -u FOO gh issue close 700 --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
-    []
-   ]
-  ],
-  "env GH_HOST=x gh issue close 700 --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
     [
      [
       "issue",
       null,
-      null
+      "395"
      ]
-    ]
+    ],
+    []
    ]
   ],
-  "env GH_HOST=x gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": [
+  "gh pr merge 1202 --repo vitalharmony/hrse --squash -sb --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; gh_argv's grammar binds no number here, where main's private reader picked a digit word",
    [
     "ask",
     "ask",
     [
      [
       "pr",
-      "vitalharmony/hrse",
-      "700"
+      null,
+      "1202"
      ]
     ],
     [
@@ -118,131 +38,53 @@
     ]
    ]
   ],
-  "gh --hostname h issue close 5": [
+  "gh pr merge 1202 --repo vitalharmony/hrse --squash -- --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "5"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh --repo o/r issue close 5": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "o/r",
-      "5"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh --repo o/r pr checks 5": [
-   "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
-  ],
-  "gh --repo o/r pr merge 5": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; gh_argv's grammar binds no number here, where main's private reader picked a digit word",
    [
     "ask",
     "ask",
     [
      [
       "pr",
-      "o/r",
-      "5"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh --repo=o/r issue close 5": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
       null,
-      "5"
+      "1202"
      ]
     ],
-    []
-   ]
-  ],
-  "gh -R a/b -R c/d issue close 5": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
     [
      [
-      "issue",
+      "pr",
       null,
-      "5"
+      null
      ]
-    ],
-    []
+    ]
    ]
   ],
-  "gh -R a/b issue close 5 --repo c/d": [
+  "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff '\n--match-head-commit' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; gh_argv's grammar binds no number here, where main's private reader picked a digit word",
    [
     "ask",
     "ask",
     [
      [
-      "issue",
+      "pr",
       null,
-      "5"
+      "1202"
      ]
     ],
-    []
-   ]
-  ],
-  "gh -R o/r issue close 5": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
     [
      [
-      "issue",
-      "o/r",
-      "5"
+      "pr",
+      null,
+      null
      ]
-    ],
-    []
+    ]
    ]
   ],
-  "gh -R o/r issue view 5": [
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=closed": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "tightening against main: a close or merge main's reader missed, or a literal gh call that cannot be proved not to be one, now asks",
    [
     "not-a-close",
     "ask",
@@ -250,9 +92,55 @@
     []
    ]
   ],
-  "gh -R o/r pr list": [
+  "gh api -iXPUT repos/vitalharmony/hrse/pulls/1202/merge": [
    "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
+   "tightening against main: a close or merge main's reader missed, or a literal gh call that cannot be proved not to be one, now asks",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --input body.json": [
+   "intended",
+   "tightening against main: a close or merge main's reader missed, or a literal gh call that cannot be proved not to be one, now asks",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -F state=@s.txt": [
+   "intended",
+   "tightening against main: a close or merge main's reader missed, or a literal gh call that cannot be proved not to be one, now asks",
+   [
+    "not-a-close",
+    "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/pulls/1202/merge -H -X PUT": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "pr",
+      "vitalharmony/hrse",
+      "1202"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh triage-done 12 --repo o/r": [
+   "intended",
+   "tightening against main: a close or merge main's reader missed, or a literal gh call that cannot be proved not to be one, now asks",
    [
     "not-a-close",
     "ask",
@@ -262,7 +150,7 @@
   ],
   "gh -R o/r pr merge 5": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
@@ -276,9 +164,73 @@
     []
    ]
   ],
-  "gh -R vitalharmony/a -R vitalharmony/b issue close 5": [
+  "gh -R o/r issue close 5": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "issue",
+      "o/r",
+      "5"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh -R vitalharmony/hrse pr merge 1202 --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "pr",
+      "vitalharmony/hrse",
+      "1202"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh -R vitalharmony/hrse issue close 395": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "issue",
+      "vitalharmony/hrse",
+      "395"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh api repos/o/r/issues/5 -X PATCH -f state=closed --hostname h": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "issue",
+      "o/r",
+      "5"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh -R a/b issue close 5 --repo c/d": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
@@ -294,7 +246,7 @@
   ],
   "gh -R vitalharmony/hrse pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
@@ -308,9 +260,9 @@
     []
    ]
   ],
-  "gh -Ro/r issue close 5": [
+  "gh --hostname h issue close 5": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
@@ -318,42 +270,6 @@
      [
       "issue",
       null,
-      "5"
-     ]
-    ],
-    []
-   ]
-  ],
-  "gh api graphql -f 'query=mutation { addCloseIssueReferences(input: {}) { clientMutationId } }'": [
-   "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
-  ],
-  "gh api graphql -f 'query=mutation { updateProjectV2ItemFieldValue(input: {}) { clientMutationId } }'": [
-   "intended",
-   "tightening: a call that is or may be a close or merge (gh behind an unmodeled prefix included) is no longer passed",
-   [
-    "not-a-close",
-    "ask",
-    [],
-    []
-   ]
-  ],
-  "gh api repos/o/r/issues/5 -X PATCH -f state=closed --hostname h": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "o/r",
       "5"
      ]
     ],
@@ -362,7 +278,7 @@
   ],
   "gh issue --hostname h close 5": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
@@ -370,6 +286,54 @@
      [
       "issue",
       null,
+      "5"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh -R a/b -R c/d issue close 5": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "issue",
+      null,
+      "5"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh -R vitalharmony/a -R vitalharmony/b issue close 5": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "issue",
+      null,
+      "5"
+     ]
+    ],
+    []
+   ]
+  ],
+  "gh --repo o/r pr merge 5": [
+   "intended",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
+   [
+    "ask",
+    "ask",
+    [
+     [
+      "pr",
+      "o/r",
       "5"
      ]
     ],
@@ -378,7 +342,7 @@
   ],
   "gh issue close --repo 5 7": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; gh_argv's grammar binds no number here, where main's private reader picked a digit word",
    [
     "ask",
     "ask",
@@ -398,9 +362,9 @@
     ]
    ]
   ],
-  "gh issue close 395 --repo vitalharmony/hrse --comment hi": [
+  "gh -Ro/r issue close 5": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "verdict unchanged (ask) against main; the adapter cannot decide this literal gh call, so no reader names a target and decide() asks on it as undecided",
    [
     "ask",
     "ask",
@@ -408,623 +372,69 @@
      [
       "issue",
       null,
-      "395"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 395 --repo vitalharmony/hrse --duplicate-of '²'": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "395"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 395 --repo vitalharmony/hrse --duplicate-of abc": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "395"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 395 --repo vitalharmony/hrse --reason": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "395"
+      "5"
      ]
     ],
     []
    ]
   ],
-  "gh issue close 395 --repo vitalharmony/hrse --reason bogus": [
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=open": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
    [
+    "not-a-close",
     "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "395"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 395 --repo vitalharmony/hrse --reason completed --reason completed": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "395"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 5 --repo o/r --comment x": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "o/r",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 5 --repo vitalharmony/hrse --comment x": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 5 --repo vitalharmony/hrse --reason bogus": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 5 -R=o/r": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "o/r",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh issue close 5 -R=vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "issue",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "993"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "993"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge --match-head-commit=1234567 993 --repo vitalharmony/hrse": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "993"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "993"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash -- --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      null,
-      null
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash --auto --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash --body --match-head-commit=ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff '\n--match-head-commit' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      null,
-      null
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit=ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash -b done --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash -sb --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      null,
-      null
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 1202 --repo vitalharmony/hrse --squash -sd --match-head-commit ffffffffffffffffffffffffffffffffffffffff": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "1202"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "1202"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 5 --body -Rvitalharmony/hrse --repo o/r": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "o/r",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 5 -r -R other/repo": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "5"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "other/repo",
-      "5"
-     ]
-    ]
-   ]
-  ],
-  "gh pr merge 7 --body -Rx --repo o/r": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      null,
-      "7"
-     ]
-    ],
-    [
-     [
-      "pr",
-      "o/r",
-      "7"
-     ]
-    ]
-   ]
-  ],
-  "nice gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": [
-   "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
-   [
-    "ask",
-    "ask",
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "993"
-     ]
-    ],
+    [],
     []
    ]
   ],
-  "nohup gh issue close 700 --repo vitalharmony/hrse": [
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=open": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
    [
+    "not-a-close",
     "ask",
-    "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
+    [],
     []
    ]
   ],
-  "nohup gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": [
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=$S'": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
    [
+    "not-a-close",
     "ask",
-    "ask",
-    [
-     [
-      "pr",
-      "vitalharmony/hrse",
-      "700"
-     ]
-    ],
+    [],
     []
    ]
   ],
-  "timeout 30 gh issue close 395 --repo vitalharmony/hrse": [
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=$closed'": [
    "intended",
-   "verdict unchanged; the adapter binds per gh's own grammar or withholds a target it cannot prove",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
    [
+    "not-a-close",
     "ask",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=${S}'": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
     "ask",
-    [
-     [
-      "issue",
-      "vitalharmony/hrse",
-      "395"
-     ]
-    ],
+    [],
+    []
+   ]
+  ],
+  "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f 'state=clos?d'": [
+   "intended",
+   "tightening against main (TC3, sticky-wicket round 2 issuecomment-7184370067): main's literal `state=closed` predicate read this gated REST issue PATCH as not-a-close; every gated REST issue PATCH is a close, a reopen or a shell-expanded state value included, and asks, as the F1447 shim gates it",
+   [
+    "not-a-close",
+    "ask",
+    [],
     []
    ]
   ]
@@ -5924,9 +5334,9 @@
     []
    ]
   ],
-  "gh api repos/:owner/:repoé/issues/5 -X PATCH -f state=closed": [
+  "gh api repos/:owner/:repo\u00e9/issues/5 -X PATCH -f state=closed": [
    "intended",
-   "tightening against main to undecided (harmonic-forge#1499 post-verdict survivor 4): gh's Go placeholder regex uses an ASCII word boundary, so it fills :repo in :repoé from GH_REPO or the checkout; the path names no repo and is denied before any read where main read no close",
+   "tightening against main to undecided (harmonic-forge#1499 post-verdict survivor 4): gh's Go placeholder regex uses an ASCII word boundary, so it fills :repo in :repo\u00e9 from GH_REPO or the checkout; the path names no repo and is denied before any read where main read no close",
    [
     "not-a-close",
     "refuse",
@@ -5934,9 +5344,9 @@
     []
    ]
   ],
-  "gh api repos/o/:repoé/issues/5 -X PATCH -f state=closed": [
+  "gh api repos/o/:repo\u00e9/issues/5 -X PATCH -f state=closed": [
    "intended",
-   "tightening against main to undecided (harmonic-forge#1499 post-verdict survivor 4): gh's Go placeholder regex uses an ASCII word boundary, so it fills :repo in :repoé from GH_REPO or the checkout; the path names no repo and is denied before any read where main read no close",
+   "tightening against main to undecided (harmonic-forge#1499 post-verdict survivor 4): gh's Go placeholder regex uses an ASCII word boundary, so it fills :repo in :repo\u00e9 from GH_REPO or the checkout; the path names no repo and is denied before any read where main read no close",
    [
     "not-a-close",
     "refuse",

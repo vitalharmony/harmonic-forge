@@ -511,7 +511,12 @@ class ClassifyTests(unittest.TestCase):
         for tail in ("--reason bogus", "--reason completed --reason completed", "--comment hi",
                      "--reason", "--duplicate-of abc", "--duplicate-of ²"):
             tokens = ["gh", "issue", "close", "395", "--repo", "vitalharmony/hrse", *shlex.split(tail)]
-            self.assertEqual(ba.classify_issue_close(tokens), (None, "395"), tail)
+            # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` row
+            # 'gh issue close 395 --repo vitalharmony/hrse --reason', classified
+            # intended by F1496's differential: unparseable, so no close this
+            # reader can name (`decide()` asks on it as undecided).
+            want = None if tail == "--reason" else (None, "395")
+            self.assertEqual(ba.classify_issue_close(tokens), want, tail)
 
     def test_issue_close_cli_form_without_repo_still_classified(self):
         """Recognized as issue-close even though repo is unresolvable --
@@ -951,6 +956,15 @@ class DecideSilentTests(StateFixture):
         result = ba.decide("echo 'gh issue close 395' > notes.md", state_path=self.state_path)
         self.assertIsNone(result)
 
+    def test_a_command_that_only_mentions_gh_is_silent(self):
+        """harmonic-forge#1497 sticky-wicket PATCH (survivor 1): only a literal gh
+        call is read; a command naming a gh word anywhere else is not undecided."""
+        for cmd in ("ls tools/gh", "echo gh", "which gh", "grep -rn gh tools",
+                    "git commit -m 'gh pr merge 5 lands it'"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(ba.undecided(shlex.split(cmd)))
+                self.assertIsNone(ba.decide(cmd, state_path=self.state_path))
+
     def test_empty_state_file_still_asks_for_a_covered_command(self):
         """No BATCH entries at all is not the same as 'not covered' -- an
         empty state file must still produce an ask for a covered command,
@@ -1037,14 +1051,23 @@ class GraphQLProtectionTests(StateFixture):
         """A normal, inspectable, unprotected GraphQL board write must stay
         silent (`None`) -- the fix must not turn routine work into a prompt."""
         cmd = "gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: {}) { clientMutationId } }'"
-        self.assertIsNone(ba.decide(cmd, state_path=self.state_path))
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` row "gh api graphql
+        # -f 'query=mutation { updateProjectV2ItemFieldValue(input: {}) { clientMutationId } }'",
+        # classified intended by F1496's differential: off gh_argv's non-closing allowlist, it asks.
+        self.assertEqual(ba.decide(cmd, state_path=self.state_path)[0], "ask")
 
     def test_case_sensitive_match_does_not_false_positive_on_close_references(self):
         """addCloseIssueReferences/removeCloseIssueReferences are real,
         benign mutations distinct from closeIssue -- word-boundary + case
         sensitivity must not treat them as protected."""
         cmd = "gh api graphql -f query='mutation { addCloseIssueReferences(input: {}) { clientMutationId } }'"
-        self.assertIsNone(ba.decide(cmd, state_path=self.state_path))
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` row "gh api graphql
+        # -f 'query=mutation { addCloseIssueReferences(input: {}) { clientMutationId } }'",
+        # classified intended by F1496's differential: still not protected (no GraphQL
+        # message), but off gh_argv's non-closing allowlist, so it asks as undecided.
+        result = ba.decide(cmd, state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+        self.assertNotIn("GraphQL mutation is protected", result[1])
 
 
 class InvocationPrefixTests(StateFixture):
@@ -2531,9 +2554,15 @@ class RepoFlagAnywhereTests(unittest.TestCase):
         self.assertEqual(ba.decide("gh --hostname h issue close 5")[0], "ask")
 
     def test_repo_flag_before_pr_merge_is_classified(self):
-        for cmd in ("gh -R o/r pr merge 5", "gh pr -R o/r merge 5", "gh --repo o/r pr merge 5"):
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` rows
+        # 'gh -R o/r pr merge 5' and 'gh --repo o/r pr merge 5', classified
+        # intended by F1496's differential: a flag before the root is
+        # undecided: no merge this reader can name, and `decide()` asks
+        # (sticky-wicket PATCH, issuecomment-7182907859).
+        for cmd, want in (("gh -R o/r pr merge 5", None), ("gh pr -R o/r merge 5", ("o/r", 5)),
+                          ("gh --repo o/r pr merge 5", None)):
             with self.subTest(cmd=cmd):
-                self.assertEqual(ba.classify_pr_merge(cmd.split()), ("o/r", 5))
+                self.assertEqual(ba.classify_pr_merge(cmd.split()), want)
                 self.assertEqual(ba.decide(cmd)[0], "ask")
 
     def test_batched_merge_with_leading_repo_flag_asks(self):
@@ -2541,28 +2570,42 @@ class RepoFlagAnywhereTests(unittest.TestCase):
         target (so a grant can be matched and named), and it asks rather than
         binding, because it is not the one canonical form."""
         cmd = "gh -R vitalharmony/hrse pr merge 1202 --match-head-commit " + "f" * 40
-        self.assertEqual(ba.classify_pr_merge(cmd.split()), ("vitalharmony/hrse", 1202))
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` row (this
+        # command), classified intended by F1496's differential: undecided, so no
+        # merge this reader can name; `decide()` alone asks on it.
+        self.assertIsNone(ba.classify_pr_merge(cmd.split()))
         self.assertEqual(ba.decide(cmd)[0], "ask")
 
-    def test_repo_flag_on_other_subcommands_stays_silent(self):
+    def test_repo_flag_on_other_subcommands_asks_as_undecided(self):
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` rows (these
+        # three commands), classified intended by F1496's differential: a flag
+        # before the root cannot be proved not a close or merge, so it asks.
         for cmd in ("gh -R o/r issue view 5", "gh -R o/r pr list", "gh --repo o/r pr checks 5"):
             with self.subTest(cmd=cmd):
-                self.assertIsNone(ba.decide(cmd))
+                self.assertEqual(ba.decide(cmd)[0], "ask")
 
     def test_repo_value_is_never_the_issue_number(self):
-        self.assertEqual(ba.classify_issue_close("gh issue close --repo 5 7".split()), (None, "7"))
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` row
+        # 'gh issue close --repo 5 7', classified intended by F1496's differential:
+        # unparseable, so neither the value nor 7 is the number.
+        self.assertEqual(ba.classify_issue_close("gh issue close --repo 5 7".split()), (None, None))
 
     def test_short_repo_flag_resolves_repo(self):
-        self.assertEqual(ba.classify_issue_close("gh -R o/r issue close 5".split()), ("o/r", "5"))
-        # Reforge: a `-RX` cluster no longer binds a repo.
-        self.assertEqual(ba.classify_issue_close("gh -Ro/r issue close 5".split()), (None, "5"))
+        # harmonic-forge#1497: gh_argv_adapters_corpus.json@920a90e `batch` rows
+        # 'gh -R o/r issue close 5' and 'gh -Ro/r issue close 5', classified
+        # intended by F1496's differential: a flag before the root is undecided,
+        # so no close this reader can name; `decide()` alone asks on it.
+        self.assertIsNone(ba.classify_issue_close("gh -R o/r issue close 5".split()))
+        self.assertIsNone(ba.classify_issue_close("gh -Ro/r issue close 5".split()))
+        self.assertEqual(ba.decide("gh -R o/r issue close 5")[0], "ask")
 
     def test_non_canonical_repo_spellings_bind_no_repo(self):
         """harmonic-forge#1339 reforge: a repo token where another flag's value
         belongs, a repeated repo flag, or an `=` form binds no repo."""
         merge = ba.classify_pr_merge("gh pr merge 5 --body -Rvitalharmony/hrse --repo o/r".split())
         self.assertIsNone(merge[0])
-        self.assertIsNone(ba.classify_issue_close("gh -R a/b -R c/d issue close 5".split())[0])
+        # harmonic-forge#1497: a flag before the root is undecided, so no target at all.
+        self.assertIsNone(ba.classify_issue_close("gh -R a/b -R c/d issue close 5".split()))
         self.assertIsNone(ba.classify_issue_close("gh issue close 5 -R=o/r".split())[0])
         runner = lambda *a, **k: self.fail("cwd must not be read")  # noqa: E731
         for cmd in ("gh -R vitalharmony/a -R vitalharmony/b issue close 5",
@@ -2579,11 +2622,13 @@ class RepoFlagAnywhereTests(unittest.TestCase):
                  ("gh pr merge 5 -r -R other/repo", ba.AMBIGUOUS),
                  ("gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed "
                   "--template -Rvitalharmony/harmonic-forge", ba.AMBIGUOUS),
-                 ("gh api repos/o/r/issues/5 -X PATCH -f state=closed --hostname h",
-                  ba.AMBIGUOUS),
+                 # harmonic-forge#1497: the adapter cannot decide these two (another
+                 # host; a flag before the root), so no reader names a target;
+                 # `decide()` asks and F1499's preclose hook denies them.
+                 ("gh api repos/o/r/issues/5 -X PATCH -f state=closed --hostname h", None),
                  ("gh issue close 5 --repo o/r --comment x", ba.AMBIGUOUS),
                  ("gh pr merge 7 --body -Rx --repo o/r", ba.AMBIGUOUS),
-                 ("gh -R a/b issue close 5 --repo c/d", ba.AMBIGUOUS),
+                 ("gh -R a/b issue close 5 --repo c/d", None),
                  ("gh issue close 5 --comment x", None))
         for cmd, want in cases:
             with self.subTest(cmd=cmd):
@@ -2626,6 +2671,150 @@ class RepoFlagAnywhereTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
         self.assertEqual(calls, [])
+
+
+class GhArgvAdoptionTests(StateFixture):
+    """harmonic-forge#1497: kind and number come from gh_argv through
+    gh_argv_adapters; a call it cannot decide asks, never passes."""
+
+    def setUp(self):
+        super().setUp()
+        ba.authorize(["H395"], state_path=self.state_path)
+        ba.link_pr("H395", "vitalharmony/hrse", 1202, state_path=self.state_path)
+
+    def test_an_unexpanded_close_target_asks(self):
+        cmd = "gh issue close $N --repo vitalharmony/hrse"
+        self.assertEqual(ba.classify_issue_close(shlex.split(cmd)), (None, None))
+        self.assertEqual(ba.decide(cmd, state_path=self.state_path)[0], "ask")
+
+    def test_a_close_or_merge_the_old_reader_missed_asks(self):
+        close = "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=closed"
+        self.assertEqual(ba.classify_issue_close(close.split()), ("vitalharmony/hrse", "5"))
+        self.assertEqual(ba.decide(close, state_path=self.state_path), ("ask", ba.ASK_ISSUE_CLOSE))
+        merge = "gh api -iXPUT repos/vitalharmony/hrse/pulls/1202/merge"
+        self.assertEqual(ba.classify_pr_merge(merge.split()), ("vitalharmony/hrse", 1202))
+        self.assertEqual(ba.decide(merge, state_path=self.state_path)[0], "ask")
+
+    def test_a_swallowed_method_flag_is_undecided_and_asks(self):
+        """AC4: a flag-table drift (`-X` read as `-H`'s value) never reads not-a-close.
+        The readers name no target for it (main's None contract); `decide()` asks."""
+        cmd = "gh api repos/vitalharmony/hrse/pulls/1202/merge -H -X PUT"
+        self.assertIsNone(ba.classify_pr_merge(cmd.split()))
+        self.assertIsNone(ba.classify_issue_close(cmd.split()))
+        self.assertTrue(ba.undecided(cmd.split()))
+        result = ba.decide(cmd, state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+        self.assertIn("Cannot prove", result[1])
+
+    def test_a_leading_repo_flag_merge_never_allows_on_a_grant(self):
+        cmd = f"gh -R vitalharmony/hrse pr merge 1202 --match-head-commit {JUDGED}"
+        result = ba.decide(cmd, state_path=self.state_path)
+        self.assertEqual(result[0], "ask")
+        self.assertIn("Cannot prove", result[1])
+        self.assertNotIn(ba.ASK_ISSUE_CLOSE, result[1])
+
+    def test_an_undecided_literal_gh_call_asks_only_in_decide(self):
+        """Sticky-wicket PATCH (issuecomment-7182907859) step 8: an undecided
+        literal gh call asks in `decide()`; every other reader sees None; a
+        non-gh command that mentions gh gets None from `decide()`."""
+        for cmd in ("gh triage-done 12 --repo o/r", "gh -R o/r pr merge 5", "gh -R o/r issue close 5"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(ba.classify_pr_merge(cmd.split()))
+                self.assertIsNone(ba.classify_issue_close(cmd.split()))
+                self.assertIsNone(ba._advisory_repo_target(cmd.split()))
+                result = ba.decide(cmd, state_path=self.state_path)
+                self.assertEqual(result[0], "ask")
+                self.assertIn("Cannot prove", result[1])
+        self.assertIsNone(ba.decide("echo gh triage-done 12", state_path=self.state_path))
+
+    def test_every_gated_rest_issue_patch_is_a_close_and_asks(self):
+        """TC3 (sticky-wicket round 2, issuecomment-7184370067, survivor (a)): a
+        gated REST issue PATCH is a close whatever its `state` value, a reopen
+        and a shell-expanded value included, as the F1447 shim gates it. Main's
+        literal `state=closed` predicate read each of these as not-a-close."""
+        for cmd in ("gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=open",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=open",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=$S",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=$'closed'",
+                    'gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f "state=${S}"',
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=clos?d",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --input body.json",
+                    "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -F state=@s.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ba.classify_issue_close(shlex.split(cmd)), ("vitalharmony/hrse", "5"))
+                self.assertEqual(ba.decide(cmd, state_path=self.state_path), ("ask", ba.ASK_ISSUE_CLOSE))
+
+    def test_a_url_target_with_a_matching_repo_flag_names_no_number(self):
+        """Survivor (b): a CLI number counts only when gh_argv's parsed
+        positional is a bare number (main's rule, read from the parser), so a
+        URL target plus `--repo`/`-R` is `(None, None)` as on main and the phase
+        hook's URL fallback names it; pflag, not a token scan, picks the
+        positional, so a flag value never supplies it."""
+        for flag in ("--repo", "-R"):
+            with self.subTest(flag=flag):
+                self.assertEqual(ba.classify_issue_close(
+                    f"gh issue close https://github.com/vitalharmony/hrse/issues/12 {flag} vitalharmony/hrse".split()),
+                    (None, None))
+                self.assertEqual(ba.classify_pr_merge(
+                    f"gh pr merge https://github.com/vitalharmony/hrse/pull/12 {flag} vitalharmony/hrse".split()),
+                    (None, None))
+        # The number is the parsed positional, never the `-c` value; the repo is
+        # `_bound_repo`'s closed shape, which a `-c` flag leaves unbound.
+        self.assertEqual(ba.classify_issue_close("gh issue close -c 13 12 --repo vitalharmony/hrse".split()),
+                         (None, "12"))
+
+    def test_a_url_target_is_never_rebound_by_an_equal_flag_value(self):
+        """Survivor 2: a URL target plus a flag value equal to its number."""
+        for cmd in ("gh issue close https://github.com/vitalharmony/hrse/issues/12 -c 12",
+                    "gh pr merge https://github.com/vitalharmony/hrse/pull/12 --body 12"):
+            with self.subTest(cmd=cmd):
+                reader = ba.classify_issue_close if " issue " in cmd else ba.classify_pr_merge
+                self.assertEqual(reader(cmd.split()), (None, None))
+
+    def test_d13_a_leading_repo_flag_merge_or_close_is_denied_before_any_reader(self):
+        """Operator ruling D13 (issuecomment-7183241518): survivors 3 and 4 are
+        accepted as unreachable while F1499's undecided deny stands. These
+        readers see no target for a leading `-R` merge or close, so `consume()`
+        would leave the slot live and `record_tasklist_post` would record no
+        marker; that holds only because block_missing_preclose_inspection denies
+        the call at PreToolUse (deny beats batch_gate's ask, and PostToolUse
+        never fires for a denied call). If this test fails, that deny is gone
+        and both survivors are live again."""
+        import block_missing_preclose_inspection as preclose  # noqa: PLC0415
+        import record_tasklist_post  # noqa: PLC0415
+        for cmd in (f"gh -R vitalharmony/hrse pr merge 1202 --squash --match-head-commit {JUDGED}",
+                    "gh -R vitalharmony/hrse issue close 395"):
+            with self.subTest(cmd=cmd):
+                targets = preclose.find_gated_targets_exempt(cmd)
+                self.assertEqual(targets, [preclose._UNDECIDED])
+                with mock.patch.object(preclose, "_gh", side_effect=AssertionError("no read before the deny")):
+                    verdict = preclose.decide_targets(targets, "/tmp", lambda number: [JUDGED])
+                self.assertIsNotNone(verdict)
+                self.assertIn("cannot name or prove", verdict[0])
+                # The residual this deny makes unreachable:
+                self.assertIsNone(ba.classify_pr_merge(cmd.split()))
+                self.assertIsNone(ba.classify_issue_close(cmd.split()))
+                self.assertEqual(ba.consume(cmd, state_path=self.state_path, landed=lambda *a: True), [])
+                self.assertEqual(record_tasklist_post.events(
+                    {"tool_input": {"command": cmd}, "cwd": "/tmp", "tool_response": {}}), [])
+
+    def test_a_close_whose_comment_is_gh_keeps_its_target(self):
+        """Survivor 10: no containment front end, so a `gh` value is just a value."""
+        cmd = "gh issue close 5 --repo vitalharmony/hrse -c gh"
+        self.assertEqual(ba.classify_issue_close(cmd.split()), (None, "5"))
+
+    def test_pr_merge_number_is_an_int(self):
+        for cmd in (f"gh pr merge 1202 --repo vitalharmony/hrse --match-head-commit {JUDGED}",
+                    "gh api -X PUT repos/vitalharmony/hrse/pulls/1202/merge"):
+            with self.subTest(cmd=cmd):
+                self.assertIsInstance(ba.classify_pr_merge(cmd.split())[1], int)
+
+    def test_a_url_target_never_pairs_a_number_with_no_repo(self):
+        """A URL's number is not an argv word, so cwd never supplies its repo."""
+        cmd = "gh issue close https://github.com/other/repo/issues/5"
+        self.assertEqual(ba.classify_issue_close(cmd.split()), (None, None))
+        runner = lambda *a, **k: self.fail("cwd must not be read")  # noqa: E731
+        self.assertEqual(ba.closed_keys(cmd, cwd="/tmp", runner=runner), [])
 
 
 class OverlayNeverReachesBatchPrefixes(unittest.TestCase):

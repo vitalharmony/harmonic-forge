@@ -150,6 +150,13 @@ class TestFamilyMatching(unittest.TestCase):
             verdict = self.assertFamily(command, "gh issue close", "external-publish")
             self.assertIn("batch_gate.py", verdict.guard)
 
+    def test_an_undecided_call_is_not_claimed_as_a_merge_or_close(self):
+        """harmonic-forge#1497: the recognizer claims a merge or close only with a number."""
+        for command in ("gh -R o/r pr " + "list", "gh triage-done 12"):
+            verdict = classify(command)
+            self.assertNotIn(getattr(verdict, "family", None), ("gh pr merge", "gh issue close"), command)
+        self.assertFamily("gh pr -R o/r merge 5", "gh pr merge", "irreversible")
+
     def test_shell_escape(self):
         self.assertFamily("bash -c 'git push'", "git push", "external-publish")
         self.assertFamily("sh -c 'cd x && gh -R o/r pr merge 5'", "gh pr merge", "irreversible")
