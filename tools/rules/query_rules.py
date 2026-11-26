@@ -127,11 +127,17 @@ def enforcement_of(rule: dict) -> str:
     return rule.get("enforcement", "prose")
 
 
+def _hook_script(entry: object) -> str | None:
+    """A table or path-string `hooks` entry as its basename, else None (harmonic-forge#1594)."""
+    return Path(entry["script"] if isinstance(entry, dict) else entry).name if isinstance(entry, (dict, str)) else None
+
+
 def _print_rule(rule: dict) -> None:
     print(f"{rule['id']}  [{enforcement_of(rule)}]  {rule['file']}")
     print(f"    {rule['statement']}")
     for hook in rule.get("hooks", []) or []:
-        print(f"    hook: {hook['script']}  events={hook.get('events', [])}  wired_in={hook.get('wired_in', [])}")
+        extra = f"  events={hook.get('events', [])}  wired_in={hook.get('wired_in', [])}" if isinstance(hook, dict) else ""
+        print(f"    hook: {_hook_script(hook) or f'<{type(hook).__name__} entry>'}{extra}")
     if rule.get("restates"):
         print(f"    restates: {rule['restates']}")
 
@@ -155,9 +161,13 @@ def hooks_report(rules: list[dict], root: Path) -> int:
             print(f"  {scope:<18} {len(scripts)} script(s)")
 
     claimed: dict[str, set[str]] = defaultdict(set)
+    malformed: list[str] = []
     for rule in rules:
         for hook in rule.get("hooks", []) or []:
-            claimed[hook["script"]].add(rule["id"])
+            if (script := _hook_script(hook)) is not None:
+                claimed[script].add(rule["id"])
+            else:
+                malformed.append(f"rule {rule['id']}: hook entry of type {type(hook).__name__} is neither a table nor a path")
 
     unbacked = sorted(s for s in claimed if s not in live_scripts)
     unmapped = sorted(s for s in live_scripts if s not in claimed)
@@ -172,9 +182,11 @@ def hooks_report(rules: list[dict], root: Path) -> int:
         print(f"\nUNMAPPED live hooks — wired but named by no rule ({len(unmapped)}):")
         for script in unmapped:
             print(f"  {script}  wired in {sorted(live_scripts[script])}")
-    if not unbacked and not unmapped:
+    if malformed:
+        print(f"\nMALFORMED `hooks` entries ({len(malformed)}):", *malformed, sep="\n  ")
+    if not unbacked and not unmapped and not malformed:
         print("\nEvery claimed hook is live and every live hook maps to a rule.")
-    return 1 if (unbacked or unmapped) else 0
+    return 1 if (unbacked or unmapped or malformed) else 0
 
 
 def folded_report(rules: list[dict]) -> int:
