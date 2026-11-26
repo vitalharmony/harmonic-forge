@@ -184,9 +184,31 @@ class Q3PushForAnOrganization(InvokingCase):
         os.chdir(self.org)
 
     def gh(self, stdout: str, code: int = 0):
-        """The push read's `gh api`, stubbed in `manifest_invoking` alone (git still runs)."""
+        """The push read's `gh api`, stubbed in `manifest_invoking` alone (git still runs).
+        The stub refuses any read but `repos/<repo> --jq '.owner.type, .permissions.push'`
+        (preclose round 1: a `.permissions.pull` read must not pass)."""
         result = subprocess.CompletedProcess([], code, stdout=stdout, stderr="HTTP 502")
-        fake = mock.Mock(run=mock.Mock(return_value=result), SubprocessError=subprocess.SubprocessError)
+
+        def run(argv, **_kwargs):
+            if argv[3:] != ["--jq", ".owner.type, .permissions.push"]:
+                raise AssertionError(f"the push read queried {argv!r}")
+            return result
+        fake = mock.Mock(run=mock.Mock(side_effect=run), SubprocessError=subprocess.SubprocessError)
+        return mock.patch.object(minv, "subprocess", fake)
+
+    def gh_api(self, response: dict):
+        """The push read answered from a repos API `response`, evaluating the `--jq`
+        paths it is given, so the answer depends on the permission queried."""
+        def run(argv, **_kwargs):
+            out = []
+            for field in argv[argv.index("--jq") + 1].split(","):
+                value = response
+                for part in field.strip().lstrip(".").split("."):
+                    value = value.get(part) if isinstance(value, dict) else None
+                out.append("null" if value is None
+                           else str(value).lower() if isinstance(value, bool) else str(value))
+            return subprocess.CompletedProcess(argv, 0, stdout="\n".join(out) + "\n", stderr="")
+        fake = mock.Mock(run=mock.Mock(side_effect=run), SubprocessError=subprocess.SubprocessError)
         return mock.patch.object(minv, "subprocess", fake)
 
     def apply(self, login: str, repo: str = "acmeorg/app") -> str:
@@ -194,10 +216,22 @@ class Q3PushForAnOrganization(InvokingCase):
             return mi.apply_project_identity(repo)
 
     def test_an_org_member_with_push_posts(self) -> None:
+        ambient = str(self.tmp / "ambient")
+        os.environ["GH_CONFIG_DIR"] = ambient
         with self.gh("Organization\ntrue\n") as run:
             self.assertEqual(self.apply("alice"), "acmeorg")
-        self.assertEqual(run.run.call_args.args[0][:3], ["gh", "api", "repos/acmeorg/app"])
-        self.assertEqual(os.environ["GH_CONFIG_DIR"], str(self.slots / "acmeorg"))
+        self.assertEqual(run.run.call_args.args[0],
+                         ["gh", "api", "repos/acmeorg/app", "--jq", ".owner.type, .permissions.push"])
+        self.assertEqual(os.environ["GH_CONFIG_DIR"], ambient)  # ruling D11: never a slot
+
+    def test_the_push_read_queries_push_not_pull(self) -> None:
+        """Preclose round 1, survivor 3: a pull-only member refuses, a push member posts."""
+        pull_only = {"owner": {"type": "Organization"}, "permissions": {"pull": True, "push": False}}
+        with self.gh_api(pull_only), self.assertRaisesRegex(SystemExit, "identity mismatch"):
+            self.apply("alice")
+        pusher = {"owner": {"type": "Organization"}, "permissions": {"pull": False, "push": True}}
+        with self.gh_api(pusher):
+            self.assertEqual(self.apply("alice"), "acmeorg")
 
     def test_a_login_without_push_refuses(self) -> None:
         for stdout in ("Organization\nfalse\n", "Organization\nnull\n", "User\ntrue\n", ""):
@@ -214,7 +248,6 @@ class Q3PushForAnOrganization(InvokingCase):
         with self.gh("Organization\ntrue\n") as run:
             self.assertEqual(self.apply("acme", "acme/app"), "acme")
             run.run.assert_not_called()
-        mi._VERIFIED.clear()  # the probe is cached per slot
         with self.gh("User\ntrue\n"), self.assertRaisesRegex(SystemExit, "identity mismatch"):
             self.apply("alice", "acme/app")
 
@@ -223,6 +256,93 @@ class Q3PushForAnOrganization(InvokingCase):
             with self.assertRaisesRegex(SystemExit, "identity mismatch"):
                 self.apply("alice", "vitalharmony/hrse")
             run.run.assert_not_called()
+
+
+class D11OverlayOnlyIsAmbient(InvokingCase):
+    """Ruling D11 (preclose round 1, survivors 1 and 2): an overlay-only account never
+    uses a credential slot, inside a lane or not; the session's current login posts."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ambient = str(self.tmp / "ambient")
+        os.environ.update(GH_CONFIG_DIR=self.ambient, GH_TOKEN="ambient-token")
+        self.seen: list[tuple[str | None, str | None]] = []
+
+    def probe(self, logins: dict[str, str]):
+        """`_probe_login` answering by the GH_CONFIG_DIR it runs under, recording the env."""
+        def login() -> str:
+            self.seen.append((os.environ.get("GH_CONFIG_DIR"), os.environ.get("GH_TOKEN")))
+            return logins.get(os.environ.get("GH_CONFIG_DIR", ""), "")
+        return mock.patch.object(mi, "_probe_login", side_effect=login)
+
+    def test_every_lane_posts_under_the_ambient_login(self) -> None:
+        os.chdir(self.app)
+        for lane in (None, "1", "2", "3"):
+            with self.subTest(lane=lane):
+                self.seen.clear()
+                if lane is None:
+                    os.environ.pop("LANE", None)
+                else:
+                    os.environ["LANE"] = lane
+                with self.probe({self.ambient: "acme"}):
+                    self.assertEqual(mi.apply_project_identity("acme/app"), "acme")
+                self.assertEqual(self.seen, [(self.ambient, "ambient-token")])
+                self.assertEqual((os.environ["GH_CONFIG_DIR"], os.environ["GH_TOKEN"]),
+                                 (self.ambient, "ambient-token"))
+
+    def test_an_owner_named_like_a_slot_dir_never_reads_it(self) -> None:
+        """`slots/acmeorg` exists and authenticates as acmeorg; the ambient login is
+        alice, without push, so the post refuses rather than borrowing the slot."""
+        os.chdir(self.repo("org", "acmeorg/app"))
+        fake = mock.Mock(run=mock.Mock(return_value=subprocess.CompletedProcess(
+            [], 0, stdout="Organization\nfalse\n", stderr="")),
+            SubprocessError=subprocess.SubprocessError)
+        logins = {self.ambient: "alice", str(self.slots / "acmeorg"): "acmeorg"}
+        with self.probe(logins), mock.patch.object(minv, "subprocess", fake):
+            with self.assertRaisesRegex(SystemExit, "identity mismatch"):
+                mi.apply_project_identity("acmeorg/app")
+        self.assertEqual(self.seen, [(self.ambient, "ambient-token")])
+
+
+class RequireOnboardedRefuses(InvokingCase):
+    """Preclose round 1, survivor 4: each refusal branch of `require_onboarded`."""
+
+    def overlay_repo(self, name: str, extra: str) -> Path:
+        return make_repo(self.tmp / name, f"https://github.com/acme/{name}.git",
+                         overlay_text(name=name, repo=f"acme/{name}", account="acme",
+                                      prefix="Q", extra=extra))
+
+    def test_an_overlay_not_onboarded_refuses(self) -> None:
+        for name, extra in (("noob", "onboarded = false\n" + PROTOCOL), ("unset", PROTOCOL)):
+            with self.subTest(name=name):
+                where = self.overlay_repo(name, extra)
+                self.assertEqual(minv.project_for_repo(f"acme/{name}", cwd=where).repo, f"acme/{name}")
+                with self.assertRaisesRegex(ManifestError,
+                                            f"acme/{name} is declared with onboarded = false"):
+                    minv.require_onboarded(f"acme/{name}", cwd=where)
+
+    def test_an_overlay_without_protocol_refuses(self) -> None:
+        """A real onboarded overlay with no protocol already fails validation, so the
+        `protocol is None` branch is reached with a resolved Project patched in."""
+        where = self.overlay_repo("noproto", 'onboarded = true\nworkspace = "acme-noproto"\n')
+        with self.assertRaisesRegex(ManifestError, r"onboarded but declares no \[project.protocol\]"):
+            minv.require_onboarded("acme/noproto", cwd=where)
+        bare = mf.Project(name="noproto", prefix="Q", account="acme", repo="acme/noproto",
+                          onboarded=True, workspace="acme-noproto")
+        self.assertIsNone(bare.protocol)
+        with mock.patch.object(minv, "_fallback", return_value=bare):
+            with self.assertRaisesRegex(ManifestError, r"acme/noproto has no \[project.protocol\]"):
+                minv.require_onboarded("acme/noproto", cwd=where)
+
+    def test_a_registered_repo_not_onboarded_refuses_without_the_overlay(self) -> None:
+        """`vitalharmony/hrse` is in BASE with no `onboarded` (false): the base-hit path
+        is `manifest.require_onboarded_repo`, which refuses it, from any cwd."""
+        self.assertFalse(mf.by_repo()["vitalharmony/hrse"].onboarded)
+        for where in (self.outside, self.app):
+            with self.subTest(where=where):
+                with self.assertRaisesRegex(ManifestError,
+                                            "vitalharmony/hrse is declared with onboarded = false"):
+                    minv.require_onboarded("vitalharmony/hrse", cwd=where)
 
 
 class HooksArePinnedOut(unittest.TestCase):

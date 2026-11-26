@@ -255,14 +255,34 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
 
     Call once per entrypoint, right after the repo is resolved and before the
     first `gh` call. Returns the account. The probe runs once per slot per
-    process; a mismatch exits non-zero before the caller can write anything. An
-    overlay-only organization repo needs push instead (`manifest_invoking.org_push`).
+    process; a mismatch exits non-zero before the caller can write anything.
+
+    An overlay-only repo (harmonic-forge#1579, ruling D11) never uses a credential
+    slot, inside a lane or not: it takes the launcher's `ambient` mode
+    (`manifest_slots.launch_identity`), leaving GH_CONFIG_DIR and tokens untouched,
+    so the session's current `gh` login posts. That login must equal the account
+    or, for an organization owner, have push (`manifest_invoking.org_push`).
     """
     import manifest_invoking  # noqa: PLC0415 -- harmonic-forge#1579: posting entrypoints only
-    account = manifest_invoking.project_for_repo(repo, path=path).account
-    if not account:
-        raise ManifestError(f"{normalize_repo(repo)} is registered but declares no `account`; "
-                            "its identity cannot be resolved")
+    if normalize_repo(repo) not in by_repo(path):
+        account = manifest_invoking.project_for_repo(repo, path=path).account
+        if not account:
+            raise ManifestError(f"{normalize_repo(repo)} is registered but declares no "
+                                "`account`; its identity cannot be resolved")
+        try:
+            login = _probe_login()
+        except ProbeUnavailable as exc:
+            raise SystemExit(
+                f"identity: could not verify the ambient gh login for account {account} "
+                f"(gh api user failed: {exc}); retry when GitHub is reachable") from exc
+        if not login:
+            raise SystemExit(f"identity: the ambient gh login is not authenticated; {repo} "
+                             "is registered only by its .claude/forge.toml (harmonic-forge#1579)")
+        if login.lower() != account.lower() and not manifest_invoking.org_push(repo, path):
+            raise SystemExit(
+                f"identity mismatch: {repo} needs {account}, the ambient gh login is {login}")
+        return account
+    account = account_for(repo, path)
     # harmonic-forge#1470: a lane keeps its own slot and token, never the shared one.
     slot, lane_token = manifest_slots.selection(account, os.environ.get("LANE"), path)
     if lane_token == "":
@@ -289,7 +309,7 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
                 f"identity: slot {slot} for account {account} is not "
                 f"authenticated (repair with: gh-as --init {account})")
         _VERIFIED[str(slot)] = login
-    if login.lower() != account.lower() and not manifest_invoking.org_push(repo, path):
+    if login.lower() != account.lower():
         raise SystemExit(
             f"identity mismatch: {repo} needs {account}, slot authenticates as {login}")
     return account
