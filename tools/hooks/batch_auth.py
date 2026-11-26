@@ -930,42 +930,87 @@ def _protected_graphql(tokens: list[str]) -> bool:
     return query is None or query.startswith("@") or "$" in query or bool(PROTECTED_GRAPHQL_MUTATIONS.search(query))
 
 
-def _adapter_target(tokens: list[str], reader, verb: tuple[str, str]) -> tuple[str | None, str | None] | None:
-    """`reader`'s (`gh_argv_adapters.close_target`/`merge_target`) answer for one
-    segment as `(repo, number)`, or None when the call is provably not that kind
-    (harmonic-forge#1497, `VERDICT["batch"]`: every non-None answer asks unless a
-    grant binds it). Kind and number are `gh_argv`'s, read with an empty
-    environment; an unparseable or unprovable call has no number. The repo is a
-    `gh api` call's REST path, else `_bound_repo`'s closed shape, never the
-    adapter's (that would bind an inline or inherited GH_REPO). A CLI number
-    counts only as a literal argv word, so a URL target never pairs with cwd."""
+def _gh_reading(tokens: list[str]) -> tuple[list[str], "A.Result"] | None:
+    """One segment's literal gh call and the adapter's reading of it, or None
+    when the segment is not a literal gh call (harmonic-forge#1497).
+
+    Recognition is main's: `strip_invocation_prefix` plus a `gh` basename (the
+    F1498 sticky-wicket design amendment, as F1499's `_gh_reading`); containment
+    is the F1447 shim's. The adapter reads only the argv after `gh`, with an
+    empty environment. A fault after recognition is unparseable, never a pass."""
     tokens = strip_invocation_prefix(tokens)
-    result = reader(tokens, {})
-    if result is None:
+    if not tokens or Path(tokens[0]).name != "gh":
+        return None
+    try:
+        return tokens, A.classify_argv(tokens[1:], {})
+    except Exception as exc:  # noqa: BLE001 - any parser fault is undecided
+        return tokens, A.Result(A.UNPARSEABLE, reason=f"unparseable gh call: {type(exc).__name__}")
+
+
+def _rest_reopen(rest: list[str]) -> bool:
+    """A gated REST issue PATCH that is not a close: its body is read in full
+    and never sets `state=closed` (main's `_has_field` predicate, applied to
+    gh_argv's parsed fields so `--raw-field=state=closed` and `-fstate=closed`
+    still count). An `--input` body, a keyless or `@file` field, or a query
+    string is unread, so the call stays a close (harmonic-forge#1497)."""
+    try:
+        parsed = A.gh_argv.parse(rest)
+        fields = A.gh_argv._api_fields(parsed)
+    except Exception:  # noqa: BLE001 - unread, so not provably a reopen
+        return False
+    if parsed.has("--input") or any("?" in p for p in parsed.positionals) or any(
+            f.key is None or f.from_file for f in fields):
+        return False
+    return not _has_field([f"{f.base}={f.value}" for f in fields], "state=closed")
+
+
+def _adapter_target(tokens: list[str], kind: str, verb: tuple[str, str]) -> tuple[str | None, str | None] | None:
+    """`(repo, number)` for a literal gh call the adapter reads as a gated `kind`
+    ("issue" close or "pr" merge), bound or unbound; None otherwise, an
+    unparseable or unprovable call included (main's contract: None is "not a
+    close or merge this reader can name"; `decide()` alone asks on those).
+    The repo is a `gh api` call's REST path, else `_bound_repo`'s closed shape,
+    never the adapter's. A REST issue PATCH whose body is read in full and
+    never sets `state=closed` is a reopen, not a close (`_rest_reopen`). With
+    an empty environment the adapter's repo comes only
+    from `-R`/`--repo` or a URL, so a repo with no such token is a URL target:
+    `(None, None)`, as on main, so cwd never supplies its repo."""
+    reading = _gh_reading(tokens)
+    if reading is None:
+        return None
+    tokens, result = reading
+    if not result.gated or result.kind != kind:
         return None
     rest = tokens[1:]
     if rest[:1] == ["api"]:
+        if kind == "issue" and _rest_reopen(rest):
+            return None
         return result.repo, result.number
-    return _bound_repo(rest, verb), (result.number if result.number in rest else None)
+    if result.repo and not any(t.startswith(("--repo", "-R")) for t in rest):
+        return None, None
+    return _bound_repo(rest, verb), result.number
 
 
 def undecided(tokens: list[str]) -> str | None:
-    """The adapter's reason when this segment cannot be proved not to be a close
-    or merge (unparseable or unprovable), else None (harmonic-forge#1497)."""
-    reading = A.classify(strip_invocation_prefix(tokens), {})
-    return reading.reason if reading.outcome in (A.UNPARSEABLE, A.UNPROVABLE) else None
+    """The adapter's reason when this literal gh segment cannot be proved not to
+    be a close or merge (unparseable or unprovable), else None; a segment that
+    is not a literal gh call is never undecided (harmonic-forge#1497)."""
+    reading = _gh_reading(tokens)
+    if reading is None:
+        return None
+    return reading[1].reason if reading[1].outcome in (A.UNPARSEABLE, A.UNPROVABLE) else None
 
 
 def classify_issue_close(tokens: list[str]) -> tuple[str | None, str | None] | None:
-    """Is this segment `gh issue close` in any form, or a gh call that cannot be
-    proved not to be one? Returns (repo, number), either possibly None, or None
-    when it is provably not an issue close."""
-    return _adapter_target(tokens, A.close_target, ("issue", "close"))
+    """Is this segment ANY form of `gh issue close`? Returns (repo, number) --
+    either may be None if unresolvable from this command alone -- or None if
+    this segment is not an issue close the adapter can read."""
+    return _adapter_target(tokens, "issue", ("issue", "close"))
 
 
 def classify_pr_merge(tokens: list[str]) -> tuple[str | None, int | None] | None:
     """`classify_issue_close` for `gh pr merge`; the number is an int."""
-    found = _adapter_target(tokens, A.merge_target, ("pr", "merge"))
+    found = _adapter_target(tokens, "pr", ("pr", "merge"))
     return None if found is None else (found[0], int(found[1]) if found[1] else None)
 
 
@@ -1409,7 +1454,7 @@ def decide(command: str, state_path: Path | None = None) -> tuple[str, str] | No
             if reason:  # never told it is an issue close
                 return "ask", ("[BATCH] Cannot prove this is not an issue close or a PR merge "
                                f"({reason}); a merge binds only as `{CANONICAL_MERGE}`.")
-            is_close =classify_issue_close(tokens) is not None
+            is_close = classify_issue_close(tokens) is not None
             is_merge = (not is_close) and classify_pr_merge(tokens) is not None
             if not is_close and not is_merge:
                 continue

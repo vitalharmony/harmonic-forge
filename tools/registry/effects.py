@@ -536,9 +536,7 @@ def _family_matches(entry: dict, tokens: list[str]) -> bool:
     if pair and any(rest[i:i + 2] == pair for i in range(len(rest) - 1)):
         return True
     recognizer = match.get("recognizer")
-    # harmonic-forge#1497: an undecided call (no number) is not claimed as a merge or close.
-    found = RECOGNIZERS[recognizer](list(tokens)) if recognizer else None
-    return found is not None and found[1] is not None
+    return bool(recognizer and RECOGNIZERS[recognizer](list(tokens)) is not None)
 
 
 def _flag_read(args: list[str], flags: dict) -> bool:

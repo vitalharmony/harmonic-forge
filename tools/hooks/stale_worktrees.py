@@ -105,8 +105,7 @@ def merged_repos(command: str, cwd: str | None, deadline: float,
     for raw in segments:
         tokens = batch_auth.strip_invocation_prefix(raw)
         info = batch_auth.classify_pr_merge(tokens)
-        # harmonic-forge#1497: a call that is undecided, not a merge, is skipped silently.
-        if info is None or (info[1] is None and batch_auth.undecided(tokens)):
+        if info is None:
             continue
         repo, number = info
         # Scope (sticky-wicket PATCH, issuecomment-6874956429): an unparsed merge form is

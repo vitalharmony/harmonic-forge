@@ -1,0 +1,1293 @@
+{
+ "GH_REPO=a/b gh issue close 12": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "12"
+  ],
+  "pr": null
+ },
+ "VAR=x gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "command gh issue close 700 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "700"
+  ],
+  "pr": null
+ },
+ "command gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "700"
+  ]
+ },
+ "echo 'gh issue close 395' '>' notes.md": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "echo gh": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "echo gh triage-done 12": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "env -i gh issue close 700 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "700"
+  ],
+  "pr": null
+ },
+ "env -u FOO gh issue close 700 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "700"
+  ],
+  "pr": null
+ },
+ "env -u GH_REPO gh issue close 12": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "12"
+  ],
+  "pr": null
+ },
+ "env GH_HOST=x gh issue close 700 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "700"
+  ],
+  "pr": null
+ },
+ "env GH_HOST=x gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "700"
+  ]
+ },
+ "gh --hostname h issue close 5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh --repo o/r pr merge 5": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "5"
+  ]
+ },
+ "gh -R a/b -R c/d issue close 5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh -R a/b issue close 5 --repo c/d": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh -R o/r issue close 12": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "12"
+  ],
+  "pr": null
+ },
+ "gh -R o/r issue close 5": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh -R o/r pr merge 5": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "5"
+  ]
+ },
+ "gh -R vitalharmony/a -R vitalharmony/b issue close 5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh -R vitalharmony/hrse issue close 395": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh -R vitalharmony/hrse pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh -R vitalharmony/hrse pr merge 1202 --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh -Ro/r issue close 5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api -X PATCH 'repos/{owner}/{repo}/issues/5' -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "{owner}/{repo}",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api -X PATCH repos/o/r/issues/5 -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api -X PUT 'repos/{owner}/{repo}/pulls/5/merge'": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "{owner}/{repo}",
+   "5"
+  ]
+ },
+ "gh api -X PUT repos/o/r/pulls/5/merge": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "5"
+  ]
+ },
+ "gh api -X PUT repos/vitalharmony/hrse/pulls/1202/merge": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh api -iXPUT repos/vitalharmony/hrse/pulls/1202/merge": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api graphql --input body.json -X POST": {
+  "decide": "ask",
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/o/r/issues/5 -X PATCH -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api repos/o/r/issues/5 -X PATCH -f state=closed --hostname h": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/harmonic-forge/issues/900 -X PATCH -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/harmonic-forge",
+   "900"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/395 -X PATCH -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/400 -X PATCH -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "400"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --input body.json": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=closed": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH --raw-field=state=open": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -F state=@s.txt": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=closed --template -Rvitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/5 -X PATCH -f state=open": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/issues/999 -X PATCH -f state=closed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "999"
+  ],
+  "pr": null
+ },
+ "gh api repos/vitalharmony/hrse/pulls/1202/merge -H -X PUT": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh api repos/vitalharmony/hrse/pulls/1202/merge -X PUT -f sha=ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh issue --hostname h close 5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue -R o/r close 5": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue close '$N'": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue close '$N' --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue close --comment 7 1291": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "1291"
+  ],
+  "pr": null
+ },
+ "gh issue close --duplicate-of 1290 1291": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "1291"
+  ],
+  "pr": null
+ },
+ "gh issue close --repo 5 7": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "7"
+  ],
+  "pr": null
+ },
+ "gh issue close -R vitalharmony/hrse 900": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "900"
+  ],
+  "pr": null
+ },
+ "gh issue close -c 12 1291": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "1291"
+  ],
+  "pr": null
+ },
+ "gh issue close -r completed 1291": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "1291"
+  ],
+  "pr": null
+ },
+ "gh issue close 12 --bogus": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "12"
+  ],
+  "pr": null
+ },
+ "gh issue close 12 --repo o/r": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "12"
+  ],
+  "pr": null
+ },
+ "gh issue close 395": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --comment hi": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --duplicate-of '\u00b2'": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --duplicate-of abc": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --reason": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --reason 'not planned'": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --reason bogus": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --reason completed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --reason completed --reason completed": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 395 --repo vitalharmony/hrse --reason duplicate --duplicate-of 12": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --comment x": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --repo o/r": {
+  "decide": "ask",
+  "issue": [
+   "o/r",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --repo o/r --comment x": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --repo vitalharmony/hrse --comment x": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --repo vitalharmony/hrse --reason bogus": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --repo vitalharmony/hrse --reason completed": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 --repo vitalharmony/hrse -c gh": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 -R=o/r": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 5 -R=vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "5"
+  ],
+  "pr": null
+ },
+ "gh issue close 552 --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/harmonic-forge",
+   "552"
+  ],
+  "pr": null
+ },
+ "gh issue close 9 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "9"
+  ],
+  "pr": null
+ },
+ "gh issue close 900": {
+  "decide": "ask",
+  "issue": [
+   null,
+   "900"
+  ],
+  "pr": null
+ },
+ "gh issue close 900 --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/harmonic-forge",
+   "900"
+  ],
+  "pr": null
+ },
+ "gh issue close 901 --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/harmonic-forge",
+   "901"
+  ],
+  "pr": null
+ },
+ "gh issue close 99 --repo x/y": {
+  "decide": "ask",
+  "issue": [
+   "x/y",
+   "99"
+  ],
+  "pr": null
+ },
+ "gh issue close https://github.com/other/repo/issues/5": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue close https://github.com/vitalharmony/hrse/issues/12 -c 12": {
+  "decide": "ask",
+  "issue": [
+   null,
+   null
+  ],
+  "pr": null
+ },
+ "gh issue list --repo vitalharmony/hrse": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh issue view 12": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh pr -R o/r merge 5": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "5"
+  ]
+ },
+ "gh pr merge": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   null
+  ]
+ },
+ "gh pr merge --match-head-commit 123456 7": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "7"
+  ]
+ },
+ "gh pr merge --match-head-commit 1234567 993 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "993"
+  ]
+ },
+ "gh pr merge --match-head-commit=1234567 993 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "993"
+  ]
+ },
+ "gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/a",
+   "1"
+  ]
+ },
+ "gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo o/a --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/a",
+   "1"
+  ]
+ },
+ "gh pr merge 1 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "1"
+  ]
+ },
+ "gh pr merge 1 --repo o/a --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/a",
+   "1"
+  ]
+ },
+ "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --rebase --delete-branch --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash -- --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --auto --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --body --match-head-commit=ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff '\n--match-head-commit' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit ffffffffffffffffffffffffffffffffffffffff --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --match-head-commit=ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash --merge --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash -b done --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash -sb --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1202 --repo vitalharmony/hrse --squash -sd --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "1202"
+  ]
+ },
+ "gh pr merge 1500 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1500"
+  ]
+ },
+ "gh pr merge 1600 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1600"
+  ]
+ },
+ "gh pr merge 1753 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1753"
+  ]
+ },
+ "gh pr merge 1758 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1758"
+  ]
+ },
+ "gh pr merge 1799 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1799"
+  ]
+ },
+ "gh pr merge 2 --repo o/b --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/b",
+   "2"
+  ]
+ },
+ "gh pr merge 273 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "273"
+  ]
+ },
+ "gh pr merge 274 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "274"
+  ]
+ },
+ "gh pr merge 3 --repo o/c --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/c",
+   "3"
+  ]
+ },
+ "gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "42"
+  ]
+ },
+ "gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "42"
+  ]
+ },
+ "gh pr merge 42 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "42"
+  ]
+ },
+ "gh pr merge 43 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "43"
+  ]
+ },
+ "gh pr merge 5 --body -Rvitalharmony/hrse --repo o/r": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "5"
+  ]
+ },
+ "gh pr merge 5 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "5"
+  ]
+ },
+ "gh pr merge 5 --repo o/r --squash --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "5"
+  ]
+ },
+ "gh pr merge 5 -r -R other/repo": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "5"
+  ]
+ },
+ "gh pr merge 5001 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "5001"
+  ]
+ },
+ "gh pr merge 561 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "561"
+  ]
+ },
+ "gh pr merge 7 --body -Rx --repo o/r": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   "7"
+  ]
+ },
+ "gh pr merge 7 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo kenekted/mve --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "kenekted/mve",
+   "7"
+  ]
+ },
+ "gh pr merge 7 --repo o/r --squash --delete-branch --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "7"
+  ]
+ },
+ "gh pr merge 9 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo someorg/unmapped": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "someorg/unmapped",
+   "9"
+  ]
+ },
+ "gh pr merge 9 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "9"
+  ]
+ },
+ "gh pr merge 900 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/harmonic-forge --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/harmonic-forge",
+   "900"
+  ]
+ },
+ "gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --delete-branch": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "gh pr merge 993 --repo vitalharmony/hrse --squash --match-head-commit abc123": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "gh pr merge https://github.com/vitalharmony/hrse/pull/12 --body 12": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   null,
+   null
+  ]
+ },
+ "gh repo view": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh triage-done 12 --repo o/r": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "gh-as vitalharmony gh issue close 395 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gh-as vitalharmony gh issue close 999999 --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/harmonic-forge",
+   "999999"
+  ],
+  "pr": null
+ },
+ "gh-as vitalharmony gh pr merge 1202 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gh-as vitalharmony gh pr merge 5 --repo o/r": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "o/r",
+   "5"
+  ]
+ },
+ "gh-as vitalharmony gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "gha vh issue close 395 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "gha vh issue close 999999 --repo vitalharmony/harmonic-forge": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/harmonic-forge",
+   "999999"
+  ],
+  "pr": null
+ },
+ "gha vh pr merge 1202 --repo vitalharmony/hrse --match-head-commit ffffffffffffffffffffffffffffffffffffffff": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "1202"
+  ]
+ },
+ "gha vitalharmony pr merge 993 --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "git clean -fd": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "git commit -m 'gh pr merge 5 lands it'": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "git status": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "grep -rn gh tools": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "ls -la": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "ls tools/gh": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "nice gh pr merge 993 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse --squash": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "993"
+  ]
+ },
+ "nohup gh issue close 700 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "700"
+  ],
+  "pr": null
+ },
+ "nohup gh pr merge 700 --match-head-commit ffffffffffffffffffffffffffffffffffffffff --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": null,
+  "pr": [
+   "vitalharmony/hrse",
+   "700"
+  ]
+ },
+ "sudo gh pr merge 5": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "timeout 30 gh issue close 395 --repo vitalharmony/hrse": {
+  "decide": "ask",
+  "issue": [
+   "vitalharmony/hrse",
+   "395"
+  ],
+  "pr": null
+ },
+ "which gh": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ },
+ "xargs -n1 gh issue close": {
+  "decide": null,
+  "issue": null,
+  "pr": null
+ }
+}

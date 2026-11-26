@@ -81,7 +81,7 @@ def _closed(payload: dict, deadline: float | None = None,
     found: list[tuple[str, str, str | None]] = []
     for segment in command_segments(command):
         close = batch_auth.classify_issue_close(segment)
-        if not close or batch_auth.undecided(segment):  # harmonic-forge#1497: the catch-all's
+        if not close:
             continue
         number = close[1] or "?"
         if deadline is not None and deadline - clock() <= LANDING_TIMEOUT:
@@ -166,7 +166,7 @@ def _unparsed(command: str) -> bool:
         seen += mentions
         if not mentions:
             continue
-        if mentions > 1 or not batch_auth.classify_issue_close(segment) or batch_auth.undecided(segment):
+        if mentions > 1 or not batch_auth.classify_issue_close(segment):
             return True
     return len(_CLOSE_MENTION.findall(command)) > seen
 
