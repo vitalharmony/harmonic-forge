@@ -1195,6 +1195,8 @@ def validate_ae(body: str, repo: str, issue: int) -> None:
         )
     if not is_substantive(body.strip()):
         fail("AE body is a template placeholder")
+    if gate_ci.verdict_of(body) == "PASS" and gate_ci.may_be_a_gate_report(body):  # harmonic-forge#1565
+        fail("AE body carries a Lane 3 PASS declaration (gate_ci's PASS recognizer); an AE is never a gate result")
 
 
 SWEEP_HEADING = re.compile(r"(?im)^#{1,4}\s*Gate-readiness sweep\b")
