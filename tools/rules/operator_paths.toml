@@ -22,8 +22,6 @@ globs = [
     "tools/gh/bounded_scan.py",
     "tools/gh/gh_scan_patterns.py",
     "tools/gh/projects_token.py",
-    "tools/lane/_gh_config_dir.sh",
-    "tools/lane/_lane_identity.sh",
     "tools/hooks/scan_grant.py",
     # the consuming-project gate files
     "tools/gate/*_gate_*",

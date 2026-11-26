@@ -3,7 +3,7 @@
 
 `projects.toml` records an `account` per project, but until this module only the
 belt read it. Every other tool ran `gh` as whichever login was globally active,
-so `vitalharmony` got a `404` on `kenekted/kenekted-platform` and none of the lane
+so one account got a `404` on another account's repo and none of the lane
 tooling could operate there at all.
 
 **The mechanism is one `GH_CONFIG_DIR` per process, set at the entrypoint.** Every
@@ -13,18 +13,18 @@ reintroduce the bug. It points at the project's `gh-as` slot
 switched: no `gh auth switch`, no write to `hosts.yml`.
 
 **An inherited `GH_TOKEN` is stripped, not tolerated.** `gh` gives `GH_TOKEN`
-precedence over `GH_CONFIG_DIR` (tested 2026-09-28: `GH_TOKEN`=vitalharmony plus
-the harmonicarchitect slot resolves to `vitalharmony`), so leaving one exported
+precedence over `GH_CONFIG_DIR` (tested 2026-09-28: one account's `GH_TOKEN` plus
+another account's slot resolves to the token's account), so leaving one exported
 would silently defeat the slot while every check still looked wired.
 
 **Fails loudly on an unknown repo or a wrong login.** An unregistered repo raises
 rather than falling back to the global login, and a slot that authenticates as a
 different login exits non-zero before any write (R-0015).
 
-Lives beside `manifest.py`, not in it: `manifest.py` was 294 lines and R-0006 caps a
-source file at 300. Hooks import from `tools/onboard/`, never the reverse
-(`batch_auth.py:164`'s one-way rule), and `slot_env` makes no `gh` call, so a hook
-can use it without a network probe.
+Which slot an account runs on (a lane slot or the account slot) is
+`manifest_slots.selection`, from `projects.toml`'s `[accounts]` (harmonic-forge#1528).
+Hooks import from `tools/onboard/`, never the reverse, and `slot_env` makes no `gh`
+call, so a hook can use it without a network probe.
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import manifest_slots
 from manifest import ManifestError, Project, by_repo, load
 from manifest_protocol import normalize_repo, origin_repo
 
@@ -44,9 +45,12 @@ _VERIFIED: dict[str, str] = {}
 
 
 def slot_dir(account: str) -> Path:
-    """The `gh-as` config directory for an account."""
+    """The `gh-as` config directory for an account. A relative `GH_ACCT_HOME` is
+    refused, as the launcher refuses it (harmonic-forge#1507, #1528)."""
     home = os.environ.get("GH_ACCT_HOME")
     base = Path(home).expanduser() if home else Path.home() / ".config" / "gh-accounts"
+    if not base.is_absolute():
+        raise ManifestError(f"GH_ACCT_HOME {home!r} is not an absolute path")
     return base / account
 
 
@@ -157,28 +161,15 @@ def workspace_for(path: str | Path | None, manifest: Path | None = None) -> str:
 
 
 def slot_env(repo: str, path: Path | None = None) -> dict[str, str]:
-    """`os.environ` with the repo's slot injected and tokens removed. No probe.
-
-    For hooks and multi-repo sweeps, which pass it as a per-subprocess `env=`
-    rather than mutating the process environment.
-    """
+    """`os.environ` with the repo's slot injected and tokens removed. No probe. For
+    hooks and multi-repo sweeps, which pass it as a per-subprocess `env=`."""
     env = {k: v for k, v in os.environ.items() if k not in STRIPPED_TOKEN_VARS}
-    account = account_for(repo, path)
-    lane = os.environ.get("LANE")
-    if account == "vitalharmony" and lane in ("1", "2", "3"):
-        # harmonic-forge#1396 preclose pass 1: in a lane, a vitalharmony child
-        # runs on the lane's own slot and its file token, never the shared slot,
-        # whose keyring entry gh would otherwise read. A lane slot with no file
-        # token passes none, so the call fails rather than falling back.
-        lane_slot = slot_dir(f"vitalharmony-lane{lane}")
-        env["GH_CONFIG_DIR"] = str(lane_slot)
-        # Preclose pass 2: with no GH_TOKEN, gh reads the shared keyring entry
-        # (every slot logs in as the same user), so a token-less lane slot must
-        # fail closed. This sentinel makes gh's call fail authentication; it is
-        # never the keyring.
-        env["GH_TOKEN"] = _hosts_file_token(lane_slot) or LANE_SLOT_MISSING_TOKEN
-        return env
-    env["GH_CONFIG_DIR"] = str(slot_dir(account))
+    slot, token = manifest_slots.selection(account_for(repo, path), os.environ.get("LANE"), path)
+    env["GH_CONFIG_DIR"] = str(slot)
+    if token is not None:
+        # harmonic-forge#1396: a lane child runs on its slot's file token, never the
+        # shared keyring; a token-less lane slot gets a sentinel gh cannot use.
+        env["GH_TOKEN"] = token or LANE_SLOT_MISSING_TOKEN
     return env
 
 
@@ -267,19 +258,12 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
     process; a mismatch exits non-zero before the caller can write anything.
     """
     account = account_for(repo, path)
-    slot = slot_dir(account)
-    lane = os.environ.get("LANE")
-    lane_token = ""
-    if lane in ("1", "2", "3") and account == "vitalharmony":
-        # harmonic-forge#1470: a lane keeps its own least-privilege slot and
-        # token (harmonic-forge#1396); the bare account slot is the shared
-        # keyring credential, which a lane never runs on (harmonic-forge#1466).
-        slot = slot_dir(f"vitalharmony-lane{lane}")  # same slot slot_env uses
-        lane_token = _hosts_file_token(slot)
-        if not lane_token:
-            raise SystemExit(
-                f"identity: lane {lane} has no token in {slot}/hosts.yml; refusing to "
-                f"fall back to the shared {account} slot (harmonic-forge#1470)")
+    # harmonic-forge#1470: a lane keeps its own slot and token, never the shared one.
+    slot, lane_token = manifest_slots.selection(account, os.environ.get("LANE"), path)
+    if lane_token == "":
+        raise SystemExit(
+            f"identity: lane {os.environ.get('LANE')} has no token in {slot}/hosts.yml; refusing to "
+            f"fall back to the shared {account} slot (harmonic-forge#1470)")
     os.environ["GH_CONFIG_DIR"] = str(slot)
     for var in STRIPPED_TOKEN_VARS:
         os.environ.pop(var, None)
