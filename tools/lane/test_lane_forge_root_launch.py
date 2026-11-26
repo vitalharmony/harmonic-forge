@@ -146,6 +146,33 @@ class EmptyRootFieldsRefuse(unittest.TestCase):
         self.assertNotIn("forge root  (from", cell["stderr"])
         self.assertFalse(past, cell["stderr"])
 
+    # Operator ruling D35: each field alone, so a guard narrowed to skip any one
+    # field (or to check only the resolved root) fails the test for that field.
+    _FULL = {"set": "/fx/lane_hooks.json", "root": "/fx/root",
+             "source": "HARMONIC_FORGE_ROOT", "as-written": "/fx/as-written"}
+
+    def _only_empty_refuses(self, field: str, named: str):
+        fields = dict(self._FULL, **{field: ""})
+        cell, past = self._launch(list(fields.values()))
+        self.assertFalse(cell["launched"], cell["stderr"])
+        self.assertNotEqual(cell["returncode"], 0)
+        self.assertIn(f"{named}: the root producer exited 0 with empty field(s): {field} -- "
+                      "refusing to launch", cell["stderr"])
+        self.assertNotIn("sync_rules.py --pull failed", cell["stderr"])
+        self.assertFalse(past, cell["stderr"])
+
+    def test_only_an_empty_set_refuses(self):
+        self._only_empty_refuses("set", "forge root '/fx/as-written' (from HARMONIC_FORGE_ROOT)")
+
+    def test_only_an_empty_root_refuses(self):
+        self._only_empty_refuses("root", "forge root '/fx/as-written' (from HARMONIC_FORGE_ROOT)")
+
+    def test_only_an_empty_source_refuses(self):
+        self._only_empty_refuses("source", "forge root '/fx/as-written' (from an empty source)")
+
+    def test_only_an_empty_as_written_refuses(self):
+        self._only_empty_refuses("as-written", "the forge root (its value as written is empty too)")
+
 
 class BuildRefusalNamesTheValueAsWritten(unittest.TestCase):
     """Sticky-wicket C1 (and D1's build refusal under a non-default source): a
