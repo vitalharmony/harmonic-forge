@@ -117,7 +117,11 @@ def lookup(slug: str, sha: str) -> dict | None:
 #: needs only what CI cannot run. It never replaces another source's receipt; a
 #: full `check` replaces it (the upgrade path).
 LOCAL_CHECK_SOURCE = "local-check"
-SOURCES = ("check", LOCAL_CHECK_SOURCE)
+#: harmonic-forge#1586: a full `check-full` run (vitalharmony/hrse#2889), evidence
+#: harmonic-forge#1565's ci-outage override will read. Full-replace, own label;
+#: separate storage is #1565's decision.
+CHECK_FULL_SOURCE = "check-full"
+SOURCES = ("check", LOCAL_CHECK_SOURCE, CHECK_FULL_SOURCE)
 #: harmonic-forge#894 C1: a `local-check` run inside l1_post's scratch worktree.
 #: It keeps local-check's no-replace rule, so it never displaces a full
 #: `l1-post-scratch` receipt.
@@ -253,7 +257,7 @@ def main(argv: list[str]) -> int:
             print(f"pre-push: WARNING the gate could not decide ({exc!r}); pushing unchecked",
                   file=sys.stderr)
             return 0
-    print("usage: check_receipt.py record [--repo-root DIR] [--head SHA] [--source check|local-check]"
+    print("usage: check_receipt.py record [--repo-root DIR] [--head SHA] [--source check|local-check|check-full]"
           " | verify <remote> <url>", file=sys.stderr)
     return 2
 
