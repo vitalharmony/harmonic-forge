@@ -82,7 +82,7 @@ class AC4BoardWriteFailure(_TempStore):
         while reintroducing hrse#1919 exactly.
         """
         source = GH_ISSUE.read_text(encoding="utf-8")
-        record_at = source.index("handoff_owed.record(")
+        record_at = source.index("handoff_owed.record,")  # via _contained (harmonic-forge#1578)
         board_at = source.index("resolve_board_for_repo(args.repo)")
         self.assertLess(
             record_at, board_at,

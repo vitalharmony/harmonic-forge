@@ -220,20 +220,26 @@ def discharge(repo: str, issue: int) -> int:
     Cross-session on purpose -- see the module docstring. Returning a count
     rather than a bool lets a caller stay quiet when there was nothing to
     clear, which is the normal case for a handoff on an issue filed by hand.
+    -1 when a store write failed: the obligation may still stand
+    (harmonic-forge#1578). A missing store is 0, nothing to clear.
     """
     try:
         files = [f for f in OWED_DIR.iterdir() if f.is_file()]
-    except OSError:
+    except FileNotFoundError:
         return 0
-    cleared = 0
+    except OSError:
+        return -1
+    cleared, failed = 0, False
     for path in files:
         entries = _read(path)
         kept = [e for e in entries
                 if not (e.get("repo") == repo and e.get("issue") == issue)]
         if len(kept) != len(entries):
+            if not _write(path, kept):
+                failed = True
+                continue
             cleared += len(entries) - len(kept)
-            _write(path, kept)
-    return cleared
+    return -1 if failed else cleared
 
 
 def discharge_command(repo: str, issue: int, route: dict | None = None) -> str:

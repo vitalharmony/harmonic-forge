@@ -372,7 +372,23 @@ def _posted_login(stdout: str) -> str | None:
     return login if isinstance(login, str) and login else None
 
 
-def _discharge_exception(args, issue: int, issue_url: str) -> bool:
+def _discharge_repair(repo: str, issue: int) -> str:
+    """harmonic-forge#1578: the exception path's literal discharge call
+    (`discharge_command()` there names a handoff that is not owed)."""
+    return (f"python3 -c 'import sys; sys.path.insert(0, \"{Path(__file__).resolve().parents[1] / 'hooks'}\"); "
+            f"import handoff_owed; sys.exit(handoff_owed.discharge(\"{repo}\", {issue}) < 0)'")
+
+
+def _discharged(repo: str, issue: int, repair: str) -> bool:
+    """Clear the obligation; False, `repair` printed, on a failed store write (#1578 AC1)."""
+    if handoff_owed.discharge(repo, issue) >= 0:
+        return True
+    print("[GH] ERROR: the comment is posted but the handoff obligation could not "
+          f"be cleared from the store. Clear it with:\n  {repair}", file=sys.stderr)
+    return False
+
+
+def _discharge_exception(args, issue: int, issue_url: str, unfinished: list | None = None) -> bool:
     """Apply an R-0039 filing-bar exception, if one was claimed. True on OK.
 
     AC3: the reason is posted to the ISSUE and only then is the obligation
@@ -416,13 +432,18 @@ def _discharge_exception(args, issue: int, issue_url: str) -> bool:
         # operator's `go`. The POST above carries no --jq, so its stdout is the
         # whole comment JSON, and its `user.login` is the filing login.
         login = _posted_login(result.stdout)
-        if login is None:
-            print(f"[GH] could not read the deferral comment's login from the POST "
-                  f"response; the belt will not watch {args.repo}#{issue} for a release "
-                  f"until you run: python3 tools/gh/record_deferral.py --repo {args.repo} "
-                  f"--issue {issue} --operator-login <login>", file=sys.stderr)
-        deferral_store.record_deferral(args.repo, issue, "filing", operator_login=login)
-    handoff_owed.discharge(args.repo, issue)
+        watch = (f"python3 tools/gh/record_deferral.py --repo {args.repo} "
+                 f"--issue {issue} --operator-login {login or '<login>'}")
+        recorded = deferral_store.record_deferral(args.repo, issue, "filing", operator_login=login)
+        if login is None or not recorded:  # harmonic-forge#1578: an unfinished step
+            print("[GH] could not read the deferral comment's login from the POST response;"
+                  if login is None else "[GH] ERROR: the deferral watch entry was not written;",
+                  f"the belt will not watch {args.repo}#{issue} for a release until you run: {watch}",
+                  file=sys.stderr)
+            if unfinished is not None:
+                unfinished.append(f"deferral watch record: {watch}")
+    if not _discharged(args.repo, issue, _discharge_repair(args.repo, issue)):
+        return False
     print(f"[GH] R-0039 exception '{args.handoff_exception}' recorded on "
           f"{issue_url}; no handoff owed.")
     return True
@@ -438,6 +459,12 @@ def is_parking_milestone(repo: str, milestone: str, titles) -> bool:
     if milestone in EXEMPT_MILESTONES.get(repo.lower(), frozenset()):
         return False
     return milestone != current_release_milestone(list(titles))
+
+
+def _deferral_retry(args, issue: int) -> str:
+    """The idempotent `--defer-existing` retry for this deferral."""
+    return handoff_owed.discharge_command(args.repo, issue, {
+        "kind": "deferral", "trigger": args.deferral_trigger, "owner": args.deferral_owner})
 
 
 def _post_deferral(args, issue: int, issue_url: str) -> bool:
@@ -456,15 +483,14 @@ def _post_deferral(args, issue: int, issue_url: str) -> bool:
     )
     result = _post_comment(args.repo, issue, comment)
     if result.returncode != 0:
-        retry = handoff_owed.discharge_command(
-            args.repo, issue, {"kind": "deferral", "trigger": args.deferral_trigger,
-                               "owner": args.deferral_owner})
+        retry = _deferral_retry(args, issue)
         print(f"[GH] ERROR: the R-0352 deferral could not be posted to "
               f"{issue_url}:\n{result.stderr}\n[GH] The handoff obligation "
               f"therefore STANDS. Retry the deferral on the existing issue "
               f"(no second filing):\n  {retry}", file=sys.stderr)
         return False
-    handoff_owed.discharge(args.repo, issue)
+    if not _discharged(args.repo, issue, _deferral_retry(args, issue)):
+        return False
     print(f"[GH] R-0352 deferral recorded on {issue_url} (parked in "
           f"{args.milestone}); no handoff owed.")
     return True
@@ -501,7 +527,8 @@ def _defer_existing(args) -> int:
               f"{comments.stderr.strip()}", file=sys.stderr)
         return 1
     if any(line.startswith(DEFERRAL_HEADING) for line in comments.stdout.splitlines()):
-        handoff_owed.discharge(args.repo, issue)
+        if not _discharged(args.repo, issue, _deferral_retry(args, issue)):
+            return 1
         print(f"[GH] the R-0352 deferral is already on {issue_url}; obligation cleared.")
         return 0
     args.milestone = milestone
@@ -843,12 +870,22 @@ def _route_at_filing(repo: str, body: str, labels: list[str], issue_number: int)
     return str(route.path)
 
 
+#: Each hard field's reason after "was requested but not written." Not warnings:
+#: each exits non-zero (harmonic-forge#263, #308, #1578).
+_FIELD_REASONS = {"Status": "The item was added but needs manual triage.",
+                  "Tier": "The model-tier gate reads an unset Tier as 'does not escalate'.",
+                  "Theme": "Theme is a required reporting-slice field (hrse#966).",
+                  "Venture": "Venture is a required reporting-slice field (hrse#966)."}
+
+
 def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: str | None,
                   theme: str | None = None, venture: str | None = None,
-                  route_path: str | None = None) -> bool:
-    # --format json returns the item id directly, no need to scan item-list
-    # (which paginates at 30 by default and a freshly created item sorts
-    # last on a large board).
+                  route_path: str | None = None, failures: list[str] | None = None) -> bool:
+    """True when every requested write landed. harmonic-forge#1578: each requested
+    field is attempted, and each failure is printed and appended to `failures`."""
+    local = failures if failures is not None else []
+    before, skipped = len(local), "; Status/Tier/Theme/Venture not attempted"
+    # --format json returns the item id directly, no item-list scan.
     add_cmd = [
         "gh", "project", "item-add", project_number,
         "--owner", project_owner,
@@ -857,17 +894,13 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     ]
     add_result = _run_board(add_cmd, check=False)
     if add_result.returncode != 0:
-        # hrse#883: a repo-level auto-add can win the race and put the issue
-        # on the board before this call runs, and GitHub answers the second
-        # add with "Content already exists". Bailing here left the item on
-        # the board with no Tier, which is exactly the silent-unset outcome
-        # harmonic-forge#263 exists to prevent — the field a model-routing
-        # gate reads, absent, with the run reporting only a warning. The
-        # item existing is the state this call wanted; recover its id and
-        # carry on to the field writes.
+        # hrse#883: a repo-level auto-add can win the race ("Content already
+        # exists"). The item existing is the state wanted; recover its id and
+        # carry on to the field writes, never leave it with Tier unset.
         item_id = _find_existing_item(issue_url, project_owner, project_number)
         if item_id is None:
             print(f"[GH] Warning: created issue but failed to add to board:\n{add_result.stderr}", file=sys.stderr)
+            local.append(f"board add: add {issue_url} to board #{project_number} by hand{skipped}")
             return False
         print(f"[GH] Already on board #{project_number} (added by another writer); setting fields on the existing item")
     else:
@@ -875,6 +908,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
             item_id = json.loads(add_result.stdout)["id"]
         except (json.JSONDecodeError, KeyError) as exc:
             print(f"[GH] Warning: added to board but could not parse item id: {exc}", file=sys.stderr)
+            local.append(f"board add: the item id could not be read; set the fields on the board by hand{skipped}")
             return False
 
         print(f"[GH] Added issue to board #{project_number} (owner: {project_owner})")
@@ -882,6 +916,7 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
     ctx = _fetch_project_context(project_owner, project_number)
     if ctx is None:
         print("[GH] Warning: added to board but could not fetch project context — needs manual triage", file=sys.stderr)
+        local.append(f"board add: no project context; set the fields on the board by hand{skipped}")
         return False
 
     # harmonic-forge#1232: Path is a display field, so its write is soft and runs
@@ -891,49 +926,18 @@ def add_to_board(issue_url: str, project_owner: str, project_number: str, tier: 
         if _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Path", route_path):
             _ROUTE_STATE["written"] = True
 
-    if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Status", STATUS_OPTION_NAME):
-        print("[GH] Warning: could not set Status=Todo — item was added but needs manual triage", file=sys.stderr)
-        return False
-
-    if tier is not None:
-        if not _set_tier(item_id, ctx["project_id"], ctx["fields"], tier):
-            # Not a warning: this exits non-zero. Calling it one invited the
-            # reader to scroll past, which is how harmonic-forge#263 was
-            # observed live -- two issues filed --tier fast, boarded with Tier
-            # unset after a quota blip, the message lost in the scrollback.
-            print(
-                f"[GH] ERROR: Tier={tier} was requested but not written. The "
-                f"model-tier gate reads an unset Tier as 'does not escalate', "
-                f"so this must not pass silently. Repair command above.",
-                file=sys.stderr,
-            )
-            return False
-
-    # harmonic-forge#308: same hard-fail shape as Tier above -- Theme/Venture
-    # are the required reporting-slice fields hrse#966 established, and an
-    # unset value is silent drift (exactly how the retired `Priority` field
-    # rotted), not a soft failure to warn about and move on from.
-    if theme is not None:
-        if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Theme", theme):
-            print(
-                f"[GH] ERROR: Theme={theme} was requested but not written. "
-                f"Theme is a required reporting-slice field (hrse#966), so "
-                f"this must not pass silently. Repair command above.",
-                file=sys.stderr,
-            )
-            return False
-
-    if venture is not None:
-        if not _set_single_select(item_id, ctx["project_id"], ctx["fields"], "Venture", venture):
-            print(
-                f"[GH] ERROR: Venture={venture} was requested but not written. "
-                f"Venture is a required reporting-slice field (hrse#966), so "
-                f"this must not pass silently. Repair command above.",
-                file=sys.stderr,
-            )
-            return False
-
-    return True
+    # harmonic-forge#1578: one failed (or raising) write never skips the next.
+    for name, value in (("Status", STATUS_OPTION_NAME), ("Tier", tier), ("Theme", theme),
+                        ("Venture", venture)):
+        if value is None:
+            continue
+        call = ((_set_tier, item_id, ctx["project_id"], ctx["fields"], value) if name == "Tier"
+                else (_set_single_select, item_id, ctx["project_id"], ctx["fields"], name, value))
+        if _contained(local, f"{name}={value}", "set it on the board by hand", *call) is False:
+            print(f"[GH] ERROR: {name}={value} was requested but not written. "
+                  f"{_FIELD_REASONS[name]} Repair command above.", file=sys.stderr)
+            local.append(f"{name}={value} not written: the repair command printed above")
+    return len(local) == before
 
 
 def main() -> int:
@@ -1239,29 +1243,14 @@ def main() -> int:
     if issue_url is None:
         return 1
 
-    # harmonic-forge#687. R-0039 makes filing and handing off ONE action, and
-    # until this call nothing recorded that the second half was outstanding --
-    # `gh_issue.py` contained zero occurrences of the string "handoff".
-    #
-    # Placed HERE, immediately after creation and BEFORE board resolution,
-    # because every remaining exit below can fail after the issue exists:
-    # the no-board-with-requested-fields branch, and `add_to_board()`. That
-    # is AC4, and it is the observed shape, not a hypothetical -- on hrse#1919
-    # the Theme write was rejected, the issue was created anyway, and the task
-    # exited ERROR. One placement covers all three exits; no try/finally
-    # around the board logic is needed, and the board logic is untouched.
-    #
-    # The `issue_url is None` guard above is also the right one: a failed
-    # creation records nothing, so it cannot leave a record blocking a turn
-    # for an issue that does not exist.
+    # harmonic-forge#687: R-0039 makes filing and handing off ONE action, so the
+    # obligation is recorded immediately after creation, before any step that
+    # can fail once the issue exists (hrse#1919). A failed creation records nothing.
     issue_number = _issue_number(issue_url)
     route_path = None
-    # harmonic-forge#1382 sticky-wicket P1: a post-create step that fails is
-    # recorded here and the remaining steps still run; the exit is 1 at the
-    # end. An early `return 1` skipped every later step (the board and its
-    # Tier/Theme/Venture writes) while the retry covered only its own step.
-    # Each entry is "<step>: <repair>", printed together by
-    # `_post_create_exit`.
+    # harmonic-forge#1382 P1 and #1578: a post-create step that fails, or
+    # raises (`_contained`), is one "<step>: <repair>" entry here, the later
+    # steps still run, and `_post_create_exit` prints them all and exits 1.
     unfinished: list[str] = []
     if issue_number is None and args.escape_of is not None:
         print(f"[GH] escape-of: not recorded — no issue number in {issue_url}", file=sys.stderr)
@@ -1271,8 +1260,9 @@ def main() -> int:
                        "owner": (args.deferral_owner or "").strip()} if parking else None)
         # P2: the Stop hook cannot name an obligation that was never stored,
         # so a failed write prints the discharge command itself, now.
-        if not handoff_owed.record(args.repo, issue_number, issue_url, route=owed_route):
-            repair = handoff_owed.discharge_command(args.repo, issue_number, owed_route)
+        repair = handoff_owed.discharge_command(args.repo, issue_number, owed_route)
+        if _contained(unfinished, "obligation record", repair, handoff_owed.record,
+                      args.repo, issue_number, issue_url, route=owed_route) is False:
             print(f"[GH] ERROR: the handoff obligation for {issue_url} could not "
                   f"be recorded, so no Stop hook will name it. Discharge it by "
                   f"hand:\n  {repair}", file=sys.stderr)
@@ -1283,12 +1273,15 @@ def main() -> int:
         if args.escape_of is not None:
             _record_escape(args.repo, issue_number, args.escape_of)
         if parking:
-            if not _post_deferral(args, issue_number, issue_url):
-                unfinished.append("R-0352 deferral: " + handoff_owed.discharge_command(
-                    args.repo, issue_number, owed_route))
+            if _contained(unfinished, "R-0352 deferral", repair, _post_deferral,
+                          args, issue_number, issue_url) is False:
+                unfinished.append(f"R-0352 deferral: {repair}")
         # The same early-return shape as the deferral (operator ruling on the
         # sticky-wicket PATCH, 2026-11-25): record it and let the board run.
-        elif not _discharge_exception(args, issue_number, issue_url):
+        elif _contained(unfinished, "R-0039 exception record",
+                        f"if the exception comment is not on {issue_url}, post it by hand; "
+                        f"then {_discharge_repair(args.repo, issue_number)}",
+                        _discharge_exception, args, issue_number, issue_url, unfinished) is False:
             unfinished.append("R-0039 exception record: the repair printed above")
 
     # harmonic-forge#107: derive from --repo. An explicit override still wins.
@@ -1298,50 +1291,59 @@ def main() -> int:
     else:
         try:
             project_owner, project_number = resolve_board_for_repo(args.repo)
-        except SystemExit as exc:
-            # Post-verdict finding 4: an unmapped repo is one more unfinished
-            # step, reported with the others, not an exit that hides them.
-            print(str(exc), file=sys.stderr)
-            unfinished.append("board resolution: map the repo in projects.toml or pass "
-                              "--project-owner/--project-number")
+        except (SystemExit, Exception) as exc:  # noqa: BLE001
+            # Post-verdict finding 4 and #1578: an unmapped repo, or any exception
+            # from the lookup, is one more unfinished step, not an exit that hides them.
+            print(str(exc) if isinstance(exc, SystemExit) else
+                  f"[GH] ERROR: board resolution raised {type(exc).__name__}: {exc}", file=sys.stderr)
+            unfinished.append("board resolution: map the repo in projects.toml or pass --project-owner/"
+                              "--project-number; board add and Tier/Theme/Venture not attempted")
             return _post_create_exit(issue_url, unfinished)
 
     if not project_owner or not project_number:
         print("[GH] No project board configured — skipping board-add.")
-        # harmonic-forge#263, same defect in the branch nobody looked at: a
-        # board field was explicitly requested and cannot be written because
-        # there is no board. Returning 0 here reports success for a routing/
-        # reporting signal that was silently dropped. The issue itself is
-        # kept -- AC2, a filed issue with a missing field beats a lost issue.
+        # harmonic-forge#263: a requested board field with no board to write it
+        # to is not success. The issue itself is kept (a missing field beats a lost issue).
         requested = [f"--{name} {value}" for name, value in
                      (("tier", tier), ("theme", args.theme), ("venture", args.venture))
                      if value is not None]
         if requested:
-            print(
-                f"[GH] ERROR: {', '.join(requested)} was requested but "
-                f"these are board fields and no board is configured, so "
-                f"nothing was written. Issue created: {issue_url}\n"
-                f"[GH] Repair by re-running with "
-                f"--project-owner/--project-number, or set "
-                f"$GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
-                file=sys.stderr,
-            )
+            print(f"[GH] ERROR: {', '.join(requested)} was requested but these are board "
+                  f"fields and no board is configured, so nothing was written. Issue "
+                  f"created: {issue_url}\n[GH] Repair by re-running with --project-owner/"
+                  f"--project-number, or set $GH_PROJECT_OWNER/$GH_PROJECT_NUMBER.",
+                  file=sys.stderr)
             unfinished.append("board fields: re-run with --project-owner/--project-number")
         return _post_create_exit(issue_url, unfinished)
 
-    if not add_to_board(issue_url, project_owner, project_number, tier,
-                        args.theme, args.venture, route_path):
+    board_failures: list[str] = []
+    ok = _contained(unfinished, "board add", f"add {issue_url} to board #{project_number} by hand",
+                    add_to_board, issue_url, project_owner, project_number, tier, args.theme,
+                    args.venture, route_path, failures=board_failures)
+    unfinished.extend(board_failures)
+    if ok is False and not board_failures:
         unfinished.append("board add or field write: see the [GH] lines above for the step that failed")
     return _post_create_exit(issue_url, unfinished)
 
 
+def _contained(unfinished: list[str], step: str, repair: str, fn, *args, **kw):
+    """harmonic-forge#1578 AC3: run one post-create step; an Exception from it (not
+    SystemExit, which keeps its own handler) is one more unfinished step. None if raised."""
+    try:
+        return fn(*args, **kw)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[GH] ERROR: {step} raised {type(exc).__name__}: {exc}\n  {repair}", file=sys.stderr)
+        unfinished.append(f"{step}: {repair}")
+        return None
+
+
 def _post_create_exit(issue_url: str, unfinished: list[str]) -> int:
-    """harmonic-forge#1382 P1: the one exit after every post-create step ran.
-    0 when all finished; else 1, naming each unfinished step and its repair."""
+    """harmonic-forge#1382 P1: the one exit after the post-create steps. 0, or 1 naming
+    each unfinished step and its repair, with no claim about the others (#1578 AC4)."""
     if not unfinished:
         return 0
     print(f"[GH] ERROR: {issue_url} was filed, but {len(unfinished)} post-create "
-          f"step(s) did not finish (every other step ran):", file=sys.stderr)
+          "step(s) did not finish:", file=sys.stderr)
     for entry in unfinished:
         print(f"[GH]   - {entry}", file=sys.stderr)
     return 1
@@ -1349,14 +1351,8 @@ def _post_create_exit(issue_url: str, unfinished: list[str]) -> int:
 
 def _print_owed() -> None:
     """Print this session's outstanding handoffs and how to discharge them.
-
-    harmonic-forge#687 spec step 2: the obligation must be printed on the
-    success path and the board-field-failure path alike. Doing it here, in a
-    wrapper around `main()`, rather than at each `return` is what makes that
-    true of exits nobody has written yet -- `main()` has three post-creation
-    exits today and the one that mattered (hrse#1919's board-field failure)
-    was the one it would have been easiest to forget.
-    """
+    harmonic-forge#687: here, around `main()`, so every exit prints it,
+    including exits nobody has written yet."""
     owed = handoff_owed.outstanding(handoff_owed.session_id())
     if not owed:
         return

@@ -402,7 +402,7 @@ class TestDeferExisting(unittest.TestCase):
              patch("gh_issue.apply_project_identity"), \
              patch("gh_issue.create_issue") as created, \
              patch("gh_issue._run", side_effect=run), \
-             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             patch("gh_issue.handoff_owed.discharge", return_value=1) as discharge, \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             try:
@@ -461,7 +461,7 @@ class TestParkingMilestoneDeferral(unittest.TestCase):
              patch("gh_issue.resolve_board_for_repo", return_value=(None, None)), \
              patch("gh_issue._run", side_effect=run), \
              patch("gh_issue.handoff_owed.record") as record, \
-             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             patch("gh_issue.handoff_owed.discharge", return_value=1) as discharge, \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()) as err:
             try:
@@ -569,11 +569,9 @@ class TestParkingMilestoneDeferral(unittest.TestCase):
 
 
 class TestPostCreateFailureTable(unittest.TestCase):
-    """harmonic-forge#1382 sticky-wicket tripwire, for the category rather than
-    one instance: every post-create step of a filing runs when an earlier one
-    fails. Each row fails ONE step and asserts (a) every other step still ran,
-    including `add_to_board` with the requested Tier/Theme/Venture, (b) exit 1,
-    (c) stderr names the unfinished step and its repair command.
+    """harmonic-forge#1382 sticky-wicket tripwire, for the category: each row fails
+    ONE post-create step and asserts every other step still ran (`add_to_board`
+    with the requested Tier/Theme/Venture), exit 1, and the step's repair in stderr.
     `test_every_post_create_step_has_a_row` fails for a new step with no row."""
 
     BOARD_ARGS = ["--tier", "fast", "--theme", "Tooling", "--venture", "Platform"]
@@ -581,9 +579,7 @@ class TestPostCreateFailureTable(unittest.TestCase):
     EXCEPTION = ["--repo", FORGE, "--milestone", "0.3", "--handoff-exception",
                  "parent-epic", "--handoff-exception-reason", "children carry it"]
 
-    #: step -> (the call `main()` makes, argv, injected failure, stderr repair text,
-    #: whether the later steps run). Every row runs the later steps: the operator
-    #: extended P1 to `_discharge_exception` (2026-11-25).
+    #: step -> (call in `main()`, argv, failure, repair text, later steps run: all do, 2026-11-25).
     ROWS = {
         "record": ("handoff_owed.record", PARKING, "record", "--defer-existing 42", True),
         "deferral": ("_post_deferral", PARKING, "post", "--defer-existing 42", True),
@@ -599,6 +595,7 @@ class TestPostCreateFailureTable(unittest.TestCase):
         "resolve_board_for_repo",      # a lookup; an unmapped repo is a reported unfinished step
         "handoff_owed.discharge_command",  # builds repair text
         "_post_create_exit",           # the single exit
+        "_contained", "_discharge_repair",  # the AC3 wrapper; repair text (harmonic-forge#1578)
     }
 
     def _drive(self, argv, fail, run_error=None, resolve_error=None):
@@ -621,7 +618,7 @@ class TestPostCreateFailureTable(unittest.TestCase):
              patch("gh_issue.resolve_board_for_repo", **resolve), \
              patch("gh_issue._run", side_effect=run), \
              patch("gh_issue.handoff_owed.record", return_value=fail != "record") as record, \
-             patch("gh_issue.handoff_owed.discharge") as discharge, \
+             patch("gh_issue.handoff_owed.discharge", return_value=1) as discharge, \
              patch("gh_issue.add_to_board", return_value=fail != "board") as board, \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()) as err:
@@ -635,7 +632,9 @@ class TestPostCreateFailureTable(unittest.TestCase):
             with self.subTest(step=step):
                 code, err, ran = self._drive(argv, fail)
                 self.assertEqual(code, 1, err)
-                self.assertIn(repair, err)
+                lines = err.splitlines()  # harmonic-forge#1578 AC5: on the line after its ERROR
+                after = [b for a, b in zip(lines, lines[1:]) if "ERROR: the handoff obligation" in a]
+                self.assertIn(repair, after[0] if step == "record" else err)
                 ran["record"].assert_called_once()
                 ran["route"].assert_called_once()
                 self.assertEqual(len(ran["comments"]), 1)  # the deferral/exception post ran
@@ -668,29 +667,30 @@ class TestPostCreateFailureTable(unittest.TestCase):
         self.assertIn("R-0352 deferral", err)
 
     def test_every_post_create_step_has_a_row(self):
-        """The enumeration: each gh_issue/handoff_owed call `main()` makes
-        after `create_issue` is a row or a named non-failure step."""
+        """The enumeration: each gh_issue/handoff_owed call `main()` makes after
+        `create_issue` is a row or a named non-failure step, and every row runs
+        only as `_contained`'s callable argument (harmonic-forge#1578)."""
         import ast
         import inspect
         tree = ast.parse(inspect.getsource(gh_issue.main))
         create_line = next(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
                            and isinstance(n.func, ast.Name) and n.func.id == "create_issue")
-        found = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or node.lineno <= create_line:
-                continue
-            func = node.func
-            if isinstance(func, ast.Name) and inspect.isfunction(getattr(gh_issue, func.id, None)) \
-                    and getattr(gh_issue, func.id).__module__ == gh_issue.__name__:
-                found.add(func.id)
-            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
-                    and func.value.id == "handoff_owed":
-                found.add(f"handoff_owed.{func.attr}")
+
+        def name(f):
+            if isinstance(f, ast.Name) and inspect.isfunction(getattr(gh_issue, f.id, None)) \
+                    and getattr(gh_issue, f.id).__module__ == gh_issue.__name__:
+                return f.id
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "handoff_owed":
+                return f"handoff_owed.{f.attr}"
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and n.lineno > create_line]
+        found = {name(n.func) for n in calls} - {None}
+        contained = {name(n.args[3]) for n in calls if name(n.func) == "_contained"}
         rows = {call for call, *_ in self.ROWS.values()}
-        self.assertEqual(found - rows - self.NOT_FAILURE_STEPS, set(),
+        self.assertEqual((rows & found, rows - contained), (set(), set()), "a row step runs bare")
+        self.assertEqual((found | contained) - rows - self.NOT_FAILURE_STEPS, set(),
                          "a new post-create step needs a row in ROWS (or a reasoned "
                          "entry in NOT_FAILURE_STEPS)")
-        self.assertEqual((rows | self.NOT_FAILURE_STEPS) - found, set(),
+        self.assertEqual((rows | self.NOT_FAILURE_STEPS) - found - contained, set(),
                          "a listed step is no longer called after create_issue")
 
 
@@ -1731,7 +1731,7 @@ class ExceptionRecordsDeferralTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.base = Path(tmp.name)
         for target in (patch.object(deferral_store, "DEFAULT_CANDIDATES_DIR", self.base),
-                       patch.object(gh_issue.handoff_owed, "discharge"),
+                       patch.object(gh_issue.handoff_owed, "discharge", return_value=1),
                        patch.object(gh_issue, "_link_blocker", return_value=True)):
             target.start()
             self.addCleanup(target.stop)
