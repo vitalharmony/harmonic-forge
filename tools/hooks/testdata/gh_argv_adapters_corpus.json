@@ -5923,6 +5923,26 @@
     [],
     []
    ]
+  ],
+  "gh api repos/:owner/:repoé/issues/5 -X PATCH -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 post-verdict survivor 4): gh's Go placeholder regex uses an ASCII word boundary, so it fills :repo in :repoé from GH_REPO or the checkout; the path names no repo and is denied before any read where main read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
+  ],
+  "gh api repos/o/:repoé/issues/5 -X PATCH -f state=closed": [
+   "intended",
+   "tightening against main to undecided (harmonic-forge#1499 post-verdict survivor 4): gh's Go placeholder regex uses an ASCII word boundary, so it fills :repo in :repoé from GH_REPO or the checkout; the path names no repo and is denied before any read where main read no close",
+   [
+    "not-a-close",
+    "refuse",
+    [],
+    []
+   ]
   ]
  }
 }

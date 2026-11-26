@@ -5,9 +5,11 @@ Two claims the differential cannot make on its own:
 
 - The table is main's output. `test_the_table_is_mains_output` reruns
   `preclose_main_table`'s evaluator on `git archive 178ba5f` over every key and
-  byte-compares the result with the file, so an edited row fails. It never calls
-  `commands()` or `_write()`, which rewrite the file it checks. It skips only when
-  the 178ba5f object is absent: CI's shallow checkout, a stated residual, so the
+  byte-compares the result with the file, so an edited row fails, and pins the
+  key count and a digest of the sorted keys, so a deleted row fails. It never
+  calls `commands()` or `_write()`, which rewrite the file it checks. Main's id is
+  this file's own literal, never a value the branch can edit; the test skips only
+  when git reports a shallow clone (CI's checkout, a stated residual), so the
   local `mise run check` is the run that counts.
 - No row is looser than main, whatever its classification. For every key the
   hook's targets are at least as strict as main's (`at_least_as_strict`): a
@@ -15,6 +17,7 @@ Two claims the differential cannot make on its own:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -29,7 +32,14 @@ import block_missing_preclose_inspection as hook  # noqa: E402
 import migration_main_table  # noqa: E402
 import preclose_main_table  # noqa: E402
 
-BASE = migration_main_table.BASE  # full id: a forged commit can make a short prefix ambiguous
+#: This file's own literal, never migration_main_table's: the guard must not read
+#: a value the branch edits (post-verdict survivor 1). Full id: a forged commit
+#: can make a short prefix ambiguous.
+MAIN = "178ba5f76eca2c3f900617af15f503873ef257c0"
+#: Post-verdict survivor 2: the regeneration compares only the table's own keys,
+#: so the key set itself is pinned. Adding a key updates both on purpose.
+KEY_COUNT = 843
+KEYS_SHA256 = "5e975889855a8bad10a5be86a81c5e24411e5319964182d6d98f3a99df6efaa5"
 UNDECIDED = (None, "", "issue", False)
 
 
@@ -72,20 +82,31 @@ class NeverLooserThanMain(unittest.TestCase):
 
 
 class TableIsMainsOutput(unittest.TestCase):
-    def test_the_skip_guard_names_main_by_its_full_id(self) -> None:
-        # A short prefix can be made ambiguous by a forged commit, which turns the guard into a skip.
-        self.assertRegex(BASE, r"^[0-9a-f]{40}$")
+    def test_the_archive_reads_main_by_its_full_id(self) -> None:
+        # The archive reads migration_main_table.BASE; it must be this file's literal.
+        self.assertRegex(MAIN, r"^[0-9a-f]{40}$")
+        self.assertEqual(migration_main_table.BASE, MAIN)
+
+    def test_no_frozen_key_is_deleted(self) -> None:
+        keys = sorted(_table())
+        self.assertEqual(len(keys), KEY_COUNT)
+        self.assertEqual(hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest(), KEYS_SHA256)
 
     def test_the_table_is_mains_output(self) -> None:
-        present = subprocess.run(["git", "-C", str(HERE), "cat-file", "-e", f"{BASE}^{{commit}}"],
+        self.assertEqual(migration_main_table.BASE, MAIN)
+        present = subprocess.run(["git", "-C", str(HERE), "cat-file", "-e", f"{MAIN}^{{commit}}"],
                                  capture_output=True, check=False)
         if present.returncode:
-            self.skipTest(f"{BASE} is absent (a shallow clone); the local full-clone run is binding")
+            shallow = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--is-shallow-repository"],
+                                     capture_output=True, text=True, check=False)
+            if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+                self.skipTest(f"{MAIN} is absent from a shallow clone; the local full-clone run is binding")
+            self.fail(f"{MAIN} is not a commit in this full clone")
         table = _table()
         result = preclose_main_table.main_outputs(sorted(table), preclose_main_table._EVAL)
         self.assertEqual(json.dumps(result, indent=1, sort_keys=True) + "\n",
                          preclose_main_table.OUT.read_text(encoding="utf-8"),
-                         f"preclose_main_178ba5f.json is not main {BASE}'s output for its own keys")
+                         f"preclose_main_178ba5f.json is not main {MAIN}'s output for its own keys")
 
 
 if __name__ == "__main__":

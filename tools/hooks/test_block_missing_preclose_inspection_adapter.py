@@ -187,6 +187,15 @@ class VerdictColumnTests(unittest.TestCase):
                 self.assertTrue(_denied(_main(command)))
         self.assertEqual(hook.find_gated_targets_exempt("gh api repos/:owner/:repo/issues/5"), [])
 
+    def test_a_placeholder_word_boundary_is_ascii_as_in_gh(self) -> None:
+        """Post-verdict survivor 4: gh's Go `\\b` is ASCII, so it fills `:repo`
+        in `:repoé`; a Unicode boundary would see no placeholder."""
+        for command in ("gh api repos/:owner/:repo\u00e9/issues/5 -X PATCH -f state=closed",
+                        "gh api repos/o/:repo\u00e9/issues/5 -X PATCH -f state=closed"):
+            with self.subTest(command=command):
+                self.assertEqual(hook.find_gated_targets_exempt(command), UNDECIDED)
+                self.assertTrue(_denied(_main(command)))
+
     def test_a_shell_word_pair_in_a_gh_argv_reads_only_that_payload(self) -> None:
         """The docstring's stated residual, unchanged from main."""
         self.assertEqual(hook.find_gated_targets_exempt("gh issue close 5 -c sh -c x"), [])

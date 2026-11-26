@@ -3964,6 +3964,8 @@
  ],
  "gh api graphql --input body.json -X POST": [],
  "gh api repos/:owner/:repo/issues/5": [],
+ "gh api repos/:owner/:repo\u00e9/issues/5 -X PATCH -f state=closed": [],
+ "gh api repos/o/:repo\u00e9/issues/5 -X PATCH -f state=closed": [],
  "gh api repos/o/r/issues/5": [],
  "gh issue close": [],
  "gh issue close \"$N\"": [],

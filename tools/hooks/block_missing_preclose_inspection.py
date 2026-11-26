@@ -199,8 +199,9 @@ TOOLING_EXCEPTION_LABEL = "tooling-exception"
 #: token at any depth names one of these, is undecided (gh may read it).
 _GH_ENV = ("GH_REPO", "GH_HOST")
 #: gh's own api placeholder grammar (cli/cli pkg/cmd/api/api.go): a path holding
-#: one is filled from GH_REPO or the checkout, so it never names the repo.
-_PLACEHOLDER = re.compile(r":(?:owner|repo|branch)\b|\{[a-z]+\}")
+#: one is filled from GH_REPO or the checkout, so it never names the repo. Go's
+#: regexp `\b` is ASCII, so re.ASCII: `:repoé` is a placeholder to gh too.
+_PLACEHOLDER = re.compile(r":(?:owner|repo|branch)\b|\{[a-z]+\}", re.ASCII)
 _UNDECIDED = (None, "", "issue", False)
 
 
