@@ -44,6 +44,12 @@ workspace = "leasepal"
 
 [accounts.vitalharmony]
 lane_slots = true
+
+[accounts.harmonicarchitect]
+lane_slots = false
+
+[accounts.leasepal]
+lane_slots = false
 """
 #: `gh api user` answers the slot's `login` file, only for its token if it has one (#1528).
 STUB_GH = """#!/bin/sh
@@ -265,23 +271,29 @@ class GhConfigDir(unittest.TestCase):
         self.assertTrue(out.startswith("rc=1 dir=UNSET"), out)
         self.assertIn("harmonic-forge#1396", err)
 
-    # Preclose round 1, survivor 2: dropping or re-casing [accounts.vitalharmony] never
-    # moves a lane onto the shared slot.
+    # Preclose rounds 1-2 (sticky-wicket verdict): a deleted, misspelled or key-less
+    # [accounts.vitalharmony] refuses a lane launch even with no lane slot on disk; a
+    # re-cased one still selects the lane slot.
     def test_a_dropped_lane_slots_table_refuses_and_a_recased_one_still_holds(self) -> None:
         manifest = self.script.parents[2] / "projects.toml"
         self.slot("vitalharmony")
-        lane = self.slot("vitalharmony-lane2", token="lane2tok")
         for name, text in (("deleted", MANIFEST.replace("[accounts.vitalharmony]\nlane_slots = true\n", "")),
                            ("misspelled", MANIFEST.replace("[accounts.vitalharmony]", "[accounts.vitalharmonyy]")),
-                           ("recased", MANIFEST.replace("[accounts.vitalharmony]", "[accounts.VitalHarmony]"))):
+                           ("keyless", MANIFEST.replace("[accounts.vitalharmony]\nlane_slots = true\n",
+                                                        "[accounts.vitalharmony]\n"))):
             with self.subTest(name=name):
+                self.assertEqual(sorted(p.name for p in self.slots.iterdir()),
+                                 ["harmonicarchitect", "vitalharmony"])
                 manifest.write_text(text)
                 _, out, err = self.launch("https://github.com/vitalharmony/hrse.git",
                                           {"LANE": "2", "GH_TOKEN": "inherited"})
-                if name == "recased":
-                    self.assertEqual(out, f"rc=0 dir={lane} tok=lane2tok", err)
-                else:
-                    self.assertTrue(out.startswith("rc=1 dir=UNSET"), out)
+                self.assertTrue(out.startswith("rc=1 dir=UNSET"), out)
+                self.assertNotIn("ambient", err)
+        lane = self.slot("vitalharmony-lane2", token="lane2tok")
+        manifest.write_text(MANIFEST.replace("[accounts.vitalharmony]", "[accounts.VitalHarmony]"))
+        _, out, err = self.launch("https://github.com/vitalharmony/hrse.git",
+                                  {"LANE": "2", "GH_TOKEN": "inherited"})
+        self.assertEqual(out, f"rc=0 dir={lane} tok=lane2tok", err)
 
 
 if __name__ == "__main__":

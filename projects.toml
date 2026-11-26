@@ -82,15 +82,16 @@
 # ## [accounts.<name>] (harmonic-forge#1528)
 #
 # A gh credential slot mode per account, read by `tools/onboard/manifest_slots.py`.
-#   lane_slots      Bool, default false. When true, inside lanes 1-3 the account runs
+#   lane_slots      Bool, required. When true, inside lanes 1-3 the account runs
 #                   on `<slot root>/<name>-lane<N>` and that slot's file token, never
-#                   on the shared account slot (harmonic-forge#1396/#1470). Supported
-#                   for vitalharmony only until gh_shim, gh-as, belt_mechanics and
-#                   projects_token read this table too. Names match ignoring case.
-#                   An account with a `<name>-lane<N>` slot on disk but no
-#                   `lane_slots = true` here refuses inside a lane, so deleting or
-#                   misspelling this table fails closed rather than downgrading lanes.
-# Every account a [[project]] declares is strict, with or without a table here: the
+#                   on the shared account slot (harmonic-forge#1396/#1470); when false
+#                   it runs on the account slot. `true` is supported for vitalharmony
+#                   only until gh_shim, gh-as, belt_mechanics and projects_token read
+#                   this table too. Names match ignoring case.
+# Every account a [[project]] declares must have a table here with an explicit
+# `lane_slots`: a table without the key is refused, and a lane refuses an account
+# with no table rather than choosing a slot, so deleting or misspelling a table
+# fails closed instead of downgrading lanes. Every such account is strict: the
 # launcher refuses a missing slot or a login other than the account. An account only
 # an app repo's .claude/forge.toml declares runs on the ambient gh login, with one
 # line saying so, unless it owns a repo registered here (kenekted, LeasePAL-ML):
@@ -186,6 +187,12 @@ kenekted = "k"
 
 [accounts.vitalharmony]
 lane_slots = true
+
+[accounts.harmonicarchitect]
+lane_slots = false
+
+[accounts.leasepal]
+lane_slots = false
 
 [[project]]
 name = "hrse"

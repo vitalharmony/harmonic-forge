@@ -40,6 +40,9 @@ prefix = "H"
 repo = "{UPSTREAM}"
 account = "vitalharmony"
 path = "/nonexistent/hrse"
+
+[accounts.vitalharmony]
+lane_slots = true
 """
 FORK_OVERLAY = ('[project]\nname = "hrse-fork"\nprefix = "Q"\nrepo = "evil/hrse"\n'
                 'account = "evil"\n')

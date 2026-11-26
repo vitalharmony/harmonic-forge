@@ -36,6 +36,7 @@ account = "plain"
 path = "/nonexistent/two"
 """
 LANE_SLOTS = "\n[accounts.lanes]\nlane_slots = true\n"
+PLAIN = "\n[accounts.plain]\nlane_slots = false\n"
 
 
 class Case(unittest.TestCase):
@@ -45,7 +46,7 @@ class Case(unittest.TestCase):
         self.root = Path(tmp.name).resolve()
         self.slots = self.root / "slots"
         self.manifest = self.root / "projects.toml"
-        self.write(PROJECTS + LANE_SLOTS)
+        self.write(PROJECTS + LANE_SLOTS + PLAIN)
         env = mock.patch.dict(os.environ, {"GH_ACCT_HOME": str(self.slots),
                                            "FORGE_PROJECTS_MANIFEST": str(self.manifest)})
         env.start()
@@ -70,7 +71,20 @@ class AccountsTable(Case):
         self.assertEqual(ms.accounts(), {})
 
     def test_reads_the_table(self) -> None:
-        self.assertEqual(ms.accounts(), {"lanes": {"lane_slots": True}})
+        self.assertEqual(ms.accounts(), {"lanes": {"lane_slots": True}, "plain": {"lane_slots": False}})
+
+    def test_a_table_without_lane_slots_refuses(self) -> None:
+        """Sticky-wicket verdict: an empty table, or one whose key was deleted, never
+        silently means false."""
+        for text in (PROJECTS + "\n[accounts.lanes]\n" + PLAIN,
+                     PROJECTS + LANE_SLOTS + "\n[accounts.plain]\n"):
+            with self.subTest(text=text[-40:]):
+                self.write(text)
+                with self.assertRaises(ManifestError) as caught:
+                    ms.accounts()
+                self.assertIn("must set lane_slots", str(caught.exception))
+                with mock.patch.dict(os.environ, {"LANE": "2"}), self.assertRaises(ManifestError):
+                    ms.selection("lanes", "2")
 
     def test_an_unknown_key_or_a_non_bool_refuses(self) -> None:
         for text in (PROJECTS + "\n[accounts.lanes]\nlane_slot = true\n",
@@ -100,25 +114,40 @@ class Selection(Case):
             with self.subTest(account=account, lane=lane):
                 self.assertEqual(ms.selection(account, lane), (self.slots / account, None))
 
-    def test_without_the_table_and_no_lane_slot_on_disk_it_is_the_account_slot(self) -> None:
-        self.write(PROJECTS)
-        self.assertEqual(ms.selection("lanes", "2"), (self.slots / "lanes", None))
-
-    def test_a_lane_slot_on_disk_without_the_flag_refuses(self) -> None:
-        """Preclose round 1, survivor 2: a deleted or misspelled table fails closed."""
-        self.lane_slot("3")
-        for text in (PROJECTS, PROJECTS + "\n[accounts.lane]\nlane_slots = true\n"):
-            self.write(text)
-            with self.subTest(text=text[-30:]), mock.patch.dict(os.environ, {"LANE": "2"}):
-                with self.assertRaises(ManifestError) as caught:
-                    ms.selection("lanes", "2")
-                self.assertIn("lane slots on disk", str(caught.exception))
-                self.assertIsNone(mi.slot_env_or_none("lanes/one"))
+    def test_a_deleted_table_with_no_lane_slot_on_disk_refuses_in_a_lane(self) -> None:
+        """Preclose round 2 input: no `<acct>-lane<N>` dir exists, and the table is gone."""
+        self.write(PROJECTS + PLAIN)
+        self.assertFalse(self.slots.exists())
+        with mock.patch.dict(os.environ, {"LANE": "2", "GH_TOKEN": "inherited"}):
+            with self.assertRaises(ManifestError) as caught:
+                ms.selection("lanes", "2")
+            self.assertIn("has no [accounts.lanes] table", str(caught.exception))
+            with self.assertRaises(ManifestError):
+                mi.slot_env("lanes/one")
+            self.assertIsNone(mi.slot_env_or_none("lanes/one"))
+            mi._VERIFIED.clear()
+            with mock.patch.object(mi, "_probe_login", return_value="lanes") as probe, \
+                    self.assertRaises(ManifestError):
+                mi.apply_project_identity("lanes/one")
+            probe.assert_not_called()
         self.assertEqual(ms.selection("lanes", None), (self.slots / "lanes", None))
+
+    def test_a_misspelled_table_refuses_in_a_lane(self) -> None:
+        self.lane_slot("2")
+        self.write(PROJECTS + PLAIN + "\n[accounts.lanez]\nlane_slots = true\n")
+        with self.assertRaises(ManifestError) as caught:
+            ms.selection("lanes", "2")
+        self.assertIn("has no [accounts.lanes] table", str(caught.exception))
+        self.assertEqual(ms.selection("lanes", None), (self.slots / "lanes", None))
+
+    def test_a_recased_table_still_selects_the_lane_slot(self) -> None:
+        slot = self.lane_slot("2")
+        self.write(PROJECTS + PLAIN + "\n[accounts.LaNeS]\nlane_slots = true\n")
+        self.assertEqual(ms.selection("lanes", "2"), (slot, "tok"))
 
     def test_the_table_lookup_ignores_case_and_refuses_a_case_duplicate(self) -> None:
         slot = self.lane_slot("2")
-        self.write(PROJECTS + "\n[accounts.LANES]\nlane_slots = true\n")
+        self.write(PROJECTS + PLAIN + "\n[accounts.LANES]\nlane_slots = true\n")
         self.assertEqual(ms.selection("lanes", "2"), (slot, "tok"))
         self.write(PROJECTS + LANE_SLOTS + "\n[accounts.Lanes]\nlane_slots = false\n")
         with self.assertRaises(ManifestError):
@@ -196,7 +225,7 @@ class LaunchIdentity(Case):
 
     def test_an_overlay_only_repo_under_a_declared_account_refuses(self) -> None:
         """Revision 1: `lanes` is a project's account, `extra` only an [accounts] key."""
-        self.write(PROJECTS + LANE_SLOTS + "\n[accounts.extra]\nlane_slots = false\n")
+        self.write(PROJECTS + LANE_SLOTS + PLAIN + "\n[accounts.extra]\nlane_slots = false\n")
         for key in ("lanes/new", "extra/new"):
             with self.subTest(key=key):
                 repo = self.repo(key)

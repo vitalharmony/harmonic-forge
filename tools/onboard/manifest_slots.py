@@ -2,9 +2,9 @@
 """Which gh credential slot an account runs on, from `projects.toml` (harmonic-forge#1528).
 
 **Slot modes live in one top-level table, `[accounts.<name>]`.** Its one key is
-`lane_slots` (bool, default false): inside lanes 1-3 such an account runs on
+`lane_slots` (bool, required): when true, inside lanes 1-3 the account runs on
 `<slot root>/<name>-lane<N>` and that slot's file token, never the shared account
-slot (harmonic-forge#1396/#1470). Any other account runs on `<slot root>/<name>`.
+slot (harmonic-forge#1396/#1470); when false it runs on `<slot root>/<name>`.
 The table is top-level on purpose: an app repo's own forge.toml may set only
 `[project]` keys and refuses any other top-level key, so it can never reach a slot
 mode. A `Project` field would be settable from there.
@@ -19,9 +19,10 @@ one under the owner of any registered repo, whatever account that repo runs as
 (`kenekted/<new>` is harmonicarchitect's; preclose round 1).
 
 **A lane slot cannot be dropped silently.** The `[accounts]` lookup is
-case-insensitive, and an account that has a `<name>-lane<N>` slot on disk but no
-`lane_slots = true` refuses inside a lane instead of falling back to the shared
-slot (preclose round 1): deleting, misspelling or re-casing the table fails closed.
+case-insensitive, a table without `lane_slots` is refused, and inside a lane an
+account with no `[accounts]` table refuses rather than choosing a slot (sticky-wicket
+verdict, preclose rounds 1-2): a missing declaration resolves to the deny side, so
+deleting, misspelling or emptying the table fails closed and re-casing it still holds.
 
 The repo-to-account lookup stays `manifest_identity.account_for_origin`, whose
 two-call shape is the one place the per-checkout resolver is reached (R1).
@@ -58,25 +59,27 @@ def accounts(path: Path | None = None) -> dict[str, dict]:
         unknown = sorted(set(entry) - set(ACCOUNT_KEYS))
         if unknown:
             raise ManifestError(f"{target}: [accounts.{name}] has unknown key(s): {', '.join(unknown)}")
-        if not isinstance(entry.get("lane_slots", False), bool):
+        if "lane_slots" not in entry:
+            raise ManifestError(f"{target}: [accounts.{name}] must set lane_slots = true or false")
+        if not isinstance(entry["lane_slots"], bool):
             raise ManifestError(f"{target}: [accounts.{name}] lane_slots must be true or false")
     return table
 
 
 def lane_slot(account: str, lane: str | None, path: Path | None = None) -> Path | None:
     """The account's own slot for `lane`, or None when it runs on the account slot.
-    Refuses an account with lane slots on disk but no `lane_slots = true`."""
+    Inside a lane, refuses an account with no `[accounts]` table."""
     if lane not in LANES:
         return None
     table = {name.casefold(): entry for name, entry in accounts(path).items()}
-    if table.get(account.casefold(), {}).get("lane_slots"):
-        return manifest_identity.slot_dir(f"{account}-lane{lane}")
-    on_disk = [manifest_identity.slot_dir(f"{account}-lane{n}") for n in LANES]
-    if any(slot.is_dir() for slot in on_disk):
+    entry = table.get(account.casefold())
+    if entry is None:
         raise ManifestError(
-            f"account '{account}' has lane slots on disk but projects.toml has no "
-            f"[accounts.{account}] lane_slots = true; refusing to fall back to the "
-            "shared slot (harmonic-forge#1396, #1528)")
+            f"account '{account}' is declared in projects.toml but has no "
+            f"[accounts.{account}] table; a lane refuses rather than choosing a slot "
+            "(harmonic-forge#1528)")
+    if entry["lane_slots"]:
+        return manifest_identity.slot_dir(f"{account}-lane{lane}")
     return None
 
 
