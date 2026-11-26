@@ -12,7 +12,7 @@ The pflag-faithful parse and decision of one gh close, merge or api call, agains
 - **Modules:** `tools/hooks/gh_argv.py`, `tools/hooks/gh_flag_table.json`, `tools/hooks/gen_gh_flag_table.py`
 - **Authority:** `tools/hooks/gh_flag_table.json`
 - **Example caller:** `tools/hooks/close_gate.py:90`
-- **Guard and tests:** `tools/hooks/test_gh_argv.py`
-- **Exceptions:** none
+- **Guard and tests:** `tools/hooks/test_gh_argv.py`, `tools/rules/test_check_gh_recognizers.py`
+- **Exceptions:** tools/rules/gh_recognizer_exceptions.toml (shrink-only, ceiling-pinned)
 - **Scan roots:** `tools/hooks`
-- **Blind spots:** text hooks tokenize a command string with shell_parse, which this contract does not cover; the index checks that example_caller's line exists, not that it still holds a call
+- **Blind spots:** text hooks tokenize a command string with shell_parse, which this contract does not cover; the index checks that example_caller's line exists, not that it still holds a call; check_gh_recognizers.py (harmonic-forge#1500) is a tripwire for accidental reintroduction of the shapes in TC1, TC2 and TC8, not a semantic proof, and every other shape is a blind spot, including: whitespace forms other than TEXT's, f-string and concatenated literals, operands built by splitting or joining, getattr/eval lookups, qualified (import a.b.mod; a.b.mod.s) and relative (from . import mod) re-exports, and a close/merge comparison in a symbol that never compares the paired noun (issue/pr); target grammar (URL and bare-number fallbacks, block_undetermined_phase_close.py:216-235) is not kind recognition and is not scanned; dynamic module loads are counted but not followed; a re-export through getattr(X, "s") with a constant name is not resolved by G4; only tools/hooks is scanned (tools/registry/effects.py is outside it)

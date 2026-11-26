@@ -72,6 +72,8 @@ python3 tools/rules/check_test_main_last.py
 # harmonic-forge#1524: no new operator hardcode or core-to-operator import
 # beyond the shrink-only hardcode.baseline.toml.
 python3 tools/rules/hardcode_scan.py --check
+# harmonic-forge#1500: no private gh close/merge recognizer outside gh_argv_adapters.
+python3 tools/rules/check_gh_recognizers.py
 """
 
 [tasks.check]
