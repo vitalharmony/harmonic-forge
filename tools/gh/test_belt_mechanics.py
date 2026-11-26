@@ -418,7 +418,7 @@ class RawReadTests(unittest.TestCase):
                 raise side_effect
             return type("P", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
 
-        with patch("belt_mechanics.subprocess.run", side_effect=fake):
+        with patch("_etag_cache.subprocess.run", side_effect=fake):
             resp = belt_mechanics.gh_as_raw("vitalharmony", ["api", "-X", "GET", "repos/o/r/issues/1"],
                                             counter=counter, conditional=conditional)
         return resp, counter, calls
