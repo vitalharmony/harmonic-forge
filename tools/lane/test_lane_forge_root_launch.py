@@ -123,10 +123,19 @@ class EmptyRootFieldsRefuse(unittest.TestCase):
     def _launch(self, fields: list[str]) -> tuple[dict, Path]:
         with tll._FixtureTree() as tree:
             tree.lane_dir = tll.RegistryIntegrity._copy_lane_dir(None, tree.root)
+            # A real root whose rules pull leaves a marker, so a pull that would
+            # succeed is seen, not only one that fails (post-verdict check 4).
+            root = tree.root / "fx-root"
+            root.mkdir()
+            (root / "sync_rules.py").write_text(
+                "from pathlib import Path\n"
+                "Path(__file__).with_name('pulled').write_text('yes')\n")
+            fields = [str(root) if f == "@ROOT@" else f for f in fields]
             stub = tree.lane_dir / "lane_hookset.py"
             stub.unlink()
             stub.write_text(self._STUB.replace("{fields!r}", repr(fields)))
             cell = tree.run("1", [], LANE_CLI="claude", HARMONIC_FORGE_ROOT="")
+            self.assertFalse((root / "pulled").exists(), cell["stderr"])
             return cell, (tree.lane_dir / "called-past-root").exists()
 
     def test_four_empty_fields_refuse(self):
@@ -148,7 +157,7 @@ class EmptyRootFieldsRefuse(unittest.TestCase):
 
     # Operator ruling D35: each field alone, so a guard narrowed to skip any one
     # field (or to check only the resolved root) fails the test for that field.
-    _FULL = {"set": "/fx/lane_hooks.json", "root": "/fx/root",
+    _FULL = {"set": "/fx/lane_hooks.json", "root": "@ROOT@",
              "source": "HARMONIC_FORGE_ROOT", "as-written": "/fx/as-written"}
 
     def _only_empty_refuses(self, field: str, named: str):
