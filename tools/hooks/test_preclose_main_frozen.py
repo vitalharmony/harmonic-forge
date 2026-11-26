@@ -26,9 +26,10 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "testdata"))
 
 import block_missing_preclose_inspection as hook  # noqa: E402
+import migration_main_table  # noqa: E402
 import preclose_main_table  # noqa: E402
 
-BASE = "178ba5f"
+BASE = migration_main_table.BASE  # full id: a forged commit can make a short prefix ambiguous
 UNDECIDED = (None, "", "issue", False)
 
 
@@ -71,6 +72,10 @@ class NeverLooserThanMain(unittest.TestCase):
 
 
 class TableIsMainsOutput(unittest.TestCase):
+    def test_the_skip_guard_names_main_by_its_full_id(self) -> None:
+        # A short prefix can be made ambiguous by a forged commit, which turns the guard into a skip.
+        self.assertRegex(BASE, r"^[0-9a-f]{40}$")
+
     def test_the_table_is_mains_output(self) -> None:
         present = subprocess.run(["git", "-C", str(HERE), "cat-file", "-e", f"{BASE}^{{commit}}"],
                                  capture_output=True, check=False)
