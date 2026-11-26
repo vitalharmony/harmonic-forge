@@ -257,11 +257,13 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
     first `gh` call. Returns the account. The probe runs once per slot per
     process; a mismatch exits non-zero before the caller can write anything.
 
-    An overlay-only repo (harmonic-forge#1579, ruling D11) never uses a credential
-    slot, inside a lane or not: it takes the launcher's `ambient` mode
+    An overlay-only repo (harmonic-forge#1579, ruling D11 as amended by D14) never
+    uses a credential slot. Outside a lane it takes the launcher's `ambient` mode
     (`manifest_slots.launch_identity`), leaving GH_CONFIG_DIR and tokens untouched,
     so the session's current `gh` login posts. That login must equal the account
     or, for an organization owner, have push (`manifest_invoking.org_push`).
+    Inside a lane (LANE 1-3) it refuses before any `gh` call: the ambient login
+    there is the shared keyring's, which F1466 forbids in lanes (ruling D14).
     """
     import manifest_invoking  # noqa: PLC0415 -- harmonic-forge#1579: posting entrypoints only
     if normalize_repo(repo) not in by_repo(path):
@@ -269,6 +271,11 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
         if not account:
             raise ManifestError(f"{normalize_repo(repo)} is registered but declares no "
                                 "`account`; its identity cannot be resolved")
+        if os.environ.get("LANE") in manifest_slots.LANES:
+            raise SystemExit(
+                f"identity: {normalize_repo(repo)} is registered only by its forge.toml; "
+                "overlay-only posting is not available inside a lane until the follow-up "
+                "(harmonic-forge#1579 ruling D14); post from outside a lane")
         try:
             login = _probe_login()
         except ProbeUnavailable as exc:

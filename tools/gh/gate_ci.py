@@ -486,7 +486,23 @@ def s0_reader(repo: str, counter=None):
     one `_etag_cache.conditional_get` per call, under the account
     `manifest_identity.account_for(repo)` names, with no fallback. A
     `ManifestError` (or any failure resolving the account) answers status
-    None, which every reader path reads as `unknown`."""
+    None, which every reader path reads as `unknown`.
+
+    A repo known only from its forge.toml has no CI account (harmonic-forge#1579
+    ruling D13): building its reader raises `manifest_invoking.OverlayOnlyRefusal`,
+    which names the follow-up, before any read. Any other failure of that check
+    leaves the reader as it was."""
+    onboard = str(Path(__file__).resolve().parents[1] / "onboard")
+    if onboard not in sys.path:
+        sys.path.insert(0, onboard)
+    import manifest_invoking  # noqa: PLC0415
+    try:
+        manifest_invoking.refuse_board_ci(repo, "CI read")
+    except manifest_invoking.OverlayOnlyRefusal:
+        raise
+    except Exception:  # noqa: BLE001 - only the named refusal stops the read
+        pass
+
     def read(path: str) -> tuple[int | None, str | None]:
         try:
             tools = Path(__file__).resolve().parents[1]

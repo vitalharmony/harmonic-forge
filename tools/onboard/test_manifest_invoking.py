@@ -259,8 +259,9 @@ class Q3PushForAnOrganization(InvokingCase):
 
 
 class D11OverlayOnlyIsAmbient(InvokingCase):
-    """Ruling D11 (preclose round 1, survivors 1 and 2): an overlay-only account never
-    uses a credential slot, inside a lane or not; the session's current login posts."""
+    """Ruling D11 (preclose round 1, survivors 1 and 2) as amended by D14: an
+    overlay-only account never uses a credential slot; outside a lane the session's
+    current login posts, and inside a lane the post refuses before any gh call."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -275,9 +276,9 @@ class D11OverlayOnlyIsAmbient(InvokingCase):
             return logins.get(os.environ.get("GH_CONFIG_DIR", ""), "")
         return mock.patch.object(mi, "_probe_login", side_effect=login)
 
-    def test_every_lane_posts_under_the_ambient_login(self) -> None:
+    def test_outside_a_lane_posts_under_the_ambient_login(self) -> None:
         os.chdir(self.app)
-        for lane in (None, "1", "2", "3"):
+        for lane in (None, "", "0", "4"):
             with self.subTest(lane=lane):
                 self.seen.clear()
                 if lane is None:
@@ -289,6 +290,32 @@ class D11OverlayOnlyIsAmbient(InvokingCase):
                 self.assertEqual(self.seen, [(self.ambient, "ambient-token")])
                 self.assertEqual((os.environ["GH_CONFIG_DIR"], os.environ["GH_TOKEN"]),
                                  (self.ambient, "ambient-token"))
+
+    def test_every_lane_refuses_overlay_only_posting(self) -> None:
+        """Ruling D14: LANE 1, 2 and 3 refuse by name, with no probe and no env change,
+        so nothing runs on the shared keyring's login."""
+        os.chdir(self.app)
+        for lane in ("1", "2", "3"):
+            with self.subTest(lane=lane):
+                self.seen.clear()
+                os.environ["LANE"] = lane
+                with self.probe({self.ambient: "acme"}), self.assertRaisesRegex(
+                        SystemExit, "overlay-only posting is not available inside a lane until "
+                        r"the follow-up \(harmonic-forge#1579 ruling D14\)"):
+                    mi.apply_project_identity("acme/app")
+                self.assertEqual(self.seen, [])
+                self.assertEqual((os.environ["GH_CONFIG_DIR"], os.environ["GH_TOKEN"]),
+                                 (self.ambient, "ambient-token"))
+
+    def test_a_registered_repo_in_a_lane_is_unaffected(self) -> None:
+        """D14 reaches the overlay-only branch only: a projects.toml repo in a lane still
+        takes its lane slot (here a token-less one, which refuses on #1470's message)."""
+        os.chdir(self.app)
+        os.environ["LANE"] = "1"
+        (self.slots / "vitalharmony-lane1").mkdir()
+        with self.assertRaisesRegex(SystemExit, "has no token in") as ctx:
+            mi.apply_project_identity("vitalharmony/hrse")
+        self.assertNotIn("overlay-only", str(ctx.exception))
 
     def test_an_owner_named_like_a_slot_dir_never_reads_it(self) -> None:
         """`slots/acmeorg` exists and authenticates as acmeorg; the ambient login is
@@ -345,6 +372,83 @@ class RequireOnboardedRefuses(InvokingCase):
                     minv.require_onboarded("vitalharmony/hrse", cwd=where)
 
 
+D13 = r"acme/app is registered only by its forge\.toml; board/CI support is the follow-up"
+
+
+class D13NoBoardNoCI(InvokingCase):
+    """Ruling D13: a repo known only from its forge.toml gets no board and no CI
+    account. Every board step and the CI read refuses by name, and a board the
+    overlay names (here vitalharmony's, the round-2 hostile-author case) is never used."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        gh = str(HERE.parent / "gh")
+        if gh not in sys.path:
+            sys.path.insert(0, gh)
+        self.app = make_repo(
+            self.tmp / "boarded", "https://github.com/acme/app.git",
+            overlay_text(name="app", repo="acme/app", account="acme", prefix="Q",
+                         extra='workspace = "acme-app"\nboard_owner = "vitalharmony"\n'
+                               'board_number = "1"\n' + ONBOARDED))
+        os.chdir(self.app)
+        self.assertEqual(minv.require_onboarded("acme/app").board, ("vitalharmony", "1"))
+
+    def test_the_guard_refuses_only_an_overlay_only_repo(self) -> None:
+        with self.assertRaisesRegex(minv.OverlayOnlyRefusal, D13 + ".*so its CI read refuses"):
+            minv.refuse_board_ci("acme/app", "CI read")
+        minv.refuse_board_ci("vitalharmony/hrse", "CI read")  # projects.toml: no refusal
+        os.chdir(self.outside)
+        minv.refuse_board_ci("acme/app", "CI read")  # not registered here: the caller's own path
+
+    def test_l1_post_board_field_list_refuses_by_name(self) -> None:
+        import l1_post  # noqa: PLC0415
+        boom = AssertionError("a board command ran")
+        with mock.patch.object(l1_post, "board_field_names", side_effect=boom), \
+                mock.patch.object(l1_post, "run", side_effect=boom):
+            with self.assertRaisesRegex(SystemExit, D13 + ".*so its board field list refuses"):
+                l1_post.validate_board_fields_set("acme/app", 1)
+
+    def test_l1_post_tier_read_refuses_by_name(self) -> None:
+        import l1_post  # noqa: PLC0415
+        boom = AssertionError("a board command ran")
+        with mock.patch.object(l1_post, "resolve_board_tier", side_effect=boom), \
+                mock.patch.object(l1_post, "run", side_effect=boom):
+            with self.assertRaisesRegex(SystemExit, D13 + ".*so its board Tier read refuses"):
+                l1_post.LeadCtx("acme/app", 1, []).tier()
+
+    def test_gh_issue_board_lookup_refuses_by_name(self) -> None:
+        import gh_issue  # noqa: PLC0415
+        with self.assertRaisesRegex(SystemExit, r"\[GH\] " + D13 + ".*so its board item-add"):
+            gh_issue.resolve_board_for_repo("acme/app")
+        os.chdir(self.outside)  # an unmapped repo keeps the old refusal
+        with self.assertRaisesRegex(SystemExit, "No project board mapped"):
+            gh_issue.resolve_board_for_repo("acme/app")
+
+    def test_gh_issue_files_nothing_for_an_overlay_only_repo(self) -> None:
+        """The filing refuses before identity, the milestone read and create_issue."""
+        import gh_issue  # noqa: PLC0415
+        boom = AssertionError("gh_issue went past the D13 check")
+        argv = ["gh_issue.py", "--repo", "acme/app", "--title", "t", "--body", "b"]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(gh_issue, "apply_project_identity", side_effect=boom), \
+                mock.patch.object(gh_issue, "fetch_milestones", side_effect=boom), \
+                mock.patch.object(gh_issue, "create_issue", side_effect=boom) as create:
+            with self.assertRaisesRegex(SystemExit, D13 + ".*before the issue is created"):
+                gh_issue.main()
+        create.assert_not_called()
+
+    def test_gate_ci_ci_read_refuses_by_name(self) -> None:
+        import gate_ci  # noqa: PLC0415
+        import l1_post  # noqa: PLC0415
+        with mock.patch("_etag_cache.conditional_get",
+                        side_effect=AssertionError("a CI read ran")):
+            with self.assertRaisesRegex(minv.OverlayOnlyRefusal, D13 + ".*so its CI read refuses"):
+                gate_ci.s0_reader("acme/app")
+            with self.assertRaisesRegex(SystemExit, r"\[l1-post\] " + D13):
+                l1_post._ci_reader("acme/app")
+        self.assertTrue(callable(gate_ci.s0_reader("vitalharmony/hrse")))
+
+
 class HooksArePinnedOut(unittest.TestCase):
     """Pitch revision 2: the third consumer is reached from the posting entrypoints only."""
 
@@ -354,7 +458,8 @@ class HooksArePinnedOut(unittest.TestCase):
 
     def test_only_the_named_files_name_the_module(self) -> None:
         found = [f for f in self.grep("-l", "manifest_invoking", "--", "*.py", ":!**/test_*") if f]
-        self.assertEqual(sorted(found), ["tools/gh/l1_post.py", "tools/gh/preclose_check.py",
+        self.assertEqual(sorted(found), ["tools/gh/gate_ci.py", "tools/gh/gh_issue.py",
+                                         "tools/gh/l1_post.py", "tools/gh/preclose_check.py",
                                          "tools/onboard/manifest_identity.py",
                                          "tools/onboard/manifest_invoking.py",
                                          "tools/onboard/manifest_overlay.py"])

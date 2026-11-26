@@ -17,6 +17,13 @@ is an account `projects.toml` declares (operator ruling, second round).
 **Who may post (Q3(b)).** An overlay-only account is the repo's owner. A
 user-owned repo keeps login == account. No login equals an organization, so
 `org_push` accepts one only when GitHub says it has push; anything else refuses.
+
+**Identity and the comment only (re-scope, rulings D13 and D14).** An
+overlay-only repo gets no board and no CI account: `refuse_board_ci` is the one
+guard, called by the board resolvers (`l1_post.resolve_project_board`,
+`gh_issue.resolve_board_for_repo` and gh_issue's pre-create check) and by
+gate_ci's CI reader, so each refuses by name. Posting runs on the ambient login
+outside a lane only; inside one it refuses (`apply_project_identity`).
 """
 from __future__ import annotations
 
@@ -69,6 +76,34 @@ def require_onboarded(repo: str, cwd: str | Path | None = None,
     if project.protocol is None:
         raise ManifestError(f"{target}: {key} has no [project.protocol] declaration")
     return project
+
+
+class OverlayOnlyRefusal(ManifestError):
+    """Ruling D13: a board or CI step on a repo known only from its forge.toml."""
+
+
+#: The one named refusal (ruling D13). "the follow-up" is filled in by Lane 1.
+BOARD_CI_REFUSAL = ("{repo} is registered only by its forge.toml; board/CI support is "
+                    "the follow-up (harmonic-forge#1579 ruling D13), so its {step} refuses")
+
+
+def refuse_board_ci(repo: str, step: str, cwd: str | Path | None = None,
+                    path: Path | None = None) -> None:
+    """Ruling D13, the one guard: a repo known only from its forge.toml gets no
+    board and no CI account. Raises `OverlayOnlyRefusal` naming `step` when `repo`
+    is not in `projects.toml` and the cwd checkout's overlay registers it. A
+    `projects.toml` repo returns at once and reads no overlay; a repo neither
+    registers returns too, so the caller's own lookup refuses it as before. No
+    overlay board field is ever read, so a forge.toml cannot pick a board (round 2,
+    the hostile-author survivor)."""
+    key = normalize_repo(repo)
+    if key in by_repo(path):
+        return
+    try:
+        _fallback(key, cwd, path, key)
+    except ManifestError:
+        return
+    raise OverlayOnlyRefusal(BOARD_CI_REFUSAL.format(repo=key, step=step))
 
 
 def org_push(repo: str, path: Path | None = None) -> bool:
