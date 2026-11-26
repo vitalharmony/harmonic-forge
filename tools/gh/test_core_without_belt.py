@@ -4,10 +4,14 @@ The shared AC2 harness of #1569's children, created by harmonic-forge#1590 (D4).
 issue extends it in two places and changes nothing else:
 
 * `MODULES` names a core module that must import with the belt absent.
-* `CHECKS` registers (through `@check`) a function that calls the code path that used
-  to reach the belt. Most target imports are lazy, so an import alone proves little:
-  the check runs the path itself. It returns a JSON-serializable result, which must be
-  the same with the operator paths blocked and present.
+* `CHECKS` registers (through `@check`) a function that calls the module's functions
+  named in the child's AC2 and returns a JSON-serializable result, which must be the
+  same with the operator paths blocked and present.
+
+The checks prove AC2's same-values requirement and nothing more. They do not catch a
+core-to-operator import that returns later: that is `hardcode_scan.py --check`'s job
+(AC1). Where a child moved its belt-reaching path out of core, no such path is left in
+core for a check to call.
 
 Every import and every check runs in its own subprocess (a fresh `sys.modules` and a
 fresh module state such as `_etag_cache._IDENTITY`), with `HOME` set to a new tempdir
@@ -37,6 +41,7 @@ import hardcode_scan  # noqa: E402
 #: Core modules that must import with every operator path blocked.
 MODULES: tuple[str, ...] = (
     "_etag_cache",  # harmonic-forge#1590
+    "afk_toggle",  # harmonic-forge#1591
 )
 
 #: name -> a function run in a child; its result must match blocked and unblocked.
@@ -119,6 +124,26 @@ def etag_conditional_get() -> object:
 @check
 def etag_conditional_get_no_counter() -> object:
     return _etag_reads(False)
+
+
+# harmonic-forge#1591: afk_toggle imported belt_heartbeat for the idle-cutoff helpers,
+# which moved to the belt. Its remaining functions must return the same values.
+sys.path.insert(0, str(ROOT / "tools" / "hooks"))
+
+
+@check
+def afk_toggle_state() -> object:
+    import afk_toggle
+
+    out = [afk_toggle.is_on(), afk_toggle.last_action_age("1", now=2000.0)]
+    out.append(afk_toggle.record_lane_action("1", now=1000.0))
+    out.append(afk_toggle.record_lane_action("l2", now=1500.0))
+    out += [afk_toggle.last_action_age("1", now=2000.0),
+            afk_toggle.last_action_age("2", now=2000.0)]
+    out.append(afk_toggle.toggle({"prompt": "/afk on", "session_id": "s", "cwd": "."},
+                                 "cli", now=0.0) is not None)
+    out += [afk_toggle.is_on(), afk_toggle.last_action_age("1", now=2000.0)]
+    return out
 
 
 # --- child entry point and the tests ----------------------------------------------
