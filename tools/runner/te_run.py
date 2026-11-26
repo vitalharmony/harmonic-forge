@@ -570,6 +570,7 @@ CHECK_STEPS: tuple[tuple[str, str], ...] = (
      '--gate (got $rc)"; exit 1; }'),
     ("check_test_main_last", "python3 tools/rules/check_test_main_last.py"),
     ("hardcode_scan", "python3 tools/rules/hardcode_scan.py --check"),
+    ("check_gh_recognizers", "python3 tools/rules/check_gh_recognizers.py"),
     ("check_installed_lane_sources",
      'python3 tools/lane/check_installed_lane_sources.py --bin-dir "$HOME/.local/bin" '
      "--skip-if-absent"),
