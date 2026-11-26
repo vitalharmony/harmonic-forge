@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 HOOK = HERE / "enforce_belt_arming.py"
@@ -732,14 +733,15 @@ class Registration(unittest.TestCase):
 
 
 def _effective_operator_set() -> dict:
-    """The lane hook set with the operator overlay merged, validated against
-    this checkout (`tools/lane/lane_hookset.py`, loaded by path)."""
+    """The operator lane set, validated here and spelled as the operator layout renders it (#1526)."""
     import importlib.util
     root = HERE.parent.parent
     spec = importlib.util.spec_from_file_location("lane_hookset", root / "tools" / "lane" / "lane_hookset.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.load_effective(root / "tools" / "lane" / "lane_hooks.json", "operator", forge_root=root)
+    with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+        (Path(home) / "harmonic-forge").symlink_to(root)  # the operator layout: HOME links the root
+        return module.load_effective(root / "tools" / "lane" / "lane_hooks.json", "operator", forge_root=root)
 
 
 def _write_grant_file(arming, session_id, age_seconds=0.0, **extra):

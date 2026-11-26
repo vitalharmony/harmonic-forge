@@ -19,89 +19,89 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane1_status_claims.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane2_status_claims.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane2_status_claims.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_irreversible_ops.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_irreversible_ops.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/batch_gate.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/deny_lane3_ae_self_post.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/mypy_cwd_trap.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/mypy_cwd_trap.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_inline_prose.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_inline_prose.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_data_migration_close.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_data_migration_close.py\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_missing_preclose_inspection.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_missing_preclose_inspection.py\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_route_tightened_merge.py\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_gate_and_write_same_command.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_gate_and_write_same_command.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_undetermined_phase_close.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_undetermined_phase_close.py\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_stale_script_execution.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_stale_script_execution.py\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/lane3_cloud_cli_policy.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/lane3_cloud_cli_policy.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/model_tier_gate.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_raw_board_scan.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_raw_board_scan.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_unbounded_poll.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_unbounded_poll.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_gate.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/precheck_gate.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 5
           }
         ]
@@ -111,7 +111,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_reload_probe.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/compaction_reload_probe.py\"",
             "timeout": 10
           }
         ]
@@ -121,11 +121,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane1_status_claims.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/model_tier_gate.py\"",
             "timeout": 10
           }
         ]
@@ -135,12 +135,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_store_guard.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/precheck_store_guard.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -150,7 +150,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -160,7 +160,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/deny_cross_session_contact.py\""
           }
         ]
       },
@@ -169,7 +169,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/require_ci_plan.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/require_ci_plan.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -179,7 +179,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -189,7 +189,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -201,7 +201,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/remind_gate_readiness_sweep.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/remind_gate_readiness_sweep.py\"",
             "timeout": 10
           }
         ]
@@ -211,7 +211,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 90
           }
         ]
@@ -221,7 +221,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -232,22 +232,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/expand_lane_shorthand.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/expand_lane_shorthand.py\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_trigger_check.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tier_model_trigger_check.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/surface_dry_run_failures.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/surface_dry_run_failures.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -256,7 +256,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/grant_ci_plan_override.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/grant_ci_plan_override.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -267,27 +267,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_model_stop_backstop.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tier_model_stop_backstop.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tier_downshift_reminder.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tier_downshift_reminder.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_handoff_owed.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/enforce_handoff_owed.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/require_probed_operator_commands.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/require_probed_operator_commands.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -298,7 +298,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_session_model.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/record_session_model.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
@@ -308,7 +308,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_marker.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/compaction_marker.py\"",
             "timeout": 10
           }
         ]
@@ -318,7 +318,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/lane_launch_notice.py\"",
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/lane_launch_notice.py\"",
             "timeout": 10
           }
         ]
@@ -330,12 +330,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/record_tasklist_post.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 90
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/record_failed_command.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/record_failed_command.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 5
           }
         ]
@@ -345,7 +345,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]

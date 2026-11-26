@@ -241,8 +241,14 @@ fi
 # What no launch check reaches, stated rather than implied (the residual):
 #  - settings edits made after launch: the CLI hot-reloads `hooks` and `env`
 #    from its settings files mid-session (code.claude.com/docs/en/settings);
-#  - same-user writes to ~/harmonic-forge/tools/hooks, ~/.claude or the
+#  - same-user writes to the forge root's tools/hooks, ~/.claude or the
 #    interpreter, which the session and the branch's code can make;
+#  - the root itself: HARMONIC_FORGE_ROOT or instance.toml forge_root selects
+#    both the hook code every set handler runs and the sync_rules.py this
+#    launcher runs before any check, for every agent. The redirect is out of
+#    git's view (the checkout stays clean); the root notice line names it at
+#    launch. A root removed mid-session turns every guarded handler
+#    (`[ -f "$f" ] && ... || true`) into a silent no-op (harmonic-forge#1526);
 #  - a branch's own code running in a gate, as the operator's user;
 #  - projects with no frozen hook snapshot (only HRSE2 and harmonic-forge carry
 #    one): nothing fails when a project-only deny hook leaves their settings;
@@ -620,39 +626,29 @@ cli_args+=("${lane_passthrough[@]}")
 # settings are built after the rules pull below (harmonic-forge#1307).
 unset _lane_command _lane_env_prefix _lane_policy_file _lane_denied _token _arg
 
-## Platform-rules sync -- immediately before the final exec (harmonic-forge#651)
-#
-# A fast-forward-only pull of ~/harmonic-forge itself. The 2026-09-14 incident
-# was a Lane 1 session running belt-mode tooling from a checkout 3 commits
-# behind origin/main -- both the stale SKILL.md prose AND the stale script
-# that still accepted a retired flag were served from the same stale
-# checkout, so the launcher is the one place that can close that gap for
-# every subsequent hook/skill/tool invocation in the session. Best-effort by
-# design: this must never block session startup -- a warning and continue on
-# any failure (missing sync_rules.py, no network, merge conflict a
-# fast-forward-only pull refuses, timeout).
-if ! timeout 30 python3 "$HOME/harmonic-forge/sync_rules.py" --pull >&2; then
-  echo "${_lane_name:-lane launcher}: sync_rules.py --pull failed or timed out -- continuing with the current ~/harmonic-forge checkout" >&2
-fi
+## The forge root, then sync_rules.py --pull -- before the final exec
+# (harmonic-forge#1526, #651): both live in _lane_forge_root.sh.
+source "$_lane_dir/_lane_forge_root.sh" \
+  || _lane_launch_die "the forge root step could not be loaded from $_lane_dir/_lane_forge_root.sh -- refusing to launch"
 
 ## The lane's settings -- after the rules pull (harmonic-forge#1307)
 #
-# Built here, not in step 4, because the pull above can change
-# tools/lane/lane_hooks.json and tools/hooks/: validating before it would check
-# script paths against a tree that is about to move. Spliced back at step 4's
-# argv position, so it still precedes the passthrough (a `resume` or `-p`
-# passthrough receives it).
+# Built here, not in step 4: the pull above can change tools/hooks/ and, when
+# the root is the launcher checkout, tools/lane/lane_hooks.json (under a
+# redirect it pulls the root's scripts, not the set, which stays $_lane_dir's).
+# Spliced back at step 4's argv position, so it still precedes the passthrough.
 #
 # At every Claude lane the value is ONE inline JSON object, never a path: the
 # flag is single-valued, so the Lane 3 policy must be merged into it, and a
-# session that can edit ~/harmonic-forge cannot change the settings its own
+# session that can edit the forge root cannot change the settings its own
 # launch was given. `lane_hookset.py build` re-reads the policy's bytes once and
 # checks them against the root-owned manifest's policy_sha256 before merging.
 # It refuses a missing, empty or schema-invalid set, and Claude Code itself
 # would only drop a bad entry with a warning and start, so the refusal is here.
 _lane_hook_set="$(registry_lookup AGENT_HOOK_SET "$_lane_agent")"
 if [ -n "$_lane_hook_set" ]; then
-  _lane_build=(python3 -I -E "$_lane_dir/lane_hookset.py" build --set "$_lane_dir/$_lane_hook_set")
+  _lane_build=(python3 -I -E "$_lane_dir/lane_hookset.py" build --set "$_lane_view_set" --forge-root "$_lane_forge_root"
+               --forge-root-source "$_lane_forge_root_source" --forge-root-as-written "$_lane_forge_root_written")
   if [ -n "$_lane_policy_path" ]; then
     _lane_build+=(--policy "$_lane_policy_path" --manifest "$(dirname "$_lane_policy_path")/manifest.json")
   fi
@@ -669,5 +665,5 @@ elif [ -n "$_lane_policy_path" ]; then
             "$_lane_policy_flag" "$_lane_policy_path"
             "${cli_args[@]:$_lane_settings_at}")
 fi
-unset _lane_hook_set _lane_build _lane_settings_value _lane_settings_at \
-      _lane_policy_path _lane_policy_flag _lane_agent _lane_dir
+unset _lane_hook_set _lane_build _lane_settings_value _lane_settings_at _lane_policy_path \
+      _lane_policy_flag _lane_agent _lane_dir _lane_forge_root _lane_forge_root_source _lane_view_set _lane_forge_root_written

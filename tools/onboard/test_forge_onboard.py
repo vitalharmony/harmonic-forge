@@ -58,15 +58,15 @@ class Base(unittest.TestCase):
         self.store = self.root / "store"
         (self.store / ".git").mkdir(parents=True)
         self.set_settings({"autoMemoryDirectory": str(self.store)})
-        # harmonic-forge#1525: the hooks check loads the lane set for the
-        # declared overlay; the declaration read is this fixture's, never the
-        # operator's instance.toml.
+        # #1525/#1526: the hooks check loads the launch view's set for this fixture's
+        # overlay, from the checkout under test (set and root), never the operator's.
         _declare_overlay(self.home, "operator")
         self._env = mock.patch.dict(
-            os.environ, {"CLAUDE_CONFIG_DIR": str(self.home / ".claude"),
+            os.environ, {"CLAUDE_CONFIG_DIR": str(self.home / ".claude"), "HARMONIC_FORGE_ROOT": str(fo._THIS_CHECKOUT),
                          "XDG_CONFIG_HOME": str(self.home / ".config")})
-        self._env.start()
-        self.addCleanup(self._env.stop)
+        for patcher in (self._env, mock.patch.object(fo, "platform_source", return_value=fo._THIS_CHECKOUT)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
         # harmonic-forge#804: these fixtures use fake `.git` directories and no
         # account slot, so the identity check is covered by its own hermetic file
@@ -644,12 +644,12 @@ def _hermetic_home(case: unittest.TestCase, root: Path) -> Path:
 
     harmonic-forge#1525: XDG_CONFIG_HOME is pinned to `<home>/.config`, which
     declares `lane_hook_overlay = "operator"`, so `_lane_set` reads the
-    fixture's declaration, never the operator's `instance.toml`."""
+    fixture's declaration, never the operator's `instance.toml`; the root is pinned too (#1526 B2)."""
     home = root / "home"
     home.mkdir()
     (home / "harmonic-forge").symlink_to(fo._THIS_CHECKOUT)
     _declare_overlay(home, "operator")
-    patcher = mock.patch.dict(os.environ, {"HOME": str(home),
+    patcher = mock.patch.dict(os.environ, {"HOME": str(home), "HARMONIC_FORGE_ROOT": str(fo._THIS_CHECKOUT),
                                            "XDG_CONFIG_HOME": str(home / ".config")})
     patcher.start()
     case.addCleanup(patcher.stop)
@@ -686,8 +686,8 @@ class LaneHookSetCheckTests(unittest.TestCase):
         return mf.Project(name=name, prefix="Z", path=str(checkout))
 
     def _set_entry(self, script: str) -> tuple[str, dict]:
-        for path in (self.SET, self.OVERLAY):
-            data = json.loads(path.read_text(encoding="utf-8"))
+        for path in (self.SET, self.OVERLAY):  # rendered as the operator layout (harmonic-forge#1526)
+            data = json.loads(path.read_text(encoding="utf-8").replace("@FORGE_ROOT@", "${HOME}/harmonic-forge"))
             for event, blocks in data["hooks"].items():
                 for block in blocks:
                     for handler in block["hooks"]:
@@ -741,7 +741,7 @@ class LaneHookSetCheckTests(unittest.TestCase):
         self.assertIn("differs from the set's 25", check.detail)
 
     def test_an_unloadable_set_fails_every_project(self) -> None:
-        with mock.patch.object(fo, "LANE_HOOK_SET", self.root / "no-such-set.json"):
+        with mock.patch.object(fo, "platform_source", lambda: self.root):  # no tools/lane set there
             for name in ("a", "b"):
                 check = fo.check_hooks(self._project(name, {"hooks": self.OWN}))
                 self.assertEqual(check.status, fo.FAIL)

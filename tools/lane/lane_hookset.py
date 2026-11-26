@@ -16,7 +16,7 @@ or disable them:
     `--setting-sources`, `--restricted`) is refused by the launcher;
   * the value declares `disableAllHooks: false`, which outranks a project or
     local `true` (measured on 2.1.322, the plan's probe runs 2-4);
-  * the value is inline, so a session that can edit `~/harmonic-forge` cannot
+  * the value is inline, so a session that can edit the forge root cannot
     change the settings its own launch was given.
 
 `build` fails closed. Claude Code drops a malformed hooks entry with a warning
@@ -26,21 +26,21 @@ guards.
 
 Hook identity, measured on 2.1.322: a hook runs once per event when its
 command STRING is identical across settings sources, whatever the matcher or
-timeout, and twice when the strings differ. So a project entry that names a
-set script must be byte-identical to the set's entry; `doubled` reports any
-that is not.
+timeout, and twice when the strings differ. So a project entry naming a set
+script must be byte-identical to the set's entry; `doubled` reports any not.
 
 Subcommands:
-  build   --set F [--policy P --manifest M]   print the --settings value
-  doubled --set F [--settings S ...]           a project's doubled/removable entries
+  build   --set F --forge-root R --forge-root-source S --forge-root-as-written W [--policy P --manifest M]
+  doubled [--set F --forge-root R] [--settings S ...]   doubled/removable entries
+  root    --launcher-checkout DIR       print set, root, source, as written: each NUL-ended (#1526)
   freeze  --repo R --commit C [--project-specific SNAPSHOT]   AC4 snapshot
   running [--project DIR]                       live lane processes without the set
 
 Run as `python3 -I -E`, which drops the cwd and the `PYTHON*` variables. `HOME`
 and an absolute `XDG_CONFIG_HOME` still choose which `instance.toml` declares
-the overlay: the launcher refuses an `XDG_CONFIG_HOME` other than
-`$HOME/.config` before calling `build` (harmonic-forge#1525), and any other
-caller owns that environment.
+the overlay (and the root `root` prints, with `HARMONIC_FORGE_ROOT`): the
+launcher refuses an `XDG_CONFIG_HOME` other than `$HOME/.config` before calling
+`build` (harmonic-forge#1525), and any other caller owns that environment.
 """
 from __future__ import annotations
 
@@ -57,12 +57,12 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 # -I drops the script's directory from sys.path; the shared helper is named
 # explicitly, by this file's own resolved location.
-sys.path.insert(0, str(_HERE.parent / "onboard"))
+sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent / "settings"))
-from hook_targets import _PLATFORM_HOOK_PATH, unresolvable_hook_targets  # noqa: E402
+from hookset_root import (PLACEHOLDER, TEMPLATES, SetError,  # noqa: E402,F401
+                          render, render_checked, spelling, stored_form, stored_paths)
 import instance  # noqa: E402
 
-DEFAULT_SET = _HERE / "lane_hooks.json"
 SET_KEYS = frozenset({"schema", "disableAllHooks", "lane_only", "hooks"})
 BLOCK_KEYS = frozenset({"matcher", "hooks"})
 HANDLER_KEYS = frozenset({"type", "command", "timeout"})
@@ -85,10 +85,6 @@ OVERLAY_KEYS = frozenset({"schema", "lane_only", "hooks"})
 # (harmonic-forge#1525). Read from this file's own checkout, never beside a
 # caller-chosen set.
 OPERATOR_FIXTURE = _HERE / "testdata" / "lane_hooks_f61ac37_tuples.json"
-
-
-class SetError(ValueError):
-    """The set (or the policy merged into it) cannot be passed to a session."""
 
 
 def load_json_object(path: Path, what: str) -> dict:
@@ -114,21 +110,10 @@ def handlers(hooks: dict):
                     yield event, block.get("matcher"), handler
 
 
-def _resolve_in(forge_root: Path, command: str) -> Path | None:
-    match = _PLATFORM_HOOK_PATH.search(command)
-    if not match:
-        return None
-    return forge_root / match.group(2)[len("harmonic-forge/"):]
-
-
-def validate(data: dict, *, forge_root: Path | None = None) -> None:
-    """Raise SetError for any set the launcher must not pass.
-
-    `forge_root` None checks each script where the session will run it
-    (`${HOME}` expanded, as `unresolvable_hook_targets` does); a forge root
-    checks it in that checkout instead, which is what onboarding wants on a
-    machine whose `~/harmonic-forge` is not the checkout under test.
-    """
+def validate(data: dict, *, forge_root: Path) -> None:
+    """Raise SetError for any set the launcher must not pass. Each command is
+    in the stored form, and each script it names exists under `forge_root`
+    (harmonic-forge#1526)."""
     extra = sorted(set(data) - SET_KEYS)
     if extra:
         raise SetError(f"unknown top-level key(s): {', '.join(extra)}")
@@ -172,11 +157,11 @@ def validate(data: dict, *, forge_root: Path | None = None) -> None:
                 if "timeout" in handler and (isinstance(timeout, bool) or not isinstance(timeout, int)
                                              or timeout <= 0):
                     raise SetError(f"hooks.{event}: timeout is not a positive integer: {handler!r}")
-                # Change 4: an unmatched command is never existence-checked, and
-                # a guarded form then fails open at runtime.
-                if not _PLATFORM_HOOK_PATH.search(command) or "CLAUDE_PROJECT_DIR" in command:
-                    raise SetError(f"hooks.{event}: command does not name a "
-                                   f"harmonic-forge script by its platform path: {command}")
+                # Change 4: an unchecked command fails open at runtime (`stored_paths`).
+                try:
+                    stored_paths(command)
+                except SetError as exc:
+                    raise SetError(f"hooks.{event}: {exc}") from None
                 count += 1
     if not count:
         raise SetError("`hooks` holds no handler")
@@ -187,20 +172,19 @@ def validate(data: dict, *, forge_root: Path | None = None) -> None:
     stray = sorted(set(lane_only) - named)
     if stray:
         raise SetError(f"`lane_only` names no set entry: {', '.join(stray)}")
-    if forge_root is None:
-        missing = unresolvable_hook_targets(hooks)
-    else:
-        missing = sorted({str(p) for _e, _m, h in handlers(hooks)
-                          if (p := _resolve_in(forge_root, h["command"])) is not None
-                          and not p.is_file()})
+    missing = sorted({str(Path(forge_root) / rel) for _e, _m, h in handlers(hooks)
+                      for rel in stored_paths(h["command"])
+                      if not (Path(forge_root) / rel).is_file()})
     if missing:
-        raise SetError("named script(s) do not exist: " + ", ".join(missing))
+        raise SetError(f"named script(s) do not exist under forge root {forge_root}: {', '.join(missing)}")
 
 
-def load_set(path: Path, *, forge_root: Path | None = None) -> dict:
+def load_set(path: Path, *, forge_root: Path, stored: bool = False) -> dict:
+    """The core set, validated in its stored form; rendered for `forge_root`
+    unless `stored` (harmonic-forge#1526)."""
     data = load_json_object(path, "lane hook set")
     validate(data, forge_root=forge_root)
-    return data
+    return data if stored else render_checked(data, forge_root)
 
 
 def _scripts(data: dict) -> set[str]:
@@ -208,7 +192,7 @@ def _scripts(data: dict) -> set[str]:
             for s in SCRIPT_RE.findall(h.get("command") or "")}
 
 
-def load_overlay(path: Path, core: dict, *, forge_root: Path | None = None) -> dict:
+def load_overlay(path: Path, core: dict, *, forge_root: Path) -> dict:
     """The operator overlay at `path`, validated as a set of its own and
     disjoint from `core`: it may only add hooks, never carry
     `disableAllHooks` or name a script the core set wires. It must also be
@@ -251,15 +235,15 @@ def _handler_keys(data: dict) -> list[tuple]:
 
 def _operator_handlers(core: dict) -> Counter:
     """The handlers the operator overlay must carry: every handler of the
-    frozen f61ac37 set (`OPERATOR_FIXTURE`) whose script `core` does not wire.
-    Derived, not listed, so no hand list can drift from the record."""
+    frozen f61ac37 set (`OPERATOR_FIXTURE`) whose script `core` does not wire,
+    in the stored form (#1526). Derived, not listed: no hand list can drift."""
     frozen = load_json_object(OPERATOR_FIXTURE, "frozen operator hook record")
     rows = frozen.get("handlers")
     if (not isinstance(rows, list) or not rows
             or not all(isinstance(r, list) and len(r) == 4 for r in rows)):
         raise SetError(f"frozen operator hook record has no handler list: {OPERATOR_FIXTURE}")
     wired = _scripts(core)
-    required = Counter(tuple(r) for r in rows
+    required = Counter((r[0], r[1], stored_form(r[2]), r[3]) for r in rows
                        if isinstance(r[2], str) and SCRIPT_RE.findall(r[2])
                        and not set(SCRIPT_RE.findall(r[2])) & wired)
     if not required:
@@ -267,7 +251,7 @@ def _operator_handlers(core: dict) -> Counter:
     return required
 
 
-def merge(core: dict, overlay: dict, *, forge_root: Path | None = None) -> dict:
+def merge(core: dict, overlay: dict, *, forge_root: Path) -> dict:
     """`core` with `overlay` appended: per event, every core block and then
     every overlay block (never into an existing block); `lane_only` is the
     union. The result is validated again."""
@@ -280,17 +264,17 @@ def merge(core: dict, overlay: dict, *, forge_root: Path | None = None) -> dict:
     return merged
 
 
-def load_effective(set_path: Path, overlay: str, *, forge_root: Path | None = None) -> dict:
-    """The lane set for a declared overlay: the core set alone for `"none"`,
-    the core set plus `OVERLAY_FILES[overlay]` beside it otherwise."""
+def load_effective(set_path: Path, overlay: str, *, forge_root: Path) -> dict:
+    """The lane set for a declared overlay, rendered for `forge_root`: the core
+    set alone for `"none"`, plus `OVERLAY_FILES[overlay]` beside it otherwise."""
     if overlay not in OVERLAY_CHOICES:
         raise SetError(f"unknown lane hook overlay {overlay!r}: must be one of "
                        f"{', '.join(OVERLAY_CHOICES)}")
-    core = load_set(set_path, forge_root=forge_root)
-    if overlay == "none":
-        return core
-    path = Path(set_path).parent / OVERLAY_FILES[overlay]
-    return merge(core, load_overlay(path, core, forge_root=forge_root), forge_root=forge_root)
+    data = load_set(set_path, forge_root=forge_root, stored=True)
+    if overlay != "none":
+        path = Path(set_path).parent / OVERLAY_FILES[overlay]
+        data = merge(data, load_overlay(path, data, forge_root=forge_root), forge_root=forge_root)
+    return render_checked(data, forge_root)
 
 
 def _overlay_from_config() -> tuple[str, Path]:
@@ -302,17 +286,36 @@ def _overlay_from_config() -> tuple[str, Path]:
         raise SetError(str(exc)) from None
 
 
-def build(set_path: Path, policy: Path | None = None,
-          manifest: Path | None = None, *, overlay: str) -> dict:
+def _named(forge_root: Path, source: str, written: str | None) -> str:
+    """The prefix every build SetError carries: `instance.named_root`, the
+    shared formatter (sticky-wicket C1; post-verdict survivor 3)."""
+    return instance.named_root(str(forge_root) if written is None else written, source, forge_root)
+
+
+def build(set_path: Path, forge_root: Path, source: str, policy: Path | None = None,
+          manifest: Path | None = None, *, overlay: str, written: str | None = None) -> dict:
     """The one `--settings` object: the set, plus the Lane 3 policy when given.
 
-    `overlay` is the declared overlay (`load_effective`). The policy is read
-    ONCE: its digest is checked against the manifest's
-    `policy_sha256` and those same bytes are merged, so nothing can swap it
-    between the launcher's ownership check and here. Neither source may carry
-    the other's keys, so neither can override the other.
+    `forge_root` (from `source`, as `written`) holds every script; one with no
+    `tools/hooks/` refuses. Every SetError is named by `_named` (harmonic-forge#1526). `overlay` is the declared overlay
+    (`load_effective`). The policy is read ONCE: its digest is checked against
+    the manifest's `policy_sha256` and those same bytes are merged, so nothing
+    can swap it between the launcher's ownership check and here. Neither
+    source may carry the other's keys, so neither can override the other.
     """
-    data = load_effective(set_path, overlay)
+    named = _named(forge_root, source, written)  # C1
+    if not (Path(forge_root) / "tools" / "hooks").is_dir():
+        raise SetError(f"{named} has no tools/hooks/")
+    try:
+        return _build(set_path, forge_root, policy, manifest, overlay=overlay)
+    except SetError as exc:
+        raise SetError(f"{named}: {exc}") from None
+
+
+def _build(set_path: Path, forge_root: Path, policy: Path | None, manifest: Path | None,
+           *, overlay: str) -> dict:
+    """`build`'s body, unnamed: the set, then the policy."""
+    data = load_effective(set_path, overlay, forge_root=forge_root)
     value = {"disableAllHooks": False, "hooks": data["hooks"]}
     if policy is None:
         return value
@@ -502,10 +505,14 @@ def _main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("build")
     p.add_argument("--set", type=Path, required=True)
+    p.add_argument("--forge-root", type=Path, required=True)
+    p.add_argument("--forge-root-source", required=True)
+    p.add_argument("--forge-root-as-written")
     p.add_argument("--policy", type=Path)
     p.add_argument("--manifest", type=Path)
     p = sub.add_parser("doubled")
-    p.add_argument("--set", type=Path, default=DEFAULT_SET)
+    p.add_argument("--set", type=Path)  # default: the set and root a launch resolves (#1526)
+    p.add_argument("--forge-root", type=Path)
     p.add_argument("--settings", type=Path, action="append", default=[])
     p.add_argument("--user-settings", type=Path,
                    default=Path.home() / ".claude" / "settings.json",
@@ -517,32 +524,41 @@ def _main(argv: list[str] | None = None) -> int:
                    help="carry `project_specific` from this snapshot")
     p = sub.add_parser("running")
     p.add_argument("--project", type=Path)
+    sub.add_parser("root").add_argument("--launcher-checkout", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.cmd == "root":
+            # NUL-ended, so a tab or newline in any field (the instance.toml
+            # path in the source) survives the launcher's read (post-verdict 2).
+            sys.stdout.write("".join(f"{field}\0" for field in instance.launch_view(args.launcher_checkout)))
+            return 0
         if args.cmd == "build":
-            if (args.policy is None) != (args.manifest is None):
-                raise SetError("--policy and --manifest go together")
-            overlay, config = _overlay_from_config()
-            value = build(args.set, args.policy, args.manifest, overlay=overlay)
+            try:  # named like every build refusal (post-verdict survivor 3)
+                if (args.policy is None) != (args.manifest is None):
+                    raise SetError("--policy and --manifest go together")
+                overlay, config = _overlay_from_config()
+            except SetError as exc:
+                raise SetError(f"{_named(args.forge_root, args.forge_root_source, args.forge_root_as_written)}: "
+                               f"{exc}") from None
+            value = build(args.set, args.forge_root, args.forge_root_source, args.policy,
+                          args.manifest, overlay=overlay, written=args.forge_root_as_written)
             if overlay == "none":
                 print(f'lane_hookset: hook overlay "none" (from {config}): core set only '
                       f'-- the operator hooks (belt, memory) are NOT wired', file=sys.stderr)
             else:
-                core_n = sum(1 for _ in handlers(load_set(args.set)["hooks"]))
+                core_n = sum(1 for _ in handlers(load_set(args.set, forge_root=args.forge_root)["hooks"]))
                 total = sum(1 for _ in handlers(value["hooks"]))
                 print(f'lane_hookset: hook overlay "{overlay}" (from {config}): '
                       f'{core_n} core + {total - core_n} operator handler(s)', file=sys.stderr)
             print(json.dumps(value, separators=(",", ":")))
             return 0
         if args.cmd == "doubled":
-            set_data = load_effective(args.set, _overlay_from_config()[0])
+            view = instance.launch_view(_HERE.parent.parent)  # the launch's set and root (B1)
+            set_data = load_effective(args.set or view[0], _overlay_from_config()[0], forge_root=args.forge_root or view[1])
             files = list(args.settings)
             if str(args.user_settings) not in ("", "."):
                 files.append(args.user_settings)
-            settings = {}
-            for path in files:
-                if path.is_file():
-                    settings[str(path)] = load_json_object(path, "settings file")
+            settings = {str(f): load_json_object(f, "settings file") for f in files if f.is_file()}
             doubles, removable = doubled(set_data, settings)
             for line in doubles:
                 print(f"DOUBLED {line}")
@@ -558,7 +574,7 @@ def _main(argv: list[str] | None = None) -> int:
         for line in running(project=args.project):
             print(line)
         return 0
-    except (SetError, subprocess.CalledProcessError) as exc:
+    except (ValueError, subprocess.CalledProcessError) as exc:
         print(f"lane_hookset: {exc}", file=sys.stderr)
         return 1
 

@@ -201,7 +201,7 @@ class Wiring(Busy):
     @staticmethod
     def commands(path: Path) -> list[str]:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return [hook["command"] for groups in data["hooks"].values() for group in groups
+        return [_operator_layout(hook["command"]) for groups in data["hooks"].values() for group in groups
                 for hook in group.get("hooks", []) if "worktree_busy_guard.py" in hook.get("command", "")]
 
     def run_row(self, command: str, linked: bool) -> subprocess.CompletedProcess:
@@ -231,7 +231,7 @@ class Wiring(Busy):
         """The guard rows Claude Code runs for `tool`'s PreToolUse: a group's
         matcher is a regex matched against the whole tool name; "" or "*" is all."""
         data = json.loads(path.read_text(encoding="utf-8"))
-        return [hook["command"] for group in data["hooks"].get("PreToolUse", [])
+        return [_operator_layout(hook["command"]) for group in data["hooks"].get("PreToolUse", [])
                 if group.get("matcher", "") in ("", "*") or re.fullmatch(group["matcher"], tool)
                 for hook in group.get("hooks", []) if "worktree_busy_guard.py" in hook.get("command", "")]
 
@@ -254,6 +254,13 @@ class Wiring(Busy):
                     self.assertEqual(done.returncode, 0, done.stderr)
                     self.assertEqual(json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"],
                                      "deny", tool)
+
+
+def _operator_layout(command: str) -> str:
+    """A stored row as the operator layout renders it (harmonic-forge#1526): the
+    `@FORGE_ROOT@` placeholder becomes `${HOME}/harmonic-forge`, which these
+    tests link to this checkout under a temp HOME."""
+    return command.replace("@FORGE_ROOT@", "${HOME}/harmonic-forge")
 
 
 if __name__ == "__main__":
