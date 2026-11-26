@@ -73,7 +73,7 @@ _COMMAND_FIELD_RE = re.compile(r"^\s*(?:-\s*)?command:(.*)$", re.MULTILINE)
 
 
 def _scripts_in_settings(path: Path) -> dict[str, set[str]]:
-    """`{script_path_as_written: {event, ...}}` from one settings.json."""
+    """`{script_basename: {event, ...}}` from one settings.json."""
     found: dict[str, set[str]] = defaultdict(set)
     if not path.exists():
         return found
@@ -85,7 +85,7 @@ def _scripts_in_settings(path: Path) -> dict[str, set[str]]:
         for entry in entries or []:
             for hook in entry.get("hooks", []) or []:
                 for match in _SCRIPT_RE.findall(hook.get("command", "")):
-                    found[match].add(event)
+                    found[Path(match).name].add(event)
     return found
 
 
@@ -107,7 +107,7 @@ def _scripts_in_agent_frontmatter(root: Path) -> dict[str, set[str]]:
             continue
         for command in _COMMAND_FIELD_RE.findall(frontmatter):
             for match in _SCRIPT_RE.findall(command):
-                found[match].add(f"agent:{path.stem}")
+                found[Path(match).name].add(f"agent:{path.stem}")
     return found
 
 
@@ -152,15 +152,6 @@ def _hook_claims(rule: dict) -> tuple[list[tuple[str, object]], list[str]]:
     return claims, malformed
 
 
-def _same_script(claim: str, live: str) -> bool:
-    """One script iff the shorter path's components end the longer one's: a
-    bare basename matches by name, a path with a directory matches only that
-    full repo-relative path (harmonic-forge#1594)."""
-    a, b = Path(claim).parts, Path(live).parts
-    n = min(len(a), len(b))
-    return n > 0 and a[-n:] == b[-n:]
-
-
 def _print_rule(rule: dict) -> list[str]:
     """Print one rule; return its MALFORMED `hooks` findings."""
     print(f"{rule['id']}  [{enforcement_of(rule)}]  {rule['file']}")
@@ -176,16 +167,16 @@ def _print_rule(rule: dict) -> list[str]:
     return malformed
 
 
-def claims_by_script(rules: list[dict]) -> tuple[dict[str, dict[str, set[str]]], list[str]]:
-    """`({basename: {path_as_claimed: {rule_id}}}, MALFORMED findings)`: a full
-    path and its basename are one claim (AC2), each path kept for matching."""
-    claimed: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+def claims_by_script(rules: list[dict]) -> tuple[dict[str, set[str]], list[str]]:
+    """`({basename: {rule_id}}, MALFORMED findings)`: a full path and its
+    basename are one claim (AC2)."""
+    claimed: dict[str, set[str]] = defaultdict(set)
     malformed: list[str] = []
     for rule in rules:
         claims, bad = _hook_claims(rule)
         malformed += bad
         for path, _ in claims:
-            claimed[Path(path).name][path].add(rule["id"])
+            claimed[Path(path).name].add(rule["id"])
     return claimed, malformed
 
 
@@ -193,10 +184,10 @@ def hooks_report(rules: list[dict], root: Path) -> int:
     """AC3, both directions: an unbacked `hook` claim and an unmapped live
     hook are each a finding, not a silent pass."""
     wiring = live_wiring(root)
-    live_paths: dict[str, set[str]] = defaultdict(set)
+    live_scripts: dict[str, set[str]] = defaultdict(set)
     for scope, scripts in wiring.items():
         for script in scripts:
-            live_paths[script].add(scope)
+            live_scripts[script].add(scope)
 
     print("=== live hook wiring, by scope ===")
     for scope in list(_WIRING_LOCATIONS) + ["agent-frontmatter"]:
@@ -208,23 +199,19 @@ def hooks_report(rules: list[dict], root: Path) -> int:
             print(f"  {scope:<18} {len(scripts)} script(s)")
 
     claimed, malformed = claims_by_script(rules)
-    claim_paths = [path for paths in claimed.values() for path in paths]
-    unbacked = sorted(p for p in claim_paths if not any(_same_script(p, live) for live in live_paths))
-    unmapped: dict[str, set[str]] = defaultdict(set)
-    for live, scopes in live_paths.items():
-        if not any(_same_script(path, live) for path in claim_paths):
-            unmapped[Path(live).name] |= scopes
+    unbacked = sorted(s for s in claimed if s not in live_scripts)
+    unmapped = sorted(s for s in live_scripts if s not in claimed)
 
     print(f"\n=== rules claiming a hook: {len(claimed)} distinct script(s) ===")
-    print(f"=== live hook scripts: {len({Path(p).name for p in live_paths})} ===")
+    print(f"=== live hook scripts: {len(live_scripts)} ===")
     if unbacked:
         print(f"\nUNBACKED `hook` claims — rule names a script found in no wiring location ({len(unbacked)}):")
-        for path in unbacked:
-            print(f"  {path}  claimed by {sorted(claimed[Path(path).name][path])}")
+        for script in unbacked:
+            print(f"  {script}  claimed by {sorted(claimed[script])}")
     if unmapped:
         print(f"\nUNMAPPED live hooks — wired but named by no rule ({len(unmapped)}):")
-        for script in sorted(unmapped):
-            print(f"  {script}  wired in {sorted(unmapped[script])}")
+        for script in unmapped:
+            print(f"  {script}  wired in {sorted(live_scripts[script])}")
     if malformed:
         print(f"\nMALFORMED `hooks` entries ({len(malformed)}):", *malformed, sep="\n  ")
     if not unbacked and not unmapped and not malformed:
