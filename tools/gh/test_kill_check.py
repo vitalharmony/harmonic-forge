@@ -286,6 +286,50 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(recorded.parent, kill._scratch.root())
         self.assertFalse(recorded.exists())
 
+    def leaky_check(self) -> None:
+        """A check whose test leaks a `mkdtemp()` dir, mode 000 on the mutated run."""
+        (self.repo / "leak.py").write_text(
+            "import os, tempfile\nfrom pathlib import Path\nfrom f import f\n"
+            "d = tempfile.mkdtemp()\n"
+            "if f() != 1:\n"
+            "    Path(d, 'state.json').write_text('{}')\n"
+            "    os.chmod(d, 0)\n"
+            "    raise SystemExit(1)\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "leaky check")
+        self.write_checks(test=["python3", "leak.py"])
+
+    def test_leaked_temp_dirs_stay_out_of_the_real_temp_dir(self) -> None:
+        """harmonic-forge#1600 AC1: a test that leaks `mkdtemp()` dirs, including a
+        mode-000 one on the mutated run, leaves the real temp dir empty."""
+        real = self.root / "realtmp"
+        real.mkdir()
+        self.leaky_check()
+        env = {name: str(real) for name in ("TMPDIR", "TMP", "TEMP", "HF_REAL_TMPDIR")}
+        with patch.dict(os.environ, env), patch.object(tempfile, "tempdir", str(real)):
+            self.assertEqual(self.execute(), 0)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "killed")
+        self.assertEqual(sorted(os.listdir(real)), [])
+
+    def test_the_per_check_temp_dir_is_removed(self) -> None:
+        """harmonic-forge#1600 round-1 survivor 2: one_check's own finally removes
+        its per-check temp dir, mode-000 leak and all; the scratch exit's
+        rmtree(ignore_errors=True) is no substitute."""
+        self.leaky_check()
+        removed: list[tuple[str, bool]] = []
+        real_remove = kill.remove_tree
+
+        def recording(directory: Path) -> str | None:
+            error = real_remove(directory)
+            removed.append((directory.name, directory.exists()))
+            return error
+
+        with patch.object(kill, "remove_tree", side_effect=recording):
+            self.assertEqual(self.execute(), 0)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "killed")
+        tmp = [exists for name, exists in removed if name.startswith("kill-check-tmp-")]
+        self.assertEqual(tmp, [False])
+
     def test_reaper_removes_only_old_scratch(self) -> None:
         parent = kill.scratch_parent()
         old, fresh = parent / "kill-check-old", parent / "kill-check-fresh"

@@ -973,6 +973,21 @@ path = "tools/lane/tick_scan.py"
   class = "read"
   cite = ["tools/lane/tick_scan.py:64-73"]
 
+[[tool]]
+path = "tools/lane/tmp_sweep.py"
+  [[tool.mode]]
+  name = "--dry-run"
+  match = ["--dry-run"]
+  exact = true
+  class = "read"
+  cite = ["tools/lane/tmp_sweep.py:65", "tools/lane/tmp_sweep.py:77-79"]
+  [[tool.mode]]
+  name = "sweep"
+  match = []
+  class = "local-write"
+  note = "temp: removes the current user's stale top-level tmpXXXXXXXX dirs (rule step 1)"
+  cite = ["tools/lane/tmp_sweep.py:65-67"]
+
 # --------------------------------------------------------------------------
 # Libraries: imported or sourced only, no process entry point.
 

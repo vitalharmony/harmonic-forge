@@ -218,6 +218,17 @@ class BeltSkillMatchesCanonicalTableTests(unittest.TestCase):
     def test_skill_names_the_repo_flag(self):
         self.assertIn("belt_plan.py --repo", _SKILL_MD.read_text(encoding="utf-8"))
 
+    def test_skill_names_every_tick_script_and_the_sweep_line_as_silent(self):
+        """harmonic-forge#1600 round-1 survivor 4: the skill reads tick output, so it
+        names each tick script, and the sweep's line as housekeeping that keeps the tick silent."""
+        sys.path.insert(0, str(_BELT_PLAN.parent))
+        import belt_plan  # noqa: PLC0415
+        skill = _SKILL_MD.read_text(encoding="utf-8")
+        for script in re.findall(r"/(\w+\.py)", belt_plan.TICK_COMMAND):
+            self.assertIn(f"`{script}", skill)
+        self.assertIn("A `tmp-sweep: removed N` line is housekeeping, not owed work: "
+                      "the tick still ends silently.", skill)
+
     def test_lane3_table_holds_only_the_queue_belt(self):
         """harmonic-forge#659 AC1; one queue belt per workspace since harmonic-forge#917."""
         entries = [e for e in watch_lane_posts.CANONICAL_BELTS["3"] if not e.get("repo")]
