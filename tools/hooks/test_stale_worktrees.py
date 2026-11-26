@@ -250,6 +250,17 @@ class Warn(Fixture):
             self.assertIn("merge target not resolved", err.getvalue())
             self.assertEqual(runner.gh_calls, [])
 
+    def test_7e_an_undecided_non_merge_call_is_skipped_silently(self):
+        """harmonic-forge#1497: a leading-flag call BATCH cannot decide is not a merge here."""
+        checkout = self.clone("hrse2-7e-impl")
+        new = self.advance_main()
+        runner, err = FakeRunner(new), io.StringIO()
+        with redirect_stderr(err):
+            # `warn` reads only a command that mentions "merge".
+            self.assertIsNone(sw.warn("gh -R o/r pr view 5 --json mergeable", str(checkout), self.root, runner))
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(runner.gh_calls, [])
+
     def test_7d_a_repo_flag_the_parser_missed_never_becomes_the_cwd_repo(self):
         """Pass 2, survivor 3: `--repo=` and attached `-R` forms do not fall back to cwd."""
         checkout = self.clone("hrse2-7d-impl")
