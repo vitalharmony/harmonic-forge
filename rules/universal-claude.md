@@ -162,3 +162,9 @@ When the auto-mode classifier blocks an unattended-agent launcher (a `claude -p`
 <!-- R-0412 -->
 An Artifact `open` result is not evidence the operator can see the artifact. Open it in the operator's browser and check it before saying it is open, and leave that tab open.
 <!-- /R-0412 -->
+<!-- R-0438 -->
+A `!` or `/` command the operator types while a turn runs waits until that turn ends, so after handing the operator a command the session ends its turn promptly. It never hands a command and also runs it; if it takes over a handed step, it says so in one line at that moment.
+<!-- /R-0438 -->
+<!-- R-0439 -->
+The `UserPromptSubmit` model-tier note is advisory: the session reads the model id in its own system prompt and, on an Opus or Fable model, proceeds without asking for `/model`. Only a `PreToolUse` deny from `model_tier_gate.py` on a non-high-tier model puts `/model` in the operator's actions.
+<!-- /R-0439 -->
