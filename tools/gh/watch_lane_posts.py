@@ -3592,14 +3592,14 @@ def announce_afk_idle_cutoff(lane: str, scope: str = "all", workspace: str | Non
     line prints and the line prints only when the write succeeded: a failed write
     announces nothing, so no run can announce an episode twice (it may skip one on
     a crash between the two, which the next afk episode recovers). Never raises."""
-    if _afk_toggle is None:
+    if _afk_toggle is None or _belt_heartbeat is None:
         return False
     try:
         workspace = workspace or "none"
-        since = _afk_toggle.idle_cutoff_due(lane, workspace=workspace, scope=scope)
+        since = _belt_heartbeat.idle_cutoff_due(lane, workspace=workspace, scope=scope)
         if since is None:
             return False
-        if not _afk_toggle.mark_cutoff_announced(lane, since, workspace=workspace, scope=scope):
+        if not _belt_heartbeat.mark_cutoff_announced(lane, since, workspace=workspace, scope=scope):
             print("[watch_lane_posts] afk cutoff marker not written; not announcing", file=sys.stderr)
             return False
         print(f"afk-idle-cutoff {lane}: no lane action for "

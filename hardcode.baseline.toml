@@ -1042,12 +1042,6 @@ count = 1
 
 [[finding]]
 rule = "import"
-path = "tools/hooks/afk_toggle.py"
-text = "tools/lane/belt_heartbeat.py"
-count = 1
-
-[[finding]]
-rule = "import"
 path = "tools/hooks/batch_auth.py"
 text = "tools/telemetry/archive.py"
 count = 1

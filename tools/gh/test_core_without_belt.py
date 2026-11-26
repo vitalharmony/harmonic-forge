@@ -4,16 +4,27 @@ The shared AC2 harness of #1569's children, created by harmonic-forge#1590 (D4).
 issue extends it in two places and changes nothing else:
 
 * `MODULES` names a core module that must import with the belt absent.
-* `CHECKS` registers (through `@check`) a function that calls the code path that used
-  to reach the belt. Most target imports are lazy, so an import alone proves little:
-  the check runs the path itself. It returns a JSON-serializable result, which must be
-  the same with the operator paths blocked and present.
+* `CHECKS` registers (through `@check`) a function that calls the module's functions
+  named in the child's AC2 and returns a JSON-serializable result, which must be the
+  same with the operator paths blocked and present.
+
+The checks prove AC2's same-values requirement and nothing more. They do not catch a
+core-to-operator import that returns later: that is `hardcode_scan.py --check`'s job
+(AC1). Where a child moved its belt-reaching path out of core, no such path is left in
+core for a check to call.
 
 Every import and every check runs in its own subprocess (a fresh `sys.modules` and a
 fresh module state such as `_etag_cache._IDENTITY`), with `HOME` set to a new tempdir
-so a patched read can never write the live `~/.claude/state/belt/` caches. The blocker
-is a `sys.meta_path` finder that raises ImportError for any module whose file matches a
-glob from `hardcode_scan.load_operator_globs` (tools/rules/operator_paths.toml).
+so a patched read can never write the live `~/.claude/state/belt/` caches. A `--child`
+started any other way (by hand, with the real HOME) refuses before it runs an import or
+a check: `_run` names its tempdir in `CHILD_HOME_ENV`, and the child runs only when
+that equals its `HOME` (harmonic-forge#1591 D16).
+
+Both children have the same `sys.path`, tools/lane included, so the blocker is the only
+difference between them: a core module that silently falls back when a belt module
+cannot be imported returns different values blocked and unblocked (#1591 D17). The
+blocker is a `sys.meta_path` finder that raises ImportError for any module whose file
+matches a glob from `hardcode_scan.load_operator_globs` (tools/rules/operator_paths.toml).
 """
 from __future__ import annotations
 
@@ -37,10 +48,14 @@ import hardcode_scan  # noqa: E402
 #: Core modules that must import with every operator path blocked.
 MODULES: tuple[str, ...] = (
     "_etag_cache",  # harmonic-forge#1590
+    "afk_toggle",  # harmonic-forge#1591
 )
 
 #: name -> a function run in a child; its result must match blocked and unblocked.
 CHECKS: dict[str, Callable[[], object]] = {}
+
+#: `_run` sets this to its temporary HOME; a `--child` without it refuses (D16).
+CHILD_HOME_ENV = "CORE_WITHOUT_BELT_CHILD_HOME"
 
 
 def check(fn: Callable[[], object]) -> Callable[[], object]:
@@ -121,9 +136,40 @@ def etag_conditional_get_no_counter() -> object:
     return _etag_reads(False)
 
 
+# harmonic-forge#1591: afk_toggle imported belt_heartbeat for the idle-cutoff helpers,
+# which moved to the belt. Its remaining functions must return the same values.
+sys.path.insert(0, str(ROOT / "tools" / "hooks"))
+
+
+@check
+def afk_toggle_state() -> object:
+    import afk_toggle
+
+    out = [afk_toggle.is_on(), afk_toggle.last_action_age("1", now=2000.0)]
+    out.append(afk_toggle.record_lane_action("1", now=1000.0))
+    out.append(afk_toggle.record_lane_action("l2", now=1500.0))
+    out += [afk_toggle.last_action_age("1", now=2000.0),
+            afk_toggle.last_action_age("2", now=2000.0)]
+    out.append(afk_toggle.toggle({"prompt": "/afk on", "session_id": "s", "cwd": "."},
+                                 "cli", now=0.0) is not None)
+    out += [afk_toggle.is_on(), afk_toggle.last_action_age("1", now=2000.0)]
+    return out
+
+
 # --- child entry point and the tests ----------------------------------------------
 
+def _refuse_outside_run() -> str | None:
+    """Why this `--child` must not run, or None when `_run` started it (D16)."""
+    marker, home = os.environ.get(CHILD_HOME_ENV), os.environ.get("HOME")
+    if not marker or marker != home:
+        return (f"test_core_without_belt: --child refuses: run it through the tests, "
+                f"not by hand ({CHILD_HOME_ENV} must name this HOME, a temporary one)")
+    return None
+
+
 def _child(blocked: bool, kind: str, name: str) -> None:
+    # The same path in both runs (D17): the blocker alone decides what is importable.
+    sys.path.insert(0, str(ROOT / "tools" / "lane"))
     if blocked:
         sys.meta_path.insert(0, OperatorBlocker(hardcode_scan.load_operator_globs(ROOT)))
     if kind == "import":
@@ -135,7 +181,7 @@ def _child(blocked: bool, kind: str, name: str) -> None:
 
 def _run(blocked: bool, kind: str, name: str) -> subprocess.CompletedProcess:
     with tempfile.TemporaryDirectory() as home:
-        env = {**os.environ, "HOME": home}
+        env = {**os.environ, "HOME": home, CHILD_HOME_ENV: home}
         return subprocess.run(
             [sys.executable, "-B", str(Path(__file__).resolve()), "--child",
              "1" if blocked else "0", kind, name],
@@ -147,6 +193,30 @@ class CoreWithoutBeltTests(unittest.TestCase):
         proc = _run(True, "import", "belt_mechanics")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("operator path blocked: tools/gh/belt_mechanics.py", proc.stderr)
+
+    def test_the_unblocked_child_can_import_the_belt_in_tools_lane(self):
+        # D17: without tools/lane on the path, a fallback in a core module taken when
+        # belt_heartbeat is missing would run in both children and compare equal.
+        proc = _run(False, "import", "belt_heartbeat")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("operator path blocked: tools/lane/belt_heartbeat.py",
+                      _run(True, "import", "belt_heartbeat").stderr)
+
+    def test_a_child_outside_run_refuses_and_writes_nothing(self):
+        # D16: a hand-run `--child` once wrote the operator's real afk state.
+        base = {k: v for k, v in os.environ.items() if k != CHILD_HOME_ENV}
+        for label, extra in (("missing", {}), ("another dir", {CHILD_HOME_ENV: "/nonexistent"})):
+            with self.subTest(marker=label), tempfile.TemporaryDirectory() as home:
+                proc = subprocess.run(
+                    [sys.executable, "-B", str(Path(__file__).resolve()), "--child",
+                     "0", "check", "afk_toggle_state"],
+                    capture_output=True, text=True, env={**base, **extra, "HOME": home},
+                    cwd=home, timeout=120)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout, "")
+                self.assertEqual(len(proc.stderr.strip().splitlines()), 1, proc.stderr)
+                self.assertIn("--child refuses", proc.stderr)
+                self.assertEqual(list(Path(home).iterdir()), [])
 
     def test_each_core_module_imports_with_the_belt_blocked(self):
         for name in MODULES:
@@ -181,6 +251,9 @@ class CoreWithoutBeltTests(unittest.TestCase):
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--child"]:
+        if (refusal := _refuse_outside_run()) is not None:
+            print(refusal, file=sys.stderr)
+            raise SystemExit(2)
         _child(sys.argv[2] == "1", sys.argv[3], sys.argv[4])
     else:
         unittest.main()
