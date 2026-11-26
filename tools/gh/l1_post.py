@@ -124,6 +124,7 @@ import _lane3_env  # noqa: E402  (harmonic-forge#1218)
 import ui_grant  # noqa: E402  (harmonic-forge#1274)
 import _route_snapshot  # noqa: E402  (harmonic-forge#1231)
 import route_store  # noqa: E402  (harmonic-forge#1318; on sys.path through _route_snapshot)
+import ci_outage  # noqa: E402  (harmonic-forge#1565)
 
 HANDOFF_HEADINGS = [
     "Issue", "Lane 3 Gate Variant", "Affected Files", "Root Cause / Entry Point",
@@ -3362,20 +3363,12 @@ def _applied_ack(pr_check_names: list[str] | None, ack_no_pr_required: str | Non
     return None
 
 
-def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None) -> str:
-    """harmonic-forge#894 step 4: a pre-merge AE posts only on green CI.
-
-    Returns the check name recorded in the footer. `pending` waits
-    (`_carry_forward.WAIT_EXIT`, `WAIT: CI is pending on <sha>`). Every other
-    non-green state refuses, and so does an unresolvable source repo, an
-    unreadable required set and a reader exception: fail closed. One release:
-    the no-PR acknowledgment, on `absent` or all-skipped only (as
-    `check_gate_result`'s no-PR branch; `require_open_pr` has already shown no
-    PR exists). A CI outage has no override here; it waits or refuses like
-    any other non-green read. (harmonic-forge#894 PATCH A1/A2: the ack is passed
-    here only when `require_open_pr` applied it, and its release is
-    `gate_ci.no_pr_ack_release`, the rule `check_gate_result` uses.) `grant_on_main` and `merged_readonly` AEs never reach
-    here (C2). Every CI read passes the S0 reader (C3)."""
+def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None, prod_run=None) -> str:
+    """harmonic-forge#894 step 4: a pre-merge AE posts only on green CI; returns the footer's
+    check name. `pending` waits (`WAIT_EXIT`); any other non-green read, an unresolvable repo,
+    an unreadable required set or a reader exception refuses. Two releases: the no-PR ack
+    (`gate_ci.no_pr_ack_release`, only when `require_open_pr` applied it, #894 A1/A2), or else a
+    ci-outage grant on a pending or absent read beside its check-full receipt, never --prod-run (#1565)."""
     source_repo = _cwd_repo_from_git(None)
     if not source_repo:
         fail(f"cannot resolve the source repo, so CI on {sha[:12]} cannot be read; "
@@ -3396,6 +3389,8 @@ def _ae_ci_gate(repo: str, issue: int, sha: str, ack_no_pr_required: str | None)
         state, detail = "unknown", f"the CI read raised {type(exc).__name__}: {exc}"
     if state == "green":
         return "ci-green"
+    if ack_no_pr_required is None and (name := ci_outage.ae_release(repo, issue, source_repo, sha, state, prod_run, fail)):
+        return name
     if state == "pending":
         print(f"[l1-post] WAIT: CI is {state} on {sha[:12]} ({detail}); re-post when it finishes",
               file=sys.stderr)
@@ -3593,7 +3588,7 @@ def _post_kind(
         checks += pr_check_names
         if kind == "ae":  # harmonic-forge#894 step 4: the pre-merge AE needs green CI
             checks.append(_ae_ci_gate(repo, issue, sha,
-                                      _applied_ack(pr_check_names, ack_no_pr_required, branch)))
+                                      _applied_ack(pr_check_names, ack_no_pr_required, branch), prod_run))
     # Two distinct override classes, two distinct headings -- a reader
     # auditing the thread for one kind of waiver must not find the other's
     # warning filed under a heading that names something that never
@@ -3624,6 +3619,7 @@ def _post_kind(
         # harmonic-forge#1242: the labels `main` already read once (#1192 AC7).
         snapshot_line, snapshot_route = _route_snapshot.snapshot(body, repo, labels or ())
         body = body.rstrip("\n") + "\n\n" + snapshot_line + "\n"
+    body = ci_outage.substitute_line(body, sha, checks)  # harmonic-forge#1565: under the digest
     # a private-repo incident: hash the rstripped body, not the raw one -- `comment_body()`
     # below posts `body.rstrip("\n") + footer`, so hashing `body` unstripped
     # recorded a digest that didn't correspond to what was actually posted
@@ -3693,6 +3689,7 @@ def _post_kind(
             route_store.record_floor(f"{repo}#{issue}", "deep", "correction-rework", decider="l1-post")
         except Exception as exc:
             print(f"[route] correction-rework floor not recorded: {type(exc).__name__}: {exc}")
+    ci_outage.reserve(repo, issue, sha, checks, fail)  # harmonic-forge#1565: consume, then post
     url, comment_id = comment_body(repo, issue, body.rstrip("\n") + footer)
     if attempt is not None:
         attempt["posted"] = True
@@ -3887,7 +3884,7 @@ def _dry_run_command() -> str:
 
 def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
                     ack_overlap: str | None, ack_no_pr_required: str | None,
-                    grant_on_main: bool, merged_readonly: bool = False) -> list:
+                    grant_on_main: bool, merged_readonly: bool = False, prod_run=None) -> list:
     """harmonic-forge#1115: `_post_kind`'s refusals as side-effect-free steps
     for `--dry-run`. Posts nothing, opens no PR, emits no attempt; the only
     local write is `refresh_main`'s fetch, which the real post makes too.
@@ -3916,7 +3913,7 @@ def _publish_checks(repo: str, issue: int, kind: str, sha: str, branch: str, *,
         steps.append(pr)
         if kind == "ae":  # harmonic-forge#894 step 4, the same decision as the real post
             steps.append(lambda: _ae_ci_gate(
-                repo, issue, sha, _applied_ack(seen.get("names"), ack_no_pr_required, branch)))
+                repo, issue, sha, _applied_ack(seen.get("names"), ack_no_pr_required, branch), prod_run))
     return steps
 
 
@@ -4118,7 +4115,7 @@ def main() -> None:
             *(_publish_checks(repo, args.issue, "ae", sha, args.branch, ack_overlap=args.ack_overlap,
                               ack_no_pr_required=args.ack_no_pr_required,
                               grant_on_main=grant_on_main(ae_body, sha),
-                              merged_readonly=merged_readonly_once())
+                              merged_readonly=merged_readonly_once(), prod_run=prod_run)
               if args.dry_run else []),
         ])
         if args.dry_run:
@@ -4251,7 +4248,7 @@ def main() -> None:
             repo, args.issue, args.kind, sha, args.branch, ack_overlap=args.ack_overlap,
             ack_no_pr_required=args.ack_no_pr_required,
             grant_on_main=(args.kind == "ae" and grant_on_main(body, sha)),
-            merged_readonly=merged_readonly_once())
+            merged_readonly=merged_readonly_once(), prod_run=prod_run)
         if args.kind == "ready-for-l3":
             # harmonic-forge#1134 AC3: the dry run runs (or reuses) the check
             # the real post runs, so a clean dry run predicts the real post.
