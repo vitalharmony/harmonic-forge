@@ -93,7 +93,9 @@ def _lane_dir_in_forge(root: Path) -> Path:
         "[[project]]\n"
         'name = "origin-fixture"\nprefix = "Q"\nrepo = "vitalharmony/harmonic-forge"\n'
         f'account = "vitalharmony"\npath = "{root / "unregistered-path"}"\n'
-        'onboarded = false\nworkspace = "vh"\n')
+        'onboarded = false\nworkspace = "vh"\n'
+        # harmonic-forge#1528: lane slots are a declared per-account mode.
+        "\n[accounts.vitalharmony]\nlane_slots = true\n")
     return lane_dir
 
 
@@ -184,6 +186,8 @@ class _FixtureTree:
                 'name = "origin-fixture"\nprefix = "Q"\nrepo = "vitalharmony/harmonic-forge"\n'
                 f'account = "vitalharmony"\npath = "{self.root / "unregistered-path"}"\n'
                 'onboarded = false\nworkspace = "vh"\n')
+        if "[accounts.vitalharmony]" not in raw:  # harmonic-forge#1528: lane slots are declared
+            raw += "\n[accounts.vitalharmony]\nlane_slots = true\n"
         (at or self.manifest).write_text(raw)
 
     @staticmethod
