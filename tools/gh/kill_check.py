@@ -243,17 +243,17 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
               parent: Path, timeout: int) -> dict:
     result = {**check, "baseline_rcs": [], "control_rc": None,
               "mutated_rc": None, "verdict": "error"}
-    directory = Path(tempfile.mkdtemp(prefix="kill-check-", dir=parent))
+    # harmonic-forge#1600: `tmp` is the check's TMPDIR, a sibling of the scratch repo.
+    directory, tmp = (Path(tempfile.mkdtemp(prefix=f"kill-check-{p}", dir=parent)) for p in ("", "tmp-"))
     snapshot: Path | None = None
     with contextlib.ExitStack() as leases:
         leases.enter_context(scratch_lease(directory))
         try:
             materialize(directory, sha, origin)
-            # harmonic-forge#865: mark the child as a test so belt writers it
-            # reaches (in-process or spawned) never touch the real store.
-            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HARMONIC_FORGE_TESTING": "1",
-                   # harmonic-forge#907: the tests it runs emit telemetry too;
-                   # send it to the scratch tree, never the operator's store.
+            # harmonic-forge#865: mark the child as a test so belt writers it reaches never touch
+            # the real store; #907: its telemetry, and #1600: its temp files, stay out of it too.
+            env = {"HF_REAL_TMPDIR": tempfile.gettempdir(), **os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                   "HARMONIC_FORGE_TESTING": "1", **dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(tmp)),
                    "HARMONIC_FORGE_TELEMETRY_STORE": str(directory / ".telemetry-store")}
             if repo == "vitalharmony/harmonic-forge":
                 env["HARMONIC_FORGE_ROOT"] = str(directory)
@@ -291,8 +291,8 @@ def one_check(check: dict, *, sha: str, origin: str, repo: str,
         except (OSError, RuntimeError) as exc:
             result["detail"] = str(exc)
         finally:
-            errors = [error for error in
-                      (remove_tree(directory), remove_tree(snapshot) if snapshot else None) if error]
+            errors = [error for error in (remove_tree(directory), remove_tree(tmp),
+                                          remove_tree(snapshot) if snapshot else None) if error]
             if errors:
                 result["verdict"] = "cleanup-failed"
                 result["detail"] = "; ".join(errors)

@@ -286,6 +286,27 @@ class KillCheckTests(unittest.TestCase):
         self.assertEqual(recorded.parent, kill._scratch.root())
         self.assertFalse(recorded.exists())
 
+    def test_leaked_temp_dirs_stay_out_of_the_real_temp_dir(self) -> None:
+        """harmonic-forge#1600 AC1: a test that leaks `mkdtemp()` dirs, including a
+        mode-000 one on the mutated run, leaves the real temp dir empty."""
+        real = self.root / "realtmp"
+        real.mkdir()
+        (self.repo / "leak.py").write_text(
+            "import os, tempfile\nfrom pathlib import Path\nfrom f import f\n"
+            "d = tempfile.mkdtemp()\n"
+            "if f() != 1:\n"
+            "    Path(d, 'state.json').write_text('{}')\n"
+            "    os.chmod(d, 0)\n"
+            "    raise SystemExit(1)\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "leaky check")
+        self.write_checks(test=["python3", "leak.py"])
+        env = {name: str(real) for name in ("TMPDIR", "TMP", "TEMP", "HF_REAL_TMPDIR")}
+        with patch.dict(os.environ, env), patch.object(tempfile, "tempdir", str(real)):
+            self.assertEqual(self.execute(), 0)
+        self.assertEqual(self.receipt()["checks"][0]["verdict"], "killed")
+        self.assertEqual(sorted(os.listdir(real)), [])
+
     def test_reaper_removes_only_old_scratch(self) -> None:
         parent = kill.scratch_parent()
         old, fresh = parent / "kill-check-old", parent / "kill-check-fresh"
