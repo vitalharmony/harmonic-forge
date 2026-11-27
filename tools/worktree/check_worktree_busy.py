@@ -64,7 +64,22 @@ def ancestor_pids(pid: int) -> set[int]:
     return ancestors
 
 
+class CannotTell(Exception):
+    """procfs is not readable here, so no answer is an answer (harmonic-forge#1531)."""
+
+
 def busy_pids(worktree: Path, exclude: set[int], caller_lane: str | None) -> list[tuple[int, str]]:
+    # harmonic-forge#1531: decided here, not in main, so worktree_gc gets it too
+    # (its sweep skips a candidate whose check raises). /proc/self, not /proc:
+    # an empty /proc directory (procfs not mounted) would list no process and
+    # read as idle. os.stat, not Path.exists: whether exists() swallows EACCES
+    # depends on the Python version. Only "not there" means cannot tell; a
+    # denied stat (PermissionError) propagates, and main reads it as busy
+    # (exit 1, fail closed).
+    try:
+        os.stat("/proc/self")
+    except (FileNotFoundError, NotADirectoryError):
+        raise CannotTell("no procfs at /proc") from None
     worktree = worktree.resolve()
     found: list[tuple[int, str]] = []
     for entry in Path("/proc").iterdir():
@@ -100,16 +115,21 @@ def main() -> int:
         print(f"check-worktree-busy: '{worktree}' is not a directory", file=sys.stderr)
         return 2
 
-    # harmonic-forge#1531: a host with no /proc (macOS) cannot tell. Exit 3, not
-    # the busy 1: only the launcher refresh treats 3 as not busy (with a
-    # warning); gate-checkout and lane1_rebase keep refusing on it.
-    if not Path("/proc").is_dir():
-        print("check-worktree-busy: cannot tell (no /proc)", file=sys.stderr)
-        return 3
-
     exclude = ancestor_pids(os.getpid())
     caller_lane = os.environ.get("LANE") or None
-    found = busy_pids(worktree, exclude, caller_lane)
+    # harmonic-forge#1531: a host with no procfs (macOS, or /proc not mounted)
+    # cannot tell. Exit 3, not the busy 1: only the launcher refresh treats 3 as
+    # not busy (with a warning); gate-checkout and lane1_rebase keep refusing on
+    # it, and worktree_gc skips the candidate. busy_pids decides it.
+    try:
+        found = busy_pids(worktree, exclude, caller_lane)
+    except CannotTell as exc:
+        print(f"check-worktree-busy: cannot tell ({exc})", file=sys.stderr)
+        return 3
+    except PermissionError as exc:
+        print(f"check-worktree-busy: refusing — procfs is not readable ({exc}); "
+              "treating the worktree as busy", file=sys.stderr)
+        return 1
 
     if found:
         print(

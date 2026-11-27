@@ -1139,33 +1139,84 @@ class ClaudeLane3Settings(unittest.TestCase):
         self.assertIn('[claude:3]="@instance:lane3_policy"', text)
         self.assertEqual(bc.LANE3_POLICY, self.INSTALLED)
 
+    @staticmethod
+    def _set_policy_line(tree: _FixtureTree, value: str) -> None:
+        import re as _re  # noqa: PLC0415
+        toml = tree.instance_toml
+        line = f'lane3_policy = "{value}"'
+        toml.write_text(_re.sub(r'(?m)^lane3_policy = ".*"$', lambda _m: line,
+                                toml.read_text()))
+
     def test_a_relative_or_symlinked_lane3_policy_refuses(self):
-        """harmonic-forge#1531: a user-chosen path is refused when it is relative,
-        or when any ancestor is a symlink (the lstats see only the last hops)."""
+        """harmonic-forge#1531: a user-chosen path is refused when it is relative
+        or carries a control character. A symlinked ancestor is resolved, not
+        refused (sticky-wicket PATCH 2: Silverblue's /usr/local is a root-owned
+        system symlink): the checks run on the resolved hops, and the policy
+        reaches the session's `--settings`."""
+        policy_permissions = json.loads(self.POLICY.read_text())["permissions"]
         with _FixtureTree() as tree:
             policy = self._install(tree, self.POLICY.read_text())
             lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
-            # A symlink ABOVE the policy's own directory: the lstats on the file,
-            # its directory and the manifest all see real entries, so only the
-            # realpath check catches it (kill-check: the parent-level link was
-            # already refused by the S_ISLNK lstat, which made that case vacuous).
+            # A symlink ABOVE the policy's own directory: the lstats on the
+            # resolved file, its directory and the manifest all see real entries.
             link = tree.root / "linked-root"
             link.symlink_to(tree.root)
             via_link = link / policy.parent.name / policy.name
+            with self.subTest(why="symlinked ancestor"):
+                self._set_policy_line(tree, str(via_link))
+                cell = self._run(tree, lane_dir)
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+                self.assertEqual(_settings_value(cell)["permissions"], policy_permissions)
+            # Pitch N2: the configured path's LAST component is a symlink, in
+            # another directory, beside a DECOY manifest whose digest matches
+            # nothing. The checks and the launch must both use the resolved
+            # target and the manifest beside it: checking the link itself
+            # refuses (S_ISLNK), and reading the decoy refuses on the digest.
+            link_dir = tree.root / "link-dir"
+            link_dir.mkdir()
+            (link_dir / "manifest.json").write_text(json.dumps({"policy_sha256": "0" * 64}))
+            final_link = link_dir / policy.name
+            final_link.symlink_to(policy)
+            with self.subTest(why="final-component symlink beside a decoy manifest"):
+                self._set_policy_line(tree, str(final_link))
+                cell = self._run(tree, lane_dir)
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+                self.assertEqual(_settings_value(cell)["permissions"], policy_permissions)
             # A NUL escape: `instance.py get` would cut it at the NUL into another
             # path, so it must refuse the launch (sticky-wicket PATCH).
             for value, why in (("relative/claude-lane3.json", "relative"),
-                               (str(via_link), "symlinked ancestor"),
                                (f"{policy}\\u0000suffix", "control character")):
                 with self.subTest(why=why):
-                    toml = tree.instance_toml
-                    text = toml.read_text()
-                    import re as _re  # noqa: PLC0415
-                    line = f'lane3_policy = "{value}"'
-                    toml.write_text(_re.sub(r'(?m)^lane3_policy = ".*"$',
-                                            lambda _m: line, text))
+                    self._set_policy_line(tree, value)
                     cell = self._run(tree, lane_dir)
                     self.assertFalse(cell["launched"], why)
+
+    def test_a_refused_policy_names_the_resolved_hop(self):
+        """Sticky-wicket PATCH 2: a refusal names the hop that failed, on the
+        resolved path, not the old catch-all with its stderr discarded."""
+        with _FixtureTree() as tree:
+            policy = self._install(tree, self.POLICY.read_text())
+            lane_dir = self._copy_lane_dir(tree, policy, os.getuid() + 1)
+            link = tree.root / "linked-root"
+            link.symlink_to(tree.root)
+            self._set_policy_line(tree, str(link / policy.parent.name / policy.name))
+            cell = self._run(tree, lane_dir)
+            self.assertFalse(cell["launched"])
+            self.assertIn(f"lane3: {policy.resolve()} must be owned by uid {os.getuid() + 1}",
+                          cell["stderr"])
+
+    def test_an_absent_lane3_policy_key_launches_and_says_so(self):
+        """Sticky-wicket PATCH 2: no `lane3_policy` in instance.toml is its own
+        state, announced, never silent."""
+        import re as _re  # noqa: PLC0415
+        with _FixtureTree() as tree:
+            toml = tree.instance_toml
+            toml.write_text(_re.sub(r'(?m)^lane3_policy = ".*"\n', "", toml.read_text()))
+            self.assertNotIn("lane3_policy", toml.read_text())
+            cell = tree.run("3", [], LANE_CLI="claude")
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertNotIn("permissions", _settings_value(cell))
+            self.assertIn("instance.toml sets no lane3_policy", cell["stderr"])
 
     def test_a_caller_cannot_replace_the_lane3_settings(self):
         """`--settings` is single-valued, so a caller's own would replace the
@@ -1211,14 +1262,15 @@ class ClaudeLane3Settings(unittest.TestCase):
                 policy = self._install(tree, self.POLICY.read_text(), **kw)
                 cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid()))
                 self.assertFalse(cell["launched"])
-                self.assertIn("not an immutable JSON object", cell["stderr"])
+                self.assertIn("not group/other-writable", cell["stderr"])
+                self.assertIn("Lane 3 policy refused", cell["stderr"])
 
     def test_a_policy_not_owned_by_the_required_uid_refuses_to_launch(self):
         with _FixtureTree() as tree:
             policy = self._install(tree, self.POLICY.read_text())
             cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid() + 1))
             self.assertFalse(cell["launched"])
-            self.assertIn("not an immutable JSON object", cell["stderr"])
+            self.assertIn(f"must be owned by uid {os.getuid() + 1}", cell["stderr"])
 
     def test_a_policy_not_matching_the_manifest_digest_refuses(self):
         """Item 8: the installed policy is checked against the reviewed digest,
@@ -1240,12 +1292,13 @@ class ClaudeLane3Settings(unittest.TestCase):
             self.assertFalse(cell["launched"])
 
     def test_an_invalid_installed_policy_refuses_to_launch(self):
-        for content in ('{"permissions": ', "[]"):
+        for content, reason in (('{"permissions": ', "does not parse as JSON"),
+                                ("[]", "is not a JSON object")):
             with self.subTest(content=content), _FixtureTree() as tree:
                 policy = self._install(tree, content)
                 cell = self._run(tree, self._copy_lane_dir(tree, policy, os.getuid()))
                 self.assertFalse(cell["launched"])
-                self.assertIn("not an immutable JSON object", cell["stderr"])
+                self.assertIn(f"{policy} {reason}", cell["stderr"])
 
 
 # ---------------------------------------------------------------------------
@@ -2041,6 +2094,35 @@ class PlatformRulesSync(unittest.TestCase):
         self.assertIn("verify_codex_registration.py", source)
         self.assertIn('--path "$PWD/.codex/hooks.json"', source)
         self.assertIn("refusing to start an unguarded session", source)
+
+
+class CodexHookPaths(unittest.TestCase):
+    """harmonic-forge#1531 AC4 (TC4), driven through a Codex launch: the extra
+    registrations checked come from instance.toml `codex_hook_paths`, never a
+    path built into the launcher (sticky-wicket PATCH 2, P5)."""
+
+    @staticmethod
+    def _set_codex_paths(tree: _FixtureTree, line: str | None) -> None:
+        import re as _re  # noqa: PLC0415
+        toml = tree.instance_toml
+        text = toml.read_text()
+        assert len(_re.findall(r"(?m)^codex_hook_paths = .*$", text)) == 1
+        toml.write_text(_re.sub(r"(?m)^codex_hook_paths = .*\n", "" if line is None else line + "\n", text))
+
+    def test_absent_codex_hook_paths_launches_without_the_hrse2_registration(self):
+        with _FixtureTree() as tree:
+            self._set_codex_paths(tree, None)
+            (tree.home / "Harmonic_Projects" / "HRSE2" / ".codex" / "hooks.json").unlink()
+            cell = tree.run("1", ["--agent", "codex"])
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            self.assertEqual(cell["env"]["LANE_AGENT"], "codex")
+
+    def test_an_invalid_codex_hook_paths_refuses(self):
+        with _FixtureTree() as tree:
+            self._set_codex_paths(tree, 'codex_hook_paths = "rel"')
+            cell = tree.run("1", ["--agent", "codex"])
+            self.assertFalse(cell["launched"])
+            self.assertIn("codex_hook_paths is invalid", cell["stderr"])
 
 
 # ---------------------------------------------------------------------------
