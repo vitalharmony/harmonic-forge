@@ -2,14 +2,18 @@
 resolution, never `~/harmonic-forge`.
 
 TC1: compaction_marker and tier_downshift_reminder name the configured root.
-TC2: check_receipt reads the configured root's HEAD, and has no own-checkout
-fallback (its recorder and readers run from different checkouts).
+TC2 (amended, operator D25/D26): check_receipt's identity is the checkout it
+runs from; a declared root that is a different checkout makes it None ("forge
+root mismatch"), so a mismatch misses a reuse and never allows a false one.
 TC3 (generated lane tasks) and TC5 (wrapper parity) are in
 tools/onboard/test_lane_tasks_root.py.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
+import io
+import json
 import os
 import subprocess
 import sys
@@ -86,37 +90,58 @@ class TC1AdvisoryHooks(Fixture):
 
 
 class TC2CheckReceipt(Fixture):
-    def reload(self):
+    """check_receipt runs from `self.forge` (FORGE_ROOT patched to it, as if this
+    file lived there); the declaration varies."""
+
+    def setUp(self) -> None:
+        super().setUp()
         import check_receipt  # noqa: PLC0415
-        with mock.patch.dict(os.environ, self.env, clear=True):
-            return importlib.reload(check_receipt)
+        self.C = check_receipt
+        for target in (mock.patch.object(check_receipt, "FORGE_ROOT", self.forge),
+                       mock.patch.dict(os.environ, self.env, clear=True)):
+            target.start()
+            self.addCleanup(target.stop)
 
-    def test_reads_the_configured_roots_head(self) -> None:
-        self.declare(str(self.forge))
-        receipt = self.reload()
-        self.assertEqual(receipt.FORGE_ROOT, self.forge)
-        self.assertEqual(receipt.forge_sha(), self.forge_sha)
-
-    def test_a_root_without_tools_hooks_reads_none(self) -> None:
-        bare = self.tmp / "bare"
-        git_repo(bare)
-        subprocess.run(["rm", "-rf", str(bare / "tools")], check=True)
-        self.declare(str(bare))
-        self.assertIsNone(self.reload().forge_sha())
-
-    def test_undeclared_never_takes_the_own_checkout(self) -> None:
-        """The recorder runs from a second checkout with FORGE_SHA_ENV set from
-        the first; with no root declared its forge identity is None."""
+    def test_identity_is_the_running_checkout(self) -> None:
+        self.assertEqual(Path(importlib.import_module("check_receipt").__file__).resolve()
+                         .parents[2], HERE.parents[1])
         self.declare(None)
-        receipt = self.reload()
-        self.assertEqual(receipt.FORGE_ROOT, receipt.UNRESOLVED_FORGE_ROOT)
-        self.assertIsNone(receipt.forge_sha())
-        self.assertIn("forge root unresolved", receipt.forge_unusable_reason())
+        self.assertEqual(self.C.forge_sha(), self.forge_sha)
 
-    def tearDown(self) -> None:
-        import check_receipt  # noqa: PLC0415
-        importlib.reload(check_receipt)
-        super().tearDown()
+    def test_declared_through_a_symlink_to_the_same_checkout(self) -> None:
+        link = self.tmp / "forge-link"
+        link.symlink_to(self.forge)
+        self.declare(str(link))
+        self.assertEqual(self.C.forge_sha(), self.forge_sha)
+        self.assertIsNone(self.C.forge_unusable_reason())
+
+    def test_a_declared_different_checkout_is_a_mismatch(self) -> None:
+        """The pass-1 survivor: wrappers may run forge from the declared root
+        while this file runs from another; the identity is then None."""
+        other = (self.tmp / "other-forge").resolve()
+        git_repo(other)
+        self.declare(str(other))
+        self.assertIsNone(self.C.forge_sha())
+        self.assertIn("forge root mismatch", self.C.forge_unusable_reason())
+
+    def test_a_scratch_check_says_its_receipt_will_not_be_reused(self) -> None:
+        """D26: a forge-repo check recorded with l1_post's forge SHA that is not
+        this checkout's HEAD records no identity and says so."""
+        self.declare(None)
+        src = self.tmp / "src"
+        git_repo(src)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/app.git"],
+                       cwd=src, check=True, capture_output=True)
+        err = io.StringIO()
+        with mock.patch.object(self.C, "STORE", self.tmp / "store"), \
+                mock.patch.dict(os.environ, {self.C.FORGE_SHA_ENV: "0" * 40}), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.C.record(str(src))
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
+                             capture_output=True, text=True).stdout.strip()
+        data = json.loads((self.tmp / "store" / "acme__app" / sha).read_text())
+        self.assertIsNone(data["forge_sha"])
+        self.assertIn("will not be reused", err.getvalue())
 
 
 if __name__ == "__main__":

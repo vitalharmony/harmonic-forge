@@ -5,10 +5,11 @@ instance.toml `forge_root`, then the checkout `own_file` sits in), the order the
 lane launcher uses (#1526). Any failure answers that own checkout, never a
 home-relative literal: the callers here only name paths in advisory output.
 
-`resolve_declared()` is for a caller whose recorder and readers run from
-different checkouts (check_receipt): the env value, then instance.toml, and
-None when neither resolves. It never falls back to the caller's own checkout,
-because two checkouts would then record identities no reader matches.
+`resolve_declared()` is only what is declared (the env value, then
+instance.toml), None when neither resolves, with no own-checkout fallback.
+check_receipt compares it with the checkout it runs from: a different declared
+checkout means a wrapper may have run forge from elsewhere, so its forge
+identity is withheld (harmonic-forge#1566, operator D25).
 """
 from __future__ import annotations
 

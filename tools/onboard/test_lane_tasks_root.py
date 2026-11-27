@@ -104,7 +104,13 @@ class TC5WrapperParity(unittest.TestCase):
                  "--mise-toml", str(mise), "--discover", "--expect", "l1-post,lane-comment"],
                 env={**os.environ, "HARMONIC_FORGE_ROOT": str(forge)},
                 capture_output=True, text=True, timeout=120)
-        self.assertNotIn("not discovered", proc.stderr + proc.stdout)
+        # Pass-1 survivor: the exit code and the discovered scripts decide, not the
+        # absence of one message.
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        found = dict(line.split("\t", 1) for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertEqual(found.get("l1-post"), str(forge / "tools" / "gh" / "l1_post.py"))
+        self.assertEqual(found.get("lane-comment"),
+                         str(forge / "tools" / "gh" / "post_lane_discussion.py"))
 
 
 if __name__ == "__main__":

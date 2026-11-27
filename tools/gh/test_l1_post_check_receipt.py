@@ -82,6 +82,7 @@ class ReceiptContentTests(unittest.TestCase):
 
     def test_a_dirty_forge_tree_has_no_identity(self):
         outputs = {C._FORGE_STATUS: "M tools/x.py", ("rev-parse", "HEAD"): FORGE}
+        self.enterContext(mock.patch.object(C, "declared_forge_root", lambda: None))  # #1566
         with mock.patch.object(C, "_git", side_effect=lambda *a, cwd=None: outputs[a]):
             self.assertIsNone(C.forge_sha())
             self.assertEqual(C.forge_unusable_reason(), "forge tree dirty: tools/x.py")
@@ -102,7 +103,8 @@ class ReceiptContentTests(unittest.TestCase):
             (root / "tools" / "hooks" / "a.py").write_text("x = 1\n")
             run("add", "."); run("commit", "-qm", "init")
             (root / "tools" / "hooks" / "stray.json").write_text("{}")
-            with mock.patch.object(C, "FORGE_ROOT", root):
+            with mock.patch.object(C, "FORGE_ROOT", root), \
+                    mock.patch.object(C, "declared_forge_root", lambda: None):
                 head = C.forge_sha()
                 self.assertIsNotNone(head)
                 self.assertIsNone(C.forge_unusable_reason())
@@ -218,6 +220,7 @@ class ReuseTests(unittest.TestCase):
             self.write(forge_sha=head)
             out = io.StringIO()
             with mock.patch.object(C, "FORGE_ROOT", root), \
+                    mock.patch.object(C, "declared_forge_root", lambda: None), \
                     mock.patch.object(C, "forge_sha", _REAL_FORGE_SHA), \
                     contextlib.redirect_stdout(out):
                 result, ran_check = self.static()
