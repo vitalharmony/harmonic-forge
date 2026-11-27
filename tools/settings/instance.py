@@ -24,6 +24,12 @@ any other value raises ValueError, so a lane launch refuses rather than guess.
 lane launcher and the hooks share: `HARMONIC_FORGE_ROOT`, then `forge_root`,
 then the launcher's own checkout. `launch_view()` adds the set path and the
 root as written, the one view a launch and the onboarding report share.
+
+The one writer is the `set lane3_policy <path>` subcommand (harmonic-forge#1531),
+which the Lane 3 install step runs instead of a blind shell append: it adds the
+key as a top-level line at the head of the file, so a file with no final
+newline or one ending in a `[table]` stays valid and the key stays top-level.
+Every reader above only reads.
 """
 from __future__ import annotations
 
@@ -242,13 +248,75 @@ def codex_hook_paths(environ: Mapping[str, str] | None = None) -> list[Path]:
     return [Path(v).expanduser() for v in value]
 
 
+def _toml_string(value: str) -> str:
+    """A TOML basic string for a value with no control characters."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def set_lane3_policy(value: str, environ: Mapping[str, str] | None = None) -> tuple[Path, bool]:
+    """Declare `lane3_policy` in the settings file (harmonic-forge#1531):
+    (the file, whether it changed). The value must pass the `lane3_policy`
+    reader's own rule. A missing file is created holding just the key. In an
+    existing file the key goes in as the first line -- the head of a TOML
+    document is always top level, so a file with no final newline or one
+    ending in a `[table]` stays valid and the key is never nested -- and the
+    result must parse to the old settings plus the key, or nothing is written.
+    The same value already set is a no-op; a different one raises ValueError
+    naming both, so an installed path is never silently replaced. The write is
+    atomic (a temporary file beside the target, then a rename) and keeps the
+    file's mode; a symlinked file is written through to its target."""
+    if not value.startswith("/") or _has_control(value):
+        raise ValueError(f"`lane3_policy` must be an absolute path, got {value!r}")
+    path, data = _read(environ)
+    line = f"lane3_policy = {_toml_string(value)}\n"
+    if data is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old_text, mode, target = "", 0o644, path
+    else:
+        if "lane3_policy" in data:
+            current = data["lane3_policy"]
+            if current == value:
+                return path, False
+            raise ValueError(f"{path}: `lane3_policy` is already set to {current!r}; "
+                             f"refusing to replace it with {value!r} -- edit the file by hand")
+        target = path.resolve()
+        old_text = target.read_text(encoding="utf-8")
+        mode = target.stat().st_mode & 0o7777
+    new_text = line + old_text
+    if tomllib.loads(new_text) != {**(data or {}), "lane3_policy": value}:
+        raise ValueError(f"{path}: adding `lane3_policy` would not leave it a top-level key; "
+                         f"nothing written")
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return path, True
+
+
 def _main(argv: list[str]) -> int:
     """`instance.py get lane3_policy|codex_hook_paths`: each value NUL-terminated
-    (nothing when absent), exit 0; an invalid value prints the reason, exit 1."""
+    (nothing when absent), exit 0; an invalid value prints the reason, exit 1.
+    `instance.py set lane3_policy <path>`: `set_lane3_policy`, exit 0 when the
+    key now holds the path, 1 (file unchanged) on any refusal."""
+    if len(argv) == 4 and argv[1:3] == ["set", "lane3_policy"]:
+        try:
+            path, changed = set_lane3_policy(argv[3])
+        except (ValueError, OSError, tomllib.TOMLDecodeError) as exc:
+            print(f"instance: {exc}", file=sys.stderr)
+            return 1
+        print(f"instance: {path}: lane3_policy {'set' if changed else 'already set'} to {argv[3]!r}",
+              file=sys.stderr)
+        return 0
     readers = {"lane3_policy": lambda: [p for p in [lane3_policy()] if p],
                "codex_hook_paths": codex_hook_paths}
     if len(argv) != 3 or argv[1] != "get" or argv[2] not in readers:
-        print("usage: instance.py get " + "|".join(readers), file=sys.stderr)
+        print("usage: instance.py get " + "|".join(readers) + " | instance.py set lane3_policy <path>",
+              file=sys.stderr)
         return 2
     try:
         values = readers[argv[2]]()

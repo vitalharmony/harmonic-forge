@@ -2117,6 +2117,37 @@ class CodexHookPaths(unittest.TestCase):
             self.assertTrue(cell["launched"], cell.get("stderr"))
             self.assertEqual(cell["env"]["LANE_AGENT"], "codex")
 
+    def test_a_valid_codex_hook_paths_is_forwarded_and_checked(self):
+        """Post-verdict survivor 4: a configured registration reaches
+        verify_codex_registration.py as its own `--path`, recorded through a
+        `python3` shim first on PATH, and is really checked: the same value
+        naming a missing file refuses the launch."""
+        with _FixtureTree() as tree:
+            extra = tree.root / "other-repo" / ".codex" / "hooks.json"
+            extra.parent.mkdir(parents=True)
+            shutil.copyfile(tree.home / "Harmonic_Projects" / "HRSE2" / ".codex" / "hooks.json", extra)
+            calls = tree.root / "verify-calls.log"
+            shim = tree.stub_bin / "python3"
+            shim.write_text("#!/usr/bin/env bash\n"
+                            'case "${1:-}" in *verify_codex_registration.py)\n'
+                            f'  printf "%s\\0" "$@" >> "{calls}"; printf "\\n" >> "{calls}" ;;\nesac\n'
+                            f'exec "{sys.executable}" "$@"\n')
+            shim.chmod(0o755)
+            self._set_codex_paths(tree, f'codex_hook_paths = ["{extra}"]')
+            cell = tree.run("1", ["--agent", "codex"])
+            self.assertTrue(cell["launched"], cell.get("stderr"))
+            logged = calls.read_text().splitlines()
+            self.assertEqual(len(logged), 1, logged)
+            argv = [a for a in logged[0].split("\0") if a]
+            paths = [argv[i + 1] for i, a in enumerate(argv) if a == "--path"]
+            self.assertEqual(len(paths), 2, argv)  # this checkout's, then the configured one
+            self.assertTrue(paths[0].endswith("/.codex/hooks.json"), paths)
+            self.assertEqual(paths[1], str(extra))
+            extra.unlink()
+            cell = tree.run("1", ["--agent", "codex"])
+            self.assertFalse(cell["launched"])
+            self.assertIn("Codex hook registration is incomplete", cell["stderr"])
+
     def test_an_invalid_codex_hook_paths_refuses(self):
         with _FixtureTree() as tree:
             self._set_codex_paths(tree, 'codex_hook_paths = "rel"')

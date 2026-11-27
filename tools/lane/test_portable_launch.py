@@ -7,6 +7,8 @@ TC2b: a working systemd-inhibit -> the lane's own --who/--why, unchanged.
 TC3: no procfs -> check_worktree_busy exits 3; a real lane 2 refresh treats
      only 3 as not busy; lane1_rebase refuses on 3 as on 1.
 TC4: instance.py get: absent keys answer nothing, invalid values exit 1.
+TC5: instance.py set lane3_policy: the install step keeps instance.toml valid
+     and the key top level (no final newline, a trailing [table], key present).
 """
 from __future__ import annotations
 
@@ -69,9 +71,14 @@ class Inhibitor(unittest.TestCase):
         Pitch N7: no wrapper at all. The fake systemd-inhibit logs every call
         and only the probe may appear; the agent stub records `$_`, which bash
         sets to the program it executed, so an exec-ing prefix (`env`, K-H2)
-        shows as that prefix, not the CLI. caffeinate is kept off PATH rather
-        than skipped on, and the recorded argv is read directly (`_agent_args`
-        drops the first five)."""
+        shows as that prefix, not the CLI. `$_` cannot see a shell wrapper
+        that runs the CLI (post-verdict survivor 5), so the stub also records
+        its parent's argv from procfs: the parent must be the launcher shell
+        itself (`bash <lane_dir>/lane2`), never an intermediate process. A
+        wrapper that `exec`s leaves no process behind and bash restores SHLVL
+        on exec, so it is the direct launch by construction, not a gap.
+        caffeinate is kept off PATH rather than skipped on, and the recorded
+        argv is read directly (`_agent_args` drops the first five)."""
         with tll._FixtureTree() as tree:
             # The host PATH, minus every directory holding a caffeinate.
             path = os.pathsep.join([str(tree.stub_bin)] + [
@@ -90,9 +97,11 @@ class Inhibitor(unittest.TestCase):
                 "import json, os, sys\n"
                 "if sys.argv[1:2] == ['--version']:\n"
                 f"    print({tll.bc.STUB_VERSIONS['claude']!r}); sys.exit(0)\n"
+                "with open(f'/proc/{os.getppid()}/cmdline', 'rb') as fh:\n"
+                "    parent = [a.decode() for a in fh.read().split(b'\\0') if a]\n"
                 "with open(os.environ['LANE_CAPTURE_OUT'], 'w') as fh:\n"
                 "    json.dump({'argv': [os.path.basename(sys.argv[0])] + sys.argv[1:],\n"
-                "               'exec_by': os.environ.get('_', ''),\n"
+                "               'exec_by': os.environ.get('_', ''), 'parent': parent,\n"
                 "               'cwd': os.getcwd(), 'env': {}}, fh)\n")
             agent.chmod(0o755)
             bare = tree.run("2", [], LANE_CLI="claude", PATH=path)
@@ -104,6 +113,9 @@ class Inhibitor(unittest.TestCase):
             self.assertEqual(len(logged), 1, logged)
             self.assertTrue(logged[0].startswith("1\t"), logged)  # the probe, and nothing else
             self.assertEqual(os.path.basename(bare["exec_by"]), "claude", bare["exec_by"])
+            # The CLI's parent is the launcher shell: no wrapper process between.
+            self.assertEqual([os.path.basename(a) for a in bare["parent"]], ["bash", "lane2"],
+                             bare["parent"])
             self.assertEqual(bare["argv"][0], "claude")
             settings = bare["argv"][bare["argv"].index("--settings") + 1]
             self.assertEqual(settings, normal["argv"][normal["argv"].index("--settings") + 1])
@@ -141,6 +153,27 @@ class NoProc(unittest.TestCase):
                 with self.assertRaises(cwb.CannotTell):
                     cwb.busy_pids(Path(tmp), set(), None)
                 self.assertTrue(probed, "the /proc/self probe never ran")
+
+    def test_tc3_a_proc_that_is_a_regular_file_exits_3(self) -> None:
+        """Post-verdict survivor 2, with nothing faked but where procfs is:
+        PROC points at a real regular file (then at an empty directory), and
+        main must answer 3. The ancestor scan reads procfs too, so it runs
+        after the probe; ahead of it, a regular-file /proc raised
+        NotADirectoryError out of main."""
+        sys.path.insert(0, str(TOOLS / "worktree"))
+        import check_worktree_busy as cwb  # noqa: PLC0415
+        for case in ("a regular file", "an empty directory"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                proc = Path(tmp) / "proc"
+                if case == "a regular file":
+                    proc.write_text("")
+                else:
+                    proc.mkdir()
+                with mock.patch.object(cwb, "PROC", proc), \
+                        mock.patch.object(sys, "argv", ["check_worktree_busy.py", tmp]), \
+                        mock.patch.object(sys, "stderr", new_callable=__import__("io").StringIO) as err:
+                    self.assertEqual(cwb.main(), 3)
+                    self.assertIn(f"cannot tell (no procfs at {proc})", err.getvalue())
 
     def test_tc3_busy_check_denied_procfs_fails_closed(self) -> None:
         """Pitch N5: a denied /proc/self stat is not "cannot tell" -- it exits
@@ -183,14 +216,15 @@ class NoProc(unittest.TestCase):
     def test_tc3_refresh_treats_only_3_as_not_busy(self) -> None:
         """Sticky-wicket PATCH 2 (P4): a real lane 2 refresh, with the busy
         check answering through a `python3` shim first on PATH. 3 refreshes
-        with a warning; 2 (an error) still skips as busy."""
-        for rc, status in ((3, "updated"), (2, "skipped-busy")):
+        with a warning; 1 (busy, post-verdict survivor 3) and 2 (an error)
+        still skip as busy."""
+        for rc, status in ((3, "updated"), (1, "skipped-busy"), (2, "skipped-busy")):
             with self.subTest(rc=rc), tll._FixtureTree() as tree:
                 before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tree.lane2, check=True,
                                         capture_output=True, text=True).stdout.strip()
                 stub(tree.stub_bin, "python3",
                      'case "${1:-}" in *check_worktree_busy.py)\n'
-                     '  echo "check-worktree-busy: cannot tell (no procfs at /proc)" >&2\n'
+                     f'  echo "check-worktree-busy: answering {rc}" >&2\n'
                      f'  exit {rc} ;;\nesac\n'
                      f'exec "{sys.executable}" "$@"')
                 remote_sha = tll.Lane3RefreshesAtLaunch._advance_origin_from_elsewhere(tree)
@@ -253,6 +287,83 @@ class InstanceGet(unittest.TestCase):
                 self.assertEqual((proc.returncode, proc.stdout), (1, ""), proc.stderr)
         proc = self.get('codex_hook_paths = ["/a/hooks.json", "/b/hooks.json"]\n', "codex_hook_paths")
         self.assertEqual(proc.stdout, "/a/hooks.json\0/b/hooks.json\0")
+
+
+
+class InstanceSet(unittest.TestCase):
+    """Post-verdict survivor 1: `instance.py set lane3_policy` is the install
+    step (tools/gate/install-hrse-gate.md), never a blind append. Run as the
+    install doc runs it, against a file in each shape an append broke."""
+
+    POLICY = "/usr/local/share/hrse-gate/claude-lane3.json"
+
+    def run_cli(self, xdg: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, "-I", "-E", str(TOOLS / "settings" / "instance.py"), *args],
+                              env={**os.environ, "XDG_CONFIG_HOME": xdg},
+                              capture_output=True, text=True, timeout=30)
+
+    def set_in(self, text: str | None) -> tuple[subprocess.CompletedProcess[str], str | None, str]:
+        """(the set run, the file afterwards or None, `get` afterwards)."""
+        import tomllib  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as xdg:
+            toml = Path(xdg) / "harmonic-forge" / "instance.toml"
+            if text is not None:
+                toml.parent.mkdir()
+                toml.write_text(text)
+            proc = self.run_cli(xdg, "set", "lane3_policy", self.POLICY)
+            after = toml.read_text() if toml.exists() else None
+            if after is not None:
+                tomllib.loads(after)  # still valid TOML
+            got = self.run_cli(xdg, "get", "lane3_policy")
+            return proc, after, got.stdout
+
+    def test_tc5_set_keeps_the_file_valid_and_the_key_top_level(self) -> None:
+        import tomllib  # noqa: PLC0415
+        for case, text in (("no file", None),
+                           ("no final newline", 'lane_hook_overlay = "operator"'),
+                           ("ends in a [table]", 'lane_hook_overlay = "operator"\n\n[extra]\nx = 1\n'),
+                           ("ends in a [table], no final newline", 'timezone = "UTC"\n[extra]\nx = 1')):
+            with self.subTest(case=case):
+                proc, after, got = self.set_in(text)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(got, self.POLICY + "\0")
+                data = tomllib.loads(after)
+                self.assertEqual(data.pop("lane3_policy"), self.POLICY)
+                self.assertEqual(data, tomllib.loads(text or ""))  # the rest unchanged
+
+    def test_tc5_set_with_the_key_already_present(self) -> None:
+        same = f'lane3_policy = "{self.POLICY}"\n[extra]\nx = 1\n'
+        proc, after, got = self.set_in(same)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(after, same)  # untouched, byte for byte
+        self.assertIn("already set", proc.stderr)
+        other = 'lane3_policy = "/elsewhere/policy.json"\n'
+        proc, after, got = self.set_in(other)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(after, other)
+        self.assertIn("refusing to replace", proc.stderr)
+        self.assertEqual(got, "/elsewhere/policy.json\0")
+
+    def test_tc5_set_refuses_an_invalid_value_or_file(self) -> None:
+        with tempfile.TemporaryDirectory() as xdg:
+            for value in ("rel/x.json", "~/x.json", "/x\ny.json"):
+                with self.subTest(value=value):
+                    proc = self.run_cli(xdg, "set", "lane3_policy", value)
+                    self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertFalse((Path(xdg) / "harmonic-forge").exists())
+        broken = 'lane_hook_overlay = "operator'
+        with tempfile.TemporaryDirectory() as xdg:
+            toml = Path(xdg) / "harmonic-forge" / "instance.toml"
+            toml.parent.mkdir()
+            toml.write_text(broken)
+            proc = self.run_cli(xdg, "set", "lane3_policy", self.POLICY)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertEqual(toml.read_text(), broken)
+
+    def test_tc5_the_install_doc_runs_set_not_an_append(self) -> None:
+        doc = (TOOLS / "gate" / "install-hrse-gate.md").read_text(encoding="utf-8")
+        self.assertIn(f"tools/settings/instance.py set lane3_policy {self.POLICY}", doc)
+        self.assertNotIn(">> ~/.config/harmonic-forge/instance.toml", doc)
 
 
 if __name__ == "__main__":

@@ -83,12 +83,15 @@ path from `lane3_policy` in `~/.config/harmonic-forge/instance.toml`, a
 top-level key (harmonic-forge#1531). With the key absent, Lane 3 launches with
 no policy and says so on stderr (`instance.toml sets no lane3_policy`), and
 production runs prompt. Add the key once, as your own user (no `sudo`: the
-file is yours), then check that the accessor prints the path:
+file is yours), with the forge's own writer rather than a shell append -- an
+append breaks a file with no final newline and nests the key under a trailing
+`[table]`. `set` creates the file if it is missing, puts the key at the top
+level, leaves the file unchanged when the key already holds this path, and
+refuses (exit 1, file unchanged) when it holds another one. Then check that the
+accessor prints the path:
 
 ```bash
-mkdir -p ~/.config/harmonic-forge
-grep -q '^lane3_policy' ~/.config/harmonic-forge/instance.toml 2>/dev/null \
-  || printf '%s\n' 'lane3_policy = "/usr/local/share/hrse-gate/claude-lane3.json"' >> ~/.config/harmonic-forge/instance.toml
+python3 -I -E ~/harmonic-forge/tools/settings/instance.py set lane3_policy /usr/local/share/hrse-gate/claude-lane3.json
 python3 -I -E ~/harmonic-forge/tools/settings/instance.py get lane3_policy | tr '\0' '\n'
 ```
 
