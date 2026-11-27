@@ -85,7 +85,7 @@ if [ "$_lane_agent" = "claude" ]; then
   # /home, not the inode-capped /tmp tmpfs. A caller-set value is kept; TMPDIR
   # is untouched.
   export CLAUDE_CODE_TMPDIR="${CLAUDE_CODE_TMPDIR:-$HOME/.cache/claude-tmp}"
-  mkdir -p "$CLAUDE_CODE_TMPDIR" \
+  mkdir -p -- "$CLAUDE_CODE_TMPDIR" \
     || _lane_launch_die "could not create CLAUDE_CODE_TMPDIR $CLAUDE_CODE_TMPDIR -- refusing to launch (harmonic-forge#1655)"
 fi
 lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"

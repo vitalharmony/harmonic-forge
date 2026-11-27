@@ -243,6 +243,21 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(cell["extra_env"]["CLAUDE_CODE_TMPDIR"], str(mine))
         self.assertTrue(mine.is_dir())
 
+    def test_option_shaped_claude_code_tmpdir_is_a_path(self):
+        """harmonic-forge#1655 pass 1: an option-shaped caller value is a path,
+        not a mkdir option. Without `--`, `mkdir -p -m` fails for lack of an
+        operand and the launch refuses; with it, the directory is created."""
+        # Lane 2 launches from its worktree (lane2's `cd "$target"`), inside
+        # the fixture tree, so the relative directory lands there.
+        made = self.tree.lane2 / "-m"
+        self.assertFalse(made.exists())
+        cell = self.tree.run("2", [], LANE_CLI="claude",
+                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_TMPDIR",
+                             CLAUDE_CODE_TMPDIR="-m")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertEqual(cell["extra_env"]["CLAUDE_CODE_TMPDIR"], "-m")
+        self.assertTrue(made.is_dir())
+
     def test_codex_lane_leaves_claude_code_tmpdir_unset(self):
         """harmonic-forge#1655: the export is Claude-only."""
         cell = self.tree.run("2", [], LANE_CLI="codex",
@@ -260,7 +275,10 @@ class LauncherTests(unittest.TestCase):
         cell = self.tree.run("2", [], LANE_CLI="claude")
         self.assertFalse(cell["launched"], cell)
         self.assertNotEqual(cell["returncode"], 0)
-        self.assertIn("lane2: could not create CLAUDE_CODE_TMPDIR", cell["stderr"])
+        self.assertIn(
+            f"lane2: could not create CLAUDE_CODE_TMPDIR {cache / 'claude-tmp'}"
+            " -- refusing to launch (harmonic-forge#1655)",
+            cell["stderr"])
 
     def test_capture_scrubs_the_session_claude_code_tmpdir(self):
         # harmonic-forge#1655, the #1284 pattern: a lane session exports its own
