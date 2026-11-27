@@ -1145,10 +1145,15 @@ class ClaudeLane3Settings(unittest.TestCase):
         with _FixtureTree() as tree:
             policy = self._install(tree, self.POLICY.read_text())
             lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
-            link = tree.root / "linked"
-            link.symlink_to(policy.parent)
+            # A symlink ABOVE the policy's own directory: the lstats on the file,
+            # its directory and the manifest all see real entries, so only the
+            # realpath check catches it (kill-check: the parent-level link was
+            # already refused by the S_ISLNK lstat, which made that case vacuous).
+            link = tree.root / "linked-root"
+            link.symlink_to(tree.root)
+            via_link = link / policy.parent.name / policy.name
             for value, why in (("relative/claude-lane3.json", "relative"),
-                               (str(link / policy.name), "symlinked ancestor")):
+                               (str(via_link), "symlinked ancestor")):
                 with self.subTest(why=why):
                     toml = tree.instance_toml
                     text = toml.read_text()
