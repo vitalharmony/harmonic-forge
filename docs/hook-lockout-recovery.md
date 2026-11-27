@@ -29,7 +29,7 @@ them will not help.
 | `python3` is missing from the hook shell's `PATH` | every keyed handler fails to start, on every tool |
 | A shared module on forge main is broken (`shell_parse.py` or `block_lane1_status_claims.py`, which other hooks import) | every hook that imports it exits non-zero |
 | One hook crashes on a particular input | only calls of that shape are refused; `tools/hooks/test_hook_crash_contract.py` exists to catch this before merge |
-| A hook times out | the call is refused after the handler's `timeout` |
+| A hook times out | the call is refused after the handler's `timeout`. A network-bound hook can time out on a GitHub stall: `block_missing_preclose_inspection.py` makes 7 s `gh` reads plus a 12 s fetch under a 25 s timeout, so a stall refuses a close or merge (the safe direction; retry once GitHub answers) |
 
 ## Recovery (from a terminal outside Claude)
 
@@ -74,14 +74,27 @@ edit removes it. Recover from an ordinary terminal:
 ## Exceptions: hooks whose crash does not reach the CLI
 
 Some keyed hooks catch their own failures and exit 0, so a crash in them
-allows the call instead of refusing it, key or no key. Two groups:
+allows the call instead of refusing it, key or no key. Three groups:
 
 - The handlers registered as `f=...; [ -f "$f" ] && python3 "$f" || true`.
   The `|| true` turns a crash into exit 0; a timeout or invalid JSON still
   refuses.
-- Six hooks with an internal catch-all: `precheck_gate.py`,
-  `guard_gh_rest_budget.py`, `model_tier_gate.py`, `block_unchecked_push.py`,
-  `mypy_cwd_trap.py` and `block_stale_script_execution.py`.
+- Five unguarded hooks with an internal catch-all around the whole decision:
+  `precheck_gate.py`, `guard_gh_rest_budget.py`, `model_tier_gate.py`,
+  `block_unchecked_push.py` and `mypy_cwd_trap.py` (its catch-all is in
+  `main`, around `decision`).
+- Six guarded hooks that also catch everything internally, so removing the
+  `|| true` alone would not make their crash reach the CLI:
+  `block_blind_repeat.py:15`, `require_ci_plan.py:199`,
+  `gate_feedback_memory_write.py:223`, `afk_defer.py:82`,
+  `enforce_belt_arming.py:739` and `worktree_busy_guard.py:77`.
 
-harmonic-forge#1613 owns both groups: each one either lets its failure reach
-the CLI or documents why it fails open.
+harmonic-forge#1613 owns all three groups: each one either lets its failure
+reach the CLI or documents why it fails open.
+
+Separate from crashes: two hooks allow a command they cannot tokenize, by
+design. `block_stale_script_execution.py:219-222` (a `command_segments`
+ValueError means the command is not checked) and `block_inline_prose.py:120`
+(a parse failure fails open). That is an "unparseable input allows" path, not
+a swallowed crash. Any other exception in `block_stale_script_execution.py`
+reaches the CLI, so a crash there refuses the call like any keyed hook.

@@ -104,5 +104,19 @@ class TestMypyCwdTrap(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    def test_cd_to_an_unknown_user_home_leaves_the_cwd_and_still_denies(self):
+        # bash's `cd ~nosuchuser` fails and leaves the cwd, so mypy still runs
+        # from the repo root and the trap still applies.
+        with patch.object(m, "_repo_has_mypy_trap", return_value=True):
+            result = m.decision(f"cd {UNKNOWN_HOME} && .venv/bin/mypy app", "/home/x/HRSE2")
+        self.assertTrue(_is_denied(result))
+
+
 if __name__ == "__main__":
     unittest.main()

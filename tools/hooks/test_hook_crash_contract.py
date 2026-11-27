@@ -20,6 +20,19 @@ test (harmonic-forge#1613 owns that guard's own failure path).
 
 Every run gets a scratch HOME and no GitHub credentials, so nothing here
 reads or writes the operator's real state or the network's.
+
+Three cwds (harmonic-forge#1608 pitch change 4), each as both the payload's
+`cwd` and the process cwd:
+
+  * an empty directory that is not a git repo, for every payload and LANE;
+  * a deleted directory, for every payload, the LANE rotating across payloads
+    so every LANE is still seen (every payload times every LANE would double
+    the runtime for no path the rotation misses);
+  * a scratch git repo with a GitHub `origin`, on `main` or on a feature
+    branch, for every payload of the Bash corpus: the two branches alternate
+    across payloads and each still sees every LANE. Real lanes run inside a
+    worktree, and some decision paths (branch and tracked-file checks,
+    upstream lookups) only run inside a repo.
 """
 from __future__ import annotations
 
@@ -76,6 +89,30 @@ BASH_COMMANDS = (
     "",
 )
 FILE_PATHS = ("/tmp/hook-crash-contract.py", _UNKNOWN_HOME, "relative/x.py", "")
+#: The cwd kinds `_run` takes; the git ones are made once per class.
+PLAIN, DELETED, GIT_MAIN, GIT_FEATURE = "plain", "deleted", "git-main", "git-feature"
+GIT_BRANCHES = {GIT_MAIN: "main", GIT_FEATURE: "fix/1608-crash-contract"}
+
+
+def _scratch_repo(where: Path, branch: str) -> Path:
+    """A git repo with one commit, a GitHub origin, an untracked file, on `branch`."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_GLOBAL": "/dev/null",
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True, env=env)
+
+    where.mkdir()
+    git("init", "-q", "-b", "main")
+    (where / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "a.py")
+    git("commit", "-qm", "init")
+    git("remote", "add", "origin", "https://github.com/vitalharmony/harmonic-forge.git")
+    if branch != "main":
+        git("checkout", "-qb", branch)
+    (where / "untracked.txt").write_text("u", encoding="utf-8")
+    return where
 
 
 def _payloads(tool: str) -> list[dict]:
@@ -134,6 +171,7 @@ class CrashContract(unittest.TestCase):
         cls.cwd = cls.tmp / "cwd"
         cls.home.mkdir()
         cls.cwd.mkdir()
+        cls.repos = {kind: _scratch_repo(cls.tmp / kind, branch) for kind, branch in GIT_BRANCHES.items()}
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -149,10 +187,11 @@ class CrashContract(unittest.TestCase):
             env["LANE"] = lane
         return env
 
-    def _run(self, script: Path, payload: dict, lane: str | None, deleted_cwd: bool,
+    def _run(self, script: Path, payload: dict, lane: str | None, cwd_kind: str,
              limit: float) -> str | None:
         """One run; the failure text, or None when the contract holds."""
-        cwd = self.cwd
+        deleted_cwd = cwd_kind == DELETED
+        cwd = self.repos.get(cwd_kind, self.cwd)
         if deleted_cwd:
             cwd = Path(tempfile.mkdtemp(dir=self.tmp))
         body = {"session_id": "crash-contract", "transcript_path": str(self.home / "t.jsonl"),
@@ -165,7 +204,8 @@ class CrashContract(unittest.TestCase):
         start = time.monotonic()
         try:
             done = subprocess.run(argv, input=json.dumps(body), capture_output=True, text=True,
-                                  cwd=self.cwd, env=self._env(lane), timeout=limit * 2)
+                                  cwd=self.cwd if deleted_cwd else cwd, env=self._env(lane),
+                                  timeout=limit * 2)
         except subprocess.TimeoutExpired:
             return f"timed out after {limit * 2:.1f}s"
         elapsed = time.monotonic() - start
@@ -192,25 +232,33 @@ class CrashContract(unittest.TestCase):
 
     def _assert_contract(self, script: Path, timeout: int, tools: set[str]) -> None:
         """Exit 0 or 2, empty-or-JSON stdout, under half the timeout, for
-        every payload, every LANE, and a deleted cwd."""
+        every payload and LANE in a plain cwd, every payload in a deleted cwd,
+        and the Bash corpus inside a git repo (see the module docstring)."""
         limit = timeout / 2
         jobs = []
+        index = 0
         for tool in sorted(tools):
             for payload in _payloads(tool):
                 for lane in LANES:
-                    jobs.append((script, payload, lane, False, limit))
-        # A deleted cwd, once per LANE, on the first payload.
-        for lane in LANES:
-            jobs.append((script, _payloads(sorted(tools)[0])[0], lane, True, limit))
+                    jobs.append((script, payload, lane, PLAIN, limit))
+                # Every payload in a deleted cwd, the LANE rotating.
+                jobs.append((script, payload, LANES[index % len(LANES)], DELETED, limit))
+                if tool == "Bash":
+                    # A git cwd: main and the feature branch alternate across
+                    # payloads, and each one still sees every LANE.
+                    kind = list(GIT_BRANCHES)[index % len(GIT_BRANCHES)]
+                    lane = LANES[(index // len(GIT_BRANCHES)) % len(LANES)]
+                    jobs.append((script, payload, lane, kind, limit))
+                index += 1
         workers = max(2, min(8, (os.cpu_count() or 2) // 2))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             results = list(pool.map(lambda job: (job, self._run(*job)), jobs))
         failures = []
-        for (script, payload, lane, deleted, _limit), problem in results:
+        for (script, payload, lane, cwd_kind, _limit), problem in results:
             if problem:
                 command = (payload.get("tool_input") or {}).get("command", "")
                 failures.append(f"{script.relative_to(ROOT)} LANE={lane} tool={payload['tool_name']}"
-                                f"{' deleted-cwd' if deleted else ''} "
+                                f" cwd={cwd_kind} "
                                 f"input={command[:60]!r}: {problem}")
         self.assertEqual(failures, [], "\n" + "\n".join(failures))
 

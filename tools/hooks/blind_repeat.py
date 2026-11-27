@@ -21,7 +21,9 @@ so a hook timeout is a refusal. `refusal()` therefore does no git work unless
 it has to: records outside the TTL are dropped first, then a live record must
 match a cheap key (`ck`, a digest of command and cwd) before the slow tree
 digest runs, and the tree digest itself stops inside `STATE_BUDGET_SECONDS`
-(under the handler's 5 s timeout) and allows on overrun.
+(under the handler's 5 s timeout) and allows on overrun. Untracked files are
+hashed in `HASH_CHUNK_BYTES` chunks with the deadline checked on each chunk,
+so one large file cannot run past the budget either.
 """
 from __future__ import annotations
 
@@ -39,6 +41,8 @@ FLAKY_COMMANDS = ("mise run check", "mise run check-full")
 STORE_ENV = "BLIND_REPEAT_DIR"
 #: harmonic-forge#1608 P1: total wall clock for one state_key, under the 5 s handler timeout.
 STATE_BUDGET_SECONDS = 3.5
+#: harmonic-forge#1608 P1: untracked files are hashed in chunks of this size, deadline checked per chunk.
+HASH_CHUNK_BYTES = 1 << 20
 
 
 def store_dir() -> Path:
@@ -63,6 +67,29 @@ def _git(cwd: str, *args: str, timeout: float = 3) -> bytes | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
+
+
+def _open_for_hash(path: Path):
+    """The binary stream `_hash_file` reads; a seam so a test can make it slow."""
+    return path.open("rb")
+
+
+def _hash_file(path: Path, deadline: float) -> bytes | None:
+    """sha256 of one file, read in chunks; None on a read error or once the
+    shared deadline passes (harmonic-forge#1608 pitch change 2: one large
+    untracked file must not run past the budget)."""
+    digest = hashlib.sha256()
+    try:
+        with _open_for_hash(path) as stream:
+            while True:
+                if time.monotonic() >= deadline:
+                    return None
+                chunk = stream.read(HASH_CHUNK_BYTES)
+                if not chunk:
+                    return digest.digest()
+                digest.update(chunk)
+    except OSError:
+        return None
 
 
 def state_key(command: str, cwd: str, budget: float = STATE_BUDGET_SECONDS) -> str | None:
@@ -101,10 +128,12 @@ def state_key(command: str, cwd: str, budget: float = STATE_BUDGET_SECONDS) -> s
         if time.monotonic() >= deadline:
             return None  # harmonic-forge#1608 P1: out of budget, undecidable tree
         digest.update(name + b"\0")
-        try:
-            digest.update(hashlib.sha256((Path(root) / name.decode()).read_bytes()).digest())
-        except OSError:
-            return None  # pass 2 survivor 1: an unreadable file is an undecidable tree
+        # pass 2 survivor 1: an unreadable file is an undecidable tree; #1608
+        # pitch change 2: so is one whose hash would run past the deadline.
+        file_digest = _hash_file(Path(root) / name.decode(), deadline)
+        if file_digest is None:
+            return None
+        digest.update(file_digest)
     return digest.hexdigest()
 
 

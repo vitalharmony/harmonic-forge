@@ -296,5 +296,38 @@ class ImportGraphTests(unittest.TestCase):
         self.assertNotIn("protected_write_denial", called)
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+
+def _load_guard():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("lane3_codex_write_guard_1608", GUARD)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    def setUp(self) -> None:
+        self.guard = _load_guard()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cwd = Path(self._tmp.name)
+
+    def _denied(self, command: str) -> bool:
+        result = self.guard.bash_decision(command, self.cwd, "codex") or {}
+        return result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+    def test_cd_to_an_unknown_user_home_is_an_unresolved_cwd(self) -> None:  # the `cd` site
+        self.assertTrue(self._denied(f"cd {UNKNOWN_HOME} && echo hi > out.txt"))
+
+    def test_an_unknown_user_home_target_is_relative(self) -> None:  # _is_absolute_target
+        self.assertFalse(self.guard._is_absolute_target(UNKNOWN_HOME))
+        self.assertTrue(self._denied(f'cd "$D" && echo hi > {UNKNOWN_HOME}'))
+
+
 if __name__ == "__main__":
     unittest.main()

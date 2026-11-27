@@ -644,5 +644,44 @@ class CanonicalWorktreeGuardTests(unittest.TestCase):
                 self.assertEqual(out, "")
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    """Each `cd` walk keeps its cwd on `cd ~nosuchuser` (bash does too) and
+    still decides the next segment; one test per site."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cwd = Path(self._tmp.name)
+        self.cd = f"cd {UNKNOWN_HOME} && "
+
+    def test_gate_task_denial(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertIn("Lane-3-only", MODULE.gate_task_denial(
+                self.cd + "mise run gate-checkout foo", self.cwd) or "")
+
+    def test_gate_worktree_location_denial(self) -> None:
+        self.assertIn("canonical Lane 3 worktree", MODULE.gate_worktree_location_denial(
+            self.cd + "mise run gate-checkout foo", self.cwd, True) or "")
+
+    def test_git_mutation_denial(self) -> None:
+        self.assertIn("git worktree add", MODULE.git_mutation_denial(
+            self.cd + "git worktree add y", self.cwd, True) or "")
+
+    def test_direct_post_denial(self) -> None:
+        with patch.dict(os.environ, {"LANE": "1"}):
+            self.assertIn("raw GitHub issue posting", MODULE.direct_post_denial(
+                self.cd + "gh issue comment 5 --body x", self.cwd) or "")
+
+    def test_bulk_comment_read_denial(self) -> None:
+        self.assertIn("gh issue view --comments", MODULE.bulk_comment_read_denial(
+            self.cd + "gh issue view 5 --comments", self.cwd, True) or "")
+
+
 if __name__ == "__main__":
     unittest.main()

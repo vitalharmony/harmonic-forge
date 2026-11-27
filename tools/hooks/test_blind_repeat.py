@@ -207,7 +207,7 @@ class Pass2Fixes(Base):
 
     def test_an_unreadable_untracked_file_gives_no_key(self):
         (self.repo / "locked.txt").write_text("a")
-        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
+        with mock.patch.object(Path, "open", side_effect=PermissionError):
             self.assertIsNone(R.state_key("make x", str(self.repo)))
 
 
@@ -276,6 +276,36 @@ class Issue1608Budget(Base):
         with mock.patch.object(R.subprocess, "run", side_effect=slow):
             self.assertIsNone(R.state_key("make x", str(self.repo)))
         self.assertLess(time.monotonic() - start, 4)
+
+    def test_one_slow_large_untracked_file_stops_inside_the_budget_and_allows(self):
+        # harmonic-forge#1608 pitch change 2: the deadline is checked per chunk,
+        # so one big untracked file cannot run past the budget on its own.
+        (self.repo / "big.bin").write_bytes(b"x")
+
+        class Slow(io.RawIOBase):  # 40 chunks at 0.1 s each: 4 s if read whole
+            chunks = 40
+
+            def readable(self):
+                return True
+
+            def read(self, size=-1):
+                if Slow.chunks == 0:
+                    return b""
+                Slow.chunks -= 1
+                time.sleep(0.1)
+                return b"x" * 16
+
+        start = time.monotonic()
+        with mock.patch.object(R, "_open_for_hash", side_effect=lambda path: Slow()):
+            self.assertIsNone(R.state_key("make x", str(self.repo), budget=1.0))
+        self.assertLess(time.monotonic() - start, 2.5)
+
+    def test_a_chunked_hash_matches_the_whole_file_hash(self):
+        import hashlib
+        path = self.repo / "big.bin"
+        path.write_bytes(os.urandom(R.HASH_CHUNK_BYTES * 2 + 7))
+        self.assertEqual(R._hash_file(path, time.monotonic() + 30),
+                         hashlib.sha256(path.read_bytes()).digest())
 
     def test_a_matching_live_record_still_refuses(self):
         self.record_failure("make x")

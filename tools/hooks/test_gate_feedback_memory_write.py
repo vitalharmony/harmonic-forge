@@ -310,5 +310,19 @@ class Main(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, ""))
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    def test_an_unknown_user_home_is_never_in_the_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "store"
+            store.mkdir()
+            self.assertIsNone(gate.decide("Write", {"file_path": UNKNOWN_HOME, "content": memory(None)},
+                                          store, IDS))
+
+
 if __name__ == "__main__":
     unittest.main()
