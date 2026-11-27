@@ -1076,11 +1076,36 @@ def parse_directive(line: str) -> tuple[str, str] | str | None:
     <scope>"`); otherwise the refusal reason the matching authorizer gives
     after "REFUSED[ for KEY]: ". Shape and key steps only, from the same
     regexes and helpers the authorizers read: no provenance, LANE, fence or
-    grant step, no I/O beyond the local projects manifest. Never raises."""
+    grant step, no I/O beyond the local projects manifest. Never raises.
+    Candidacy is decided first from this module's own patterns, with no
+    import, so a helper module that fails to load can refuse only a
+    candidate, never a shell line."""
+    kind = _directive_kind(line)
+    if kind is None:
+        return None
     try:
-        return _parse_directive(line)
+        return _parse_directive(line, kind)
     except Exception as exc:  # noqa: BLE001 - a refusal, never an exemption
         return f"the directive parser failed ({type(exc).__name__})"
+
+
+def _directive_kind(line: str) -> str | None:
+    """Which directive `line` is a candidate for, or None, with no import.
+    SCAN is a candidate here on its first word only; `scan_grant.ANY_RE`
+    then confirms it inside the parser."""
+    if _FORCE_ANY_RE.match(line) or _FORCE_MALFORMED_RE.match(line):
+        return "force"
+    if _PARK_ANY_RE.match(line):
+        return "park"
+    head = line.lstrip(" \t>")
+    if head[:4].lower() == "scan" and head[4:5] in (" ", "\t"):
+        return "scan"
+    if _UI_ANY_RE.match(line):
+        return "ui"
+    match = _ATTRIB_TRIGGER_RE.match(line)
+    if match is not None and match.group(1) == "close":
+        return "close"
+    return None
 
 
 def _directive_key_problem(key: str, kind: str) -> str | None:
@@ -1094,14 +1119,12 @@ def _directive_key_problem(key: str, kind: str) -> str | None:
     return None
 
 
-def _parse_directive(line: str):
+def _parse_directive(line: str, kind: str):
     here = str(Path(__file__).resolve().parent)
     if here not in sys.path:
         sys.path.insert(0, here)
-    import scan_grant  # noqa: PLC0415
-    import tasklist_owed  # noqa: PLC0415
 
-    if _FORCE_ANY_RE.match(line) or _FORCE_MALFORMED_RE.match(line):
+    if kind == "force":
         match = _FORCE_RE.match(line)
         if match is None and _FORCE_MALFORMED_RE.match(line):
             return ("the line needs a key like F1244 and a colon before the reason. The form is "
@@ -1117,7 +1140,8 @@ def _parse_directive(line: str):
         if not reason:
             return "the reason is empty"
         return _directive_key_problem(key, "FORCE") or ("force", key)
-    if _PARK_ANY_RE.match(line):
+    if kind == "park":
+        import tasklist_owed  # noqa: PLC0415
         match = _PARK_RE.match(line)
         if match is None:
             return ("PARK is honored only as the prompt's first line, typed unindented and "
@@ -1128,12 +1152,15 @@ def _parse_directive(line: str):
         if key[1] == "0":
             return ("write the issue number without leading zeros, as the task-list entry does")
         return "park", key
-    if scan_grant.ANY_RE.match(line):
+    if kind == "scan":
+        import scan_grant  # noqa: PLC0415
+        if not scan_grant.ANY_RE.match(line):
+            return None
         parsed = scan_grant.parse(line)
         if isinstance(parsed, str):
             return parsed
         return "scan", f"{parsed[0]} {parsed[1]}"
-    if _UI_ANY_RE.match(line):
+    if kind == "ui":
         match = _UI_RE.match(line)
         if match is None:
             return ("UI is honored only as the prompt's first line, typed unindented and "
@@ -1148,9 +1175,8 @@ def _parse_directive(line: str):
         if not reason:
             return "the reason is empty"
         return _directive_key_problem(key, "UI") or ("ui", key)
+    import tasklist_owed  # noqa: PLC0415
     match = _ATTRIB_TRIGGER_RE.match(line)
-    if match is None or match.group(1) != "close":
-        return None
     key = match.group(2) + match.group(3)
     if match.end() != len(line.rstrip()) or not tasklist_owed.KEY_RE.match(key):
         return _CLOSE_REFUSAL

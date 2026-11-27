@@ -1084,6 +1084,7 @@ class ParseDirective(unittest.TestCase):
             "SCAN H everything: x": "unknown scope 'everything'",
             "UI H1 a b: x": "at most one digest",
             "UI H1 zz: x": "'zz' is not a 12-64 character hex digest",
+            "UI H1:": "the reason is empty",
             "close F1 now": "a close line is exactly `close <KEY>`",
             "close f1": "a close line is exactly `close <KEY>`",
         }
@@ -1097,6 +1098,13 @@ class ParseDirective(unittest.TestCase):
         for line in ("python3 x.py", "git status", "Close the PR", "Close F1", "close the PR"):
             with self.subTest(line=line):
                 self.assertIsNone(m.parse_directive(line))
+
+    def test_a_broken_helper_import_refuses_only_candidates(self):
+        with mock.patch.dict(sys.modules, {"scan_grant": None, "tasklist_owed": None}):
+            self.assertIsNone(m.parse_directive("git status"))
+            self.assertEqual(m.parse_directive("FORCE F1566: x"), ("force", "F1566"))
+            self.assertIn("the directive parser failed",
+                          m.parse_directive("SCAN H open-issues: x"))
 
     def test_an_unexpected_error_is_a_refusal_never_an_exemption(self):
         with mock.patch.object(m, "_parse_directive", side_effect=RuntimeError("boom")):

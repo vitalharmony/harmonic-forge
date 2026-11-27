@@ -28,8 +28,10 @@ shell at all.
   `parse_directive` reads, as written, as a well-formed single-part FORCE,
   PARK, SCAN, UI or `close` directive needs no probe; one it refuses is
   refused here with the same reason. A directive candidate still passes the
-  one-command shape check first, and an `&&` chain on one is refused. If the
-  parser cannot be imported, every line keeps the probe rule.
+  one-command shape check first, and an `&&` chain on one is refused. Lines
+  are read relative to the opening fence's indent, so a block nested under a
+  list item is not a placement refusal. If the parser cannot be imported or
+  raises, the line keeps the probe rule.
 
 The hook nudges at most once per turn: `stop_hook_active` is honoured before
 anything else. A turn that ends at a genuine question (shared
@@ -57,7 +59,7 @@ from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
 PROBE_SUFFIXES = (" --help", " --dry-run")
 _ACTIONS_RE = re.compile(r"YOUR NEXT ACTIONS", re.I)
-_BLOCK_RE = re.compile(r"^[ \t]*(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
+_BLOCK_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
                        r"(?P<body>.*?)^[ \t]*(?P=fence)`*[ \t]*$", re.M | re.S)
 #: A fence line declaring the block, at any backtick count; never inline code.
 _DECLARED_RE = re.compile(r"^[ \t]*`{3,}[ \t]*operator-commands[ \t]*$", re.M)
@@ -65,7 +67,13 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def blocks(text: str) -> list[str]:
-    return [m.group("body") for m in _BLOCK_RE.finditer(text or "")]
+    return [body for _indent, body in declared_blocks(text)]
+
+
+def declared_blocks(text: str) -> list[tuple[str, str]]:
+    """`(opening fence's indent, body)` for each block: a fence nested under a
+    list item carries its indent on every body line (harmonic-forge#1639)."""
+    return [(m.group("indent"), m.group("body")) for m in _BLOCK_RE.finditer(text or "")]
 
 
 def lines_of(body: str) -> list[str]:
@@ -73,11 +81,22 @@ def lines_of(body: str) -> list[str]:
             if ln.strip() and not ln.strip().startswith("#")]
 
 
-def raw_lines_of(body: str) -> list[tuple[str, str]]:
+def raw_lines_of(body: str, indent: str = "") -> list[tuple[str, str]]:
     """`(as written, stripped)` for each line `lines_of` keeps, in order: the
-    directive parser reads placement (indent, `>`) from the line as written."""
-    return [(ln, ln.strip()) for ln in body.splitlines()
+    directive parser reads placement (indent, `>`) from the line as written.
+    "As written" is relative to the fence: up to `len(indent)` leading
+    whitespace characters (the opening fence's own indent) are removed, as
+    the rendered block shows them, so only an indent beyond the fence's own
+    reaches the parser."""
+    return [(_dedent(ln, len(indent)), ln.strip()) for ln in body.splitlines()
             if ln.strip() and not ln.strip().startswith("#")]
+
+
+def _dedent(line: str, width: int) -> str:
+    cut = 0
+    while cut < width and cut < len(line) and line[cut] in " \t":
+        cut += 1
+    return line[cut:]
 
 
 def directive_parser():
@@ -88,6 +107,17 @@ def directive_parser():
     except Exception:  # noqa: BLE001
         return None
     return parse_directive
+
+
+def parse_line(parse, raw: str):
+    """`parse(raw)`, or None (the probe rule) when there is no parser or it
+    raises: a parser fault never refuses a probed shell line."""
+    if parse is None:
+        return None
+    try:
+        return parse(raw)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def segments(line: str) -> tuple[list[str], set[str]] | None:
@@ -196,7 +226,7 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     # 2026-10-22): the block shape and AC2 still run, so a question can end
     # the turn without a probe but never bypass the gate.
     question = asks_a_question(text)
-    declared = blocks(text)
+    declared = declared_blocks(text)
     if len(declared) != 1 or len(_DECLARED_RE.findall(text)) != 1:
         return "block", ("A response with YOUR NEXT ACTIONS carries exactly one "
                          "`operator-commands` block, opened with four backticks, one command "
@@ -209,9 +239,10 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     probe_set = {p.strip() for p in probes or []}
     problems = []
     parse = directive_parser()
-    for raw, line in raw_lines_of(declared[0]):
+    indent, body = declared[0]
+    for raw, line in raw_lines_of(body, indent):
         why = shape_problem(line)
-        directive = parse(raw) if parse is not None else None
+        directive = parse_line(parse, raw)
         if why and isinstance(directive, str):
             problems.append(f"  - `{line}`: the prompt hook would refuse it: {directive}; "
                             "reword the reason (no quotes or shell metacharacters)")

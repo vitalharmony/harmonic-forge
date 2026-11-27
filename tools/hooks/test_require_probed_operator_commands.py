@@ -288,6 +288,7 @@ MALFORMED = (
     "SCAN H everything: x",
     "UI H1 a b: x",
     "UI H1 zz: x",
+    "UI H1:",
     "close F1 now",
 )
 #: TC3 (AC3): never exempt, whatever the parser reads.
@@ -390,10 +391,48 @@ class DirectiveLines(unittest.TestCase):
         self.assertEqual(hook.decide({"transcript_path": path})[0], "block")
 
     def test_parser_import_failure_falls_back_to_the_probe_rule(self):
+        line = "FORCE F1566: two passes clean"
         with mock.patch.object(hook, "directive_parser", return_value=None):
-            verdict, reason = self.say("FORCE F1566: two passes clean", probes=[])
+            verdict, reason = self.say(line, probes=[])
+            self.assertEqual(verdict, "block")
+            self.assertIn("no Bash call", reason)
+            # the fallback is today's rule, not a refusal: an exactly probed line allows
+            self.assertEqual(self.say(line, probes=[line]), ("allow", ""))
+
+    def test_a_parser_that_raises_falls_back_to_the_probe_rule(self):
+        def boom(_line):
+            raise RuntimeError("boom")
+        with mock.patch.object(hook, "directive_parser", return_value=boom):
+            self.assertEqual(self.say("git status", probes=["git status"]), ("allow", ""))
+            verdict, reason = self.say("git status", probes=[])
         self.assertEqual(verdict, "block")
         self.assertIn("no Bash call", reason)
+
+    def test_a_broken_scan_grant_import_never_refuses_a_shell_line(self):
+        with mock.patch.dict(sys.modules, {"scan_grant": None}):
+            self.assertEqual(self.say("git status", probes=["git status"]), ("allow", ""))
+            verdict, reason = self.say("SCAN H open-issues: tune-up", probes=[])
+        self.assertEqual(verdict, "block")
+        self.assertIn("SCAN H open-issues: tune-up", reason)
+
+    def nested(self, *lines: str, probes=None):
+        """The block as an indented fence under a numbered list item."""
+        text = ("Done.\n\n## YOUR NEXT ACTIONS\n1. Run:\n   " + FENCE + "operator-commands\n"
+                + "".join(f"   {ln}\n" for ln in lines) + "   " + FENCE + "\n")
+        path = Transcript(self.tmp).say(text)
+        return hook.decide({"transcript_path": path}, probes=probes)
+
+    def test_a_fence_nested_under_a_list_item_reads_lines_relative_to_it(self):
+        self.assertEqual(self.nested("FORCE F1566: two passes clean", "PARK H2621: moved to 3.2",
+                                     "close F1639", probes=[]), ("allow", ""))
+
+    def test_a_line_indented_beyond_its_nested_fence_is_refused(self):
+        for line in ("  FORCE F1566: two passes clean", "> PARK H2621"):
+            with self.subTest(line=line):
+                verdict, reason = self.nested(line, probes=[line.strip()])
+                self.assertEqual(verdict, "block")
+                self.assertIn("honored only as the prompt's first line",
+                              self.problem_line(reason, line))
 
     def test_directive_parser_returns_none_when_the_import_raises(self):
         with mock.patch.dict(sys.modules, {"expand_lane_shorthand": None}):
