@@ -108,6 +108,30 @@ def real_tmpdir() -> str:
     return os.environ.get(REAL_TMPDIR_ENV) or tempfile.gettempdir()
 
 
+def _write_run_config(root: Path) -> None:
+    """harmonic-forge#1529: tests never read the developer's instance.toml. The
+    run's own one declares a scratch projects_root, so a module that reads it at
+    import (the Lane 3 fence, the tier gate) resolves the same root on every
+    machine, CI included (no instance.toml at all).
+
+    instance.py refuses to read a config file inside any git checkout. When this
+    run's TMPDIR is inside one (a Codex lane's), no fixture there can be read,
+    so the run says so in one line and goes on without it (the root-dependent
+    tests then report the missing root) -- never a crash, never a leaked root."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "settings"))
+    import instance  # noqa: PLC0415 -- the one place the config path is named
+    xdg = root / "xdg"
+    try:
+        config = instance.config_path({"XDG_CONFIG_HOME": str(xdg)})
+    except ValueError as exc:
+        print(f"run_tests: per-run instance.toml skipped ({exc})", file=sys.stderr)
+        return
+    config.parent.mkdir(parents=True)
+    (root / "projects").mkdir()
+    config.write_text(f'projects_root = "{root / "projects"}"\n', encoding="utf-8")
+    os.environ["XDG_CONFIG_HOME"] = str(xdg)
+
+
 @contextlib.contextmanager
 def contained_tempdir(prefix: str = "hf-test-run-"):
     """harmonic-forge#1114: contain every temp file a test run creates.
@@ -121,18 +145,11 @@ def contained_tempdir(prefix: str = "hf-test-run-"):
     root = tempfile.mkdtemp(prefix=prefix)
     old_env = {name: os.environ.get(name) for name in (*TMP_ENV_VARS, REAL_TMPDIR_ENV,
                                                        "XDG_CONFIG_HOME")}
-    # harmonic-forge#1529: tests never read the developer's instance.toml. The
-    # run's own one declares a scratch projects_root, so a module that reads it
-    # at import (the Lane 3 fence, the tier gate) resolves the same root on
-    # every machine, CI included (which has no instance.toml at all).
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "settings"))
-    import instance  # noqa: PLC0415 -- the one place the config path is named
-    xdg = Path(root) / "xdg"
-    config = instance.config_path({"XDG_CONFIG_HOME": str(xdg)})
-    config.parent.mkdir(parents=True)
-    (Path(root) / "projects").mkdir()
-    config.write_text(f'projects_root = "{Path(root) / "projects"}"\n', encoding="utf-8")
-    os.environ["XDG_CONFIG_HOME"] = str(xdg)
+    try:
+        _write_run_config(Path(root))
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
     old_cache = tempfile.tempdir
     os.environ[REAL_TMPDIR_ENV] = real
     os.environ["HEAVY_SLOT_DISABLE"] = "1"  # harmonic-forge#1271: tests never sit in the machine's real queue

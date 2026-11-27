@@ -156,10 +156,12 @@ _WORKTREE_ROOTS = tuple(dict.fromkeys(("/tmp", *(
     else (str(_PROJECT_WORKTREES), os.path.realpath(_PROJECT_WORKTREES))))))
 #: This is the gate's detached-HEAD fallback (a conflicted rebase), so matching
 #: FEWER worktrees skips the gate. With the root unset it matches MORE: any
-#: `.../.worktrees/hrse2-N-impl`, never only `/tmp` (pitch NC9, R-0371).
+#: absolute `.../hrse2-N-impl`, never only `/tmp` (pitch NC9, R-0371) -- not
+#: only under a `.worktrees` segment, since the cwd here is realpath-ed and a
+#: symlinked worktree root need not contain one (preclose pass 1, cross-family).
 WORKTREE_ISSUE_RE = re.compile(
     r"^(?:" + "|".join(re.escape(root) for root in _WORKTREE_ROOTS)
-    + (r"|/.*/\.worktrees" if _PROJECT_WORKTREES is None else "")
+    + (r"|/.*" if _PROJECT_WORKTREES is None else "")
     + r")/hrse2-(?P<number>\d+)-impl$")
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),

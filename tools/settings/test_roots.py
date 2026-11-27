@@ -88,15 +88,41 @@ class TC1Fence(RootsCase):
                 bash = self.fence({"command": f"echo x > '{target}'"}, tool="Bash")
                 self.assertEqual(self.decision(bash), "deny")
 
-    def test_a_relative_forge_root_still_denies(self) -> None:
+    def test_the_deny_message_names_an_unset_root_without_crashing(self) -> None:
+        """Pass-1 survivor: the deny message is where a crash would turn a deny
+        into an allow; with the root unset it names the setting, not a path."""
         self.declare(None)
-        proc = subprocess.run(
-            [sys.executable, str(HOOKS / "block_lane1_status_claims.py")],
-            input=json.dumps({"tool_name": "Write", "cwd": str(self.tmp),
-                              "tool_input": {"file_path": "/etc/x", "content": "x"}}),
-            env=self.env(LANE="3", HARMONIC_FORGE_ROOT="relative/path"),
-            capture_output=True, text=True, timeout=60)
+        proc = self.fence({"file_path": "/etc/x", "content": "x"})
         self.assertEqual(self.decision(proc), "deny")
+        reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("<projects root>/testplan", reason)
+        self.assertIn("projects_root", reason)
+
+    def test_the_run_fixture_works_under_a_tmpdir_inside_a_checkout(self) -> None:
+        """Pass-1 survivor: a Codex lane's TMPDIR has a .git ancestor, where
+        instance.py reads no config; the run says so once and goes on -- no
+        crash, and its temp root is still removed on exit."""
+        checkout = self.tmp / "lane tmp"
+        (checkout / ".git").mkdir(parents=True)
+        code = ("import run_tests\n"
+                "with run_tests.contained_tempdir() as root:\n"
+                "    print('entered')\n")
+        proc = subprocess.run([sys.executable, "-c", f"import sys; sys.path[:0] = [{str(TOOLS)!r}, "
+                               f"{str(TOOLS / 'settings')!r}]\n" + code],
+                              env={**self.env(), "TMPDIR": str(checkout)},
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "entered")
+        self.assertIn("per-run instance.toml skipped", proc.stderr)
+        self.assertEqual([p.name for p in checkout.iterdir()], [".git"])
+
+    def test_tier_gate_matches_a_symlinked_worktree_root_when_unset(self) -> None:
+        """Pass-1 survivor (cross-family): the cwd is realpath-ed, so a worktree
+        under a symlinked root has no `.worktrees` segment; unset still gates it."""
+        self.declare(None)
+        probe = ("import model_tier_gate as m; "
+                 "print(bool(m.WORKTREE_ISSUE_RE.match('/srv/forge-worktrees/hrse2-7-impl')))")
+        self.assertEqual(self.py(probe).stdout.strip(), "True")
 
 
 class TC2TC3Worktrees(RootsCase):
