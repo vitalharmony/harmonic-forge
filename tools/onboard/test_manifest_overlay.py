@@ -143,8 +143,12 @@ def registered_env(case: unittest.TestCase, overlay: str) -> tuple[Path, Path]:
 def probe_from(cwd: Path, base: Path, code: str) -> str:
     """stdout of `code` run in a fresh interpreter with its cwd at `cwd` and
     `FORGE_PROJECTS_MANIFEST` at `base`; `tools/hooks` and `tools/onboard` are on
-    its path (TC17: a hook process computes its prefix maps at import)."""
-    env = {k: v for k, v in os.environ.items() if k != "LANE"}
+    its path (TC17: a hook process computes its prefix maps at import).
+    `LANE`, `CLAUDE_CODE_ENTRYPOINT` and `GH_REPO` are not inherited, as in
+    test_manifest_scoping's `probe`: an `sdk` entrypoint refuses every
+    authorizer at provenance (harmonic-forge#1635 gap 4)."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("LANE", "CLAUDE_CODE_ENTRYPOINT", "GH_REPO")}
     env["FORGE_PROJECTS_MANIFEST"] = str(base)
     prelude = (f"import sys\nsys.path[:0] = [{str(HERE.parent / 'hooks')!r}, {str(HERE)!r}]\n")
     result = subprocess.run([sys.executable, "-c", prelude + code], cwd=cwd, env=env,

@@ -154,6 +154,13 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
     `manifest_overlay.<attr>` (test_manifest_scope pins the naming files), so any
     overlay read on these paths trips the patch, whatever its import spelling.
 
+    What each writer decides (harmonic-forge#1635): FORCE, IMC and UI make a
+    home-repo decision, and `reached` asserts each got past it. PARK and SCAN
+    make none: PARK checks the key against the fixed pattern
+    `tasklist_owed.KEY_RE`, SCAN the letter against its fixed map
+    `scan_grant.REPOS`; FIXED_MAP asserts those answers and that they are the
+    same with the overlay file removed.
+
     D23's stated limit: imc_waiver posts with `apply_project_identity` on the
     key's projects.toml repo; that call is posting identity, not grant scope, and
     for a registered repo it never falls back to the overlay (checked last)."""
@@ -181,8 +188,17 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         # before any normalization: normpath drops `..` lexically, which names
         # a different file when the `..` follows a symlink.
         "_stat = os.stat\n"
-        "def _is_overlay(p):\n"
+        "def _is_overlay(p, dir_fd=None):\n"
         "    raw = os.fsdecode(p)\n"
+        # harmonic-forge#1635 gap 1: a relative path opened against a
+        # directory descriptor names a file there, not under the cwd, so its
+        # identity is taken with the same descriptor.
+        "    if dir_fd is not None and not os.path.isabs(raw):\n"
+        "        try:\n"
+        "            st = _stat(raw, dir_fd=dir_fd)\n"
+        "        except OSError:\n"
+        "            return False\n"
+        "        return (st.st_dev, st.st_ino) == (_OVERLAY.st_dev, _OVERLAY.st_ino)\n"
         "    try:\n"
         "        st = _stat(raw)\n"
         "        if (st.st_dev, st.st_ino) == (_OVERLAY.st_dev, _OVERLAY.st_ino):\n"
@@ -201,10 +217,10 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         "        boom()\n"
         "    return _path_open(self, *a, **k)\n"
         # Post-verdict 3 (Codex): a read through os.open is a read too.
-        "def guarded_os_open(path, *a, **k):\n"
-        "    if isinstance(path, (str, bytes, os.PathLike)) and _is_overlay(path):\n"
+        "def guarded_os_open(path, flags, mode=0o777, *, dir_fd=None):\n"
+        "    if isinstance(path, (str, bytes, os.PathLike)) and _is_overlay(path, dir_fd):\n"
         "        boom()\n"
-        "    return _os_open(path, *a, **k)\n"
+        "    return _os_open(path, flags, mode, dir_fd=dir_fd)\n"
         "builtins.open = io.open = guarded_open\n"
         "pathlib.Path.open = guarded_path_open\n"
         "os.open = guarded_os_open\n"
@@ -225,25 +241,22 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         # Post-verdict 3 (Codex): a key that DOES map (F5, a projects.toml
         # repo) carries each hook authorizer past the prefix map into its
         # home-repo decision; state is a scratch dir, and no gh call is made.
-        "import tempfile, force_grant, park_grant, scan_grant\n"
+        # harmonic-forge#1635 gap 3: PARK and SCAN make no home-repo decision,
+        # so they are not here; FIXED_MAP below asserts what they do decide.
+        "import tempfile, force_grant\n"
         "_st = pathlib.Path(tempfile.mkdtemp())\n"
         "force_grant.FORCE_STATE_DIR = _st / 'force'\n"
         "ui_grant.UI_STATE_DIR = _st / 'ui'\n"
         "imc_waiver.IMC_STATE_DIR = _st / 'imc'\n"
-        "park_grant.PARK_STATE_DIR = _st / 'park'\n"
-        "scan_grant.SCAN_STATE_DIR = _st / 'scan'\n"
         "mapped = {\n"
         "  'force': m.authorize_force('FORCE F5: probe', 's', '1'),\n"
         "  'imc': m.authorize_imc('BATCH F5 IMC F5', 's', '1', label_reader=lambda r, n: ({'tooling-exception'}, '')),\n"
         "  'ui': m.authorize_ui('UI F5: probe', 's', '1'),\n"
-        "  'park': m.authorize_park('PARK F5: probe', 's', '1'),\n"
-        "  'scan': m.authorize_scan('SCAN F open-issues: probe', 's'),\n"
         "}\n"
         # Each one decided past scope: FORCE stops only at its receipt check,
-        # the other four write their (scratch) grant.
+        # the other two write their (scratch) grant.
         "reached = {'force': 'has no preclose receipt', 'imc': 'waiver hook record written',\n"
-        "           'ui': 'pending plan grant written', 'park': 'may now be completed',\n"
-        "           'scan': 'may be scanned'}\n"
+        "           'ui': 'pending plan grant written'}\n"
         "out.append(sorted(k for k, v in mapped.items() if reached[k] in (v or '')))\n"
         "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
         "target = imc_waiver.key_target('F5')\n"
@@ -257,12 +270,62 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         "out.append(seen)\n"
         "print(json.dumps(out))\n")
 
+    EXPECTED = [True, False, None, ["acme/forge", 5], None, [], [], None,
+                True, ["force", "imc", "ui"], "identity-ok", []]
+
+    #: PARK and SCAN at a fixed `now` and in scratch state, so two runs' receipts
+    #: compare equal. Each decides by a fixed map: PARK by `tasklist_owed.KEY_RE`,
+    #: SCAN by `scan_grant.REPOS`. Z is the overlay repo's letter.
+    FIXED_MAP = (
+        "sys.path.insert(1, " + repr(str(HERE.parent / "gh")) + ")\n"
+        "import datetime, pathlib, tempfile, park_grant, scan_grant, expand_lane_shorthand as m\n"
+        "_st = pathlib.Path(tempfile.mkdtemp())\n"
+        "park_grant.PARK_STATE_DIR = _st / 'park'\n"
+        "scan_grant.SCAN_STATE_DIR = _st / 'scan'\n"
+        "_now = datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc)\n"
+        "fixed = {'park_z': m.authorize_park('PARK Z5: probe', 's', '1', _now),\n"
+        "         'park_f': m.authorize_park('PARK F5: probe', 's', '1', _now),\n"
+        "         'scan_z': m.authorize_scan('SCAN Z open-issues: probe', 's', _now),\n"
+        "         'scan_f': m.authorize_scan('SCAN F open-issues: probe', 's', _now)}\n")
+
     def test_grant_scope_never_reads_the_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, base = overlay_only_fixture(Path(tmp).resolve())
             out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
-        self.assertEqual(out, [True, False, None, ["acme/forge", 5], None, [], [], None,
-                               True, ["force", "imc", "park", "scan", "ui"], "identity-ok", []])
+        self.assertEqual(out, self.EXPECTED)
+
+    def test_an_inherited_sdk_entrypoint_changes_nothing(self) -> None:
+        """harmonic-forge#1635 gap 4: under `CLAUDE_CODE_ENTRYPOINT=sdk` every
+        authorizer refuses at provenance, which would leave `reached` empty and
+        exercise no scope decision; `probe_from` drops it (and `GH_REPO`)."""
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk",
+                                             "GH_REPO": "other/thing"}):
+            repo, base = overlay_only_fixture(Path(tmp).resolve())
+            out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
+        self.assertEqual(out, self.EXPECTED)
+
+    def test_park_and_scan_decide_by_a_fixed_map_not_the_overlay(self) -> None:
+        """harmonic-forge#1635 gap 3: PARK refuses Z5 (no repo prefix matches)
+        and grants F5; SCAN refuses Z by its letter map and grants F. Neither
+        reads the overlay, and each receipt is the same with the overlay file
+        removed, so the answer comes from the fixed map, not from the overlay."""
+        guard = self.CODE.split("sys.path.insert(0, ")[0]
+        tail = "print(json.dumps({'fixed': fixed, 'seen': seen}))\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = overlay_only_fixture(Path(tmp).resolve())
+            present = json.loads(probe_from(repo, base, "import sys\n" + guard
+                                            + self.FIXED_MAP + tail))
+            (repo / ".claude" / "forge.toml").unlink()
+            absent = json.loads(probe_from(repo, base, "import json, sys\n" + self.FIXED_MAP
+                                           + "print(json.dumps({'fixed': fixed}))\n"))
+        fixed = present["fixed"]
+        self.assertEqual(present["seen"], [])
+        self.assertIn("PARK REFUSED for Z5: no repo prefix matches it", fixed["park_z"])
+        self.assertIn("may now be completed", fixed["park_f"])
+        self.assertIn("SCAN REFUSED", fixed["scan_z"])
+        self.assertIn("may be scanned", fixed["scan_f"])
+        self.assertEqual(absent["fixed"], fixed)
 
     def test_an_alias_of_the_overlay_is_trapped(self) -> None:
         """The guard itself (post-verdict 2): a symlink and a hard link to the
@@ -288,9 +351,18 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
                     + "    os.close(os.open('sym.toml', os.O_RDONLY))\n"
                     + "except OverlayRead:\n"
                     + "    pass\n"
+                    # harmonic-forge#1635 gap 1: a relative name opened
+                    # against a directory descriptor.
+                    + "d = os.open('.claude', os.O_RDONLY)\n"
+                    + "try:\n"
+                    + "    os.close(os.open(b'forge.toml', os.O_RDONLY, dir_fd=d))\n"
+                    + "except OverlayRead:\n"
+                    + "    pass\n"
+                    + "finally:\n"
+                    + "    os.close(d)\n"
                     + "print(json.dumps(seen))\n")
             out = json.loads(probe_from(repo, base, code))
-        self.assertEqual(out, ["overlay read"] * 4)
+        self.assertEqual(out, ["overlay read"] * 5)
 
 
 class LiveForeignKeysStillRefuse(unittest.TestCase):
