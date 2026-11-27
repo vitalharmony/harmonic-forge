@@ -453,7 +453,7 @@ class DiscoverExpectFlag(_TmpDirCase):
 
 class RuntimeRootSpelling(_TmpDirCase):
     """Sticky-wicket S3 (harmonic-forge#1566): the generated lane tasks'
-    `"$HARMONIC_FORGE_ROOT"` resolves env, then instance.toml `forge_root`,
+    `"$hf_forge_root"` resolves env, then instance.toml `forge_root`,
     never `~/harmonic-forge`; the checker asks the same resolver
     (`hook_forge_root.resolve`), falling back to its own checkout where the
     tasks would refuse. Run as the handoff's literal

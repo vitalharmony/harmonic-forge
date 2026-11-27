@@ -52,7 +52,7 @@ END_MARKER = "# <<< harmonic-forge lane tasks <<<"
 #: harmonic-forge's own `gate-checkout` used `tools/worktree/...` and resolved
 #: only because harmonic-forge IS the platform -- the same text in any other
 #: repo silently names a file that is not there.
-PLATFORM = '"$HARMONIC_FORGE_ROOT"'
+PLATFORM = '"$hf_forge_root"'
 
 #: harmonic-forge#1566: the forge root, resolved at run time with no home
 #: default: `HARMONIC_FORGE_ROOT`, else instance.toml `forge_root` (read where
@@ -80,6 +80,10 @@ PLATFORM = '"$HARMONIC_FORGE_ROOT"'
 #: but a generated task has no checkout of its own and refuses; and a forge
 #: checkout whose `instance.py` predates `resolve_forge_root` (version skew)
 #: refuses where the launcher would accept.
+#:
+#: The candidate's own `instance.py` runs before the root is validated, the
+#: same trust the invocation that follows extends (good-faith; a baked
+#: validator path was rejected).
 ROOT_READER = (
     "python3 -I -E -c 'import os, sys, pathlib, tomllib; "
     "c = os.environ.get(\"HARMONIC_FORGE_ROOT\", \"\"); "
@@ -95,11 +99,19 @@ ROOT_READER = (
     "' 2>/dev/null || true")
 #: `|| true` keeps a `set -e` body (gate-checkout) alive to print the refusal
 #: when the reader itself fails (an unparseable instance.toml).
+#:
+#: The prelude resolves the root for this task's own invocation only, into the
+#: private shell variable `hf_forge_root`. It never writes or exports
+#: `HARMONIC_FORGE_ROOT` (reassigning an inherited variable keeps it exported,
+#: so deleting an `export` alone would not do), so child processes see the
+#: caller's environment unchanged, as on main. That does not close the split:
+#: a caller-exported HARMONIC_FORGE_ROOT still reaches descendants, as on main,
+#: and check_receipt's home literal is harmonic-forge#1630's (D31). Propagating
+#: a root is #1630's job (sticky-wicket e2p2 survivor (a), harmonic-forge#1566).
 ROOT_PRELUDE = (
-    f'HARMONIC_FORGE_ROOT="$({ROOT_READER})"\n'
-    '[ -n "$HARMONIC_FORGE_ROOT" ] || { echo "lane task: no forge root -- set '
-    'HARMONIC_FORGE_ROOT or forge_root in instance.toml (#1566)" >&2; exit 1; }\n'
-    'export HARMONIC_FORGE_ROOT\n')
+    f'hf_forge_root="$({ROOT_READER})"\n'
+    '[ -n "$hf_forge_root" ] || { echo "lane task: no forge root -- set '
+    'HARMONIC_FORGE_ROOT or forge_root in instance.toml (#1566)" >&2; exit 1; }\n')
 
 #: name -> TOML body. The names are the DEFAULTS a repo's `[project.protocol]`
 #: block declares; a repo free to rename them is why the check reads the

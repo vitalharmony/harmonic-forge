@@ -150,15 +150,17 @@ _FORGE_ROOT_REF = re.compile(
     r'|\$L1_TOOLS_FORGE)(/[\w./-]*\.py)"?'
 )
 
-# harmonic-forge#1566: lane_tasks' generated tasks resolve the root into
-# HARMONIC_FORGE_ROOT first (through `instance.resolve_forge_root`: env, else
-# instance.toml `forge_root`, else a refusal; never `~/harmonic-forge`) and invoke `"$HARMONIC_FORGE_ROOT"/tools/...`.
-# Under `eval` the reference is single-quoted as well: `'"$HARMONIC_FORGE_ROOT"'`.
+# harmonic-forge#1566: lane_tasks' generated tasks resolve the root into the
+# private shell variable `hf_forge_root` first (through
+# `instance.resolve_forge_root`: env, else instance.toml `forge_root`, else a
+# refusal; never `~/harmonic-forge`; never exported) and invoke
+# `"$hf_forge_root"/tools/...`. Under `eval` the reference is single-quoted as
+# well: `'"$hf_forge_root"'`.
 # Its own token, because it resolves differently from the old spelling above,
 # whose `$HOME/harmonic-forge` default really does run in the shell
 # (sticky-wicket S3).
 _RUNTIME_ROOT_REF = re.compile(
-    r"'?\"?\$\{?HARMONIC_FORGE_ROOT\}?\"?'?(/[\w./-]*\.py)\"?"
+    r"'?\"?\$\{?hf_forge_root\}?\"?'?(/[\w./-]*\.py)\"?"
 )
 
 

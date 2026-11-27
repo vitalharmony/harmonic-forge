@@ -45,7 +45,11 @@ class TC3RunTimeRoot(unittest.TestCase):
         for rel in SCRIPTS:
             path = root / "tools" / rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("import os, sys\nprint('RAN', os.environ['HARMONIC_FORGE_ROOT'])\n"
+            # Reports the root it ran from and the HARMONIC_FORGE_ROOT it
+            # inherited, which the prelude never writes (sticky-wicket e2p2 (a)).
+            path.write_text("import os, sys, pathlib\n"
+                            "print('RAN', pathlib.Path(__file__).resolve().parents[2])\n"
+                            "print('ENV', os.environ.get('HARMONIC_FORGE_ROOT', '<unset>'))\n"
                             "sys.exit(7)\n", encoding="utf-8")
 
     def real_forge(self, root: Path, hooks: bool = True) -> None:
@@ -120,10 +124,38 @@ class TC3RunTimeRoot(unittest.TestCase):
                 self.assert_refused(self.run_task(name, HARMONIC_FORGE_ROOT=str(root)))
 
     def test_neither_refuses_and_invokes_nothing(self) -> None:
-        self.stub_forge(self.home / "harmonic-forge")  # the old default must not be used
+        # A forge the validator would accept, so a refusal can only mean there
+        # is no home default (sticky-wicket e2p2 (b)).
+        self.real_forge(self.home / "harmonic-forge")
         for name in TASKS:
             with self.subTest(name):
                 self.assert_refused(self.run_task(name))
+
+    def test_the_prelude_never_propagates_a_root(self) -> None:
+        """Sticky-wicket e2p2 (a): the prelude resolves the root into a private
+        shell variable and never writes or exports HARMONIC_FORGE_ROOT, so a
+        child sees the caller's value unchanged: unset stays unset, an empty
+        value stays empty (an inherited variable stays exported after a
+        reassignment), and a symlink spelling is passed through as given."""
+        declared = self.home / "declared forge"
+        self.real_forge(declared)
+        self.write_instance(f'forge_root = "{declared}"\n')
+        link = self.home / "link forge"
+        link.symlink_to(declared)
+        ran = f"RAN {declared.resolve()}"
+        for name in TASKS:
+            with self.subTest(name, case="unset"):
+                out = self.run_task(name).stdout.splitlines()
+                self.assertIn(ran, out)
+                self.assertIn("ENV <unset>", out)
+            with self.subTest(name, case="empty"):
+                out = self.run_task(name, HARMONIC_FORGE_ROOT="").stdout.splitlines()
+                self.assertIn(ran, out)
+                self.assertIn("ENV ", out)
+            with self.subTest(name, case="symlink"):
+                out = self.run_task(name, HARMONIC_FORGE_ROOT=str(link)).stdout.splitlines()
+                self.assertIn(ran, out)
+                self.assertIn(f"ENV {link}", out)
 
     def test_a_forge_root_with_a_trailing_newline_refuses_by_name(self) -> None:
         """Sticky-wicket S2: `$(...)` strips a trailing newline, so an
