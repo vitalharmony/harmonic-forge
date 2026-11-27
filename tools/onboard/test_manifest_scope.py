@@ -94,12 +94,13 @@ class OverlayStaysOutOfGrantScope(unittest.TestCase):
     harmonic-forge#1579 adds the posting-side consumer, manifest_invoking
     (imported by l1_post, gate_ci, gh_issue and preclose_check).
 
-    That grant scope never reads the overlay is checked by behavior, not here:
+    That grant scope never reads the overlay is checked two ways. By behavior:
     tools/hooks/test_manifest_scoping.py OverlayFunnelNeverReachedByGrantScope
     runs each grant writer's scope decision with every `manifest_overlay` entry
-    point made to raise (sticky-wicket PATCH, operator D22). Its limit, stated:
-    a future grant writer that decides scope without `manifest_scope.home_project`
-    is not covered until that test names it."""
+    point made to raise (sticky-wicket PATCH, operator D22). Statically, below:
+    no grant writer imports an overlay consumer. The static check stays
+    (post-verdict 3, operator D33): it covers the PARK and SCAN writers and any
+    writer the behavior probe does not name."""
 
     def grep(self, *args: str) -> list[str]:
         found = subprocess.run(["git", "-C", str(HERE.parents[1]), "grep", *args],
@@ -113,6 +114,43 @@ class OverlayStaysOutOfGrantScope(unittest.TestCase):
                                  "tools/onboard/manifest_identity.py",
                                  "tools/onboard/manifest_invoking.py",
                                  "tools/onboard/manifest_overlay.py"])
+
+    #: What a grant writer may call on a module that also holds an overlay path:
+    #: receipt readers and the required-check read, none of which reads the overlay.
+    GRANT_SAFE = {"preclose_check": {"find_receipt", "receipt_path", "read_receipt",
+                                     "legacy_receipt_dir", "_repo_key"},
+                  "gate_ci": {"required_checks", "authorizing_conclusion"}}
+    OVERLAY_READS = {"require_onboarded", "refuse_board_ci", "overlay_ci_refusal",
+                     "registered_repo", "resolve_repo", "s0_reader", "check_gate_result",
+                     "manifest_invoking", "manifest_overlay"}
+
+    def test_no_grant_writer_reaches_an_overlay_read(self) -> None:
+        import ast  # noqa: PLC0415
+        root = HERE.parents[1]
+        writers = ["tools/gh/force_grant.py", "tools/gh/imc_waiver.py", "tools/gh/ui_grant.py",
+                   "tools/hooks/batch_auth.py", "tools/hooks/park_grant.py",
+                   "tools/hooks/scan_grant.py", "tools/onboard/manifest_scope.py"]
+        consumers = {"manifest_invoking", "manifest_overlay", "l1_post", "gh_issue",
+                     *self.GRANT_SAFE}
+        for writer in writers:
+            tree = ast.parse((root / writer).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    names = {a.name.split(".")[0] for a in node.names} | {node.module or ""} \
+                        if isinstance(node, ast.ImportFrom) else {a.name.split(".")[0] for a in node.names}
+                    bad = (names & consumers) - set(self.GRANT_SAFE)
+                    self.assertFalse(bad, f"{writer}:{node.lineno} imports {bad}")
+                if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                        and node.value.id in self.GRANT_SAFE):
+                    self.assertIn(node.attr, self.GRANT_SAFE[node.value.id],
+                                  f"{writer}:{node.lineno} calls {node.value.id}.{node.attr}")
+        for module, allowed in self.GRANT_SAFE.items():
+            path = next(root.glob(f"tools/*/{module}.py"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in allowed):
+                named = {getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(fn)}
+                self.assertFalse(named & self.OVERLAY_READS,
+                                 f"{module}.{fn.name} names {named & self.OVERLAY_READS}")
 
 
 if __name__ == "__main__":
