@@ -167,6 +167,9 @@ not proof against a session that can write files.
    is no flag to type a label. It refuses a label that contradicts the gate,
    and it refuses a second `--complete` on the same diff. A call that could not
    run records its `in-family fallback` label, never relabelled.
+   Run `--complete` and `--post-verdict` from the issue's implementation
+   worktree: both refuse a head with no diff against the base, and
+   `--complete` refuses a head the plan did not target (harmonic-forge#1646).
 
    ```
    python3 "${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}/tools/gh/preclose_check.py" \

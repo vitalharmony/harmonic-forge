@@ -156,6 +156,12 @@ class DecisionTests(unittest.TestCase):  # AC1, AC6
 
 
 class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
+    def setUp(self):
+        super().setUp()
+        # harmonic-forge#1646: --complete refuses a head with no diff against
+        # the base, so the branch carries one commit past `base`.
+        self.commit("tools/x.py")
+
     def complete_with(self, findings, *, force=False, threat_model="good-faith", reverify=None,
                       grant=True):
         # A pass with survivors does not take the cross-family branch, so it
@@ -356,6 +362,7 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
                 mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
                 mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
                 mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "_require_branch_head"), \
                 mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="b" * 40)), \
                 mock.patch.object(preclose, "find_receipt", return_value={"pass_history": [
                     {"sha": "b" * 40, "epoch": 0}]}), \
@@ -390,6 +397,7 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
                 mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
                 mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
                 mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "_require_branch_head"), \
                 mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="b" * 40)), \
                 mock.patch.object(preclose, "find_receipt", return_value=prior), \
                 mock.patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
@@ -427,6 +435,7 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
                 mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
                 mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
                 mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "_require_branch_head"), \
                 mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="c" * 40)), \
                 mock.patch.object(preclose, "find_receipt", return_value=prior), \
                 mock.patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
@@ -465,6 +474,7 @@ class RecordedTests(ScratchRepo):  # AC2, AC3, AC4, AC6
                 mock.patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
                 mock.patch.object(preclose, "registered_repo", return_value=args.repo), \
                 mock.patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+                mock.patch.object(preclose, "_require_branch_head"), \
                 mock.patch.object(preclose, "run", return_value=mock.MagicMock(stdout="b" * 40)), \
                 mock.patch.object(preclose, "find_receipt", return_value=prior), \
                 mock.patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
