@@ -252,6 +252,153 @@ class Decide(unittest.TestCase):
                 self.assertEqual(self.decide(self.fresh().say(text))[0], "block")
 
 
+
+SHA40 = "0123456789abcdef0123456789abcdef01234567"
+#: TC1 (harmonic-forge#1639 AC1): well-formed directives, as the operator types them.
+WELL_FORMED = (
+    "FORCE F1566: two passes clean",
+    "FORCE f1566: x",
+    "FORCE F1531 reforge 2b5d58f0a1b2: patch",
+    f"FORCE F1579 route {SHA40}: merge",
+    "FORCE F1565 cluster: x",
+    "FORCE F1291 gate 0123456789ab: x",
+    "PARK H2621",
+    "PARK H2621: moved to 3.2",
+    "SCAN H open-issues: tune-up",
+    "UI H2615: nav",
+    "UI H2615 0123456789abcdef: merge",
+    "close F1639",
+)
+#: TC2 (AC2): candidates the prompt hook refuses; the probe hook refuses them with its reason.
+MALFORMED = (
+    "FORCE F1 rebase abc: x",
+    "FORCE F1 reforge xyz: x",
+    "FORCE F1 route abc123abc123: x",
+    "FORCE F1:",
+    "FORCE F1 x",
+    "force F1: x",
+    "  FORCE F1: x",
+    "> PARK H1",
+    "FORCE K12: x",
+    "UI P5: x",
+    "PARK Z5",
+    "PARK H02621",
+    "PARK H1 extra",
+    "SCAN K open-issues: x",
+    "SCAN H everything: x",
+    "UI H1 a b: x",
+    "UI H1 zz: x",
+    "close F1 now",
+)
+#: TC3 (AC3): never exempt, whatever the parser reads.
+SHELLISH = (
+    "FORCE F1: x; rm -rf ~",
+    "FORCE F1: fixes (D54)",
+    "FORCE F1: Marc's call",
+)
+CHAINED = (
+    "close F1 && ls",
+    "FORCE F1: x && ls",
+    "PARK H1: x && ls",
+    "SCAN H open-issues: x && ls",
+    "UI H1: x && ls",
+)
+
+
+class DirectiveLines(unittest.TestCase):
+    """harmonic-forge#1639: directive lines are parsed by the prompt hook's own
+    `parse_directive`, as written, never probed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def say(self, *lines: str, probes=None):
+        path = Transcript(self.tmp).say(block(*lines))
+        return hook.decide({"transcript_path": path}, probes=probes)
+
+    def problem_line(self, reason: str, line: str) -> str:
+        found = [ln for ln in reason.splitlines() if ln.startswith(f"  - `{line.strip()}`")]
+        self.assertEqual(len(found), 1, reason)
+        return found[0]
+
+    def test_tc1_well_formed_directives_need_no_probe(self):
+        self.assertEqual(self.say(*WELL_FORMED, probes=[]), ("allow", ""))
+        # no Bash call at all in the transcript: the turn's own scan finds none
+        self.assertEqual(self.say(*WELL_FORMED), ("allow", ""))
+
+    def test_tc2_a_refused_directive_carries_the_parsers_reason(self):
+        import expand_lane_shorthand as m
+        for line in MALFORMED:
+            with self.subTest(line=line):
+                expected = m.parse_directive(line)
+                self.assertIsInstance(expected, str)
+                verdict, reason = self.say(line, probes=[line.strip()])
+                self.assertEqual(verdict, "block")
+                got = self.problem_line(reason, line)
+                self.assertIn(f"the prompt hook would refuse it: {expected}", got)
+                self.assertIn("reword the reason", got)
+                self.assertNotIn("no Bash call", got)
+
+    def test_tc2_placement_is_read_from_the_line_as_written(self):
+        verdict, reason = self.say("  FORCE F1: x", "> PARK H1", probes=[])
+        self.assertEqual(verdict, "block")
+        self.assertIn("honored only as the prompt's first line",
+                      self.problem_line(reason, "  FORCE F1: x"))
+        self.assertIn("honored only as the prompt's first line",
+                      self.problem_line(reason, "> PARK H1"))
+
+    def test_tc3_shell_metacharacters_are_never_exempt(self):
+        for line in SHELLISH:
+            with self.subTest(line=line):
+                verdict, reason = self.say(line, probes=[])
+                self.assertEqual(verdict, "block")
+                self.assertIn("reword the reason (no quotes or shell metacharacters)",
+                              self.problem_line(reason, line))
+
+    def test_tc3_an_and_chain_on_a_directive_is_refused(self):
+        for line in CHAINED:
+            with self.subTest(line=line):
+                verdict, reason = self.say(line, probes=[line])
+                self.assertEqual(verdict, "block")
+                self.assertIn("a directive line is one line",
+                              self.problem_line(reason, line))
+
+    def test_tc3_non_candidates_keep_the_probe_rule(self):
+        shell = "python3 tools/gh/force_grant.py status --key F1"
+        for line in ("Close F1", shell):
+            with self.subTest(line=line):
+                verdict, reason = self.say(line, probes=[])
+                self.assertEqual(verdict, "block")
+                self.assertIn("no Bash call", self.problem_line(reason, line))
+        self.assertEqual(self.say(shell, probes=[shell]), ("allow", ""))
+
+    def test_tc3_executable_bit_still_checked_beside_directives(self):
+        script = self.tmp / "reset.sh"
+        script.write_text("#!/usr/bin/env bash\necho hi\n")
+        os.chmod(script, 0o644)
+        verdict, reason = self.say("FORCE F1566: x", str(script), probes=[str(script)])
+        self.assertEqual(verdict, "block")
+        self.assertIn("not executable", self.problem_line(reason, str(script)))
+
+    def test_question_turn_still_refuses_a_malformed_directive(self):
+        tail = "\n## DECISIONS NEEDED\n1. Should I merge it? Yes.\n"
+        path = Transcript(self.tmp).say(block("FORCE F1 rebase abc: x") + tail)
+        self.assertEqual(hook.decide({"transcript_path": path})[0], "block")
+
+    def test_parser_import_failure_falls_back_to_the_probe_rule(self):
+        with mock.patch.object(hook, "directive_parser", return_value=None):
+            verdict, reason = self.say("FORCE F1566: two passes clean", probes=[])
+        self.assertEqual(verdict, "block")
+        self.assertIn("no Bash call", reason)
+
+    def test_directive_parser_returns_none_when_the_import_raises(self):
+        with mock.patch.dict(sys.modules, {"expand_lane_shorthand": None}):
+            self.assertIsNone(hook.directive_parser())
+
 class ScanTurn(unittest.TestCase):
     def test_drop_background_is_opt_in(self):
         with tempfile.TemporaryDirectory() as raw:

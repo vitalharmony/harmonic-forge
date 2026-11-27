@@ -216,8 +216,10 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
   - `operator-commands-block` slips are commands handed to the operator,
     which no PreToolUse gate sees, so they are out of the registry's scope.
     They are owned by `tools/hooks/require_probed_operator_commands.py`
-    (harmonic-forge#1151); its gap (FORCE and waiver lines, and `--help`
-    accepted as a probe for state-bound modes) is a follow-up.
+    (harmonic-forge#1151); its gap (waiver lines, and `--help`
+    accepted as a probe for state-bound modes) is a follow-up. FORCE, PARK,
+    SCAN, UI and `close` lines are parsed by the prompt hook's own
+    `parse_directive`, not probed (harmonic-forge#1639).
   - Lint's unscoped coverage includes one `operator-commands-block` slip it
     cannot refuse.
 - A claim is `*|<class>` (any tool) or `<tool>|<class>` (one tool's mode). Every

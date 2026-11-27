@@ -24,6 +24,12 @@ shell at all.
   ` --dry-run` (only on a line without `&&`).
 - **Runnable (AC2).** A line whose first token, after `os.path.expanduser`,
   is a file with no execute bit is refused whatever was probed.
+- **Directive lines (harmonic-forge#1639).** A line the prompt hook's own
+  `parse_directive` reads, as written, as a well-formed single-part FORCE,
+  PARK, SCAN, UI or `close` directive needs no probe; one it refuses is
+  refused here with the same reason. A directive candidate still passes the
+  one-command shape check first, and an `&&` chain on one is refused. If the
+  parser cannot be imported, every line keeps the probe rule.
 
 The hook nudges at most once per turn: `stop_hook_active` is honoured before
 anything else. A turn that ends at a genuine question (shared
@@ -65,6 +71,23 @@ def blocks(text: str) -> list[str]:
 def lines_of(body: str) -> list[str]:
     return [ln.strip() for ln in body.splitlines()
             if ln.strip() and not ln.strip().startswith("#")]
+
+
+def raw_lines_of(body: str) -> list[tuple[str, str]]:
+    """`(as written, stripped)` for each line `lines_of` keeps, in order: the
+    directive parser reads placement (indent, `>`) from the line as written."""
+    return [(ln, ln.strip()) for ln in body.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")]
+
+
+def directive_parser():
+    """`expand_lane_shorthand.parse_directive`, or None when it cannot be
+    imported: then every line keeps the probe rule, never an exemption."""
+    try:
+        from expand_lane_shorthand import parse_directive  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    return parse_directive
 
 
 def segments(line: str) -> tuple[list[str], set[str]] | None:
@@ -185,10 +208,26 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
         probes = [call[0] for call in calls]
     probe_set = {p.strip() for p in probes or []}
     problems = []
-    for line in lines_of(declared[0]):
+    parse = directive_parser()
+    for raw, line in raw_lines_of(declared[0]):
         why = shape_problem(line)
-        if why:
+        directive = parse(raw) if parse is not None else None
+        if why and isinstance(directive, str):
+            problems.append(f"  - `{line}`: the prompt hook would refuse it: {directive}; "
+                            "reword the reason (no quotes or shell metacharacters)")
+        elif why and directive is not None:
+            problems.append(f"  - `{line}`: a directive line cannot hold quotes or shell "
+                            "metacharacters; reword the reason (no quotes or shell "
+                            "metacharacters)")
+        elif why:
             problems.append(f"  - `{line}`: {why}")
+        elif directive is not None and len(segments(line)[0]) > 1:
+            problems.append(f"  - `{line}`: a directive line is one line; `&&` is not allowed")
+        elif isinstance(directive, str):
+            problems.append(f"  - `{line}`: the prompt hook would refuse it: {directive}; "
+                            "reword the reason (no quotes or shell metacharacters)")
+        elif directive is not None:
+            continue  # a well-formed directive: no shell form, nothing to probe
         elif not_runnable(line):
             problems.append(f"  - `{line}`: not executable as written; prefix it with "
                             "`bash` or `python3`")

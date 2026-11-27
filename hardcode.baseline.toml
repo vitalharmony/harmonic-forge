@@ -786,7 +786,7 @@ count = 1
 rule = "import"
 path = "tools/hooks/expand_lane_shorthand.py"
 text = "tools/hooks/scan_grant.py"
-count = 1
+count = 2
 
 [[finding]]
 rule = "import"

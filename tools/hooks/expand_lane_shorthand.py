@@ -1066,6 +1066,97 @@ def _ui_module():
     return ui_grant
 
 
+_CLOSE_REFUSAL = "a close line is exactly `close <KEY>`, lowercase `close`, nothing after the key"
+
+
+def parse_directive(line: str) -> tuple[str, str] | str | None:
+    """Read one line, as written, as a FORCE, PARK, SCAN, UI or `close`
+    directive (harmonic-forge#1639). None when the line is not a directive
+    candidate; `(kind, key)` when well formed (SCAN's key is `"<letter>
+    <scope>"`); otherwise the refusal reason the matching authorizer gives
+    after "REFUSED[ for KEY]: ". Shape and key steps only, from the same
+    regexes and helpers the authorizers read: no provenance, LANE, fence or
+    grant step, no I/O beyond the local projects manifest. Never raises."""
+    try:
+        return _parse_directive(line)
+    except Exception as exc:  # noqa: BLE001 - a refusal, never an exemption
+        return f"the directive parser failed ({type(exc).__name__})"
+
+
+def _directive_key_problem(key: str, kind: str) -> str | None:
+    """FORCE and UI keys: the authorizers' `imc.key_target` / `is_home_repo` steps."""
+    imc = _imc_module()
+    target = imc.key_target(key)
+    if target is None:
+        return "no repo maps to its prefix"
+    if not imc.is_home_repo(target[0]):
+        return f"{target[0]} is a cross-account repo, and {kind} fails closed there"
+    return None
+
+
+def _parse_directive(line: str):
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import scan_grant  # noqa: PLC0415
+    import tasklist_owed  # noqa: PLC0415
+
+    if _FORCE_ANY_RE.match(line) or _FORCE_MALFORMED_RE.match(line):
+        match = _FORCE_RE.match(line)
+        if match is None and _FORCE_MALFORMED_RE.match(line):
+            return ("the line needs a key like F1244 and a colon before the reason. The form is "
+                    "`FORCE <KEY> [reforge <sha> | route <sha> | ci-outage <sha> | cluster | "
+                    "gate <refusal-id>]: <reason>`")
+        if match is None:
+            return ("FORCE is honored only as the prompt's first line, typed unindented and "
+                    "uppercase, as `FORCE <KEY>: <reason>`")
+        key, reason = match.group(1).upper(), match.group(3).strip()
+        mode = _force_mode(match.group(2).split())
+        if isinstance(mode, str):
+            return mode
+        if not reason:
+            return "the reason is empty"
+        return _directive_key_problem(key, "FORCE") or ("force", key)
+    if _PARK_ANY_RE.match(line):
+        match = _PARK_RE.match(line)
+        if match is None:
+            return ("PARK is honored only as the prompt's first line, typed unindented and "
+                    "uppercase, as `PARK <KEY>` or `PARK <KEY>: <reason>`")
+        key = match.group(1).upper()
+        if not tasklist_owed.KEY_RE.match(key):
+            return "no repo prefix matches it"
+        if key[1] == "0":
+            return ("write the issue number without leading zeros, as the task-list entry does")
+        return "park", key
+    if scan_grant.ANY_RE.match(line):
+        parsed = scan_grant.parse(line)
+        if isinstance(parsed, str):
+            return parsed
+        return "scan", f"{parsed[0]} {parsed[1]}"
+    if _UI_ANY_RE.match(line):
+        match = _UI_RE.match(line)
+        if match is None:
+            return ("UI is honored only as the prompt's first line, typed unindented and "
+                    "uppercase, as `UI <KEY>: <reason>` or `UI <KEY> <digest>: <reason>`")
+        key, reason = match.group(1).upper(), match.group(3).strip()
+        tokens = match.group(2).split()
+        if len(tokens) > 1:
+            return f"a UI line takes at most one digest: `UI {key} <digest>: <reason>`"
+        if tokens and not _ui_module().DIGEST_PREFIX_RE.match(tokens[0].lower()):
+            return (f"{tokens[0]!r} is not a 12-64 character hex digest (the one "
+                    "`ui_version.py diff` prints)")
+        if not reason:
+            return "the reason is empty"
+        return _directive_key_problem(key, "UI") or ("ui", key)
+    match = _ATTRIB_TRIGGER_RE.match(line)
+    if match is None or match.group(1) != "close":
+        return None
+    key = match.group(2) + match.group(3)
+    if match.end() != len(line.rstrip()) or not tasklist_owed.KEY_RE.match(key):
+        return _CLOSE_REFUSAL
+    return "close", key
+
+
 def authorize_ui(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
     """Write a PENDING UI grant (harmonic-forge#1274 AC3). It approves nothing
     until `ui_grant.py record` posts its public record. Returns a receipt for
