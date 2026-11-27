@@ -309,6 +309,8 @@ CONSUMERS = (
     Consumer("fence MEMORY", "block_lane1_status_claims.py hook, LANE=3",
              "test_row_fence_memory",
              ((_FENCE, 'MEMORY_ROOT = roots.under_projects("operator-memory", resolved=True)'),)),
+    Consumer("fence testplan/memory overlap (D63)", "block_lane1_status_claims.py hook, LANE=3",
+             "test_row_fence_aliased_memory", ()),
     Consumer("worktree_issue.is_impl_worktree", "worktree_issue.is_impl_worktree",
              "test_row_impl_worktree",
              (("tools/hooks/worktree_issue.py",
@@ -377,6 +379,40 @@ class TC8ConsumerTable(RootsCase):
                    for p in (lesson, at_home, at_root)}
             self.assertEqual(got, {lesson: "allow" if state == "set" else "deny",
                                    at_home: "deny", at_root: "deny"})
+
+    def test_row_fence_aliased_memory(self) -> None:
+        """D63: testplan and operator-memory resolving to one directory, or the
+        memory root inside testplan, never lets the testplan allowance admit
+        MEMORY.md; a lesson and a testplan file outside the overlap still pass,
+        and a testplan inside the memory root keeps working."""
+        layouts = {}
+        for name, real_tp, real_mem in (("same", "D", "D"), ("mem-in-tp", "D", "D/mem"),
+                                        ("tp-in-mem", "D/tp", "D")):
+            root = self.tmp / name
+            for real in {real_tp, real_mem}:
+                (root / real).mkdir(parents=True, exist_ok=True)
+            (root / "testplan").symlink_to(root / real_tp)
+            (root / "operator-memory").symlink_to(root / real_mem)
+            layouts[name] = root
+        # Real (resolved) paths: the fence requires the lexical form inside the
+        # resolved root too, so a path spelled through the symlink is denied
+        # before this guard is reached (K-P1 targets resolved paths the same way).
+        want = {
+            "same": {"D/MEMORY.md": "deny", "D/notes.md": "deny", "D/sub/x.md": "deny",
+                     "D/feedback_x.md": "allow"},
+            "mem-in-tp": {"D/mem/MEMORY.md": "deny", "D/mem/notes.md": "deny",
+                          "D/x.md": "allow", "D/mem/feedback_x.md": "allow"},
+            "tp-in-mem": {"D/MEMORY.md": "deny", "D/tp/x.md": "allow",
+                          "D/feedback_x.md": "allow"},
+        }
+        for name, root in layouts.items():
+            for state, declared in (("set", root), ("unset", None)):
+                self.declare(declared)
+                for rel, expected in want[name].items():
+                    with self.subTest(layout=name, state=state, path=rel):
+                        got = self.decision(self.fence({"file_path": str(root / rel),
+                                                        "content": "x"}))
+                        self.assertEqual(got, expected if state == "set" else "deny")
 
     def test_row_impl_worktree(self) -> None:
         path = str(self.root / ".worktrees" / "acme-12-impl")

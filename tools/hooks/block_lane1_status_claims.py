@@ -628,11 +628,27 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
     except (OSError, ValueError, RuntimeError):
         return False
     candidates = (lexical, resolved)
-    if TESTPLAN_ROOT is not None and _inside(candidates, TESTPLAN_ROOT):
+    if (TESTPLAN_ROOT is not None and _inside(candidates, TESTPLAN_ROOT)
+            and not _memory_aliased_into_testplan(candidates)):
         return False
     if _is_feedback_lesson_path(candidates):
         return False
     return True
+
+
+def _memory_aliased_into_testplan(candidates: tuple) -> bool:
+    """harmonic-forge#1529 (D63): True when the resolved memory root is the
+    resolved testplan root or inside it AND any form of the target is inside
+    the memory root. The testplan allowance then admits nothing there, so
+    `MEMORY.md` is never writable through it; the lesson rule alone decides.
+    A testplan strictly inside the memory root needs no guard (its subtree
+    cannot hold `MEMORY.md`) and keeps working, which refusing every target
+    in the memory root, or both allowances on any overlap, would not."""
+    if MEMORY_ROOT is None or TESTPLAN_ROOT is None:
+        return False
+    if not _inside((MEMORY_ROOT,), TESTPLAN_ROOT):
+        return False
+    return any(_inside((candidate,), MEMORY_ROOT) for candidate in candidates)
 
 
 def _is_feedback_lesson_path(candidates: tuple) -> bool:
