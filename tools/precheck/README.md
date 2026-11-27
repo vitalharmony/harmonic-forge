@@ -79,8 +79,10 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    label in the manifest's `excluded_by_bucket`.
 4. De-duplicates exact strings, keeping the earliest record by
    `(timestamp, path, line)`.
-5. **Secret scan**: blanks the record's own `cwd`, `$HOME` and
-   `/tmp/claude-<uid>/<project-dir>` (exact strings), runs
+5. **Secret scan**: blanks the record's own `cwd`, `$HOME` and both scratch
+   roots, `/tmp/claude-<uid>/<project-dir>` and
+   `$HOME/.cache/claude-tmp/claude-<uid>/<project-dir>` (harmonic-forge#1655)
+   (exact strings), runs
    `tools/memory/secret_scan.findings()` unchanged, and drops the string on any
    hit. The stored command is the original string.
 6. **Ordinary classifier**, a recognizer of literal shapes, not an

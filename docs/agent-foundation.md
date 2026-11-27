@@ -79,6 +79,27 @@ and `docs/decisions/ADR-002-*`.
 project through `sync_rules.py`. Treat a rules edit as a change to every
 project at once, not a local one.
 
+## Claude Code temp off tmpfs (harmonic-forge#1655)
+
+Claude Code writes its session temp and scratchpad under `/tmp/claude-<uid>/`
+unless `CLAUDE_CODE_TMPDIR` says otherwise, and `/tmp` here is an
+inode-capped tmpfs. Every Claude lane launch exports
+`CLAUDE_CODE_TMPDIR="$HOME/.cache/claude-tmp"` (a value already set is kept),
+creates it, and refuses to launch if it cannot. `TMPDIR` is left alone.
+
+A non-lane session does not go through the launcher, so set it yourself: add
+this line to your shell profile and create the directory once.
+
+```bash
+export CLAUDE_CODE_TMPDIR="$HOME/.cache/claude-tmp"
+```
+
+```bash
+mkdir -p "$HOME/.cache/claude-tmp"
+```
+
+harmonic-forge#1653's reaper ages old session directories out of that root.
+
 ## Per-user instance settings (harmonic-forge#1505)
 
 Forge is a public repo, so per-user values never live in it. They are read

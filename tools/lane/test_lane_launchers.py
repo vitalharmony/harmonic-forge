@@ -260,6 +260,8 @@ exit 0
                     # harmonic-forge#1014: a run inside a lane pane must never
                     # retitle it, nor inherit a label.
                     "TMUX", "TMUX_PANE", "LANE_LABEL",
+                    # harmonic-forge#1655: a lane session exports its temp root.
+                    "CLAUDE_CODE_TMPDIR",
                     # harmonic-forge#1525/#1526: pinned below to the fixture's.
                     "XDG_CONFIG_HOME", "HARMONIC_FORGE_ROOT"):
             env.pop(key, None)

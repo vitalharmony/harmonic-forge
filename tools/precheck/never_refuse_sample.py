@@ -642,9 +642,13 @@ def ran_check(results: list[tuple]) -> str | None:
 
 
 def masks_for(meta: dict, home: str, uid: int) -> list[str]:
-    """Only `$HOME` and this project's scratch root: a row's cwd is transcript
-    data and is scanned, never used as its own mask (harmonic-forge#1289 #13)."""
-    candidates = {home, f"/tmp/claude-{uid}/{meta.get('slug') or ''}"}
+    """Only `$HOME` and this project's scratch roots: a row's cwd is transcript
+    data and is scanned, never used as its own mask (harmonic-forge#1289 #13).
+    Lanes moved the scratch root to `CLAUDE_CODE_TMPDIR` (harmonic-forge#1655);
+    the `/tmp` root stays for older transcripts and non-lane sessions."""
+    slug = meta.get('slug') or ''
+    candidates = {home, f"/tmp/claude-{uid}/{slug}",
+                  f"{home}/.cache/claude-tmp/claude-{uid}/{slug}"}
     return sorted((m for m in candidates if len(m) > 1 and not m.endswith("/")), key=len, reverse=True)
 
 
