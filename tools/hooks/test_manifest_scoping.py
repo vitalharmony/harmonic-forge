@@ -10,6 +10,7 @@ file and `HOME` at a scratch dir: no case can reach a live grant store.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,10 +30,12 @@ import batch_auth  # noqa: E402
 import expand_lane_shorthand as els  # noqa: E402
 import force_grant  # noqa: E402
 import l1_post  # noqa: E402
+import manifest_overlay  # noqa: E402
 import report_red_main  # noqa: E402
 import tasklist_owed  # noqa: E402
 import ui_grant  # noqa: E402
-from test_manifest_overlay import overlay_only_fixture, probe_from  # noqa: E402
+from test_manifest_overlay import (  # noqa: E402
+    FILLER, make_repo, overlay_only_fixture, overlay_text, probe_from, write_overlay)
 
 ADOPTER = ('[[project]]\nname = "app"\nprefix = "Z"\nrepo = "acme/app"\naccount = "acme"\n'
            'workspace = "acme"\nboard_owner = "acme"\nboard_number = "1"\n')
@@ -158,52 +162,108 @@ WIDENING_OVERLAY = ('[project]\nname = "forge"\nprefix = "F"\nrepo = "acme/app"\
                     'account = "acme"\nworkspace = "acme"\nboard_owner = "acme"\n'
                     'board_number = "1"\nhome = true\n')
 
+#: harmonic-forge#1635 P1: the hostile-account checkout. The validator binds an
+#: overlay-only account only to its own origin's owner
+#: (`manifest_overlay._resolve`), so a checkout whose origin is `mallory/app`
+#: may legally claim `account = "mallory"`. Every identity value this V1
+#: injects (account, name, prefix, workspace, repo) matches nothing in the base
+#: and nothing the acme checkout's overlays hold, which is what P7(a) checks.
+MALLORY_URL = "https://github.com/mallory/app.git"
+MALLORY_OVERLAY = ('[project]\nname = "mapp"\nprefix = "M"\nrepo = "mallory/app"\n'
+                   'account = "mallory"\nworkspace = "mallory"\n')
+#: V2 for the mallory checkout: the raw widening overlay with account mallory.
+MALLORY_WIDENING = WIDENING_OVERLAY.replace('account = "acme"', 'account = "mallory"')
+
+
+def snapshot(root) -> dict[str, str]:
+    """Every file under `root` by relative path, as the hex of its raw bytes
+    (harmonic-forge#1635 P6: a `decode('utf-8', 'replace')` made two files that
+    differ only in invalid UTF-8 compare equal). The probe runs this function's
+    own source, so the unit test and the probe compare the same way."""
+    from pathlib import Path as _Path
+    top = _Path(root)
+    return {str(p.relative_to(top)): p.read_bytes().hex()
+            for p in sorted(top.rglob("*")) if p.is_file()}
+
+
+class SnapshotComparesRawBytes(unittest.TestCase):
+    """harmonic-forge#1635 P6 (kill KP6)."""
+
+    def test_files_differing_only_in_invalid_utf8_compare_unequal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            left, right = Path(tmp) / "a", Path(tmp) / "b"
+            for side, data in ((left, b"x\xff"), (right, b"x\xfe")):
+                side.mkdir()
+                (side / "grant.json").write_bytes(data)
+            self.assertNotEqual(snapshot(left), snapshot(right))
+
 
 class OverlayContentNeverChangesGrantScope(unittest.TestCase):
-    """harmonic-forge#1635 reforge (sticky-wicket REFORGE, operator D52/D53):
-    overlay content cannot change a driven grant decision. The property is
-    noninterference, checked by behavior: one decision program runs from inside
-    an overlay-only checkout three times, with the overlay absent (V0), the
-    fixture overlay (V1) and WIDENING_OVERLAY (V2). Every driven decision,
-    every receipt and the bytes of every grant or receipt file written must be
-    identical across the three, and V0 must equal EXPECTED. The check does not
-    depend on how a read is spelled: a read through any spelling that changes
-    a driven decision changes the output.
+    """harmonic-forge#1635 reforge (sticky-wicket REFORGE, operator D52/D53;
+    epoch-2 PATCH P1-P7, operator D58): overlay content cannot change a driven
+    grant decision. The property is noninterference, checked by behavior: one
+    decision program runs from inside each of two overlay-only checkouts, with
+    the overlay absent (V0), validator-accepted (V1) and raw (V2). Within a
+    checkout, every driven decision, every receipt, the IMC label reader's
+    arguments and the raw bytes of every grant or receipt file written must be
+    identical across the three; each checkout's V0 is its own baseline and
+    must equal EXPECTED. The check does not depend on how a read is spelled: a
+    read through any spelling that changes a driven decision changes the output.
 
-    V1 is the validator-accepted widening overlay (claims letter Z, repo
-    acme/app, account acme). It is not benign and must never be dropped: it
-    is the variant that catches reads through the real manifest_overlay API,
-    the plausible regression class (KD1, KD3, KD5, KD6 are killed by V1 only).
-    V2 is the raw widening the validator refuses; it catches raw reads (KD2,
-    KD4, killed by V1 and V2). KD7 reads no overlay: it fails the `reached`
-    anchor in EXPECTED on V0, not the three-way comparison.
+    Checkouts. `acme`: origin acme/app, V1 the fixture overlay (Z, acme/app,
+    account acme), V2 WIDENING_OVERLAY. `mallory` (P1): origin mallory/app, V1
+    MALLORY_OVERLAY (M, mallory/app, account mallory, workspace mallory), V2
+    MALLORY_WIDENING. The acme V1 is the variant that catches reads through the
+    real manifest_overlay API (KD1, KD3, KD5, KD6); its account equals the
+    base's, so an account-keyed read is caught only by the mallory V1 (KP1).
+    The V2s catch raw reads (KD2, KD4). KD7 reads no overlay: it fails the
+    `reached` anchor on V0, not the comparison.
 
-    Driven: `manifest_scope.home_project`, `imc_waiver.is_home_repo` and
-    `key_target` (Z5, F5); `_scan_batch`, `authorize_batch` and `closed_keys`
-    (`--repo` and bare forms); `ui_grant.find_record`; FORCE, IMC, UI, PARK
-    and SCAN receipts for Z5/F5 (Z, F); `batch_auth._slot_env('acme/app')`, the
-    hook_identity -> manifest_identity credential path; and imc_waiver's
-    posting identity (`apply_project_identity`, D23: posting identity on a
-    projects.toml repo, not grant scope). State is scratch and `now` is fixed.
+    Validator status (P3): the program records
+    `manifest_overlay.project_for_checkout(cwd)` outside the compared output,
+    and each variant is asserted: V0 None, V1 its repo, V2 a refusal. A V1
+    the validator silently refuses would otherwise degrade into a copy of V0.
 
-    `reached` (in EXPECTED) shows the program exercises decisions: FORCE, IMC
-    and UI each got past their home-repo decision for F5.
+    Driven, for every login in LOGINS, key in KEYS and repo in REPOS:
+    `manifest_scope.home_project`, `imc_waiver.is_home_repo`, `key_target`,
+    `_scan_batch`, `closed_keys` (`--repo` and the bare form, whose resolved
+    checkout `cwd_repo` is pinned per checkout), `ui_grant.find_record`,
+    `batch_auth._slot_env` (the hook_identity -> manifest_identity credential
+    path), and the BATCH, FORCE (plain and reforge), IMC, UI, PARK and SCAN
+    authorizers. The IMC label reader is a stub that records the `(repo,
+    number)` it is asked about (P4), compared across variants and pinned.
+    `apply_project_identity('acme/forge')` is driven once per login (posting
+    identity on a projects.toml repo, D23). FORCE reaches its grant write (P2):
+    the probe's scratch `HOME` holds a preclose receipt for acme/forge#5, read
+    by the real `covered_head` and `reviewed_match`. State is scratch and `now`
+    is fixed. `probe_from` builds the child's environment from an allowlist
+    (P5), so no `HOME`, `GIT_*`, `GH_ACCT_HOME` or `CLAUDE_*` reaches it.
 
-    Stated residuals (the reforge verdict's, not hidden):
-    1. Input coverage. Only the decision paths and inputs driven here are
-       compared. A writer path this program never calls, or a read gated on a
-       trigger it never sends (a hostile author's own key), is not caught. That
-       gap shrinks by adding driven inputs, not by adding recognizers. Not
-       driven: batch_auth's merge-side account checks (`issue_key`,
-       `_derived_merge_match`, `decide`, `consume`); IMC's own scope check for
-       Z5 (`imc_z` is refused at the BATCH-syntax step first, so IMC's
-       `key_target`/`is_home_repo` are covered only by the direct calls); and
-       `apply_project_identity`, which is called but cannot vary, because
-       every variant claims account acme and `_probe_login` is stubbed.
-    2. A hostile author in production code is review's to stop, not a test's.
-       This suite is a tripwire for plausible regressions.
-    3. A read that cannot change a decision is permitted by design: the
-       property is noninterference, not "never opened".
+    `reached` (in EXPECTED) names every authorizer whose F5 receipt says it
+    wrote, and P7(c) requires each one's terminal grant file in EXPECTED_FILES,
+    so `reached` means "wrote", not "got past home".
+
+    Completeness (P7), derived, not a hand table: (a) every key in production
+    `manifest_overlay.IDENTITY_KEYS`, plus `repo`, is set by some accepted
+    variant to a value that matches nothing in the base and nothing the other
+    checkout's accepted variants hold, so a new overlay identity field fails
+    this suite until a variant covers it; (b) every account, prefix letter and
+    repo an accepted variant injects is among LOGINS, KEYS and REPOS, the inputs
+    offered to the decisions of that kind; (c) above.
+
+    Stated residuals (the epoch-2 verdict's, accepted, not hidden):
+    1. Inputs not driven stay uncovered. batch_auth's merge-side `decide`,
+       `consume` and `_derived_merge_match` are outside the differential, as
+       is a read gated on a trigger this program never sends.
+    2. The real `gh` label reader is not exercised; only the repo it is asked
+       about is observed (P4).
+    3. `board_owner` and `board_number` are not in `IDENTITY_KEYS`. They are
+       covered only by harmonic-forge#1579's refuse-by-name tests, not by this
+       differential.
+    4. A hostile author of production code is review's to stop; this suite is
+       a tripwire for plausible regressions.
+    5. A read that cannot change a decision is allowed by design: the property
+       is noninterference, not "never opened".
 
     `seen` is a diagnostic only, and not complete: it records calls to the
     `manifest_overlay` entry points (passed through, never raised) so a failure
@@ -211,11 +271,35 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     the equality is the assertion."""
 
     STATE = "{STATE}"
+    HOME = "{HOME}"
+    #: The inputs offered to each kind of decision (P7(b) checks the variants
+    #: against them): logins for find_record and identity, keys for key_target
+    #: and the authorizers, repos for home_project/is_home_repo/closed_keys.
+    LOGINS = ("acme", "mallory")
+    KEYS = ("Z5", "M5", "F5")
+    REPOS = ("acme/app", "mallory/app", "acme/forge")
+    #: The preclose receipt's pass head for acme/forge#5, and the unreviewed
+    #: head a reforge line binds.
+    HEAD = "c" * 40
+    REFORGE = "d" * 12
+
+    #: The overlay variants per checkout; V0 (absent) is implicit.
+    VARIANTS = {
+        "acme": {"V1": overlay_text(), "V2": WIDENING_OVERLAY},
+        "mallory": {"V1": MALLORY_OVERLAY, "V2": MALLORY_WIDENING},
+    }
+    #: The repo each checkout's origin names: the bare close resolves it.
+    CHECKOUT_REPO = {"acme": "acme/app", "mallory": "mallory/app"}
 
     CODE = (
         "import datetime, json, os, pathlib, sys\n"
         "sys.path.insert(0, " + repr(str(HERE.parent / "gh")) + ")\n"
         "import manifest_overlay\n"
+        "try:\n"
+        "    validator = getattr(manifest_overlay.project_for_checkout(pathlib.Path.cwd()),\n"
+        "                        'repo', None)\n"
+        "except Exception as exc:\n"
+        "    validator = type(exc).__name__\n"
         "seen = []\n"
         "def _record(name, fn):\n"
         "    def wrapper(*a, **k):\n"
@@ -236,107 +320,192 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
         "scan_grant.SCAN_STATE_DIR = _st / 'scan'\n"
         "def _body(key):\n"
         "    return ui_grant.heading(key, 'plan') + '\\n' + ui_grant.marker(key, 'plan', 'x')\n"
+        "label_calls = []\n"
         "def _labels(repo, number):\n"
+        "    label_calls.append([repo, number])\n"
         "    return {'tooling-exception'}, ''\n"
         "out = {\n"
-        "  'home_project': [getattr(manifest_scope.home_project(r), 'repo', None)\n"
-        "                   for r in ('acme/app', 'acme/forge')],\n"
-        "  'is_home_repo': [imc_waiver.is_home_repo(r) for r in ('acme/app', 'acme/forge')],\n"
-        "  'key_target': [imc_waiver.key_target(k) for k in ('Z5', 'F5')],\n"
-        "  'scan_batch': [m._scan_batch(p) for p in ('BATCH Z5', 'BATCH F5')],\n"
-        "  'batch': [m.authorize_batch('BATCH Z5', state_path=_st / 'batch-z.json'),\n"
-        "            m.authorize_batch('BATCH F5', state_path=_st / 'batch-f.json')],\n"
-        "  'closed_keys': [batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
-        "                  batch_auth.closed_keys('gh issue close 5', os.getcwd()),\n"
-        "                  batch_auth.closed_keys('gh issue close 5 --repo acme/forge')],\n"
-        "  'find_record': [bool(ui_grant.find_record([{'login': 'acme', 'body': _body(k)}],\n"
-        "                                            k, 'plan')) for k in ('Z5', 'F5')],\n"
-        "  'slot_env': batch_auth._slot_env('acme/app'),\n"
+        "  'home_project': [getattr(manifest_scope.home_project(r), 'repo', None) for r in REPOS],\n"
+        "  'is_home_repo': [imc_waiver.is_home_repo(r) for r in REPOS],\n"
+        "  'key_target': [imc_waiver.key_target(k) for k in KEYS],\n"
+        "  'scan_batch': [m._scan_batch('BATCH ' + k) for k in KEYS],\n"
+        "  'closed_keys': [batch_auth.closed_keys('gh issue close 5 --repo ' + r) for r in REPOS]\n"
+        "                 + [batch_auth.closed_keys('gh issue close 5', os.getcwd())],\n"
+        "  'cwd_repo': batch_auth.cwd_repo(os.getcwd()),\n"
+        "  'find_record': [[bool(ui_grant.find_record([{'login': who, 'body': _body(k)}], k, 'plan'))\n"
+        "                   for who in LOGINS] for k in KEYS],\n"
+        "  'slot_env': [batch_auth._slot_env(r) for r in REPOS],\n"
         "}\n"
         "out['grants'] = {\n"
-        "  'force_z': m.authorize_force('FORCE Z5: probe', 's', '1', _now),\n"
-        "  'force_f': m.authorize_force('FORCE F5: probe', 's', '1', _now),\n"
-        "  'imc_z': m.authorize_imc('BATCH Z5 IMC Z5', 's', '1', label_reader=_labels, now=_now),\n"
-        "  'imc_f': m.authorize_imc('BATCH F5 IMC F5', 's', '1', label_reader=_labels, now=_now),\n"
-        "  'ui_z': m.authorize_ui('UI Z5: probe', 's', '1', _now),\n"
-        "  'ui_f': m.authorize_ui('UI F5: probe', 's', '1', _now),\n"
-        "  'park_z': m.authorize_park('PARK Z5: probe', 's', '1', _now),\n"
-        "  'park_f': m.authorize_park('PARK F5: probe', 's', '1', _now),\n"
-        "  'scan_z': m.authorize_scan('SCAN Z open-issues: probe', 's', _now),\n"
-        "  'scan_f': m.authorize_scan('SCAN F open-issues: probe', 's', _now),\n"
+        "  'batch': {k: m.authorize_batch('BATCH ' + k, state_path=_st / 'batch' / (k + '.json'))\n"
+        "            for k in KEYS},\n"
+        "  'force': {k: m.authorize_force('FORCE ' + k + ': probe', 's', '1', _now) for k in KEYS},\n"
+        "  'force_reforge': {k: m.authorize_force('FORCE ' + k + ' reforge ' + REFORGE + ': probe',\n"
+        "                                         's', '1', _now) for k in KEYS},\n"
+        "  'imc': {k: m.authorize_imc('BATCH ' + k + ' IMC ' + k, 's', '1', label_reader=_labels,\n"
+        "                             now=_now) for k in KEYS},\n"
+        "  'ui': {k: m.authorize_ui('UI ' + k + ': probe', 's', '1', _now) for k in KEYS},\n"
+        "  'park': {k: m.authorize_park('PARK ' + k + ': probe', 's', '1', _now) for k in KEYS},\n"
+        "  'scan': {k: m.authorize_scan('SCAN ' + k[0] + ' open-issues: probe', 's', _now)\n"
+        "           for k in KEYS},\n"
         "}\n"
-        "reached = {'force_f': 'has no preclose receipt', 'imc_f': 'waiver hook record written',\n"
-        "           'ui_f': 'pending plan grant written'}\n"
-        "out['reached'] = sorted(k for k, v in reached.items() if v in (out['grants'][k] or ''))\n"
-        "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
-        "try:\n"
-        "    out['identity'] = manifest_identity.apply_project_identity('acme/forge')\n"
-        "except BaseException as exc:\n"
-        "    out['identity'] = type(exc).__name__\n"
-        "out['files'] = {str(p.relative_to(_st)): p.read_bytes().decode('utf-8', 'replace')\n"
-        "                for p in sorted(_st.rglob('*')) if p.is_file()}\n"
-        "print(json.dumps({'out': out, 'seen': seen}))\n")
+        "out['label_calls'] = label_calls\n"
+        "reached = {'batch': 'authorized F5',\n"
+        "           'force': 'pending plain grant written for F5 at ' + HEAD[:12],\n"
+        "           'force_reforge': 'pending reforge grant written for F5 at ' + REFORGE,\n"
+        "           'imc': 'waiver hook record written for F5',\n"
+        "           'ui': 'pending plan grant written', 'park': 'may now be completed',\n"
+        "           'scan': 'may be scanned'}\n"
+        "out['reached'] = sorted(a for a, text in reached.items()\n"
+        "                        if text in (out['grants'][a]['F5'] or ''))\n"
+        "identity = {}\n"
+        "for who in LOGINS:\n"
+        "    manifest_identity._VERIFIED.clear()\n"
+        "    manifest_identity._probe_login = lambda *a, _who=who, **k: _who\n"
+        "    try:\n"
+        "        identity[who] = manifest_identity.apply_project_identity('acme/forge')\n"
+        "    except BaseException as exc:\n"
+        "        identity[who] = type(exc).__name__\n"
+        "out['identity'] = identity\n"
+        + inspect.getsource(snapshot) +
+        "out['files'] = snapshot(_st)\n"
+        "print(json.dumps({'out': out, 'seen': seen, 'validator': validator}))\n")
 
-    #: V0's output with the scratch state path as `{STATE}`. The grant and
-    #: receipt bytes are pinned by the cross-variant equality, and their names here.
+    #: Each checkout's V0 output, with the scratch paths as `{STATE}` and
+    #: `{HOME}`. The grant and receipt bytes are pinned by the cross-variant
+    #: equality, and their names by EXPECTED_FILES.
     EXPECTED = {
-        "home_project": [None, "acme/forge"],
-        "is_home_repo": [False, True],
-        "key_target": [None, ["acme/forge", 5]],
-        "scan_batch": [None, [0, ["F5"]]],
-        "closed_keys": [[], [], [["F5", "acme/forge", 5]]],
-        "find_record": [False, True],
-        "slot_env": None,
-        "reached": ["force_f", "imc_f", "ui_f"],
-        "identity": "acme",
+        "home_project": [None, None, "acme/forge"],
+        "is_home_repo": [False, False, True],
+        "key_target": [None, None, ["acme/forge", 5]],
+        "scan_batch": [None, None, [0, ["F5"]]],
+        "closed_keys": [[], [], [["F5", "acme/forge", 5]], []],
+        "find_record": [[False, False], [False, False], [True, False]],
+        "label_calls": [["acme/forge", 5]],
+        "reached": ["batch", "force", "force_reforge", "imc", "park", "scan", "ui"],
+        "identity": {"acme": "acme", "mallory": "SystemExit"},
     }
-    SCAN_Z = "SCAN REFUSED: no repo prefix matches 'Z'. No grant written."
 
-    def run_variants(self) -> dict[str, dict]:
-        """The program's output from the overlay-only checkout per overlay state,
-        each from fresh scratch state at the same path."""
-        outputs = {}
+    #: The scratch files V0 writes: the F5 grants and their locks, nothing for Z5 or M5.
+    EXPECTED_FILES = ["batch/F5.json", "batch/F5.json.lock", "force/F5.json", "force/F5.json.lock",
+                      "imc/F5.json", "park/s/F5.json", "park/s/F5.json.lock",
+                      "scan/s/F-9037c5488f26c3b7.json", "scan/s/F-9037c5488f26c3b7.json.lock",
+                      "ui/F5.json", "ui/F5.json.lock"]
+    #: The credential slot `_slot_env` selects per repo in REPOS: only the home repo has one.
+    SLOT_DIRS = [None, None, "{HOME}/gh-slots/acme"]
+
+    def run_variants(self) -> dict[str, dict[str, dict]]:
+        """`{checkout: {variant: output}}`, each run from fresh scratch state and a
+        fresh scratch `HOME` (holding the acme/forge#5 preclose receipt) at the
+        same paths."""
+        outputs: dict[str, dict[str, dict]] = {}
         with tempfile.TemporaryDirectory() as tmp:
-            repo, base = overlay_only_fixture(Path(tmp).resolve())
-            overlay = repo / ".claude" / "forge.toml"
-            benign = overlay.read_text(encoding="utf-8")
-            state = Path(tmp).resolve() / "state"
-            code = "import sys\nSTATE = " + repr(str(state)) + "\n" + self.CODE
-            for name, text in (("V0", None), ("V1", benign), ("V2", WIDENING_OVERLAY)):
-                shutil.rmtree(state, ignore_errors=True)
-                state.mkdir()
-                if text is None:
-                    overlay.unlink(missing_ok=True)
-                else:
-                    overlay.write_text(text, encoding="utf-8")
-                raw = json.loads(probe_from(repo, base, code).strip().splitlines()[-1])
-                outputs[name] = json.loads(json.dumps(raw).replace(str(state), self.STATE))
+            root = Path(tmp).resolve()
+            acme, base = overlay_only_fixture(root)
+            checkouts = {"acme": acme, "mallory": make_repo(root / "mallory-app", MALLORY_URL)}
+            state, home = root / "state", root / "home"
+            code = ("import sys\n"
+                    f"STATE = {str(state)!r}\nLOGINS, KEYS, REPOS = "
+                    f"{self.LOGINS!r}, {self.KEYS!r}, {self.REPOS!r}\n"
+                    f"HEAD, REFORGE = {self.HEAD!r}, {self.REFORGE!r}\n" + self.CODE)
+            for checkout, repo in checkouts.items():
+                overlay = repo / ".claude" / "forge.toml"
+                outputs[checkout] = {}
+                for name, text in (("V0", None), *self.VARIANTS[checkout].items()):
+                    for scratch in (state, home):
+                        shutil.rmtree(scratch, ignore_errors=True)
+                        scratch.mkdir()
+                    self.write_receipt(home)
+                    if text is None:
+                        overlay.unlink(missing_ok=True)
+                    else:
+                        write_overlay(repo, text)
+                    raw = probe_from(repo, base, code, home=home).strip().splitlines()[-1]
+                    raw = raw.replace(str(state), self.STATE).replace(str(home), self.HOME)
+                    outputs[checkout][name] = json.loads(raw)
         return outputs
 
-    def assert_noninterference(self, outputs: dict[str, dict]) -> None:
-        v0 = outputs["V0"]["out"]
-        for name in ("V1", "V2"):
-            with self.subTest(variant=name):
-                self.assertEqual(outputs[name]["out"], v0,
-                                 f"{name} differs from V0; manifest_overlay entry points "
-                                 f"called (diagnostic only): {outputs[name]['seen']}")
-        for field, value in self.EXPECTED.items():
-            self.assertEqual(v0[field], value, field)
-        grants = v0["grants"]
-        self.assertEqual(grants["scan_z"], self.SCAN_Z)
-        self.assertIn("may be scanned", grants["scan_f"])
-        self.assertIn("PARK REFUSED for Z5: no repo prefix matches it", grants["park_z"])
-        self.assertIn("may now be completed", grants["park_f"])
-        self.assertIn("no repo maps to its prefix", grants["force_z"])
-        self.assertIn("no repo maps to its prefix", grants["ui_z"])
-        self.assertIn("authorized F5", v0["batch"][1])
-        self.assertEqual(v0["batch"][0], "")
-        self.assertEqual(sorted(v0["files"]), self.EXPECTED_FILES)
+    def write_receipt(self, home: Path) -> None:
+        """A completed one-pass preclose receipt for acme/forge#5 at HEAD, where
+        `preclose_check.receipt_path` looks under the probe's `HOME` (P2)."""
+        directory = home / ".claude" / "state" / "preclose"
+        directory.mkdir(parents=True)
+        (directory / "acme_forge_5.json").write_text(json.dumps({
+            "repo": "acme/forge", "issue": 5, "reviewed_sha": self.HEAD, "refuters": 2,
+            "status": "complete", "pass_history": [{"sha": self.HEAD, "surviving": 0}]}),
+            encoding="utf-8")
 
-    #: The scratch files V0 writes: the F5 grants and their locks, nothing for Z5.
-    EXPECTED_FILES = ["batch-f.json", "batch-f.json.lock", "imc/F5.json", "park/s/F5.json",
-                      "park/s/F5.json.lock", "scan/s/F-9037c5488f26c3b7.json",
-                      "scan/s/F-9037c5488f26c3b7.json.lock", "ui/F5.json", "ui/F5.json.lock"]
+    def accepted(self, outputs: dict[str, dict[str, dict]]) -> dict[str, list[dict]]:
+        """Per checkout, the `[project]` table of every variant the validator accepted
+        in the probe (P3's recorded status names the variant's own repo)."""
+        found: dict[str, list[dict]] = {}
+        for checkout, variants in self.VARIANTS.items():
+            found[checkout] = []
+            for name, text in variants.items():
+                project = tomllib.loads(text)["project"]
+                if outputs[checkout][name]["validator"] == project.get("repo"):
+                    found[checkout].append(project)
+        return found
+
+    def assert_complete(self, outputs: dict[str, dict[str, dict]]) -> None:
+        """P7: the variants vary every identity key and the program is offered every
+        injected value; derived from production `IDENTITY_KEYS`, not a hand table."""
+        accepted = self.accepted(outputs)
+        base = tomllib.loads(FILLER)["project"]
+        uncovered = []
+        for key in (*manifest_overlay.IDENTITY_KEYS, "repo"):
+            held = {str(e[key]).casefold() for e in base if e.get(key) is not None}
+
+            def fresh(checkout: str, value: object, key: str = key, held: set = held) -> bool:
+                others = {str(o[key]).casefold() for other, projects in accepted.items()
+                          if other != checkout for o in projects if o.get(key) is not None}
+                return value is not None and str(value).casefold() not in held | others
+
+            if not any(fresh(c, p.get(key)) for c, projects in accepted.items() for p in projects):
+                uncovered.append(key)
+        self.assertEqual(uncovered, [], (
+            "P7(a): no validator-accepted variant sets these identity keys to a value that "
+            "neither the base nor the other checkout holds, so no driven decision can see "
+            f"them vary (degenerate fixture): {uncovered}"))
+        offered = {"account": set(self.LOGINS), "prefix": {k[0] for k in self.KEYS},
+                   "repo": set(self.REPOS)}
+        missing = [(checkout, key, project[key]) for checkout, projects in accepted.items()
+                   for project in projects for key, values in offered.items()
+                   if key in project and project[key] not in values]
+        self.assertEqual(missing, [], "P7(b): an injected value is offered to no driven decision")
+        for authorizer in outputs["acme"]["V0"]["out"]["grants"]:
+            directory = authorizer.split("_")[0] + "/"
+            terminal = [f for f in self.EXPECTED_FILES if f.startswith(directory)
+                        and not f.endswith(".lock")
+                        and f.rsplit("/", 1)[-1].startswith(("F5.", "F-"))]
+            self.assertTrue(terminal, f"P7(c): {authorizer} has no F5 grant file in EXPECTED_FILES")
+
+    def assert_noninterference(self, outputs: dict[str, dict[str, dict]]) -> None:
+        self.assert_complete(outputs)
+        for checkout, variants in outputs.items():
+            want = {"V0": None, "V1": self.CHECKOUT_REPO[checkout], "V2": "ManifestError"}
+            self.assertEqual({name: out["validator"] for name, out in variants.items()}, want,
+                             f"P3: {checkout} validator status per variant")
+            v0 = variants["V0"]["out"]
+            for name in self.VARIANTS[checkout]:
+                with self.subTest(checkout=checkout, variant=name):
+                    self.assertEqual(variants[name]["out"], v0,
+                                     f"{checkout} {name} differs from V0; manifest_overlay entry "
+                                     f"points called (diagnostic only): {variants[name]['seen']}")
+            for field, value in self.EXPECTED.items():
+                self.assertEqual(v0[field], value, f"{checkout} {field}")
+            self.assertEqual(v0["cwd_repo"], self.CHECKOUT_REPO[checkout], "bare close's checkout")
+            self.assertEqual([(env or {}).get("GH_CONFIG_DIR") for env in v0["slot_env"]],
+                             self.SLOT_DIRS, f"{checkout} slot_env")
+            grants = v0["grants"]
+            for key in ("Z5", "M5"):
+                self.assertEqual(grants["batch"][key], "")
+                self.assertIn(f"PARK REFUSED for {key}: no repo prefix matches it", grants["park"][key])
+                self.assertIn("no repo maps to its prefix", grants["force"][key])
+                self.assertIn("no repo maps to its prefix", grants["ui"][key])
+                self.assertEqual(grants["scan"][key],
+                                 f"SCAN REFUSED: no repo prefix matches '{key[0]}'. No grant written.")
+            self.assertEqual(sorted(v0["files"]), self.EXPECTED_FILES)
 
     def test_overlay_content_changes_no_grant_decision(self) -> None:
         self.assert_noninterference(self.run_variants())
@@ -344,7 +513,7 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     def test_an_inherited_sdk_entrypoint_changes_nothing(self) -> None:
         """harmonic-forge#1635 gap 4: under `CLAUDE_CODE_ENTRYPOINT=sdk` every
         authorizer refuses at provenance, which would leave `reached` empty and
-        exercise no scope decision; `probe_from` drops it."""
+        exercise no scope decision; `probe_from`'s allowlist never passes it."""
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk"}):
             self.assert_noninterference(self.run_variants())
 
