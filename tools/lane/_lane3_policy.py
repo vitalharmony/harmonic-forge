@@ -26,7 +26,16 @@ def _registry() -> tuple[str, int]:
     text = REGISTRY.read_text(encoding="utf-8")
     path = _PATH_RE.search(text)
     owner = _OWNER_RE.search(text)
-    return (path.group(1) if path else "", int(owner.group(1)) if owner and owner.group(1) else 0)
+    value = path.group(1) if path else ""
+    if value == "@instance:lane3_policy":
+        # harmonic-forge#1531 (sticky-wicket PATCH): the launcher resolves this
+        # from instance.toml, and every launch this helper guards reads the test
+        # fixture's instance.toml, which declares baseline_capture.LANE3_POLICY.
+        # The helper predicts that launch, so it reads the same value, never the
+        # test process's own config (absent in the sandbox and on CI).
+        import baseline_capture  # noqa: PLC0415
+        value = baseline_capture.LANE3_POLICY
+    return (value, int(owner.group(1)) if owner and owner.group(1) else 0)
 
 
 def overflow_uid() -> int | None:

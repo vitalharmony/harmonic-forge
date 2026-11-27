@@ -394,8 +394,11 @@ def prune_stale_prep(repo_dir: str, prep: Path) -> None:
     if prep.exists() and _BUSY.exists():
         busy = subprocess.run([sys.executable, str(_BUSY), str(prep)],
                               capture_output=True, text=True)
-        if busy.returncode == 1:
-            raise Exit(1, f"stale prep worktree {prep} is busy:\n{busy.stdout}{busy.stderr}")
+        # harmonic-forge#1531: 3 is "cannot tell" (no /proc); a forced, unlocked
+        # removal must not proceed on it.
+        if busy.returncode in (1, 3):
+            what = "busy" if busy.returncode == 1 else "cannot tell whether busy (no /proc)"
+            raise Exit(1, f"stale prep worktree {prep}: {what}:\n{busy.stdout}{busy.stderr}")
     remove_prep(repo_dir, prep, force=True)
 
 

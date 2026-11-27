@@ -535,8 +535,10 @@ project's base name from the current worktree (`git rev-parse
 the bare `<project>` checkout, `lane2`/`lane3` into `<project>-lane2`/
 `-lane3`, refusing to launch (not falling back to the main checkout) if
 that worktree doesn't exist yet; sets the `LANE` environment variable
-(see below); wraps the session in `systemd-inhibit --what=sleep:idle` so
-a long batched or unattended run isn't suspended mid-work; and builds the
+(see below); wraps the session in a sleep inhibitor (`systemd-inhibit
+--what=sleep:idle` where a probe shows it works, else `caffeinate -i`, else
+none with one warning; harmonic-forge#1531) so a long batched or unattended
+run isn't suspended mid-work; and builds the
 launch command per-CLI from the closed agent registry (see below). All three
 launchers share one implementation, `tools/lane/_cli_launch.sh` plus
 `tools/lane/_agent_registry.sh` and `tools/lane/_lane_args.sh`, sourced the
@@ -1184,7 +1186,9 @@ run and its `--mode apply` are two AEs and two grants; a post-merge step's AE
 names the merged `main` SHA, checked out with `gate-checkout`.
 
 The `lane3` launcher passes `--settings` to Claude at Lane 3 only, from the
-root-owned `/usr/local/share/hrse-gate/claude-lane3.json`, and refuses a caller
+root-owned `/usr/local/share/hrse-gate/claude-lane3.json`, loaded only when
+instance.toml's `lane3_policy` names it (absent, the launch says so and runs
+without it; harmonic-forge#1531), and refuses a caller
 `--settings` at every Claude lane. That file holds exactly one rule,
 `Bash(/usr/local/libexec/hrse-gate-run:*)`, an absolute path to an object the
 agent cannot replace. The launcher refuses to launch if the installed file or

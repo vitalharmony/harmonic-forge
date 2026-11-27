@@ -87,11 +87,20 @@ lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 # Codex loads hook registration when the session starts. Refuse to start a
 # Codex lane while either repo lacks the merge/close/preclose gates; otherwise
 # a long-lived session can retain an unguarded hook set for its whole lifetime.
+# harmonic-forge#1531: the extra repos checked come from instance.toml
+# `codex_hook_paths` (absent: only this checkout); an invalid value refuses.
 if [ "$_lane_agent" = codex ]; then
+  mapfile -d '' -t _lane_codex_extra < <(rc=0; python3 -I -E "$_lane_dir/../settings/instance.py" get codex_hook_paths || rc=$?; printf '%s\0' "$rc")
+  [ "${_lane_codex_extra[-1]}" = 0 ] \
+    || _lane_launch_die "instance.toml codex_hook_paths is invalid (see the reason above) -- refusing to launch (harmonic-forge#1531)"
+  unset '_lane_codex_extra[-1]'
+  _lane_codex_args=()
+  for _p in "${_lane_codex_extra[@]}"; do _lane_codex_args+=(--path "$_p"); done
   python3 "$_lane_dir/../hooks/verify_codex_registration.py" \
     --path "$PWD/.codex/hooks.json" \
-    --path "${HOME}/Harmonic_Projects/HRSE2/.codex/hooks.json" \
+    "${_lane_codex_args[@]}" \
     || _lane_launch_die "Codex hook registration is incomplete -- refusing to start an unguarded session"
+  unset _lane_codex_extra _lane_codex_args _p
 fi
 
 ## AC9 -- minimum-version check
@@ -255,7 +264,22 @@ fi
 #  - a same-user write of lane_hook_overlay = "none" to
 #    ~/.config/harmonic-forge/instance.toml, which drops the operator overlay at
 #    the next launch; every launch prints which overlay it built, on stderr
-#    only (harmonic-forge#1525).
+#    only (harmonic-forge#1525);
+#  - a same-user write of codex_hook_paths = [] to instance.toml, which drops
+#    the HRSE2 Codex gate-registration check at the next Codex launch, and a
+#    Codex launch is not XDG-pinned (harmonic-forge#1531);
+#  - a dangling symlink at the configured lane3_policy path, which reads as
+#    "not installed": the launch proceeds without the widening policy (the
+#    restrictive direction) and the notice names the path (harmonic-forge#1531);
+#  - the Lane 3 policy check lstats the resolved file, its directory and the
+#    manifest, not every ancestor, and lane_hookset.py re-reads both by path
+#    after it: a same-user rename above them between the check and the read is
+#    not closed. Pre-existing #878 posture, adversarial, against a good-faith
+#    threat model; the digest re-check at the read narrows it (harmonic-forge#1531);
+#  - check_worktree_busy.py reads a process whose /proc/<pid>/cwd it cannot read
+#    (another uid, hidepid) as not busy, and a denied /proc listing exits 1,
+#    which every caller treats as busy. Pre-existing: lane sessions run as the
+#    same uid, so their cwd is readable (harmonic-forge#1531).
 # The set guarantees what reaches the launch, and that its wiring cannot be
 # dropped or narrowed without the snapshot test failing. It does not guarantee
 # that the session's later environment leaves the hooks working.
@@ -449,6 +473,23 @@ _lane_settings_at=${#cli_args[@]}
 _lane_policy_path=""
 _lane_policy_flag=""
 _lane_policy_file="$(registry_lookup AGENT_LANE_POLICY "$_lane_agent:$LANE")"
+# harmonic-forge#1531: `@instance:<key>` is resolved from instance.toml; an
+# absent key means no policy (the launch proceeds without one, #878's safe
+# direction, with a notice), an invalid one refuses. The owner and
+# immutability checks below still apply to whatever path it names.
+case "$_lane_policy_file" in
+  @instance:*)
+    _lane_policy_key="${_lane_policy_file#@instance:}"
+    mapfile -d '' -t _lane_policy_vals < <(rc=0; python3 -I -E "$_lane_dir/../settings/instance.py" get "$_lane_policy_key" || rc=$?; printf '%s\0' "$rc")
+    [ "${_lane_policy_vals[-1]}" = 0 ] \
+      || _lane_launch_die "instance.toml $_lane_policy_key is invalid (see the reason above) -- refusing to launch (harmonic-forge#1531)"
+    _lane_policy_file="${_lane_policy_vals[0]:-}"
+    [ "${#_lane_policy_vals[@]}" -gt 1 ] || _lane_policy_file=""
+    # An absent key is a state of its own, so it says so (sticky-wicket PATCH 2).
+    [ -n "$_lane_policy_file" ] \
+      || printf '%s\n' "lane${LANE}: instance.toml sets no $_lane_policy_key -- launching without a Lane ${LANE} policy; production runs will prompt (harmonic-forge#1531)." >&2
+    unset _lane_policy_key _lane_policy_vals ;;
+esac
 if [ -n "$_lane_policy_file" ]; then
   _lane_policy_flag="$(registry_lookup AGENT_POLICY_FLAG "$_lane_agent")"
   [ -n "$_lane_policy_flag" ] \
@@ -480,26 +521,66 @@ if [ -n "$_lane_policy_file" ]; then
         # -I -E so no environment variable can change what this check runs
         # (sticky-wicket PATCH 2, item 6). The installed policy's digest must
         # also equal the root-owned manifest's policy_sha256 (item 8).
-        python3 -I -E - "$_lane_policy_path" "$_lane_policy_owner" <<'PYCHECK' 2>/dev/null \
-          || _lane_launch_die "policy file is not an immutable JSON object: $_lane_policy_path must be owned by uid ${_lane_policy_owner:-?}, not group/other-writable, in a directory with the same property, parse as a JSON object, and match the policy_sha256 of manifest.json beside it -- refusing to launch $lane_agent_display with a policy the agent could have widened (harmonic-forge#878)"
+        #
+        # harmonic-forge#1531 (sticky-wicket PATCH 2): the path is user-chosen
+        # (instance.toml), so it is resolved first and every check runs on the
+        # resolved file, its directory and the manifest beside it, and the
+        # launch then reads the policy from the resolved path. A root-owned
+        # system symlink (Silverblue's /usr/local) is followed, not refused.
+        # What this delivers, exactly:
+        #  - directories above the resolved one are not checked (residual G:
+        #    the same-user rename item in the residual list above);
+        #  - a symlink as the final component is accepted, and checked as the
+        #    file it resolves to;
+        #  - the manifest is found beside the resolved target, never beside
+        #    the configured path;
+        #  - unlike hrse_gate_run._root_tool (HRSE2 hrse_gate_run.py:107-109),
+        #    the link itself need not be root-owned: the path is user input.
+        # One state refuses a valid-looking install the installer never
+        # produces: a root-owned link into another directory whose target
+        # directory lacks the manifest. Each refusal names the failing hop on
+        # stderr; stdout carries only the resolved path.
+        _lane_policy_real="$(python3 -I -E - "$_lane_policy_path" "$_lane_policy_owner" <<'PYCHECK'
 import hashlib, json, os, stat, sys
 path, owner = sys.argv[1], int(sys.argv[2])
-manifest = os.path.join(os.path.dirname(path), "manifest.json")
-for p in (path, os.path.dirname(path), manifest):
-    st = os.lstat(p)
+
+
+def refuse(reason):
+    print(f"lane3: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
+real = os.path.realpath(path)
+manifest = os.path.join(os.path.dirname(real), "manifest.json")
+for hop in (real, os.path.dirname(real), manifest):
+    try:
+        st = os.lstat(hop)
+    except OSError as exc:
+        refuse(f"{hop} cannot be checked ({exc.strerror or exc})")
     if stat.S_ISLNK(st.st_mode) or st.st_uid != owner or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        sys.exit(1)
+        refuse(f"{hop} must be owned by uid {owner}, not a symlink, not group/other-writable "
+               f"(it is uid {st.st_uid}, {stat.filemode(st.st_mode)})")
 try:
-    policy_ok = isinstance(json.load(open(path)), dict)
-    expected = json.load(open(manifest)).get("policy_sha256")
-except Exception:
-    sys.exit(1)
-digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
-if not policy_ok or not expected or digest != expected:
-    sys.exit(1)
-sys.exit(0)
+    with open(real, "rb") as fh:
+        data = fh.read()
+    policy = json.loads(data)
+except Exception as exc:
+    refuse(f"{real} does not parse as JSON ({exc})")
+if not isinstance(policy, dict):
+    refuse(f"{real} is not a JSON object")
+try:
+    with open(manifest) as fh:
+        expected = json.load(fh).get("policy_sha256")
+except Exception as exc:
+    refuse(f"{manifest} does not parse as a JSON object ({exc})")
+digest = hashlib.sha256(data).hexdigest()
+if not expected or digest != expected:
+    refuse(f"{real} has sha256 {digest}, which does not match the policy_sha256 of {manifest} ({expected!r})")
+print(real)
 PYCHECK
-        unset _lane_policy_owner
+)" || _lane_launch_die "Lane 3 policy refused (reason above): $_lane_policy_path -- refusing to launch $lane_agent_display with a policy the agent could have widened (harmonic-forge#878, #1531)"
+        _lane_policy_path="$_lane_policy_real"
+        unset _lane_policy_owner _lane_policy_real
       fi
       ;;
     json)

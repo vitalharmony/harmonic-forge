@@ -45,7 +45,7 @@ These are all the inputs an authorization decision reads, and who can write each
 | Sudo rules | `/etc/sudoers.d/hrse-gate` and the rest | No: root 0440 | The only password-free route to `consume`. On every run, `hrse-gate-run` compares the host's whole `sudo -n -l` rule set with the manifest's `sudo_rules`, and refuses any password-free `ALL` or wildcard rule. |
 | Runner | `/usr/local/libexec/hrse-gate-run` | No: root 0755 | The only auto-approved command. It verifies everything below before spending a grant. |
 | Manifest | `/usr/local/share/hrse-gate/manifest.json` | No: root 0444, root directory | Names the gate worktree and its interpreter, the reviewed sha256 of the gate script, the broker, the interpreter binary and the Lane 3 policy, and the host's reviewed sudo rule set. |
-| Lane 3 Claude policy | `/usr/local/share/hrse-gate/claude-lane3.json` | No: root 0444 | One allow rule, `Bash(/usr/local/libexec/hrse-gate-run:*)`. The launcher refuses to launch unless it is root-owned, not writable by anyone else, and matches the manifest's `policy_sha256`. |
+| Lane 3 Claude policy | `/usr/local/share/hrse-gate/claude-lane3.json` | No: root 0444 | One allow rule, `Bash(/usr/local/libexec/hrse-gate-run:*)`. It is loaded only when instance.toml's `lane3_policy` names it (harmonic-forge#1531). The launcher resolves that path, then refuses to launch unless the resolved file, its directory and the manifest are root-owned, not writable by anyone else, and the file matches the manifest's `policy_sha256`. |
 | Gate script | `HRSE2-lane3/scripts/gate_production_run.py` | Yes | Drift-detected: the runner refuses unless its sha256 equals the manifest's. |
 | Migration script | `HRSE2-lane3/scripts/1-*.py` | Yes | Drift-detected: the runner refuses unless it matches HEAD's committed blob. |
 | `sudo`, `git` | `/usr/bin/sudo`, `/usr/bin/git` | No: root | Run by absolute path, root-ownership checked, with `PATH=/usr/bin:/bin`. A planted `~/.local/bin/sudo` is never called. |
@@ -76,6 +76,23 @@ sudo install -o root -g root -m 0444 /tmp/claude-lane3.json /usr/local/share/hrs
 printf '%s\n' 'mmangus ALL=(hrse-gate) NOPASSWD: /usr/local/libexec/hrse-gate consume *' > /tmp/hrse-gate.sudoers && visudo -cf /tmp/hrse-gate.sudoers
 sudo install -o root -g root -m 0440 /tmp/hrse-gate.sudoers /etc/sudoers.d/hrse-gate && sudo visudo -c
 rm /tmp/hrse-gate.py /tmp/hrse-gate-run.py /tmp/hrse_gate_ae.py /tmp/claude-lane3.json /tmp/hrse-gate.sudoers
+```
+
+Then point the launcher at the installed policy. The `lane3` launcher reads the
+path from `lane3_policy` in `~/.config/harmonic-forge/instance.toml`, a
+top-level key (harmonic-forge#1531). With the key absent, Lane 3 launches with
+no policy and says so on stderr (`instance.toml sets no lane3_policy`), and
+production runs prompt. Add the key once, as your own user (no `sudo`: the
+file is yours), with the forge's own writer rather than a shell append -- an
+append breaks a file with no final newline and nests the key under a trailing
+`[table]`. `set` creates the file if it is missing, puts the key at the top
+level, leaves the file unchanged when the key already holds this path, and
+refuses (exit 1, file unchanged) when it holds another one. Then check that the
+accessor prints the path:
+
+```bash
+python3 -I -E ~/harmonic-forge/tools/settings/instance.py set lane3_policy /usr/local/share/hrse-gate/claude-lane3.json
+python3 -I -E ~/harmonic-forge/tools/settings/instance.py get lane3_policy | tr '\0' '\n'
 ```
 
 Then write the manifest from the reviewed HRSE2 SHA:

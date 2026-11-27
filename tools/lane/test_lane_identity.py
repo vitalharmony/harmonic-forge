@@ -281,7 +281,9 @@ class LauncherTests(unittest.TestCase):
         for name in ("lane1", "lane2", "lane3"):
             with self.subTest(wrapper=name):
                 text = (LANE_DIR / name).read_text()
-                self.assertIn("lane_pin_title\nlane_run_with_cleanup systemd-inhibit", text)
+                # harmonic-forge#1531: the inhibitor is chosen before the pin.
+                self.assertIn('lane_pin_title\nlane_run_with_cleanup "${lane_inhibit[@]}"', text)
+                self.assertLess(text.index("lane_inhibitor "), text.index("lane_pin_title\n"))
                 self.assertEqual(text.count("lane_pin_title"), 1)
         self.assertNotIn("lane_pin_title", (LANE_DIR / "_cli_launch.sh").read_text())
 

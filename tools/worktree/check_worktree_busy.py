@@ -30,11 +30,15 @@ import os
 import sys
 from pathlib import Path
 
+#: Where procfs is read. One name, so a test can point it at a fixture (a
+#: regular file, an empty directory) and every read below follows it.
+PROC = Path("/proc")
+
 
 def read_lane(pid: int) -> str | None:
     """Return the LANE env var of `pid`, or None if unreadable/unset."""
     try:
-        raw = Path(f"/proc/{pid}/environ").read_bytes()
+        raw = PROC.joinpath(str(pid), "environ").read_bytes()
     except (FileNotFoundError, ProcessLookupError, PermissionError):
         return None
     for entry in raw.split(b"\0"):
@@ -49,7 +53,7 @@ def ancestor_pids(pid: int) -> set[int]:
     current = pid
     while current > 1:
         try:
-            stat = Path(f"/proc/{current}/stat").read_text()
+            stat = PROC.joinpath(str(current), "stat").read_text()
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             break
         # comm is parenthesized and may itself contain ')'; split on the
@@ -64,10 +68,33 @@ def ancestor_pids(pid: int) -> set[int]:
     return ancestors
 
 
+class CannotTell(Exception):
+    """procfs is not readable here, so no answer is an answer (harmonic-forge#1531)."""
+
+
+def probe_procfs() -> None:
+    """Raise CannotTell when there is no procfs at PROC (harmonic-forge#1531).
+
+    PROC/self, not PROC: an empty /proc directory (procfs not mounted) would
+    list no process and read as idle. os.stat, not Path.exists: whether
+    exists() swallows EACCES depends on the Python version. Only "not there"
+    (absent, or a /proc that is not a directory) means cannot tell; a denied
+    stat (PermissionError) propagates, and main reads it as busy (exit 1, fail
+    closed). Callers run it before any other procfs read, the ancestor scan
+    included, so a /proc that is a regular file never escapes as an error."""
+    try:
+        os.stat(PROC / "self")
+    except (FileNotFoundError, NotADirectoryError):
+        raise CannotTell(f"no procfs at {PROC}") from None
+
+
 def busy_pids(worktree: Path, exclude: set[int], caller_lane: str | None) -> list[tuple[int, str]]:
+    # harmonic-forge#1531: probed here too, not only in main, so worktree_gc
+    # gets it (its sweep skips a candidate whose check raises).
+    probe_procfs()
     worktree = worktree.resolve()
     found: list[tuple[int, str]] = []
-    for entry in Path("/proc").iterdir():
+    for entry in PROC.iterdir():
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
@@ -100,9 +127,24 @@ def main() -> int:
         print(f"check-worktree-busy: '{worktree}' is not a directory", file=sys.stderr)
         return 2
 
-    exclude = ancestor_pids(os.getpid())
     caller_lane = os.environ.get("LANE") or None
-    found = busy_pids(worktree, exclude, caller_lane)
+    # harmonic-forge#1531: a host with no procfs (macOS, or /proc not mounted)
+    # cannot tell. Exit 3, not the busy 1: only the launcher refresh treats 3 as
+    # not busy (with a warning); gate-checkout and lane1_rebase keep refusing on
+    # it, and worktree_gc skips the candidate. The probe runs before the
+    # ancestor scan, which reads procfs too: with /proc a regular file that
+    # scan would raise NotADirectoryError out of main instead of exiting 3.
+    try:
+        probe_procfs()
+        exclude = ancestor_pids(os.getpid())
+        found = busy_pids(worktree, exclude, caller_lane)
+    except CannotTell as exc:
+        print(f"check-worktree-busy: cannot tell ({exc})", file=sys.stderr)
+        return 3
+    except PermissionError as exc:
+        print(f"check-worktree-busy: refusing — procfs is not readable ({exc}); "
+              "treating the worktree as busy", file=sys.stderr)
+        return 1
 
     if found:
         print(

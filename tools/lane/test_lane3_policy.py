@@ -22,10 +22,44 @@ def absent(path):
 
 
 class Helper(unittest.TestCase):
-    def test_the_registry_names_the_installed_path_and_root(self):
-        path, owner = policy._registry()
-        self.assertEqual(path, "/usr/local/share/hrse-gate/claude-lane3.json")
-        self.assertEqual(owner, 0)
+    def setUp(self):
+        """CI's shape on any host: no instance.toml reachable (sticky-wicket PATCH)."""
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        empty = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, empty, True)
+        patcher = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": os.path.join(empty, "xdg"),
+                                               "HOME": empty})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_helper_predicts_the_fixture_not_the_host_config(self):
+        """harmonic-forge#1531: the registry names `@instance:lane3_policy`; the helper
+        resolves it to the value every guarded fixture launch declares, whatever
+        the test process's own instance.toml says or whether it exists."""
+        import os  # noqa: PLC0415
+        import baseline_capture as bc  # noqa: PLC0415
+        self.assertIn('[claude:3]="@instance:lane3_policy"', policy.REGISTRY.read_text())
+        self.assertEqual(policy._registry(), (bc.LANE3_POLICY, 0))
+        cfg = os.path.join(os.environ["XDG_CONFIG_HOME"], "harmonic-forge")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "instance.toml"), "w") as f:
+            f.write('lane3_policy = "/opt/other.json"\n')
+        self.assertEqual(policy._registry(), (bc.LANE3_POLICY, 0))
+
+    def test_the_helper_and_the_fixture_name_the_same_path(self):
+        """The fixture's own declaration, read the way the launcher reads it,
+        names the path the helper checks."""
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        import baseline_capture as bc  # noqa: PLC0415
+        sys.path.insert(0, str(policy.REGISTRY.parents[1] / "settings"))
+        import instance  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as home:
+            written = bc.write_overlay_declaration(home, "operator")
+            declared = instance.lane3_policy({"XDG_CONFIG_HOME": str(written.parents[1])})
+        self.assertEqual(str(declared), policy._registry()[0])
 
     def test_root_owned_is_trusted(self):
         self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(0)))

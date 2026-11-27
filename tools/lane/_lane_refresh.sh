@@ -130,10 +130,16 @@ lane_refresh() {
     # process (a still-open session, a preview stack). LANE is unset for the
     # check so a previous session of this same lane counts as busy rather
     # than being excluded as "our own session".
-    local busy_check busy_out=""
+    local busy_check busy_out="" busy_rc=0
     busy_check="$(dirname "${BASH_SOURCE[0]}")/../worktree/check_worktree_busy.py"
-    if [ -f "$busy_check" ] \
-       && ! busy_out="$(env -u LANE python3 "$busy_check" . 2>&1)"; then
+    if [ -f "$busy_check" ]; then
+      busy_out="$(env -u LANE python3 "$busy_check" . 2>&1)" || busy_rc=$?
+    fi
+    # harmonic-forge#1531: 3 is "cannot tell" (no /proc): warn and refresh.
+    # Any other non-zero is busy (or an error) and skips, as before.
+    if [ "$busy_rc" = 3 ]; then
+      printf '%s\n' "lane refresh: ${busy_out:-cannot tell whether the worktree is busy} -- refreshing anyway (harmonic-forge#1531)" >&2
+    elif [ "$busy_rc" != 0 ]; then
       LANE_REFRESH_STATUS="skipped-busy"
       LANE_REFRESH_DETAIL="$busy_out"
       _lane_refresh_log "$mode" "$LANE_REFRESH_STATUS" "$LANE_REFRESH_FROM" "$LANE_REFRESH_TO"
