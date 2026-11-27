@@ -1159,9 +1159,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--apply", action="store_true",
                    help="Create what is missing. Without it the run only verifies.")
     p.add_argument("--dry-run", action="store_true",
-                   help="With --apply: print what would change, change nothing.")
+                   help="With --apply or --install: print what would change, change nothing.")
     p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument("--install", action="store_true",
+                   help="Link the lane launchers into ~/.local/bin and create the repo's "
+                        "lane worktrees (harmonic-forge#1532).")
+    p.add_argument("--repo", type=Path, default=None,
+                   help="With --install: the repo whose lane worktrees to create (default: cwd).")
+    p.add_argument("--force", action="store_true",
+                   help="With --install: replace a launcher link that resolves elsewhere.")
     args = p.parse_args(argv)
+
+    if args.install:
+        if args.apply or args.project or args.manifest is not None:
+            p.error("--install cannot be combined with --apply, --project or --manifest")
+        import forge_onboard_install as foi
+        try:
+            checks, code = foi.install(args.repo or Path.cwd(), Path.home() / ".local" / "bin",
+                                       foi.install_source(), force=args.force, dry_run=args.dry_run)
+        except foi.InstallError as exc:
+            print(f"forge-onboard: {exc}", file=sys.stderr)
+            return 2
+        print("\n".join(c.line() for c in checks))
+        return code
+    if args.force or args.repo is not None:
+        p.error("--force and --repo are valid only with --install")
 
     try:
         projects = load(args.manifest)
