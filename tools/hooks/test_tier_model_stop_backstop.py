@@ -568,11 +568,24 @@ class CodeModeTurnTests(unittest.TestCase):
         self.records[31]["message"]["content"][0]["tool_use_id"] = "toolu_x"
         self.assertEqual(self.receipts(self.write()), [])
 
+    def test_v207_non_repl_id_call_keeps_synthetic_and_reports(self):
+        """TC5(ii) with the receipt in `content` under an Opus REPL: a
+        `toolu_` id is not a script pair, so the call keeps `<synthetic>`."""
+        self.script_post()
+        self.set_model(24, OPUS)
+        self.records[30]["message"]["content"][0]["id"] = "toolu_x"
+        self.records[31]["message"]["content"][0]["tool_use_id"] = "toolu_x"
+        self.records[31]["message"]["content"][0]["content"] = _l1_receipt(1609)
+        self.assert_reported(self.write(), 1609, "<synthetic>")
+
     def test_tc5_iii_non_virtual_synthetic_call_keeps_synthetic(self):
+        """Record 30 non-virtual: it is not a script pair, and it is also the
+        first non-virtual parent of call 32, a failed anchor, so call 32 keeps
+        `<synthetic>` too (the pass-1 PATCH: nothing walks past an anchor)."""
         del self.records[30]["isVirtual"]
         calls, _ = b.scan_turn(self.write())
         self.assertEqual(calls[0][:2], ("ls", "<synthetic>"))
-        self.assertEqual(calls[1][:2], ("git status", HAIKU))
+        self.assertEqual(calls[1][:2], ("git status", "<synthetic>"))
 
     def test_tc5_iv_non_virtual_call_with_virtual_result_has_no_fallback(self):
         self.script_post()
@@ -599,6 +612,207 @@ class CodeModeTurnTests(unittest.TestCase):
         self.script_post()
         self.set_model(49, OPUS)
         self.assert_unresolved_is_reported(self.records[:24] + self.records[26:])
+
+
+    # --- pass-1 PATCH variants (sticky-wicket verdict, one per survivor) ---
+
+    def assert_reported(self, path, issue, model):
+        self.assertEqual(self.receipts(path), [(FORGE, issue, model)])
+        out = self.run_backstop(path)
+        self.assertIsNotNone(out)
+        self.assertIn(f"Posted on {FORGE}#{issue} (Tier deep) from {model};",
+                      out["systemMessage"])
+
+    def test_v206_non_synthetic_call_keeps_its_own_model_and_reports(self):
+        self.script_post()
+        self.set_model(24, OPUS)
+        self.set_model(30, HAIKU)
+        self.records[31]["message"]["content"][0]["content"] = _l1_receipt(1609)
+        self.assert_reported(self.write(), 1609, HAIKU)
+
+    def test_v219_receipt_in_content_is_read_when_stdout_is_empty(self):
+        self.script_post()
+        self.records[31]["message"]["content"][0]["content"] = _l1_receipt(1609)
+        self.records[31]["toolUseResult"]["stdout"] = ""
+        self.assertEqual(self.receipts(self.write()), [(FORGE, 1609, HAIKU)])
+
+    def test_v263_anchor_source_that_is_not_a_repl_call_keeps_synthetic(self):
+        self.script_post()
+        self.set_model(24, OPUS)
+        self.records[24]["message"]["content"][0]["name"] = "Bash"
+        self.assert_reported(self.write(), 1609, "<synthetic>")
+
+    def test_v266_anchor_answering_another_id_keeps_synthetic(self):
+        """Record 43 answers an id record 42 never made: the anchor fails and
+        the walk stops there, never reaching record 24's Opus REPL."""
+        self.second_script_post()
+        self.set_model(24, OPUS)
+        self.set_model(42, HAIKU)
+        self.records[43]["message"]["content"][0]["tool_use_id"] = "toolu_other"
+        self.assert_reported(self.write(), 1642, "<synthetic>")
+
+    def test_v247a_non_virtual_record_without_source_link_is_not_walked_past(self):
+        self.second_script_post()
+        self.set_model(24, OPUS)
+        self.set_model(42, SONNET)
+        del self.records[43]["sourceToolAssistantUUID"]
+        self.assert_reported(self.write(), 1642, "<synthetic>")
+
+    def test_v247b_non_virtual_record_without_source_link_is_not_walked_past(self):
+        self.second_script_post()
+        self.set_model(24, SONNET)
+        self.set_model(42, OPUS)
+        del self.records[43]["sourceToolAssistantUUID"]
+        self.assert_reported(self.write(), 1642, "<synthetic>")
+
+    def test_v405_non_virtual_result_record_blocks_model_borrowing(self):
+        self.script_post()
+        self.set_model(24, OPUS)
+        del self.records[31]["isVirtual"]
+        path = self.write()
+        self.assertEqual(self.receipts(path), [])
+        calls, _ = b.scan_turn(path)
+        self.assertEqual([call[1] for call in calls], ["<synthetic>", "<synthetic>"])
+
+    def test_v405b_non_virtual_result_record_blocks_only_its_own_call(self):
+        """Record 33 (call 32's result) non-virtual, record 31 virtual: call 32
+        is not a script pair and keeps `<synthetic>`; call 30 still borrows."""
+        self.assertEqual(self.records[33]["message"]["content"][0]["content"], "")
+        del self.records[33]["isVirtual"]
+        calls, _ = b.scan_turn(self.write())
+        self.assertEqual([call[:2] for call in calls],
+                         [("ls", HAIKU), ("git status", "<synthetic>")])
+
+    def test_v_tur_not_a_dict_has_no_fallback(self):
+        self.script_post()
+        self.records[31]["toolUseResult"] = _l1_receipt(1609)
+        self.assertEqual(self.receipts(self.write()), [])
+
+    def test_script_call_without_a_result_record_keeps_synthetic(self):
+        """Record 33 (call 32's result) absent: no pair, so no borrowing."""
+        calls, _ = b.scan_turn(self.write(self.records[:33] + self.records[34:]))
+        self.assertEqual([call[:2] for call in calls],
+                         [("ls", HAIKU), ("git status", "<synthetic>")])
+
+    def test_kw_synthetic_source_model_is_not_borrowed(self):
+        """An anchor source whose model is `<synthetic>` resolves to None. At
+        scan level that is indistinguishable from borrowing `<synthetic>`; the
+        unit row in AnchorModelTests is what pins the condition."""
+        self.script_post()
+        self.set_model(24, "<synthetic>")
+        self.assert_reported(self.write(), 1609, "<synthetic>")
+
+
+def _pair_records(tool_use_id="repl_1"):
+    call = {"isVirtual": True, "message": {"model": "<synthetic>"}}
+    result = {"isVirtual": True, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": tool_use_id, "content": ""}]}}
+    return call, result
+
+
+class ScriptPairTruthTableTests(unittest.TestCase):
+    """harmonic-forge#1642 pass-1 PATCH: `_is_script_pair`, one row per
+    condition, each flipping exactly one of (a)-(e). Row (e) is the only test
+    that can see (e): inside `scan_turn` calls and results pair by id."""
+
+    def test_all_conditions_hold(self):
+        call, result = _pair_records()
+        self.assertTrue(b._is_script_pair(call, result, "repl_1"))
+
+    def test_a_call_not_virtual(self):
+        call, result = _pair_records()
+        del call["isVirtual"]
+        self.assertFalse(b._is_script_pair(call, result, "repl_1"))
+
+    def test_b_call_model_not_synthetic(self):
+        call, result = _pair_records()
+        call["message"]["model"] = HAIKU
+        self.assertFalse(b._is_script_pair(call, result, "repl_1"))
+
+    def test_c_id_not_repl(self):
+        call, result = _pair_records("toolu_1")
+        self.assertFalse(b._is_script_pair(call, result, "toolu_1"))
+
+    def test_d_result_not_virtual(self):
+        call, result = _pair_records()
+        del result["isVirtual"]
+        self.assertFalse(b._is_script_pair(call, result, "repl_1"))
+
+    def test_e_result_answers_another_id(self):
+        call, result = _pair_records("repl_2")
+        self.assertFalse(b._is_script_pair(call, result, "repl_1"))
+
+
+class AnchorModelTests(unittest.TestCase):
+    """harmonic-forge#1642 pass-1 PATCH: `_anchor_model`, one row per anchor
+    condition."""
+
+    def setUp(self):
+        self.anchor = {"type": "user", "sourceToolAssistantUUID": "src",
+                       "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_r"}]}}
+        self.source = {"type": "assistant", "uuid": "src", "message": {
+            "model": OPUS, "content": [{"type": "tool_use", "name": "REPL", "id": "toolu_r"}]}}
+
+    def model(self):
+        return b._anchor_model(self.anchor, {"src": self.source})
+
+    def test_valid_anchor_names_the_repl_model(self):
+        self.assertEqual(self.model(), OPUS)
+
+    def test_anchor_not_a_user_record(self):
+        self.anchor["type"] = "assistant"
+        self.assertIsNone(self.model())
+
+    def test_anchor_on_a_sidechain(self):
+        self.anchor["isSidechain"] = True
+        self.assertIsNone(self.model())
+
+    def test_anchor_without_source_link(self):
+        del self.anchor["sourceToolAssistantUUID"]
+        self.assertIsNone(self.model())
+
+    def test_anchor_source_link_not_a_string(self):
+        self.anchor["sourceToolAssistantUUID"] = ["src"]
+        self.assertIsNone(self.model())
+
+    def test_anchor_content_not_a_list(self):
+        self.anchor["message"]["content"] = None
+        self.assertIsNone(self.model())
+
+    def test_source_content_not_a_list(self):
+        self.source["message"]["content"] = None
+        self.assertIsNone(self.model())
+
+    def test_anchor_without_tool_result(self):
+        self.anchor["message"]["content"] = [{"type": "text", "text": "x"}]
+        self.assertIsNone(self.model())
+
+    def test_source_missing(self):
+        self.assertIsNone(b._anchor_model(self.anchor, {}))
+
+    def test_source_not_an_assistant_record(self):
+        self.source["type"] = "user"
+        self.assertIsNone(self.model())
+
+    def test_source_on_a_sidechain(self):
+        self.source["isSidechain"] = True
+        self.assertIsNone(self.model())
+
+    def test_source_model_empty(self):
+        self.source["message"]["model"] = ""
+        self.assertIsNone(self.model())
+
+    def test_source_model_synthetic(self):
+        self.source["message"]["model"] = "<synthetic>"
+        self.assertIsNone(self.model())
+
+    def test_source_tool_use_not_repl(self):
+        self.source["message"]["content"][0]["name"] = "Bash"
+        self.assertIsNone(self.model())
+
+    def test_source_tool_use_id_does_not_match(self):
+        self.source["message"]["content"][0]["id"] = "toolu_other"
+        self.assertIsNone(self.model())
 
 
 if __name__ == "__main__":

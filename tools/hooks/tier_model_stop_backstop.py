@@ -198,72 +198,110 @@ _SYNTHETIC_MODEL = "<synthetic>"
 _SCRIPT_ID_PREFIX = "repl_"
 
 
-def _is_script_call(entry: dict | None, tool_use_id: str) -> bool:
-    """A Code Mode script call (harmonic-forge#1642): a harness-written virtual
-    assistant record whose model is `"<synthetic>"` and whose tool_use id is
-    `repl_`-keyed."""
-    return (isinstance(entry, dict) and entry.get("isVirtual") is True
-            and (entry.get("message") or {}).get("model") == _SYNTHETIC_MODEL
-            and str(tool_use_id or "").startswith(_SCRIPT_ID_PREFIX))
+def _is_script_pair(call_entry: dict | None, result_entry: dict | None, tool_use_id: str) -> bool:
+    """A Code Mode script-call pair (harmonic-forge#1642): the one test both the
+    receipt fallback and model borrowing use, so the two cannot disagree on
+    which records are a script call's. Each condition is its own check."""
+    if not isinstance(call_entry, dict) or not isinstance(result_entry, dict):
+        return False
+    if call_entry.get("isVirtual") is not True:  # (a)
+        return False
+    if (call_entry.get("message") or {}).get("model") != _SYNTHETIC_MODEL:  # (b)
+        return False
+    if not str(tool_use_id or "").startswith(_SCRIPT_ID_PREFIX):  # (c)
+        return False
+    if result_entry.get("isVirtual") is not True:  # (d)
+        return False
+    content = (result_entry.get("message") or {}).get("content")
+    return isinstance(content, list) and any(  # (e)
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        and block.get("tool_use_id") == tool_use_id for block in content)
 
 
 def _record_result_text(entry: dict, block: dict, call: dict | None) -> str:
     """`_result_text(block)`, except for a Code Mode script call's result
     (harmonic-forge#1642): its block `content` is empty and its output sits in
-    the record's `toolUseResult`. That fallback is read only when BOTH records
-    of the pair are a script call's: this virtual user record with a `repl_`
-    id, and `call`, the assistant record that made the call with that id."""
+    the record's `toolUseResult`, read only when `call` and this record are a
+    script pair (`_is_script_pair`)."""
     text = _result_text(block)
-    tool_use_id = str(block.get("tool_use_id") or "")
     tool_use_result = entry.get("toolUseResult")
-    if (text != "" or entry.get("isVirtual") is not True
-            or not tool_use_id.startswith(_SCRIPT_ID_PREFIX)
-            or not isinstance(tool_use_result, dict)
-            or not _is_script_call(call, tool_use_id)):
+    if text != "":
+        return text
+    if not isinstance(tool_use_result, dict):
+        return text
+    if not _is_script_pair(call, entry, str(block.get("tool_use_id") or "")):
         return text
     return "\n".join(value for value in (tool_use_result.get("stdout"),
                                           tool_use_result.get("stderr"))
                      if isinstance(value, str))
 
 
+def _anchor_model(anchor: dict, by_uuid: dict[str, dict]) -> str | None:
+    """The REPL model an anchor names (harmonic-forge#1642): `anchor` must be a
+    non-sidechain user record carrying `sourceToolAssistantUUID` and a
+    tool_result, and that source a non-sidechain assistant record with a
+    non-empty, non-synthetic model and a `REPL` tool_use whose id the
+    tool_result answers. Anything else is None."""
+    if anchor.get("type") != "user":
+        return None
+    if anchor.get("isSidechain"):
+        return None
+    source_uuid = anchor.get("sourceToolAssistantUUID")
+    if not isinstance(source_uuid, str):
+        return None
+    content = (anchor.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    # The id match below needs a tool_result: an anchor with none names nothing.
+    result_ids = {block.get("tool_use_id") for block in content
+                  if isinstance(block, dict) and block.get("type") == "tool_result"}
+    source = by_uuid.get(source_uuid)
+    if not isinstance(source, dict):
+        return None
+    if source.get("type") != "assistant":
+        return None
+    if source.get("isSidechain"):
+        return None
+    message = source.get("message") or {}
+    model = message.get("model")
+    if not isinstance(model, str) or not model:
+        return None
+    if model == _SYNTHETIC_MODEL:
+        return None
+    source_content = message.get("content")
+    if not isinstance(source_content, list):
+        return None
+    for block in source_content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "REPL":
+            continue
+        if block.get("id") not in result_ids:
+            continue
+        return model
+    return None
+
+
 def _repl_model(start_uuid: str, by_uuid: dict[str, dict]) -> str | None:
     """The model of the REPL call that ran the script call recorded at
-    `start_uuid` (harmonic-forge#1642), from the transcript's own links: the
-    `parentUuid` chain to the REPL's tool_result record, whose
-    `sourceToolAssistantUUID` names the REPL assistant record. None when the
-    chain is broken, leaves the scanned window, or does not match."""
-    seen: set[str] = set()
+    `start_uuid` (harmonic-forge#1642). The walk follows `parentUuid` through
+    virtual records only; the first non-virtual parent is the anchor, which
+    must be the REPL's tool_result (`_anchor_model`). Nothing walks past the
+    anchor: a broken chain, a repeated uuid, or a failed anchor is None."""
+    seen = {start_uuid}
     current = by_uuid.get(start_uuid)
-    while isinstance(current, dict):
+    for _ in range(len(by_uuid)):
+        if not isinstance(current, dict):
+            return None
         parent = current.get("parentUuid")
-        if not isinstance(parent, str) or parent in seen or parent not in by_uuid:
+        if not isinstance(parent, str) or parent in seen:
             return None
         seen.add(parent)
-        current = by_uuid[parent]
-        source_uuid = current.get("sourceToolAssistantUUID")
-        content = (current.get("message") or {}).get("content")
-        if current.get("type") != "user" or current.get("isSidechain") \
-                or not isinstance(source_uuid, str) or not isinstance(content, list):
-            continue
-        result_ids = {block.get("tool_use_id") for block in content
-                      if isinstance(block, dict) and block.get("type") == "tool_result"}
-        if not result_ids:
-            continue
-        source = by_uuid.get(source_uuid)
-        if not isinstance(source, dict) or source.get("type") != "assistant" \
-                or source.get("isSidechain"):
+        current = by_uuid.get(parent)
+        if not isinstance(current, dict):
             return None
-        message = source.get("message") or {}
-        model = message.get("model")
-        source_content = message.get("content")
-        if not isinstance(model, str) or not model or model == _SYNTHETIC_MODEL \
-                or not isinstance(source_content, list):
-            return None
-        if any(isinstance(block, dict) and block.get("type") == "tool_use"
-               and block.get("name") == "REPL" and block.get("id") in result_ids
-               for block in source_content):
-            return model
-        return None
+        if current.get("isVirtual") is not True:
+            return _anchor_model(current, by_uuid)
     return None
 
 
@@ -357,9 +395,10 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
     calls: list[tuple[str, str | None, str]] = []
     results: dict[str, str] = {}
     script_results: dict[str, tuple[dict, dict]] = {}
+    result_records: dict[str, dict] = {}
     call_records: dict[str, dict] = {}
     by_uuid: dict[str, dict] = {}
-    pending: list[tuple[int, str]] = []
+    pending: list[tuple[int, dict]] = []
     reached_turn_start = False
     try:
         size = os.path.getsize(transcript_path)
@@ -383,14 +422,17 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
                         answered.add(block.get("tool_use_id"))
+                        tool_use_id = block.get("tool_use_id") or ""
+                        # harmonic-forge#1642: the newest record per id, the
+                        # same rule as call_records, on every pass.
+                        result_records.setdefault(tool_use_id, entry)
                         if block.get("is_error"):
                             errored.add(block.get("tool_use_id"))
                         elif with_receipts:
-                            tool_use_id = block.get("tool_use_id") or ""
                             results[tool_use_id] = _result_text(block)
-                            # harmonic-forge#1642: met before its call in this
-                            # backward walk; admitted after the walk.
-                            script_results[tool_use_id] = (entry, block)
+                            # met before its call in this backward walk;
+                            # admitted after the walk.
+                            script_results.setdefault(tool_use_id, (entry, block))
             elif entry.get("type") == "assistant":
                 model = (entry.get("message") or {}).get("model")
                 for block in content:
@@ -402,15 +444,16 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
                         if isinstance(command, str):
                             tool_use_id = block.get("id") or ""
                             call_records.setdefault(tool_use_id, entry)
-                            if _is_script_call(entry, tool_use_id) \
-                                    and isinstance(entry.get("uuid"), str):
-                                pending.append((len(calls), entry["uuid"]))
+                            pending.append((len(calls), entry))
                             calls.append((command, model, tool_use_id))
     except OSError:
         return ([], False, []) if with_receipts else ([], False)
     truncated = not reached_turn_start and size > _bytes_scanned(size)
-    for index, record_uuid in pending:
-        repl_model = _repl_model(record_uuid, by_uuid)
+    for index, call_entry in pending:
+        tool_use_id = calls[index][2]
+        if not _is_script_pair(call_entry, result_records.get(tool_use_id), tool_use_id):
+            continue
+        repl_model = _repl_model(call_entry.get("uuid"), by_uuid)
         if repl_model is not None:
             command, _model, tool_use_id = calls[index]
             calls[index] = (command, repl_model, tool_use_id)
