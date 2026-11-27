@@ -163,7 +163,8 @@ class TC2TC3Worktrees(RootsCase):
         group, which misses `/hrse2-7-impl` (Codex P2 #3)."""
         paths = [str(self.root / ".worktrees" / "hrse2-7-impl"),
                  str(Path.home() / "Harmonic_Projects" / ".worktrees" / "hrse2-7-impl"),
-                 "/srv/forge-worktrees/hrse2-7-impl", "/tmp/hrse2-7-impl", "/hrse2-7-impl"]
+                 "/srv/forge-worktrees/hrse2-7-impl", "/tmp/hrse2-7-impl", "/hrse2-7-impl",
+                 "/srv/a\nb/hrse2-7-impl"]
         probe = ("import json, subprocess, model_tier_gate as m\n"
                  "m._run = lambda *a, **k: subprocess.CompletedProcess(a, 0, '', '')\n"
                  f"print(json.dumps([m.resolve_issue_target(p) for p in {paths!r}]))\n")
@@ -173,6 +174,16 @@ class TC2TC3Worktrees(RootsCase):
                 proc = self.py(probe)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(json.loads(proc.stdout), [[7, "hrse"]] * len(paths))
+
+    def test_tc7_no_operator_projects_literal_in_the_six_files(self) -> None:
+        """AC3 / TC7 as the handoff states it: a grep, comments included."""
+        six = ["tools/hooks/block_lane1_status_claims.py", "tools/hooks/model_tier_gate.py",
+               "tools/hooks/worktree_issue.py", "tools/hooks/stale_worktrees.py",
+               "tools/lane/_agent_registry.sh", "tools/lane/lane1_rebase.py"]
+        literal = "Harmonic" + "_Projects"
+        for rel in six:
+            with self.subTest(file=rel):
+                self.assertNotIn(literal, (TOOLS.parent / rel).read_text(encoding="utf-8"))
 
     def test_tier_gate_reads_no_projects_root(self) -> None:
         """K-B2 (harmonic-forge#1529 reforge): the tier gate's fallback has no

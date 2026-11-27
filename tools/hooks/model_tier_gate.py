@@ -146,7 +146,7 @@ HINTED_BRANCH_ISSUE_RE = re.compile(
 #: worktree with no branch). A miss here SKIPS the gate, so this pattern has no
 #: root: it matches every absolute `.../hrse2-N-impl` directory, whatever
 #: `projects_root` says or whether it is set (harmonic-forge#1529 reforge).
-#: Every path main matched (`/tmp/...`, `~/Harmonic_Projects/.worktrees/...`,
+#: Every path main matched (`/tmp/...` or the operator's home worktree root,
 #: either one realpath-ed) gives the identical answer, so this is a pointwise
 #: superset of main in every config state, with no config branch to regress --
 #: anchoring to configured roots could only ever match fewer paths than main in
@@ -154,7 +154,8 @@ HINTED_BRANCH_ISSUE_RE = re.compile(
 #: which already accepts any `/tmp/hrse2-N-impl`. Residual: a non-worktree
 #: directory named `hrse2-N-impl` reached through this fallback is gated as
 #: hrse N, which fails closed.
-WORKTREE_ISSUE_RE = re.compile(r"^/(?:.*/)?hrse2-(?P<number>\d+)-impl$")
+#: DOTALL: `.` must span a newline in an ancestor name, or that path would miss.
+WORKTREE_ISSUE_RE = re.compile(r"^/(?:.*/)?hrse2-(?P<number>\d+)-impl$", re.DOTALL)
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),
     "harmonic-forge": ("vitalharmony/harmonic-forge", "3"),

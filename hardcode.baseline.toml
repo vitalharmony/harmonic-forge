@@ -2074,12 +2074,6 @@ count = 1
 
 [[finding]]
 rule = "projects-root"
-path = "tools/hooks/lane3_codex_write_guard.py"
-text = "\"Codex Lane 3 may write only inside ~/Harmonic_Projects/testplan/ \""
-count = 1
-
-[[finding]]
-rule = "projects-root"
 path = "tools/hooks/verify_codex_registration.py"
 text = "Path.home() / \"Harmonic_Projects\" / \"HRSE2\" / \".codex\" / \"hooks.json\","
 count = 1

@@ -107,8 +107,7 @@ class ApplyPatchTests(unittest.TestCase):
                 self.assertEqual(payload["permissionDecision"], "deny")
                 self.assertEqual(
                     payload["permissionDecisionReason"],
-                    "Codex Lane 3 may write only inside "
-                    "~/Harmonic_Projects/testplan/ (harmonic-forge#644).",
+                    f"Codex Lane 3 may write only inside {TESTPLAN}/ (harmonic-forge#644).",
                 )
 
     def test_delete_outside_testplan_denied(self):
