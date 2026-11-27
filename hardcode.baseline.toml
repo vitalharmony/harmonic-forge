@@ -16,8 +16,8 @@ count = 1
 
 [[finding]]
 rule = "codex-path"
-path = "tools/lane/_cli_launch.sh"
-text = "--path \"${HOME}/Harmonic_Projects/HRSE2/.codex/hooks.json\" \\"
+path = "tools/lane/baseline_capture.py"
+text = "CODEX_HOOK_PATH = \"~/Harmonic_Projects/HRSE2/.codex/hooks.json\""
 count = 1
 
 [[finding]]
@@ -268,8 +268,8 @@ count = 1
 
 [[finding]]
 rule = "gh-slot"
-path = "tools/lane/_agent_registry.sh"
-text = "[claude:1]=\"\" [claude:2]=\"\" [claude:3]=\"/usr/local/share/hrse-gate/claude-lane3.json\""
+path = "tools/lane/baseline_capture.py"
+text = "LANE3_POLICY = \"/usr/local/share/hrse-gate/claude-lane3.json\""
 count = 1
 
 [[finding]]
@@ -1774,8 +1774,8 @@ count = 1
 
 [[finding]]
 rule = "project-name"
-path = "tools/lane/_agent_registry.sh"
-text = "[claude:1]=\"\" [claude:2]=\"\" [claude:3]=\"/usr/local/share/hrse-gate/claude-lane3.json\""
+path = "tools/lane/baseline_capture.py"
+text = "LANE3_POLICY = \"/usr/local/share/hrse-gate/claude-lane3.json\""
 count = 1
 
 [[finding]]
@@ -2188,8 +2188,8 @@ count = 1
 
 [[finding]]
 rule = "projects-root"
-path = "tools/lane/_cli_launch.sh"
-text = "--path \"${HOME}/Harmonic_Projects/HRSE2/.codex/hooks.json\" \\"
+path = "tools/lane/baseline_capture.py"
+text = "CODEX_HOOK_PATH = \"~/Harmonic_Projects/HRSE2/.codex/hooks.json\""
 count = 1
 
 [[finding]]

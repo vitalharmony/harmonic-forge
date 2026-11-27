@@ -97,6 +97,31 @@ _lane_cleanup() {
   return 0
 }
 
+# lane_inhibitor <who> <why> -- harmonic-forge#1531: the platform step, chosen
+# once before the launch, setting the array `lane_inhibit` (the prefix
+# `lane_run_with_cleanup` runs the CLI under). `systemd-inhibit` only when a
+# no-op probe through it succeeds -- present is not working (WSL with systemd
+# off) -- with the launch's own `--what` and `--no-ask-password`, so a polkit
+# prompt cannot stall it; else `caffeinate -i` (macOS); else no prefix and one
+# warning. `HF_INHIBIT_PROBE` tells baseline_capture's stub not to record it.
+lane_inhibitor() {
+  local who="$1" why="$2"
+  if command -v systemd-inhibit >/dev/null 2>&1 \
+     && HF_INHIBIT_PROBE=1 timeout 5 systemd-inhibit --no-ask-password --what=sleep:idle \
+          --mode=block true >/dev/null 2>&1; then
+    lane_inhibit=(systemd-inhibit --what=sleep:idle --who="$who" --why="$why" --mode=block)
+  elif command -v caffeinate >/dev/null 2>&1; then
+    lane_inhibit=(caffeinate -i)
+  else
+    lane_inhibit=()
+    if [ -n "${WSL_DISTRO_NAME:-}" ] || [ -e /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+      printf '%s\n' "${who}: no sleep inhibitor works here (systemd is off) -- keep Windows awake while the session runs (harmonic-forge#1531)." >&2
+    else
+      printf '%s\n' "${who}: no sleep inhibitor (systemd-inhibit or caffeinate) works here -- the host may sleep during the session (harmonic-forge#1531)." >&2
+    fi
+  fi
+}
+
 # Run "$@" (the systemd-inhibit invocation) as an ordinary foreground child
 # instead of `exec`-ing it, so this shell survives to run cleanup once the
 # child returns -- whether that is a normal exit or termination by a signal

@@ -26,7 +26,21 @@ def _registry() -> tuple[str, int]:
     text = REGISTRY.read_text(encoding="utf-8")
     path = _PATH_RE.search(text)
     owner = _OWNER_RE.search(text)
-    return (path.group(1) if path else "", int(owner.group(1)) if owner and owner.group(1) else 0)
+    value = path.group(1) if path else ""
+    if value.startswith("@instance:"):
+        # harmonic-forge#1531: the launcher resolves this from instance.toml; so
+        # does this check, the same way (absent or invalid reads as no policy).
+        import sys  # noqa: PLC0415
+        settings = str(REGISTRY.parents[1] / "settings")
+        if settings not in sys.path:
+            sys.path.insert(0, settings)
+        import instance  # noqa: PLC0415
+        try:
+            found = instance.lane3_policy() if value == "@instance:lane3_policy" else None
+        except ValueError:
+            found = None
+        value = str(found) if found else ""
+    return (value, int(owner.group(1)) if owner and owner.group(1) else 0)
 
 
 def overflow_uid() -> int | None:

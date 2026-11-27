@@ -23,9 +23,27 @@ def absent(path):
 
 class Helper(unittest.TestCase):
     def test_the_registry_names_the_installed_path_and_root(self):
-        path, owner = policy._registry()
-        self.assertEqual(path, "/usr/local/share/hrse-gate/claude-lane3.json")
-        self.assertEqual(owner, 0)
+        """harmonic-forge#1531: the registry names `@instance:lane3_policy`, resolved
+        from instance.toml exactly as the launcher does; absent reads as none."""
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        self.assertIn('[claude:3]="@instance:lane3_policy"', policy.REGISTRY.read_text())
+        with tempfile.TemporaryDirectory() as xdg:
+            cfg = os.path.join(xdg, "harmonic-forge")
+            os.makedirs(cfg)
+            toml = os.path.join(cfg, "instance.toml")
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": xdg}):
+                with open(toml, "w") as f:
+                    f.write('lane3_policy = "/opt/gate/claude-lane3.json"\n')
+                path, owner = policy._registry()
+                self.assertEqual((path, owner), ("/opt/gate/claude-lane3.json", 0))
+                with open(toml, "w") as f:
+                    f.write("")
+                self.assertEqual(policy._registry()[0], "")
+                with open(toml, "w") as f:
+                    f.write('lane3_policy = "relative/x.json"\n')
+                self.assertEqual(policy._registry()[0], "")
 
     def test_root_owned_is_trusted(self):
         self.assertIsNone(policy.lane3_policy_untrusted(lstat=stat_as(0)))

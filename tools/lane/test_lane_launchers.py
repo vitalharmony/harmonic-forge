@@ -1078,10 +1078,20 @@ class ClaudeLane3Settings(unittest.TestCase):
         (lane_dir / "policies").mkdir()
         reg = lane_dir / "_agent_registry.sh"
         text = reg.read_text()
-        assert text.count(self.INSTALLED) == 1 and text.count('[claude]="0"') == 1
-        reg.write_text(text.replace(self.INSTALLED, str(policy_path))
-                       .replace('[claude]="0"', f'[claude]="{owner}"'))
+        assert text.count('[claude:3]="@instance:lane3_policy"') == 1 \
+            and text.count('[claude]="0"') == 1
+        reg.write_text(text.replace('[claude]="0"', f'[claude]="{owner}"'))
+        # harmonic-forge#1531: the installed path now comes from instance.toml.
+        self._declare_policy(tree, str(policy_path))
         return lane_dir
+
+    @staticmethod
+    def _declare_policy(tree: _FixtureTree, value: str) -> None:
+        toml = tree.instance_toml
+        text = toml.read_text()
+        assert text.count(f'lane3_policy = "{bc.LANE3_POLICY}"') == 1
+        toml.write_text(text.replace(f'lane3_policy = "{bc.LANE3_POLICY}"',
+                                     f'lane3_policy = "{value}"'))
 
     def _install(self, tree: _FixtureTree, content: str, mode: int = 0o444,
                  dir_mode: int = 0o755, manifest_sha: str | None = None) -> Path:
@@ -1122,10 +1132,31 @@ class ClaudeLane3Settings(unittest.TestCase):
             self.assertEqual(args.count("--settings"), 1)
             self.assertEqual(_settings_value(cell)["permissions"], policy_permissions)
 
-    def test_the_registry_names_an_absolute_installed_path(self):
-        """C1b: never the repo copy, which any session can edit."""
+    def test_the_registry_defers_to_instance_toml(self):
+        """C1b, harmonic-forge#1531: the registry names instance.toml, never the
+        repo copy any session can edit; the operator's value is the installed path."""
         text = (LANE_DIR / "_agent_registry.sh").read_text()
-        self.assertIn(f'[claude:3]="{self.INSTALLED}"', text)
+        self.assertIn('[claude:3]="@instance:lane3_policy"', text)
+        self.assertEqual(bc.LANE3_POLICY, self.INSTALLED)
+
+    def test_a_relative_or_symlinked_lane3_policy_refuses(self):
+        """harmonic-forge#1531: a user-chosen path is refused when it is relative,
+        or when any ancestor is a symlink (the lstats see only the last hops)."""
+        with _FixtureTree() as tree:
+            policy = self._install(tree, self.POLICY.read_text())
+            lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
+            link = tree.root / "linked"
+            link.symlink_to(policy.parent)
+            for value, why in (("relative/claude-lane3.json", "relative"),
+                               (str(link / policy.name), "symlinked ancestor")):
+                with self.subTest(why=why):
+                    toml = tree.instance_toml
+                    text = toml.read_text()
+                    import re as _re  # noqa: PLC0415
+                    toml.write_text(_re.sub(r'(?m)^lane3_policy = ".*"$',
+                                            f'lane3_policy = "{value}"', text))
+                    cell = self._run(tree, lane_dir)
+                    self.assertFalse(cell["launched"], why)
 
     def test_a_caller_cannot_replace_the_lane3_settings(self):
         """`--settings` is single-valued, so a caller's own would replace the
@@ -1988,10 +2019,11 @@ class PlatformRulesSync(unittest.TestCase):
         for lane in ("1", "2", "3"):
             launcher = _code_only(LANE_DIR / f"lane{lane}")
             source_idx = launcher.find("_cli_launch.sh")
-            inhibit_idx = launcher.rfind("systemd-inhibit")
+            # harmonic-forge#1531: the launch runs under `lane_inhibit`.
+            inhibit_idx = launcher.rfind("lane_run_with_cleanup")
             self.assertGreater(inhibit_idx, source_idx,
                                 f"lane{lane}: _cli_launch.sh must be sourced "
-                                "before the final systemd-inhibit invocation")
+                                "before the final launch")
 
     def test_codex_startup_refuses_stale_gate_registration(self):
         """A Codex session must not start before the merge/close gates load."""

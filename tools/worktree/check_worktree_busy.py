@@ -100,6 +100,13 @@ def main() -> int:
         print(f"check-worktree-busy: '{worktree}' is not a directory", file=sys.stderr)
         return 2
 
+    # harmonic-forge#1531: a host with no /proc (macOS) cannot tell. Exit 3, not
+    # the busy 1: only the launcher refresh treats 3 as not busy (with a
+    # warning); gate-checkout and lane1_rebase keep refusing on it.
+    if not Path("/proc").is_dir():
+        print("check-worktree-busy: cannot tell (no /proc)", file=sys.stderr)
+        return 3
+
     exclude = ancestor_pids(os.getpid())
     caller_lane = os.environ.get("LANE") or None
     found = busy_pids(worktree, exclude, caller_lane)

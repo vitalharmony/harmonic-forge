@@ -87,8 +87,16 @@ AC8_AGENTS = ("claude", "codex")
 
 CAPTURED_ENV_KEYS = ("LANE", "LANE_AGENT", "GH_CONFIG_DIR", "GH_TOKEN")
 
+#: harmonic-forge#1531: the operator's values, written into each fixture's
+#: instance.toml so a capture launches exactly as the frozen tuples recorded.
+LANE3_POLICY = "/usr/local/share/hrse-gate/claude-lane3.json"
+CODEX_HOOK_PATH = "~/Harmonic_Projects/HRSE2/.codex/hooks.json"
+
 _STUB_INHIBIT = """#!/usr/bin/env python3
 import json, os, sys
+# harmonic-forge#1531: the launcher's no-op probe succeeds and is never recorded.
+if os.environ.get("HF_INHIBIT_PROBE"):
+    sys.exit(0)
 payload = {
     "argv": ["systemd-inhibit"] + sys.argv[1:],
     "cwd": os.getcwd(),
@@ -295,7 +303,12 @@ def write_overlay_declaration(home: Path, value: str = "operator") -> Path:
         raise ValueError(f"refusing to write the lane hook overlay declaration under the real home {real}")
     path = instance.config_path({"XDG_CONFIG_HOME": str(Path(home) / ".config")})
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f'lane_hook_overlay = "{value}"\n', encoding="utf-8")
+    # harmonic-forge#1531: the two launch inputs that moved from the registry to
+    # instance.toml, declared as on the operator's machine so the frozen launch
+    # tuples are reproduced byte-identical.
+    path.write_text(f'lane_hook_overlay = "{value}"\n'
+                    f'lane3_policy = "{LANE3_POLICY}"\n'
+                    f'codex_hook_paths = ["{CODEX_HOOK_PATH}"]\n', encoding="utf-8")
     return path
 
 

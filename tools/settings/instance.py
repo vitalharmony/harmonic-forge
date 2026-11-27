@@ -28,6 +28,7 @@ root as written, the one view a launch and the onboarding report share.
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -203,3 +204,54 @@ def resolve_forge_root(launcher_checkout: Path,
     """(resolved forge root, its source): `launch_view` without the set."""
     _set, root, source, _written = launch_view(launcher_checkout, environ)
     return root, source
+
+
+def lane3_policy(environ: Mapping[str, str] | None = None) -> Path | None:
+    """The installed Lane 3 policy file (harmonic-forge#1531), or None when the
+    key is absent (Lane 3 then launches without one, harmonic-forge#878). The
+    value must be an absolute path, never `~/`; anything else raises ValueError.
+    Ownership and immutability are the launcher's check, not this reader's."""
+    path, data = _read(environ)
+    if data is None or "lane3_policy" not in data:
+        return None
+    value = data["lane3_policy"]
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValueError(f"{path}: `lane3_policy` must be an absolute path, got {value!r}")
+    return Path(value)
+
+
+def codex_hook_paths(environ: Mapping[str, str] | None = None) -> list[Path]:
+    """Extra `.codex/hooks.json` files a Codex launch checks besides its own
+    checkout's (harmonic-forge#1531): empty when absent. A non-list, or an entry
+    that is not an absolute or `~/` string, raises ValueError."""
+    path, data = _read(environ)
+    if data is None or "codex_hook_paths" not in data:
+        return []
+    value = data["codex_hook_paths"]
+    if (not isinstance(value, list)
+            or not all(isinstance(v, str) and (v.startswith("/") or v.startswith("~/"))
+                       for v in value)):
+        raise ValueError(f"{path}: `codex_hook_paths` must be a list of absolute paths, "
+                         f"got {value!r}")
+    return [Path(v).expanduser() for v in value]
+
+
+def _main(argv: list[str]) -> int:
+    """`instance.py get lane3_policy|codex_hook_paths`: each value NUL-terminated
+    (nothing when absent), exit 0; an invalid value prints the reason, exit 1."""
+    readers = {"lane3_policy": lambda: [p for p in [lane3_policy()] if p],
+               "codex_hook_paths": codex_hook_paths}
+    if len(argv) != 3 or argv[1] != "get" or argv[2] not in readers:
+        print("usage: instance.py get " + "|".join(readers), file=sys.stderr)
+        return 2
+    try:
+        values = readers[argv[2]]()
+    except ValueError as exc:
+        print(f"instance: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write("".join(f"{v}\0" for v in values))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv))

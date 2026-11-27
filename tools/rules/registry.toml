@@ -1546,7 +1546,7 @@ id = "R-0182"
 file = "3-lane-protocol.md"
 anchor = "Per-Lane Working Directories — git worktree"
 statement = "A lane session starts via the lane1/lane2/lane3 launcher scripts rather than a bare CLI invocation; lane3 refuses to start on unrepaired drift rather than repairing it."
-text_sha = "33e159001193f7fd"
+text_sha = "c8a649493feb13cf"
 hooks = []
 folded_obligations = ["`lane3` refuses to start on unrepaired drift rather than repairing it."]
 

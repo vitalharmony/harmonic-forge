@@ -342,8 +342,12 @@ declare -A AGENT_LANE_POLICY=(
   # carries only its own rule. An ABSOLUTE value is the installed, root-owned
   # copy (tools/gate/install-hrse-gate.md); the repo's
   # policies/claude-lane3.json is only its reviewed source. Lanes 1 and 2 stay
-  # empty: they gain nothing.
-  [claude:1]="" [claude:2]="" [claude:3]="/usr/local/share/hrse-gate/claude-lane3.json"
+  # empty: they gain nothing. harmonic-forge#1531: `@instance:<key>` names the
+  # installed path through instance.toml (the operator's is
+  # `lane3_policy = "/usr/local/share/hrse-gate/claude-lane3.json"`); absent
+  # launches without one. AGENT_POLICY_CHECK and AGENT_POLICY_REQUIRED_OWNER
+  # stay here, never in instance.toml.
+  [claude:1]="" [claude:2]="" [claude:3]="@instance:lane3_policy"
   [codex:1]=""  [codex:2]=""  [codex:3]=""
 )
 

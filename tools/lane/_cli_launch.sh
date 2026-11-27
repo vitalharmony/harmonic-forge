@@ -87,11 +87,20 @@ lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 # Codex loads hook registration when the session starts. Refuse to start a
 # Codex lane while either repo lacks the merge/close/preclose gates; otherwise
 # a long-lived session can retain an unguarded hook set for its whole lifetime.
+# harmonic-forge#1531: the extra repos checked come from instance.toml
+# `codex_hook_paths` (absent: only this checkout); an invalid value refuses.
 if [ "$_lane_agent" = codex ]; then
+  mapfile -d '' -t _lane_codex_extra < <(rc=0; python3 -I -E "$_lane_dir/../settings/instance.py" get codex_hook_paths || rc=$?; printf '%s\0' "$rc")
+  [ "${_lane_codex_extra[-1]}" = 0 ] \
+    || _lane_launch_die "instance.toml codex_hook_paths is invalid (see the reason above) -- refusing to launch (harmonic-forge#1531)"
+  unset '_lane_codex_extra[-1]'
+  _lane_codex_args=()
+  for _p in "${_lane_codex_extra[@]}"; do _lane_codex_args+=(--path "$_p"); done
   python3 "$_lane_dir/../hooks/verify_codex_registration.py" \
     --path "$PWD/.codex/hooks.json" \
-    --path "${HOME}/Harmonic_Projects/HRSE2/.codex/hooks.json" \
+    "${_lane_codex_args[@]}" \
     || _lane_launch_die "Codex hook registration is incomplete -- refusing to start an unguarded session"
+  unset _lane_codex_extra _lane_codex_args _p
 fi
 
 ## AC9 -- minimum-version check
@@ -255,7 +264,10 @@ fi
 #  - a same-user write of lane_hook_overlay = "none" to
 #    ~/.config/harmonic-forge/instance.toml, which drops the operator overlay at
 #    the next launch; every launch prints which overlay it built, on stderr
-#    only (harmonic-forge#1525).
+#    only (harmonic-forge#1525);
+#  - a same-user write of codex_hook_paths = [] to instance.toml, which drops
+#    the HRSE2 Codex gate-registration check at the next Codex launch, and a
+#    Codex launch is not XDG-pinned (harmonic-forge#1531).
 # The set guarantees what reaches the launch, and that its wiring cannot be
 # dropped or narrowed without the snapshot test failing. It does not guarantee
 # that the session's later environment leaves the hooks working.
@@ -449,6 +461,20 @@ _lane_settings_at=${#cli_args[@]}
 _lane_policy_path=""
 _lane_policy_flag=""
 _lane_policy_file="$(registry_lookup AGENT_LANE_POLICY "$_lane_agent:$LANE")"
+# harmonic-forge#1531: `@instance:<key>` is resolved from instance.toml; an
+# absent key means no policy (the launch proceeds without one, #878's safe
+# direction), an invalid one refuses. The owner and immutability checks below
+# still apply to whatever path it names.
+case "$_lane_policy_file" in
+  @instance:*)
+    _lane_policy_key="${_lane_policy_file#@instance:}"
+    mapfile -d '' -t _lane_policy_vals < <(rc=0; python3 -I -E "$_lane_dir/../settings/instance.py" get "$_lane_policy_key" || rc=$?; printf '%s\0' "$rc")
+    [ "${_lane_policy_vals[-1]}" = 0 ] \
+      || _lane_launch_die "instance.toml $_lane_policy_key is invalid (see the reason above) -- refusing to launch (harmonic-forge#1531)"
+    _lane_policy_file="${_lane_policy_vals[0]:-}"
+    [ "${#_lane_policy_vals[@]}" -gt 1 ] || _lane_policy_file=""
+    unset _lane_policy_key _lane_policy_vals ;;
+esac
 if [ -n "$_lane_policy_file" ]; then
   _lane_policy_flag="$(registry_lookup AGENT_POLICY_FLAG "$_lane_agent")"
   [ -n "$_lane_policy_flag" ] \
@@ -484,6 +510,10 @@ if [ -n "$_lane_policy_file" ]; then
           || _lane_launch_die "policy file is not an immutable JSON object: $_lane_policy_path must be owned by uid ${_lane_policy_owner:-?}, not group/other-writable, in a directory with the same property, parse as a JSON object, and match the policy_sha256 of manifest.json beside it -- refusing to launch $lane_agent_display with a policy the agent could have widened (harmonic-forge#878)"
 import hashlib, json, os, stat, sys
 path, owner = sys.argv[1], int(sys.argv[2])
+# harmonic-forge#1531: the path is user-chosen (instance.toml), so no symlink
+# or `.`/`..` anywhere in its chain -- the lstats below see only the last hops.
+if os.path.realpath(path) != path:
+    sys.exit(1)
 manifest = os.path.join(os.path.dirname(path), "manifest.json")
 for p in (path, os.path.dirname(path), manifest):
     st = os.lstat(p)

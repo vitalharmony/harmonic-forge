@@ -69,10 +69,8 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lane_cleanup.sh"
 
 # harmonic-forge#1014: pin the pane title only here, after every refusal in
 # this wrapper and in _cli_launch.sh, immediately before the launch.
+# harmonic-forge#1531: the sleep inhibitor is chosen first, so the pin
+# stays immediately before the launch.
+lane_inhibitor "lane1" "Lane 1 $lane_agent_display session"
 lane_pin_title
-lane_run_with_cleanup systemd-inhibit \
-  --what=sleep:idle \
-  --who="lane1" \
-  --why="Lane 1 $lane_agent_display session" \
-  --mode=block \
-  "${cli_args[@]}"
+lane_run_with_cleanup "${lane_inhibit[@]}" "${cli_args[@]}"
