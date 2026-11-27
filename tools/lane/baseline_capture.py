@@ -306,9 +306,13 @@ def write_overlay_declaration(home: Path, value: str = "operator") -> Path:
     # harmonic-forge#1531: the two launch inputs that moved from the registry to
     # instance.toml, declared as on the operator's machine so the frozen launch
     # tuples are reproduced byte-identical.
+    # harmonic-forge#1529 (option A): a Codex Lane 2/3 launch refuses without a
+    # projects_root, and `~/Harmonic_Projects` keeps the frozen launch tuples'
+    # `<HOME>/Harmonic_Projects/...` add-dirs byte-identical.
     path.write_text(f'lane_hook_overlay = "{value}"\n'
                     f'lane3_policy = "{LANE3_POLICY}"\n'
-                    f'codex_hook_paths = ["{CODEX_HOOK_PATH}"]\n', encoding="utf-8")
+                    f'codex_hook_paths = ["{CODEX_HOOK_PATH}"]\n'
+                    'projects_root = "~/Harmonic_Projects"\n', encoding="utf-8")
     return path
 
 

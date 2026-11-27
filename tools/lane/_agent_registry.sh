@@ -379,8 +379,10 @@ declare -A AGENT_LANE_POLICY=(
 # and injects one `--add-dir` per entry. Every Codex lane gets its private
 # TMPDIR root `.cache/codex-lane-tmp/lane<N>` (the launcher also exports
 # TMPDIR there), because `/tmp` and `$TMPDIR` are no longer writable roots
-# (AGENT_SESSION_FLAGS above). Lane 2 gains `Harmonic_Projects/.worktrees`,
-# the per-issue worktree root that replaced `/tmp/<repo>-<N>-impl`. Lanes 2
+# (AGENT_SESSION_FLAGS above). Lane 2 gains `@projects/.worktrees`,
+# the per-issue worktree root that replaced `/tmp/<repo>-<N>-impl`; an entry
+# starting `@projects/` is under instance.toml `projects_root`, not $HOME
+# (harmonic-forge#1529), expanded by `registry_add_dirs` below. Lanes 2
 # and 3 gain `.cache/cymagraph`, where HRSE2's `mise run restart`/`pc-up`/
 # `gate-restart` keep the host-wide launch lock and process-compose log
 # (hrse PR-A of harmonic-forge#756). Lane 1 is Claude in practice; its Codex
@@ -388,9 +390,36 @@ declare -A AGENT_LANE_POLICY=(
 declare -A AGENT_LANE_ADD_DIR=(
   [claude:1]="" [claude:2]="" [claude:3]=""
   [codex:1]=".cache/codex-lane-tmp/lane1 .claude/state/preclose"
-  [codex:2]="Harmonic_Projects/.worktrees .cache/codex-lane-tmp/lane2 .cache/cymagraph"
-  [codex:3]="Harmonic_Projects/testplan .cache/codex-lane-tmp/lane3 .cache/cymagraph"
+  [codex:2]="@projects/.worktrees .cache/codex-lane-tmp/lane2 .cache/cymagraph"
+  [codex:3]="@projects/testplan .cache/codex-lane-tmp/lane3 .cache/cymagraph"
 )
+
+# registry_add_dirs <agent:lane> -- harmonic-forge#1529: the slot's add-dirs as
+# absolute paths, NUL-terminated, the one expansion both the launcher (step 4b)
+# and queue_resume_args.sh use. `@projects/<sub>` is under the projects root
+# `roots.py projects` prints; a plain entry is under $HOME. A `@projects/` entry
+# with no root configured returns 1, naming the setting, and prints nothing.
+registry_add_dirs() {
+  local slot entries entry root="" have_root=0 out=()
+  slot="$(registry_lookup AGENT_LANE_ADD_DIR "$1")"
+  read -ra entries <<<"$slot"
+  for entry in "${entries[@]}"; do
+    case "$entry" in
+      @projects/*)
+        if [ "$have_root" = 0 ]; then
+          root="$(python3 -I -E "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../settings/roots.py" projects)" || root=""
+          have_root=1
+        fi
+        if [ -z "$root" ]; then
+          printf '%s\n' "agent registry: $1 needs instance.toml projects_root for '$entry' -- set it (harmonic-forge#1529)" >&2
+          return 1
+        fi
+        out+=("$root/${entry#@projects/}") ;;
+      *) out+=("$HOME/$entry") ;;
+    esac
+  done
+  [ "${#out[@]}" -eq 0 ] || printf '%s\0' "${out[@]}"
+}
 declare -A AGENT_LANE_SANDBOX=(
   [claude:1]="" [claude:2]="" [claude:3]=""
   [codex:1]="danger-full-access"  [codex:2]="danger-full-access"  [codex:3]="danger-full-access"

@@ -353,9 +353,10 @@ class IssueTargetTests(unittest.TestCase):
             self.assertEqual(m.resolve_issue_target("/tmp/hrse2-1099-impl"), (1099, "hrse"))
 
     def test_detached_worktree_under_the_new_root_is_a_known_target(self):
-        """harmonic-forge#756: worktrees moved to ~/Harmonic_Projects/.worktrees;
-        the legacy /tmp root (above) is still accepted during the migration."""
-        new_root = Path.home() / "Harmonic_Projects" / ".worktrees" / "hrse2-1099-impl"
+        """harmonic-forge#756: worktrees moved to <projects root>/.worktrees
+        (harmonic-forge#1529); the legacy /tmp root (above) is still accepted."""
+        self.assertIsNotNone(m._PROJECT_WORKTREES, "run under tools/run_tests.py")
+        new_root = m._PROJECT_WORKTREES / "hrse2-1099-impl"
         with patch.object(m, "_run", return_value=_completed("")):
             self.assertEqual(m.resolve_issue_target(str(new_root)), (1099, "hrse"))
             for other in ("/var/tmp/hrse2-1099-impl",

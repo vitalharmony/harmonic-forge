@@ -17,7 +17,11 @@ from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 GUARD = HOOK_DIR / "lane3_codex_write_guard.py"
-TESTPLAN = Path.home() / "Harmonic_Projects" / "testplan"
+sys.path.insert(0, str(HOOK_DIR.parent / "settings"))
+import roots  # noqa: E402  (harmonic-forge#1529: the run's configured projects root)
+
+TESTPLAN = roots.under_projects("testplan")
+assert TESTPLAN is not None, "run under tools/run_tests.py, which declares projects_root"
 
 
 def run_guard(payload: dict, lane: str | None = "3", host: str | None = None) -> str:

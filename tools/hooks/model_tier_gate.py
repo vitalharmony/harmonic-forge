@@ -62,7 +62,9 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "settings"))
 from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
+import roots  # noqa: E402  (harmonic-forge#1529: total, never raises)
 import route_floor_marker  # noqa: E402
 import session_model  # noqa: E402
 from session_model import _tail_lines  # noqa: E402,F401 -- re-exported; one bounded reader
@@ -143,17 +145,21 @@ HINTED_BRANCH_ISSUE_RE = re.compile(
     r"^[\w.-]+/(?P<hint>hrse|harmonic-forge|forge|h|f)-?(?P<number>\d+)-"
 )
 # harmonic-forge#756: per-issue worktrees moved from `/tmp` to
-# `~/Harmonic_Projects/.worktrees/` (a Codex lane can no longer write `/tmp`).
+# `<projects root>/.worktrees/` (a Codex lane can no longer write `/tmp`).
 # Both roots are accepted during the migration; `/tmp` is the legacy one. The
-# home root is matched both as written and resolved, because the cwd below is
-# `realpath`-ed and $HOME may itself be a symlink.
-_WORKTREE_ROOTS = tuple(dict.fromkeys((
-    "/tmp",
-    str(Path.home() / "Harmonic_Projects" / ".worktrees"),
-    os.path.realpath(Path.home() / "Harmonic_Projects" / ".worktrees"),
-)))
+# projects root (instance.toml `projects_root`, harmonic-forge#1529) is matched
+# both as written and resolved, because the cwd below is `realpath`-ed and the
+# root may sit behind a symlink.
+_PROJECT_WORKTREES = roots.under_projects(".worktrees")
+_WORKTREE_ROOTS = tuple(dict.fromkeys(("/tmp", *(
+    () if _PROJECT_WORKTREES is None
+    else (str(_PROJECT_WORKTREES), os.path.realpath(_PROJECT_WORKTREES))))))
+#: This is the gate's detached-HEAD fallback (a conflicted rebase), so matching
+#: FEWER worktrees skips the gate. With the root unset it matches MORE: any
+#: `.../.worktrees/hrse2-N-impl`, never only `/tmp` (pitch NC9, R-0371).
 WORKTREE_ISSUE_RE = re.compile(
     r"^(?:" + "|".join(re.escape(root) for root in _WORKTREE_ROOTS)
+    + (r"|/.*/\.worktrees" if _PROJECT_WORKTREES is None else "")
     + r")/hrse2-(?P<number>\d+)-impl$")
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),

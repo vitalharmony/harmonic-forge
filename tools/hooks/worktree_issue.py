@@ -32,10 +32,13 @@ GIT_TIMEOUT_SECONDS = 1.5
 # same issue (e.g. a reforge); the branch still decides repo and issue.
 _IMPL_DIR_RE = re.compile(r"-(?P<number>\d+)[a-z]?-impl$")
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
-_IMPL_ROOTS = (
-    str(Path.home() / "Harmonic_Projects" / ".worktrees"),
+#: harmonic-forge#1529: the configured `<projects root>/.worktrees` plus the
+#: legacy `/tmp`; with `projects_root` unset, `/tmp` only (this detection is
+#: advisory; the tier gate's own fallback matches more, model_tier_gate.py).
+_IMPL_ROOTS = tuple(r for r in (
+    None if model_tier_gate._PROJECT_WORKTREES is None else str(model_tier_gate._PROJECT_WORKTREES),
     "/tmp",
-)
+) if r is not None)
 
 
 def in_git_tree(directory: str) -> bool:

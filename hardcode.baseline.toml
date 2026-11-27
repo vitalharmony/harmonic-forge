@@ -2068,42 +2068,6 @@ count = 1
 
 [[finding]]
 rule = "projects-root"
-path = "tools/hooks/block_lane1_status_claims.py"
-text = "\"paths are ~/Harmonic_Projects/testplan/ (gate artifacts \""
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/block_lane1_status_claims.py"
-text = "\"worktree or a fresh ~/Harmonic_Projects/.worktrees/<project>-<issue>-impl worktree, \""
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/block_lane1_status_claims.py"
-text = "\"~/Harmonic_Projects/.worktrees/<project>-<issue>-impl worktree.\""
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/block_lane1_status_claims.py"
-text = "\"~/Harmonic_Projects/operator-memory/ (harmonic-forge#797). \""
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/block_lane1_status_claims.py"
-text = "MEMORY_ROOT = (Path.home() / \"Harmonic_Projects\" / \"operator-memory\").resolve()"
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/block_lane1_status_claims.py"
-text = "TESTPLAN_ROOT = (Path.home() / \"Harmonic_Projects\" / \"testplan\").resolve()"
-count = 1
-
-[[finding]]
-rule = "projects-root"
 path = "tools/hooks/codex_lane2_main_checkout.py"
 text = "\"your per-issue worktree under ~/Harmonic_Projects/.worktrees \""
 count = 1
@@ -2116,44 +2080,14 @@ count = 1
 
 [[finding]]
 rule = "projects-root"
-path = "tools/hooks/model_tier_gate.py"
-text = "os.path.realpath(Path.home() / \"Harmonic_Projects\" / \".worktrees\"),"
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/model_tier_gate.py"
-text = "str(Path.home() / \"Harmonic_Projects\" / \".worktrees\"),"
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/hooks/stale_worktrees.py"
-text = "DEFAULT_ROOT = Path.home() / \"Harmonic_Projects\" / \".worktrees\""
-count = 1
-
-[[finding]]
-rule = "projects-root"
 path = "tools/hooks/verify_codex_registration.py"
 text = "Path.home() / \"Harmonic_Projects\" / \"HRSE2\" / \".codex\" / \"hooks.json\","
 count = 1
 
 [[finding]]
 rule = "projects-root"
-path = "tools/hooks/worktree_issue.py"
-text = "str(Path.home() / \"Harmonic_Projects\" / \".worktrees\"),"
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/lane/_agent_registry.sh"
-text = "[codex:2]=\"Harmonic_Projects/.worktrees .cache/codex-lane-tmp/lane2 .cache/cymagraph\""
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/lane/_agent_registry.sh"
-text = "[codex:3]=\"Harmonic_Projects/testplan .cache/codex-lane-tmp/lane3 .cache/cymagraph\""
+path = "tools/lane/baseline_capture.py"
+text = "'projects_root = \"~/Harmonic_Projects\"\\n', encoding=\"utf-8\")"
 count = 1
 
 [[finding]]
@@ -2184,12 +2118,6 @@ count = 3
 rule = "projects-root"
 path = "tools/lane/cli_update.toml"
 text = "log = \"%h/Harmonic_Projects/logs/cli-versions.jsonl\""
-count = 1
-
-[[finding]]
-rule = "projects-root"
-path = "tools/lane/lane1_rebase.py"
-text = "DEFAULT_WORKTREES = Path.home() / \"Harmonic_Projects\" / \".worktrees\""
 count = 1
 
 [[finding]]

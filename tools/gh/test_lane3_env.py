@@ -454,7 +454,9 @@ class FenceTest(Lane3EnvCase):
     """harmonic-forge#1225 AC2: `fence:` paths go through the hook's own predicate."""
 
     OUTSIDE = "~/Harmonic_Projects/HRSE2-lane3/backend/x.json"
-    INSIDE = "~/Harmonic_Projects/testplan/h1/x.json"
+    #: harmonic-forge#1529: inside the run's configured projects root.
+    INSIDE = str(Path(os.environ.get("XDG_CONFIG_HOME", "/nonexistent")).parent
+                 / "projects" / "testplan" / "h1" / "x.json")
 
     def setUp(self) -> None:
         super().setUp()

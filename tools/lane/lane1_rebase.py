@@ -94,7 +94,18 @@ _HERE = Path(__file__).resolve().parent
 _GH = _HERE.parent / "gh"
 _BUSY = _HERE.parent / "worktree" / "check_worktree_busy.py"
 
-DEFAULT_WORKTREES = Path.home() / "Harmonic_Projects" / ".worktrees"
+sys.path.insert(0, str(_HERE.parent / "settings"))
+import roots  # noqa: E402  (harmonic-forge#1529)
+
+
+def worktrees_root() -> Path:
+    """`LANE1_REBASE_WORKTREES`, else `<projects root>/.worktrees`. Resolved at
+    call time, never at import (`_carry_forward.py` imports this module). Unset
+    is exit 4, "a precondition failed" -- never exit 2, which means conflicts."""
+    configured = os.environ.get("LANE1_REBASE_WORKTREES") or roots.under_projects(".worktrees")
+    if not configured:
+        raise Exit(4, f"{roots.UNSET_TEXT} is unset; set it or LANE1_REBASE_WORKTREES")
+    return Path(configured)
 
 
 class Exit(Exception):
@@ -375,8 +386,7 @@ def fetch(repo_dir: str, branch: str) -> None:
 
 
 def prep_path(repo_dir: str, issue: int) -> Path:
-    root = Path(os.environ.get("LANE1_REBASE_WORKTREES") or DEFAULT_WORKTREES)
-    return root / f"{Path(repo_dir).resolve().name}-{issue}-prep"
+    return worktrees_root() / f"{Path(repo_dir).resolve().name}-{issue}-prep"
 
 
 def remove_prep(repo_dir: str, prep: Path, force: bool = False) -> None:
@@ -841,6 +851,7 @@ def check(repo_dir: str, issue: int, branch: str) -> tuple[int, list[str]]:
     if not old or not main:
         return 1, [f"origin/{branch} or origin/main did not resolve via ls-remote"]
     try:
+        worktrees_root()  # harmonic-forge#1529: refuse here exactly as run() would
         check_preconditions(repo_dir, issue, branch, old)
     except Exit as exc:
         return exc.code, [f"precondition: {exc.message}"]

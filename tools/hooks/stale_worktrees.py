@@ -12,7 +12,8 @@ and the prune, so a slow scan can never cost either. Read-only: git object
 reads in each worktree, and two kinds of GET.
 
 - **Which worktrees.** Every directory under the root (`STALE_WORKTREE_ROOT`,
-  default `~/Harmonic_Projects/.worktrees`) holding `.git`, grouped by
+  default `<projects root>/.worktrees` from instance.toml `projects_root`,
+  harmonic-forge#1529; unset is one stderr line and no scan) holding `.git`, grouped by
   `git rev-parse --git-common-dir` so each repo's origin is read once.
 - **Behind.** The new head's commit object is absent, or is not an ancestor of
   HEAD.
@@ -37,11 +38,14 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "settings"))
 import batch_auth  # noqa: E402
+import roots  # noqa: E402  (harmonic-forge#1529: total, never raises)
 from hook_identity import slot_env  # noqa: E402
 
 ROOT_ENV = "STALE_WORKTREE_ROOT"
-DEFAULT_ROOT = Path.home() / "Harmonic_Projects" / ".worktrees"
+#: None when instance.toml `projects_root` is unset (harmonic-forge#1529).
+DEFAULT_ROOT = roots.under_projects(".worktrees")
 STALE_SCAN_BUDGET_S = 15.0
 
 
@@ -264,7 +268,13 @@ def warn(command: str, cwd: str | None, root: Path | None = None,
     if "merge" not in command:
         return None
     deadline = time.monotonic() + STALE_SCAN_BUDGET_S
-    root = root or Path(os.environ.get(ROOT_ENV) or DEFAULT_ROOT)
+    if root is None:
+        configured = os.environ.get(ROOT_ENV) or DEFAULT_ROOT
+        if not configured:
+            print(f"[stale-worktrees] {roots.UNSET_TEXT} is unset; worktrees not checked",
+                  file=sys.stderr)
+            return None
+        root = Path(configured)
     parts = []
     for repo in merged_repos(command, cwd, deadline, runner):
         sha = main_head(repo, deadline, runner)
