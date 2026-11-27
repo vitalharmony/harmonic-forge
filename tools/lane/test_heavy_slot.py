@@ -484,12 +484,16 @@ class Priority(unittest.TestCase):
     def test_tc8_the_overdue_start_goes_to_the_ranked_head_only(self):
         """Both waiters are past max_wait_seconds; only the ranked head starts."""
         loaded = hs.Reading(8, 30.0, 20.0, 90.0, 0.0)
-        self.ticket("00000000000000000001-1.ticket", "high", 0.0)  # the head, never ours
+        # A high ticket that arrived AFTER ours (its name sorts last and its body
+        # says so): arrival order would start ours, the ranked queue never does.
+        self.ticket("99999999999999999999-1.ticket", "high", 10_000.5)
         now = [10_000.0]
 
         def sleep(seconds):
             now[0] += seconds
-            if now[0] > 10_000.0 + 2 * CONFIG["limits"]["max_wait_seconds"]:
+            # Past the overdue bound, short of aging: ours stays normal throughout.
+            if now[0] > 10_000.0 + (CONFIG["limits"]["max_wait_seconds"]
+                                    + CONFIG["limits"]["aging_seconds"]) / 2:
                 raise TimeoutError
 
         with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"}), \
