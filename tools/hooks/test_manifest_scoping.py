@@ -13,6 +13,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -146,223 +147,190 @@ class OverlayIsNeverHome(unittest.TestCase):
         self.assertEqual(out, [True, False, True, None])
 
 
-class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
-    """harmonic-forge#1579 sticky-wicket PATCH (operator D22/D23): every grant
-    writer's scope decision, run from inside an overlay-only checkout with every
-    `manifest_overlay` entry point patched to raise, answers not-home / no-target
-    without reading the overlay. Production reaches the overlay only through
-    `manifest_overlay.<attr>` (test_manifest_scope pins the naming files), so any
-    overlay read on these paths trips the patch, whatever its import spelling.
+#: harmonic-forge#1635 reforge (operator D52): a widening overlay. Every field
+#: would flip a home-repo, target or scope answer if a grant writer consulted
+#: it: it claims the base repo's name and prefix (F), its account, workspace
+#: and board, and a second letter. manifest_overlay's validator refuses these
+#: claims, so it is written raw, as a hostile clone would ship it.
+WIDENING_OVERLAY = ('[project]\nname = "forge"\nprefix = "F"\nrepo = "acme/app"\n'
+                    'account = "acme"\nworkspace = "acme"\nboard_owner = "acme"\n'
+                    'board_number = "1"\nhome = true\n')
 
-    What each writer decides (harmonic-forge#1635): FORCE, IMC and UI make a
-    home-repo decision, and `reached` asserts each got past it. PARK and SCAN
-    make none: PARK checks the key against the fixed pattern
-    `tasklist_owed.KEY_RE`, SCAN the letter against its fixed map
-    `scan_grant.REPOS`; FIXED_MAP asserts those answers and that they are the
-    same with the overlay file removed.
 
-    D23's stated limit: imc_waiver posts with `apply_project_identity` on the
-    key's projects.toml repo; that call is posting identity, not grant scope, and
-    for a registered repo it never falls back to the overlay (checked last)."""
+class OverlayContentNeverChangesGrantScope(unittest.TestCase):
+    """harmonic-forge#1635 reforge (sticky-wicket REFORGE, operator D52/D53):
+    overlay content cannot change any grant writer's decision. The property is
+    noninterference, checked by behavior: one decision program runs from inside
+    an overlay-only checkout three times, with the overlay absent (V0), the
+    benign fixture (V1, acme/app, letter Z) and WIDENING_OVERLAY (V2). Every
+    driven decision, every receipt and the bytes of every grant or receipt file
+    written must be identical across the three, and V0 must equal EXPECTED.
+    The check does not depend on how a read is spelled: a read through any
+    spelling that changes a decision changes the output.
 
-    # Post-verdict tightening (operator D24): the read raises a BaseException
-    # subclass, so a writer's `except Exception` cannot swallow it; a direct open
-    # of the overlay file trips it too, not only the manifest_overlay entry
-    # points; and the bare `gh issue close N` form (repo from the cwd checkout)
-    # is exercised. Any read is also recorded, so a swallowed one still fails.
+    Driven: `manifest_scope.home_project`, `imc_waiver.is_home_repo` and
+    `key_target` (Z5, F5); `_scan_batch`, `authorize_batch` and `closed_keys`
+    (`--repo` and bare forms); `ui_grant.find_record`; FORCE, IMC, UI, PARK
+    and SCAN receipts for Z5/F5 (Z, F); `batch_auth._slot_env('acme/app')`, the
+    hook_identity -> manifest_identity credential path; and imc_waiver's
+    posting identity (`apply_project_identity`, D23: posting identity on a
+    projects.toml repo, not grant scope). State is scratch and `now` is fixed.
+
+    `reached` (in EXPECTED) shows the program exercises decisions: FORCE, IMC
+    and UI each got past their home-repo decision for F5.
+
+    Stated residuals (the reforge verdict's, not hidden):
+    1. Input coverage. Only the decision paths and inputs driven here are
+       compared. A writer path this program never calls, or a read gated on a
+       trigger it never sends (a hostile author's own key), is not caught. That
+       gap shrinks by adding driven inputs, not by adding recognizers.
+    2. A hostile author in production code is review's to stop, not a test's.
+       This suite is a tripwire for plausible regressions.
+    3. A read that cannot change a decision is permitted by design: the
+       property is noninterference, not "never opened".
+
+    `seen` is a diagnostic only, and not complete: it records calls to the
+    `manifest_overlay` entry points (passed through, never raised) so a failure
+    message can name the read. Reads by any other spelling do not appear in it;
+    the equality is the assertion."""
+
+    STATE = "{STATE}"
+
     CODE = (
-        "import builtins, io, json, os, pathlib, manifest_overlay\n"
-        "class OverlayRead(BaseException):\n"
-        "    pass\n"
-        "seen = []\n"
-        "def boom(*a, **k):\n"
-        "    seen.append('overlay read')\n"
-        "    raise OverlayRead('overlay read')\n"
-        "manifest_overlay.read = manifest_overlay.project_for_checkout = boom\n"
-        "manifest_overlay.path_project = boom\n"
-        # Post-verdict 2 (Codex): an alias (a symlink or hard link to the
-        # overlay) is the same file under another name, so the file's identity
-        # is matched too, not only the spelling of its path.
-        "_OVERLAY = os.stat(os.path.join(os.getcwd(), '.claude', 'forge.toml'))\n"
-        # Post-verdict 3 (Codex): identity is taken from the path AS GIVEN,
-        # before any normalization: normpath drops `..` lexically, which names
-        # a different file when the `..` follows a symlink.
-        "_stat = os.stat\n"
-        "def _is_overlay(p, dir_fd=None):\n"
-        "    raw = os.fsdecode(p)\n"
-        # harmonic-forge#1635 gap 1: a relative path opened against a
-        # directory descriptor names a file there, not under the cwd, so its
-        # identity is taken with the same descriptor.
-        "    if dir_fd is not None and not os.path.isabs(raw):\n"
-        "        try:\n"
-        "            st = _stat(raw, dir_fd=dir_fd)\n"
-        "        except OSError:\n"
-        "            return False\n"
-        "        return (st.st_dev, st.st_ino) == (_OVERLAY.st_dev, _OVERLAY.st_ino)\n"
-        "    try:\n"
-        "        st = _stat(raw)\n"
-        "        if (st.st_dev, st.st_ino) == (_OVERLAY.st_dev, _OVERLAY.st_ino):\n"
-        "            return True\n"
-        "    except OSError:\n"
-        "        pass\n"
-        "    norm = os.path.normpath(os.path.abspath(raw))\n"
-        "    return norm.replace(os.sep, '/').endswith('/.claude/forge.toml')\n"
-        "_open, _path_open, _os_open = builtins.open, pathlib.Path.open, os.open\n"
-        "def guarded_open(file, *a, **k):\n"
-        "    if isinstance(file, (str, bytes, os.PathLike)) and _is_overlay(file):\n"
-        "        boom()\n"
-        "    return _open(file, *a, **k)\n"
-        "def guarded_path_open(self, *a, **k):\n"
-        "    if _is_overlay(self):\n"
-        "        boom()\n"
-        "    return _path_open(self, *a, **k)\n"
-        # Post-verdict 3 (Codex): a read through os.open is a read too.
-        "def guarded_os_open(path, flags, mode=0o777, *, dir_fd=None):\n"
-        "    if isinstance(path, (str, bytes, os.PathLike)) and _is_overlay(path, dir_fd):\n"
-        "        boom()\n"
-        "    return _os_open(path, flags, mode, dir_fd=dir_fd)\n"
-        "builtins.open = io.open = guarded_open\n"
-        "pathlib.Path.open = guarded_path_open\n"
-        "os.open = guarded_os_open\n"
+        "import datetime, json, os, pathlib, sys\n"
         "sys.path.insert(0, " + repr(str(HERE.parent / "gh")) + ")\n"
-        "import manifest_scope, imc_waiver, ui_grant, batch_auth, expand_lane_shorthand as m\n"
-        "import manifest_identity\n"
-        "out = [manifest_scope.home_project('acme/app') is None,\n"
-        "       imc_waiver.is_home_repo('acme/app'),\n"
-        "       imc_waiver.key_target('Z5'), imc_waiver.key_target('F5'),\n"
-        "       m._scan_batch('BATCH Z5'),\n"
-        "       batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
-        "       batch_auth.closed_keys('gh issue close 5', os.getcwd()),\n"
-        "       ui_grant.find_record([], 'Z5', 'plan')]\n"
-        # Post-verdict 2 (Codex): the FORCE authorizer's own scope decision
-        # runs too. Z5 is the overlay repo's key, so it refuses before any
-        # grant is written.
-        "out.append('no repo maps to its prefix' in m.authorize_force('FORCE Z5: probe', 's', '1'))\n"
-        # Post-verdict 3 (Codex): a key that DOES map (F5, a projects.toml
-        # repo) carries each hook authorizer past the prefix map into its
-        # home-repo decision; state is a scratch dir, and no gh call is made.
-        # harmonic-forge#1635 gap 3: PARK and SCAN make no home-repo decision,
-        # so they are not here; FIXED_MAP below asserts what they do decide.
-        "import tempfile, force_grant\n"
-        "_st = pathlib.Path(tempfile.mkdtemp())\n"
+        "import manifest_overlay\n"
+        "seen = []\n"
+        "def _record(name, fn):\n"
+        "    def wrapper(*a, **k):\n"
+        "        seen.append(name)\n"
+        "        return fn(*a, **k)\n"
+        "    return wrapper\n"
+        "for _name in ('read', 'project_for_checkout', 'path_project'):\n"
+        "    setattr(manifest_overlay, _name, _record(_name, getattr(manifest_overlay, _name)))\n"
+        "import batch_auth, force_grant, imc_waiver, manifest_identity, manifest_scope\n"
+        "import park_grant, scan_grant, ui_grant, expand_lane_shorthand as m\n"
+        "_st = pathlib.Path(STATE)\n"
+        "_now = datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc)\n"
+        "imc_waiver._now = batch_auth._now = lambda: _now\n"
         "force_grant.FORCE_STATE_DIR = _st / 'force'\n"
         "ui_grant.UI_STATE_DIR = _st / 'ui'\n"
         "imc_waiver.IMC_STATE_DIR = _st / 'imc'\n"
-        "mapped = {\n"
-        "  'force': m.authorize_force('FORCE F5: probe', 's', '1'),\n"
-        "  'imc': m.authorize_imc('BATCH F5 IMC F5', 's', '1', label_reader=lambda r, n: ({'tooling-exception'}, '')),\n"
-        "  'ui': m.authorize_ui('UI F5: probe', 's', '1'),\n"
-        "}\n"
-        # Each one decided past scope: FORCE stops only at its receipt check,
-        # the other two write their (scratch) grant.
-        "reached = {'force': 'has no preclose receipt', 'imc': 'waiver hook record written',\n"
-        "           'ui': 'pending plan grant written'}\n"
-        "out.append(sorted(k for k, v in mapped.items() if reached[k] in (v or '')))\n"
-        "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
-        "target = imc_waiver.key_target('F5')\n"
-        "try:\n"
-        "    manifest_identity.apply_project_identity(target[0])\n"
-        "    out.append('identity-ok')\n"
-        "except OverlayRead as exc:\n"
-        "    out.append(str(exc))\n"
-        "except BaseException:\n"
-        "    out.append('identity-ok')\n"
-        "out.append(seen)\n"
-        "print(json.dumps(out))\n")
-
-    EXPECTED = [True, False, None, ["acme/forge", 5], None, [], [], None,
-                True, ["force", "imc", "ui"], "identity-ok", []]
-
-    #: PARK and SCAN at a fixed `now` and in scratch state, so two runs' receipts
-    #: compare equal. Each decides by a fixed map: PARK by `tasklist_owed.KEY_RE`,
-    #: SCAN by `scan_grant.REPOS`. Z is the overlay repo's letter.
-    FIXED_MAP = (
-        "sys.path.insert(1, " + repr(str(HERE.parent / "gh")) + ")\n"
-        "import datetime, pathlib, tempfile, park_grant, scan_grant, expand_lane_shorthand as m\n"
-        "_st = pathlib.Path(tempfile.mkdtemp())\n"
         "park_grant.PARK_STATE_DIR = _st / 'park'\n"
         "scan_grant.SCAN_STATE_DIR = _st / 'scan'\n"
-        "_now = datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc)\n"
-        "fixed = {'park_z': m.authorize_park('PARK Z5: probe', 's', '1', _now),\n"
-        "         'park_f': m.authorize_park('PARK F5: probe', 's', '1', _now),\n"
-        "         'scan_z': m.authorize_scan('SCAN Z open-issues: probe', 's', _now),\n"
-        "         'scan_f': m.authorize_scan('SCAN F open-issues: probe', 's', _now)}\n")
+        "def _body(key):\n"
+        "    return ui_grant.heading(key, 'plan') + '\\n' + ui_grant.marker(key, 'plan', 'x')\n"
+        "def _labels(repo, number):\n"
+        "    return {'tooling-exception'}, ''\n"
+        "out = {\n"
+        "  'home_project': [getattr(manifest_scope.home_project(r), 'repo', None)\n"
+        "                   for r in ('acme/app', 'acme/forge')],\n"
+        "  'is_home_repo': [imc_waiver.is_home_repo(r) for r in ('acme/app', 'acme/forge')],\n"
+        "  'key_target': [imc_waiver.key_target(k) for k in ('Z5', 'F5')],\n"
+        "  'scan_batch': [m._scan_batch(p) for p in ('BATCH Z5', 'BATCH F5')],\n"
+        "  'batch': [m.authorize_batch('BATCH Z5', state_path=_st / 'batch-z.json'),\n"
+        "            m.authorize_batch('BATCH F5', state_path=_st / 'batch-f.json')],\n"
+        "  'closed_keys': [batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
+        "                  batch_auth.closed_keys('gh issue close 5', os.getcwd()),\n"
+        "                  batch_auth.closed_keys('gh issue close 5 --repo acme/forge')],\n"
+        "  'find_record': [bool(ui_grant.find_record([{'login': 'acme', 'body': _body(k)}],\n"
+        "                                            k, 'plan')) for k in ('Z5', 'F5')],\n"
+        "  'slot_env': batch_auth._slot_env('acme/app'),\n"
+        "}\n"
+        "out['grants'] = {\n"
+        "  'force_z': m.authorize_force('FORCE Z5: probe', 's', '1', _now),\n"
+        "  'force_f': m.authorize_force('FORCE F5: probe', 's', '1', _now),\n"
+        "  'imc_z': m.authorize_imc('BATCH Z5 IMC Z5', 's', '1', label_reader=_labels, now=_now),\n"
+        "  'imc_f': m.authorize_imc('BATCH F5 IMC F5', 's', '1', label_reader=_labels, now=_now),\n"
+        "  'ui_z': m.authorize_ui('UI Z5: probe', 's', '1', _now),\n"
+        "  'ui_f': m.authorize_ui('UI F5: probe', 's', '1', _now),\n"
+        "  'park_z': m.authorize_park('PARK Z5: probe', 's', '1', _now),\n"
+        "  'park_f': m.authorize_park('PARK F5: probe', 's', '1', _now),\n"
+        "  'scan_z': m.authorize_scan('SCAN Z open-issues: probe', 's', _now),\n"
+        "  'scan_f': m.authorize_scan('SCAN F open-issues: probe', 's', _now),\n"
+        "}\n"
+        "reached = {'force_f': 'has no preclose receipt', 'imc_f': 'waiver hook record written',\n"
+        "           'ui_f': 'pending plan grant written'}\n"
+        "out['reached'] = sorted(k for k, v in reached.items() if v in (out['grants'][k] or ''))\n"
+        "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
+        "try:\n"
+        "    out['identity'] = manifest_identity.apply_project_identity('acme/forge')\n"
+        "except BaseException as exc:\n"
+        "    out['identity'] = type(exc).__name__\n"
+        "out['files'] = {str(p.relative_to(_st)): p.read_bytes().decode('utf-8', 'replace')\n"
+        "                for p in sorted(_st.rglob('*')) if p.is_file()}\n"
+        "print(json.dumps({'out': out, 'seen': seen}))\n")
 
-    def test_grant_scope_never_reads_the_overlay(self) -> None:
+    #: V0's output with the scratch state path as `{STATE}`. The grant and
+    #: receipt bytes are pinned by the cross-variant equality, and their names here.
+    EXPECTED = {
+        "home_project": [None, "acme/forge"],
+        "is_home_repo": [False, True],
+        "key_target": [None, ["acme/forge", 5]],
+        "scan_batch": [None, [0, ["F5"]]],
+        "closed_keys": [[], [], [["F5", "acme/forge", 5]]],
+        "find_record": [False, True],
+        "slot_env": None,
+        "reached": ["force_f", "imc_f", "ui_f"],
+        "identity": "acme",
+    }
+    SCAN_Z = "SCAN REFUSED: no repo prefix matches 'Z'. No grant written."
+
+    def run_variants(self) -> dict[str, dict]:
+        """The program's output from the overlay-only checkout per overlay state,
+        each from fresh scratch state at the same path."""
+        outputs = {}
         with tempfile.TemporaryDirectory() as tmp:
             repo, base = overlay_only_fixture(Path(tmp).resolve())
-            out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
-        self.assertEqual(out, self.EXPECTED)
+            overlay = repo / ".claude" / "forge.toml"
+            benign = overlay.read_text(encoding="utf-8")
+            state = Path(tmp).resolve() / "state"
+            code = "import sys\nSTATE = " + repr(str(state)) + "\n" + self.CODE
+            for name, text in (("V0", None), ("V1", benign), ("V2", WIDENING_OVERLAY)):
+                shutil.rmtree(state, ignore_errors=True)
+                state.mkdir()
+                if text is None:
+                    overlay.unlink(missing_ok=True)
+                else:
+                    overlay.write_text(text, encoding="utf-8")
+                raw = json.loads(probe_from(repo, base, code).strip().splitlines()[-1])
+                outputs[name] = json.loads(json.dumps(raw).replace(str(state), self.STATE))
+        return outputs
+
+    def assert_noninterference(self, outputs: dict[str, dict]) -> None:
+        v0 = outputs["V0"]["out"]
+        for name in ("V1", "V2"):
+            with self.subTest(variant=name):
+                self.assertEqual(outputs[name]["out"], v0,
+                                 f"{name} differs from V0; manifest_overlay entry points "
+                                 f"called (diagnostic only): {outputs[name]['seen']}")
+        for field, value in self.EXPECTED.items():
+            self.assertEqual(v0[field], value, field)
+        grants = v0["grants"]
+        self.assertEqual(grants["scan_z"], self.SCAN_Z)
+        self.assertIn("may be scanned", grants["scan_f"])
+        self.assertIn("PARK REFUSED for Z5: no repo prefix matches it", grants["park_z"])
+        self.assertIn("may now be completed", grants["park_f"])
+        self.assertIn("no repo maps to its prefix", grants["force_z"])
+        self.assertIn("no repo maps to its prefix", grants["ui_z"])
+        self.assertIn("authorized F5", v0["batch"][1])
+        self.assertEqual(v0["batch"][0], "")
+        self.assertEqual(sorted(v0["files"]), self.EXPECTED_FILES)
+
+    #: The scratch files V0 writes: the F5 grants and their locks, nothing for Z5.
+    EXPECTED_FILES = ["batch-f.json", "batch-f.json.lock", "imc/F5.json", "park/s/F5.json",
+                      "park/s/F5.json.lock", "scan/s/F-9037c5488f26c3b7.json",
+                      "scan/s/F-9037c5488f26c3b7.json.lock", "ui/F5.json", "ui/F5.json.lock"]
+
+    def test_overlay_content_changes_no_grant_decision(self) -> None:
+        self.assert_noninterference(self.run_variants())
 
     def test_an_inherited_sdk_entrypoint_changes_nothing(self) -> None:
         """harmonic-forge#1635 gap 4: under `CLAUDE_CODE_ENTRYPOINT=sdk` every
         authorizer refuses at provenance, which would leave `reached` empty and
-        exercise no scope decision; `probe_from` drops it (and `GH_REPO`)."""
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk",
-                                             "GH_REPO": "other/thing"}):
-            repo, base = overlay_only_fixture(Path(tmp).resolve())
-            out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
-        self.assertEqual(out, self.EXPECTED)
-
-    def test_park_and_scan_decide_by_a_fixed_map_not_the_overlay(self) -> None:
-        """harmonic-forge#1635 gap 3: PARK refuses Z5 (no repo prefix matches)
-        and grants F5; SCAN refuses Z by its letter map and grants F. Neither
-        reads the overlay, and each receipt is the same with the overlay file
-        removed, so the answer comes from the fixed map, not from the overlay."""
-        guard = self.CODE.split("sys.path.insert(0, ")[0]
-        tail = "print(json.dumps({'fixed': fixed, 'seen': seen}))\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, base = overlay_only_fixture(Path(tmp).resolve())
-            present = json.loads(probe_from(repo, base, "import sys\n" + guard
-                                            + self.FIXED_MAP + tail))
-            (repo / ".claude" / "forge.toml").unlink()
-            absent = json.loads(probe_from(repo, base, "import json, sys\n" + self.FIXED_MAP
-                                           + "print(json.dumps({'fixed': fixed}))\n"))
-        fixed = present["fixed"]
-        self.assertEqual(present["seen"], [])
-        self.assertIn("PARK REFUSED for Z5: no repo prefix matches it", fixed["park_z"])
-        self.assertIn("may now be completed", fixed["park_f"])
-        self.assertIn("SCAN REFUSED", fixed["scan_z"])
-        self.assertIn("may be scanned", fixed["scan_f"])
-        self.assertEqual(absent["fixed"], fixed)
-
-    def test_an_alias_of_the_overlay_is_trapped(self) -> None:
-        """The guard itself (post-verdict 2): a symlink and a hard link to the
-        overlay are reads of it."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, base = overlay_only_fixture(Path(tmp).resolve())
-            overlay = repo / ".claude" / "forge.toml"
-            (repo / "sym.toml").symlink_to(overlay)
-            os.link(overlay, repo / "hard.toml")
-            # Post-verdict 3 (Codex): `..` after a symlink names another file
-            # than its lexical normalization; and a read through os.open.
-            (repo / "deep" / "x").mkdir(parents=True)
-            (repo / "jump").symlink_to(repo / "deep" / "x")
-            (repo / "deep" / "forge.toml").symlink_to(overlay)
-            guard = self.CODE.split("sys.path.insert(0, ")[0]
-            code = ("import sys\n" + guard
-                    + "for name in ('sym.toml', 'hard.toml', 'jump/../forge.toml'):\n"
-                    + "    try:\n"
-                    + "        open(name).close()\n"
-                    + "    except OverlayRead:\n"
-                    + "        pass\n"
-                    + "try:\n"
-                    + "    os.close(os.open('sym.toml', os.O_RDONLY))\n"
-                    + "except OverlayRead:\n"
-                    + "    pass\n"
-                    # harmonic-forge#1635 gap 1: a relative name opened
-                    # against a directory descriptor.
-                    + "d = os.open('.claude', os.O_RDONLY)\n"
-                    + "try:\n"
-                    + "    os.close(os.open(b'forge.toml', os.O_RDONLY, dir_fd=d))\n"
-                    + "except OverlayRead:\n"
-                    + "    pass\n"
-                    + "finally:\n"
-                    + "    os.close(d)\n"
-                    + "print(json.dumps(seen))\n")
-            out = json.loads(probe_from(repo, base, code))
-        self.assertEqual(out, ["overlay read"] * 5)
+        exercise no scope decision; `probe_from` drops it."""
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk"}):
+            self.assert_noninterference(self.run_variants())
 
 
 class LiveForeignKeysStillRefuse(unittest.TestCase):

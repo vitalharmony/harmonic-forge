@@ -144,7 +144,7 @@ def probe_from(cwd: Path, base: Path, code: str) -> str:
     """stdout of `code` run in a fresh interpreter with its cwd at `cwd` and
     `FORGE_PROJECTS_MANIFEST` at `base`; `tools/hooks` and `tools/onboard` are on
     its path (TC17: a hook process computes its prefix maps at import).
-    `LANE`, `CLAUDE_CODE_ENTRYPOINT` and `GH_REPO` are not inherited, as in
+    `LANE` and `CLAUDE_CODE_ENTRYPOINT` are not inherited, as in
     test_manifest_scoping's `probe`: an `sdk` entrypoint refuses every
     authorizer at provenance (harmonic-forge#1635 gap 4)."""
     env = {k: v for k, v in os.environ.items()
