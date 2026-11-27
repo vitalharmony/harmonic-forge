@@ -27,11 +27,16 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import forge_onboard_install as foi  # noqa: E402
+import worktree_table as wt  # noqa: E402
 
 FO = HERE / "forge_onboard.py"
 LANE_DIR = HERE.parent / "lane"
 sys.path.insert(0, str(LANE_DIR))
 import check_installed_lane_sources as checker  # noqa: E402
+
+
+def by_path(records) -> dict:
+    return {r.path.resolve(): r for r in records}
 
 
 class InstallBase(unittest.TestCase):
@@ -384,14 +389,15 @@ class PassTwo(InstallBase):
 
     # Finding :144 -- a failed worktree listing is never read as an empty one.
     def test_failed_worktree_listing_is_install_error(self):
-        real = foi._git
+        real = foi._git_raw
 
         def failing_list(args, cwd):
             if args[:2] == ["worktree", "list"]:
-                return subprocess.CompletedProcess(args, 128, "", "fatal: boom")
+                good = real(args, cwd)
+                return subprocess.CompletedProcess(args, 128, good.stdout, b"fatal: boom")
             return real(args, cwd)
 
-        with mock.patch.object(foi, "_git", failing_list), self.assertRaisesRegex(foi.InstallError, "boom"):
+        with mock.patch.object(foi, "_git_raw", failing_list), self.assertRaisesRegex(foi.InstallError, "boom"):
             foi.plan_worktrees(self.app)
 
     # Finding :180 -- origin/main is reached before the first write.
@@ -499,11 +505,12 @@ class PassTwo(InstallBase):
 
         def record(cmd, *a, **k):
             seen.update(k)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
         with mock.patch.object(foi.subprocess, "run", record):
             foi._git(["status"], self.app)
         self.assertTrue(seen["start_new_session"])
+        self.assertNotIn("text", seen)
         self.assertIs(seen["stdin"], subprocess.DEVNULL)
         for key, value in {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false",
                            "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "false"}.items():
@@ -633,16 +640,18 @@ class OriginSha(InstallBase):
 
 
 class WorktreeTable(InstallBase):
-    """harmonic-forge#1532 two-pass PATCH, P2: one test per row of
-    `_inspect_worktree`'s outcome table (rows 1, 4, 5, 6, 7, 9 and 11 also
-    keep their earlier end-to-end tests in InstallEdges / PassTwo)."""
+    """harmonic-forge#1532 reforge (D86): one test per row of
+    `worktree_table.ROWS` (rows 1, 4, 5, 6, 7, 9 and 11 also keep their
+    earlier end-to-end tests in InstallEdges / PassTwo). `inspect` returns
+    the Check `forge_onboard_install` makes from the typed Outcome."""
+
+    def outcome(self, path: Path) -> wt.Outcome:
+        registered = wt.read_listing(self.app, foi._git_raw)
+        common = wt.common_dir(self.app, foi._git_raw)
+        return wt.classify(path, self.app, common, registered, foi._git_raw)
 
     def inspect(self, path: Path):
-        registered, why = foi._registered(self.app)
-        self.assertIsNotNone(registered, why)
-        common = Path(self.git("rev-parse", "--path-format=absolute", "--git-common-dir",
-                               cwd=self.app).rstrip("\n")).resolve()
-        return foi._inspect_worktree(path, self.app, common, registered)
+        return foi._outcome_check(path, self.outcome(path))
 
     def installed(self) -> None:
         result = self.install()
@@ -655,8 +664,7 @@ class WorktreeTable(InstallBase):
     def test_row02_main_checkout_is_install_error_without_an_identity_probe(self):  # K12
         main = self.app.parent / "app-lane2"
         self.git("clone", "-q", str(self.tmp / "origin.git"), str(main), cwd=self.tmp)
-        unreadable = subprocess.CompletedProcess([], 128, "", "fatal: stubbed unreadable")
-        with mock.patch.object(foi, "_identity", return_value=unreadable):
+        with mock.patch.object(wt, "probe_identity", return_value="fatal: stubbed unreadable"):
             code, out, err = self.run_main(repo=main)
         self.assertEqual(code, 2, out + err)
         self.assertIn("main checkout", err)
@@ -665,15 +673,17 @@ class WorktreeTable(InstallBase):
 
     def test_row02_bare_main_record(self):
         bare = self.tmp / "origin.git"
-        wt = self.tmp / "bare-wt"
-        self.git("worktree", "add", "-q", "--detach", str(wt), "main", cwd=bare)
-        registered, why = foi._registered(bare)
-        self.assertIsNotNone(registered, why)
+        linked = self.tmp / "bare-wt"
+        self.git("worktree", "add", "-q", "--detach", str(linked), "main", cwd=bare)
+        records = wt.read_listing(bare, foi._git_raw)
+        registered = by_path(records)
         main = registered[bare.resolve()]
         self.assertTrue(main.is_main and main.bare, main)
-        self.assertFalse(registered[wt.resolve()].is_main)
+        self.assertFalse(registered[linked.resolve()].is_main)
+        outcome = wt.classify(bare, bare, bare.resolve(), records, foi._git_raw)
+        self.assertEqual((outcome.row, outcome.kind), (2, wt.MAIN))
         with self.assertRaisesRegex(foi.InstallError, "main checkout"):
-            foi._inspect_worktree(bare, bare, bare.resolve(), registered)
+            foi._outcome_check(bare, outcome)
 
     def test_row03_absent_locked_names_unlock_then_prune(self):  # K13
         self.installed()
@@ -702,7 +712,8 @@ class WorktreeTable(InstallBase):
     def test_row06_present_prunable(self):
         self.installed()
         (self.lane3 / ".git").unlink()
-        self.assertIn("prunable", self.inspect(self.lane3).detail)
+        self.assertIn("prunable worktree", self.inspect(self.lane3).detail)
+        self.assertIn("move it aside", self.inspect(self.lane3).detail)
 
     def test_row07_present_unlisted(self):
         self.lane3.mkdir()
@@ -710,8 +721,7 @@ class WorktreeTable(InstallBase):
 
     def test_row08_listed_but_unreadable(self):
         self.installed()
-        failed = subprocess.CompletedProcess([], 128, "", "fatal: stubbed")
-        with mock.patch.object(foi, "_identity", return_value=failed):
+        with mock.patch.object(wt, "probe_identity", return_value="fatal: stubbed"):
             self.assertIn("git cannot read it", self.inspect(self.lane2).detail)
 
     def test_row09_identity_mismatch(self):
@@ -724,13 +734,12 @@ class WorktreeTable(InstallBase):
     def test_row10_git_dir_backstop_catches_a_main_checkout_not_marked_main(self):  # K14
         main = self.app.parent / "app-lane2"
         self.git("clone", "-q", str(self.tmp / "origin.git"), str(main), cwd=self.tmp)
-        real = foi._registered
+        real = wt.read_listing
 
-        def unmarked(repo):
-            found, why = real(repo)
-            return ({p: dataclasses.replace(r, is_main=False) for p, r in found.items()}, why)
+        def unmarked(repo, run):
+            return tuple(dataclasses.replace(r, is_main=False) for r in real(repo, run))
 
-        with mock.patch.object(foi, "_registered", unmarked):
+        with mock.patch.object(wt, "read_listing", unmarked):
             code, out, err = self.run_main(repo=main)
         self.assertEqual(code, 2, out + err)
         self.assertIn("main checkout", err)
@@ -744,33 +753,206 @@ class WorktreeTable(InstallBase):
         self.assertIn("worktree app-lane3 — already present", result.stdout)
 
     def test_row12_default_deny_names_the_record(self):
-        record = foi.Worktree(path=self.lane2.resolve(), is_main=False)
-        check = foi._inspect_worktree(self.lane2, self.app, self.app / ".git", {record.path: record})
-        self.assertEqual(check.status, foi.FAIL)
-        self.assertIn("Worktree(", check.detail)
+        record = wt.Record(path=self.lane2.resolve(), is_main=False)
+        outcome = wt.classify(self.lane2, self.app, self.app / ".git", (record,), foi._git_raw)
+        self.assertEqual((outcome.row, outcome.kind), (12, wt.FAIL))
+        self.assertIn("Record(", outcome.detail)
+        self.assertEqual(foi._outcome_check(self.lane2, outcome).status, foi.FAIL)
 
     def test_newline_path_does_not_shift_attributes(self):
         self.installed()
         odd = self.app.parent / "x\nlocked trap"
         self.git("worktree", "add", "-q", "--detach", str(odd), cwd=self.app)
         self.git("worktree", "lock", "--reason", "two\nlines", str(self.lane3), cwd=self.app)
-        registered, why = foi._registered(self.app)
-        self.assertIsNotNone(registered, why)
+        registered = by_path(wt.read_listing(self.app, foi._git_raw))
         self.assertFalse(registered[odd.resolve()].locked)
         self.assertTrue(registered[self.lane3.resolve()].locked)
         self.assertFalse(registered[self.lane2.resolve()].locked)
         self.assertTrue(registered[self.app.resolve()].is_main)
 
     def test_malformed_listing_is_install_error(self):
-        real = foi._git
+        real = foi._git_raw
 
         def garbled(args, cwd):
             if args[:2] == ["worktree", "list"]:
-                return subprocess.CompletedProcess(args, 0, "HEAD abc\0\0", "")
+                return subprocess.CompletedProcess(args, 0, b"HEAD abc\0\0", b"")
             return real(args, cwd)
 
-        with mock.patch.object(foi, "_git", garbled), self.assertRaisesRegex(foi.InstallError, "worktree list"):
+        with mock.patch.object(foi, "_git_raw", garbled), self.assertRaisesRegex(foi.InstallError, "worktree list"):
             foi.plan_worktrees(self.app)
+
+    def test_row11_present_is_ok_via_the_typed_result(self):  # K21
+        self.installed()
+        outcome = self.outcome(self.lane2)
+        self.assertEqual((outcome.row, outcome.kind), (11, wt.PRESENT))
+        self.assertEqual(self.inspect(self.lane2).status, foi.OK)
+
+    def test_row12_unknown_key_at_a_lane_path_is_default_denied(self):  # K27
+        self.installed()
+        records = tuple(dataclasses.replace(r, unknown=("newattr",)) if r.path.resolve() == self.lane2.resolve()
+                        else r for r in wt.read_listing(self.app, foi._git_raw))
+        common = wt.common_dir(self.app, foi._git_raw)
+        outcome = wt.classify(self.lane2, self.app, common, records, foi._git_raw)
+        self.assertEqual((outcome.row, outcome.kind), (12, wt.FAIL))
+        self.assertIn("newattr", outcome.detail)
+        self.assertEqual(wt.classify(self.lane3, self.app, common, records, foi._git_raw).row, 11)
+
+    def test_row12_two_records_at_one_lane_path_are_default_denied(self):  # K22
+        self.installed()
+        records = wt.read_listing(self.app, foi._git_raw)
+        twin = [r for r in records if r.path.resolve() == self.lane2.resolve()][0]
+        outcome = wt.classify(self.lane2, self.app, wt.common_dir(self.app, foi._git_raw),
+                              (*records, dataclasses.replace(twin, locked=True)), foi._git_raw)
+        self.assertEqual((outcome.row, outcome.kind), (12, wt.FAIL))
+        self.assertIn("locked=True", outcome.detail)
+        self.assertIn("locked=False", outcome.detail)
+
+
+class ListingParser(unittest.TestCase):
+    """harmonic-forge#1532 reforge (D86), S1: every malformed listing is a
+    ListingError, never an empty or partial listing."""
+
+    def refused(self, raw: bytes, why: str) -> None:
+        with self.assertRaisesRegex(wt.ListingError, why):
+            wt.parse_listing(raw)
+
+    def test_well_formed_shapes_parse(self):
+        records = wt.parse_listing(b"worktree /m\0HEAD " + b"a" * 40 + b"\0branch refs/heads/main\0\0"
+                                   b"worktree /l\0HEAD " + b"0" * 40 + b"\0detached\0locked\0\0"
+                                   b"worktree /r\0HEAD " + b"c" * 40 + b"\0detached\0locked two\nlines\0"
+                                   b"prunable gitdir file points to non-existent location\0\0")
+        self.assertEqual([(str(r.path), r.is_main, r.locked, r.prunable) for r in records],
+                         [("/m", True, False, False), ("/l", False, True, False), ("/r", False, True, True)])
+        bare = wt.parse_listing(b"worktree /b.git\0bare\0\0")
+        self.assertTrue(bare[0].is_main and bare[0].bare)
+
+    def test_empty_listing(self):  # K23
+        self.refused(b"", "printed nothing")
+
+    def test_record_without_trailing_terminator(self):  # K24
+        for raw in (b"worktree /a\0HEAD x\0", b"worktree /a"):
+            with self.subTest(raw=raw):
+                self.refused(raw, "ends mid-record")
+
+    def test_record_without_terminator_mid_listing(self):  # K25 (the post-verdict survivor string)
+        self.refused(b"worktree /a\0HEAD x\0worktree /a-lane3\0locked\0\0", "repeats `worktree`")
+
+    def test_duplicate_attribute(self):  # K25
+        self.refused(b"worktree /a\0locked\0locked x\0\0", "repeats `locked`")
+        self.refused(b"worktree /a\0newattr\0newattr\0\0", "repeats `newattr`")
+
+    def test_record_not_starting_with_worktree_or_with_an_empty_field(self):  # K26
+        self.refused(b"HEAD abc\0\0", "does not start with")
+        self.refused(b"worktreeX /a\0\0", "does not start with")
+        self.refused(b"worktree /a\0\0\0", "empty field")
+        self.refused(b"worktree /a\0\0\0\0worktree /b\0\0", "does not start with")
+
+    def test_unknown_key_is_recorded_not_refused(self):  # K27
+        (record,) = wt.parse_listing(b"worktree /a\0HEAD " + b"a" * 40 + b"\0newattr some value\0\0")
+        self.assertEqual(record.unknown, ("newattr",))
+
+    def test_attribute_in_the_wrong_form(self):  # K28
+        for raw in (b"worktree /a\0bare x\0\0", b"worktree /a\0detached y\0\0", b"worktree /a\0HEAD\0\0",
+                    b"worktree \0\0", b"worktree\0\0", b"worktree /a\0locked \0\0", b"worktree /a\0prunable \0\0"):
+            with self.subTest(raw=raw):
+                self.refused(raw, "documented form")
+
+    def test_non_utf8_path(self):  # K29
+        self.refused(b"worktree /a\xff\0\0", "not UTF-8")
+
+
+class PathBytes(InstallBase):
+    """harmonic-forge#1532 reforge (D86), S2/S3, F9, the identity probe and
+    the toplevel: path bytes reach every comparison exactly as git and the
+    filesystem hold them."""
+
+    def odd_clone(self, parent: str | bytes) -> Path:
+        main = Path(os.fsdecode(os.path.join(os.fsencode(self.tmp), os.fsencode(parent)))) / "app-lane2"
+        main.parent.mkdir()
+        self.git("clone", "-q", str(self.tmp / "origin.git"), str(main), cwd=self.tmp)
+        return main
+
+    def test_cr_in_a_main_checkout_path_is_still_the_main_checkout(self):  # K30
+        main = self.odd_clone("a\rb")
+        code, out, err = self.run_main(repo=main)
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("main checkout", err)
+        self.assertFalse(self.bin.exists())
+
+    def test_cr_in_the_toplevel_reaches_the_lane_paths(self):  # K31
+        main = self.odd_clone("c\rd")
+        self.assertEqual(foi.lane_worktree_paths(main), [main.parent / "app-lane2", main.parent / "app-lane3"])
+
+    def test_listing_that_exits_0_and_prints_nothing_is_install_error(self):  # K23, end to end
+        main = self.odd_clone("e")
+        real = foi._git_raw
+
+        def empty(args, cwd):
+            if args[:2] == ["worktree", "list"]:
+                return subprocess.CompletedProcess(args, 0, b"", b"")
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git_raw", empty):
+            code, out, err = self.run_main(repo=main)
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("printed nothing", err)
+        self.assertFalse(self.bin.exists())
+
+    def test_non_utf8_worktree_anywhere_is_install_error(self):  # K29, end to end
+        odd = os.fsencode(self.app.parent) + b"/odd\xff"
+        subprocess.run([b"git", b"worktree", b"add", b"-q", b"--detach", odd], cwd=self.app, env=self.env,
+                       check=True, capture_output=True)
+        with self.assertRaisesRegex(foi.InstallError, "not UTF-8"):
+            foi.plan_worktrees(self.app)
+
+    def test_non_utf8_toplevel_is_install_error(self):  # K36
+        main = self.odd_clone(b"t\xff")
+        with self.assertRaisesRegex(foi.InstallError, "toplevel .* is not UTF-8"):
+            foi.lane_worktree_paths(main)
+
+    def test_unreadable_common_dir_is_install_error(self):  # K35
+        real = foi._git_raw
+        for printed in (b"/x\xff\n", b"", b"\n", b"/x"):
+            def odd(args, cwd, printed=printed):
+                if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"] and cwd == self.app:
+                    return subprocess.CompletedProcess(args, 0, printed, b"")
+                return real(args, cwd)
+
+            with self.subTest(printed=printed), mock.patch.object(foi, "_git_raw", odd), \
+                    self.assertRaisesRegex(foi.InstallError, "common dir"):
+                foi.plan_worktrees(self.app)
+
+    def test_newline_in_a_parent_directory_keeps_a_present_worktree_ok(self):  # K33
+        nl = self.tmp / "n\nl"
+        nl.mkdir()
+        self.app.rename(nl / "app")
+        self.app, self.lane2, self.lane3 = nl / "app", nl / "app-lane2", nl / "app-lane3"
+        self.assertEqual(self.install().returncode, 0)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("worktree app-lane2 — already present", result.stdout)
+
+    def test_relisting_failure_after_a_failed_add_is_a_fail_check(self):  # K34
+        real_git, real_list = foi._git, wt.read_listing
+        calls = []
+
+        def failing_add(args, cwd):
+            if args[:2] == ["worktree", "add"]:
+                return subprocess.CompletedProcess(args, 128, "", "fatal: stubbed add failure")
+            return real_git(args, cwd)
+
+        def listing(repo, run):
+            calls.append(repo)
+            if len(calls) > 1:
+                raise wt.ListingError("stubbed re-list failure")
+            return real_list(repo, run)
+
+        with mock.patch.object(foi, "_git", failing_add), mock.patch.object(wt, "read_listing", listing):
+            code, out, err = self.run_main()
+        self.assertEqual(code, 1, out + err)
+        self.assertNotIn("Traceback", err)
+        self.assertRegex(out, r"\[ FAIL \] worktree app-lane2 — fatal: stubbed add failure; could not re-list "
+                              r"worktrees \(stubbed re-list failure\)")
 
 
 if __name__ == "__main__":
