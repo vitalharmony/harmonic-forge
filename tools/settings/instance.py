@@ -215,9 +215,15 @@ def lane3_policy(environ: Mapping[str, str] | None = None) -> Path | None:
     if data is None or "lane3_policy" not in data:
         return None
     value = data["lane3_policy"]
-    if not isinstance(value, str) or not value.startswith("/"):
+    if not isinstance(value, str) or not value.startswith("/") or _has_control(value):
         raise ValueError(f"{path}: `lane3_policy` must be an absolute path, got {value!r}")
     return Path(value)
+
+
+def _has_control(value: str) -> bool:
+    """A control character (below 0x20, or 0x7f). `get` NUL-terminates each value,
+    so an embedded NUL would truncate it to another path (sticky-wicket PATCH)."""
+    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
 
 
 def codex_hook_paths(environ: Mapping[str, str] | None = None) -> list[Path]:
@@ -230,7 +236,7 @@ def codex_hook_paths(environ: Mapping[str, str] | None = None) -> list[Path]:
     value = data["codex_hook_paths"]
     if (not isinstance(value, list)
             or not all(isinstance(v, str) and (v.startswith("/") or v.startswith("~/"))
-                       for v in value)):
+                       and not _has_control(v) for v in value)):
         raise ValueError(f"{path}: `codex_hook_paths` must be a list of absolute paths, "
                          f"got {value!r}")
     return [Path(v).expanduser() for v in value]

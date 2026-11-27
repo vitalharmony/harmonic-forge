@@ -1152,14 +1152,18 @@ class ClaudeLane3Settings(unittest.TestCase):
             link = tree.root / "linked-root"
             link.symlink_to(tree.root)
             via_link = link / policy.parent.name / policy.name
+            # A NUL escape: `instance.py get` would cut it at the NUL into another
+            # path, so it must refuse the launch (sticky-wicket PATCH).
             for value, why in (("relative/claude-lane3.json", "relative"),
-                               (str(via_link), "symlinked ancestor")):
+                               (str(via_link), "symlinked ancestor"),
+                               (f"{policy}\\u0000suffix", "control character")):
                 with self.subTest(why=why):
                     toml = tree.instance_toml
                     text = toml.read_text()
                     import re as _re  # noqa: PLC0415
+                    line = f'lane3_policy = "{value}"'
                     toml.write_text(_re.sub(r'(?m)^lane3_policy = ".*"$',
-                                            f'lane3_policy = "{value}"', text))
+                                            lambda _m: line, text))
                     cell = self._run(tree, lane_dir)
                     self.assertFalse(cell["launched"], why)
 

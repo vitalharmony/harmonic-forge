@@ -119,9 +119,17 @@ class InstanceGet(unittest.TestCase):
         for text, key in (('lane3_policy = "rel/x.json"\n', "lane3_policy"),
                           ('lane3_policy = "~/x.json"\n', "lane3_policy"),
                           ('codex_hook_paths = "/x"\n', "codex_hook_paths"),
-                          ('codex_hook_paths = ["rel"]\n', "codex_hook_paths")):
+                          ('codex_hook_paths = ["rel"]\n', "codex_hook_paths"),
+                          # Sticky-wicket PATCH (Codex): `get` NUL-terminates each
+                          # value, so a control character must refuse, not truncate.
+                          ('lane3_policy = "/x\\u0000y.json"\n', "lane3_policy"),
+                          ('lane3_policy = "/x\\ny.json"\n', "lane3_policy"),
+                          ('lane3_policy = "/x\\u007fy.json"\n', "lane3_policy"),
+                          ('codex_hook_paths = ["/a\\u0000b"]\n', "codex_hook_paths"),
+                          ('codex_hook_paths = ["/a\\nb"]\n', "codex_hook_paths")):
             with self.subTest(text=text):
-                self.assertEqual(self.get(text, key).returncode, 1)
+                proc = self.get(text, key)
+                self.assertEqual((proc.returncode, proc.stdout), (1, ""), proc.stderr)
         proc = self.get('codex_hook_paths = ["/a/hooks.json", "/b/hooks.json"]\n', "codex_hook_paths")
         self.assertEqual(proc.stdout, "/a/hooks.json\0/b/hooks.json\0")
 

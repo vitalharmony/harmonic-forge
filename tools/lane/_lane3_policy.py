@@ -27,19 +27,14 @@ def _registry() -> tuple[str, int]:
     path = _PATH_RE.search(text)
     owner = _OWNER_RE.search(text)
     value = path.group(1) if path else ""
-    if value.startswith("@instance:"):
-        # harmonic-forge#1531: the launcher resolves this from instance.toml; so
-        # does this check, the same way (absent or invalid reads as no policy).
-        import sys  # noqa: PLC0415
-        settings = str(REGISTRY.parents[1] / "settings")
-        if settings not in sys.path:
-            sys.path.insert(0, settings)
-        import instance  # noqa: PLC0415
-        try:
-            found = instance.lane3_policy() if value == "@instance:lane3_policy" else None
-        except ValueError:
-            found = None
-        value = str(found) if found else ""
+    if value == "@instance:lane3_policy":
+        # harmonic-forge#1531 (sticky-wicket PATCH): the launcher resolves this
+        # from instance.toml, and every launch this helper guards reads the test
+        # fixture's instance.toml, which declares baseline_capture.LANE3_POLICY.
+        # The helper predicts that launch, so it reads the same value, never the
+        # test process's own config (absent in the sandbox and on CI).
+        import baseline_capture  # noqa: PLC0415
+        value = baseline_capture.LANE3_POLICY
     return (value, int(owner.group(1)) if owner and owner.group(1) else 0)
 
 
