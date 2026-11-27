@@ -65,7 +65,9 @@ import instance  # noqa: E402
 
 SET_KEYS = frozenset({"schema", "disableAllHooks", "lane_only", "hooks"})
 BLOCK_KEYS = frozenset({"matcher", "hooks"})
-HANDLER_KEYS = frozenset({"type", "command", "timeout"})
+# `onFailure` only ever as "block" (harmonic-forge#1608): a failed or timed-out
+# refusal hook then refuses the call; "continue" would let a set relax a guard.
+HANDLER_KEYS = frozenset({"type", "command", "timeout", "onFailure"})
 # The Claude Code hook events (2.1.322). An unknown name is refused rather than
 # passed: the CLI ignores an event it does not know, silently.
 KNOWN_EVENTS = frozenset({
@@ -147,7 +149,7 @@ def validate(data: dict, *, forge_root: Path) -> None:
                 raise SetError(f"hooks.{event}: a block holds no handler")
             for handler in entries:
                 if not isinstance(handler, dict) or set(handler) - HANDLER_KEYS:
-                    raise SetError(f"hooks.{event}: a handler must be {{type, command, timeout?}}: {handler!r}")
+                    raise SetError(f"hooks.{event}: a handler must be {{type, command, timeout?, onFailure?}}: {handler!r}")
                 if handler.get("type") != "command":
                     raise SetError(f"hooks.{event}: handler type is not \"command\": {handler!r}")
                 command = handler.get("command")
@@ -157,6 +159,8 @@ def validate(data: dict, *, forge_root: Path) -> None:
                 if "timeout" in handler and (isinstance(timeout, bool) or not isinstance(timeout, int)
                                              or timeout <= 0):
                     raise SetError(f"hooks.{event}: timeout is not a positive integer: {handler!r}")
+                if "onFailure" in handler and handler["onFailure"] != "block":
+                    raise SetError(f"hooks.{event}: onFailure must be \"block\": {handler!r}")
                 # Change 4: an unchecked command fails open at runtime (`stored_paths`).
                 try:
                     stored_paths(command)

@@ -19,90 +19,109 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane1_status_claims.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane1_status_claims.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane2_status_claims.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane2_status_claims.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_irreversible_ops.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_irreversible_ops.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/batch_gate.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/batch_gate.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/deny_lane3_ae_self_post.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/deny_lane3_ae_self_post.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/mypy_cwd_trap.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_inline_prose.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_inline_prose.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_data_migration_close.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_missing_preclose_inspection.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_route_tightened_merge.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_gate_and_write_same_command.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_undetermined_phase_close.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_stale_script_execution.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/lane3_cloud_cli_policy.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/model_tier_gate.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_raw_board_scan.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_raw_board_scan.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_unbounded_poll.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_unbounded_poll.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/precheck_gate.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "f=\"@FORGE_ROOT@/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 5
+            "timeout": 5,
+            "onFailure": "block"
           }
         ]
       },
@@ -112,7 +131,8 @@
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/compaction_reload_probe.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -121,12 +141,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane1_status_claims.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/block_lane1_status_claims.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/model_tier_gate.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -136,12 +158,14 @@
           {
             "type": "command",
             "command": "python3 \"@FORGE_ROOT@/tools/hooks/precheck_store_guard.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "f=\"@FORGE_ROOT@/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -151,7 +175,8 @@
           {
             "type": "command",
             "command": "f=\"@FORGE_ROOT@/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -160,7 +185,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"@FORGE_ROOT@/tools/hooks/deny_cross_session_contact.py\""
+            "command": "python3 \"@FORGE_ROOT@/tools/hooks/deny_cross_session_contact.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -170,7 +196,8 @@
           {
             "type": "command",
             "command": "f=\"@FORGE_ROOT@/tools/hooks/require_ci_plan.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -180,7 +207,8 @@
           {
             "type": "command",
             "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -190,7 +218,8 @@
           {
             "type": "command",
             "command": "f=\"@FORGE_ROOT@/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }
