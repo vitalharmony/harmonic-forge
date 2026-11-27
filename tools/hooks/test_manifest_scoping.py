@@ -147,11 +147,13 @@ class OverlayIsNeverHome(unittest.TestCase):
         self.assertEqual(out, [True, False, True, None])
 
 
-#: harmonic-forge#1635 reforge (operator D52): a widening overlay. Every field
-#: would flip a home-repo, target or scope answer if a grant writer consulted
-#: it: it claims the base repo's name and prefix (F), its account, workspace
-#: and board, and a second letter. manifest_overlay's validator refuses these
-#: claims, so it is written raw, as a hostile clone would ship it.
+#: harmonic-forge#1635 reforge (operator D52): V2, the raw widening overlay. It
+#: claims the base repo's name and prefix (F), its account, workspace and
+#: board. manifest_overlay's validator refuses these claims, so a writer that
+#: reads through the real manifest_overlay API sees no overlay at all, and on a
+#: read that falls back to the overlay only on a miss, its F is shadowed by the
+#: base's F. It is written raw, as a hostile clone would ship it, and catches
+#: raw reads only (KD2, KD4). It complements V1, it does not replace it.
 WIDENING_OVERLAY = ('[project]\nname = "forge"\nprefix = "F"\nrepo = "acme/app"\n'
                     'account = "acme"\nworkspace = "acme"\nboard_owner = "acme"\n'
                     'board_number = "1"\nhome = true\n')
@@ -159,14 +161,22 @@ WIDENING_OVERLAY = ('[project]\nname = "forge"\nprefix = "F"\nrepo = "acme/app"\
 
 class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     """harmonic-forge#1635 reforge (sticky-wicket REFORGE, operator D52/D53):
-    overlay content cannot change any grant writer's decision. The property is
+    overlay content cannot change a driven grant decision. The property is
     noninterference, checked by behavior: one decision program runs from inside
     an overlay-only checkout three times, with the overlay absent (V0), the
-    benign fixture (V1, acme/app, letter Z) and WIDENING_OVERLAY (V2). Every
-    driven decision, every receipt and the bytes of every grant or receipt file
-    written must be identical across the three, and V0 must equal EXPECTED.
-    The check does not depend on how a read is spelled: a read through any
-    spelling that changes a decision changes the output.
+    fixture overlay (V1) and WIDENING_OVERLAY (V2). Every driven decision,
+    every receipt and the bytes of every grant or receipt file written must be
+    identical across the three, and V0 must equal EXPECTED. The check does not
+    depend on how a read is spelled: a read through any spelling that changes
+    a driven decision changes the output.
+
+    V1 is the validator-accepted widening overlay (claims letter Z, repo
+    acme/app, account acme). It is not benign and must never be dropped: it
+    is the variant that catches reads through the real manifest_overlay API,
+    the plausible regression class (KD1, KD3, KD5, KD6 are killed by V1 only).
+    V2 is the raw widening the validator refuses; it catches raw reads (KD2,
+    KD4, killed by V1 and V2). KD7 reads no overlay: it fails the `reached`
+    anchor in EXPECTED on V0, not the three-way comparison.
 
     Driven: `manifest_scope.home_project`, `imc_waiver.is_home_repo` and
     `key_target` (Z5, F5); `_scan_batch`, `authorize_batch` and `closed_keys`
@@ -183,7 +193,13 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     1. Input coverage. Only the decision paths and inputs driven here are
        compared. A writer path this program never calls, or a read gated on a
        trigger it never sends (a hostile author's own key), is not caught. That
-       gap shrinks by adding driven inputs, not by adding recognizers.
+       gap shrinks by adding driven inputs, not by adding recognizers. Not
+       driven: batch_auth's merge-side account checks (`issue_key`,
+       `_derived_merge_match`, `decide`, `consume`); IMC's own scope check for
+       Z5 (`imc_z` is refused at the BATCH-syntax step first, so IMC's
+       `key_target`/`is_home_repo` are covered only by the direct calls); and
+       `apply_project_identity`, which is called but cannot vary, because
+       every variant claims account acme and `_probe_login` is stubbed.
     2. A hostile author in production code is review's to stop, not a test's.
        This suite is a tripwire for plausible regressions.
     3. A read that cannot change a decision is permitted by design: the
