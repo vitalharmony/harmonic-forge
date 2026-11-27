@@ -165,7 +165,8 @@ def _worktree_candidates(cwd: str, env) -> list[tuple[str, int]]:
     """Probe 4 (AC2, `LANE=2`): issues of every implementation worktree."""
     import worktree_issue  # noqa: PLC0415 -- inside the caller's guard
 
-    forge = env.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
+    import hook_forge_root  # noqa: PLC0415 -- harmonic-forge#1566
+    forge = str(hook_forge_root.resolve(__file__, env))
     found: list[tuple[str, int]] = []
     seen_paths: set[str] = set()
     for base in (cwd, forge):

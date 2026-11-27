@@ -124,12 +124,6 @@ count = 1
 
 [[finding]]
 rule = "forge-root"
-path = "tools/hooks/compaction_marker.py"
-text = "return os.environ.get(\"HARMONIC_FORGE_ROOT\") or str(Path.home() / \"harmonic-forge\")"
-count = 1
-
-[[finding]]
-rule = "forge-root"
 path = "tools/hooks/gate_codex_tool.py"
 text = "\"Use `python3 ~/harmonic-forge/tools/gh/fetch_lane1_context.py --repo \""
 count = 1
@@ -154,12 +148,6 @@ count = 1
 
 [[finding]]
 rule = "forge-root"
-path = "tools/hooks/tier_downshift_reminder.py"
-text = "forge = env.get(\"HARMONIC_FORGE_ROOT\") or str(Path.home() / \"harmonic-forge\")"
-count = 1
-
-[[finding]]
-rule = "forge-root"
 path = "tools/hooks/verify_codex_registration.py"
 text = "Path.home() / \"harmonic-forge\" / \".codex\" / \"hooks.json\","
 count = 1
@@ -174,12 +162,6 @@ count = 1
 rule = "forge-root"
 path = "tools/lane/lanes-claude"
 text = "python3 \"${HOME}/harmonic-forge/tools/precheck/gate_receipt.py\" record --tool tools/lane/lanes-claude -- \"${lanes_claude_args[@]}\" || true"
-count = 1
-
-[[finding]]
-rule = "forge-root"
-path = "tools/onboard/lane_tasks.py"
-text = "PLATFORM = '\"${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}\"'"
 count = 1
 
 [[finding]]
@@ -1636,12 +1618,6 @@ count = 1
 
 [[finding]]
 rule = "project-name"
-path = "tools/hooks/compaction_marker.py"
-text = "return os.environ.get(\"HARMONIC_FORGE_ROOT\") or str(Path.home() / \"harmonic-forge\")"
-count = 1
-
-[[finding]]
-rule = "project-name"
 path = "tools/hooks/enforce_handoff_owed.py"
 text = "f\"`~/.cache/harmonic-forge/handoff_owed/`.\\n\\n\""
 count = 1
@@ -1740,12 +1716,6 @@ count = 1
 rule = "project-name"
 path = "tools/hooks/tasklist_owed.py"
 text = "REAL_OWED_DIR = Path.home() / \".cache\" / \"harmonic-forge\" / \"tasklist_owed\""
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/hooks/tier_downshift_reminder.py"
-text = "forge = env.get(\"HARMONIC_FORGE_ROOT\") or str(Path.home() / \"harmonic-forge\")"
 count = 1
 
 [[finding]]
@@ -1865,6 +1835,12 @@ count = 2
 [[finding]]
 rule = "project-name"
 path = "tools/onboard/lane_tasks.py"
+text = "\"f = b / \\\"harmonic-forge\\\" / \\\"instance.toml\\\"; \""
+count = 1
+
+[[finding]]
+rule = "project-name"
+path = "tools/onboard/lane_tasks.py"
 text = "BEGIN_MARKER = \"# >>> harmonic-forge lane tasks (generated, harmonic-forge#730) >>>\""
 count = 1
 
@@ -1872,12 +1848,6 @@ count = 1
 rule = "project-name"
 path = "tools/onboard/lane_tasks.py"
 text = "END_MARKER = \"# <<< harmonic-forge lane tasks <<<\""
-count = 1
-
-[[finding]]
-rule = "project-name"
-path = "tools/onboard/lane_tasks.py"
-text = "PLATFORM = '\"${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}\"'"
 count = 1
 
 [[finding]]

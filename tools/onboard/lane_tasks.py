@@ -52,7 +52,66 @@ END_MARKER = "# <<< harmonic-forge lane tasks <<<"
 #: harmonic-forge's own `gate-checkout` used `tools/worktree/...` and resolved
 #: only because harmonic-forge IS the platform -- the same text in any other
 #: repo silently names a file that is not there.
-PLATFORM = '"${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"'
+PLATFORM = '"$hf_forge_root"'
+
+#: harmonic-forge#1566: the forge root, resolved at run time with no home
+#: default: `HARMONIC_FORGE_ROOT`, else instance.toml `forge_root` (read where
+#: `tools/settings/instance.config_path` looks), else a refusal. It is its own
+#: statement, never a `${…:-$(…)}` inside the invocation's word, because a
+#: failing substitution there loses its status and the task then runs
+#: `/tools/...` (pitch inspection). No backslash: the l1-post body is a TOML
+#: basic string.
+#:
+#: The reader runs every time, so a set `HARMONIC_FORGE_ROOT` passes the same
+#: validation as a declared `forge_root`. Its candidate (the env value if
+#: non-empty, else the stdlib read of `forge_root`) only says where
+#: `tools/settings/instance.py` is, and only when absolute, so a relative
+#: value never imports from the cwd. That module's `resolve_forge_root` (the
+#: `launch_view` the launcher and hooks share), given the environment
+#: unchanged, decides the root: a relative env value, a tab or newline, a
+#: missing or looping path, a root with no `tools/hooks/` and an instance.toml
+#: inside a checkout all refuse here exactly as they do at launch, rather than
+#: a second copy of those checks drifting (sticky-wicket S2,
+#: harmonic-forge#1566). Any exception prints nothing, so the prelude's named
+#: refusal fires.
+#:
+#: Two residuals, both fail-closed and decided on purpose: with no env value
+#: and no `forge_root` key, `launch_view` falls back to the launcher checkout,
+#: but a generated task has no checkout of its own and refuses; and a forge
+#: checkout whose `instance.py` predates `resolve_forge_root` (version skew)
+#: refuses where the launcher would accept.
+#:
+#: The candidate's own `instance.py` runs before the root is validated, the
+#: same trust the invocation that follows extends (good-faith; a baked
+#: validator path was rejected).
+ROOT_READER = (
+    "python3 -I -E -c 'import os, sys, pathlib, tomllib; "
+    "c = os.environ.get(\"HARMONIC_FORGE_ROOT\", \"\"); "
+    "x = os.environ.get(\"XDG_CONFIG_HOME\", \"\"); "
+    "b = pathlib.Path(x) if x.startswith(\"/\") else pathlib.Path.home() / \".config\"; "
+    "f = b / \"harmonic-forge\" / \"instance.toml\"; "
+    "v = \"\" if c or not f.is_file() else tomllib.load(open(f, \"rb\")).get(\"forge_root\", \"\"); "
+    "ok = isinstance(v, str) and v.startswith((\"/\", \"~/\")); "
+    "c = c or (os.path.expanduser(v) if ok else \"\"); "
+    "c.startswith(\"/\") or sys.exit(0); "
+    "sys.path.insert(0, os.path.join(c, \"tools\", \"settings\")); "
+    "print(__import__(\"instance\").resolve_forge_root(pathlib.Path(c), os.environ)[0])"
+    "' 2>/dev/null || true")
+#: `|| true` keeps a `set -e` body (gate-checkout) alive to print the refusal
+#: when the reader itself fails (an unparseable instance.toml).
+#:
+#: The prelude resolves the root for this task's own invocation only, into the
+#: private shell variable `hf_forge_root`. It never writes or exports
+#: `HARMONIC_FORGE_ROOT` (reassigning an inherited variable keeps it exported,
+#: so deleting an `export` alone would not do), so child processes see the
+#: caller's environment unchanged, as on main. That does not close the split:
+#: a caller-exported HARMONIC_FORGE_ROOT still reaches descendants, as on main,
+#: and check_receipt's home literal is harmonic-forge#1630's (D31). Propagating
+#: a root is #1630's job (sticky-wicket e2p2 survivor (a), harmonic-forge#1566).
+ROOT_PRELUDE = (
+    f'hf_forge_root="$({ROOT_READER})"\n'
+    '[ -n "$hf_forge_root" ] || { echo "lane task: no forge root -- set '
+    'HARMONIC_FORGE_ROOT or forge_root in instance.toml (#1566)" >&2; exit 1; }\n')
 
 #: name -> TOML body. The names are the DEFAULTS a repo's `[project.protocol]`
 #: block declares; a repo free to rename them is why the check reads the
@@ -67,22 +126,18 @@ run = """
 # mise single-quotes each multi-word `var=#true` value inside $usage_args, and
 # an UNQUOTED expansion re-splits it on whitespace leaving the literal quotes
 # behind. `eval` re-joins and re-parses, restoring mise's own quoting
-# (harmonic-forge#568, live-verified).
-eval python3 {PLATFORM}/tools/gh/l1_post.py $usage_args
+# (harmonic-forge#568, live-verified). The root reference is single-quoted so
+# `eval` expands it after re-parsing, keeping a root with a space whole.
+{ROOT_PRELUDE}eval python3 \'{PLATFORM}\'/tools/gh/l1_post.py $usage_args
 """
 ''',
     "lane-comment": f'''[tasks.lane-comment]
-description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml."
+description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml. The script owns the flag surface (harmonic-forge#1117)."
 usage = \'\'\'
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--file <file>" help="Path to the comment body" required=#true
-flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
-flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
+arg "[args]" var=#true help="tools/gh/post_lane_discussion.py arguments verbatim, e.g. --issue 123 --file body.md --kind discussion"
 \'\'\'
 run = \'\'\'
-set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
-[ -n "${{usage_repo:-}}" ] && set -- "$@" --repo "$usage_repo"
-python3 {PLATFORM}/tools/gh/post_lane_discussion.py "$@"
+{ROOT_PRELUDE}eval python3 \'{PLATFORM}\'/tools/gh/post_lane_discussion.py $usage_args
 \'\'\'
 ''',
     "gate-checkout": f'''[tasks.gate-checkout]
@@ -111,7 +166,7 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-python3 {PLATFORM}/tools/worktree/check_worktree_busy.py "$(pwd)" || exit 1
+{ROOT_PRELUDE}python3 {PLATFORM}/tools/worktree/check_worktree_busy.py "$(pwd)" || exit 1
 
 git fetch origin "$branch" --quiet || {{
   echo "gate-checkout: could not fetch '$branch' from origin" >&2

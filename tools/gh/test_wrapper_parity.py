@@ -451,6 +451,65 @@ class DiscoverExpectFlag(_TmpDirCase):
         self.assertEqual(out, "")
 
 
+class RuntimeRootSpelling(_TmpDirCase):
+    """Sticky-wicket S3 (harmonic-forge#1566): the generated lane tasks'
+    `"$hf_forge_root"` resolves env, then instance.toml `forge_root`,
+    never `~/harmonic-forge`; the checker asks the same resolver
+    (`hook_forge_root.resolve`), falling back to its own checkout where the
+    tasks would refuse. Run as the handoff's literal
+    `--shape --expect l1-post,lane-comment` over a rendered block."""
+
+    _FORGE = Path(__file__).resolve().parents[2]
+
+    def _run(self, xdg):
+        import os
+        import subprocess
+        sys.path.insert(0, str(self._FORGE / "tools" / "onboard"))
+        import lane_tasks
+        mise = self.tmp_path / "mise.toml"
+        mise.write_text(lane_tasks.render(), encoding="utf-8")
+        home = self.tmp_path / "home"
+        home.mkdir()
+        env = {k: v for k, v in os.environ.items() if k != "HARMONIC_FORGE_ROOT"}
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(xdg))
+        out = []
+        for mode in ("--shape", "--discover"):
+            out.append(subprocess.run(
+                [sys.executable, str(_MODULE_PATH), "--mise-toml", str(mise), mode,
+                 "--expect", "l1-post,lane-comment"],
+                env=env, capture_output=True, text=True, timeout=120))
+        return out
+
+    def test_env_unset_home_empty_reads_instance_toml(self):
+        forge = self.tmp_path / "fixture forge"
+        for name in ("l1_post.py", "post_lane_discussion.py"):
+            (forge / "tools" / "gh").mkdir(parents=True, exist_ok=True)
+            (forge / "tools" / "gh" / name).write_text("", encoding="utf-8")
+        # `launch_view` accepts only a root with tools/hooks/ (pitch N4).
+        (forge / "tools" / "hooks").mkdir()
+        xdg = self.tmp_path / "xdg"
+        (xdg / "harmonic-forge").mkdir(parents=True)
+        (xdg / "harmonic-forge" / "instance.toml").write_text(
+            f'forge_root = "{forge}"\n', encoding="utf-8")
+        shape, discover = self._run(xdg)
+        self.assertEqual(shape.returncode, 0, shape.stderr)
+        self.assertIn("forward verbatim: OK", shape.stdout)
+        self.assertEqual(discover.returncode, 0, discover.stderr)
+        found = dict(line.split("\t", 1) for line in discover.stdout.splitlines() if "\t" in line)
+        self.assertEqual(found.get("lane-comment"),
+                         str(forge.resolve() / "tools" / "gh" / "post_lane_discussion.py"))
+
+    def test_env_unset_home_empty_no_instance_toml_uses_own_checkout(self):
+        xdg = self.tmp_path / "empty xdg"
+        xdg.mkdir()
+        shape, discover = self._run(xdg)
+        self.assertEqual(shape.returncode, 0, shape.stderr)
+        self.assertIn("forward verbatim: OK", shape.stdout)
+        self.assertEqual(discover.returncode, 0, discover.stderr)
+        found = dict(line.split("\t", 1) for line in discover.stdout.splitlines() if "\t" in line)
+        self.assertEqual(found.get("l1-post"), str(self._FORGE / "tools" / "gh" / "l1_post.py"))
+
+
 class LiveScriptParsing(unittest.TestCase):
     def test_live_gh_issue_usage_block_parses(self):
         """Guards the real parse against argparse formatting changes."""
