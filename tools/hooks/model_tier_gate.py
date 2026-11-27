@@ -155,7 +155,9 @@ HINTED_BRANCH_ISSUE_RE = re.compile(
 #: directory named `hrse2-N-impl` reached through this fallback is gated as
 #: hrse N, which fails closed.
 #: DOTALL: `.` must span a newline in an ancestor name, or that path would miss.
-WORKTREE_ISSUE_RE = re.compile(r"^/(?:.*/)?hrse2-(?P<number>\d+)-impl$", re.DOTALL)
+#: `[a-z]?`: a letter-suffixed reforge worktree (`hrse2-7b-impl`) is hrse 7, as
+#: worktree_issue's `_IMPL_DIR_RE` already reads it.
+WORKTREE_ISSUE_RE = re.compile(r"^/(?:.*/)?hrse2-(?P<number>\d+)[a-z]?-impl$", re.DOTALL)
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),
     "harmonic-forge": ("vitalharmony/harmonic-forge", "3"),

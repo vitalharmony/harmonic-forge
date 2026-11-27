@@ -2081,13 +2081,13 @@ count = 1
 [[finding]]
 rule = "projects-root"
 path = "tools/lane/baseline_capture.py"
-text = "'projects_root = \"~/Harmonic_Projects\"\\n', encoding=\"utf-8\")"
+text = "CODEX_HOOK_PATH = \"~/Harmonic_Projects/HRSE2/.codex/hooks.json\""
 count = 1
 
 [[finding]]
 rule = "projects-root"
 path = "tools/lane/baseline_capture.py"
-text = "CODEX_HOOK_PATH = \"~/Harmonic_Projects/HRSE2/.codex/hooks.json\""
+text = "_FIXTURE_PROJECTS_ROOT = \"~/Harmonic_Projects\""
 count = 1
 
 [[finding]]

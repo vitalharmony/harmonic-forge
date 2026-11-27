@@ -41,8 +41,19 @@ def projects_root_or_none(resolved: bool = False) -> Path | None:
 
 
 def under_projects(*parts: str, resolved: bool = False) -> Path | None:
-    root = projects_root_or_none(resolved=resolved)
-    return None if root is None else root.joinpath(*parts)
+    """`<projects root>/<parts>`, or None. `resolved=True` resolves the JOINED
+    path, as main's `(home/.../testplan).resolve()` did, so a symlinked
+    `<root>/testplan` names its target; total, so a resolve failure is None."""
+    root = projects_root_or_none()
+    if root is None:
+        return None
+    path = root.joinpath(*parts)
+    if not resolved:
+        return path
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 def describe(own_file: str | None = None) -> str:

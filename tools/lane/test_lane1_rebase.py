@@ -376,7 +376,9 @@ class PrecloseFixTests(unittest.TestCase):
     def test_concurrent_run_exits_1(self):
         with tempfile.TemporaryDirectory() as tmp:
             # _run_locked is stubbed to succeed, so only the lock can make run() exit 1.
-            with mock.patch.object(lane1_rebase, "prep_path", return_value=Path(tmp) / "r-7-prep"), \
+            # harmonic-forge#1529: run() reads the worktrees root once, first.
+            with mock.patch.object(lane1_rebase, "worktrees_root", return_value=Path(tmp)), \
+                    mock.patch.object(lane1_rebase, "prep_path", return_value=Path(tmp) / "r-7-prep"), \
                     mock.patch.object(lane1_rebase, "_run_locked", return_value="ran"):
                 self.assertEqual(lane1_rebase.run("/x", 7, "feat/7-thing"), "ran")
                 lock = open(Path(tmp) / "r-7-prep.lock", "w")

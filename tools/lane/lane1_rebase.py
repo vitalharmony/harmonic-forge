@@ -385,8 +385,11 @@ def fetch(repo_dir: str, branch: str) -> None:
         f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
 
 
-def prep_path(repo_dir: str, issue: int) -> Path:
-    return worktrees_root() / f"{Path(repo_dir).resolve().name}-{issue}-prep"
+def prep_path(repo_dir: str, issue: int, root: Path | None = None) -> Path:
+    """The prep worktree under `root` (the run's own, read once in run()),
+    else under `worktrees_root()` read now."""
+    base = root if root is not None else worktrees_root()
+    return base / f"{Path(repo_dir).resolve().name}-{issue}-prep"
 
 
 def remove_prep(repo_dir: str, prep: Path, force: bool = False) -> None:
@@ -629,8 +632,9 @@ def _regenerate(prep: Path, declared: dict[str, str], provision: str | None,
 
 
 def rebase_and_push(repo_dir: str, issue: int, branch: str, old: str,
-                    passed: str | None = None) -> tuple[str, str | None, list[str], str | None]:
-    prep = prep_path(repo_dir, issue)
+                    passed: str | None = None,
+                    root: Path | None = None) -> tuple[str, str | None, list[str], str | None]:
+    prep = prep_path(repo_dir, issue, root)
     prune_stale_prep(repo_dir, prep)
     prep.parent.mkdir(parents=True, exist_ok=True)
     target, mains = version_target(repo_dir, old)
@@ -763,19 +767,24 @@ def run(repo_dir: str, issue: int, branch: str,
         checked_main: str | None = None) -> tuple[str, str | None, list[str], str | None]:
     # preclose F1018-3: one run per issue at a time. The stale-prep busy check
     # ignores same-lane processes, so a concurrent Lane 1 run would look stale.
-    lock_path = prep_path(repo_dir, issue).with_suffix(".lock")
+    # harmonic-forge#1529: the worktrees root is read ONCE per run, so the lock
+    # and the prep it guards are always siblings even if instance.toml changes
+    # mid-run (a second read could put the prep where another run's lock is not).
+    root = worktrees_root()
+    lock_path = prep_path(repo_dir, issue, root).with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Exit(1, f"another lane1-rebase run holds {lock_path}; nothing done") from None
-        return _run_locked(repo_dir, issue, branch, checked, checked_main)
+        return _run_locked(repo_dir, issue, branch, checked, checked_main, root=root)
 
 
 def _run_locked(repo_dir: str, issue: int, branch: str,
                 checked: str | None = None,
-                checked_main: str | None = None) -> tuple[str, str | None, list[str], str | None]:
+                checked_main: str | None = None,
+                root: Path | None = None) -> tuple[str, str | None, list[str], str | None]:
     fetch(repo_dir, branch)
     old = rev(repo_dir, f"refs/remotes/origin/{branch}")
     main = rev(repo_dir, "refs/remotes/origin/main")
@@ -796,7 +805,7 @@ def _run_locked(repo_dir: str, issue: int, branch: str,
         new, resolved, regenerated, render_run = old, None, [], None  # already on current main (incl. a crash re-run)
     else:
         new, resolved, regenerated, render_run = rebase_and_push(
-            repo_dir, issue, branch, old, passed)
+            repo_dir, issue, branch, old, passed, root=root)
     # harmonic-forge#1057: a regeneration commit, like a resolved version or a
     # rendered baseline (#1058), makes the rebase non-patch-equivalent to local.
     move_local_ref(repo_dir, branch, new,
