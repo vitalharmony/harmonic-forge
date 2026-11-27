@@ -103,8 +103,12 @@ class TC2CheckReceipt(Fixture):
             self.addCleanup(target.stop)
 
     def test_identity_is_the_running_checkout(self) -> None:
-        self.assertEqual(Path(importlib.import_module("check_receipt").__file__).resolve()
-                         .parents[2], HERE.parents[1])
+        # The real, unpatched FORGE_ROOT, read in a fresh process.
+        proc = subprocess.run([sys.executable, "-c",
+                               f"import sys; sys.path.insert(0, {str(HERE)!r}); "
+                               "import check_receipt; print(check_receipt.FORGE_ROOT)"],
+                              capture_output=True, text=True, timeout=60, env=self.env)
+        self.assertEqual(Path(proc.stdout.strip()), HERE.parents[1], proc.stderr)
         self.declare(None)
         self.assertEqual(self.C.forge_sha(), self.forge_sha)
 
