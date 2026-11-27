@@ -454,12 +454,24 @@ class FenceTest(Lane3EnvCase):
     """harmonic-forge#1225 AC2: `fence:` paths go through the hook's own predicate."""
 
     OUTSIDE = "~/Harmonic_Projects/HRSE2-lane3/backend/x.json"
-    #: harmonic-forge#1529: inside the run's configured projects root.
-    INSIDE = str(Path(os.environ.get("XDG_CONFIG_HOME", "/nonexistent")).parent
-                 / "projects" / "testplan" / "h1" / "x.json")
 
     def setUp(self) -> None:
         super().setUp()
+        # harmonic-forge#1529: the test declares its own testplan root on the
+        # hook module fence_refusals calls in-process, so it depends on neither
+        # the test runner nor the host's instance.toml.
+        hooks = str(_lane3_env._HERE.parents[1] / "hooks")
+        if hooks not in sys.path:
+            sys.path.insert(0, hooks)
+        import block_lane1_status_claims as fence  # noqa: PLC0415
+        plan_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(plan_dir.cleanup)
+        testplan = Path(plan_dir.name).resolve() / "testplan"
+        testplan.mkdir()
+        self.INSIDE = str(testplan / "h1" / "x.json")
+        patcher = patch.object(fence, "TESTPLAN_ROOT", testplan)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         prior = os.environ.pop("LANE", None)
         self.addCleanup(lambda: os.environ.__setitem__("LANE", prior) if prior is not None
                         else os.environ.pop("LANE", None))

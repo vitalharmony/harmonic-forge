@@ -25,7 +25,9 @@ from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(HOOKS_DIR.parent / "settings"))
 import model_tier_gate  # noqa: E402
+import roots  # noqa: E402  (harmonic-forge#1529: total, never raises)
 
 GIT_TIMEOUT_SECONDS = 1.5
 # `<stem>-<N>-impl`, or `<stem>-<N><letter>-impl` for a second worktree on the
@@ -34,9 +36,11 @@ _IMPL_DIR_RE = re.compile(r"-(?P<number>\d+)[a-z]?-impl$")
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
 #: harmonic-forge#1529: the configured `<projects root>/.worktrees` plus the
 #: legacy `/tmp`; with `projects_root` unset, `/tmp` only (this detection is
-#: advisory; the tier gate's own fallback matches more, model_tier_gate.py).
+#: advisory; the tier gate's own fallback has no root and matches more,
+#: model_tier_gate.py).
+_PROJECT_WORKTREES = roots.under_projects(".worktrees")
 _IMPL_ROOTS = tuple(r for r in (
-    None if model_tier_gate._PROJECT_WORKTREES is None else str(model_tier_gate._PROJECT_WORKTREES),
+    None if _PROJECT_WORKTREES is None else str(_PROJECT_WORKTREES),
     "/tmp",
 ) if r is not None)
 

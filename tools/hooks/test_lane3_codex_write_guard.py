@@ -17,17 +17,38 @@ from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 GUARD = HOOK_DIR / "lane3_codex_write_guard.py"
-sys.path.insert(0, str(HOOK_DIR.parent / "settings"))
-import roots  # noqa: E402  (harmonic-forge#1529: the run's configured projects root)
+#: harmonic-forge#1529: the guard runs as a subprocess and reads projects_root
+#: from instance.toml, so this module declares its own per-run fixture (the
+#: test_roots `RootsCase.declare` pattern) and depends on neither the test
+#: runner nor the host's config. Set by setUpModule.
+TESTPLAN: Path = Path("/nonexistent/testplan")
+_XDG: Path | None = None
+_FIXTURE: tempfile.TemporaryDirectory | None = None
 
-TESTPLAN = roots.under_projects("testplan")
-assert TESTPLAN is not None, "run under tools/run_tests.py, which declares projects_root"
+
+def setUpModule() -> None:  # noqa: N802 -- unittest's hook name
+    global TESTPLAN, _XDG, _FIXTURE
+    _FIXTURE = tempfile.TemporaryDirectory()
+    base = Path(_FIXTURE.name).resolve()
+    _XDG = base / "xdg"
+    (_XDG / "harmonic-forge").mkdir(parents=True)
+    projects = base / "projects"
+    (_XDG / "harmonic-forge" / "instance.toml").write_text(
+        f'projects_root = "{projects}"\n', encoding="utf-8")
+    TESTPLAN = projects / "testplan"
+    TESTPLAN.mkdir(parents=True)
+
+
+def tearDownModule() -> None:  # noqa: N802 -- unittest's hook name
+    if _FIXTURE is not None:
+        _FIXTURE.cleanup()
 
 
 def run_guard(payload: dict, lane: str | None = "3", host: str | None = None) -> str:
     env = {}
     import os
     env.update(os.environ)
+    env["XDG_CONFIG_HOME"] = str(_XDG)
     if lane is None:
         env.pop("LANE", None)
     else:

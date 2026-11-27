@@ -98,23 +98,33 @@ class TC1Fence(RootsCase):
         self.assertIn("<projects root>/testplan", reason)
         self.assertIn("projects_root", reason)
 
-    def test_the_run_fixture_works_under_a_tmpdir_inside_a_checkout(self) -> None:
-        """Pass-1 survivor: a Codex lane's TMPDIR has a .git ancestor, where
-        instance.py reads no config; the run says so once and goes on -- no
-        crash, and its temp root is still removed on exit."""
+    def test_the_runner_reads_no_config_and_supplies_none(self) -> None:
+        """K-A1 (harmonic-forge#1529 reforge): inside `contained_tempdir()` no
+        instance.toml is read -- not the developer's (here a fixture declaring
+        /srv/dev-root) and not one the runner wrote -- whether TMPDIR is plain
+        or under a `.git` directory (a Codex lane's). On exit TMPDIR holds only
+        what it held before. Reverting to a runner-written fixture yields the
+        scratch root; dropping the XDG override leaks /srv/dev-root."""
+        self.declare(Path("/srv/dev-root"))
+        plain = self.tmp / "plain tmp"
+        plain.mkdir()
         checkout = self.tmp / "lane tmp"
         (checkout / ".git").mkdir(parents=True)
-        code = ("import run_tests\n"
-                "with run_tests.contained_tempdir() as root:\n"
-                "    print('entered')\n")
-        proc = subprocess.run([sys.executable, "-c", f"import sys; sys.path[:0] = [{str(TOOLS)!r}, "
-                               f"{str(TOOLS / 'settings')!r}]\n" + code],
-                              env={**self.env(), "TMPDIR": str(checkout)},
-                              capture_output=True, text=True, timeout=60)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "entered")
-        self.assertIn("per-run instance.toml skipped", proc.stderr)
-        self.assertEqual([p.name for p in checkout.iterdir()], [".git"])
+        code = ("import os, run_tests, roots\n"
+                "with run_tests.contained_tempdir():\n"
+                "    print(roots.projects_root_or_none())\n"
+                "    print(os.environ['XDG_CONFIG_HOME'] == run_tests.CONFIG_FREE_XDG)\n")
+        for tmpdir in (plain, checkout):
+            with self.subTest(tmpdir=tmpdir.name):
+                before = sorted(p.name for p in tmpdir.iterdir())
+                proc = subprocess.run(
+                    [sys.executable, "-c", f"import sys; sys.path[:0] = [{str(TOOLS)!r}, "
+                     f"{str(TOOLS / 'settings')!r}]\n" + code],
+                    env={**self.env(), "TMPDIR": str(tmpdir)},
+                    capture_output=True, text=True, timeout=60)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout.split(), ["None", "True"], proc.stderr)
+                self.assertEqual(sorted(p.name for p in tmpdir.iterdir()), before)
 
     def test_tier_gate_matches_a_symlinked_worktree_root_when_unset(self) -> None:
         """Pass-1 survivor (cross-family): the cwd is realpath-ed, so a worktree
@@ -143,6 +153,49 @@ class TC2TC3Worktrees(RootsCase):
             with self.subTest(root=root):
                 self.declare(root)
                 self.assertEqual(self.py(probe).stdout.strip(), "True")
+
+    def test_tier_gate_fallback_matrix_every_config_state(self) -> None:
+        """K-B1 (harmonic-forge#1529 reforge): projects_root unset, set to the
+        worktrees' own root, and set elsewhere, against five worktree layouts.
+        A miss skips the gate, so every cell must gate hrse 7. Kills: a
+        set-root branch dropping the legacy home root (P2 #2), a fallback that
+        needs a `.worktrees` segment (P1 #3), and `^/.*/` without the optional
+        group, which misses `/hrse2-7-impl` (Codex P2 #3)."""
+        paths = [str(self.root / ".worktrees" / "hrse2-7-impl"),
+                 str(Path.home() / "Harmonic_Projects" / ".worktrees" / "hrse2-7-impl"),
+                 "/srv/forge-worktrees/hrse2-7-impl", "/tmp/hrse2-7-impl", "/hrse2-7-impl"]
+        probe = ("import json, subprocess, model_tier_gate as m\n"
+                 "m._run = lambda *a, **k: subprocess.CompletedProcess(a, 0, '', '')\n"
+                 f"print(json.dumps([m.resolve_issue_target(p) for p in {paths!r}]))\n")
+        for root in (None, self.root, Path("/srv/elsewhere")):
+            with self.subTest(root=root):
+                self.declare(root)
+                proc = self.py(probe)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), [[7, "hrse"]] * len(paths))
+
+    def test_tier_gate_reads_no_projects_root(self) -> None:
+        """K-B2 (harmonic-forge#1529 reforge): the tier gate's fallback has no
+        config branch to regress, so its source names no root at all."""
+        import ast  # noqa: PLC0415
+        tree = ast.parse((HOOKS / "model_tier_gate.py").read_text(encoding="utf-8"))
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.add(node.module or "")
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                names.add(node.value)
+        for needle in ("roots", "instance", "projects_root", "projects_root_or_none",
+                       "under_projects", "_PROJECT_WORKTREES", "_WORKTREE_ROOTS"):
+            with self.subTest(needle=needle):
+                self.assertNotIn(needle, names)
 
 
 class TC4Helpers(RootsCase):

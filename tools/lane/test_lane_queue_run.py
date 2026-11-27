@@ -36,6 +36,18 @@ class QueueRunTests(unittest.TestCase):
         (self.home / ".codex" / "config.toml").write_text(
             f'[projects."{self.repo.resolve()}"]\ntrust_level = "trusted"\n')
         self.queue = self.root / "queue.json"
+        # harmonic-forge#1529 reforge (R2): the queued-resume helper derives Codex
+        # add-dirs from instance.toml `projects_root`, and a test run reads no
+        # config, so this test declares its own root rather than relying on the
+        # runner or the host.
+        xdg = self.root / "xdg"
+        (xdg / "harmonic-forge").mkdir(parents=True)
+        (self.root / "projects").mkdir()
+        (xdg / "harmonic-forge" / "instance.toml").write_text(
+            f'projects_root = "{(self.root / "projects").resolve()}"\n', encoding="utf-8")
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)})
+        env.start()
+        self.addCleanup(env.stop)
 
     def write_queue(self, items):
         self.queue.write_text(json.dumps({"items": items}))

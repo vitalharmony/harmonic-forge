@@ -62,9 +62,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "settings"))
 from shell_parse import command_segments, mask_heredoc_bodies, strip_invocation_prefix  # noqa: E402
-import roots  # noqa: E402  (harmonic-forge#1529: total, never raises)
 import route_floor_marker  # noqa: E402
 import session_model  # noqa: E402
 from session_model import _tail_lines  # noqa: E402,F401 -- re-exported; one bounded reader
@@ -144,25 +142,19 @@ BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
 HINTED_BRANCH_ISSUE_RE = re.compile(
     r"^[\w.-]+/(?P<hint>hrse|harmonic-forge|forge|h|f)-?(?P<number>\d+)-"
 )
-# harmonic-forge#756: per-issue worktrees moved from `/tmp` to
-# `<projects root>/.worktrees/` (a Codex lane can no longer write `/tmp`).
-# Both roots are accepted during the migration; `/tmp` is the legacy one. The
-# projects root (instance.toml `projects_root`, harmonic-forge#1529) is matched
-# both as written and resolved, because the cwd below is `realpath`-ed and the
-# root may sit behind a symlink.
-_PROJECT_WORKTREES = roots.under_projects(".worktrees")
-_WORKTREE_ROOTS = tuple(dict.fromkeys(("/tmp", *(
-    () if _PROJECT_WORKTREES is None
-    else (str(_PROJECT_WORKTREES), os.path.realpath(_PROJECT_WORKTREES))))))
-#: This is the gate's detached-HEAD fallback (a conflicted rebase), so matching
-#: FEWER worktrees skips the gate. With the root unset it matches MORE: any
-#: absolute `.../hrse2-N-impl`, never only `/tmp` (pitch NC9, R-0371) -- not
-#: only under a `.worktrees` segment, since the cwd here is realpath-ed and a
-#: symlinked worktree root need not contain one (preclose pass 1, cross-family).
-WORKTREE_ISSUE_RE = re.compile(
-    r"^(?:" + "|".join(re.escape(root) for root in _WORKTREE_ROOTS)
-    + (r"|/.*" if _PROJECT_WORKTREES is None else "")
-    + r")/hrse2-(?P<number>\d+)-impl$")
+#: The gate's detached-HEAD fallback (a conflicted rebase leaves a Lane 2
+#: worktree with no branch). A miss here SKIPS the gate, so this pattern has no
+#: root: it matches every absolute `.../hrse2-N-impl` directory, whatever
+#: `projects_root` says or whether it is set (harmonic-forge#1529 reforge).
+#: Every path main matched (`/tmp/...`, `~/Harmonic_Projects/.worktrees/...`,
+#: either one realpath-ed) gives the identical answer, so this is a pointwise
+#: superset of main in every config state, with no config branch to regress --
+#: anchoring to configured roots could only ever match fewer paths than main in
+#: some state. The extra matches add nothing a hostile author lacks on main,
+#: which already accepts any `/tmp/hrse2-N-impl`. Residual: a non-worktree
+#: directory named `hrse2-N-impl` reached through this fallback is gated as
+#: hrse N, which fails closed.
+WORKTREE_ISSUE_RE = re.compile(r"^/(?:.*/)?hrse2-(?P<number>\d+)-impl$")
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),
     "harmonic-forge": ("vitalharmony/harmonic-forge", "3"),
