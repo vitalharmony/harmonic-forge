@@ -146,6 +146,52 @@ class OverlayIsNeverHome(unittest.TestCase):
         self.assertEqual(out, [True, False, True, None])
 
 
+class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
+    """harmonic-forge#1579 sticky-wicket PATCH (operator D22/D23): every grant
+    writer's scope decision, run from inside an overlay-only checkout with every
+    `manifest_overlay` entry point patched to raise, answers not-home / no-target
+    without reading the overlay. Production reaches the overlay only through
+    `manifest_overlay.<attr>` (test_manifest_scope pins the naming files), so any
+    overlay read on these paths trips the patch, whatever its import spelling.
+
+    D23's stated limit: imc_waiver posts with `apply_project_identity` on the
+    key's projects.toml repo; that call is posting identity, not grant scope, and
+    for a registered repo it never falls back to the overlay (checked last)."""
+
+    CODE = (
+        "import json, manifest_overlay\n"
+        "def boom(*a, **k):\n"
+        "    raise AssertionError('overlay read')\n"
+        "manifest_overlay.read = manifest_overlay.project_for_checkout = boom\n"
+        "manifest_overlay.path_project = boom\n"
+        "sys.path.insert(0, " + repr(str(HERE.parent / "gh")) + ")\n"
+        "import manifest_scope, imc_waiver, ui_grant, batch_auth, expand_lane_shorthand as m\n"
+        "import manifest_identity\n"
+        "out = [manifest_scope.home_project('acme/app') is None,\n"
+        "       imc_waiver.is_home_repo('acme/app'),\n"
+        "       imc_waiver.key_target('Z5'), imc_waiver.key_target('F5'),\n"
+        "       m._scan_batch('BATCH Z5'),\n"
+        "       batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
+        "       ui_grant.find_record([], 'Z5', 'plan')]\n"
+        "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
+        "target = imc_waiver.key_target('F5')\n"
+        "try:\n"
+        "    manifest_identity.apply_project_identity(target[0])\n"
+        "    out.append('identity-ok')\n"
+        "except AssertionError as exc:\n"
+        "    out.append(str(exc))\n"
+        "except BaseException as exc:\n"
+        "    out.append('identity-ok' if 'overlay read' not in str(exc) else str(exc))\n"
+        "print(json.dumps(out))\n")
+
+    def test_grant_scope_never_reads_the_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = overlay_only_fixture(Path(tmp).resolve())
+            out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
+        self.assertEqual(out, [True, False, None, ["acme/forge", 5], None, [], None,
+                               "identity-ok"])
+
+
 class LiveForeignKeysStillRefuse(unittest.TestCase):
     """TC4 / AC4: on the checked-in manifest K/Y/D/P keys refuse IMC, FORCE and UI
     as cross-account, exactly as before."""

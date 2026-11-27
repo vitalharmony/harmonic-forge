@@ -512,8 +512,10 @@ class HooksArePinnedOut(unittest.TestCase):
         self.assertTrue(all(fn.lineno <= i <= fn.end_lineno for i in lines), lines)
 
     def test_no_hook_calls_apply_project_identity(self) -> None:
-        self.assertEqual([f for f in self.grep("-n", "apply_project_identity(", "--", "tools/hooks")
-                          if f], [])
+        # Production hooks only: a test under tools/hooks may exercise identity
+        # (test_manifest_scoping's grant-scope funnel, harmonic-forge#1579 D23).
+        self.assertEqual([f for f in self.grep("-n", "apply_project_identity(", "--", "tools/hooks",
+                                               ":!**/test_*") if f], [])
 
 
 if __name__ == "__main__":
