@@ -147,7 +147,11 @@ _FORGE_ROOT_REF = re.compile(
     # to `_forge_root()` (not the real, session-specific worktree path,
     # which does not exist in CI) is correct: the check's job is asserting
     # wrapper/script flag parity, not that a particular worktree exists.
-    r'|\$L1_TOOLS_FORGE)(/[\w./-]*\.py)"?'
+    r'|\$L1_TOOLS_FORGE'
+    # harmonic-forge#1566: lane_tasks' generated tasks resolve the root into
+    # HARMONIC_FORGE_ROOT first and invoke `"$HARMONIC_FORGE_ROOT"/tools/...`.
+    # Under `eval` the reference is single-quoted as well: `'"$HARMONIC_FORGE_ROOT"'`.
+    r"|'?\"?\$\{?HARMONIC_FORGE_ROOT\}?\"?'?)(/[\w./-]*\.py)\"?"
 )
 
 

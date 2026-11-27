@@ -115,6 +115,9 @@ class InHandProbeTests(unittest.TestCase):
         self.lane2 = self.make_repo("HRSE2-lane2", "https://github.com/vitalharmony/hrse.git")
         self.forge = self.make_repo("harmonic-forge",
                                     "https://github.com/vitalharmony/harmonic-forge.git")
+        # harmonic-forge#1566: the hook resolves HARMONIC_FORGE_ROOT through the
+        # launcher's resolver, which accepts only a root with tools/hooks/.
+        (self.forge / "tools" / "hooks").mkdir(parents=True, exist_ok=True)
         patcher = patch.object(worktree_issue, "_IMPL_ROOTS", (str(self.wt_root),))
         patcher.start()
         self.addCleanup(patcher.stop)

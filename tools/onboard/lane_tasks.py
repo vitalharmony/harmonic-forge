@@ -52,7 +52,30 @@ END_MARKER = "# <<< harmonic-forge lane tasks <<<"
 #: harmonic-forge's own `gate-checkout` used `tools/worktree/...` and resolved
 #: only because harmonic-forge IS the platform -- the same text in any other
 #: repo silently names a file that is not there.
-PLATFORM = '"${HARMONIC_FORGE_ROOT:-$HOME/harmonic-forge}"'
+PLATFORM = '"$HARMONIC_FORGE_ROOT"'
+
+#: harmonic-forge#1566: the forge root, resolved at run time with no home
+#: default: `HARMONIC_FORGE_ROOT`, else instance.toml `forge_root` (read where
+#: `tools/settings/instance.config_path` looks), else a refusal. It is its own
+#: statement, never a `${…:-$(…)}` inside the invocation's word, because a
+#: failing substitution there loses its status and the task then runs
+#: `/tools/...` (pitch inspection). No backslash: the l1-post body is a TOML
+#: basic string.
+ROOT_READER = (
+    "python3 -I -E -c 'import os, pathlib, tomllib; "
+    "x = os.environ.get(\"XDG_CONFIG_HOME\", \"\"); "
+    "b = pathlib.Path(x) if x.startswith(\"/\") else pathlib.Path.home() / \".config\"; "
+    "f = b / \"harmonic-forge\" / \"instance.toml\"; "
+    "v = tomllib.load(open(f, \"rb\")).get(\"forge_root\", \"\") if f.is_file() else \"\"; "
+    "ok = isinstance(v, str) and v.startswith((\"/\", \"~/\")); "
+    "print(os.path.expanduser(v) if ok else \"\")' 2>/dev/null || true")
+#: `|| true` keeps a `set -e` body (gate-checkout) alive to print the refusal
+#: when the reader itself fails (an unparseable instance.toml).
+ROOT_PRELUDE = (
+    f'HARMONIC_FORGE_ROOT="${{HARMONIC_FORGE_ROOT:-$({ROOT_READER})}}"\n'
+    '[ -n "$HARMONIC_FORGE_ROOT" ] || { echo "lane task: no forge root -- set '
+    'HARMONIC_FORGE_ROOT or forge_root in instance.toml (#1566)" >&2; exit 1; }\n'
+    'export HARMONIC_FORGE_ROOT\n')
 
 #: name -> TOML body. The names are the DEFAULTS a repo's `[project.protocol]`
 #: block declares; a repo free to rename them is why the check reads the
@@ -67,8 +90,9 @@ run = """
 # mise single-quotes each multi-word `var=#true` value inside $usage_args, and
 # an UNQUOTED expansion re-splits it on whitespace leaving the literal quotes
 # behind. `eval` re-joins and re-parses, restoring mise's own quoting
-# (harmonic-forge#568, live-verified).
-eval python3 {PLATFORM}/tools/gh/l1_post.py $usage_args
+# (harmonic-forge#568, live-verified). The root reference is single-quoted so
+# `eval` expands it after re-parsing, keeping a root with a space whole.
+{ROOT_PRELUDE}eval python3 \'{PLATFORM}\'/tools/gh/l1_post.py $usage_args
 """
 ''',
     "lane-comment": f'''[tasks.lane-comment]
@@ -80,7 +104,7 @@ flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking 
 flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
 \'\'\'
 run = \'\'\'
-set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
+{ROOT_PRELUDE}set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
 [ -n "${{usage_repo:-}}" ] && set -- "$@" --repo "$usage_repo"
 python3 {PLATFORM}/tools/gh/post_lane_discussion.py "$@"
 \'\'\'
@@ -111,7 +135,7 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-python3 {PLATFORM}/tools/worktree/check_worktree_busy.py "$(pwd)" || exit 1
+{ROOT_PRELUDE}python3 {PLATFORM}/tools/worktree/check_worktree_busy.py "$(pwd)" || exit 1
 
 git fetch origin "$branch" --quiet || {{
   echo "gate-checkout: could not fetch '$branch' from origin" >&2

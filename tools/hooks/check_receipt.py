@@ -41,7 +41,21 @@ L1_POST_SOURCE = "l1-post-scratch"
 #: The forge HEAD `l1_post` read before its check started (empty when the forge
 #: tree was dirty): the receipt names that, never the HEAD at record time.
 FORGE_SHA_ENV = "HF_CHECK_RECEIPT_FORGE_SHA"
-FORGE_ROOT = Path.home() / "harmonic-forge"
+#: harmonic-forge#1566: HARMONIC_FORGE_ROOT, else instance.toml `forge_root`.
+#: Never this file's own checkout: the recorder runs from the checkout being
+#: checked and the readers from the main forge checkout, so an own-checkout
+#: fallback would record a forge SHA no reader matches. Unresolved names no
+#: checkout, so `forge_sha()` is None and no receipt is reusable.
+UNRESOLVED_FORGE_ROOT = Path("/nonexistent/forge-root-unresolved")
+
+
+def _resolve_forge_root() -> Path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import hook_forge_root  # noqa: PLC0415
+    return hook_forge_root.resolve_declared() or UNRESOLVED_FORGE_ROOT
+
+
+FORGE_ROOT = _resolve_forge_root()
 BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)-")
 ZERO = "0" * 40
 _SLUG = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", re.IGNORECASE)
@@ -91,6 +105,8 @@ def forge_unusable_reason() -> str | None:
     `forge HEAD unreadable`."""
     if forge_sha():
         return None
+    if FORGE_ROOT == UNRESOLVED_FORGE_ROOT:
+        return "forge root unresolved (set HARMONIC_FORGE_ROOT or instance.toml forge_root)"
     try:
         lines = _git(*_FORGE_STATUS, cwd=str(FORGE_ROOT)).splitlines()
     except (OSError, subprocess.CalledProcessError):

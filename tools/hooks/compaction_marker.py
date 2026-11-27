@@ -136,8 +136,13 @@ CORPUS: tuple[CorpusFile, ...] = (
 
 
 def forge_root() -> str:
-    """Where the protocol corpus lives, for the paths named in the injection."""
-    return os.environ.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
+    """Where the protocol corpus lives, for the paths named in the injection
+    (harmonic-forge#1566: the launcher's resolution order, never a home literal)."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import hook_forge_root  # noqa: PLC0415
+    return str(hook_forge_root.resolve(__file__))
 
 
 #: harmonic-forge#480. Verbs that READ a file's contents. Beside `CORPUS`
