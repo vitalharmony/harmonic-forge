@@ -481,12 +481,41 @@ PENDING_EVENTS = frozenset({"pull_request", "push", "schedule", "workflow_dispat
 REQUIRED_CHECK_PRODUCERS = {"verify": ".github/workflows/ci.yml"}
 
 
+def overlay_ci_refusal(repo: str) -> str | None:
+    """Ruling D13 on harmonic-forge#1579, the one CI-read check: the named refusal
+    when `repo` is known only from the cwd checkout's forge.toml, else None. Every
+    CI read path calls it before its first read: `s0_reader`, `check_gate_result`
+    (so `main` and post_lane_discussion's PASS check), `_carry_forward.check_ci`.
+    Any other failure of the check answers None, leaving the caller's read as it was."""
+    onboard = str(Path(__file__).resolve().parents[1] / "onboard")
+    if onboard not in sys.path:
+        sys.path.insert(0, onboard)
+    import manifest_invoking  # noqa: PLC0415
+    try:
+        manifest_invoking.refuse_board_ci(repo, "CI read")
+    except manifest_invoking.OverlayOnlyRefusal as exc:
+        return str(exc)
+    except Exception:  # noqa: BLE001 - only the named refusal stops the read
+        pass
+    return None
+
+
 def s0_reader(repo: str, counter=None):
     """A reader for harmonic-forge#894 C3: `reader(path) -> (status, body)`,
     one `_etag_cache.conditional_get` per call, under the account
     `manifest_identity.account_for(repo)` names, with no fallback. A
     `ManifestError` (or any failure resolving the account) answers status
-    None, which every reader path reads as `unknown`."""
+    None, which every reader path reads as `unknown`.
+
+    A repo known only from its forge.toml has no CI account (harmonic-forge#1579
+    ruling D13): building its reader raises `manifest_invoking.OverlayOnlyRefusal`,
+    which names the follow-up, before any read. Any other failure of that check
+    leaves the reader as it was."""
+    refusal = overlay_ci_refusal(repo)
+    if refusal is not None:
+        import manifest_invoking  # noqa: PLC0415 -- on sys.path via overlay_ci_refusal
+        raise manifest_invoking.OverlayOnlyRefusal(refusal)
+
     def read(path: str) -> tuple[int | None, str | None]:
         try:
             tools = Path(__file__).resolve().parents[1]
@@ -1246,6 +1275,9 @@ def check_gate_result(
         return True, "not a gate report; CI check does not apply"
     if verdict != "PASS":
         return True, f"verdict is {verdict}; CI check does not apply"
+    refusal = overlay_ci_refusal(repo)
+    if refusal is not None:
+        return False, f"[GATE] REFUSED: {refusal}"
 
     sha = gated_sha(body)
     if sha is None:

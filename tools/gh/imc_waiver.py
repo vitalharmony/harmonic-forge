@@ -727,7 +727,7 @@ def main() -> int:
     if target is None:
         raise SystemExit(f"imc-waiver: {args.key} is not a repo-prefixed issue key.")
     from manifest_identity import apply_project_identity  # noqa: PLC0415
-    apply_project_identity(target[0])  # harmonic-forge#804
+    apply_project_identity(target[0])  # harmonic-forge#804; posting identity on a projects.toml repo, never grant scope (#1579 D23)
     if args.command == "retire":
         for path in retire(args.key, reason=args.reason):
             print(path)

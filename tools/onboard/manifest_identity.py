@@ -76,9 +76,9 @@ def account_for_origin(url: str, path: Path | None = None, *, checkout: Path | N
     directly, never through `account_for`, which would normalize again.
 
     On a base miss, `checkout`'s main-checkout overlay may register this exact
-    key (harmonic-forge#1527). This is the launcher's call and one of the
-    overlay's only two consumers (the other is `ci_plan`); every other function
-    here reads `projects.toml` alone, so no gate, hook or slot sees an overlay."""
+    key (harmonic-forge#1527). This is the launcher's call, one of the overlay's
+    three consumers (R1). Here only it and `apply_project_identity` (posting
+    entrypoints, harmonic-forge#1579) reach one; no gate, hook or slot does."""
     key = origin_repo(url)
     project = by_repo(path).get(key)
     if project is None and checkout is not None:
@@ -256,7 +256,39 @@ def apply_project_identity(repo: str, path: Path | None = None) -> str:
     Call once per entrypoint, right after the repo is resolved and before the
     first `gh` call. Returns the account. The probe runs once per slot per
     process; a mismatch exits non-zero before the caller can write anything.
+
+    An overlay-only repo (harmonic-forge#1579, ruling D11 as amended by D14) never
+    uses a credential slot. Outside a lane it takes the launcher's `ambient` mode
+    (`manifest_slots.launch_identity`), leaving GH_CONFIG_DIR and tokens untouched,
+    so the session's current `gh` login posts. That login must equal the account
+    or, for an organization owner, have push (`manifest_invoking.org_push`).
+    Inside a lane (LANE 1-3) it refuses before any `gh` call: the ambient login
+    there is the shared keyring's, which F1466 forbids in lanes (ruling D14).
     """
+    import manifest_invoking  # noqa: PLC0415 -- harmonic-forge#1579: posting entrypoints only
+    if normalize_repo(repo) not in by_repo(path):
+        account = manifest_invoking.project_for_repo(repo, path=path).account
+        if not account:
+            raise ManifestError(f"{normalize_repo(repo)} is registered but declares no "
+                                "`account`; its identity cannot be resolved")
+        if os.environ.get("LANE") in manifest_slots.LANES:
+            raise SystemExit(
+                f"identity: {normalize_repo(repo)} is registered only by its forge.toml; "
+                "overlay-only posting is not available inside a lane until "
+                "harmonic-forge#1627 (ruling D14 on #1579); post from outside a lane")
+        try:
+            login = _probe_login()
+        except ProbeUnavailable as exc:
+            raise SystemExit(
+                f"identity: could not verify the ambient gh login for account {account} "
+                f"(gh api user failed: {exc}); retry when GitHub is reachable") from exc
+        if not login:
+            raise SystemExit(f"identity: the ambient gh login is not authenticated; {repo} "
+                             "is registered only by its .claude/forge.toml (harmonic-forge#1579)")
+        if login.lower() != account.lower() and not manifest_invoking.org_push(repo, path):
+            raise SystemExit(
+                f"identity mismatch: {repo} needs {account}, the ambient gh login is {login}")
+        return account
     account = account_for(repo, path)
     # harmonic-forge#1470: a lane keeps its own slot and token, never the shared one.
     slot, lane_token = manifest_slots.selection(account, os.environ.get("LANE"), path)

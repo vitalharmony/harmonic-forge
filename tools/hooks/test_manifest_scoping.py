@@ -146,6 +146,153 @@ class OverlayIsNeverHome(unittest.TestCase):
         self.assertEqual(out, [True, False, True, None])
 
 
+class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
+    """harmonic-forge#1579 sticky-wicket PATCH (operator D22/D23): every grant
+    writer's scope decision, run from inside an overlay-only checkout with every
+    `manifest_overlay` entry point patched to raise, answers not-home / no-target
+    without reading the overlay. Production reaches the overlay only through
+    `manifest_overlay.<attr>` (test_manifest_scope pins the naming files), so any
+    overlay read on these paths trips the patch, whatever its import spelling.
+
+    D23's stated limit: imc_waiver posts with `apply_project_identity` on the
+    key's projects.toml repo; that call is posting identity, not grant scope, and
+    for a registered repo it never falls back to the overlay (checked last)."""
+
+    # Post-verdict tightening (operator D24): the read raises a BaseException
+    # subclass, so a writer's `except Exception` cannot swallow it; a direct open
+    # of the overlay file trips it too, not only the manifest_overlay entry
+    # points; and the bare `gh issue close N` form (repo from the cwd checkout)
+    # is exercised. Any read is also recorded, so a swallowed one still fails.
+    CODE = (
+        "import builtins, io, json, os, pathlib, manifest_overlay\n"
+        "class OverlayRead(BaseException):\n"
+        "    pass\n"
+        "seen = []\n"
+        "def boom(*a, **k):\n"
+        "    seen.append('overlay read')\n"
+        "    raise OverlayRead('overlay read')\n"
+        "manifest_overlay.read = manifest_overlay.project_for_checkout = boom\n"
+        "manifest_overlay.path_project = boom\n"
+        # Post-verdict 2 (Codex): an alias (a symlink or hard link to the
+        # overlay) is the same file under another name, so the file's identity
+        # is matched too, not only the spelling of its path.
+        "_OVERLAY = os.stat(os.path.join(os.getcwd(), '.claude', 'forge.toml'))\n"
+        # Post-verdict 3 (Codex): identity is taken from the path AS GIVEN,
+        # before any normalization: normpath drops `..` lexically, which names
+        # a different file when the `..` follows a symlink.
+        "_stat = os.stat\n"
+        "def _is_overlay(p):\n"
+        "    raw = os.fsdecode(p)\n"
+        "    try:\n"
+        "        st = _stat(raw)\n"
+        "        if (st.st_dev, st.st_ino) == (_OVERLAY.st_dev, _OVERLAY.st_ino):\n"
+        "            return True\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "    norm = os.path.normpath(os.path.abspath(raw))\n"
+        "    return norm.replace(os.sep, '/').endswith('/.claude/forge.toml')\n"
+        "_open, _path_open, _os_open = builtins.open, pathlib.Path.open, os.open\n"
+        "def guarded_open(file, *a, **k):\n"
+        "    if isinstance(file, (str, bytes, os.PathLike)) and _is_overlay(file):\n"
+        "        boom()\n"
+        "    return _open(file, *a, **k)\n"
+        "def guarded_path_open(self, *a, **k):\n"
+        "    if _is_overlay(self):\n"
+        "        boom()\n"
+        "    return _path_open(self, *a, **k)\n"
+        # Post-verdict 3 (Codex): a read through os.open is a read too.
+        "def guarded_os_open(path, *a, **k):\n"
+        "    if isinstance(path, (str, bytes, os.PathLike)) and _is_overlay(path):\n"
+        "        boom()\n"
+        "    return _os_open(path, *a, **k)\n"
+        "builtins.open = io.open = guarded_open\n"
+        "pathlib.Path.open = guarded_path_open\n"
+        "os.open = guarded_os_open\n"
+        "sys.path.insert(0, " + repr(str(HERE.parent / "gh")) + ")\n"
+        "import manifest_scope, imc_waiver, ui_grant, batch_auth, expand_lane_shorthand as m\n"
+        "import manifest_identity\n"
+        "out = [manifest_scope.home_project('acme/app') is None,\n"
+        "       imc_waiver.is_home_repo('acme/app'),\n"
+        "       imc_waiver.key_target('Z5'), imc_waiver.key_target('F5'),\n"
+        "       m._scan_batch('BATCH Z5'),\n"
+        "       batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
+        "       batch_auth.closed_keys('gh issue close 5', os.getcwd()),\n"
+        "       ui_grant.find_record([], 'Z5', 'plan')]\n"
+        # Post-verdict 2 (Codex): the FORCE authorizer's own scope decision
+        # runs too. Z5 is the overlay repo's key, so it refuses before any
+        # grant is written.
+        "out.append('no repo maps to its prefix' in m.authorize_force('FORCE Z5: probe', 's', '1'))\n"
+        # Post-verdict 3 (Codex): a key that DOES map (F5, a projects.toml
+        # repo) carries each hook authorizer past the prefix map into its
+        # home-repo decision; state is a scratch dir, and no gh call is made.
+        "import tempfile, force_grant, park_grant, scan_grant\n"
+        "_st = pathlib.Path(tempfile.mkdtemp())\n"
+        "force_grant.FORCE_STATE_DIR = _st / 'force'\n"
+        "ui_grant.UI_STATE_DIR = _st / 'ui'\n"
+        "imc_waiver.IMC_STATE_DIR = _st / 'imc'\n"
+        "park_grant.PARK_STATE_DIR = _st / 'park'\n"
+        "scan_grant.SCAN_STATE_DIR = _st / 'scan'\n"
+        "mapped = {\n"
+        "  'force': m.authorize_force('FORCE F5: probe', 's', '1'),\n"
+        "  'imc': m.authorize_imc('BATCH F5 IMC F5', 's', '1', label_reader=lambda r, n: ({'tooling-exception'}, '')),\n"
+        "  'ui': m.authorize_ui('UI F5: probe', 's', '1'),\n"
+        "  'park': m.authorize_park('PARK F5: probe', 's', '1'),\n"
+        "  'scan': m.authorize_scan('SCAN F open-issues: probe', 's'),\n"
+        "}\n"
+        # Each one decided past scope: FORCE stops only at its receipt check,
+        # the other four write their (scratch) grant.
+        "reached = {'force': 'has no preclose receipt', 'imc': 'waiver hook record written',\n"
+        "           'ui': 'pending plan grant written', 'park': 'may now be completed',\n"
+        "           'scan': 'may be scanned'}\n"
+        "out.append(sorted(k for k, v in mapped.items() if reached[k] in (v or '')))\n"
+        "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
+        "target = imc_waiver.key_target('F5')\n"
+        "try:\n"
+        "    manifest_identity.apply_project_identity(target[0])\n"
+        "    out.append('identity-ok')\n"
+        "except OverlayRead as exc:\n"
+        "    out.append(str(exc))\n"
+        "except BaseException:\n"
+        "    out.append('identity-ok')\n"
+        "out.append(seen)\n"
+        "print(json.dumps(out))\n")
+
+    def test_grant_scope_never_reads_the_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = overlay_only_fixture(Path(tmp).resolve())
+            out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
+        self.assertEqual(out, [True, False, None, ["acme/forge", 5], None, [], [], None,
+                               True, ["force", "imc", "park", "scan", "ui"], "identity-ok", []])
+
+    def test_an_alias_of_the_overlay_is_trapped(self) -> None:
+        """The guard itself (post-verdict 2): a symlink and a hard link to the
+        overlay are reads of it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = overlay_only_fixture(Path(tmp).resolve())
+            overlay = repo / ".claude" / "forge.toml"
+            (repo / "sym.toml").symlink_to(overlay)
+            os.link(overlay, repo / "hard.toml")
+            # Post-verdict 3 (Codex): `..` after a symlink names another file
+            # than its lexical normalization; and a read through os.open.
+            (repo / "deep" / "x").mkdir(parents=True)
+            (repo / "jump").symlink_to(repo / "deep" / "x")
+            (repo / "deep" / "forge.toml").symlink_to(overlay)
+            guard = self.CODE.split("sys.path.insert(0, ")[0]
+            code = ("import sys\n" + guard
+                    + "for name in ('sym.toml', 'hard.toml', 'jump/../forge.toml'):\n"
+                    + "    try:\n"
+                    + "        open(name).close()\n"
+                    + "    except OverlayRead:\n"
+                    + "        pass\n"
+                    + "try:\n"
+                    + "    os.close(os.open('sym.toml', os.O_RDONLY))\n"
+                    + "except OverlayRead:\n"
+                    + "    pass\n"
+                    + "print(json.dumps(seen))\n")
+            out = json.loads(probe_from(repo, base, code))
+        self.assertEqual(out, ["overlay read"] * 4)
+
+
 class LiveForeignKeysStillRefuse(unittest.TestCase):
     """TC4 / AC4: on the checked-in manifest K/Y/D/P keys refuse IMC, FORCE and UI
     as cross-account, exactly as before."""

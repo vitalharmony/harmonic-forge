@@ -59,10 +59,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
 
-from manifest import (  # noqa: E402
-    ManifestError, normalize_repo as normalize_manifest_repo,
-    require_onboarded_repo,
-)
+from manifest import ManifestError, normalize_repo as normalize_manifest_repo  # noqa: E402
+from manifest_invoking import require_onboarded  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preclose_passes  # noqa: E402  (harmonic-forge#834)
@@ -307,9 +305,9 @@ def normalize_repo(value: str) -> str:
 
 
 def registered_repo(value: str) -> str:
-    """Resolve through projects.toml's closed, onboarded-only registry."""
+    """Resolve through the closed, onboarded-only registry (+ cwd forge.toml, harmonic-forge#1579)."""
     try:
-        project = require_onboarded_repo(value)
+        project = require_onboarded(value)
     except ManifestError as exc:
         raise SystemExit(f"preclose-check: {exc}") from exc
     assert project.repo is not None

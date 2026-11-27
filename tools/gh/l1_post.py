@@ -21,7 +21,7 @@ from _sweep_tier import NO_TIER_MESSAGE, parse_write_tier
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLATFORM_ROOT / "tools" / "onboard"))
-from manifest import ManifestError, require_onboarded_repo  # noqa: E402
+from manifest_invoking import ManifestError, refuse_board_ci, require_onboarded  # noqa: E402
 from manifest_identity import apply_project_identity, project_for_path  # noqa: E402
 import manifest_scope  # noqa: E402  (harmonic-forge#1596: the home-repo rule)
 
@@ -492,7 +492,7 @@ def _spec_body(repo: str, spec_comment, issue: int) -> str:
 
 
 def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
-    """Resolve an explicit repo or the invoking checkout through projects.toml."""
+    """Resolve an explicit repo or the invoking checkout (projects.toml, else its forge.toml)."""
     candidate = value
     if candidate is None:
         origin = run("git", "remote", "get-url", "origin", cwd=cwd or Path.cwd())
@@ -500,7 +500,7 @@ def resolve_repo(value: str | None, cwd: Path | None = None) -> str:
             fail("--repo was omitted and the invoking checkout has no readable origin")
         candidate = origin.stdout.strip()
     try:
-        project = require_onboarded_repo(candidate)
+        project = require_onboarded(candidate, cwd)
     except ManifestError as exc:
         fail(str(exc))
     assert project.repo is not None
@@ -848,7 +848,7 @@ class LeadCtx:
 
     def tier(self) -> str | None:
         if not self._tier:
-            board = resolve_project_board(self.repo, Path.cwd())
+            board = resolve_project_board(self.repo, Path.cwd(), "board Tier read")
             self._tier.append(None if board is None
                               else resolve_board_tier(self.repo, board[0], board[1], self.issue))
         return self._tier[0]
@@ -1635,7 +1635,7 @@ def validate_sweep(body: str, spec_body: str, repo: str, issue: int) -> None:
             fail(f"sweep entries carry no text: item(s) {empty_list}")
 
 
-def resolve_project_board(repo: str, cwd: Path) -> tuple[str, str] | None:
+def resolve_project_board(repo: str, cwd: Path, step: str = "board read") -> tuple[str, str] | None:
     """Resolve the target repo's board from the canonical project manifest.
 
     `cwd` remains in the signature for compatibility with callers and tests,
@@ -1643,10 +1643,14 @@ def resolve_project_board(repo: str, cwd: Path) -> tuple[str, str] | None:
     launched the transport. Requiring the onboarded manifest entry also makes
     a missing checkout distinguishable from a repo that intentionally has no
     board: checkout location is irrelevant to this decision.
+
+    A repo known only from its forge.toml has no board (harmonic-forge#1579
+    ruling D13): `step` is refused by name, and no overlay board field is read.
     """
     del cwd
     try:
-        return require_onboarded_repo(repo).board
+        refuse_board_ci(repo, step)
+        return require_onboarded(repo).board
     except ManifestError as exc:
         fail(str(exc))
 
@@ -1861,7 +1865,7 @@ def validate_board_fields_set(repo: str, issue: int) -> None:
     No-ops entirely on a repo with no project board configured (e.g.
     vitalharmony/openclaw-projects today) -- this gate only applies where
     a board exists to enforce against."""
-    board = resolve_project_board(repo, Path.cwd())
+    board = resolve_project_board(repo, Path.cwd(), "board field list")
     if board is None:
         return
     owner, number = board
@@ -3000,8 +3004,12 @@ def cheap_static_checks(sha: str, branch: str) -> None:
 
 
 def _ci_reader(source_repo: str):
-    """The S0 reader every l1_post CI read goes through (harmonic-forge#894 C3)."""
-    return gate_ci.s0_reader(source_repo)
+    """The S0 reader every l1_post CI read goes through (harmonic-forge#894 C3).
+    An overlay-only source repo refuses by name (harmonic-forge#1579 ruling D13)."""
+    try:
+        return gate_ci.s0_reader(source_repo)
+    except ManifestError as exc:  # gate_ci raises only OverlayOnlyRefusal here
+        fail(str(exc))
 
 
 #: harmonic-forge#894 step 6: one real ready-for-l3 post in this many runs the

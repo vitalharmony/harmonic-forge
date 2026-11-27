@@ -7,8 +7,8 @@ Every case uses scratch `git init` repos and a scratch base manifest passed as
 restored on cleanup. None reads the live manifest or the repo's own cwd. The
 case numbers are the handoff's TC numbers.
 
-The overlay has exactly two consumers (sticky-wicket R1): the launcher's
-`account_for_origin(checkout=)` and `ci_plan.resolve_project`, which `consumer`
+The overlay has three consumers (sticky-wicket R1; the third, `manifest_invoking`, is
+harmonic-forge#1579's): `account_for_origin(checkout=)` and `ci_plan`, which `consumer`
 below drives. Every other path-keyed reader returns its origin/main answer.
 `overlay_only_fixture` and `probe_from` are imported by the BATCH tests (TC17)
 and the gate-equivalence tests in `tools/hooks/test_overlay_never_reaches_a_gate.py`.
@@ -565,8 +565,8 @@ class ScopeLimitEntrypointsRefuse(OverlayCase):
 
 
 class OverlayHasTwoConsumers(OverlayCase):
-    """Sticky-wicket R1: only `account_for_origin(checkout=)` and `ci_plan` read the
-    overlay; every gate, hook and slot input answers as origin/main did."""
+    """Sticky-wicket R1: only `account_for_origin(checkout=)`, `ci_plan` and `manifest_invoking`
+    read the overlay; every gate, hook and slot input answers as origin/main did."""
 
     def test_r1_overlay_only_checkout_is_unknown_to_every_gate_input(self) -> None:
         sys.path.insert(0, str(HERE.parent / "hooks"))
@@ -592,8 +592,8 @@ class OverlayHasTwoConsumers(OverlayCase):
              "manifest_overlay|path_project|project_for_checkout", "--",
              "tools/**/*.py", "skills/**/*.py", ":!**/test_*"],
             capture_output=True, text=True, check=False).stdout.split()
-        self.assertEqual(sorted(found), ["tools/lane/ci_plan.py",
-                                         "tools/onboard/manifest_identity.py",
+        self.assertEqual(sorted(found), ["tools/lane/ci_plan.py", "tools/onboard/manifest_identity.py",
+                                         "tools/onboard/manifest_invoking.py",
                                          "tools/onboard/manifest_overlay.py"])
         import ast  # noqa: PLC0415
         source = (HERE / "manifest_identity.py").read_text()

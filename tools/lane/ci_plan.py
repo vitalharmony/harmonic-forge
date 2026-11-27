@@ -110,7 +110,7 @@ def _base_project(cwd: Path):
 def resolve_project(cwd: Path):
     """`_base_project`, refined by the checkout's main-checkout `.claude/forge.toml`
     (or, on a base miss, the repo that overlay registers). ci_plan is one of the
-    overlay's two consumers (harmonic-forge#1527 R1): its protocol `*_task` keys
+    overlay's three consumers (harmonic-forge#1527 R1, #1579): its protocol `*_task` keys
     run as `mise run`, the repo's own `mise.toml` trust domain."""
     try:
         base = _base_project(cwd)

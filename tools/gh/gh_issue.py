@@ -617,6 +617,17 @@ def _load_repo_boards() -> dict[str, tuple[str, str]]:
 REPO_BOARDS: dict[str, tuple[str, str]] = _load_repo_boards()
 
 
+def refuse_overlay_only_board(repo: str, step: str) -> None:
+    """`manifest_invoking.refuse_board_ci` as a `[GH]` SystemExit (ruling D13)."""
+    import manifest_invoking  # noqa: PLC0415 -- harmonic-forge#1579: the D13 guard only
+    try:
+        manifest_invoking.refuse_board_ci(repo, step)
+    except manifest_invoking.OverlayOnlyRefusal as exc:
+        raise SystemExit(f"[GH] {exc}") from None
+    except manifest_invoking.ManifestError:
+        return  # not overlay-only: the caller's own refusal stands
+
+
 def resolve_board_for_repo(repo: str) -> tuple[str, str]:
     """Board (owner, number) for a repo. Fails loudly if unmapped.
 
@@ -630,10 +641,14 @@ def resolve_board_for_repo(repo: str) -> tuple[str, str]:
     already, so an exact-match lookup here never surfaced the mismatch until
     LeasePAL-ML/LeasePAL-App-Prototype (harmonic-forge#800) -- the first
     mixed-case one.
+
+    A repo known only from its forge.toml refuses by name (harmonic-forge#1579
+    ruling D13, `manifest_invoking.refuse_board_ci`).
     """
     try:
         return REPO_BOARDS[repo.strip().lower()]
     except KeyError:
+        refuse_overlay_only_board(repo, "board item-add")
         raise SystemExit(
             f"[GH] No project board mapped for {repo!r}.\n"
             f"[GH] Known repos: {', '.join(sorted(REPO_BOARDS))}.\n"
@@ -1189,6 +1204,10 @@ def main() -> int:
     # against having one.
     # harmonic-forge#804: act as the repo's own account. Deliberately AFTER the flag
     # validation above: a malformed invocation must exit 2 without a network probe.
+    # harmonic-forge#1579 ruling D13: an overlay-only repo has no board, so the
+    # filing refuses before any gh call and before the issue exists, not after
+    # (the board step would refuse post-create and leave an un-boarded issue).
+    refuse_overlay_only_board(args.repo, "board item-add (refused before the issue is created)")
     apply_project_identity(args.repo)
     milestones = fetch_milestones(args.repo)
     milestone_number: int | None = None

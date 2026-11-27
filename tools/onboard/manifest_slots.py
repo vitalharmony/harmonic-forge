@@ -12,8 +12,11 @@ mode. A `Project` field would be settable from there.
 **Every account `projects.toml` declares is strict.** The launcher requires its
 slot and refuses a login other than the account. The only ambient path is an
 account declared nowhere in `projects.toml` (neither a `[[project]].account` nor
-an `[accounts]` key) whose repo registers itself through its own checkout, and
-only at launch (`launch_identity`). An unregistered `<declared account>/<new repo>`
+an `[accounts]` key) whose repo registers itself through its own checkout: at
+launch (`launch_identity`), and at post time by the same rule outside a lane only
+(`manifest_identity.apply_project_identity`, harmonic-forge#1579 ruling D11 as
+amended by D14: inside a lane overlay-only posting refuses).
+Such an account never reaches `selection` or `slot_dir`. An unregistered `<declared account>/<new repo>`
 with its own forge.toml still refuses (pitch-inspection revision 1), and so does
 one under the owner of any registered repo, whatever account that repo runs as
 (`kenekted/<new>` is harmonicarchitect's; preclose round 1).
