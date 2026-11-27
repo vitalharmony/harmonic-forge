@@ -253,6 +253,9 @@ def check_ci(repo: str, sha: str, run=None) -> list[Refusal]:
     # harmonic-forge#1263: no `bare_404_ok`. `check()` runs this immediately before
     # a merge, and that path must not say all clear on a repo GitHub enforces
     # nothing on.
+    refusal = gate_ci.overlay_ci_refusal(repo)  # ruling D13 on harmonic-forge#1579
+    if refusal is not None:
+        return [Refusal(refusal)]
     required = gate_ci.required_checks(repo, run=run)
     if required is None:
         # F1036 epoch 2 survivor 2: never fall back to the observed runs; an

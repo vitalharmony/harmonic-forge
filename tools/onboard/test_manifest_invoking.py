@@ -448,6 +448,45 @@ class D13NoBoardNoCI(InvokingCase):
                 l1_post._ci_reader("acme/app")
         self.assertTrue(callable(gate_ci.s0_reader("vitalharmony/hrse")))
 
+    def test_every_gate_ci_read_path_refuses_by_name(self) -> None:
+        """Reforge pass 1 survivor 1: check_gate_result (so gate_ci.main and
+        post_lane_discussion's PASS check) and _carry_forward.check_ci refuse by
+        name before any read; a FAIL stays publishable."""
+        import _carry_forward  # noqa: PLC0415
+        import gate_ci  # noqa: PLC0415
+        no_read = mock.Mock(side_effect=AssertionError("a CI read ran"))
+        passed = "## Lane 3 Gate\n**Verdict:** PASS\nHead-SHA: " + "1" * 40 + "\n"
+        ok, message = gate_ci.check_gate_result("acme/app", passed, run=no_read)
+        self.assertFalse(ok)
+        self.assertRegex(message, r"\[GATE\] REFUSED: " + D13 + ".*so its CI read refuses")
+        self.assertTrue(gate_ci.check_gate_result("acme/app", passed.replace("PASS", "FAIL"),
+                                                  run=no_read)[0])
+        refusals = _carry_forward.check_ci("acme/app", "1" * 40, run=no_read)
+        self.assertEqual(len(refusals), 1)
+        self.assertRegex(str(refusals[0]), D13 + ".*so its CI read refuses")
+        report = self.tmp / "report.md"
+        report.write_text(passed)
+        with mock.patch.object(gate_ci, "_run", no_read), \
+                mock.patch("manifest_identity.apply_project_identity"), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(gate_ci.main(["--repo", "acme/app", "--file", str(report)]), 1)
+        self.assertRegex(printed.call_args.args[0], D13)
+        no_read.assert_not_called()
+
+    def test_l1_post_and_preclose_check_resolve_an_overlay_only_repo(self) -> None:
+        """Reforge pass 1 survivor 2: AC1 at both entrypoints' repo resolution;
+        reverting either to the projects.toml-only lookup fails here."""
+        import l1_post  # noqa: PLC0415
+        import preclose_check  # noqa: PLC0415
+        self.assertEqual(l1_post.resolve_repo("acme/app"), "acme/app")
+        self.assertEqual(l1_post.resolve_repo(None, self.app), "acme/app")
+        self.assertEqual(preclose_check.registered_repo("acme/app"), "acme/app")
+        os.chdir(self.outside)
+        with self.assertRaises(SystemExit):
+            l1_post.resolve_repo("acme/app")
+        with self.assertRaises(SystemExit):
+            preclose_check.registered_repo("acme/app")
+
 
 class HooksArePinnedOut(unittest.TestCase):
     """Pitch revision 2: the third consumer is reached from the posting entrypoints only."""
