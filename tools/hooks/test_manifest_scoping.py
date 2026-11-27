@@ -173,9 +173,19 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         "    raise OverlayRead('overlay read')\n"
         "manifest_overlay.read = manifest_overlay.project_for_checkout = boom\n"
         "manifest_overlay.path_project = boom\n"
+        # Post-verdict 2 (Codex): an alias (a symlink or hard link to the
+        # overlay) is the same file under another name, so the file's identity
+        # is matched too, not only the spelling of its path.
+        "_OVERLAY = os.stat(os.path.join(os.getcwd(), '.claude', 'forge.toml'))\n"
         "def _is_overlay(p):\n"
         "    norm = os.path.normpath(os.path.abspath(os.fsdecode(p)))\n"
-        "    return norm.replace(os.sep, '/').endswith('/.claude/forge.toml')\n"
+        "    if norm.replace(os.sep, '/').endswith('/.claude/forge.toml'):\n"
+        "        return True\n"
+        "    try:\n"
+        "        st = os.stat(norm)\n"
+        "    except OSError:\n"
+        "        return False\n"
+        "    return (st.st_dev, st.st_ino) == (_OVERLAY.st_dev, _OVERLAY.st_ino)\n"
         "_open, _path_open = builtins.open, pathlib.Path.open\n"
         "def guarded_open(file, *a, **k):\n"
         "    if isinstance(file, (str, bytes, os.PathLike)) and _is_overlay(os.fsdecode(file)):\n"
@@ -197,6 +207,10 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         "       batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
         "       batch_auth.closed_keys('gh issue close 5', os.getcwd()),\n"
         "       ui_grant.find_record([], 'Z5', 'plan')]\n"
+        # Post-verdict 2 (Codex): the FORCE authorizer's own scope decision
+        # runs too. Z5 is the overlay repo's key, so it refuses before any
+        # grant is written.
+        "out.append('no repo maps to its prefix' in m.authorize_force('FORCE Z5: probe', 's', '1'))\n"
         "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
         "target = imc_waiver.key_target('F5')\n"
         "try:\n"
@@ -214,7 +228,26 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
             repo, base = overlay_only_fixture(Path(tmp).resolve())
             out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
         self.assertEqual(out, [True, False, None, ["acme/forge", 5], None, [], [], None,
-                               "identity-ok", []])
+                               True, "identity-ok", []])
+
+    def test_an_alias_of_the_overlay_is_trapped(self) -> None:
+        """The guard itself (post-verdict 2): a symlink and a hard link to the
+        overlay are reads of it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = overlay_only_fixture(Path(tmp).resolve())
+            overlay = repo / ".claude" / "forge.toml"
+            (repo / "sym.toml").symlink_to(overlay)
+            os.link(overlay, repo / "hard.toml")
+            guard = self.CODE.split("sys.path.insert(0, ")[0]
+            code = ("import sys\n" + guard
+                    + "for name in ('sym.toml', 'hard.toml'):\n"
+                    + "    try:\n"
+                    + "        open(name).close()\n"
+                    + "    except OverlayRead:\n"
+                    + "        pass\n"
+                    + "print(json.dumps(seen))\n")
+            out = json.loads(probe_from(repo, base, code))
+        self.assertEqual(out, ["overlay read", "overlay read"])
 
 
 class LiveForeignKeysStillRefuse(unittest.TestCase):
