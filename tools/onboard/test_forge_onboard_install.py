@@ -10,6 +10,7 @@ real `~/.local/bin`.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import http.server
 import inspect
 import io
@@ -86,6 +87,26 @@ class InstallBase(unittest.TestCase):
 
     def install(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
         return self.cli("--install", "--repo", str(self.app), *args, env=env)
+
+    def run_main(self, *args: str, env: dict | None = None, repo: Path | None = None) -> tuple[int, str, str]:
+        """`forge_onboard.main` in-process (so a fault can be injected), with
+        the same hermetic environment the CLI tests get."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {**self.env, **(env or {})}, clear=True), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = foi.fo.main(["--install", "--repo", str(repo or self.app), *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def advance_origin(self, ref: str = "main") -> str:
+        """One new commit on origin's `ref`, pushed from the seed clone; its SHA."""
+        seed = self.tmp / "seed"
+        (seed / "README").write_text(f"{ref} {os.urandom(4).hex()}\n", encoding="utf-8")
+        self.git("commit", "-qam", f"advance {ref}", cwd=seed)
+        self.git("push", "-q", "origin", f"HEAD:refs/heads/{ref}", cwd=seed)
+        return self.git("rev-parse", "HEAD", cwd=seed).strip()
+
+    def origin_main(self) -> str:
+        return self.git("ls-remote", str(self.tmp / "origin.git"), "refs/heads/main", cwd=self.tmp).split("\t")[0]
 
     def stamp(self) -> dict:
         return {n: (os.lstat(self.bin / n).st_ino, os.lstat(self.bin / n).st_mtime_ns) for n in checker.LANES}
@@ -268,15 +289,6 @@ class _Unauthorized(http.server.BaseHTTPRequestHandler):
 class PassTwo(InstallBase):
     """harmonic-forge#1532 pass-2: the two-phase boundary and the local fixes."""
 
-    def run_main(self, *args: str, env: dict | None = None) -> tuple[int, str, str]:
-        """`forge_onboard.main` in-process (so a fault can be injected), with
-        the same hermetic environment the CLI tests get."""
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, {**self.env, **(env or {})}, clear=True), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = foi.fo.main(["--install", "--repo", str(self.app), *args])
-        return code, out.getvalue(), err.getvalue()
-
     def chmod(self, path: Path, mode: int) -> None:
         old = path.stat().st_mode & 0o7777
         path.chmod(mode)
@@ -389,11 +401,26 @@ class PassTwo(InstallBase):
         self.git("remote", "set-url", "origin", str(empty), cwd=self.app)
 
     def test_fetch_failure_exits_2_before_any_write(self):
+        real = foi._git
+
+        def failing_fetch(args, cwd):
+            if args[:1] == ["fetch"]:
+                return subprocess.CompletedProcess(args, 128, "", "fatal: unreachable")
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", failing_fetch):
+            code, out, err = self.run_main()
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("git fetch origin main failed", err)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(self.bin.exists())
+        self.assertFalse(self.lane2.exists() or self.lane3.exists())
+
+    def test_missing_origin_main_exits_2_before_any_write(self):
         self.no_main_origin()
         result = self.install()
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("git fetch origin main failed", result.stderr)
-        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("origin has no main branch", result.stderr)
         self.assertFalse(self.bin.exists())
         self.assertFalse(self.lane2.exists() or self.lane3.exists())
 
@@ -499,6 +526,251 @@ class PassTwo(InstallBase):
             proc = foi._git(["ls-remote", "origin"], self.app)
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(marker.exists(), "a configured askpass program was run")
+
+
+class OriginSha(InstallBase):
+    """harmonic-forge#1532 two-pass PATCH, P1: the worktree is cut at exactly
+    the SHA `git ls-remote` named, never at the local origin/main."""
+
+    def heads(self) -> list[str]:
+        return [self.git("rev-parse", "HEAD", cwd=p).strip() for p in (self.lane2, self.lane3)]
+
+    def test_stale_local_origin_main_is_never_used(self):  # K9
+        self.git("config", "remote.origin.fetch", "+refs/heads/dev:refs/remotes/origin/dev", cwd=self.app)
+        stale = self.git("rev-parse", "refs/remotes/origin/main", cwd=self.app).strip()
+        fresh = self.advance_origin()
+        self.assertNotEqual(stale, fresh)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.heads(), [fresh, fresh])
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main", cwd=self.app).strip(), stale)
+        self.assertIn(f"detached at {fresh[:12]} (origin/main)", result.stdout)
+
+    def test_single_branch_clone_of_another_branch_succeeds(self):  # K10
+        self.advance_origin("dev")
+        shutil.rmtree(self.app)
+        self.git("clone", "-q", "--single-branch", "--branch", "dev", str(self.tmp / "origin.git"),
+                 str(self.app), cwd=self.tmp)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.heads(), [self.origin_main()] * 2)
+
+    def test_fetch_that_brings_nothing_is_install_error(self):  # K11
+        self.advance_origin()
+        real = foi._git
+
+        def empty_fetch(args, cwd):
+            if args[:1] == ["fetch"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", empty_fetch):
+            code, out, err = self.run_main()
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("is not here after git fetch origin main", err)
+        self.assertFalse(self.bin.exists())
+        self.assertFalse(self.lane2.exists() or self.lane3.exists())
+
+    def test_decoy_ref_matching_by_tail_is_ignored(self):
+        main = self.origin_main()
+        decoy = self.advance_origin("x/refs/heads/main")
+        self.assertNotEqual(decoy, main)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.heads(), [main, main])
+
+    def test_fast_forward_between_ls_remote_and_fetch_lands_on_the_proved_sha(self):
+        proved, real, moved = self.origin_main(), foi._git, []
+
+        def racing_fetch(args, cwd):
+            if args[:1] == ["fetch"] and not moved:
+                moved.append(self.advance_origin())
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", racing_fetch):
+            code, out, err = self.run_main()
+        self.assertEqual(code, 0, out + err)
+        self.assertNotEqual(moved[0], proved)
+        self.assertEqual(self.heads(), [proved, proved])
+
+    def test_dry_run_names_the_sha_and_never_fetches(self):
+        real, calls = foi._git, []
+
+        def record(args, cwd):
+            calls.append(args)
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", record):
+            code, out, err = self.run_main("--dry-run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn(f"would create {self.lane2} at {self.origin_main()[:12]} (origin/main)", out)
+        self.assertFalse([c for c in calls if c[:1] == ["fetch"]], calls)
+
+    def test_malformed_ls_remote_sha_is_install_error(self):
+        real = foi._git
+
+        def bad(args, cwd):
+            if args[:1] == ["ls-remote"]:
+                return subprocess.CompletedProcess(args, 0, "abc\trefs/heads/main\n", "")
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", bad), self.assertRaisesRegex(foi.InstallError, "printed"):
+            foi._reach_origin_main(self.app, dry_run=True)
+
+    def test_old_git_is_install_error(self):
+        real = foi._git
+
+        def old(args, cwd):
+            if args == ["version"]:
+                return subprocess.CompletedProcess(args, 0, "git version 2.35.9\n", "")
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", old):
+            code, out, err = self.run_main()
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("too old", err)
+        self.assertFalse(self.bin.exists())
+
+
+class WorktreeTable(InstallBase):
+    """harmonic-forge#1532 two-pass PATCH, P2: one test per row of
+    `_inspect_worktree`'s outcome table (rows 1, 4, 5, 6, 7, 9 and 11 also
+    keep their earlier end-to-end tests in InstallEdges / PassTwo)."""
+
+    def inspect(self, path: Path):
+        registered, why = foi._registered(self.app)
+        self.assertIsNotNone(registered, why)
+        common = Path(self.git("rev-parse", "--path-format=absolute", "--git-common-dir",
+                               cwd=self.app).rstrip("\n")).resolve()
+        return foi._inspect_worktree(path, self.app, common, registered)
+
+    def installed(self) -> None:
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_row01_symlink(self):
+        self.lane2.symlink_to(self.app)
+        self.assertRegex(self.inspect(self.lane2).detail, "is a symlink")
+
+    def test_row02_main_checkout_is_install_error_without_an_identity_probe(self):  # K12
+        main = self.app.parent / "app-lane2"
+        self.git("clone", "-q", str(self.tmp / "origin.git"), str(main), cwd=self.tmp)
+        unreadable = subprocess.CompletedProcess([], 128, "", "fatal: stubbed unreadable")
+        with mock.patch.object(foi, "_identity", return_value=unreadable):
+            code, out, err = self.run_main(repo=main)
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("main checkout", err)
+        self.assertFalse(self.bin.exists())
+        self.assertFalse((self.app.parent / "app-lane3").exists())
+
+    def test_row02_bare_main_record(self):
+        bare = self.tmp / "origin.git"
+        wt = self.tmp / "bare-wt"
+        self.git("worktree", "add", "-q", "--detach", str(wt), "main", cwd=bare)
+        registered, why = foi._registered(bare)
+        self.assertIsNotNone(registered, why)
+        main = registered[bare.resolve()]
+        self.assertTrue(main.is_main and main.bare, main)
+        self.assertFalse(registered[wt.resolve()].is_main)
+        with self.assertRaisesRegex(foi.InstallError, "main checkout"):
+            foi._inspect_worktree(bare, bare, bare.resolve(), registered)
+
+    def test_row03_absent_locked_names_unlock_then_prune(self):  # K13
+        self.installed()
+        self.git("worktree", "lock", str(self.lane3), cwd=self.app)
+        shutil.rmtree(self.lane3)
+        for extra in (("--dry-run",), ()):
+            with self.subTest(args=extra):
+                result = self.install(*extra)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"git -C {self.app} worktree unlock {self.lane3} && "
+                              f"git -C {self.app} worktree prune", result.stdout)
+                self.assertNotIn("would create", result.stdout)
+                self.assertFalse(self.lane3.exists())
+
+    def test_row04_absent_prunable(self):
+        self.installed()
+        shutil.rmtree(self.lane3)
+        check = self.inspect(self.lane3)
+        self.assertEqual(check.status, foi.FAIL)
+        self.assertIn("still registered", check.detail)
+        self.assertNotIn("unlock", check.detail)
+
+    def test_row05_absent_unlisted_is_created(self):
+        self.assertIsNone(self.inspect(self.lane2))
+
+    def test_row06_present_prunable(self):
+        self.installed()
+        (self.lane3 / ".git").unlink()
+        self.assertIn("prunable", self.inspect(self.lane3).detail)
+
+    def test_row07_present_unlisted(self):
+        self.lane3.mkdir()
+        self.assertIn("is not a worktree of", self.inspect(self.lane3).detail)
+
+    def test_row08_listed_but_unreadable(self):
+        self.installed()
+        failed = subprocess.CompletedProcess([], 128, "", "fatal: stubbed")
+        with mock.patch.object(foi, "_identity", return_value=failed):
+            self.assertIn("git cannot read it", self.inspect(self.lane2).detail)
+
+    def test_row09_identity_mismatch(self):
+        self.installed()
+        shutil.rmtree(self.lane2)
+        self.lane2.mkdir()
+        self.git("init", "-q", cwd=self.lane2)
+        self.assertIn("but is not one", self.inspect(self.lane2).detail)
+
+    def test_row10_git_dir_backstop_catches_a_main_checkout_not_marked_main(self):  # K14
+        main = self.app.parent / "app-lane2"
+        self.git("clone", "-q", str(self.tmp / "origin.git"), str(main), cwd=self.tmp)
+        real = foi._registered
+
+        def unmarked(repo):
+            found, why = real(repo)
+            return ({p: dataclasses.replace(r, is_main=False) for p, r in found.items()}, why)
+
+        with mock.patch.object(foi, "_registered", unmarked):
+            code, out, err = self.run_main(repo=main)
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("main checkout", err)
+        self.assertFalse(self.bin.exists())
+
+    def test_row11_linked_locked_worktree_is_present(self):
+        self.installed()
+        self.git("worktree", "lock", str(self.lane3), cwd=self.app)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("worktree app-lane3 — already present", result.stdout)
+
+    def test_row12_default_deny_names_the_record(self):
+        record = foi.Worktree(path=self.lane2.resolve(), is_main=False)
+        check = foi._inspect_worktree(self.lane2, self.app, self.app / ".git", {record.path: record})
+        self.assertEqual(check.status, foi.FAIL)
+        self.assertIn("Worktree(", check.detail)
+
+    def test_newline_path_does_not_shift_attributes(self):
+        self.installed()
+        odd = self.app.parent / "x\nlocked trap"
+        self.git("worktree", "add", "-q", "--detach", str(odd), cwd=self.app)
+        self.git("worktree", "lock", "--reason", "two\nlines", str(self.lane3), cwd=self.app)
+        registered, why = foi._registered(self.app)
+        self.assertIsNotNone(registered, why)
+        self.assertFalse(registered[odd.resolve()].locked)
+        self.assertTrue(registered[self.lane3.resolve()].locked)
+        self.assertFalse(registered[self.lane2.resolve()].locked)
+        self.assertTrue(registered[self.app.resolve()].is_main)
+
+    def test_malformed_listing_is_install_error(self):
+        real = foi._git
+
+        def garbled(args, cwd):
+            if args[:2] == ["worktree", "list"]:
+                return subprocess.CompletedProcess(args, 0, "HEAD abc\0\0", "")
+            return real(args, cwd)
+
+        with mock.patch.object(foi, "_git", garbled), self.assertRaisesRegex(foi.InstallError, "worktree list"):
+            foi.plan_worktrees(self.app)
 
 
 if __name__ == "__main__":

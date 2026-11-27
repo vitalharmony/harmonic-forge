@@ -20,10 +20,11 @@ line is printed.
 
 Two phases, one boundary (harmonic-forge#1532 pass-2 amendment):
 
-1. Preflight writes nothing, and every failure in it is `InstallError`,
-   exit 2: the forge root, the worktree pair, `origin`, the worktree listing,
-   every per-worktree probe, and `origin/main` itself (`git fetch` on a real
-   run, `git ls-remote` on a dry run, whenever a worktree needs creating).
+1. Preflight writes no link or worktree, and every failure in it is
+   `InstallError`, exit 2: git's version, the forge root, the worktree pair,
+   `origin`, the worktree listing, every per-worktree probe, and origin's
+   main itself whenever a worktree needs creating. A real run's fetch does
+   write objects and FETCH_HEAD; a dry run never fetches.
 2. The write phase raises nothing. Each item (one launcher, one worktree) is
    wrapped whole, its reads as well as its writes, the same in a dry run as in
    a real one: an `OSError` or a failed git result becomes a FAIL Check on
@@ -31,6 +32,13 @@ Two phases, one boundary (harmonic-forge#1532 pass-2 amendment):
 
 `_git` never raises: an `OSError` launching git comes back as a failed result
 (returncode 127), and each caller maps it by phase.
+
+The worktree is cut at exactly the SHA preflight proved (harmonic-forge#1532
+two-pass PATCH, P1), as `tools/lane/_lane_refresh.sh` does (NC2,
+harmonic-forge#322): `git ls-remote` names it, `git fetch` brings it in,
+`git cat-file -e` proves it is here, and `git worktree add --detach <path>
+<sha>` uses it. The local `refs/remotes/origin/main` is never read: it can be
+stale (exit 0 at the wrong commit) or absent (a single-branch clone).
 
 Beside `forge_onboard.py`, not in it, for R-0006, as `forge_onboard_skills.py`.
 """
@@ -45,6 +53,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -62,6 +71,9 @@ GIT_LAUNCH_FAILED = 127
 #: the terminal step, so askpass is disabled outright, ssh never uses one, and
 #: Git Credential Manager is non-interactive. `GIT_SSH_COMMAND` is deliberately
 #: not set: it would override an adopter's `core.sshCommand`.
+#: `git worktree list --porcelain -z` (git 2.36).
+MIN_GIT = (2, 36)
+_SHA = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 NON_INTERACTIVE_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false",
                        "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "false"}
 
@@ -107,6 +119,17 @@ def _lstat(path: Path) -> os.stat_result | None:
 
 
 # --- Preflight: no writes; every failure is InstallError --------------------
+
+def require_git_version() -> None:
+    """git 2.36+, for `worktree list --porcelain -z`; fails closed."""
+    proc = _git(["version"], Path.cwd())
+    match = re.match(r"git version (\d+)\.(\d+)", proc.stdout) if proc.returncode == 0 else None
+    if match is None:
+        raise InstallError(f"cannot tell git's version ({_why(proc)})")
+    if (int(match.group(1)), int(match.group(2))) < MIN_GIT:
+        raise InstallError(f"git {match.group(1)}.{match.group(2)} is too old; --install needs git "
+                           f"{MIN_GIT[0]}.{MIN_GIT[1]} or later (`git worktree list --porcelain -z`)")
+
 
 def install_source(environ=None) -> Path:
     """The forge root a launcher would resolve; a linked worktree is refused,
@@ -162,60 +185,132 @@ def _require_origin(repo: Path) -> None:
         raise InstallError(f"{repo} has no `origin` remote; lane worktrees are cut from origin/main")
 
 
-def _registered(repo: Path) -> tuple[dict[Path, bool] | None, str]:
-    """`({resolved worktree path: prunable}, "")` from `git worktree list
-    --porcelain`, or `(None, why)` when the listing failed: a failed listing is
-    never read as an empty one."""
-    proc = _git(["worktree", "list", "--porcelain"], repo)
+@dataclass(frozen=True)
+class Worktree:
+    """One whole `git worktree list --porcelain -z` record. Every attribute
+    git documents for the record is kept; an unknown one is ignored, and none
+    is whitelisted."""
+    path: Path
+    is_main: bool
+    bare: bool = False
+    locked: bool = False
+    prunable: bool = False
+
+
+def parse_worktree_records(raw: str) -> list[Worktree]:
+    """`git worktree list --porcelain -z`: each attribute line ends in NUL and
+    an empty field ends a record, so a path holding a newline or a quote is
+    read whole. The first record is always the main worktree (git-worktree(1)).
+    A record with no `worktree` line is malformed and raises ValueError."""
+    records: list[Worktree] = []
+    fields: list[str] = []
+    for field in raw.split("\0"):
+        if field:
+            fields.append(field)
+            continue
+        if not fields:
+            continue
+        head, attrs = fields[0], fields[1:]
+        if not head.startswith("worktree "):
+            raise ValueError(f"porcelain record does not start with `worktree `: {head!r}")
+        names = {a.split(" ", 1)[0] for a in attrs}
+        records.append(Worktree(path=Path(head[len("worktree "):]).resolve(), is_main=not records,
+                                bare="bare" in names, locked="locked" in names, prunable="prunable" in names))
+        fields = []
+    if fields:
+        raise ValueError(f"porcelain output ends mid-record: {fields!r}")
+    return records
+
+
+def _registered(repo: Path) -> tuple[dict[Path, Worktree] | None, str]:
+    """`({resolved worktree path: record}, "")`, or `(None, why)` when the
+    listing failed or could not be parsed: a failed listing is never read as
+    an empty one."""
+    proc = _git(["worktree", "list", "--porcelain", "-z"], repo)
     if proc.returncode != 0:
         return None, _why(proc)
-    found: dict[Path, bool] = {}
-    current: Path | None = None
-    for line in proc.stdout.splitlines():
-        if line.startswith("worktree "):
-            current = Path(line[len("worktree "):]).resolve()
-            found[current] = False
-        elif line.startswith("prunable") and current is not None:
-            found[current] = True
-    return found, ""
+    try:
+        records = parse_worktree_records(proc.stdout)
+    except ValueError as exc:
+        return None, str(exc)
+    return {r.path: r for r in records}, ""
 
 
 def _identity(path: Path) -> subprocess.CompletedProcess:
-    """`path`'s own git common dir and toplevel."""
-    return _git(["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"], path)
+    """`path`'s own git dir, git common dir and toplevel. A linked worktree's
+    git dir differs from its common dir; the main checkout's does not (the
+    same test `install_source` applies to the forge root)."""
+    return _git(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir",
+                 "--show-toplevel"], path)
 
 
-def _inspect_worktree(path: Path, repo: Path, common: Path, registered: dict[Path, bool]) -> Check | None:
-    """Reads only. A settled Check, or None when the worktree is to be created.
-    An existing path counts as present only when it is no symlink, is listed
-    and not prunable, and its own git common dir is the repo's."""
+def _inspect_worktree(path: Path, repo: Path, common: Path, registered: dict[Path, Worktree]) -> Check | None:
+    """Reads only. A settled Check, or None when the worktree is to be
+    created. A path that is the repo's main checkout is InstallError: the
+    run's base name is then wrong for both paths, so nothing is written.
+
+    The complete outcome table, ordered (the first row that matches decides);
+    each row has its own test in `test_forge_onboard_install.py::WorktreeTable`.
+
+    | # | Path on disk | Porcelain record | Result |
+    |---|---|---|---|
+    | 1 | symlink | any | FAIL: a symlink, left alone |
+    | 2 | present | is_main or bare | InstallError: the main checkout (no identity probe) |
+    | 3 | absent | locked | FAIL: unlock, then prune (git never marks a locked entry prunable) |
+    | 4 | absent | prunable | FAIL: prune remedy |
+    | 5 | absent | none | create |
+    | 6 | present | prunable | FAIL: move it aside, then prune |
+    | 7 | present | none | FAIL: not a worktree |
+    | 8 | present | listed, git cannot read it | FAIL: left alone |
+    | 9 | present | listed, other common dir or toplevel | FAIL: identity mismatch (a re-inited repo too) |
+    | 10 | present | listed, the repo's common dir, git dir == common dir | InstallError: the main checkout (backstop) |
+    | 11 | present | listed, linked, identity ok (locked or not) | OK already present |
+    | 12 | any other combination | | FAIL naming the record (default-deny) |
+    """
     label, prune = f"worktree {path.name}", f"git -C {repo} worktree prune"
+    main = (f"{path} is {repo}'s main checkout, not a lane worktree -- rename the checkout "
+            f"or run from elsewhere; nothing was written")
     st = _lstat(path)
     if st is not None and stat.S_ISLNK(st.st_mode):
         return Check(label, FAIL, f"{path} is a symlink (-> {os.readlink(path)}), not a worktree of {repo} "
                                   f"-- left alone; inspect it, then remove it and re-run")
     key = path.resolve()
-    listed, prunable = key in registered, registered.get(key, False)
+    record = registered.get(key)
+    if st is not None and record is not None and (record.is_main or record.bare):
+        raise InstallError(main)
     if st is None:
-        if prunable:
+        if record is None:
+            return None
+        if record.locked:
+            return Check(label, FAIL, f"{path} is gone but still registered as a locked worktree of {repo} "
+                                      f"-- not unlocked or pruned automatically; inspect, then run: "
+                                      f"git -C {repo} worktree unlock {path} && {prune}")
+        if record.prunable:
             return Check(label, FAIL, f"{path} is gone but still registered as a worktree of {repo} "
                                       f"-- not pruned automatically; inspect, then run: {prune}")
-        return None
-    if prunable:
+        return Check(label, FAIL, f"{path} is gone but git still lists it as a worktree of {repo} "
+                                  f"({record}) -- left alone; inspect: git -C {repo} worktree list --porcelain")
+    if record is None:
+        return Check(label, FAIL, f"{path} exists but is not a worktree of {repo} -- left alone; inspect "
+                                  f"it, then remove it and re-run")
+    if record.prunable:
         return Check(label, FAIL, f"{path} exists but git lists it as a prunable worktree of {repo} (its "
                                   f".git link is broken) -- left alone; inspect it, move it aside, then "
                                   f"run: {prune}")
-    if not listed:
-        return Check(label, FAIL, f"{path} exists but is not a worktree of {repo} -- left alone; inspect "
-                                  f"it, then remove it and re-run")
     probe = _identity(path)
     if probe.returncode != 0:
         return Check(label, FAIL, f"{path} is listed as a worktree of {repo} but git cannot read it "
                                   f"({_why(probe)}) -- left alone; inspect it")
     lines = probe.stdout.rstrip("\n").split("\n")
-    if len(lines) != 2 or Path(lines[0]).resolve() != common or Path(lines[1]).resolve() != key:
+    if len(lines) != 3:
+        return Check(label, FAIL, f"{path} is listed as a worktree of {repo} but git rev-parse printed "
+                                  f"{probe.stdout!r} ({record}) -- left alone; inspect it")
+    git_dir, own_common, toplevel = (Path(line).resolve() for line in lines)
+    if own_common != common or toplevel != key:
         return Check(label, FAIL, f"{path} is listed as a worktree of {repo} but is not one (its git "
-                                  f"repository is {lines[0]}, not {common}) -- left alone; inspect it")
+                                  f"repository is {lines[1]}, not {common}) -- left alone; inspect it")
+    if git_dir == own_common:
+        raise InstallError(main)
     return Check(label, OK, f"already present ({path})")
 
 
@@ -240,19 +335,37 @@ def plan_worktrees(repo: Path) -> list[tuple[Path, Check | None]]:
     return plan
 
 
-def _reach_origin_main(repo: Path, *, dry_run: bool) -> None:
-    """Before any write: a real run fetches origin/main, a dry run asks the
-    remote for it, so a dry run predicts the same failure."""
-    if dry_run:
-        proc = _git(["ls-remote", "--exit-code", "origin", "refs/heads/main"], repo)
-        what = "git ls-remote --exit-code origin refs/heads/main"
-        why = "origin has no main branch" if proc.returncode == 2 else _why(proc)
-    else:
-        proc = _git(["fetch", "-q", "origin", "main"], repo)
-        what, why = "git fetch origin main", _why(proc)
+def _reach_origin_main(repo: Path, *, dry_run: bool) -> str:
+    """Before any write, the SHA the worktrees are cut at: origin's
+    `refs/heads/main` as `git ls-remote` reports it (exact ref name, one
+    line, a full SHA). A real run then fetches it and proves the commit is
+    here; a dry run never fetches. If origin is force-pushed between the two,
+    `cat-file -e` fails (InstallError); if it is fast-forwarded, the old
+    commit still arrives as an ancestor and is the one used."""
+    def fail(why: str) -> InstallError:
+        return InstallError(f"{why} in {repo}; lane worktrees are cut from origin/main -- nothing was written")
+
+    proc = _git(["ls-remote", "--exit-code", "origin", "refs/heads/main"], repo)
+    if proc.returncode == 2:
+        raise fail("git ls-remote: origin has no main branch")
     if proc.returncode != 0:
-        raise InstallError(f"{what} failed in {repo}: {why}; lane worktrees are cut from origin/main "
-                           f"-- nothing was written")
+        raise fail(f"git ls-remote --exit-code origin refs/heads/main failed: {_why(proc)}")
+    exact = [line.split("\t", 1)[0] for line in proc.stdout.splitlines()
+             if line.split("\t", 1)[1:] == ["refs/heads/main"]]
+    if not exact:
+        raise fail("git ls-remote: origin has no main branch")
+    if len(exact) != 1 or not _SHA.match(exact[0]):
+        raise fail(f"git ls-remote printed {proc.stdout!r} for refs/heads/main")
+    sha = exact[0]
+    if dry_run:
+        return sha
+    proc = _git(["fetch", "-q", "origin", "main"], repo)
+    if proc.returncode != 0:
+        raise fail(f"git fetch origin main failed: {_why(proc)}")
+    proc = _git(["cat-file", "-e", f"{sha}^{{commit}}"], repo)
+    if proc.returncode != 0:
+        raise fail(f"origin/main {sha} is not here after git fetch origin main ({_why(proc)})")
+    return sha
 
 
 # --- Write phase: nothing below raises -------------------------------------
@@ -325,9 +438,12 @@ def link_launchers(bin_dir: Path, source: Path, *, force: bool, dry_run: bool) -
     return checks
 
 
-def create_worktrees(repo: Path, plan: list[tuple[Path, Check | None]], *, dry_run: bool) -> list[Check]:
-    """Runs the plan `plan_worktrees` made; a failed `git worktree add` (or a
-    failed re-listing after it) is a FAIL Check, never an exception."""
+def create_worktrees(repo: Path, plan: list[tuple[Path, Check | None]], sha: str | None, *,
+                     dry_run: bool) -> list[Check]:
+    """Runs the plan `plan_worktrees` made, at `sha` (the one
+    `_reach_origin_main` proved; None only when nothing is to be created). A
+    failed `git worktree add` (or a failed re-listing after it) is a FAIL
+    Check, never an exception."""
     prune = f"git -C {repo} worktree prune"
     checks: list[Check] = []
     for path, done in plan:
@@ -335,13 +451,16 @@ def create_worktrees(repo: Path, plan: list[tuple[Path, Check | None]], *, dry_r
         if done is not None:
             checks.append(done)
             continue
+        if sha is None:
+            checks.append(Check(label, FAIL, f"no origin/main SHA was proved -- {path} not created"))
+            continue
         if dry_run:
-            checks.append(Check(label, OK, f"would create {path} detached at origin/main"))
+            checks.append(Check(label, OK, f"would create {path} at {sha[:12]} (origin/main)"))
             continue
         try:
-            proc = _git(["worktree", "add", "--detach", str(path), "origin/main"], repo)
+            proc = _git(["worktree", "add", "--detach", str(path), sha], repo)
             if proc.returncode == 0:
-                checks.append(Check(label, OK, f"created {path} detached at origin/main"))
+                checks.append(Check(label, OK, f"created {path} detached at {sha[:12]} (origin/main)"))
                 continue
             detail = _why(proc)
             after, why = _registered(repo)
@@ -391,12 +510,12 @@ def install(repo: Path, bin_dir: Path, source: Path, *, force: bool = False,
             dry_run: bool = False) -> tuple[list[Check], int]:
     """Preflight (InstallError, exit 2, nothing written), then link, create
     and check, where every failure is a printed FAIL Check (exit 1)."""
+    require_git_version()
     worktrees = plan_worktrees(repo)
-    if any(done is None for _, done in worktrees):
-        _reach_origin_main(repo, dry_run=dry_run)
+    sha = _reach_origin_main(repo, dry_run=dry_run) if any(done is None for _, done in worktrees) else None
     # Write phase: nothing below raises InstallError.
     checks = link_launchers(bin_dir, source, force=force, dry_run=dry_run)
-    checks += create_worktrees(repo, worktrees, dry_run=dry_run)
+    checks += create_worktrees(repo, worktrees, sha, dry_run=dry_run)
     try:
         checks += path_lines(bin_dir)
     except OSError as exc:
@@ -417,4 +536,5 @@ def install(repo: Path, bin_dir: Path, source: Path, *, force: bool = False,
 #: The write phase. None of these may raise InstallError or call a preflight
 #: function; `test_write_phase_never_raises_install_error` enforces it.
 WRITE_PHASE = (_inspect_link, _write_link, link_launchers, create_worktrees, path_lines, _source_check)
-PREFLIGHT = (install_source, lane_worktree_paths, _require_origin, plan_worktrees, _reach_origin_main)
+PREFLIGHT = (require_git_version, install_source, lane_worktree_paths, _require_origin,
+             _inspect_worktree, plan_worktrees, _reach_origin_main)
