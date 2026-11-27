@@ -52,7 +52,9 @@ def under_projects(*parts: str, resolved: bool = False) -> Path | None:
         return path
     try:
         return path.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
+        # ValueError: a root holding a NUL (a TOML `\u0000` escape) makes
+        # resolve() raise it; uncaught, it crashes a fence hook open.
         return None
 
 

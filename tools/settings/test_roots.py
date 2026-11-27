@@ -113,6 +113,22 @@ class TC1Fence(RootsCase):
         self.assertIn("<projects root>/testplan", reason)
         self.assertIn("projects_root", reason)
 
+    def test_a_nul_in_the_root_denies_without_crashing(self) -> None:
+        """Post-verdict survivor (hostile-author): a `projects_root` holding a
+        NUL (TOML `\\u0000`) makes resolve() raise ValueError; uncaught, the
+        hook crashes at import and a crashed deny is an allow. The root reads as
+        unresolvable instead, so every Lane 3 write target is denied."""
+        (self.xdg / "harmonic-forge" / "instance.toml").write_text(
+            f'projects_root = "{self.root}\\u0000x"\n', encoding="utf-8")
+        for target in (Path("/etc/x.md"), self.root / "testplan" / "x.md"):
+            with self.subTest(str(target)):
+                proc = self.fence({"file_path": str(target), "content": "x"})
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertEqual(self.decision(proc), "deny")
+                bash = self.fence({"command": f"echo x > '{target}'"}, tool="Bash")
+                self.assertNotIn("Traceback", bash.stderr)
+                self.assertEqual(self.decision(bash), "deny")
+
     def test_the_runner_reads_no_config_and_supplies_none(self) -> None:
         """K-A1 (harmonic-forge#1529 reforge): inside `contained_tempdir()` no
         instance.toml is read -- not the developer's (here a fixture declaring
@@ -161,6 +177,14 @@ class TC2TC3Worktrees(RootsCase):
         self.declare(None)
         proc = self.py("import worktree_issue as w; print(w._IMPL_ROOTS)")
         self.assertEqual(proc.stdout.strip(), "('/tmp',)", proc.stderr)
+
+    def test_a_nul_in_the_root_keeps_the_other_impl_roots(self) -> None:
+        """Post-verdict sweep: a root holding a NUL makes resolve() raise
+        ValueError; it is skipped, so `/tmp` worktrees are still detected."""
+        (self.xdg / "harmonic-forge" / "instance.toml").write_text(
+            f'projects_root = "{self.root}\\u0000x"\n', encoding="utf-8")
+        proc = self.py("import worktree_issue as w; print(w.is_impl_worktree('/tmp/acme-12-impl'))")
+        self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "True"), proc.stderr)
 
     def test_tier_gate_fallback_matches_more_when_unset(self) -> None:
         probe = ("import model_tier_gate as m; "
@@ -413,6 +437,23 @@ class TC8ConsumerTable(RootsCase):
                         got = self.decision(self.fence({"file_path": str(root / rel),
                                                         "content": "x"}))
                         self.assertEqual(got, expected if state == "set" else "deny")
+
+    def test_row_fence_aliased_memory_lexical(self) -> None:
+        """D63, lexical half (post-verdict survivor): with the memory root
+        inside testplan, `<mem>/MEMORY.md` symlinked to a testplan file is
+        inside the memory root only as spelled; the guard must test that form
+        too, or the testplan allowance admits a write through MEMORY.md."""
+        root = self.tmp / "lexical"
+        (root / "D" / "mem").mkdir(parents=True)
+        (root / "testplan").symlink_to(root / "D")
+        (root / "operator-memory").symlink_to(root / "D" / "mem")
+        (root / "D" / "x.md").write_text("x", encoding="utf-8")
+        (root / "D" / "mem" / "MEMORY.md").symlink_to(root / "D" / "x.md")
+        self.declare(root)
+        target = {"file_path": str(root / "D" / "mem" / "MEMORY.md"), "content": "x"}
+        self.assertEqual(self.decision(self.fence(target)), "deny")
+        plain = {"file_path": str(root / "D" / "x.md"), "content": "x"}
+        self.assertEqual(self.decision(self.fence(plain)), "allow")
 
     def test_row_impl_worktree(self) -> None:
         path = str(self.root / ".worktrees" / "acme-12-impl")

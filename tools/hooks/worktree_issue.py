@@ -99,8 +99,18 @@ def is_impl_worktree(path: str) -> bool:
     """AC2's filter only: a `<stem>-<N>-impl` directory directly under one of
     the implementation-worktree roots. It never decides repo or issue."""
     parent, name = str(Path(path).parent), Path(path).name
-    roots = set(_IMPL_ROOTS) | {str(Path(root).resolve()) for root in _IMPL_ROOTS}
+    roots = set(_IMPL_ROOTS) | {r for r in map(_resolved_or_none, _IMPL_ROOTS) if r}
     return parent in roots and bool(_IMPL_DIR_RE.search(name))
+
+
+def _resolved_or_none(root: str) -> str | None:
+    """`root` resolved, or None when it cannot be (harmonic-forge#1529: a
+    configured root holding a NUL makes resolve() raise ValueError, which would
+    otherwise drop every other root's candidates with it)."""
+    try:
+        return str(Path(root).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def issue_for_worktree(path: str) -> tuple[str, int] | None:
