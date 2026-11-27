@@ -722,13 +722,13 @@ wrapper = true
   match = ["status"]
   class = "shared-state"
   gap = "removes holder, lock and ticket files under the machine-wide lock"
-  cite = ["tools/lane/heavy_slot.py:343-345", "tools/lane/heavy_slot.py:191-202", "tools/lane/heavy_slot.py:212-214"]
+  cite = ["tools/lane/heavy_slot.py:349-351", "tools/lane/heavy_slot.py:191-202", "tools/lane/heavy_slot.py:212-214"]
   [[tool.mode]]
   name = "run"
   match = ["run"]
   class = "shared-state"
   gap = "takes a machine-wide admission slot, then runs the command"
-  cite = ["tools/lane/heavy_slot.py:362", "tools/lane/heavy_slot.py:271", "tools/lane/heavy_slot.py:332"]
+  cite = ["tools/lane/heavy_slot.py:369", "tools/lane/heavy_slot.py:277", "tools/lane/heavy_slot.py:337"]
 
 [[tool]]
 path = "tools/lane/install_lane_hooks.py"

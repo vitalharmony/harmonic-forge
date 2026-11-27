@@ -1,7 +1,7 @@
 """Which waiting heavy job starts first (harmonic-forge#1634).
 
 `heavy_slot.py` admits the head of its queue. This module decides who the head
-is: the highest effective class, then arrival order.
+is: the highest effective class, then the ticket name, which is arrival order.
 
 **The class comes from the repo, not the session.** A job taken in the forge's
 own repository (its checkout, or any worktree of it) is `normal`; a job taken in
@@ -17,12 +17,18 @@ bound above `max_wait_seconds` (D32), so a later `high` job's overdue start come
 before an earlier `normal` job ages.
 
 Every failure is `high`: an unreadable working directory, git missing or slow,
-a non-git directory. An unknown or missing class in a ticket body is `normal`,
-so an old-format ticket never jumps the queue.
+a non-git directory.
+
+**The ticket name is the only carrier.** A ticket is named
+`<arrival ns, 20 digits>-<pid>-<class>.ticket` and has no body: nothing writes
+one and nothing reads one. Within a class the order is the name order, the same
+order origin/main and every old-code reader use, so mixed versions never wait on
+each other. A name with no known class (an old-format `<ns>-<pid>.ticket`, or
+anything malformed) is `normal`, and a name whose arrival does not parse never
+ages, so neither can jump the queue.
 """
 from __future__ import annotations
 
-import json
 import math
 import os
 import subprocess
@@ -82,38 +88,39 @@ def priority_class(cwd: str | Path | None = None,
     return "normal" if mine is not None and mine == forge else "high"
 
 
-def ticket_body(klass: str, arrived: float) -> str:
-    return json.dumps({"class": klass, "arrived": arrived})
-
-
-def read_ticket(path: Path) -> tuple[str, float]:
-    """`(class, arrived)`; an unreadable body is `normal`, arrived from the
-    ticket name's `time_ns` prefix."""
+def parse_ticket(name: str) -> tuple[str, float | None]:
+    """`(class, arrived)` from a ticket name alone. Total and pure: any name
+    yields a class (`normal` unless the third part is a known class), and an
+    arrival that does not parse is None."""
+    parts = name.removesuffix(".ticket").split("-")
+    klass = parts[2] if len(parts) == 3 and parts[2] in PRIORITY_RANK else "normal"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        klass = data.get("class")
-        arrived = float(data["arrived"])
-        if not math.isfinite(arrived):
-            raise ValueError("non-finite arrival")
-        return (klass if klass in PRIORITY_RANK else "normal"), arrived
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
-        try:
-            return "normal", int(path.name.split("-", 1)[0]) / 1e9
-        except (ValueError, OverflowError):
-            return "normal", 0.0
+        arrived = int(parts[0]) / 1e9
+    except (ValueError, OverflowError):
+        arrived = None
+    return klass, arrived
 
 
-def effective_class(klass: str, arrived: float, now: float, aging_seconds: float) -> str:
-    if klass == "normal" and now - arrived >= aging_seconds:
+def effective_class(klass: str, arrived: float | None, now: float, aging_seconds: float) -> str:
+    if klass == "normal" and arrived is not None and now - arrived >= aging_seconds:
         return "high"
     return klass
 
 
-def rank_key(path: Path, now: float, aging_seconds: float) -> tuple[int, float, str]:
-    klass, arrived = read_ticket(path)
+def rank_key(path: Path, now: float, aging_seconds: float) -> tuple[int, str]:
+    """Highest effective class first, then the name: arrival order, as on main."""
+    klass, arrived = parse_ticket(path.name)
     effective = effective_class(klass, arrived, now, aging_seconds)
-    return (-PRIORITY_RANK[effective], arrived, path.name)
+    return (-PRIORITY_RANK[effective], path.name)
 
 
-def aging_seconds(config: dict) -> float:
-    return float(config.get("limits", {}).get("aging_seconds", DEFAULT_AGING_SECONDS))
+def aging_seconds(config: Mapping) -> float:
+    """The configured bound when it is a finite, non-negative number (not a
+    bool); anything else, TOML's `inf`/`nan` or a string included, is the default."""
+    limits = config.get("limits", {})
+    value = limits.get("aging_seconds", DEFAULT_AGING_SECONDS) if isinstance(limits, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return DEFAULT_AGING_SECONDS
+    if isinstance(value, float) and not math.isfinite(value):
+        return DEFAULT_AGING_SECONDS
+    return value if value >= 0 else DEFAULT_AGING_SECONDS

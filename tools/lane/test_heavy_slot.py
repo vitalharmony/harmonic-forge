@@ -410,12 +410,12 @@ class Priority(unittest.TestCase):
         return rank.priority_class(cwd, env if env is not None else dict(os.environ),
                                    forge_checkout=self.forge)
 
-    def ticket(self, name, klass, arrived):
+    def ticket(self, arrived, pid, klass=None):
+        """A held ticket named as `_admit` names one; no class is the old format."""
+        name = f"{int(arrived * 1e9):020d}-{pid}" + (f"-{klass}" if klass else "") + ".ticket"
         path = self.state / "tickets" / name
         handle = open(path, "a+")
         self.addCleanup(handle.close)
-        handle.write(rank.ticket_body(klass, arrived) if klass else "")
-        handle.flush()
         hs.fcntl.flock(handle, hs.fcntl.LOCK_EX)
         return path
 
@@ -459,23 +459,6 @@ class Priority(unittest.TestCase):
         with mock.patch.object(rank, "_common_dir", side_effect=RuntimeError("boom")):
             self.assertEqual(self.klass(self.other), "high")
 
-    def test_tc6_a_malformed_arrival_never_crashes_or_jumps(self):
-        early = self.ticket("00000000000000000001-1.ticket", "high", 1000.0)
-        for body in ('{"class": "high", "arrived": 1e999}', '{"class": "high", "arrived": %d}' % (10 ** 400),
-                     '{"class": "high", "arrived": "nan"}'):
-            with self.subTest(body=body[:40]):
-                bad = self.state / "tickets" / "00000000000000000002-2.ticket"
-                handle = open(bad, "w")
-                handle.write(body)
-                handle.flush()
-                hs.fcntl.flock(handle, hs.fcntl.LOCK_EX)
-                try:
-                    self.assertEqual(rank.read_ticket(bad)[0], "normal")
-                    self.assertEqual(hs._queue(self.state, 1100.0, CONFIG)[0], early)
-                finally:
-                    handle.close()
-                    bad.unlink()
-
     def test_tc7_the_holder_and_the_waiting_note_carry_the_class(self):
         loaded, now = hs.Reading(8, 30.0, 20.0, 90.0, 0.0), [10_000.0]
 
@@ -501,8 +484,8 @@ class Priority(unittest.TestCase):
         self.assertRegex(out.stdout, r"run high \S+ kill held")
 
     def test_tc2_a_later_high_ticket_is_the_head(self):
-        early = self.ticket("00000000000000000001-1.ticket", "normal", 1000.0)
-        late = self.ticket("00000000000000000002-2.ticket", "high", 1100.0)
+        early = self.ticket(1000.0, 1, "normal")
+        late = self.ticket(1100.0, 2, "high")
         self.assertEqual(hs._queue(self.state, 1200.0, CONFIG), [late, early])
 
     def test_tc3_arrival_order_within_a_class(self):
@@ -510,15 +493,15 @@ class Priority(unittest.TestCase):
             with self.subTest(klass=klass):
                 for path in (self.state / "tickets").glob("*"):
                     path.unlink()
-                a = self.ticket("00000000000000000001-1.ticket", klass, 1000.0)
-                b = self.ticket("00000000000000000002-2.ticket", klass, 1050.0)
+                a = self.ticket(1000.0, 1, klass)
+                b = self.ticket(1050.0, 2, klass)
                 self.assertEqual(hs._queue(self.state, 1100.0, CONFIG), [a, b])
 
     def test_tc4_an_aged_normal_ticket_ranks_ahead_of_a_newer_high_one(self):
         aging = CONFIG["limits"]["aging_seconds"]
         self.assertEqual(aging, 1200)
-        early = self.ticket("00000000000000000001-1.ticket", "normal", 1000.0)
-        late = self.ticket("00000000000000000002-2.ticket", "high", 1500.0)
+        early = self.ticket(1000.0, 1, "normal")
+        late = self.ticket(1500.0, 2, "high")
         self.assertEqual(hs._queue(self.state, 1000.0 + aging - 1, CONFIG), [late, early])
         self.assertEqual(hs._queue(self.state, 1000.0 + aging + 1, CONFIG), [early, late])
 
@@ -527,15 +510,16 @@ class Priority(unittest.TestCase):
         self.assertFalse(hs.decide((2, 4), starved, [], 10_000.0, CONFIG, 10_000.0)[0])
 
     def test_tc6_an_old_format_ticket_is_normal_and_a_dead_one_is_removed(self):
-        old = self.ticket("00000000000000000001-1.ticket", None, 0)
-        self.assertEqual(rank.read_ticket(old)[0], "normal")
-        dead = self.state / "tickets" / "00000000000000000003-3.ticket"
-        dead.write_text(rank.ticket_body("high", 1.0))  # nobody holds its flock
-        self.assertEqual(hs._queue(self.state, 2.0, CONFIG), [old])
+        old = self.ticket(1.0, 1)
+        self.assertEqual(old.name, "00000000001000000000-1.ticket")
+        self.assertEqual(rank.parse_ticket(old.name)[0], "normal")
+        dead = self.state / "tickets" / "00000000003000000000-3-high.ticket"
+        dead.touch()  # nobody holds its flock
+        self.assertEqual(hs._queue(self.state, 4.0, CONFIG), [old])
         self.assertFalse(dead.exists())
 
     def test_tc7_status_shows_class_and_age(self):
-        self.ticket("00000000000000000001-1.ticket", "normal", time.time() - 30)
+        self.ticket(time.time() - 30, 1, "normal")
         env = {**os.environ, "HEAVY_SLOT_DIR": str(self.state)}
         out = subprocess.run([sys.executable, str(TOOL), "status"], env=env, text=True,
                              capture_output=True, timeout=60)
@@ -545,9 +529,9 @@ class Priority(unittest.TestCase):
     def test_tc8_the_overdue_start_goes_to_the_ranked_head_only(self):
         """Both waiters are past max_wait_seconds; only the ranked head starts."""
         loaded = hs.Reading(8, 30.0, 20.0, 90.0, 0.0)
-        # A high ticket that arrived AFTER ours (its name sorts last and its body
-        # says so): arrival order would start ours, the ranked queue never does.
-        self.ticket("99999999999999999999-1.ticket", "high", 10_000.5)
+        # A high ticket named at a later injected-clock value than ours: arrival
+        # (name) order would start ours, the ranked queue never does.
+        self.ticket(10_000.5, 1, "high")
         now = [10_000.0]
 
         def sleep(seconds):
@@ -562,6 +546,96 @@ class Priority(unittest.TestCase):
             hs._admit("kill", "late-normal", self.state, CONFIG, read=lambda: loaded,
                       sleep=sleep, clock=lambda: now[0])
         self.assertEqual(list((self.state / "holders").glob("*.json")), [])
+
+    # The sticky-wicket patch (harmonic-forge#1634): the name is the only carrier.
+
+    def test_k1_old_and_new_readers_agree_on_the_head(self):
+        """An earlier new-format normal ticket and a later old-format one: the
+        ranked head is the name-order head that old code also picks."""
+        new = self.ticket(1000.0, 7, "normal")
+        old = self.ticket(1001.0, 2)
+        names = sorted(p.name for p in (self.state / "tickets").glob("*.ticket"))
+        self.assertEqual(hs._queue(self.state, 1002.0, CONFIG)[0], new)
+        self.assertEqual(new.name, names[0])
+        self.assertEqual(hs._queue(self.state, 1002.0, CONFIG), [new, old])
+
+    def test_k1_all_normal_tickets_rank_in_name_order(self):
+        import random
+        rng, aging = random.Random(1634), CONFIG["limits"]["aging_seconds"]
+        for trial in range(40):
+            with self.subTest(trial=trial):
+                for path in (self.state / "tickets").glob("*"):
+                    path.unlink()
+                for _ in range(rng.randint(1, 8)):
+                    arrived = round(rng.uniform(1000.0, 1000.0 + 2 * aging), 3)
+                    self.ticket(arrived, rng.randint(1, 99_999), rng.choice(["normal", None]))
+                now = rng.uniform(1000.0, 1000.0 + 3 * aging)
+                queue = hs._queue(self.state, now, CONFIG)
+                self.assertEqual([p.name for p in queue], sorted(p.name for p in queue))
+
+    def test_k2_a_waiting_ticket_is_named_from_the_clock_and_has_no_body(self):
+        loaded, now, seen = hs.Reading(8, 30.0, 20.0, 90.0, 0.0), [10_000.0], []
+
+        def sleep(_seconds):
+            seen.extend((p.name, p.stat().st_size) for p in (self.state / "tickets").glob("*.ticket"))
+            raise TimeoutError
+
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "high"}), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(TimeoutError):
+            hs._admit("kill", "waiting", self.state, CONFIG, read=lambda: loaded,
+                      sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(seen, [(f"{int(10_000.0 * 1e9):020d}-{os.getpid()}-high.ticket", 0)])
+
+    def test_k3_parse_ticket_is_total(self):
+        cases = {
+            "x-1-high.ticket": ("high", None),
+            "1-1-urgent.ticket": ("normal", 1e-9),
+            "9" * 40 + "-1.ticket": ("normal", int("9" * 40) / 1e9),
+            "9" * 400 + "-1-normal.ticket": ("normal", None),
+            "9" * 5000 + "-1.ticket": ("normal", None),
+            "00000000000000000001-1.ticket": ("normal", 1e-9),
+            "00000000000000000001-1-high.ticket": ("high", 1e-9),
+            "garbage": ("normal", None),
+            "": ("normal", None),
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name[:30]):
+                self.assertEqual(rank.parse_ticket(name), expected)
+        self.assertEqual(rank.effective_class("normal", None, 1e12, 0), "normal")
+
+    def test_k4_a_failing_ranking_falls_back_to_name_order(self):
+        later_high = self.ticket(20_000.5, 1, "high")  # later in name order than ours
+        with mock.patch.object(rank, "rank_key", side_effect=RuntimeError("boom")):
+            self.assertEqual(hs._queue(self.state, 20_001.0, CONFIG), [later_high])
+            with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"}), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                holder, handle = hs._admit("kill", "head", self.state, CONFIG, read=lambda: IDLE,
+                                           sleep=lambda _s: self.fail("the name-order head waited"),
+                                           clock=lambda: 20_000.0)
+            handle.close()
+            # slot() names its ticket from the real clock, after every fixture;
+            # with nothing else queued it is the name-order head.
+            later_high.unlink()
+            for path in (self.state / "holders").glob("*"):
+                path.unlink()
+            env = {"HEAVY_SLOT_DIR": str(self.state), "HEAVY_SLOT_PRIORITY": "normal"}
+            with mock.patch.dict(os.environ, env), mock.patch.object(hs, "decide", return_value=(True, "test")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                os.environ.pop("CI", None)
+                os.environ.pop("HEAVY_SLOT_DISABLE", None)
+                with hs.slot("kill", "managed"):
+                    pass
+        self.assertEqual(holder["label"], "head")
+        self.assertNotIn("unmanaged", err.getvalue())
+        self.assertIn("admitted kill managed", err.getvalue())
+
+    def test_k5_aging_seconds_accepts_only_a_finite_non_negative_number(self):
+        for value in ("x", float("nan"), float("inf"), -1, True, None, [1]):
+            with self.subTest(value=value):
+                self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": value}}), 1200)
+        self.assertEqual(rank.aging_seconds({"limits": {}}), 1200)
+        self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": 0}}), 0)
+        self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": 30.5}}), 30.5)
 
 
 if __name__ == "__main__":
