@@ -240,6 +240,26 @@ def _guard(state: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+TICKET_TRIES = 1000
+
+
+def _new_ticket(state: Path, arrived_ns: int, pid: int, klass: str) -> tuple[Path, object]:
+    """Create a ticket no other admission holds, and open it.
+
+    Two admissions in one process can read clocks that round to the same
+    nanosecond, and then share a name: the second's lock fails and it runs
+    unmanaged. The file is created exclusively; a taken name moves one
+    nanosecond later, so the 20-digit prefix stays the one ordering key."""
+    for offset in range(TICKET_TRIES):
+        path = state / "tickets" / f"{arrived_ns + offset:020d}-{pid}-{klass}.ticket"
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
+        except FileExistsError:
+            continue
+        return path, os.fdopen(fd, "a+")
+    raise FileExistsError(f"no free ticket name in {TICKET_TRIES} tries from {arrived_ns}-{pid}")
+
+
 def _admit(kind: str, label: str, state: Path, config: dict,
            read=read_system, sleep=time.sleep, clock=time.time) -> tuple[dict, object]:
     """Wait for capacity, then record a holder. Its lock handle is returned open."""
@@ -251,10 +271,9 @@ def _admit(kind: str, label: str, state: Path, config: dict,
     started, last_note = clock(), 0.0
     # The name is the ticket's only data: arrival from the one clock reading, then
     # the class. It has no body (harmonic-forge#1634).
-    ticket = state / "tickets" / f"{int(started * 1e9):020d}-{own_pid}-{klass}.ticket"
-    ticket.parent.mkdir(parents=True, exist_ok=True)
+    (state / "tickets").mkdir(parents=True, exist_ok=True)
     with _guard(state):
-        ticket_handle = open(ticket, "a+")
+        ticket, ticket_handle = _new_ticket(state, int(started * 1e9), own_pid, klass)
         fcntl.flock(ticket_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         while True:

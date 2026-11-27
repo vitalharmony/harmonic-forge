@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -636,6 +637,46 @@ class Priority(unittest.TestCase):
         self.assertEqual(rank.aging_seconds({"limits": {}}), 1200)
         self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": 0}}), 0)
         self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": 30.5}}), 30.5)
+
+    def test_d56_two_admissions_in_one_process_at_one_clock_reading_are_both_managed(self):
+        """The same pid, class and nanosecond must not share a ticket: the second
+        admission's lock would fail and its command would run unmanaged."""
+        go, results, tickets = threading.Event(), {}, self.state / "tickets"
+
+        def admit(label):
+            try:
+                results[label] = hs._admit("kill", label, self.state, CONFIG, read=lambda: IDLE,
+                                           sleep=lambda _s: time.sleep(0.01), clock=lambda: 20_000.0)
+            except Exception as exc:  # noqa: BLE001 -- recorded and asserted on below
+                results[label] = exc
+
+        def wait_for(count):
+            deadline = time.monotonic() + 10
+            while len(list(tickets.glob("*.ticket"))) < count and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return sorted(p.name for p in tickets.glob("*.ticket"))
+
+        threads = [threading.Thread(target=admit, args=(label,), daemon=True) for label in ("first", "second")]
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"}), \
+                mock.patch.object(hs, "decide", side_effect=lambda *_a: (go.is_set(), "test")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            threads[0].start()
+            wait_for(1)
+            threads[1].start()
+            names = wait_for(2)
+            go.set()
+            for thread in threads:
+                thread.join(timeout=10)
+        ns = int(20_000.0 * 1e9)
+        self.assertEqual(names, [f"{ns:020d}-{os.getpid()}-normal.ticket",
+                                 f"{ns + 1:020d}-{os.getpid()}-normal.ticket"])
+        for label in ("first", "second"):
+            with self.subTest(label=label):
+                self.assertIsInstance(results.get(label), tuple, results.get(label))
+                holder, handle = results[label]
+                handle.close()
+                self.assertEqual(holder["label"], label)
+        self.assertEqual(list(tickets.glob("*.ticket")), [])
 
 
 if __name__ == "__main__":
