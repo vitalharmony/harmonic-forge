@@ -118,6 +118,12 @@ count = 1
 
 [[finding]]
 rule = "forge-root"
+path = "tools/hooks/check_receipt.py"
+text = "FORGE_ROOT = Path.home() / \"harmonic-forge\""
+count = 1
+
+[[finding]]
+rule = "forge-root"
 path = "tools/hooks/gate_codex_tool.py"
 text = "\"Use `python3 ~/harmonic-forge/tools/gh/fetch_lane1_context.py --repo \""
 count = 1
@@ -1590,6 +1596,12 @@ count = 1
 rule = "project-name"
 path = "tools/hooks/block_stale_script_execution.py"
 text = "OVERRIDE_ENV = \"HRSE_ALLOW_STALE_SCRIPT\""
+count = 1
+
+[[finding]]
+rule = "project-name"
+path = "tools/hooks/check_receipt.py"
+text = "FORGE_ROOT = Path.home() / \"harmonic-forge\""
 count = 1
 
 [[finding]]

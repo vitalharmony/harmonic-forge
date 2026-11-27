@@ -41,32 +41,7 @@ L1_POST_SOURCE = "l1-post-scratch"
 #: The forge HEAD `l1_post` read before its check started (empty when the forge
 #: tree was dirty): the receipt names that, never the HEAD at record time.
 FORGE_SHA_ENV = "HF_CHECK_RECEIPT_FORGE_SHA"
-#: harmonic-forge#1566 (amended, operator D25/D26): the forge identity is the
-#: checkout this file lives in -- the recorder and its reader (l1_post) are both
-#: forge scripts, so that checkout is the forge code that ran. When
-#: HARMONIC_FORGE_ROOT or instance.toml `forge_root` declares a different real
-#: checkout, the identity is None ("forge root mismatch"): a wrapper may then
-#: have run forge from the other one, and a mismatch must miss a reuse, never
-#: allow a false one. A forge-repo check recorded from its scratch checkout
-#: therefore records no identity and is re-run (D26).
-FORGE_ROOT = Path(__file__).resolve().parents[2]
-
-
-def declared_forge_root() -> Path | None:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import hook_forge_root  # noqa: PLC0415
-    return hook_forge_root.resolve_declared()
-
-
-def _root_mismatch() -> str | None:
-    declared = declared_forge_root()
-    if declared is None:
-        return None
-    try:
-        same = Path(declared).resolve() == Path(FORGE_ROOT).resolve()
-    except OSError:
-        same = False
-    return None if same else f"forge root mismatch: declared {declared}, running {FORGE_ROOT}"
+FORGE_ROOT = Path.home() / "harmonic-forge"
 BRANCH_ISSUE = re.compile(r"^[a-z]+/(\d+)-")
 ZERO = "0" * 40
 _SLUG = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", re.IGNORECASE)
@@ -94,14 +69,11 @@ def check_full_path(slug: str, sha: str, forge: str) -> Path:
 
 
 def forge_sha() -> str | None:
-    """The HEAD of the forge checkout a check ran against: a consumer repo's
-    check runs forge scripts, so a forge change can change its result. None when
-    it cannot be read, the forge tree is dirty (HEAD does not name the code), or
-    a declared forge root is a different checkout (harmonic-forge#1566)."""
+    """The `~/harmonic-forge` HEAD a check ran against: a consumer repo's check
+    runs forge scripts, so a forge change can change its result. None when it
+    cannot be read or the forge tree is dirty: then HEAD does not name the code."""
     # harmonic-forge#1538: untracked files are not code a check ran, so they do
     # not void the identity; a modified or staged tracked file still does.
-    if _root_mismatch():
-        return None
     try:
         if _git(*_FORGE_STATUS, cwd=str(FORGE_ROOT)):
             return None
@@ -119,8 +91,6 @@ def forge_unusable_reason() -> str | None:
     `forge HEAD unreadable`."""
     if forge_sha():
         return None
-    if (mismatch := _root_mismatch()) is not None:
-        return mismatch
     try:
         lines = _git(*_FORGE_STATUS, cwd=str(FORGE_ROOT)).splitlines()
     except (OSError, subprocess.CalledProcessError):
@@ -191,14 +161,6 @@ def record(repo_root: str = ".", head: str | None = None, source: str = "check")
             print(f"check-receipt: kept the existing {existing.get('source')} receipt")
             return 0
         forge = _recorded_forge_sha()
-        wanted = os.environ.get(FORGE_SHA_ENV)
-        if wanted and forge != wanted:
-            # harmonic-forge#1566 (D26): say why this receipt will not be reused,
-            # e.g. a forge-repo check recorded from its scratch checkout.
-            why = forge_unusable_reason() or f"running forge is at {forge_sha() or 'unknown'}"
-            print(f"check-receipt: forge identity {(forge or 'none')[:12]} differs from "
-                  f"l1_post's {wanted[:12]} ({why}); this receipt will not be reused",
-                  file=sys.stderr)
         data = json.dumps({"repo": slug, "sha": sha, "forge_sha": forge, "source": source}) + "\n"
         path.write_text(data, encoding="utf-8")
         if source == CHECK_FULL_SOURCE:

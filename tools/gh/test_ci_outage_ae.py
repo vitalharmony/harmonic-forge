@@ -95,9 +95,7 @@ class World:
         self.S = git_repo(self.src, "https://github.com/vitalharmony/hrse.git")
         for target, attr, value in ((force_grant, "FORCE_STATE_DIR", self.state),
                                     (check_receipt, "STORE", self.store),
-                                    (check_receipt, "FORGE_ROOT", self.forge_root),
-                                    # harmonic-forge#1566: no declared root, so no mismatch.
-                                    (check_receipt, "declared_forge_root", lambda: None)):
+                                    (check_receipt, "FORGE_ROOT", self.forge_root)):
             patcher = mock.patch.object(target, attr, value)
             patcher.start()
             self.addCleanup(patcher.stop)

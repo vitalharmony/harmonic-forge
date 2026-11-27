@@ -47,8 +47,7 @@ class Sidecar(unittest.TestCase):
             path.mkdir()
         self.forge = git_repo(self.forge_root)
         self.head = git_repo(self.src, "https://github.com/vitalharmony/hrse.git")
-        for attr, value in (("STORE", self.store), ("FORGE_ROOT", self.forge_root),
-                            ("declared_forge_root", lambda: None)):  # harmonic-forge#1566
+        for attr, value in (("STORE", self.store), ("FORGE_ROOT", self.forge_root)):
             patch = mock.patch.object(C, attr, value)
             patch.start()
             self.addCleanup(patch.stop)

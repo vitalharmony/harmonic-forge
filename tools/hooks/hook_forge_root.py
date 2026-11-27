@@ -5,15 +5,12 @@ instance.toml `forge_root`, then the checkout `own_file` sits in), the order the
 lane launcher uses (#1526). Any failure answers that own checkout, never a
 home-relative literal: the callers here only name paths in advisory output.
 
-`resolve_declared()` is only what is declared (the env value, then
-instance.toml), None when neither resolves, with no own-checkout fallback.
-check_receipt compares it with the checkout it runs from: a different declared
-checkout means a wrapper may have run forge from elsewhere, so its forge
-identity is withheld (harmonic-forge#1566, operator D25).
+check_receipt does not use this: its forge identity is the meeting point of a
+recorder and a reader that run from different checkouts, which only the
+launcher-exported root can settle (harmonic-forge#1630; operator D29-D31).
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -38,17 +35,3 @@ def resolve(own_file: str, environ: Mapping[str, str] | None = None) -> Path:
         return _instance().resolve_forge_root(own_checkout(own_file), environ)[0]
     except Exception:  # noqa: BLE001 - advisory callers: never crash a hook
         return own_checkout(own_file)
-
-
-def resolve_declared(environ: Mapping[str, str] | None = None) -> Path | None:
-    env = os.environ if environ is None else environ
-    try:
-        instance = _instance()
-        if not env.get("HARMONIC_FORGE_ROOT") and instance.forge_root(env) is None:
-            return None
-        # The launcher checkout is only the last fallback, unreachable here:
-        # one of the two declarations above is set. It must still exist,
-        # because `launch_view` resolves the hook-set path beside it.
-        return instance.resolve_forge_root(own_checkout(__file__), env)[0]
-    except Exception:  # noqa: BLE001 - unresolved is None, never a guess
-        return None
