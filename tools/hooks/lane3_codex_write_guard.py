@@ -99,6 +99,15 @@ def _host(argv: list[str]) -> str:
         return "unknown"
 
 
+def _is_absolute_target(target: str) -> bool:
+    """harmonic-forge#1608 P3: bash leaves an unknown `~user` unexpanded, so
+    that target is relative, never a crash."""
+    try:
+        return Path(target).expanduser().is_absolute()
+    except RuntimeError:
+        return False
+
+
 def _resolve(target: str, cwd: Path) -> str | None:
     try:
         raw = Path(target).expanduser()
@@ -169,7 +178,12 @@ def bash_decision(command: str, cwd: Path, host: str) -> dict | None:
                 cwd_unresolved = True
                 continue
             cwd_unresolved = False
-            expanded = Path(target).expanduser()
+            try:
+                expanded = Path(target).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` is unresolvable here.
+                cwd_unresolved = True
+                continue
             effective_cwd = (
                 expanded if expanded.is_absolute() else effective_cwd / expanded
             )
@@ -179,7 +193,7 @@ def bash_decision(command: str, cwd: Path, host: str) -> dict | None:
         raw_targets = list(bash_write_targets(segment))
         raw_targets += [operand for _construct, operand in interpreter_write_pairs(joined)]
         for raw_target in raw_targets:
-            if cwd_unresolved and not Path(raw_target).expanduser().is_absolute():
+            if cwd_unresolved and not _is_absolute_target(raw_target):
                 return _deny(
                     "Codex Lane 3 write guard: this command changes to a "
                     "directory this guard cannot resolve statically and "

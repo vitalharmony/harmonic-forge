@@ -175,5 +175,43 @@ class HookEntryPointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
 
+class F1608DeletedCwdTests(unittest.TestCase):
+    """harmonic-forge#1608 P3: a deleted cwd with LANE unset must not crash the keyed hook."""
+
+    def _run(self, lane):
+        import os
+        import tempfile
+        gone = tempfile.mkdtemp()
+        os.rmdir(gone)
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        if lane is not None:
+            env["LANE"] = lane
+        payload = {"tool_name": "Bash", "tool_input": {"command": "kubectl delete pod p"}, "cwd": gone}
+        return subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env, timeout=30)
+
+    def test_lane_unset_exits_zero_with_no_decision(self):
+        done = self._run(None)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "")
+
+    def test_no_payload_cwd_and_a_deleted_process_cwd_exits_zero(self):
+        import os
+        import tempfile
+        gone = tempfile.mkdtemp()
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        payload = {"tool_name": "Bash", "tool_input": {"command": "kubectl delete pod p"}}
+        done = subprocess.run(["sh", "-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone,
+                               sys.executable, str(HOOK)], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "")
+
+    def test_lane3_still_gets_the_policy(self):
+        done = self._run("3")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

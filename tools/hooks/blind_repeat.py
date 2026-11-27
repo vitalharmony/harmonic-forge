@@ -15,6 +15,13 @@ already-modified file does not change it, so a real fix would be refused.
 
 Fail-open everywhere (AC6): any store, git or parse error allows. A cwd
 outside a git repo is neither recorded nor refused. No session id, no effect.
+
+harmonic-forge#1608 P1: the PreToolUse handler carries `onFailure: "block"`,
+so a hook timeout is a refusal. `refusal()` therefore does no git work unless
+it has to: records outside the TTL are dropped first, then a live record must
+match a cheap key (`ck`, a digest of command and cwd) before the slow tree
+digest runs, and the tree digest itself stops inside `STATE_BUDGET_SECONDS`
+(under the handler's 5 s timeout) and allows on overrun.
 """
 from __future__ import annotations
 
@@ -30,6 +37,8 @@ STALE_FILE_SECONDS = 24 * 60 * 60
 #: AC3: one unchanged retry, matched by exact whole-string equality only.
 FLAKY_COMMANDS = ("mise run check", "mise run check-full")
 STORE_ENV = "BLIND_REPEAT_DIR"
+#: harmonic-forge#1608 P1: total wall clock for one state_key, under the 5 s handler timeout.
+STATE_BUDGET_SECONDS = 3.5
 
 
 def store_dir() -> Path:
@@ -41,17 +50,33 @@ def session_file(session: str) -> Path:
     return store_dir() / f"{hashlib.sha256(session.encode()).hexdigest()[:32]}.jsonl"
 
 
-def _git(cwd: str, *args: str) -> bytes | None:
+def cheap_key(command: str, cwd: str) -> str:
+    """harmonic-forge#1608 P1: command plus resolved cwd, no git and no tree read."""
+    return hashlib.sha256(command.encode() + b"\0" + os.path.realpath(cwd).encode()).hexdigest()
+
+
+def _git(cwd: str, *args: str, timeout: float = 3) -> bytes | None:
+    if timeout <= 0:
+        return None
     try:
-        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, timeout=3)
+        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
 
 
-def state_key(command: str, cwd: str) -> str | None:
-    """The digest of command plus repo state, or None outside a git repo."""
-    head = _git(cwd, "rev-parse", "HEAD")
+def state_key(command: str, cwd: str, budget: float = STATE_BUDGET_SECONDS) -> str | None:
+    """The digest of command plus repo state, or None outside a git repo.
+
+    harmonic-forge#1608 P1: every git read and file hash shares one wall-clock
+    budget; running out of it means the tree is undecidable, so None (allow).
+    """
+    deadline = time.monotonic() + budget
+
+    def git(where: str, *args: str) -> bytes | None:
+        return _git(where, *args, timeout=deadline - time.monotonic())
+
+    head = git(cwd, "rev-parse", "HEAD")
     if head is None:
         return None
     digest = hashlib.sha256()
@@ -59,18 +84,22 @@ def state_key(command: str, cwd: str) -> str | None:
         digest.update(part + b"\0")
     # pass 1 survivor 2: a git read that fails or times out means the tree is
     # undecidable, so there is no key (allow), never an empty-digest key.
-    toplevel = _git(cwd, "rev-parse", "--show-toplevel")
+    toplevel = git(cwd, "rev-parse", "--show-toplevel")
     if toplevel is None or not toplevel.strip():
         return None
     root = toplevel.strip().decode()
     # pass 2 survivor 1: both reads run from the repo top, so untracked paths
     # are top-relative and cover the whole tree, whatever the cwd.
-    diff = _git(root, "diff", "HEAD", "--binary")
-    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
-    if diff is None or untracked is None:
+    diff = git(root, "diff", "HEAD", "--binary")
+    if diff is None:
+        return None
+    untracked = git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked is None:
         return None
     digest.update(diff)
     for name in sorted(n for n in untracked.split(b"\0") if n):
+        if time.monotonic() >= deadline:
+            return None  # harmonic-forge#1608 P1: out of budget, undecidable tree
         digest.update(name + b"\0")
         try:
             digest.update(hashlib.sha256((Path(root) / name.decode()).read_bytes()).digest())
@@ -124,7 +153,8 @@ def record(payload: dict, now: float | None = None) -> None:
     # read-modify-replace, so concurrent failures cannot overwrite each other.
     # Expired records are filtered at read time (refusal); a session's file is
     # removed by the stale-file prune below once the session has ended.
-    line = json.dumps({"key": key, "t": now, "line": _first_failure_line(payload),
+    line = json.dumps({"key": key, "ck": cheap_key(command, cwd), "t": now,
+                       "line": _first_failure_line(payload),
                        "flaky": command in FLAKY_COMMANDS}) + "\n"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
@@ -145,14 +175,19 @@ def refusal(payload: dict, now: float | None = None) -> str | None:
     cwd = payload.get("cwd") or ""
     if not session or not command or not cwd:
         return None
-    records = _read(session_file(session))
-    if not records:
+    now = time.time() if now is None else now
+    # harmonic-forge#1608 P1: the TTL filter and the cheap-key match run before
+    # any git call; a record with no `ck` (written before #1608) never matches.
+    ck = cheap_key(command, cwd)
+    live = [r for r in _read(session_file(session))
+            if isinstance(r, dict) and isinstance(r.get("t", 0), (int, float))
+            and now - r.get("t", 0) < TTL_SECONDS and r.get("ck") == ck]
+    if not live:
         return None
     key = state_key(command, cwd)
     if key is None:
         return None
-    now = time.time() if now is None else now
-    hits = [r for r in records if r.get("key") == key and now - r.get("t", 0) < TTL_SECONDS]
+    hits = [r for r in live if r.get("key") == key]
     if not hits:
         return None
     if command in FLAKY_COMMANDS and len(hits) < 2:

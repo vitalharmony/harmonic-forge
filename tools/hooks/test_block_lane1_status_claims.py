@@ -1649,5 +1649,51 @@ class TestF1262SessionRootsAndTighten(_F1116Fixture):
         self.assertIn("Pass an absolute path for the write target", reason)
 
 
+class TestF1608UnknownUserTilde(unittest.TestCase):
+    """harmonic-forge#1608 P3: `Path.expanduser` raises RuntimeError on an
+    unknown `~user`; the keyed handler turns that crash into a refusal, so
+    every site must catch it. One case per site, run as the real hook."""
+
+    HOOK = Path(__file__).resolve().parent / "block_lane1_status_claims.py"
+
+    def _rc(self, command: str, lane: str | None) -> int:
+        import json
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        if lane is not None:
+            env["LANE"] = lane
+        payload = {"tool_name": "Bash", "tool_input": {"command": command},
+                   "cwd": str(Path(__file__).resolve().parent)}
+        done = subprocess.run([sys.executable, str(self.HOOK)], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env, timeout=30)
+        return done.returncode
+
+    def _assert_clean(self, command: str) -> None:
+        for lane in (None, "1", "2", "3"):
+            with self.subTest(lane=lane):
+                self.assertEqual(self._rc(command, lane), 0, command)
+
+    def test_cd_to_an_unknown_user_home_exits_zero(self):  # :1533 site
+        self._assert_clean("cd '~nosuchuser-1608' 2>/dev/null || pwd")
+
+    def test_body_file_under_an_unknown_user_exits_zero(self):  # --body-file X site
+        self._assert_clean("gh pr create --body-file ~nosuchuser/x")
+
+    def test_body_file_equals_under_an_unknown_user_exits_zero(self):  # --body-file=X site
+        self._assert_clean("gh pr create --body-file=~nosuchuser/x")
+
+    def test_a_deleted_cwd_reads_as_no_lane3_marker(self):
+        # harmonic-forge#1608 P3: git cannot start in a deleted cwd; that is
+        # the git-failure answer (not cleared), never an OSError.
+        import os
+        gone = Path(tempfile.mkdtemp())
+        gone.rmdir()
+        task = next(iter(m.LANE3_ONLY_TASKS))
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(m.lane3_task_without_marker(["mise", "run", task], gone), task)
+
+
 if __name__ == "__main__":
     unittest.main()

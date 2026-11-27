@@ -129,7 +129,12 @@ def gate_task_denial(command: str, cwd: Path) -> str | None:
     effective_cwd = cwd
     for segment in _canonical.command_segments(command):
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
+                # so the cwd the next segment sees is unchanged.
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         task = _canonical.lane3_task_without_marker(segment, effective_cwd)
@@ -244,7 +249,12 @@ def gate_worktree_location_denial(command: str, cwd: Path, is_lane3: bool) -> st
     effective_cwd = cwd
     for segment in _canonical.command_segments(command):
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
+                # so the cwd the next segment sees is unchanged.
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         if len(segment) < 3 or segment[0] != "mise" or segment[1] != "run" or segment[2] not in _GATE_LOCATION_TASKS:
@@ -327,7 +337,12 @@ def git_mutation_denial(command: str, cwd: Path, is_lane3: bool) -> str | None:
     effective_cwd = cwd
     for segment in _canonical.command_segments(command):
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
+                # so the cwd the next segment sees is unchanged.
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         resolved = _cloud_policy._resolve_program(segment)
@@ -367,7 +382,12 @@ def direct_post_denial(command: str, cwd: Path) -> str | None:
     effective_cwd = cwd
     for segment in _canonical.command_segments(command):
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
+                # so the cwd the next segment sees is unchanged.
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         if _canonical.is_direct_transport(segment, effective_cwd, prefer_cwd=True):
@@ -411,7 +431,12 @@ def bulk_comment_read_denial(command: str, cwd: Path, is_lane3: bool) -> str | N
     effective_cwd = cwd
     for segment in _canonical.command_segments(command):
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
+                # so the cwd the next segment sees is unchanged.
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         if not segment or segment[0] != "gh":

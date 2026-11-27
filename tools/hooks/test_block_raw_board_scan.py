@@ -99,6 +99,25 @@ class Output(unittest.TestCase):
         self.assertIn("malformed", json.loads(result.stdout)["systemMessage"])
 
 
+class Issue1608ShlexCrash(unittest.TestCase):
+    """harmonic-forge#1608 P2: an untokenizable command must not crash the keyed hook."""
+
+    def _proc(self, command: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(HOOK)],
+                              input=json.dumps({"tool_input": {"command": command}}),
+                              capture_output=True, text=True)
+
+    def test_an_ansi_c_quote_exits_zero_with_no_decision(self):
+        done = self._proc("git commit -m $'Don\\'t fail open'")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("hookSpecificOutput", json.loads(done.stdout or "{}"))
+
+    def test_an_untokenizable_board_scan_still_asks(self):
+        done = self._proc("gh project item-list 1 --owner x && echo $'it\\'s'")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
+
+
 class Wiring(unittest.TestCase):
     """harmonic-forge#367's defect was wiring one repo and not the other."""
 

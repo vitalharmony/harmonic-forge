@@ -24,6 +24,11 @@ and starts the session anyway (probe run 5), so every shape the CLI would drop
 is refused here instead, and the launcher refuses to start a session with no
 guards.
 
+Every PreToolUse handler must declare `"onFailure": "block"` (harmonic-forge#1608),
+so a hook that cannot run refuses the call rather than letting it through. A
+hook broken on forge main then refuses every call it guards, with no escape
+inside the session: docs/hook-lockout-recovery.md is the terminal recovery.
+
 Hook identity, measured on 2.1.322: a hook runs once per event when its
 command STRING is identical across settings sources, whatever the matcher or
 timeout, and twice when the strings differ. So a project entry naming a set
@@ -159,6 +164,10 @@ def validate(data: dict, *, forge_root: Path) -> None:
                 if "timeout" in handler and (isinstance(timeout, bool) or not isinstance(timeout, int)
                                              or timeout <= 0):
                     raise SetError(f"hooks.{event}: timeout is not a positive integer: {handler!r}")
+                if event == "PreToolUse" and "onFailure" not in handler:
+                    # harmonic-forge#1608 P5: presence, not only the value.
+                    raise SetError(f"hooks.{event}: a PreToolUse handler must declare "
+                                   f"onFailure: \"block\": {handler!r}")
                 if "onFailure" in handler and handler["onFailure"] != "block":
                     raise SetError(f"hooks.{event}: onFailure must be \"block\": {handler!r}")
                 # Change 4: an unchecked command fails open at runtime (`stored_paths`).

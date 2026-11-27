@@ -135,7 +135,12 @@ def raw_post_denial(command: str, cwd: Path) -> str | None:
     effective_cwd = cwd
     for segment in command_segments(command):
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
+                # so the cwd the next segment sees is unchanged.
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         if is_direct_transport(segment, effective_cwd, prefer_cwd=True):

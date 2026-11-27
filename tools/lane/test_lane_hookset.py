@@ -201,6 +201,19 @@ class Build(_Tmp):
                 with self.assertRaisesRegex(hs.SetError, reason):
                     self.build(data)
 
+    def test_a_pre_tool_use_handler_without_on_failure_refuses(self):
+        # harmonic-forge#1608 P5: the key must be present, not only valid when present.
+        data = _set()
+        handler = data["hooks"]["PreToolUse"][0]["hooks"][0]
+        self.assertEqual(handler.pop("onFailure"), "block")
+        with self.assertRaisesRegex(hs.SetError, "onFailure"):
+            self.build(data)
+
+    def test_a_non_pre_tool_use_handler_needs_no_on_failure(self):
+        data = _set()
+        self.assertNotIn("onFailure", data["hooks"]["Stop"][0]["hooks"][0])
+        self.build(data)
+
     def test_disable_all_hooks_must_be_declared_false(self):
         for value in ("absent", True, 0, None):
             with self.subTest(value=value):

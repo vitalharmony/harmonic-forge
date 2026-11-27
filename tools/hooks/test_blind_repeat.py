@@ -168,8 +168,8 @@ class Pass1Fixes(Base):
     def test_a_git_failure_allows_instead_of_keying_an_empty_tree(self):
         self.record_failure("make x")
         real = R._git
-        def failing(cwd, *args):
-            return None if args[:1] == ("diff",) else real(cwd, *args)
+        def failing(cwd, *args, **kw):
+            return None if args[:1] == ("diff",) else real(cwd, *args, **kw)
         with mock.patch.object(R, "_git", side_effect=failing):
             self.assertIsNone(self.refused("make x"))
 
@@ -238,6 +238,48 @@ class Hygiene(Base):
              mock.patch("sys.stdout", out):
             block_blind_repeat.main()
         self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class Issue1608Budget(Base):
+    """harmonic-forge#1608 P1: the keyed handler must not time out on its allow path."""
+
+    def test_expired_records_never_reach_git(self):  # K1a
+        R.record(self.payload("make x"), now=time.time() - R.TTL_SECONDS - 1)
+        with mock.patch.object(R, "state_key", side_effect=AssertionError("state_key ran")) as sk:
+            self.assertIsNone(self.refused("make x"))
+        sk.assert_not_called()
+
+    def test_a_live_record_for_another_command_never_reaches_git(self):  # K1b
+        self.record_failure("make x")
+        with mock.patch.object(R, "state_key", side_effect=AssertionError("state_key ran")) as sk:
+            self.assertIsNone(self.refused("make y"))
+        sk.assert_not_called()
+
+    def test_a_record_without_a_cheap_key_allows(self):
+        R.session_file(SESSION).parent.mkdir(parents=True, exist_ok=True)
+        key = R.state_key("make x", str(self.repo))
+        R.session_file(SESSION).write_text(json.dumps({"key": key, "t": time.time()}) + "\n")
+        self.assertIsNone(self.refused("make x"))
+
+    def test_a_slow_git_stops_inside_the_budget_and_allows(self):  # K1c
+        real_run = subprocess.run
+
+        def slow(argv, *a, **kw):  # every git call takes 2 s, honoring its timeout
+            limit = kw.get("timeout")
+            if limit is not None and limit < 2:
+                time.sleep(max(limit, 0))
+                raise subprocess.TimeoutExpired(argv, limit)
+            time.sleep(2)
+            return real_run(argv, *a, **kw)
+
+        start = time.monotonic()
+        with mock.patch.object(R.subprocess, "run", side_effect=slow):
+            self.assertIsNone(R.state_key("make x", str(self.repo)))
+        self.assertLess(time.monotonic() - start, 4)
+
+    def test_a_matching_live_record_still_refuses(self):
+        self.record_failure("make x")
+        self.assertIsNotNone(self.refused("make x"))
 
 
 class Wired(unittest.TestCase):
