@@ -477,7 +477,9 @@ def main(argv: list[str] | None = None) -> None:
             "harmonic-forge#878: refuse unless the newest sweep's declared write "
             "tier is exactly this one, on top of every check the default run "
             "makes. HRSE2's scripts/gate_production_run.py passes `P`, so a "
-            "production run needs a Tier P authorization for the checked-out SHA."
+            "production run needs a Tier P authorization for the checked-out SHA. "
+            "--require-prod-run implies `P`, and `R` or `W` beside it is a usage "
+            "error (harmonic-forge#1640)."
         ),
     )
     parser.add_argument(
@@ -487,7 +489,8 @@ def main(argv: list[str] | None = None) -> None:
             "the checked-out SHA (never a carried-forward ready-for-l3 or a sweep), "
             "declares this production run in its l1-post footer: "
             "script=scripts/1-<name>.py[,apply] or count-label=<Label>. The sweep's "
-            "tier never grants one. HRSE2's scripts/gate_production_run.py passes it."
+            "tier never grants one, but it must be P: this flag implies --require-tier P "
+            "(harmonic-forge#1640). HRSE2's scripts/gate_production_run.py passes it."
         ),
     )
     parser.add_argument(
@@ -508,6 +511,11 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    if args.require_prod_run is not None and args.require_tier not in (None, "P"):
+        # harmonic-forge#1640: a usage error, so it exits before --mark-active
+        # clears a live marker (clear_marker's docstring, harmonic-forge#1117).
+        fail(f"--require-prod-run requires tier P; --require-tier {args.require_tier} "
+             "cannot authorize a production run (R-0377)")
     if args.mark_active:
         # harmonic-forge#792: a stale marker never survives a refusal, this one included.
         clear_marker()
@@ -555,6 +563,16 @@ def main(argv: list[str] | None = None) -> None:
         if reason is not None:
             fail(f"{repo}#{issue}: {reason}")
         prod_run = _prod_run.declared(authority.get("body", ""))
+        if args.require_tier is None and tier != "P":
+            # harmonic-forge#1640: --require-prod-run implies tier P, so Lane 3's
+            # own readiness run agrees with the runner's before a grant is spent.
+            # After prod_run_refusal, so a sweep authority still reads "not the
+            # newest AE" first.
+            fail(
+                f"{repo}#{issue}: sweep ({sweep['html_url']}) declares tier {tier}, "
+                f"but tier P is required -- post an AE and sweep at "
+                f"tier P naming {head_sha}"
+            )
     if args.mark_active:
         mark_active()
     # harmonic-forge#1291 (sticky-wicket PATCH c): a passed readiness run without
