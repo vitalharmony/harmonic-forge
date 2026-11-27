@@ -1115,8 +1115,8 @@ class ClaudeLane3Settings(unittest.TestCase):
     def test_only_lane3_gets_the_installed_claude_policy(self):
         """harmonic-forge#1307: every Claude lane now carries one `--settings`
         holding the Forge lane hook set; only Lane 3's also holds the policy's
-        `permissions`."""
-        policy_permissions = json.loads(self.POLICY.read_text())["permissions"]
+        `permissions`, unioned with the set's `ask` (harmonic-forge#1643)."""
+        policy_permissions = {"ask": ["REPL"], **json.loads(self.POLICY.read_text())["permissions"]}
         with _FixtureTree() as tree:
             policy = self._install(tree, self.POLICY.read_text())
             lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
@@ -1125,7 +1125,7 @@ class ClaudeLane3Settings(unittest.TestCase):
                     cell = self._run(tree, lane_dir, lane)
                     self.assertTrue(cell["launched"], cell.get("stderr"))
                     self.assertEqual(_agent_args(cell).count("--settings"), 1)
-                    self.assertNotIn("permissions", _settings_value(cell))
+                    self.assertEqual(_settings_value(cell)["permissions"], {"ask": ["REPL"]})
             cell = self._run(tree, lane_dir)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             args = _agent_args(cell)
@@ -1153,7 +1153,7 @@ class ClaudeLane3Settings(unittest.TestCase):
         refused (sticky-wicket PATCH 2: Silverblue's /usr/local is a root-owned
         system symlink): the checks run on the resolved hops, and the policy
         reaches the session's `--settings`."""
-        policy_permissions = json.loads(self.POLICY.read_text())["permissions"]
+        policy_permissions = {"ask": ["REPL"], **json.loads(self.POLICY.read_text())["permissions"]}
         with _FixtureTree() as tree:
             policy = self._install(tree, self.POLICY.read_text())
             lane_dir = self._copy_lane_dir(tree, policy, os.getuid())
@@ -1215,7 +1215,7 @@ class ClaudeLane3Settings(unittest.TestCase):
             self.assertNotIn("lane3_policy", toml.read_text())
             cell = tree.run("3", [], LANE_CLI="claude")
             self.assertTrue(cell["launched"], cell.get("stderr"))
-            self.assertNotIn("permissions", _settings_value(cell))
+            self.assertEqual(_settings_value(cell)["permissions"], {"ask": ["REPL"]})
             self.assertIn("instance.toml sets no lane3_policy", cell["stderr"])
 
     def test_a_caller_cannot_replace_the_lane3_settings(self):
@@ -1248,7 +1248,7 @@ class ClaudeLane3Settings(unittest.TestCase):
             cell = self._run(tree, lane_dir)
             self.assertTrue(cell["launched"], cell.get("stderr"))
             # harmonic-forge#1307: the set still arrives, with no allow rule.
-            self.assertNotIn("permissions", _settings_value(cell))
+            self.assertEqual(_settings_value(cell)["permissions"], {"ask": ["REPL"]})
             self.assertIn("not installed", cell["stderr"])
 
     def test_a_policy_the_agent_could_widen_refuses_to_launch(self):
@@ -2807,7 +2807,8 @@ class LaneHookSet(unittest.TestCase):
             value = _settings_value(cell)
             self.assertEqual(value["hooks"], self.set_hooks)
             self.assertEqual(value["permissions"],
-                             json.loads(ClaudeLane3Settings.POLICY.read_text())["permissions"])
+                             {"ask": ["REPL"],
+                              **json.loads(ClaudeLane3Settings.POLICY.read_text())["permissions"]})
             self.assertNotIn(str(policy), _agent_args(cell))
 
     def test_lane3_with_the_policy_absent_carries_the_set(self):
@@ -2819,7 +2820,7 @@ class LaneHookSet(unittest.TestCase):
             self.assertTrue(cell["launched"], cell.get("stderr"))
             value = _settings_value(cell)
             self.assertEqual(value["hooks"], self.set_hooks)
-            self.assertNotIn("permissions", value)
+            self.assertEqual(value["permissions"], {"ask": ["REPL"]})
 
     def test_a_policy_carrying_hooks_refuses(self):
         """Neither source may override the other."""

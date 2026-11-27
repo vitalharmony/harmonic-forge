@@ -132,7 +132,8 @@ class Build(_Tmp):
 
     def test_build_emits_only_the_disable_flag_and_hooks(self):
         value = self.build(_set())
-        self.assertEqual(list(value), ["disableAllHooks", "hooks"])
+        self.assertEqual(list(value), ["disableAllHooks", "hooks", "permissions"])
+        self.assertEqual(value["permissions"], {"ask": ["REPL"]})
         self.assertIs(value["disableAllHooks"], False)
         self.assertEqual(value["hooks"], self.rendered()["hooks"])
 
@@ -164,7 +165,11 @@ class Build(_Tmp):
         def uncompilable_matcher(d): d["hooks"]["PreToolUse"][0]["matcher"] = "Bash("
         def non_string_matcher(d): d["hooks"]["PreToolUse"][0]["matcher"] = 3
         def unknown_event(d): d["hooks"]["Stopp"] = d["hooks"].pop("Stop")
-        def unknown_top_level_key(d): d["permissions"] = {"allow": ["Bash(*)"]}
+        def unknown_top_level_key(d): d["extra"] = 1
+        # harmonic-forge#1643: a set's `permissions` holds only `ask`.
+        def permissions_allow(d): d["permissions"] = {"allow": ["Bash(*)"]}
+        def permissions_deny(d): d["permissions"] = {"deny": ["X"]}
+        def permissions_unknown_key(d): d["permissions"] = {"ask": ["REPL"], "defaultMode": "auto"}
         def unknown_handler_key(d): d["hooks"]["Stop"][0]["hooks"][0]["async"] = True
         def unknown_block_key(d): d["hooks"]["Stop"][0]["extra"] = 1
         def schema_two(d): d["schema"] = 2
@@ -182,6 +187,9 @@ class Build(_Tmp):
                                (non_string_matcher, "matcher is not a string"),
                                (unknown_event, "unknown hook event"),
                                (unknown_top_level_key, "unknown top-level"),
+                               (permissions_allow, "never carries allow or deny"),
+                               (permissions_deny, "never carries allow or deny"),
+                               (permissions_unknown_key, "never carries allow or deny"),
                                (unknown_handler_key, "a handler must be"),
                                (unknown_block_key, "a block must be"),
                                (schema_two, "schema"),
@@ -262,7 +270,8 @@ class Policy(_Tmp):
     def test_the_policy_and_the_set_merge_into_one_object(self):
         policy, manifest = self.install(POLICY.read_bytes())
         value = self.build(_set(), policy=policy, manifest=manifest)
-        self.assertEqual(value["permissions"], json.loads(POLICY.read_text())["permissions"])
+        self.assertEqual(value["permissions"],
+                         {"ask": ["REPL"], **json.loads(POLICY.read_text())["permissions"]})
         self.assertEqual(value["hooks"], self.rendered()["hooks"])
         self.assertIs(value["disableAllHooks"], False)
 
@@ -275,7 +284,7 @@ class Policy(_Tmp):
         data = _set()
         data["permissions"] = {"allow": []}
         policy, manifest = self.install(POLICY.read_bytes())
-        with self.assertRaisesRegex(hs.SetError, "unknown top-level"):
+        with self.assertRaisesRegex(hs.SetError, "never carries allow or deny"):
             self.build(data, policy=policy, manifest=manifest)
 
     def test_a_policy_not_matching_its_manifest_refuses(self):
@@ -296,6 +305,89 @@ class Policy(_Tmp):
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(proc.stdout, "")
         self.assertIn("not declared", proc.stderr)
+
+
+class PermissionsUnion(_Tmp):
+    """harmonic-forge#1643: every lane asks before each Code Mode `REPL`
+    script. The set carries an `ask`-only `permissions`, and the Lane 3
+    policy's lists are unioned into it rather than replacing it."""
+
+    def install(self, policy: dict) -> tuple[Path, Path]:
+        content = json.dumps(policy).encode()
+        path = self.tmp / "claude-lane3.json"
+        path.write_bytes(content)
+        return path, self.write("manifest.json", {"policy_sha256": hashlib.sha256(content).hexdigest()})
+
+    # TC1
+    def test_repl_is_registered_in_the_set_and_the_project_settings(self):
+        self.assertIn("REPL", json.loads(SET_FILE.read_text(encoding="utf-8"))["permissions"]["ask"])
+        settings = ROOT / ".claude" / "settings.json"
+        perms = json.loads(settings.read_text(encoding="utf-8"))["permissions"]
+        self.assertIn("REPL", perms["ask"])
+        for ref in ("main", "origin/main"):
+            proc = subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:.claude/settings.json"],
+                                  capture_output=True, text=True)
+            if proc.returncode == 0:
+                break
+        else:
+            self.skipTest("no main ref to compare allow/deny against")
+        base = json.loads(proc.stdout)["permissions"]
+        self.assertEqual(perms["allow"], base["allow"])
+        self.assertEqual(perms["deny"], base["deny"])
+
+    # TC2
+    def test_the_set_may_carry_only_a_distinct_ask_list(self):
+        hs.validate(_set(), forge_root=ROOT)
+        for perms in ({"allow": ["Bash(*)"]}, {"deny": ["X"]}, {"ask": ["REPL"], "allow": []},
+                      {"ask": []}, {"ask": "REPL"}, {"ask": ["REPL", "REPL"]}, {"ask": [""]},
+                      {"ask": [3]}, ["REPL"], None):
+            with self.subTest(perms=perms):
+                data = {**_set(), "permissions": perms}
+                with self.assertRaisesRegex(hs.SetError, "never carries allow or deny"):
+                    hs.validate(data, forge_root=ROOT)
+
+    # TC3
+    def test_with_no_policy_the_value_carries_only_the_set_ask(self):
+        self.assertEqual(self.build(_set())["permissions"], {"ask": ["REPL"]})
+
+    def test_the_committed_policy_keeps_every_entry_and_repl(self):
+        policy, manifest = self.install(json.loads(POLICY.read_text(encoding="utf-8")))
+        value = self.build(_set(), policy=policy, manifest=manifest)["permissions"]
+        self.assertEqual(value["ask"], ["REPL"])
+        for name, entries in json.loads(POLICY.read_text(encoding="utf-8"))["permissions"].items():
+            for entry in entries:
+                self.assertIn(entry, value[name])
+
+    def test_every_policy_list_is_unioned_set_entries_first(self):
+        policy, manifest = self.install({"permissions": {"allow": ["A"], "deny": ["D"],
+                                                         "ask": ["X", "REPL"]}})
+        value = self.build(_set(), policy=policy, manifest=manifest)["permissions"]
+        self.assertEqual(value, {"ask": ["REPL", "X"], "allow": ["A"], "deny": ["D"]})
+
+    def test_a_set_without_permissions_takes_the_policy_lists(self):
+        data = _set()
+        del data["permissions"]
+        policy, manifest = self.install({"permissions": {"allow": ["A"]}})
+        self.assertEqual(self.build(data, policy=policy, manifest=manifest)["permissions"],
+                         {"allow": ["A"]})
+        self.assertNotIn("permissions", self.build(data))
+
+    def test_a_policy_permissions_not_an_object_of_lists_refuses(self):
+        for perms in (["A"], {"defaultMode": "auto"}, {"allow": "A"}, {"allow": [1]}, None):
+            with self.subTest(perms=perms):
+                policy, manifest = self.install({"permissions": perms})
+                with self.assertRaisesRegex(hs.SetError, "policy permissions is not an object of lists"):
+                    self.build(_set(), policy=policy, manifest=manifest)
+
+    def test_the_clash_check_runs_before_the_permissions_check(self):
+        for key in ("hooks", "disableAllHooks"):
+            with self.subTest(key=key):
+                policy, manifest = self.install({key: {}, "permissions": "x"})
+                with self.assertRaisesRegex(hs.SetError, "only the set may declare"):
+                    self.build(_set(), policy=policy, manifest=manifest)
+
+    def test_the_permissions_survive_the_operator_overlay(self):
+        self.assertEqual(_effective()["permissions"], {"ask": ["REPL"]})
 
 
 class Snapshot(unittest.TestCase):
