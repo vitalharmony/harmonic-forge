@@ -61,18 +61,42 @@ PLATFORM = '"$HARMONIC_FORGE_ROOT"'
 #: failing substitution there loses its status and the task then runs
 #: `/tools/...` (pitch inspection). No backslash: the l1-post body is a TOML
 #: basic string.
+#:
+#: The reader runs every time, so a set `HARMONIC_FORGE_ROOT` passes the same
+#: validation as a declared `forge_root`. Its candidate (the env value if
+#: non-empty, else the stdlib read of `forge_root`) only says where
+#: `tools/settings/instance.py` is, and only when absolute, so a relative
+#: value never imports from the cwd. That module's `resolve_forge_root` (the
+#: `launch_view` the launcher and hooks share), given the environment
+#: unchanged, decides the root: a relative env value, a tab or newline, a
+#: missing or looping path, a root with no `tools/hooks/` and an instance.toml
+#: inside a checkout all refuse here exactly as they do at launch, rather than
+#: a second copy of those checks drifting (sticky-wicket S2,
+#: harmonic-forge#1566). Any exception prints nothing, so the prelude's named
+#: refusal fires.
+#:
+#: Two residuals, both fail-closed and decided on purpose: with no env value
+#: and no `forge_root` key, `launch_view` falls back to the launcher checkout,
+#: but a generated task has no checkout of its own and refuses; and a forge
+#: checkout whose `instance.py` predates `resolve_forge_root` (version skew)
+#: refuses where the launcher would accept.
 ROOT_READER = (
-    "python3 -I -E -c 'import os, pathlib, tomllib; "
+    "python3 -I -E -c 'import os, sys, pathlib, tomllib; "
+    "c = os.environ.get(\"HARMONIC_FORGE_ROOT\", \"\"); "
     "x = os.environ.get(\"XDG_CONFIG_HOME\", \"\"); "
     "b = pathlib.Path(x) if x.startswith(\"/\") else pathlib.Path.home() / \".config\"; "
     "f = b / \"harmonic-forge\" / \"instance.toml\"; "
-    "v = tomllib.load(open(f, \"rb\")).get(\"forge_root\", \"\") if f.is_file() else \"\"; "
+    "v = \"\" if c or not f.is_file() else tomllib.load(open(f, \"rb\")).get(\"forge_root\", \"\"); "
     "ok = isinstance(v, str) and v.startswith((\"/\", \"~/\")); "
-    "print(os.path.expanduser(v) if ok else \"\")' 2>/dev/null || true")
+    "c = c or (os.path.expanduser(v) if ok else \"\"); "
+    "c.startswith(\"/\") or sys.exit(0); "
+    "sys.path.insert(0, os.path.join(c, \"tools\", \"settings\")); "
+    "print(__import__(\"instance\").resolve_forge_root(pathlib.Path(c), os.environ)[0])"
+    "' 2>/dev/null || true")
 #: `|| true` keeps a `set -e` body (gate-checkout) alive to print the refusal
 #: when the reader itself fails (an unparseable instance.toml).
 ROOT_PRELUDE = (
-    f'HARMONIC_FORGE_ROOT="${{HARMONIC_FORGE_ROOT:-$({ROOT_READER})}}"\n'
+    f'HARMONIC_FORGE_ROOT="$({ROOT_READER})"\n'
     '[ -n "$HARMONIC_FORGE_ROOT" ] || { echo "lane task: no forge root -- set '
     'HARMONIC_FORGE_ROOT or forge_root in instance.toml (#1566)" >&2; exit 1; }\n'
     'export HARMONIC_FORGE_ROOT\n')
@@ -96,17 +120,12 @@ run = """
 """
 ''',
     "lane-comment": f'''[tasks.lane-comment]
-description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml."
+description = "Post an attested lane discussion/spec/gate-result through the platform transport; omit --repo to resolve the invoking checkout through projects.toml. The script owns the flag surface (harmonic-forge#1117)."
 usage = \'\'\'
-flag "--issue <issue>" help="Issue number" required=#true
-flag "--file <file>" help="Path to the comment body" required=#true
-flag "--repo <repo>" help="Target GitHub repository; defaults from the invoking checkout via projects.toml"
-flag "--kind <kind>" help="discussion | spec | gate-result" default="discussion"
+arg "[args]" var=#true help="tools/gh/post_lane_discussion.py arguments verbatim, e.g. --issue 123 --file body.md --kind discussion"
 \'\'\'
 run = \'\'\'
-{ROOT_PRELUDE}set -- --issue "$usage_issue" --file "$usage_file" --kind "$usage_kind"
-[ -n "${{usage_repo:-}}" ] && set -- "$@" --repo "$usage_repo"
-python3 {PLATFORM}/tools/gh/post_lane_discussion.py "$@"
+{ROOT_PRELUDE}eval python3 \'{PLATFORM}\'/tools/gh/post_lane_discussion.py $usage_args
 \'\'\'
 ''',
     "gate-checkout": f'''[tasks.gate-checkout]

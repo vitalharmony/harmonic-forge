@@ -147,11 +147,18 @@ _FORGE_ROOT_REF = re.compile(
     # to `_forge_root()` (not the real, session-specific worktree path,
     # which does not exist in CI) is correct: the check's job is asserting
     # wrapper/script flag parity, not that a particular worktree exists.
-    r'|\$L1_TOOLS_FORGE'
-    # harmonic-forge#1566: lane_tasks' generated tasks resolve the root into
-    # HARMONIC_FORGE_ROOT first and invoke `"$HARMONIC_FORGE_ROOT"/tools/...`.
-    # Under `eval` the reference is single-quoted as well: `'"$HARMONIC_FORGE_ROOT"'`.
-    r"|'?\"?\$\{?HARMONIC_FORGE_ROOT\}?\"?'?)(/[\w./-]*\.py)\"?"
+    r'|\$L1_TOOLS_FORGE)(/[\w./-]*\.py)"?'
+)
+
+# harmonic-forge#1566: lane_tasks' generated tasks resolve the root into
+# HARMONIC_FORGE_ROOT first (through `instance.resolve_forge_root`: env, else
+# instance.toml `forge_root`, else a refusal; never `~/harmonic-forge`) and invoke `"$HARMONIC_FORGE_ROOT"/tools/...`.
+# Under `eval` the reference is single-quoted as well: `'"$HARMONIC_FORGE_ROOT"'`.
+# Its own token, because it resolves differently from the old spelling above,
+# whose `$HOME/harmonic-forge` default really does run in the shell
+# (sticky-wicket S3).
+_RUNTIME_ROOT_REF = re.compile(
+    r"'?\"?\$\{?HARMONIC_FORGE_ROOT\}?\"?'?(/[\w./-]*\.py)\"?"
 )
 
 
@@ -161,14 +168,34 @@ _FORGE_ROOT_REF = re.compile(
 # and silently lose the task (cross-family finding, #722). The real root is
 # swapped in only when the matched path is resolved.
 _FORGE_ROOT_TOKEN = "__HARMONIC_FORGE_ROOT__"
+_RUNTIME_ROOT_TOKEN = "__HARMONIC_FORGE_ROOT_RT__"
 
 
 def _forge_root() -> str:
     return os.environ.get("HARMONIC_FORGE_ROOT") or str(Path.home() / "harmonic-forge")
 
 
+def _runtime_forge_root() -> str:
+    """The root `_RUNTIME_ROOT_REF` names: `hook_forge_root.resolve`, the one
+    resolver (`instance.resolve_forge_root`, as the launcher and the generated
+    tasks call it), never a copy of its precedence here.
+
+    This checker is more lenient than the shell: where the generated tasks
+    refuse (no env value and no `forge_root`, or a root `launch_view` rejects),
+    `resolve` answers this file's own checkout, for the same reason as
+    `$L1_TOOLS_FORGE` above: the check asserts wrapper/script flag parity, not
+    that a particular root exists, and every forge checkout carries the same
+    `tools/gh` scripts."""
+    hooks = str(Path(__file__).resolve().parents[1] / "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import hook_forge_root  # noqa: PLC0415
+    return str(hook_forge_root.resolve(__file__))
+
+
 def _expand_forge_root(run: str) -> str:
-    return _FORGE_ROOT_REF.sub(lambda m: _FORGE_ROOT_TOKEN + m.group(1), run)
+    run = _FORGE_ROOT_REF.sub(lambda m: _FORGE_ROOT_TOKEN + m.group(1), run)
+    return _RUNTIME_ROOT_REF.sub(lambda m: _RUNTIME_ROOT_TOKEN + m.group(1), run)
 
 
 # A whole-line shell comment (optional leading whitespace, then `#`, to end
@@ -290,7 +317,11 @@ def discover_wrapper_tasks(mise_toml: Path) -> list[tuple[str, Path]]:
             continue
         matches = list(_SCRIPT_INVOCATION.finditer(_expand_forge_root(_COMMENT_LINE.sub("", run))))
         for match in reversed(matches):
-            raw = match.group(1).replace(_FORGE_ROOT_TOKEN, _forge_root(), 1)
+            raw = match.group(1)
+            if raw.startswith(_RUNTIME_ROOT_TOKEN):
+                raw = raw.replace(_RUNTIME_ROOT_TOKEN, _runtime_forge_root(), 1)
+            else:
+                raw = raw.replace(_FORGE_ROOT_TOKEN, _forge_root(), 1)
             path = Path(raw).expanduser()
             if not path.is_absolute():
                 path = (repo_root / path).resolve()
