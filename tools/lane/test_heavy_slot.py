@@ -679,5 +679,86 @@ class Priority(unittest.TestCase):
         self.assertEqual(list(tickets.glob("*.ticket")), [])
 
 
+class TicketCleanup(unittest.TestCase):
+    """harmonic-forge#1657: _admit unlinks its ticket while it still holds the flock."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name).resolve() / "state"
+        (self.state / "tickets").mkdir(parents=True)
+        priority = mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"})
+        priority.start()
+        self.addCleanup(priority.stop)
+
+    def admit(self):
+        with mock.patch.object(hs, "decide", return_value=(True, "test")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            _holder, handle = hs._admit("kill", "t", self.state, CONFIG, read=lambda: IDLE,
+                                        sleep=lambda _s: self.fail("admission waited"),
+                                        clock=lambda: 20_000.0)
+        handle.close()
+
+    def test_tc1_a_reaper_between_cleanup_steps_never_costs_a_same_name_replacement(self):
+        real_new_ticket, ns, seen = hs._new_ticket, int(20_000.0 * 1e9), {}
+
+        class Proxy:
+            """The real ticket handle; its close() reaps, then re-admits on the freed name."""
+
+            def __init__(self, handle):
+                self.handle = handle
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def close(self):
+                self.handle.close()
+                with hs._guard(seen["state"]):
+                    hs._tickets(seen["state"])
+                    path, handle = real_new_ticket(seen["state"], ns, os.getpid(), "normal")
+                hs.fcntl.flock(handle, hs.fcntl.LOCK_EX | hs.fcntl.LOCK_NB)
+                seen["replacement"], seen["replacement_handle"] = path, handle
+
+        def new_ticket(state, arrived_ns, pid, klass):
+            path, handle = real_new_ticket(state, arrived_ns, pid, klass)
+            seen["state"], seen["ticket"] = state, path
+            return path, Proxy(handle)
+
+        with mock.patch.object(hs, "_new_ticket", side_effect=new_ticket):
+            self.admit()
+        self.addCleanup(seen["replacement_handle"].close)
+        # A replacement that stepped to ns+1 survives either order; only the same name is the window.
+        self.assertEqual(seen["replacement"], seen["ticket"])
+        # exists() first: _try_flock's a+ open would recreate a missing path.
+        self.assertTrue(seen["replacement"].exists())
+        self.assertFalse(hs._try_flock(seen["replacement"]))
+
+    def test_tc1b_a_failed_unlink_still_closes_the_ticket_handle(self):
+        real_new_ticket, real_unlink, seen = hs._new_ticket, Path.unlink, {}
+
+        def new_ticket(state, arrived_ns, pid, klass):
+            path, handle = real_new_ticket(state, arrived_ns, pid, klass)
+            seen["ticket"], seen["handle"] = path, handle
+            return path, handle
+
+        def unlink(path, missing_ok=False):
+            if path.suffix == ".ticket":
+                raise PermissionError(13, "injected", str(path))
+            return real_unlink(path, missing_ok=missing_ok)
+
+        def read():  # leaves the wait before any holder lock is opened
+            raise RuntimeError("interrupted")
+
+        with mock.patch.object(hs, "_new_ticket", side_effect=new_ticket), \
+                mock.patch.object(Path, "unlink", unlink), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(PermissionError):
+            hs._admit("kill", "t", self.state, CONFIG, read=read,
+                      sleep=lambda _s: self.fail("admission waited"), clock=lambda: 20_000.0)
+        self.assertTrue(seen["handle"].closed)
+        # The leftover path holds no lock, so the next scan reaps it as dead.
+        self.assertTrue(hs._try_flock(seen["ticket"]))
+
+
 if __name__ == "__main__":
     unittest.main()
