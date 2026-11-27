@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -125,6 +126,11 @@ class Real(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # harmonic-forge#1634: one class for every waiter here, whatever repo the
+        # suite runs from, so these tests stay about arrival order.
+        pinned = mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"})
+        pinned.start()
+        self.addCleanup(pinned.stop)
         self.env = {**os.environ, "HEAVY_SLOT_DIR": self.tmp.name}
         self.env.pop("CI", None)
         self.env.pop("HEAVY_SLOT_DISABLE", None)
@@ -364,6 +370,313 @@ class Real(unittest.TestCase):
         out = self._run("status")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("MemAvailable", out.stdout)
+
+
+import heavy_slot_rank as rank  # noqa: E402
+
+
+def _git(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+class Priority(unittest.TestCase):
+    """harmonic-forge#1634: waiters rank by repo class, then arrival, with aging."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        cleared = mock.patch.dict(os.environ, {})
+        cleared.start()
+        self.addCleanup(cleared.stop)
+        for name in ("HEAVY_SLOT_PRIORITY", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+            os.environ.pop(name, None)
+        self.state = self.root / "state"
+        (self.state / "tickets").mkdir(parents=True)
+        # A stand-in forge checkout with one worktree, and another repo.
+        self.forge = self.root / "forge"
+        self.forge.mkdir()
+        _git("init", "-q", cwd=self.forge)
+        _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c",
+             cwd=self.forge)
+        self.forge_wt = self.root / "forge-wt"
+        _git("worktree", "add", "-q", "-b", "wt", str(self.forge_wt), cwd=self.forge)
+        self.other = self.root / "client"
+        self.other.mkdir()
+        _git("init", "-q", cwd=self.other)
+        self.plain = self.root / "plain"
+        self.plain.mkdir()
+
+    def klass(self, cwd, env=None):
+        return rank.priority_class(cwd, env if env is not None else dict(os.environ),
+                                   forge_checkout=self.forge)
+
+    def ticket(self, arrived, pid, klass=None):
+        """A held ticket named as `_admit` names one; no class is the old format."""
+        name = f"{int(arrived * 1e9):020d}-{pid}" + (f"-{klass}" if klass else "") + ".ticket"
+        path = self.state / "tickets" / name
+        handle = open(path, "a+")
+        self.addCleanup(handle.close)
+        hs.fcntl.flock(handle, hs.fcntl.LOCK_EX)
+        return path
+
+    def test_tc1_class_comes_from_the_repo(self):
+        self.assertEqual(self.klass(self.forge), "normal")
+        self.assertEqual(self.klass(self.forge_wt), "normal")
+        self.assertEqual(self.klass(self.other), "high")
+        self.assertEqual(self.klass(self.plain), "high")
+        self.assertEqual(self.klass(self.root / "missing"), "high")
+        for value, cwd in (("high", self.forge), ("normal", self.other)):
+            with self.subTest(override=value):
+                self.assertEqual(self.klass(cwd, {**os.environ, "HEAVY_SLOT_PRIORITY": value}), value)
+        self.assertEqual(self.klass(self.other, {**os.environ, "HEAVY_SLOT_PRIORITY": "urgent"}), "high")
+
+    def test_tc1_a_git_dir_in_the_environment_does_not_merge_repos(self):
+        env = {**os.environ, "GIT_DIR": str(self.other / ".git")}
+        self.assertEqual(self.klass(self.forge, env), "normal")
+        self.assertEqual(self.klass(self.other, env), "high")
+
+    def test_tc1_this_checkout_is_normal_with_the_real_resolver(self):
+        here = Path(__file__).resolve().parents[2]
+        if rank._common_dir(here, dict(os.environ)) is None:
+            # A sandbox that hides the worktree's git dir (it sits under $HOME)
+            # cannot resolve this checkout at all; the fixture-forge tests above
+            # cover the resolver there.
+            self.skipTest("this checkout's git common dir is not reachable here")
+        self.assertEqual(rank.priority_class(here, dict(os.environ)), "normal")
+
+    def test_tc1_a_ceiling_inside_the_forge_does_not_rank_it_high(self):
+        sub = self.forge / "sub"
+        sub.mkdir()
+        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(self.forge)}
+        self.assertEqual(self.klass(sub, env), "normal")
+
+    def test_tc1_an_undecodable_git_answer_is_high_not_an_escape(self):
+        answers = iter([subprocess.CompletedProcess([], 0, b"/caf\xe9/.git\n", b""),
+                        subprocess.CompletedProcess([], 0, b"/srv/forge/.git\n", b"")])
+        with mock.patch.object(rank.subprocess, "run", side_effect=lambda *a, **k: next(answers)):
+            self.assertEqual(rank.priority_class(self.other, dict(os.environ),
+                                                 forge_checkout=self.forge), "high")
+        with mock.patch.object(rank, "_common_dir", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.klass(self.other), "high")
+
+    def test_tc7_the_holder_and_the_waiting_note_carry_the_class(self):
+        loaded, now = hs.Reading(8, 30.0, 20.0, 90.0, 0.0), [10_000.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+            if now[0] > 10_000.0 + 120:
+                raise TimeoutError
+
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "high"}), \
+                contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(TimeoutError):
+            hs._admit("kill", "noted", self.state, CONFIG, read=lambda: loaded,
+                      sleep=sleep, clock=lambda: now[0])
+        self.assertIn("[high]", err.getvalue())
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "high"}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            holder, handle = hs._admit("kill", "held", self.state, CONFIG, read=lambda: IDLE,
+                                       sleep=lambda _s: None, clock=lambda: 20_000.0)
+        self.addCleanup(handle.close)
+        self.assertEqual(holder["class"], "high")
+        env = {**os.environ, "HEAVY_SLOT_DIR": str(self.state)}
+        out = subprocess.run([sys.executable, str(TOOL), "status"], env=env, text=True,
+                             capture_output=True, timeout=60)
+        self.assertRegex(out.stdout, r"run high \S+ kill held")
+
+    def test_tc2_a_later_high_ticket_is_the_head(self):
+        early = self.ticket(1000.0, 1, "normal")
+        late = self.ticket(1100.0, 2, "high")
+        self.assertEqual(hs._queue(self.state, 1200.0, CONFIG), [late, early])
+
+    def test_tc3_arrival_order_within_a_class(self):
+        for klass in ("high", "normal"):
+            with self.subTest(klass=klass):
+                for path in (self.state / "tickets").glob("*"):
+                    path.unlink()
+                a = self.ticket(1000.0, 1, klass)
+                b = self.ticket(1050.0, 2, klass)
+                self.assertEqual(hs._queue(self.state, 1100.0, CONFIG), [a, b])
+
+    def test_tc4_an_aged_normal_ticket_ranks_ahead_of_a_newer_high_one(self):
+        aging = CONFIG["limits"]["aging_seconds"]
+        self.assertEqual(aging, 1200)
+        early = self.ticket(1000.0, 1, "normal")
+        late = self.ticket(1500.0, 2, "high")
+        self.assertEqual(hs._queue(self.state, 1000.0 + aging - 1, CONFIG), [late, early])
+        self.assertEqual(hs._queue(self.state, 1000.0 + aging + 1, CONFIG), [early, late])
+
+    def test_tc5_a_high_head_below_the_memory_floor_is_not_admitted(self):
+        starved = hs.Reading(8, 0.5, 1.0, 1.0, 0.0)
+        self.assertFalse(hs.decide((2, 4), starved, [], 10_000.0, CONFIG, 10_000.0)[0])
+
+    def test_tc6_an_old_format_ticket_is_normal_and_a_dead_one_is_removed(self):
+        old = self.ticket(1.0, 1)
+        self.assertEqual(old.name, "00000000001000000000-1.ticket")
+        self.assertEqual(rank.parse_ticket(old.name)[0], "normal")
+        dead = self.state / "tickets" / "00000000003000000000-3-high.ticket"
+        dead.touch()  # nobody holds its flock
+        self.assertEqual(hs._queue(self.state, 4.0, CONFIG), [old])
+        self.assertFalse(dead.exists())
+
+    def test_tc7_status_shows_class_and_age(self):
+        self.ticket(time.time() - 30, 1, "normal")
+        env = {**os.environ, "HEAVY_SLOT_DIR": str(self.state)}
+        out = subprocess.run([sys.executable, str(TOOL), "status"], env=env, text=True,
+                             capture_output=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertRegex(out.stdout, r"wait normal/normal 3\ds")
+
+    def test_tc8_the_overdue_start_goes_to_the_ranked_head_only(self):
+        """Both waiters are past max_wait_seconds; only the ranked head starts."""
+        loaded = hs.Reading(8, 30.0, 20.0, 90.0, 0.0)
+        # A high ticket named at a later injected-clock value than ours: arrival
+        # (name) order would start ours, the ranked queue never does.
+        self.ticket(10_000.5, 1, "high")
+        now = [10_000.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+            # Past the overdue bound, short of aging: ours stays normal throughout.
+            if now[0] > 10_000.0 + (CONFIG["limits"]["max_wait_seconds"]
+                                    + CONFIG["limits"]["aging_seconds"]) / 2:
+                raise TimeoutError
+
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"}), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(TimeoutError):
+            hs._admit("kill", "late-normal", self.state, CONFIG, read=lambda: loaded,
+                      sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(list((self.state / "holders").glob("*.json")), [])
+
+    # The sticky-wicket patch (harmonic-forge#1634): the name is the only carrier.
+
+    def test_k1_old_and_new_readers_agree_on_the_head(self):
+        """An earlier new-format normal ticket and a later old-format one: the
+        ranked head is the name-order head that old code also picks."""
+        new = self.ticket(1000.0, 7, "normal")
+        old = self.ticket(1001.0, 2)
+        names = sorted(p.name for p in (self.state / "tickets").glob("*.ticket"))
+        self.assertEqual(hs._queue(self.state, 1002.0, CONFIG)[0], new)
+        self.assertEqual(new.name, names[0])
+        self.assertEqual(hs._queue(self.state, 1002.0, CONFIG), [new, old])
+
+    def test_k1_all_normal_tickets_rank_in_name_order(self):
+        import random
+        rng, aging = random.Random(1634), CONFIG["limits"]["aging_seconds"]
+        for trial in range(40):
+            with self.subTest(trial=trial):
+                for path in (self.state / "tickets").glob("*"):
+                    path.unlink()
+                for _ in range(rng.randint(1, 8)):
+                    arrived = round(rng.uniform(1000.0, 1000.0 + 2 * aging), 3)
+                    self.ticket(arrived, rng.randint(1, 99_999), rng.choice(["normal", None]))
+                now = rng.uniform(1000.0, 1000.0 + 3 * aging)
+                queue = hs._queue(self.state, now, CONFIG)
+                self.assertEqual([p.name for p in queue], sorted(p.name for p in queue))
+
+    def test_k2_a_waiting_ticket_is_named_from_the_clock_and_has_no_body(self):
+        loaded, now, seen = hs.Reading(8, 30.0, 20.0, 90.0, 0.0), [10_000.0], []
+
+        def sleep(_seconds):
+            seen.extend((p.name, p.stat().st_size) for p in (self.state / "tickets").glob("*.ticket"))
+            raise TimeoutError
+
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "high"}), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(TimeoutError):
+            hs._admit("kill", "waiting", self.state, CONFIG, read=lambda: loaded,
+                      sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(seen, [(f"{int(10_000.0 * 1e9):020d}-{os.getpid()}-high.ticket", 0)])
+
+    def test_k3_parse_ticket_is_total(self):
+        cases = {
+            "x-1-high.ticket": ("high", None),
+            "1-1-urgent.ticket": ("normal", 1e-9),
+            "9" * 40 + "-1.ticket": ("normal", int("9" * 40) / 1e9),
+            "9" * 400 + "-1-normal.ticket": ("normal", None),
+            "9" * 5000 + "-1.ticket": ("normal", None),
+            "00000000000000000001-1.ticket": ("normal", 1e-9),
+            "00000000000000000001-1-high.ticket": ("high", 1e-9),
+            "garbage": ("normal", None),
+            "": ("normal", None),
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name[:30]):
+                self.assertEqual(rank.parse_ticket(name), expected)
+        self.assertEqual(rank.effective_class("normal", None, 1e12, 0), "normal")
+
+    def test_k4_a_failing_ranking_falls_back_to_name_order(self):
+        later_high = self.ticket(20_000.5, 1, "high")  # later in name order than ours
+        with mock.patch.object(rank, "rank_key", side_effect=RuntimeError("boom")):
+            self.assertEqual(hs._queue(self.state, 20_001.0, CONFIG), [later_high])
+            with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"}), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                holder, handle = hs._admit("kill", "head", self.state, CONFIG, read=lambda: IDLE,
+                                           sleep=lambda _s: self.fail("the name-order head waited"),
+                                           clock=lambda: 20_000.0)
+            handle.close()
+            # slot() names its ticket from the real clock, after every fixture;
+            # with nothing else queued it is the name-order head.
+            later_high.unlink()
+            for path in (self.state / "holders").glob("*"):
+                path.unlink()
+            env = {"HEAVY_SLOT_DIR": str(self.state), "HEAVY_SLOT_PRIORITY": "normal"}
+            with mock.patch.dict(os.environ, env), mock.patch.object(hs, "decide", return_value=(True, "test")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                os.environ.pop("CI", None)
+                os.environ.pop("HEAVY_SLOT_DISABLE", None)
+                with hs.slot("kill", "managed"):
+                    pass
+        self.assertEqual(holder["label"], "head")
+        self.assertNotIn("unmanaged", err.getvalue())
+        self.assertIn("admitted kill managed", err.getvalue())
+
+    def test_k5_aging_seconds_accepts_only_a_finite_non_negative_number(self):
+        for value in ("x", float("nan"), float("inf"), -1, True, None, [1]):
+            with self.subTest(value=value):
+                self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": value}}), 1200)
+        self.assertEqual(rank.aging_seconds({"limits": {}}), 1200)
+        self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": 0}}), 0)
+        self.assertEqual(rank.aging_seconds({"limits": {"aging_seconds": 30.5}}), 30.5)
+
+    def test_d56_two_admissions_in_one_process_at_one_clock_reading_are_both_managed(self):
+        """The same pid, class and nanosecond must not share a ticket: the second
+        admission's lock would fail and its command would run unmanaged."""
+        go, results, tickets = threading.Event(), {}, self.state / "tickets"
+
+        def admit(label):
+            try:
+                results[label] = hs._admit("kill", label, self.state, CONFIG, read=lambda: IDLE,
+                                           sleep=lambda _s: time.sleep(0.01), clock=lambda: 20_000.0)
+            except Exception as exc:  # noqa: BLE001 -- recorded and asserted on below
+                results[label] = exc
+
+        def wait_for(count):
+            deadline = time.monotonic() + 10
+            while len(list(tickets.glob("*.ticket"))) < count and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return sorted(p.name for p in tickets.glob("*.ticket"))
+
+        threads = [threading.Thread(target=admit, args=(label,), daemon=True) for label in ("first", "second")]
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "normal"}), \
+                mock.patch.object(hs, "decide", side_effect=lambda *_a: (go.is_set(), "test")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            threads[0].start()
+            wait_for(1)
+            threads[1].start()
+            names = wait_for(2)
+            go.set()
+            for thread in threads:
+                thread.join(timeout=10)
+        ns = int(20_000.0 * 1e9)
+        self.assertEqual(names, [f"{ns:020d}-{os.getpid()}-normal.ticket",
+                                 f"{ns + 1:020d}-{os.getpid()}-normal.ticket"])
+        for label in ("first", "second"):
+            with self.subTest(label=label):
+                self.assertIsInstance(results.get(label), tuple, results.get(label))
+                holder, handle = results[label]
+                handle.close()
+                self.assertEqual(holder["label"], label)
+        self.assertEqual(list(tickets.glob("*.ticket")), [])
 
 
 if __name__ == "__main__":

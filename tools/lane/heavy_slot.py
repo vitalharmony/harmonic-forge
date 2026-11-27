@@ -21,10 +21,12 @@ these hold, re-read every 10 s:
 a job's start. Nothing else is subtracted: a reading already shows what an older job
 uses.
 
-Waiting is first come, first served, and bounded: past 10 minutes the head of the
-queue is admitted on memory alone, unless another live job was admitted within the
-last 10 minutes, so overdue jobs start one at a time. **The memory floor is never
-bypassed.**
+Waiting is ranked, then bounded. The head of the queue is the highest class, first
+come within a class: a job taken outside the forge's own repo is `high`, a forge job
+`normal`, and a `normal` one ages to `high` after `aging_seconds`
+(`heavy_slot_rank.py`, harmonic-forge#1634). Past 10 minutes the head is admitted on
+memory alone, unless another live job was admitted within the last 10 minutes, so
+overdue jobs start one at a time. **The memory floor is never bypassed.**
 
 ## Ownership
 
@@ -55,6 +57,9 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import heavy_slot_rank as rank  # noqa: E402  (harmonic-forge#1634)
 
 CONFIG = Path(__file__).with_name("heavy_slot.toml")
 
@@ -212,6 +217,18 @@ def _tickets(state: Path) -> list[Path]:
     return live
 
 
+def _queue(state: Path, now: float, config: dict) -> list[Path]:
+    """Live tickets in start order: highest effective class, then name (arrival).
+    Ranking can only reorder: if it fails, the order is `_tickets`' name order,
+    origin/main's first come, first served."""
+    live = _tickets(state)
+    try:
+        aging = rank.aging_seconds(config)
+        return sorted(live, key=lambda p: rank.rank_key(p, now, aging))
+    except Exception:  # noqa: BLE001 -- a ranking failure is main's order, never an escape to slot()'s unmanaged path
+        return live
+
+
 @contextlib.contextmanager
 def _guard(state: Path) -> Iterator[None]:
     """One admission decision at a time, machine-wide."""
@@ -223,16 +240,41 @@ def _guard(state: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+TICKET_TRIES = 1000
+
+
+def _new_ticket(state: Path, arrived_ns: int, pid: int, klass: str) -> tuple[Path, object]:
+    """Create a ticket no other admission holds, and open it.
+
+    Two admissions in one process can read clocks that round to the same
+    nanosecond, and then share a name: the second's lock fails and it runs
+    unmanaged. The file is created exclusively; a taken name moves one
+    nanosecond later, so the 20-digit prefix stays the one ordering key."""
+    for offset in range(TICKET_TRIES):
+        path = state / "tickets" / f"{arrived_ns + offset:020d}-{pid}-{klass}.ticket"
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
+        except FileExistsError:
+            continue
+        return path, os.fdopen(fd, "a+")
+    raise FileExistsError(f"no free ticket name in {TICKET_TRIES} tries from {arrived_ns}-{pid}")
+
+
 def _admit(kind: str, label: str, state: Path, config: dict,
            read=read_system, sleep=time.sleep, clock=time.time) -> tuple[dict, object]:
     """Wait for capacity, then record a holder. Its lock handle is returned open."""
     own_pid = os.getpid()
-    ticket = state / "tickets" / f"{time.time_ns():020d}-{own_pid}.ticket"
-    ticket.parent.mkdir(parents=True, exist_ok=True)
-    with _guard(state):
-        ticket_handle = open(ticket, "a+")
-        fcntl.flock(ticket_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    _chosen, invalid = rank.override()
+    if invalid:
+        _log(f"ignoring {rank.ENV}={invalid!r}: not one of {sorted(rank.PRIORITY_RANK)}")
+    klass = rank.priority_class()  # before the guard: it runs git
     started, last_note = clock(), 0.0
+    # The name is the ticket's only data: arrival from the one clock reading, then
+    # the class. It has no body (harmonic-forge#1634).
+    (state / "tickets").mkdir(parents=True, exist_ok=True)
+    with _guard(state):
+        ticket, ticket_handle = _new_ticket(state, int(started * 1e9), own_pid, klass)
+        fcntl.flock(ticket_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         while True:
             reading = read()
@@ -240,13 +282,13 @@ def _admit(kind: str, label: str, state: Path, config: dict,
             with _guard(state):
                 now = clock()
                 holders = live_holders(state)
-                head = next(iter(_tickets(state)), ticket) == ticket
+                head = next(iter(_queue(state, now, config)), ticket) == ticket
                 ok, numbers = decide(need, reading, holders, now, config, now - started)
                 if head and ok:
                     holder_id = uuid.uuid4().hex
                     holder = {"id": holder_id, "pid": own_pid, "kind": kind, "label": label,
                               "lane": os.environ.get("LANE", ""), "cores": need[0], "gb": need[1],
-                              "admitted_at": now}
+                              "admitted_at": now, "class": klass}
                     directory = state / "holders"
                     handle = open(directory / f"{holder_id}.lock", "a+")
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -257,7 +299,7 @@ def _admit(kind: str, label: str, state: Path, config: dict,
                     return holder, handle
             if now - last_note >= config["limits"]["note_seconds"]:
                 who = ", ".join(f"{h['lane'] or '?'} {h['kind']} {h['label']}" for h in holders) or "load"
-                _log(f"waiting on {who} for {int(now - started)}s ({numbers})")
+                _log(f"waiting on {who} for {int(now - started)}s [{klass}] ({numbers})")
                 last_note = now
             sleep(config["limits"]["poll_seconds"])
     finally:
@@ -322,16 +364,21 @@ def cmd_status(_args) -> int:
     config, state, now = load_config(), _state_dir(), time.time()
     state.mkdir(parents=True, exist_ok=True)
     reading = read_system()
+    aging = rank.aging_seconds(config)
     with _guard(state):
         holders = live_holders(state)
-        queued = len(_tickets(state))
+        waiting = [rank.parse_ticket(path.name) for path in _queue(state, now, config)]
     cores, gb = free_capacity(reading, holders, now, config)
     print(f"load {reading.load1:.1f}/{reading.nproc}; MemAvailable {reading.mem_gb:.1f} GB; "
           f"cpu avg10 {reading.cpu_avg10}; mem avg10 {reading.mem_avg10}; free {cores:.1f} cores {gb:.1f} GB")
     for holder in holders:
-        print(f"  run {holder['lane'] or '?'} {holder['kind']} {holder['label']} "
+        print(f"  run {holder.get('class', '?')} {holder['lane'] or '?'} {holder['kind']} {holder['label']} "
               f"for {int(now - holder['admitted_at'])}s ({holder['cores']:g} cores {holder['gb']:g} GB)")
-    print(f"  queued: {queued}")
+    for klass, arrived in waiting:
+        effective = rank.effective_class(klass, arrived, now, aging)
+        age = "?" if arrived is None else int(now - arrived)
+        print(f"  wait {klass}/{effective} {age}s")
+    print(f"  queued: {len(waiting)}")
     return 0
 
 

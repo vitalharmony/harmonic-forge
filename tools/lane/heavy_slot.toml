@@ -5,6 +5,7 @@
 [limits]
 recent_seconds = 120          # load lags a job's start by about this long
 max_wait_seconds = 600        # the head of the queue starts after this, memory permitting
+aging_seconds = 1200          # a forge (`normal`) waiter ranks `high` after this (harmonic-forge#1634, operator D32)
 cpu_avg10 = 60.0              # PSI `some avg10` at or above this holds a job back
 mem_avg10 = 10.0
 poll_seconds = 10
