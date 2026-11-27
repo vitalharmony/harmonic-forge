@@ -1388,14 +1388,19 @@ def validate_ae_external_calls(ae_body: str, swept: frozenset[str] | None) -> No
         validate_external_calls_match(authorized, swept)
 
 
-def _newest_on_sha(repo: str, issue: int, sha: str, kind: str) -> str | None:
-    """The body of the newest `kind=` comment on `sha`, or None."""
+def _newest_in(comments: list[dict], sha: str, kind: str) -> str | None:
+    """The body of the newest `kind=` comment on `sha` in `comments`, or None."""
     import check_lane3_ready  # noqa: PLC0415
-    comments = check_lane3_ready.fetch_comments(repo, issue)
     found = [c for c in comments if (m := check_lane3_ready.FOOTER_KIND.search(c.get("body", "")))
              and m.group(1).lower() == kind
              and check_lane3_ready.same_sha(check_lane3_ready.footer_sha(c), sha)]
     return max(found, key=lambda c: c["id"]).get("body", "") if found else None
+
+
+def _newest_on_sha(repo: str, issue: int, sha: str, kind: str) -> str | None:
+    """The body of the newest `kind=` comment on `sha`, or None."""
+    import check_lane3_ready  # noqa: PLC0415
+    return _newest_in(check_lane3_ready.fetch_comments(repo, issue), sha, kind)
 
 
 def _latest_sweep_calls(repo: str, issue: int, sha: str, spec_comment: int | None) -> frozenset[str] | None:
@@ -1434,6 +1439,32 @@ def validate_sweep_against_posted_ae(repo: str, issue: int, sha: str, sweep_body
         fail(f"no AE is posted on {sha[:12]} -- the AE goes first and its `{AE_CALLS_LABEL}:` "
              "field must equal this sweep's external calls (R-0208, harmonic-forge#1115)")
     validate_external_calls_match(ae_external_calls(ae_body), swept)
+
+
+def validate_prod_run_sweep_tier(sweep_body: str) -> None:
+    """harmonic-forge#1640 (R-0377): a production run's sweep is at `Write
+    tier: P`. The runner reads the sweep's tier only after the operator's grant
+    is spent, so a non-P sweep is refused here, before it posts. Necessary,
+    never sufficient: the AE's declaration and the grant stay the authority."""
+    tier = parse_write_tier(sweep_body)
+    if tier != "P":
+        fail("a production run (--prod-run) needs its sweep at `Write tier: P`; this sweep "
+             f"declares tier {tier or 'undeclared'} -- post the AE and sweep at `Write tier: P` "
+             "(R-0377, harmonic-forge#1640)")
+
+
+def validate_sweep_after_prod_run_ae(comments: list[dict], sha: str, sweep_body: str) -> None:
+    """harmonic-forge#1640, the `--kind sweep` side: tier P is required when
+    the newest AE on this SHA, or the newest AE anywhere on the thread (the
+    runner's own read, `check_lane3_ready.latest_by_kind`; operator ruling D57),
+    carries any `prod-run=` footer field. `raw_field`, not `declared`: a
+    malformed declaration still requires P (fails closed)."""
+    import check_lane3_ready  # noqa: PLC0415
+    newest = check_lane3_ready.latest_by_kind(comments, "ae")
+    for ae in (_newest_in(comments, sha, "ae"), newest.get("body", "") if newest else None):
+        if ae is not None and _prod_run.raw_field(ae) is not None:
+            validate_prod_run_sweep_tier(sweep_body)
+            return
 
 
 #: harmonic-forge#1179: the `**AE by name:**` grammar lives in one module,
@@ -4115,6 +4146,8 @@ def main() -> None:
             lambda: validate_lead("ae", ae_body),
             lambda: validate_lead("sweep", sweep_body),
             lambda: validate_sweep(sweep_body, spec_once(), repo, args.issue),
+            # harmonic-forge#1640: a production run's sweep is Tier P, refused before either posts.
+            *([lambda: validate_prod_run_sweep_tier(sweep_body)] if prod_run else []),
             lambda: validate_lane3_env(sweep_body, spec_once(), repo, sha),  # harmonic-forge#1218/#1380
             lambda: validate_ae_by_name(spec_once(), ae_body, sweep_body),  # harmonic-forge#1179
             lambda: validate_ae_external_calls(  # F1115 AC9: live cases only
@@ -4223,10 +4256,15 @@ def main() -> None:
         # harmonic-forge#1115 AC9: its live cases' calls equal the newest AE's field on this SHA.
         steps.append(lambda: validate_sweep_against_posted_ae(
             repo, args.issue, sha, body, spec_live_ids(spec_once()), spec_is_tier_p(spec_once())))
+        # harmonic-forge#1640: one thread read shared by the by-name step and
+        # the production-run tier step, so the sweep adds no comments GET.
+        import check_lane3_ready  # noqa: PLC0415
+        comments_once = _once(lambda: check_lane3_ready.fetch_comments(repo, args.issue))
         # harmonic-forge#1179: the sweep always has the spec, so a first AE
         # posted without --spec-comment cannot skip the by-name check here.
         steps.append(lambda: validate_ae_by_name(
-            spec_once(), _newest_on_sha(repo, args.issue, sha, "ae") or "", body))
+            spec_once(), _newest_in(comments_once(), sha, "ae") or "", body))
+        steps.append(lambda: validate_sweep_after_prod_run_ae(comments_once(), sha, body))
     # harmonic-forge#1494: a standalone AE has the spec only with --spec-comment.
     ae_spec_once = _once(lambda: _spec_body(repo, args.spec_comment, args.issue) if args.spec_comment else None)
     merged_readonly_once = _once(lambda: args.kind == "ae" and merged_readonly_ae(

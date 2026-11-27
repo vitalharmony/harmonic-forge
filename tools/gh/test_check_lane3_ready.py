@@ -811,6 +811,48 @@ class RequireProdRunTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run_main(self._thread(self.SCRIPT_A), ["--require-prod-run", "script=scripts/x.py"])
 
+    # harmonic-forge#1640 TC3 (AC3): --require-prod-run implies tier P.
+    def test_require_prod_run_alone_refuses_a_tier_r_sweep(self):
+        err = self._refused(self._thread("count-label=Interpretation", sweep_tier="R"),
+                            "count-label=Interpretation")
+        self.assertIn("declares tier R, but tier P is required", err)
+
+    def test_require_prod_run_alone_passes_a_tier_p_thread_with_the_same_json(self):
+        thread = self._thread("count-label=Interpretation")
+        alone = self._run_main(thread, ["--require-prod-run", "count-label=Interpretation", "--json"])
+        explicit = self._run_main(thread, ["--require-tier", "P", "--require-prod-run",
+                                           "count-label=Interpretation", "--json"])
+        self.assertEqual(json.loads(alone), json.loads(explicit))
+        self.assertEqual(json.loads(alone)["tier"], "P")
+
+    def _usage_refused(self, argv: list[str]) -> str:
+        import contextlib
+        import io
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err), \
+                mock.patch.object(c, "fetch_comments", side_effect=AssertionError("no read")):
+            c.main(["--issue", "1867", *argv])
+        return err.getvalue()
+
+    def test_require_tier_r_or_w_with_require_prod_run_is_a_usage_error(self):
+        for tier in ("R", "W"):
+            with self.subTest(tier=tier):
+                err = self._usage_refused(["--require-tier", tier, "--require-prod-run",
+                                           "count-label=Interpretation", "--json"])
+                self.assertIn(f"--require-prod-run requires tier P; --require-tier {tier} "
+                              "cannot authorize a production run", err)
+                self.assertNotIn("but tier", err)
+
+    def test_the_usage_error_leaves_a_live_marker_in_place(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "LANE3_ACTIVE"
+            marker.touch()
+            with mock.patch.object(c, "_marker", return_value=marker):
+                self._usage_refused(["--require-tier", "R", "--require-prod-run",
+                                     "count-label=Interpretation", "--mark-active"])
+            self.assertTrue(marker.exists(), "a usage error must not clear a live LANE3_ACTIVE marker")
+
 
 class L1PostDigestRoundTripTests(unittest.TestCase):
     """Regression guard for the l1_post.py fix Lane 1 required

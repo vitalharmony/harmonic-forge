@@ -100,6 +100,8 @@ SPEC_BODY = ("## Lane 3 Test Spec — F1\n\n### Test Cases\n1. Does the thing.\n
 SWEEP_BODY = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases "
               "executable as written.\n**Blockers:** none.\n**Next:** Lane 3 "
               "executes.\n\nWrite tier: R\n\n1. TC1 -- ready\n2. TC2 -- ready")
+# harmonic-forge#1640: a production run's sweep is Tier P; SWEEP_BODY stays Tier R.
+SWEEP_BODY_P = SWEEP_BODY.replace("Write tier: R", "Write tier: P")
 MALFORMED_SWEEP_BODY = ("## Gate-readiness sweep — F1\n\n**Readiness:** one "
                         "case.\n**Blockers:** none.\n**Next:** go.\n\n"
                         "Write tier: R\n\n1. only one case listed")
@@ -457,6 +459,8 @@ LIVE_SWEEP = ("## Gate-readiness sweep — F1\n\n**Readiness:** both cases execu
               "- TC1: ready, live UI run.\n"
               "  External calls: llm:anthropic; paid-api:tavily\n"
               "- TC2: ready, offline fixtures\n")
+# harmonic-forge#1640: LIVE_SWEEP at Tier P, for a production run; LIVE_SWEEP stays Tier W.
+LIVE_SWEEP_P = LIVE_SWEEP.replace("Write tier: W", "Write tier: P")
 TIER_P_SPEC = ("## Lane 3 Test Spec — F1\n\nWrite tier: P\n\n### Cases\n"
                "| P1 | ac | x | y | z |\n| P2 | live | x | y | z |\n\n"
                "<!-- l1-post v1; kind=spec; posted-by=LANE3; classes=P1:ac,P2:live -->")
@@ -777,7 +781,7 @@ class ProdRunFooterTests(MainIntegrationTests):
 
     def _post(self, *extra: str) -> None:
         self.ae_file.write_text(AE_BODY)
-        self.sweep_file.write_text(SWEEP_BODY)
+        self.sweep_file.write_text(SWEEP_BODY_P)  # harmonic-forge#1640
         with patch.object(post, "run", side_effect=_fake_run), \
              patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
              patch.object(post, "write_receipt"), \
@@ -843,7 +847,7 @@ class ProdRunFooterTests(MainIntegrationTests):
             seen.append(list(args[:2]))
             return _fake_run(*args, **kwargs)
         self.ae_file.write_text(AE_BODY)
-        self.sweep_file.write_text(SWEEP_BODY)
+        self.sweep_file.write_text(SWEEP_BODY_P)  # harmonic-forge#1640
         with patch.object(post, "run", side_effect=run_spy), \
                 patch.object(post, "comment_body", side_effect=self._fake_comment_body), \
                 patch.object(post, "write_receipt"), \
@@ -957,13 +961,130 @@ class AeByNameThroughMain(ExternalCallsThroughMain):
 
     def test_an_ae_and_sweep_prod_run_after_a_sweep_posts(self) -> None:
         self._on_thread(LIVE_SWEEP, "sweep")
-        self._run(_flag(self.ae), LIVE_SWEEP, extra=["--prod-run", "count-label=Interpretation"])
+        self._run(_flag(self.ae), LIVE_SWEEP_P,  # harmonic-forge#1640
+                  extra=["--prod-run", "count-label=Interpretation"])
         self.assertEqual(len(self.posted), 2)
 
     # Survivor 5: the dry run applies the same by-name check.
     def test_the_dry_run_applies_the_by_name_check(self) -> None:
         self._refused(lambda: self._run(self.ae, LIVE_SWEEP, extra=["--dry-run"]), "AE by name")
 
+
+OTHER_SHA = "b" * 40
+LIVE_SWEEP_R = LIVE_SWEEP.replace("Write tier: W", "Write tier: R")
+PROD_FIX = "post the AE and sweep at `Write tier: P`"
+
+
+class ProdRunSweepTierTests(ExternalCallsThroughMain):
+    """harmonic-forge#1640 (R-0377): a production run's sweep is at `Write
+    tier: P`, refused at l1-post before anything posts, on both sweep paths.
+    Every case drives main() over a fake comment thread."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ae = _ae("llm:anthropic; paid-api:tavily")
+
+    def _prod_ae_on_thread(self, field: str, sha: str = FAKE_SHA) -> None:
+        """An AE whose own trailing l1-post footer carries `prod-run=<field>`."""
+        self.thread.append({"id": len(self.thread) + 1, "body": self.ae + (
+            f"\n<!-- l1-post v1; kind=ae; sha={sha}; prod-run={field} -->")})
+
+    # TC1 (AC1): ae-and-sweep --prod-run.
+    def test_tc1_a_prod_run_pair_with_a_tier_r_or_w_sweep_posts_nothing(self) -> None:
+        for sweep, tier in ((LIVE_SWEEP_R, "R"), (LIVE_SWEEP, "W")):
+            for extra in ([], ["--dry-run"]):
+                with self.subTest(tier=tier, dry_run=bool(extra)):
+                    self._refused(lambda: self._run(self.ae, sweep, extra=[
+                        "--prod-run", "script=scripts/1-1891-backfill.py", *extra]),
+                        PROD_FIX, f"declares tier {tier}", "harmonic-forge#1640")
+                    self.assertEqual(self.posted, [])
+
+    def test_tc1_a_prod_run_pair_with_a_tier_p_sweep_posts(self) -> None:
+        self._run(self.ae, LIVE_SWEEP_P, extra=["--prod-run", "script=scripts/1-1891-backfill.py"])
+        self.assertEqual(len(self.posted), 2)
+
+    def test_tc1_a_pair_without_prod_run_keeps_its_tier(self) -> None:
+        self._run(self.ae, LIVE_SWEEP_R)
+        self.assertEqual(len(self.posted), 2)
+
+    # TC2 (AC2): --kind sweep after a prod-run AE.
+    def test_tc2_a_tier_r_sweep_after_a_prod_run_ae_on_its_sha_is_refused(self) -> None:
+        self._prod_ae_on_thread(f"issue:1,sha:{FAKE_SHA},count-label:Interpretation")
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP_R), PROD_FIX, "declares tier R")
+
+    def test_tc2_a_tier_p_sweep_after_a_prod_run_ae_posts(self) -> None:
+        self._prod_ae_on_thread(f"issue:1,sha:{FAKE_SHA},count-label:Interpretation")
+        self._standalone("sweep", LIVE_SWEEP_P)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_tc2_a_malformed_prod_run_field_still_requires_tier_p(self) -> None:
+        import _prod_run
+        field = "issue:1,sha:nope,count-label:Interpretation"
+        self._prod_ae_on_thread(field)
+        self.assertIsNone(_prod_run.declared(self.thread[-1]["body"]))
+        self.assertIsNotNone(_prod_run.raw_field(self.thread[-1]["body"]))
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP_R), PROD_FIX)
+
+    def test_tc2_a_tier_r_sweep_after_an_ae_without_prod_run_posts(self) -> None:
+        self._on_thread(self.ae, "ae")
+        self._standalone("sweep", LIVE_SWEEP_R)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_tc2_a_newer_prod_run_ae_on_another_sha_still_requires_tier_p(self) -> None:
+        """Operator ruling D57: the runner reads the newest AE on the whole
+        thread, so a sweep on SHA X after a production-run AE on SHA Y is P."""
+        self._on_thread(self.ae, "ae")
+        self._prod_ae_on_thread(f"issue:1,sha:{OTHER_SHA},count-label:Interpretation", sha=OTHER_SHA)
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP_R), PROD_FIX, "declares tier R")
+
+    def test_tc2_an_older_prod_run_ae_on_another_sha_does_not_apply(self) -> None:
+        self._prod_ae_on_thread(f"issue:1,sha:{OTHER_SHA},count-label:Interpretation", sha=OTHER_SHA)
+        self._on_thread(self.ae, "ae")
+        self._standalone("sweep", LIVE_SWEEP_R)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_tc2_the_sweep_path_reads_the_thread_no_more_often(self) -> None:
+        """The new step shares the by-name step's read (Spec 3): two thread
+        reads on the sweep path, the posted-AE check's and the shared one."""
+        self._prod_ae_on_thread(f"issue:1,sha:{FAKE_SHA},count-label:Interpretation")
+        calls = []
+        with patch.object(_lane3_ready, "fetch_comments",
+                          side_effect=lambda repo, issue: calls.append(1) or self.thread):
+            self._standalone("sweep", LIVE_SWEEP_P)
+        self.assertEqual(len(calls), 2)
+
+    # TC4 (AC4): a standing-grant prod-run AE, a linked Tier R gate, a Tier P sweep.
+    def test_tc4_a_standing_grant_prod_run_ae_with_a_tier_p_sweep_posts(self) -> None:
+        """The R-0374 check reads the linked gate's tier (R), the new check the
+        production sweep's (P): the two never conflate, so the pair posts.
+        The thread and git are stubbed as test_standing_grant.py does."""
+        import _standing_grant
+        import test_standing_grant as tsg
+        self.assertEqual(tsg.GATED, FAKE_SHA)
+        gate = tsg.gate(comment_id=50)
+        gate["body"] = gate["body"].replace(f"/issues/{tsg.ISSUE}", "/issues/1")
+        self.thread.append({**gate, "html_url": "https://github.com/vitalharmony/harmonic-forge/issues/1#issuecomment-50"})
+        link = "https://github.com/vitalharmony/harmonic-forge/issues/1#issuecomment-50"
+        ae = self.ae.replace(
+            "**Authorized:** the spec in issuecomment-77, against `feat/x` @ `abc1234`.",
+            f"**Authorized:** the operator's standing AE grant, R-0374 — gate-result {link}, "
+            f"gated SHA {FAKE_SHA}.")
+        real = _standing_grant.grant_refusal
+        seen = []
+
+        def refusal(*args, **kwargs):
+            seen.append(real(*args, git=tsg.fake_git(), **kwargs))
+            return seen[-1]
+        with patch.object(_standing_grant, "grant_refusal", side_effect=refusal):
+            self._run(ae, LIVE_SWEEP_P, extra=["--prod-run", "count-label=Interpretation"])
+        self.assertEqual(seen, [None], "the R-0374 check ran and accepted the Tier R gate")
+        self.assertEqual(len(self.posted), 2)
+
+
+# Only this class's own cases: the inherited AC9 cases run once, in their own class.
+for _name in [n for n in vars(ExternalCallsThroughMain) if n.startswith("test_")]:
+    if _name not in vars(ProdRunSweepTierTests):
+        setattr(ProdRunSweepTierTests, _name, None)
 
 # Only this class's own cases: the inherited AC9 cases run once, in their own class.
 for _name in [n for n in vars(ExternalCallsThroughMain) if n.startswith("test_")]:
