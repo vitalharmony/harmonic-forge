@@ -339,21 +339,20 @@ def cmd_status(_args) -> int:
     config, state, now = load_config(), _state_dir(), time.time()
     state.mkdir(parents=True, exist_ok=True)
     reading = read_system()
-    with _guard(state):
+    aging = rank.aging_seconds(config)
+    with _guard(state):  # every ticket body is read under the lock that lists it
         holders = live_holders(state)
-        queue = _queue(state, now, config)
+        waiting = [rank.read_ticket(path) for path in _queue(state, now, config)]
     cores, gb = free_capacity(reading, holders, now, config)
     print(f"load {reading.load1:.1f}/{reading.nproc}; MemAvailable {reading.mem_gb:.1f} GB; "
           f"cpu avg10 {reading.cpu_avg10}; mem avg10 {reading.mem_avg10}; free {cores:.1f} cores {gb:.1f} GB")
     for holder in holders:
         print(f"  run {holder.get('class', '?')} {holder['lane'] or '?'} {holder['kind']} {holder['label']} "
               f"for {int(now - holder['admitted_at'])}s ({holder['cores']:g} cores {holder['gb']:g} GB)")
-    aging = rank.aging_seconds(config)
-    for path in queue:
-        klass, arrived = rank.read_ticket(path)
+    for klass, arrived in waiting:
         effective = rank.effective_class(klass, arrived, now, aging)
         print(f"  wait {klass}/{effective} {int(now - arrived)}s")
-    print(f"  queued: {len(queue)}")
+    print(f"  queued: {len(waiting)}")
     return 0
 
 

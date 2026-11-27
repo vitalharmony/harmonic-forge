@@ -437,7 +437,68 @@ class Priority(unittest.TestCase):
 
     def test_tc1_this_checkout_is_normal_with_the_real_resolver(self):
         here = Path(__file__).resolve().parents[2]
+        if rank._common_dir(here, dict(os.environ)) is None:
+            # A sandbox that hides the worktree's git dir (it sits under $HOME)
+            # cannot resolve this checkout at all; the fixture-forge tests above
+            # cover the resolver there.
+            self.skipTest("this checkout's git common dir is not reachable here")
         self.assertEqual(rank.priority_class(here, dict(os.environ)), "normal")
+
+    def test_tc1_a_ceiling_inside_the_forge_does_not_rank_it_high(self):
+        sub = self.forge / "sub"
+        sub.mkdir()
+        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(self.forge)}
+        self.assertEqual(self.klass(sub, env), "normal")
+
+    def test_tc1_an_undecodable_git_answer_is_high_not_an_escape(self):
+        answers = iter([subprocess.CompletedProcess([], 0, b"/caf\xe9/.git\n", b""),
+                        subprocess.CompletedProcess([], 0, b"/srv/forge/.git\n", b"")])
+        with mock.patch.object(rank.subprocess, "run", side_effect=lambda *a, **k: next(answers)):
+            self.assertEqual(rank.priority_class(self.other, dict(os.environ),
+                                                 forge_checkout=self.forge), "high")
+        with mock.patch.object(rank, "_common_dir", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.klass(self.other), "high")
+
+    def test_tc6_a_malformed_arrival_never_crashes_or_jumps(self):
+        early = self.ticket("00000000000000000001-1.ticket", "high", 1000.0)
+        for body in ('{"class": "high", "arrived": 1e999}', '{"class": "high", "arrived": %d}' % (10 ** 400),
+                     '{"class": "high", "arrived": "nan"}'):
+            with self.subTest(body=body[:40]):
+                bad = self.state / "tickets" / "00000000000000000002-2.ticket"
+                handle = open(bad, "w")
+                handle.write(body)
+                handle.flush()
+                hs.fcntl.flock(handle, hs.fcntl.LOCK_EX)
+                try:
+                    self.assertEqual(rank.read_ticket(bad)[0], "normal")
+                    self.assertEqual(hs._queue(self.state, 1100.0, CONFIG)[0], early)
+                finally:
+                    handle.close()
+                    bad.unlink()
+
+    def test_tc7_the_holder_and_the_waiting_note_carry_the_class(self):
+        loaded, now = hs.Reading(8, 30.0, 20.0, 90.0, 0.0), [10_000.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+            if now[0] > 10_000.0 + 120:
+                raise TimeoutError
+
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "high"}), \
+                contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(TimeoutError):
+            hs._admit("kill", "noted", self.state, CONFIG, read=lambda: loaded,
+                      sleep=sleep, clock=lambda: now[0])
+        self.assertIn("[high]", err.getvalue())
+        with mock.patch.dict(os.environ, {"HEAVY_SLOT_PRIORITY": "high"}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            holder, handle = hs._admit("kill", "held", self.state, CONFIG, read=lambda: IDLE,
+                                       sleep=lambda _s: None, clock=lambda: 20_000.0)
+        self.addCleanup(handle.close)
+        self.assertEqual(holder["class"], "high")
+        env = {**os.environ, "HEAVY_SLOT_DIR": str(self.state)}
+        out = subprocess.run([sys.executable, str(TOOL), "status"], env=env, text=True,
+                             capture_output=True, timeout=60)
+        self.assertRegex(out.stdout, r"run high \S+ kill held")
 
     def test_tc2_a_later_high_ticket_is_the_head(self):
         early = self.ticket("00000000000000000001-1.ticket", "normal", 1000.0)

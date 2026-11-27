@@ -23,6 +23,7 @@ so an old-format ticket never jumps the queue.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 from collections.abc import Mapping
@@ -32,24 +33,28 @@ PRIORITY_RANK = {"normal": 0, "high": 1}
 ENV = "HEAVY_SLOT_PRIORITY"
 DEFAULT_AGING_SECONDS = 1200
 GIT_TIMEOUT_SECONDS = 2.0
-#: Location variables that would make `git -C <dir>` answer for another repo
-#: (as tools/onboard/manifest_git.py strips them).
-_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
+#: Variables that would make `git -C <dir>` answer for another repo or stop
+#: discovery early (as tools/onboard/manifest_git.py strips the first three;
+#: a discovery ceiling inside the forge tree would rank a forge job high).
+_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES")
 _FORGE_CHECKOUT = Path(__file__).resolve().parents[2]
 
 
 def _common_dir(directory: str | Path, environ: Mapping[str, str]) -> str | None:
+    """The realpath'd git common dir, or None. Output is decoded with the file
+    system encoding (surrogateescape), so a non-UTF-8 path can never raise."""
     env = {k: v for k, v in environ.items() if k not in _GIT_ENV}
     try:
         result = subprocess.run(
             ["git", "-C", str(directory), "rev-parse", "--path-format=absolute",
              "--git-common-dir"],
-            capture_output=True, text=True, env=env, timeout=GIT_TIMEOUT_SECONDS, check=False)
-    except (OSError, subprocess.SubprocessError):
+            capture_output=True, env=env, timeout=GIT_TIMEOUT_SECONDS, check=False)
+        out = os.fsdecode(result.stdout).strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0 or not out:
         return None
-    return os.path.realpath(result.stdout.strip())
+    return os.path.realpath(out)
 
 
 def override(environ: Mapping[str, str] | None = None) -> tuple[str | None, str | None]:
@@ -70,10 +75,10 @@ def priority_class(cwd: str | Path | None = None,
         return chosen
     try:
         here = cwd if cwd is not None else os.getcwd()
-    except OSError:
+        mine = _common_dir(here, env)
+        forge = _common_dir(forge_checkout, env)
+    except Exception:  # noqa: BLE001 -- every undecided class is high, never an escape to slot()'s unmanaged path
         return "high"
-    mine = _common_dir(here, env)
-    forge = _common_dir(forge_checkout, env)
     return "normal" if mine is not None and mine == forge else "high"
 
 
@@ -88,11 +93,13 @@ def read_ticket(path: Path) -> tuple[str, float]:
         data = json.loads(path.read_text(encoding="utf-8"))
         klass = data.get("class")
         arrived = float(data["arrived"])
+        if not math.isfinite(arrived):
+            raise ValueError("non-finite arrival")
         return (klass if klass in PRIORITY_RANK else "normal"), arrived
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
         try:
             return "normal", int(path.name.split("-", 1)[0]) / 1e9
-        except ValueError:
+        except (ValueError, OverflowError):
             return "normal", 0.0
 
 
