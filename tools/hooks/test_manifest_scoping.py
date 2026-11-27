@@ -158,12 +158,34 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
     key's projects.toml repo; that call is posting identity, not grant scope, and
     for a registered repo it never falls back to the overlay (checked last)."""
 
+    # Post-verdict tightening (operator D24): the read raises a BaseException
+    # subclass, so a writer's `except Exception` cannot swallow it; a direct open
+    # of the overlay file trips it too, not only the manifest_overlay entry
+    # points; and the bare `gh issue close N` form (repo from the cwd checkout)
+    # is exercised. Any read is also recorded, so a swallowed one still fails.
     CODE = (
-        "import json, manifest_overlay\n"
+        "import builtins, io, json, os, pathlib, manifest_overlay\n"
+        "class OverlayRead(BaseException):\n"
+        "    pass\n"
+        "seen = []\n"
         "def boom(*a, **k):\n"
-        "    raise AssertionError('overlay read')\n"
+        "    seen.append('overlay read')\n"
+        "    raise OverlayRead('overlay read')\n"
         "manifest_overlay.read = manifest_overlay.project_for_checkout = boom\n"
         "manifest_overlay.path_project = boom\n"
+        "def _is_overlay(p):\n"
+        "    return str(p).replace(os.sep, '/').endswith('.claude/forge.toml')\n"
+        "_open, _path_open = builtins.open, pathlib.Path.open\n"
+        "def guarded_open(file, *a, **k):\n"
+        "    if isinstance(file, (str, bytes, os.PathLike)) and _is_overlay(os.fsdecode(file)):\n"
+        "        boom()\n"
+        "    return _open(file, *a, **k)\n"
+        "def guarded_path_open(self, *a, **k):\n"
+        "    if _is_overlay(self):\n"
+        "        boom()\n"
+        "    return _path_open(self, *a, **k)\n"
+        "builtins.open = io.open = guarded_open\n"
+        "pathlib.Path.open = guarded_path_open\n"
         "sys.path.insert(0, " + repr(str(HERE.parent / "gh")) + ")\n"
         "import manifest_scope, imc_waiver, ui_grant, batch_auth, expand_lane_shorthand as m\n"
         "import manifest_identity\n"
@@ -172,24 +194,26 @@ class OverlayFunnelNeverReachedByGrantScope(unittest.TestCase):
         "       imc_waiver.key_target('Z5'), imc_waiver.key_target('F5'),\n"
         "       m._scan_batch('BATCH Z5'),\n"
         "       batch_auth.closed_keys('gh issue close 5 --repo acme/app'),\n"
+        "       batch_auth.closed_keys('gh issue close 5', os.getcwd()),\n"
         "       ui_grant.find_record([], 'Z5', 'plan')]\n"
         "manifest_identity._probe_login = lambda *a, **k: 'acme'\n"
         "target = imc_waiver.key_target('F5')\n"
         "try:\n"
         "    manifest_identity.apply_project_identity(target[0])\n"
         "    out.append('identity-ok')\n"
-        "except AssertionError as exc:\n"
+        "except OverlayRead as exc:\n"
         "    out.append(str(exc))\n"
-        "except BaseException as exc:\n"
-        "    out.append('identity-ok' if 'overlay read' not in str(exc) else str(exc))\n"
+        "except BaseException:\n"
+        "    out.append('identity-ok')\n"
+        "out.append(seen)\n"
         "print(json.dumps(out))\n")
 
     def test_grant_scope_never_reads_the_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, base = overlay_only_fixture(Path(tmp).resolve())
             out = json.loads(probe_from(repo, base, "import sys\n" + self.CODE))
-        self.assertEqual(out, [True, False, None, ["acme/forge", 5], None, [], None,
-                               "identity-ok"])
+        self.assertEqual(out, [True, False, None, ["acme/forge", 5], None, [], [], None,
+                               "identity-ok", []])
 
 
 class LiveForeignKeysStillRefuse(unittest.TestCase):
