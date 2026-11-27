@@ -35,7 +35,7 @@ import report_red_main  # noqa: E402
 import tasklist_owed  # noqa: E402
 import ui_grant  # noqa: E402
 from test_manifest_overlay import (  # noqa: E402
-    FILLER, make_repo, overlay_only_fixture, overlay_text, probe_from, write_overlay)
+    FILLER, PROTOCOL, make_repo, overlay_only_fixture, overlay_text, probe_from, write_overlay)
 
 ADOPTER = ('[[project]]\nname = "app"\nprefix = "Z"\nrepo = "acme/app"\naccount = "acme"\n'
            'workspace = "acme"\nboard_owner = "acme"\nboard_number = "1"\n')
@@ -165,12 +165,16 @@ WIDENING_OVERLAY = ('[project]\nname = "forge"\nprefix = "F"\nrepo = "acme/app"\
 #: harmonic-forge#1635 P1: the hostile-account checkout. The validator binds an
 #: overlay-only account only to its own origin's owner
 #: (`manifest_overlay._resolve`), so a checkout whose origin is `mallory/app`
-#: may legally claim `account = "mallory"`. Every identity value this V1
-#: injects (account, name, prefix, workspace, repo) matches nothing in the base
-#: and nothing the acme checkout's overlays hold, which is what P7(a) checks.
+#: may legally claim `account = "mallory"`. This V1 sets every field the
+#: overlay validator accepts (pitch named change 1: board, milestones,
+#: onboarded, min_version and protocol too, not only the identity keys) to a
+#: non-default value that matches nothing in the base and nothing the acme
+#: checkout's overlays hold, which is what P7(a) checks.
 MALLORY_URL = "https://github.com/mallory/app.git"
 MALLORY_OVERLAY = ('[project]\nname = "mapp"\nprefix = "M"\nrepo = "mallory/app"\n'
-                   'account = "mallory"\nworkspace = "mallory"\n')
+                   'account = "mallory"\nworkspace = "mallory"\nboard_owner = "mallory"\n'
+                   'board_number = "77"\nmilestones = true\nactive_milestones = ["mallory-next"]\n'
+                   'onboarded = true\nmin_version = "v2031.01.7"\n' + PROTOCOL)
 #: V2 for the mallory checkout: the raw widening overlay with account mallory.
 MALLORY_WIDENING = WIDENING_OVERLAY.replace('account = "acme"', 'account = "mallory"')
 
@@ -239,17 +243,28 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     is fixed. `probe_from` builds the child's environment from an allowlist
     (P5), so no `HOME`, `GIT_*`, `GH_ACCT_HOME` or `CLAUDE_*` reaches it.
 
-    `reached` (in EXPECTED) names every authorizer whose F5 receipt says it
-    wrote, and P7(c) requires each one's terminal grant file in EXPECTED_FILES,
-    so `reached` means "wrote", not "got past home".
+    Each authorizer writes under its own state directory, named for its
+    `grants` entry: plain FORCE under `force/` and reforge FORCE under
+    `force_reforge/` (pitch named change 3). `force_grant.grant_path` is
+    `<KEY>.json` for every mode and `write_pending` replaces it, so with one
+    directory the reforge grant overwrote the plain one before the snapshot
+    and the plain grant's bytes were never compared (kill KP2b).
 
-    Completeness (P7), derived, not a hand table: (a) every key in production
-    `manifest_overlay.IDENTITY_KEYS`, plus `repo`, is set by some accepted
-    variant to a value that matches nothing in the base and nothing the other
-    checkout's accepted variants hold, so a new overlay identity field fails
-    this suite until a variant covers it; (b) every account, prefix letter and
-    repo an accepted variant injects is among LOGINS, KEYS and REPOS, the inputs
-    offered to the decisions of that kind; (c) above.
+    `reached` (in EXPECTED) names every authorizer whose F5 receipt says it
+    wrote, and P7(c) requires a distinct terminal grant file in EXPECTED_FILES
+    for each `grants` entry, so `reached` means "wrote", not "got past home".
+
+    Completeness (P7), derived, not a hand table: (a) the axis set is every
+    field the overlay validator accepts: production `Project`'s fields minus
+    `MACHINE_LOCAL_KEYS`, `INSTANCE_KEYS` and `OPERATOR_KEYS`, plus `protocol`
+    (`manifest_overlay._validated`). Each is set by some accepted variant to a
+    non-default value that matches nothing in the base and nothing the other
+    checkout's accepted variants hold, or is exempted by name in AXIS_EXEMPT
+    with its reason. A new `Project` field fails this suite until a variant
+    covers it (kill KP7a). (b) Every axis maps to an offered input kind in
+    OFFERED (its injected values must be among LOGINS, KEYS or REPOS) or sits
+    in NO_DRIVEN_DECISION with a reason; an axis in neither fails (kill
+    KP7d). (c) above.
 
     Stated residuals (the epoch-2 verdict's, accepted, not hidden):
     1. Inputs not driven stay uncovered. batch_auth's merge-side `decide`,
@@ -257,9 +272,8 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
        is a read gated on a trigger this program never sends.
     2. The real `gh` label reader is not exercised; only the repo it is asked
        about is observed (P4).
-    3. `board_owner` and `board_number` are not in `IDENTITY_KEYS`. They are
-       covered only by harmonic-forge#1579's refuse-by-name tests, not by this
-       differential.
+    3. Closed (pitch named change 1): `board_owner`, `board_number` and every
+       other accepted non-identity field are now axes the mallory V1 varies.
     4. A hostile author of production code is review's to stop; this suite is
        a tripwire for plausible regressions.
     5. A read that cannot change a decision is allowed by design: the property
@@ -278,6 +292,30 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     LOGINS = ("acme", "mallory")
     KEYS = ("Z5", "M5", "F5")
     REPOS = ("acme/app", "mallory/app", "acme/forge")
+    #: P7(b): each axis whose values a driven decision is offered as input, and
+    #: the inputs of that kind.
+    OFFERED = {"account": set(LOGINS), "prefix": {k[0] for k in KEYS}, "repo": set(REPOS)}
+    #: P7(b): the axes no driven decision takes as input, each with its reason.
+    #: They are still varied (P7(a)), so a read of one that changes a driven
+    #: decision still changes the compared output.
+    NO_DRIVEN_DECISION = {
+        "name": "no driven decision takes a project name; a key's prefix, not its name, "
+                "selects the repo",
+        "workspace": "no driven decision takes a workspace; `_slot_env` selects its slot "
+                     "from a repo in REPOS and its result is compared",
+        "board_owner": "the board is read by the lane board tools, which take no grant decision",
+        "board_number": "the board is read by the lane board tools, which take no grant decision",
+        "milestones": "milestone filtering is the lane queue's; no authorizer takes a milestone",
+        "active_milestones": "milestone filtering is the lane queue's; no authorizer takes a "
+                             "milestone",
+        "onboarded": "it gates belt workspaces and slot listing, not a driven decision's input",
+        "min_version": "only the doctor reads it",
+        "protocol": "its `*_task` keys run as mise tasks (ci_plan, its intended consumer); "
+                    "no authorizer takes a task name",
+    }
+    #: P7(a): accepted fields no variant varies, each with its reason. Empty:
+    #: the mallory V1 varies every one.
+    AXIS_EXEMPT: dict[str, str] = {}
     #: The preclose receipt's pass head for acme/forge#5, and the unreviewed
     #: head a reforge line binds.
     HEAD = "c" * 40
@@ -336,19 +374,22 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
         "                   for who in LOGINS] for k in KEYS],\n"
         "  'slot_env': [batch_auth._slot_env(r) for r in REPOS],\n"
         "}\n"
-        "out['grants'] = {\n"
-        "  'batch': {k: m.authorize_batch('BATCH ' + k, state_path=_st / 'batch' / (k + '.json'))\n"
-        "            for k in KEYS},\n"
-        "  'force': {k: m.authorize_force('FORCE ' + k + ': probe', 's', '1', _now) for k in KEYS},\n"
-        "  'force_reforge': {k: m.authorize_force('FORCE ' + k + ' reforge ' + REFORGE + ': probe',\n"
-        "                                         's', '1', _now) for k in KEYS},\n"
-        "  'imc': {k: m.authorize_imc('BATCH ' + k + ' IMC ' + k, 's', '1', label_reader=_labels,\n"
-        "                             now=_now) for k in KEYS},\n"
-        "  'ui': {k: m.authorize_ui('UI ' + k + ': probe', 's', '1', _now) for k in KEYS},\n"
-        "  'park': {k: m.authorize_park('PARK ' + k + ': probe', 's', '1', _now) for k in KEYS},\n"
-        "  'scan': {k: m.authorize_scan('SCAN ' + k[0] + ' open-issues: probe', 's', _now)\n"
-        "           for k in KEYS},\n"
-        "}\n"
+        "out['grants'] = {}\n"
+        "out['grants']['batch'] = {k: m.authorize_batch('BATCH ' + k,\n"
+        "    state_path=_st / 'batch' / (k + '.json')) for k in KEYS}\n"
+        "out['grants']['force'] = {k: m.authorize_force('FORCE ' + k + ': probe', 's', '1', _now)\n"
+        "                          for k in KEYS}\n"
+        "force_grant.FORCE_STATE_DIR = _st / 'force_reforge'  # its own file: change 3\n"
+        "out['grants']['force_reforge'] = {k: m.authorize_force(\n"
+        "    'FORCE ' + k + ' reforge ' + REFORGE + ': probe', 's', '1', _now) for k in KEYS}\n"
+        "out['grants']['imc'] = {k: m.authorize_imc('BATCH ' + k + ' IMC ' + k, 's', '1',\n"
+        "    label_reader=_labels, now=_now) for k in KEYS}\n"
+        "out['grants']['ui'] = {k: m.authorize_ui('UI ' + k + ': probe', 's', '1', _now)\n"
+        "                       for k in KEYS}\n"
+        "out['grants']['park'] = {k: m.authorize_park('PARK ' + k + ': probe', 's', '1', _now)\n"
+        "                         for k in KEYS}\n"
+        "out['grants']['scan'] = {k: m.authorize_scan('SCAN ' + k[0] + ' open-issues: probe', 's',\n"
+        "                                             _now) for k in KEYS}\n"
         "out['label_calls'] = label_calls\n"
         "reached = {'batch': 'authorized F5',\n"
         "           'force': 'pending plain grant written for F5 at ' + HEAD[:12],\n"
@@ -388,7 +429,7 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
 
     #: The scratch files V0 writes: the F5 grants and their locks, nothing for Z5 or M5.
     EXPECTED_FILES = ["batch/F5.json", "batch/F5.json.lock", "force/F5.json", "force/F5.json.lock",
-                      "imc/F5.json", "park/s/F5.json", "park/s/F5.json.lock",
+                      "force_reforge/F5.json", "force_reforge/F5.json.lock", "imc/F5.json", "park/s/F5.json", "park/s/F5.json.lock",
                       "scan/s/F-9037c5488f26c3b7.json", "scan/s/F-9037c5488f26c3b7.json.lock",
                       "ui/F5.json", "ui/F5.json.lock"]
     #: The credential slot `_slot_env` selects per repo in REPOS: only the home repo has one.
@@ -447,38 +488,74 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
                     found[checkout].append(project)
         return found
 
+    @staticmethod
+    def overlay_axes() -> list[str]:
+        """Every `[project]` field the overlay validator accepts (pitch named change
+        1): production `Project`'s fields minus the refused MACHINE_LOCAL_KEYS,
+        INSTANCE_KEYS and OPERATOR_KEYS, plus `protocol`
+        (`manifest_overlay._validated`). Imported, never copied."""
+        fields = set(manifest_overlay.Project.__dataclass_fields__)
+        refused = {*manifest_overlay.MACHINE_LOCAL_KEYS, *manifest_overlay.INSTANCE_KEYS,
+                   *manifest_overlay.OPERATOR_KEYS}
+        return sorted((fields - refused) | {"protocol"})
+
     def assert_complete(self, outputs: dict[str, dict[str, dict]]) -> None:
-        """P7: the variants vary every identity key and the program is offered every
-        injected value; derived from production `IDENTITY_KEYS`, not a hand table."""
+        """P7: the variants vary every field an overlay may set, every varied field
+        reaches an offered input or is named as reaching none, and every driven
+        authorizer has its own terminal file; derived from production `Project`
+        and the validator's refused-key tuples, not a hand table."""
         accepted = self.accepted(outputs)
         base = tomllib.loads(FILLER)["project"]
+        defaults = {f.name: f.default for f in manifest_overlay.Project.__dataclass_fields__.values()}
+        axes = self.overlay_axes()
+
+        def norm(value: object) -> str:
+            return json.dumps(value, sort_keys=True, default=str).casefold()
+
         uncovered = []
-        for key in (*manifest_overlay.IDENTITY_KEYS, "repo"):
-            held = {str(e[key]).casefold() for e in base if e.get(key) is not None}
+        for key in axes:
+            if key in self.AXIS_EXEMPT:
+                continue
+            held = {norm(e[key]) for e in base if e.get(key) is not None}
+            held.add(norm(defaults.get(key)))
+            if key == "active_milestones":
+                held.add(norm([]))  # the default () as TOML would spell it
 
             def fresh(checkout: str, value: object, key: str = key, held: set = held) -> bool:
-                others = {str(o[key]).casefold() for other, projects in accepted.items()
+                others = {norm(o[key]) for other, projects in accepted.items()
                           if other != checkout for o in projects if o.get(key) is not None}
-                return value is not None and str(value).casefold() not in held | others
+                return value is not None and norm(value) not in held | others
 
             if not any(fresh(c, p.get(key)) for c, projects in accepted.items() for p in projects):
                 uncovered.append(key)
         self.assertEqual(uncovered, [], (
-            "P7(a): no validator-accepted variant sets these identity keys to a value that "
-            "neither the base nor the other checkout holds, so no driven decision can see "
-            f"them vary (degenerate fixture): {uncovered}"))
-        offered = {"account": set(self.LOGINS), "prefix": {k[0] for k in self.KEYS},
-                   "repo": set(self.REPOS)}
+            "P7(a): no validator-accepted variant sets these overlay fields to a non-default "
+            "value that neither the base nor the other checkout holds, and none is exempted "
+            f"by name in AXIS_EXEMPT, so no driven decision can see them vary: {uncovered}"))
+        self.assertEqual(sorted(set(self.AXIS_EXEMPT) - set(axes)), [],
+                         "P7(a): AXIS_EXEMPT names a field the validator does not accept")
+        unmapped = [k for k in axes if k not in self.OFFERED and k not in self.NO_DRIVEN_DECISION]
+        self.assertEqual(unmapped, [], (
+            "P7(b): these varied fields map to no offered input kind (OFFERED) and are not "
+            f"named in NO_DRIVEN_DECISION with a reason: {unmapped}"))
+        both = sorted(set(self.OFFERED) & set(self.NO_DRIVEN_DECISION))
+        stale = sorted((set(self.OFFERED) | set(self.NO_DRIVEN_DECISION)) - set(axes))
+        self.assertEqual((both, stale), ([], []),
+                         "P7(b): a field both offered and unreached, or not an overlay field")
         missing = [(checkout, key, project[key]) for checkout, projects in accepted.items()
-                   for project in projects for key, values in offered.items()
+                   for project in projects for key, values in self.OFFERED.items()
                    if key in project and project[key] not in values]
         self.assertEqual(missing, [], "P7(b): an injected value is offered to no driven decision")
+        claimed: dict[str, str] = {}
         for authorizer in outputs["acme"]["V0"]["out"]["grants"]:
-            directory = authorizer.split("_")[0] + "/"
-            terminal = [f for f in self.EXPECTED_FILES if f.startswith(directory)
+            terminal = [f for f in self.EXPECTED_FILES if f.startswith(authorizer + "/")
                         and not f.endswith(".lock")
                         and f.rsplit("/", 1)[-1].startswith(("F5.", "F-"))]
-            self.assertTrue(terminal, f"P7(c): {authorizer} has no F5 grant file in EXPECTED_FILES")
+            self.assertEqual(len(terminal), 1,
+                             f"P7(c): {authorizer} needs exactly one F5 grant file of its own "
+                             f"in EXPECTED_FILES, found {terminal}")
+            self.assertNotIn(terminal[0], claimed, f"P7(c): {authorizer} shares {terminal[0]}")
+            claimed[terminal[0]] = authorizer
 
     def assert_noninterference(self, outputs: dict[str, dict[str, dict]]) -> None:
         self.assert_complete(outputs)
