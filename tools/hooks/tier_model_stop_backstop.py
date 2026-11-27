@@ -194,6 +194,79 @@ def _result_text(block: dict) -> str:
     return ""
 
 
+_SYNTHETIC_MODEL = "<synthetic>"
+_SCRIPT_ID_PREFIX = "repl_"
+
+
+def _is_script_call(entry: dict | None, tool_use_id: str) -> bool:
+    """A Code Mode script call (harmonic-forge#1642): a harness-written virtual
+    assistant record whose model is `"<synthetic>"` and whose tool_use id is
+    `repl_`-keyed."""
+    return (isinstance(entry, dict) and entry.get("isVirtual") is True
+            and (entry.get("message") or {}).get("model") == _SYNTHETIC_MODEL
+            and str(tool_use_id or "").startswith(_SCRIPT_ID_PREFIX))
+
+
+def _record_result_text(entry: dict, block: dict, call: dict | None) -> str:
+    """`_result_text(block)`, except for a Code Mode script call's result
+    (harmonic-forge#1642): its block `content` is empty and its output sits in
+    the record's `toolUseResult`. That fallback is read only when BOTH records
+    of the pair are a script call's: this virtual user record with a `repl_`
+    id, and `call`, the assistant record that made the call with that id."""
+    text = _result_text(block)
+    tool_use_id = str(block.get("tool_use_id") or "")
+    tool_use_result = entry.get("toolUseResult")
+    if (text != "" or entry.get("isVirtual") is not True
+            or not tool_use_id.startswith(_SCRIPT_ID_PREFIX)
+            or not isinstance(tool_use_result, dict)
+            or not _is_script_call(call, tool_use_id)):
+        return text
+    return "\n".join(value for value in (tool_use_result.get("stdout"),
+                                          tool_use_result.get("stderr"))
+                     if isinstance(value, str))
+
+
+def _repl_model(start_uuid: str, by_uuid: dict[str, dict]) -> str | None:
+    """The model of the REPL call that ran the script call recorded at
+    `start_uuid` (harmonic-forge#1642), from the transcript's own links: the
+    `parentUuid` chain to the REPL's tool_result record, whose
+    `sourceToolAssistantUUID` names the REPL assistant record. None when the
+    chain is broken, leaves the scanned window, or does not match."""
+    seen: set[str] = set()
+    current = by_uuid.get(start_uuid)
+    while isinstance(current, dict):
+        parent = current.get("parentUuid")
+        if not isinstance(parent, str) or parent in seen or parent not in by_uuid:
+            return None
+        seen.add(parent)
+        current = by_uuid[parent]
+        source_uuid = current.get("sourceToolAssistantUUID")
+        content = (current.get("message") or {}).get("content")
+        if current.get("type") != "user" or current.get("isSidechain") \
+                or not isinstance(source_uuid, str) or not isinstance(content, list):
+            continue
+        result_ids = {block.get("tool_use_id") for block in content
+                      if isinstance(block, dict) and block.get("type") == "tool_result"}
+        if not result_ids:
+            continue
+        source = by_uuid.get(source_uuid)
+        if not isinstance(source, dict) or source.get("type") != "assistant" \
+                or source.get("isSidechain"):
+            return None
+        message = source.get("message") or {}
+        model = message.get("model")
+        source_content = message.get("content")
+        if not isinstance(model, str) or not model or model == _SYNTHETIC_MODEL \
+                or not isinstance(source_content, list):
+            return None
+        if any(isinstance(block, dict) and block.get("type") == "tool_use"
+               and block.get("name") == "REPL" and block.get("id") in result_ids
+               for block in source_content):
+            return model
+        return None
+    return None
+
+
 _GH_COMMENT_SEGMENT_RE = re.compile(
     r"gh\s+issue\s+comment\s+(?:\S*/issues/)?(\d+)\b")
 _GH_API_POST_SEGMENT_RE = re.compile(
@@ -268,11 +341,25 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
     `drop_background=True` (harmonic-forge#1151) also drops a Bash call run
     with `run_in_background`: its tool_result acknowledges the launch, so a
     non-error result says nothing about the command's exit. `require_result=True`
-    also drops a call with no tool_result yet: no result is no evidence."""
+    also drops a call with no tool_result yet: no result is no evidence.
+
+    Code Mode (harmonic-forge#1642): a script call is a virtual assistant
+    record with model `"<synthetic>"` and a `repl_` tool_use id, answered by a
+    virtual user record whose tool_result `content` is empty and whose output
+    is the record's `toolUseResult`. That output is read only for such a pair
+    (`_record_result_text`). The call takes the model of the REPL call its
+    `parentUuid`/`sourceToolAssistantUUID` links name (`_repl_model`), resolved
+    after the walk from the records this same bounded pass saw; when the links
+    do not resolve, the call keeps `"<synthetic>"`, which is never high-tier,
+    so the report fires. Every other record is read as before."""
     errored: set[str] = set()
     answered: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
     results: dict[str, str] = {}
+    script_results: dict[str, tuple[dict, dict]] = {}
+    call_records: dict[str, dict] = {}
+    by_uuid: dict[str, dict] = {}
+    pending: list[tuple[int, str]] = []
     reached_turn_start = False
     try:
         size = os.path.getsize(transcript_path)
@@ -287,6 +374,8 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
             if _is_turn_start(entry):
                 reached_turn_start = True
                 break
+            if isinstance(entry.get("uuid"), str):
+                by_uuid.setdefault(entry["uuid"], entry)
             content = (entry.get("message") or {}).get("content")
             if not isinstance(content, list) or entry.get("isSidechain"):
                 continue
@@ -297,7 +386,11 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
                         if block.get("is_error"):
                             errored.add(block.get("tool_use_id"))
                         elif with_receipts:
-                            results[block.get("tool_use_id") or ""] = _result_text(block)
+                            tool_use_id = block.get("tool_use_id") or ""
+                            results[tool_use_id] = _result_text(block)
+                            # harmonic-forge#1642: met before its call in this
+                            # backward walk; admitted after the walk.
+                            script_results[tool_use_id] = (entry, block)
             elif entry.get("type") == "assistant":
                 model = (entry.get("message") or {}).get("model")
                 for block in content:
@@ -307,10 +400,22 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
                         if drop_background and (block.get("input") or {}).get("run_in_background"):
                             continue
                         if isinstance(command, str):
-                            calls.append((command, model, block.get("id") or ""))
+                            tool_use_id = block.get("id") or ""
+                            call_records.setdefault(tool_use_id, entry)
+                            if _is_script_call(entry, tool_use_id) \
+                                    and isinstance(entry.get("uuid"), str):
+                                pending.append((len(calls), entry["uuid"]))
+                            calls.append((command, model, tool_use_id))
     except OSError:
         return ([], False, []) if with_receipts else ([], False)
     truncated = not reached_turn_start and size > _bytes_scanned(size)
+    for index, record_uuid in pending:
+        repl_model = _repl_model(record_uuid, by_uuid)
+        if repl_model is not None:
+            command, _model, tool_use_id = calls[index]
+            calls[index] = (command, repl_model, tool_use_id)
+    for tool_use_id, (entry, block) in script_results.items():
+        results[tool_use_id] = _record_result_text(entry, block, call_records.get(tool_use_id))
     calls.reverse()
     kept = [call for call in calls if call[2] not in errored
             and (not require_result or call[2] in answered)]

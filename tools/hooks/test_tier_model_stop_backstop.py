@@ -421,5 +421,185 @@ class TurnTests(unittest.TestCase):
         self.assertIsNone(out)
 
 
+FIXTURE = Path(__file__).parent / "testdata" / "code_mode_turn.jsonl"
+HAIKU = "claude-haiku-5-5"
+OPUS = "claude-opus-5-5"
+SONNET = "claude-sonnet-5-5"
+
+
+def _post_command(issue):
+    return (f"python3 tools/gh/l1_post.py --repo {FORGE} --issue {issue} "
+            f"--kind discussion --body-file /tmp/x.md")
+
+
+def _l1_receipt(issue):
+    return f"[l1-post] posted and refetched {receipt(FORGE, issue)}"
+
+
+class CodeModeTurnTests(unittest.TestCase):
+    """harmonic-forge#1642: a Code Mode script call's receipt and model.
+
+    Record numbers are 0-based line indices of the fixture, the sanitized
+    #1609 capture. Variants are built here from it, so they cannot drift."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.records = [json.loads(line) for line in FIXTURE.read_text().splitlines()]
+
+    # --- building variants ---
+
+    def write(self, records=None):
+        path = self.root / "t.jsonl"
+        path.write_text("".join(json.dumps(r) + "\n"
+                                for r in (self.records if records is None else records)))
+        return str(path)
+
+    def set_model(self, index, model):
+        self.records[index]["message"]["model"] = model
+
+    def script_post(self):
+        """TC1's variant: record 30's `ls` becomes a post to #1609; record 31's
+        receipt is only in `toolUseResult.stdout`, `content` stays empty."""
+        self.records[30]["message"]["content"][0]["input"]["command"] = _post_command(1609)
+        self.records[31]["toolUseResult"]["stdout"] = _l1_receipt(1609)
+        self.assertEqual(self.records[31]["message"]["content"][0]["content"], "")
+
+    def second_script_post(self):
+        """TC2's variant: record 44 (an Edit) becomes a Bash post to #1642, a
+        different issue, so the (repo, issue) dedup keeps both receipts."""
+        block = self.records[44]["message"]["content"][0]
+        block["name"] = "Bash"
+        block["input"] = {"command": _post_command(1642)}
+        self.records[45]["toolUseResult"] = {"stdout": _l1_receipt(1642), "stderr": ""}
+
+    def receipts(self, path):
+        return b.scan_turn(path, with_receipts=True)[2]
+
+    def run_backstop(self, path):
+        def deep(repo, number):
+            return "deep", None
+
+        return b.run({"transcript_path": path, "cwd": str(self.root)}, env={}, lookup=deep)
+
+    # --- the fixture's own shape (guards the variants' premises) ---
+
+    def test_fixture_shape(self):
+        self.assertEqual(len(self.records), 52)
+        for index in (26, 28, 30, 32, 44, 46):
+            self.assertIs(self.records[index].get("isVirtual"), True)
+            self.assertEqual(self.records[index]["message"]["model"], "<synthetic>")
+        self.assertEqual(self.records[24]["message"]["content"][0]["name"], "REPL")
+        self.assertEqual(self.records[42]["message"]["content"][0]["name"], "REPL")
+        self.assertEqual(self.records[25]["sourceToolAssistantUUID"], self.records[24]["uuid"])
+        self.assertEqual(self.records[43]["sourceToolAssistantUUID"], self.records[42]["uuid"])
+
+    # --- TC1 (AC1) ---
+
+    def test_tc1_script_post_receipt_is_read_from_tool_use_result(self):
+        self.script_post()
+        receipts = self.receipts(self.write())
+        self.assertEqual([r[:2] for r in receipts], [(FORGE, 1609)])
+
+    # --- TC2 (AC2) ---
+
+    def test_tc2_receipt_takes_its_own_repl_model(self):
+        self.script_post()
+        self.second_script_post()
+        self.set_model(42, SONNET)
+        receipts = self.receipts(self.write())
+        self.assertEqual(receipts, [(FORGE, 1609, HAIKU), (FORGE, 1642, SONNET)])
+
+    # --- TC3 (AC3) ---
+
+    def test_tc3_deep_post_reports_the_repl_model(self):
+        self.script_post()
+        out = self.run_backstop(self.write())
+        self.assertIsNotNone(out)
+        self.assertIn(f"Posted on {FORGE}#1609 (Tier deep) from {HAIKU};", out["systemMessage"])
+
+    def test_tc3_opus_repl_is_not_reported(self):
+        self.script_post()
+        self.set_model(24, OPUS)
+        self.assertIsNone(self.run_backstop(self.write()))
+
+    def test_tc3_opus_repl_with_a_later_haiku_record_is_not_reported(self):
+        self.script_post()
+        self.set_model(24, OPUS)
+        self.set_model(49, HAIKU)
+        self.assertIsNone(self.run_backstop(self.write()))
+
+    def test_tc3_links_not_file_position_bind_the_call(self):
+        """An Opus REPL (records 42-43) landing between the script's records
+        in file order does not take the call: the links still name record 24."""
+        self.script_post()
+        self.set_model(42, OPUS)
+        moved = self.records[42:44]
+        rest = self.records[:42] + self.records[44:]
+        reordered = rest[:30] + moved + rest[30:]
+        self.assertEqual(reordered[32]["uuid"], self.records[30]["uuid"])
+        path = self.write(reordered)
+        self.assertEqual(self.receipts(path), [(FORGE, 1609, HAIKU)])
+        out = self.run_backstop(path)
+        self.assertIsNotNone(out)
+        self.assertIn(f"from {HAIKU};", out["systemMessage"])
+
+    # --- TC4 (AC4) ---
+
+    def test_tc4_unmodified_fixture_calls_take_the_repl_model(self):
+        calls, truncated = b.scan_turn(str(FIXTURE), drop_background=True, require_result=True)
+        self.assertEqual(calls, [
+            ("ls", HAIKU, self.records[30]["message"]["content"][0]["id"]),
+            ("git status", HAIKU, self.records[32]["message"]["content"][0]["id"]),
+        ])
+        self.assertTrue(all(call[2].startswith("repl_") for call in calls))
+        self.assertFalse(truncated)
+
+    # --- TC5 (AC5): every other record is read as before ---
+
+    def test_tc5_i_non_virtual_result_record_has_no_fallback(self):
+        self.script_post()
+        del self.records[31]["isVirtual"]
+        self.assertEqual(self.receipts(self.write()), [])
+
+    def test_tc5_ii_non_repl_id_has_no_fallback(self):
+        self.script_post()
+        self.records[30]["message"]["content"][0]["id"] = "toolu_x"
+        self.records[31]["message"]["content"][0]["tool_use_id"] = "toolu_x"
+        self.assertEqual(self.receipts(self.write()), [])
+
+    def test_tc5_iii_non_virtual_synthetic_call_keeps_synthetic(self):
+        del self.records[30]["isVirtual"]
+        calls, _ = b.scan_turn(self.write())
+        self.assertEqual(calls[0][:2], ("ls", "<synthetic>"))
+        self.assertEqual(calls[1][:2], ("git status", HAIKU))
+
+    def test_tc5_iv_non_virtual_call_with_virtual_result_has_no_fallback(self):
+        self.script_post()
+        del self.records[30]["isVirtual"]
+        self.assertIs(self.records[31]["isVirtual"], True)
+        self.assertEqual(self.receipts(self.write()), [])
+
+    # --- TC7 (AC2/AC3): an unresolved call stays in the reporting direction ---
+
+    def assert_unresolved_is_reported(self, records):
+        path = self.write(records)
+        self.assertEqual(self.receipts(path), [(FORGE, 1609, "<synthetic>")])
+        out = self.run_backstop(path)
+        self.assertIsNotNone(out)
+        self.assertIn("from <synthetic>;", out["systemMessage"])
+
+    def test_tc7_i_missing_source_link_keeps_synthetic_and_reports(self):
+        self.script_post()
+        self.set_model(49, OPUS)
+        del self.records[25]["sourceToolAssistantUUID"]
+        self.assert_unresolved_is_reported(self.records)
+
+    def test_tc7_ii_repl_record_outside_the_file_keeps_synthetic_and_reports(self):
+        self.script_post()
+        self.set_model(49, OPUS)
+        self.assert_unresolved_is_reported(self.records[:24] + self.records[26:])
+
+
 if __name__ == "__main__":
     unittest.main()
