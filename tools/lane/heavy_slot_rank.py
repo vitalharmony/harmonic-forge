@@ -23,9 +23,10 @@ a non-git directory.
 `<arrival ns, 20 digits>-<pid>-<class>.ticket` and has no body: nothing writes
 one and nothing reads one. Within a class the order is the name order, the same
 order origin/main and every old-code reader use, so mixed versions never wait on
-each other. A name with no known class (an old-format `<ns>-<pid>.ticket`, or
-anything malformed) is `normal`, and a name whose arrival does not parse never
-ages, so neither can jump the queue.
+each other. A name whose third part is not a known class (an old-format
+`<ns>-<pid>.ticket`, or any other shape) is `normal`, and a name whose arrival
+does not parse never ages, so neither can jump the queue. Only `_admit` creates
+live tickets, and it always writes a 20-digit prefix.
 """
 from __future__ import annotations
 
