@@ -1037,6 +1037,14 @@ class ProdRunSweepTierTests(ExternalCallsThroughMain):
         self._prod_ae_on_thread(f"issue:1,sha:{OTHER_SHA},count-label:Interpretation", sha=OTHER_SHA)
         self._refused(lambda: self._standalone("sweep", LIVE_SWEEP_R), PROD_FIX, "declares tier R")
 
+    def test_tc2_a_prod_run_ae_on_its_sha_still_applies_after_a_newer_ae_elsewhere(self) -> None:
+        """The on-SHA read is not shadowed by D57's thread-wide one: a
+        production-run AE on this SHA, then a newer non-prod AE on another
+        SHA, still makes a Tier R sweep on this SHA refuse."""
+        self._prod_ae_on_thread(f"issue:1,sha:{FAKE_SHA},count-label:Interpretation")
+        self._on_thread(self.ae, "ae", sha=OTHER_SHA)
+        self._refused(lambda: self._standalone("sweep", LIVE_SWEEP_R), PROD_FIX, "declares tier R")
+
     def test_tc2_an_older_prod_run_ae_on_another_sha_does_not_apply(self) -> None:
         self._prod_ae_on_thread(f"issue:1,sha:{OTHER_SHA},count-label:Interpretation", sha=OTHER_SHA)
         self._on_thread(self.ae, "ae")
