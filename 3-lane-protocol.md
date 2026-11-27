@@ -1410,8 +1410,10 @@ preview is not the document.
 
 `tools/lane/heavy_slot.py` admits `check`, `check-full`, `e2e-mocked`, kill runs and a
 Lane 3 gate from measured load, across all lanes: cores from `load1` against `nproc`,
-`MemAvailable`, PSI, and what recently admitted jobs reserved. Waiting is first come,
-first served, and bounded: past 10 minutes the head starts, memory permitting, once no
+`MemAvailable`, PSI, and what recently admitted jobs reserved. Waiting is ranked: a
+job taken outside the forge's own repo is `high`, a forge job `normal`, first come
+within a class, and a `normal` waiter ranks `high` after 20 minutes (harmonic-forge#1634,
+operator D32). It is bounded: past 10 minutes the head starts, memory permitting, once no
 job has been admitted in the last 10 minutes. `python3 tools/lane/heavy_slot.py status`
 shows holders, queue and readings. A waiting job's line names what it waits on, and a
 queued job is working as designed, not stuck. A waiter's place and clock end with its
