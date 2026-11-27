@@ -252,192 +252,6 @@ class Decide(unittest.TestCase):
                 self.assertEqual(self.decide(self.fresh().say(text))[0], "block")
 
 
-
-SHA40 = "0123456789abcdef0123456789abcdef01234567"
-#: TC1 (harmonic-forge#1639 AC1): well-formed directives, as the operator types them.
-WELL_FORMED = (
-    "FORCE F1566: two passes clean",
-    "FORCE f1566: x",
-    "FORCE F1531 reforge 2b5d58f0a1b2: patch",
-    f"FORCE F1579 route {SHA40}: merge",
-    "FORCE F1565 cluster: x",
-    "FORCE F1291 gate 0123456789ab: x",
-    "PARK H2621",
-    "PARK H2621: moved to 3.2",
-    "SCAN H open-issues: tune-up",
-    "UI H2615: nav",
-    "UI H2615 0123456789abcdef: merge",
-    "close F1639",
-)
-#: TC2 (AC2): candidates the prompt hook refuses; the probe hook refuses them with its reason.
-MALFORMED = (
-    "FORCE F1 rebase abc: x",
-    "FORCE F1 reforge xyz: x",
-    "FORCE F1 route abc123abc123: x",
-    "FORCE F1:",
-    "FORCE F1 x",
-    "force F1: x",
-    "  FORCE F1: x",
-    "> PARK H1",
-    "FORCE K12: x",
-    "UI P5: x",
-    "PARK Z5",
-    "PARK H02621",
-    "PARK H1 extra",
-    "SCAN K open-issues: x",
-    "SCAN H everything: x",
-    "UI H1 a b: x",
-    "UI H1 zz: x",
-    "UI H1:",
-    "close F1 now",
-)
-#: TC3 (AC3): never exempt, whatever the parser reads.
-SHELLISH = (
-    "FORCE F1: x; rm -rf ~",
-    "FORCE F1: fixes (D54)",
-    "FORCE F1: Marc's call",
-)
-CHAINED = (
-    "close F1 && ls",
-    "FORCE F1: x && ls",
-    "PARK H1: x && ls",
-    "SCAN H open-issues: x && ls",
-    "UI H1: x && ls",
-)
-
-
-class DirectiveLines(unittest.TestCase):
-    """harmonic-forge#1639: directive lines are parsed by the prompt hook's own
-    `parse_directive`, as written, never probed."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def say(self, *lines: str, probes=None):
-        path = Transcript(self.tmp).say(block(*lines))
-        return hook.decide({"transcript_path": path}, probes=probes)
-
-    def problem_line(self, reason: str, line: str) -> str:
-        found = [ln for ln in reason.splitlines() if ln.startswith(f"  - `{line.strip()}`")]
-        self.assertEqual(len(found), 1, reason)
-        return found[0]
-
-    def test_tc1_well_formed_directives_need_no_probe(self):
-        self.assertEqual(self.say(*WELL_FORMED, probes=[]), ("allow", ""))
-        # no Bash call at all in the transcript: the turn's own scan finds none
-        self.assertEqual(self.say(*WELL_FORMED), ("allow", ""))
-
-    def test_tc2_a_refused_directive_carries_the_parsers_reason(self):
-        import expand_lane_shorthand as m
-        for line in MALFORMED:
-            with self.subTest(line=line):
-                expected = m.parse_directive(line)
-                self.assertIsInstance(expected, str)
-                verdict, reason = self.say(line, probes=[line.strip()])
-                self.assertEqual(verdict, "block")
-                got = self.problem_line(reason, line)
-                self.assertIn(f"the prompt hook would refuse it: {expected}", got)
-                self.assertIn("reword the reason", got)
-                self.assertNotIn("no Bash call", got)
-
-    def test_tc2_placement_is_read_from_the_line_as_written(self):
-        verdict, reason = self.say("  FORCE F1: x", "> PARK H1", probes=[])
-        self.assertEqual(verdict, "block")
-        self.assertIn("honored only as the prompt's first line",
-                      self.problem_line(reason, "  FORCE F1: x"))
-        self.assertIn("honored only as the prompt's first line",
-                      self.problem_line(reason, "> PARK H1"))
-
-    def test_tc3_shell_metacharacters_are_never_exempt(self):
-        for line in SHELLISH:
-            with self.subTest(line=line):
-                verdict, reason = self.say(line, probes=[])
-                self.assertEqual(verdict, "block")
-                self.assertIn("reword the reason (no quotes or shell metacharacters)",
-                              self.problem_line(reason, line))
-
-    def test_tc3_an_and_chain_on_a_directive_is_refused(self):
-        for line in CHAINED:
-            with self.subTest(line=line):
-                verdict, reason = self.say(line, probes=[line])
-                self.assertEqual(verdict, "block")
-                self.assertIn("a directive line is one line",
-                              self.problem_line(reason, line))
-
-    def test_tc3_non_candidates_keep_the_probe_rule(self):
-        shell = "python3 tools/gh/force_grant.py status --key F1"
-        for line in ("Close F1", shell):
-            with self.subTest(line=line):
-                verdict, reason = self.say(line, probes=[])
-                self.assertEqual(verdict, "block")
-                self.assertIn("no Bash call", self.problem_line(reason, line))
-        self.assertEqual(self.say(shell, probes=[shell]), ("allow", ""))
-
-    def test_tc3_executable_bit_still_checked_beside_directives(self):
-        script = self.tmp / "reset.sh"
-        script.write_text("#!/usr/bin/env bash\necho hi\n")
-        os.chmod(script, 0o644)
-        verdict, reason = self.say("FORCE F1566: x", str(script), probes=[str(script)])
-        self.assertEqual(verdict, "block")
-        self.assertIn("not executable", self.problem_line(reason, str(script)))
-
-    def test_question_turn_still_refuses_a_malformed_directive(self):
-        tail = "\n## DECISIONS NEEDED\n1. Should I merge it? Yes.\n"
-        path = Transcript(self.tmp).say(block("FORCE F1 rebase abc: x") + tail)
-        self.assertEqual(hook.decide({"transcript_path": path})[0], "block")
-
-    def test_parser_import_failure_falls_back_to_the_probe_rule(self):
-        line = "FORCE F1566: two passes clean"
-        with mock.patch.object(hook, "directive_parser", return_value=None):
-            verdict, reason = self.say(line, probes=[])
-            self.assertEqual(verdict, "block")
-            self.assertIn("no Bash call", reason)
-            # the fallback is today's rule, not a refusal: an exactly probed line allows
-            self.assertEqual(self.say(line, probes=[line]), ("allow", ""))
-
-    def test_a_parser_that_raises_falls_back_to_the_probe_rule(self):
-        def boom(_line):
-            raise RuntimeError("boom")
-        with mock.patch.object(hook, "directive_parser", return_value=boom):
-            self.assertEqual(self.say("git status", probes=["git status"]), ("allow", ""))
-            verdict, reason = self.say("git status", probes=[])
-        self.assertEqual(verdict, "block")
-        self.assertIn("no Bash call", reason)
-
-    def test_a_broken_scan_grant_import_never_refuses_a_shell_line(self):
-        with mock.patch.dict(sys.modules, {"scan_grant": None}):
-            self.assertEqual(self.say("git status", probes=["git status"]), ("allow", ""))
-            verdict, reason = self.say("SCAN H open-issues: tune-up", probes=[])
-        self.assertEqual(verdict, "block")
-        self.assertIn("SCAN H open-issues: tune-up", reason)
-
-    def nested(self, *lines: str, probes=None):
-        """The block as an indented fence under a numbered list item."""
-        text = ("Done.\n\n## YOUR NEXT ACTIONS\n1. Run:\n   " + FENCE + "operator-commands\n"
-                + "".join(f"   {ln}\n" for ln in lines) + "   " + FENCE + "\n")
-        path = Transcript(self.tmp).say(text)
-        return hook.decide({"transcript_path": path}, probes=probes)
-
-    def test_a_fence_nested_under_a_list_item_reads_lines_relative_to_it(self):
-        self.assertEqual(self.nested("FORCE F1566: two passes clean", "PARK H2621: moved to 3.2",
-                                     "close F1639", probes=[]), ("allow", ""))
-
-    def test_a_line_indented_beyond_its_nested_fence_is_refused(self):
-        for line in ("  FORCE F1566: two passes clean", "> PARK H2621"):
-            with self.subTest(line=line):
-                verdict, reason = self.nested(line, probes=[line.strip()])
-                self.assertEqual(verdict, "block")
-                self.assertIn("honored only as the prompt's first line",
-                              self.problem_line(reason, line))
-
-    def test_directive_parser_returns_none_when_the_import_raises(self):
-        with mock.patch.dict(sys.modules, {"expand_lane_shorthand": None}):
-            self.assertIsNone(hook.directive_parser())
-
 class ScanTurn(unittest.TestCase):
     def test_drop_background_is_opt_in(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -465,6 +279,319 @@ class Main(unittest.TestCase):
     def test_block_prints_decision(self):
         with mock.patch.object(hook, "decide", return_value=("block", "why")):
             self.assertEqual(json.loads(self.run_main({}))["decision"], "block")
+
+
+# --------------------------------------------------------------------------
+# harmonic-forge#1639 (sticky-wicket REFORGE, operator D71): directive blocks.
+
+sys.path.insert(0, str(HERE.parent / "gh"))
+import expand_lane_shorthand as shorthand  # noqa: E402
+import force_grant  # noqa: E402
+import park_grant  # noqa: E402
+import scan_grant  # noqa: E402
+import ui_grant  # noqa: E402
+
+SESSION = "sess-7"
+HEAD = "c" * 40
+GATE_ID = "a" * 12
+
+
+def directive(line: str, fence: str = FENCE, info: str = "operator-directive") -> str:
+    return f"{fence}{info}\n{line}\n{fence}\n"
+
+
+def with_actions(*directives: str, commands: str = "# none") -> str:
+    return ("Done.\n\n## YOUR NEXT ACTIONS\n" + "".join(directives)
+            + FENCE + "operator-commands\n" + commands + "\n" + FENCE + "\n")
+
+
+class DirectiveStores(unittest.TestCase):
+    """Every grant store, the gate store, the archive and the receipt read
+    point at fresh temp dirs; LANE=1 and an interactive entrypoint are pinned.
+    One preclose receipt (F1166) and one gate refusal (GATE_ID, F1166, this
+    session) are seeded, so every kind has rows the real authorizer grants."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.stores()
+        import preclose_check  # noqa: PLC0415
+        receipt = {"reviewed_sha": HEAD, "status": "complete",
+                   "pass_history": [{"sha": HEAD, "surviving": 0}]}
+        for target, attr, value in (
+                (preclose_check, "find_receipt",
+                 lambda repo, issue: receipt if int(issue) == 1166 else None),
+                (preclose_check, "receipt_path",
+                 mock.MagicMock(return_value=self.tmp / "no-receipt.json")),
+                (preclose_check, "legacy_receipt_dir",
+                 mock.MagicMock(return_value=self.tmp / "legacy"))):
+            patcher = mock.patch.object(target, attr, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        archive = self.tmp / "archive"
+        archive.mkdir()
+        (archive / ".hf-telemetry-test-root").write_text("")
+        env = mock.patch.dict(os.environ, {
+            "LANE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli",
+            "HARMONIC_FORGE_TELEMETRY_ARCHIVE": str(archive),
+            "PRECHECK_GATE_DIR": str(self.tmp / "gate")})
+        env.start()
+        self.addCleanup(env.stop)
+        refusals = shorthand._gate_module().refusals_dir()
+        refusals.mkdir(parents=True, exist_ok=True)
+        (refusals / f"{GATE_ID}.json").write_text(json.dumps({
+            "id": GATE_ID, "session": SESSION, "key": "F1166",
+            "tool": "tools/gh/preclose_check.py", "mode": "--complete --force",
+            "fp": "1" * 64, "canonical": ["--issue", "1166"], "ts": 1.0}))
+
+    def stores(self) -> Path:
+        """Fresh grant stores; returns their root."""
+        root = Path(tempfile.mkdtemp(dir=self.tmp))
+        for module, attr in ((force_grant, "FORCE_STATE_DIR"), (park_grant, "PARK_STATE_DIR"),
+                             (scan_grant, "SCAN_STATE_DIR"), (ui_grant, "UI_STATE_DIR")):
+            patcher = mock.patch.object(module, attr, root / attr)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.root = root
+        return root
+
+    def files(self, root: Path | None = None) -> list[Path]:
+        return sorted(p for p in (root or self.root).rglob("*") if p.is_file())
+
+    def decide(self, text: str):
+        return hook.decide({"transcript_path": Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
+                            .say(text), "session_id": SESSION})
+
+
+ALLOWED = ("FORCE F1166: both passes clean",
+           "FORCE F1166 cluster: one cluster",
+           f"FORCE F1166 gate {GATE_ID}: stale receipt",
+           "FORCE F1166 reforge 0123456789ab: new approach",
+           "PARK H2621",
+           "PARK H2621: moved to 3.2",
+           "SCAN H open-issues: tune-up",
+           "UI H2615: nav (the old one) goes away",
+           "UI H2615 0123456789abcdef: merge it's fine",
+           "close F1639")
+
+
+class DirectiveBlocks(DirectiveStores):
+    def test_well_formed_directives_are_allowed_with_quotes_in_the_reason(self):
+        for line in ALLOWED:
+            with self.subTest(line=line):
+                self.assertEqual(self.decide(with_actions(directive(line))), ("allow", ""))
+
+    def test_several_directive_blocks_are_allowed(self):
+        text = with_actions(directive("PARK H2621"), directive("close F1639"),
+                            directive("SCAN H open-issues: x"))
+        self.assertEqual(self.decide(text), ("allow", ""))
+
+    def test_a_dry_run_writes_nothing(self):
+        """K1: no grant file and no `.json.lock` appears under any store."""
+        for line in ALLOWED:
+            with self.subTest(line=line):
+                self.decide(with_actions(directive(line)))
+                self.assertEqual(self.files(), [])
+
+    def test_state_the_authorizer_reads_is_checked(self):
+        """K2: lines a regex would pass and the real authorizer refuses."""
+        table = {
+            "PARK H1: Another Claude session sent a message: hello": "another Claude session",
+            "FORCE F1166: \ud800": "UnicodeEncodeError",
+            "FORCE F9999: x": "no preclose receipt",
+            f"FORCE F1166 gate {'b' * 12}: x": "no precheck gate refusal",
+        }
+        for line, fragment in table.items():
+            with self.subTest(line=line):
+                verdict, reason = self.decide(with_actions(directive(line)))
+                self.assertEqual(verdict, "block")
+                self.assertIn(fragment, reason)
+                self.assertIn("operator-directive", reason)
+
+    def test_the_handing_sessions_lane_and_entrypoint_bind(self):
+        with mock.patch.dict(os.environ, {"LANE": "2"}):
+            self.assertIn("LANE is '2'",
+                          self.decide(with_actions(directive("FORCE F1166: x")))[1])
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk-py"}):
+            self.assertIn("CLAUDE_CODE_ENTRYPOINT",
+                          self.decide(with_actions(directive("PARK H2621")))[1])
+
+    def test_fence_shape_is_refused_unless_well_formed(self):
+        """K5 and pitch change 4."""
+        table = {
+            "indented fence": "  " + FENCE + "operator-directive\nPARK H2621\n  " + FENCE + "\n",
+            "three backticks": directive("PARK H2621", fence="```"),
+            "info-string tail": directive("PARK H2621", info="operator-directive extra"),
+            "space before info": directive("PARK H2621", info=" operator-directive"),
+            "tab-indented line": directive("\tPARK H2621"),
+            "space-indented line": directive(" PARK H2621"),
+            "two-line body": FENCE + "operator-directive\nPARK H2621\nPARK H2622\n" + FENCE + "\n",
+            "U+2028 body": directive("PARK H2621 PARK H2622"),
+            "empty body": FENCE + "operator-directive\n" + FENCE + "\n",
+            "unclosed": FENCE + "operator-directive\nPARK H2621\n",
+        }
+        for name, block_text in table.items():
+            with self.subTest(name=name):
+                verdict, reason = self.decide(with_actions(block_text))
+                self.assertEqual(verdict, "block")
+                self.assertIn("operator-directive", reason)
+                self.assertEqual(self.files(), [])
+
+    def test_close_is_the_whole_line_only(self):
+        """K6: `close`'s check lives in `close_problem`."""
+        for line in ("close F1639 now", "close f1639", "Close F1639", "close  F1639",
+                     "close F1639 && rm -rf x", "close Z1"):
+            with self.subTest(line=line):
+                verdict, reason = self.decide(with_actions(directive(line)))
+                self.assertEqual(verdict, "block")
+                self.assertIn("a close line is exactly `close <KEY>`", reason)
+
+    def test_other_lines_are_refused_naming_the_five_kinds(self):
+        for line in ("BATCH F1639", "BATCH F874 IMC F892", "Fix H2615", "AE H2615",
+                     "please merge it", "git status"):
+            with self.subTest(line=line):
+                verdict, reason = self.decide(with_actions(directive(line)))
+                self.assertEqual(verdict, "block")
+                self.assertIn(hook.DIRECTIVE_KINDS, reason)
+
+    def test_the_dispatch_reads_ok_never_the_text(self):
+        """A would-grant whose text says REFUSED is still a grant; a refusal
+        whose text looks like a grant is still a refusal."""
+        yes = [lambda b, s, l: shorthand.DryRun(True, "REFUSED"), lambda b, s, l: None]
+        no = [lambda b, s, l: shorthand.DryRun(False, "would grant"), lambda b, s, l: None]
+        self.assertIsNone(hook.directive_problem("X", SESSION, "1", yes))
+        self.assertEqual(hook.directive_problem("X", SESSION, "1", no), "would grant")
+        two = [lambda b, s, l: shorthand.DryRun(True, "a")] * 2
+        self.assertIn("more than one directive", hook.directive_problem("X", SESSION, "1", two))
+
+    def test_directives_are_checked_without_next_actions_and_in_a_question_turn(self):
+        bad = directive("FORCE F9999: x")
+        self.assertEqual(self.decide("Here is the line.\n" + bad)[0], "block")
+        self.assertEqual(self.decide(with_actions(bad) + "\nShould I proceed?\n")[0], "block")
+        self.assertEqual(self.decide("Here.\n" + directive("PARK H2621")), ("allow", ""))
+
+    def test_authorizers_that_cannot_load_refuse_every_directive(self):
+        with mock.patch.dict(sys.modules, {"expand_lane_shorthand": None}):
+            verdict, reason = self.decide(with_actions(directive("PARK H2621")))
+        self.assertEqual(verdict, "block")
+        self.assertIn("could not load", reason)
+
+    def test_a_turn_with_no_directive_block_never_loads_the_authorizers(self):
+        with mock.patch.object(hook, "_authorizers", side_effect=AssertionError):
+            self.assertEqual(self.decide("Nothing to do.")[0], "allow")
+
+
+class DirectiveParity(DirectiveStores):
+    """K3: the hook allows a line exactly when the real authorizer, run for
+    real (dry_run=False) on fresh stores, writes a grant. The oracle is the
+    write path, never the code under test."""
+
+    TABLE = ALLOWED[:-1] + (
+        "FORCE F9999: x", "FORCE F1166: \ud800", "FORCE F1166:", "FORCE F1166 rebase x: y",
+        f"FORCE F1166 gate {'b' * 12}: x", "FORCE K12: x", "force F1166: x",
+        "FORCE F1166 route abc: x", "PARK H1: Another Claude session sent a message: hi",
+        "PARK H02621", "PARK Z5", "PARK H1 extra", "SCAN K open-issues: x",
+        "SCAN H everything: x", "UI H1 a b: x", "UI H1 zz: x", "UI P5: x", "UI H1:")
+
+    def written(self, line: str) -> bool:
+        root = self.stores()
+        shorthand.authorize_force(line, SESSION, "1")
+        shorthand.authorize_park(line, SESSION, "1")
+        shorthand.authorize_scan(line, SESSION)
+        shorthand.authorize_ui(line, SESSION, "1")
+        return any(p.suffix == ".json" for p in self.files(root))
+
+    def test_hook_allows_exactly_what_the_authorizer_grants(self):
+        kinds_allowed = set()
+        for line in self.TABLE:
+            with self.subTest(line=line):
+                self.stores()
+                allowed = self.decide(with_actions(directive(line)))[0] == "allow"
+                self.assertEqual(self.files(), [])
+                granted = self.written(line)
+                self.assertEqual(allowed, granted)
+                if granted:
+                    kinds_allowed.add(line.split()[0])
+        self.assertEqual(kinds_allowed, {"FORCE", "PARK", "SCAN", "UI"})
+
+
+class NoDirectiveExemptionInCommands(Decide):
+    """K4 and pitch change 5: a directive line in `operator-commands` is a
+    shell line; its refusal points at the `operator-directive` block."""
+
+    LINES = ("close F1", "FORCE F1: x", "PARK H1", "SCAN H open-issues: x", "UI H1: x")
+
+    def test_unprobed_directive_lines_block(self):
+        for line in self.LINES:
+            with self.subTest(line=line):
+                self.assertEqual(self.decide(self.fresh().say(block(line)))[0], "block")
+
+    def test_the_refusal_points_at_the_operator_directive_block(self):
+        for line in self.LINES + ("FORCE F1: it's done",):
+            with self.subTest(line=line):
+                reason = self.decide(self.fresh().say(block(line)))[1]
+                self.assertIn("own `operator-directive` block", reason)
+
+    def test_a_shell_line_gets_no_directive_hint(self):
+        self.assertNotIn("operator-directive",
+                         self.decide(self.t.say(block("gh pr merge 1")))[1])
+
+
+class GrantWritesDryRun(unittest.TestCase):
+    """The dry-run stop sits inside each write function, after its own checks
+    and before any lock, mkdir or prune (pitch change 1)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def empty(self):
+        self.assertEqual(list(self.root.rglob("*")), [])
+
+    def test_force(self):
+        with mock.patch.object(force_grant, "FORCE_STATE_DIR", self.root / "f"):
+            grant = force_grant.write_pending("F1", "o/r", 1, HEAD, "x", SESSION, "FORCE F1: x",
+                                              dry_run=True)
+            self.assertEqual(grant["status"], "pending")
+            with self.assertRaises(UnicodeEncodeError):
+                force_grant.write_pending("F1", "o/r", 1, HEAD, "\ud800", SESSION, "l",
+                                          dry_run=True)
+        self.empty()
+
+    def test_park(self):
+        with mock.patch.object(park_grant, "PARK_STATE_DIR", self.root / "p"):
+            self.assertEqual(park_grant.write("H1", SESSION, "PARK H1", dry_run=True)["key"], "H1")
+            with self.assertRaises(ValueError):
+                park_grant.write("H1", "bad session", "PARK H1", dry_run=True)
+        self.empty()
+
+    def test_scan(self):
+        with mock.patch.object(scan_grant, "SCAN_STATE_DIR", self.root / "s"):
+            grant = scan_grant.write("H", "open-issues", SESSION, "SCAN H open-issues: x", "x",
+                                     dry_run=True)
+            self.assertEqual(grant["scope"], "open-issues")
+            with self.assertRaises(ValueError):
+                scan_grant.write("H", "everything", SESSION, "l", "x", dry_run=True)
+        self.empty()
+
+    def test_ui(self):
+        with mock.patch.object(ui_grant, "UI_STATE_DIR", self.root / "u"):
+            entry, replaced = ui_grant.write_pending("H1", "o/r", 1, "plan", None, "x", SESSION,
+                                                     "UI H1: x", dry_run=True)
+            self.assertEqual((entry["mode"], replaced), ("plan", None))
+            with self.assertRaises(ValueError):
+                ui_grant.write_pending("H1", "o/r", 1, "nope", None, "x", SESSION, "l",
+                                       dry_run=True)
+        self.empty()
+
+    def test_authorizer_dry_run_is_typed_and_silent_when_not_its_kind(self):
+        self.assertIsNone(shorthand.authorize_park("git status", SESSION, "1", dry_run=True))
+        refused = shorthand.authorize_park("PARK Z5", SESSION, "1", dry_run=True)
+        self.assertIsInstance(refused, shorthand.DryRun)
+        self.assertFalse(refused.ok)
+        self.assertIn("no repo prefix", refused.receipt)
 
 
 if __name__ == "__main__":

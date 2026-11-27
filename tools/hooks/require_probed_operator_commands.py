@@ -24,14 +24,36 @@ shell at all.
   ` --dry-run` (only on a line without `&&`).
 - **Runnable (AC2).** A line whose first token, after `os.path.expanduser`,
   is a file with no execute bit is refused whatever was probed.
-- **Directive lines (harmonic-forge#1639).** A line the prompt hook's own
-  `parse_directive` reads, as written, as a well-formed single-part FORCE,
-  PARK, SCAN, UI or `close` directive needs no probe; one it refuses is
-  refused here with the same reason. A directive candidate still passes the
-  one-command shape check first, and an `&&` chain on one is refused. Lines
-  are read relative to the opening fence's indent, so a block nested under a
-  list item is not a placement refusal. If the parser cannot be imported or
-  raises, the line keeps the probe rule.
+- **No directive exemption here.** A FORCE, PARK, SCAN, UI or `close` line in
+  the `operator-commands` block is a shell line like any other; when it is
+  refused, the message says it goes in its own `operator-directive` block.
+
+**Directive blocks (harmonic-forge#1639, sticky-wicket REFORGE, operator D71).**
+A FORCE, PARK, SCAN, UI or `close` line is typed into the prompt, never run
+in a shell, so it goes in its own fenced block whose info string is
+`operator-directive`: opened at column 0 with four or more backticks, the
+bare info string, exactly one body line (counted with `str.splitlines()`)
+starting at column 0, and a closing fence at column 0. Any number of these
+blocks may appear, one directive each. Every line that declares the block
+(`^[ \t]*`{3,}[ \t]*operator-directive`, at any indent or backtick count)
+must open a well-formed one, or the stop is blocked. The body is validated by
+running the prompt hook's own authorizers (`expand_lane_shorthand.authorize_
+force/park/scan/ui`) with `dry_run=True`, the body as the prompt, the Stop
+payload's `session_id` and this process's `LANE`: exactly one of them must
+answer, and its answer must be a would-grant. The authorizers are called
+directly, never the prompt hook's `main()`, so nothing is fetched, posted or
+recorded. A body no authorizer answers must be `close <KEY>`: lowercase
+`close`, one space, a key `tasklist_owed.KEY_RE` matches, nothing after it
+(`close_problem`). These blocks are validated in every turn, with or without
+YOUR NEXT ACTIONS, and in a question turn too.
+
+Accepted residuals: the dry run binds the handing session's `session_id`,
+`LANE` and `CLAUDE_CODE_ENTRYPOINT`, and state as it is when the turn ends.
+A directive meant for a different session (a no-lane session handing over a
+FORCE, PARK or UI line) is refused here although that session could use it,
+and so is a FORCE line handed over before its preclose receipt exists. State
+that changes after the hand-off (a new head pushed) is refused by the
+authorizer at prompt time, which writes nothing.
 
 The hook nudges at most once per turn: `stop_hook_active` is honoured before
 anything else. A turn that ends at a genuine question (shared
@@ -59,65 +81,32 @@ from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
 PROBE_SUFFIXES = (" --help", " --dry-run")
 _ACTIONS_RE = re.compile(r"YOUR NEXT ACTIONS", re.I)
-_BLOCK_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
+_BLOCK_RE = re.compile(r"^[ \t]*(?P<fence>`{4,})[ \t]*operator-commands[ \t]*\n"
                        r"(?P<body>.*?)^[ \t]*(?P=fence)`*[ \t]*$", re.M | re.S)
 #: A fence line declaring the block, at any backtick count; never inline code.
 _DECLARED_RE = re.compile(r"^[ \t]*`{3,}[ \t]*operator-commands[ \t]*$", re.M)
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+#: harmonic-forge#1639: any line declaring a directive block, at any indent,
+#: backtick count or info-string tail. Each must open a well-formed block.
+_DIRECTIVE_DECLARED_RE = re.compile(r"^[ \t]*`{3,}[ \t]*operator-directive")
+#: The one well-formed opener: column 0, four or more backticks, the bare info string.
+_DIRECTIVE_OPEN_RE = re.compile(r"^(?P<fence>`{4,})operator-directive[ \t]*$")
+DIRECTIVE_KINDS = "FORCE, PARK, SCAN, UI or `close <KEY>`"
+_DIRECTIVE_WORDS = ("force", "park", "scan", "ui", "close")
+_DIRECTIVE_HINT = ("; a FORCE/PARK/SCAN/UI/close line goes in its own `operator-directive` "
+                   "block, not here")
+CLOSE_REFUSAL = ("a close line is exactly `close <KEY>`: lowercase `close`, one space, the "
+                 "key, nothing after it")
+
 
 def blocks(text: str) -> list[str]:
-    return [body for _indent, body in declared_blocks(text)]
-
-
-def declared_blocks(text: str) -> list[tuple[str, str]]:
-    """`(opening fence's indent, body)` for each block: a fence nested under a
-    list item carries its indent on every body line (harmonic-forge#1639)."""
-    return [(m.group("indent"), m.group("body")) for m in _BLOCK_RE.finditer(text or "")]
+    return [m.group("body") for m in _BLOCK_RE.finditer(text or "")]
 
 
 def lines_of(body: str) -> list[str]:
     return [ln.strip() for ln in body.splitlines()
             if ln.strip() and not ln.strip().startswith("#")]
-
-
-def raw_lines_of(body: str, indent: str = "") -> list[tuple[str, str]]:
-    """`(as written, stripped)` for each line `lines_of` keeps, in order: the
-    directive parser reads placement (indent, `>`) from the line as written.
-    "As written" is relative to the fence: up to `len(indent)` leading
-    whitespace characters (the opening fence's own indent) are removed, as
-    the rendered block shows them, so only an indent beyond the fence's own
-    reaches the parser."""
-    return [(_dedent(ln, len(indent)), ln.strip()) for ln in body.splitlines()
-            if ln.strip() and not ln.strip().startswith("#")]
-
-
-def _dedent(line: str, width: int) -> str:
-    cut = 0
-    while cut < width and cut < len(line) and line[cut] in " \t":
-        cut += 1
-    return line[cut:]
-
-
-def directive_parser():
-    """`expand_lane_shorthand.parse_directive`, or None when it cannot be
-    imported: then every line keeps the probe rule, never an exemption."""
-    try:
-        from expand_lane_shorthand import parse_directive  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return None
-    return parse_directive
-
-
-def parse_line(parse, raw: str):
-    """`parse(raw)`, or None (the probe rule) when there is no parser or it
-    raises: a parser fault never refuses a probed shell line."""
-    if parse is None:
-        return None
-    try:
-        return parse(raw)
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def segments(line: str) -> tuple[list[str], set[str]] | None:
@@ -215,22 +204,132 @@ def not_runnable(line: str) -> bool:
     return False
 
 
+def close_problem(line: str) -> str | None:
+    """The `close` directive's whole-line check (harmonic-forge#1639): its only
+    home, since `close` has no prompt authorizer. None when `line` is
+    `close <KEY>` exactly, else the refusal."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import tasklist_owed  # noqa: PLC0415
+
+    word, sep, key = line.partition(" ")
+    if word != "close" or sep != " " or not tasklist_owed.KEY_RE.fullmatch(key):
+        return CLOSE_REFUSAL
+    return None
+
+
+def directive_blocks(text: str) -> tuple[list[str], list[str]]:
+    """`(bodies, problems)` for every `operator-directive` declaration in
+    `text`. A declaration that does not open a well-formed block (column-0
+    fence of four or more backticks, bare info string, one body line at
+    column 0, closing fence at column 0) is a problem, never skipped."""
+    lines = (text or "").split("\n")
+    bodies, problems = [], []
+    for index, line in enumerate(lines):
+        if not _DIRECTIVE_DECLARED_RE.match(line):
+            continue
+        opener = _DIRECTIVE_OPEN_RE.match(line)
+        if opener is None:
+            problems.append(f"  - `{line.strip()}`: an `operator-directive` block opens at "
+                            "column 0 with four or more backticks and the bare info string")
+            continue
+        fence = opener.group("fence")
+        body = lines[index + 1] if index + 1 < len(lines) else None
+        close = lines[index + 2] if index + 2 < len(lines) else None
+        closed = close is not None and re.fullmatch(re.escape(fence) + r"`*[ \t]*", close)
+        if body is None or not closed:
+            problems.append("  - an `operator-directive` block holds exactly one line and "
+                            "closes at column 0 with its own fence on the next line")
+        elif not body.strip() or len(body.splitlines()) != 1:
+            problems.append(f"  - `{body.strip()}`: an `operator-directive` block holds "
+                            "exactly one non-blank line")
+        elif body[0] in " \t":
+            problems.append(f"  - `{body.strip()}`: a directive line starts at column 0, "
+                            "as the operator types it")
+        else:
+            bodies.append(body)
+    return bodies, problems
+
+
+def _authorizers():
+    """The prompt hook's four authorizers, as dry runs. Import errors raise;
+    the caller refuses every directive block (fail closed)."""
+    from expand_lane_shorthand import (  # noqa: PLC0415
+        authorize_force, authorize_park, authorize_scan, authorize_ui)
+    return (lambda b, sid, lane: authorize_force(b, sid, lane, dry_run=True),
+            lambda b, sid, lane: authorize_park(b, sid, lane, dry_run=True),
+            lambda b, sid, lane: authorize_scan(b, sid, dry_run=True),
+            lambda b, sid, lane: authorize_ui(b, sid, lane, dry_run=True))
+
+
+def directive_problem(body: str, session_id: str | None, lane: str | None,
+                      authorizers) -> str | None:
+    """Why the prompt hook would not honor `body`, or None. Exactly one
+    authorizer may answer, and its answer must be a would-grant; a body none
+    answers must pass `close_problem`."""
+    answers = [run(body, session_id, lane) for run in authorizers]
+    answers = [a for a in answers if a is not None]
+    if len(answers) > 1:
+        return "it reads as more than one directive; one directive per block"
+    if answers:
+        return None if answers[0].ok is True else answers[0].receipt
+    if body.split(" ", 1)[0].lower() == "close":
+        return close_problem(body)
+    return f"an `operator-directive` block holds only a {DIRECTIVE_KINDS} line"
+
+
+def directive_problems(text: str, session_id: str | None, lane: str | None) -> list[str]:
+    bodies, problems = directive_blocks(text)
+    if not bodies:
+        return problems
+    try:
+        authorizers = _authorizers()
+    except Exception as exc:  # noqa: BLE001 - fail closed: no directive is vouched for
+        return problems + [f"  - `{b}`: the prompt hook's authorizers could not load "
+                           f"({type(exc).__name__})" for b in bodies]
+    for body in bodies:
+        try:
+            why = directive_problem(body, session_id, lane, authorizers)
+        except Exception as exc:  # noqa: BLE001
+            why = f"the directive check failed ({type(exc).__name__})"
+        if why:
+            problems.append(f"  - `{body}`: the prompt hook would refuse it: {why}")
+    return problems
+
+
+def _directive_block(problems: list[str]) -> tuple[str, str]:
+    return "block", ("An `operator-directive` block would not be honored as typed "
+                     "(harmonic-forge#1639):\n" + "\n".join(problems) + "\n\nEach FORCE, PARK, "
+                     "SCAN, UI or `close` line goes alone in its own block, opened at column 0 "
+                     "with four backticks and `operator-directive`, and is checked by the prompt "
+                     "hook's own authorizers as a dry run.")
+
+
+def _hint(line: str) -> str:
+    return _DIRECTIVE_HINT if line.split(" ", 1)[0].lower() in _DIRECTIVE_WORDS else ""
+
+
 def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     transcript = payload.get("transcript_path") or ""
     if not transcript:
         return "allow", ""
     text = last_assistant_text(Path(transcript))
-    if not text or not _ACTIONS_RE.search(text):
+    if not text:
         return "allow", ""
+    directives = directive_problems(text, payload.get("session_id"), os.environ.get("LANE"))
+    if not _ACTIONS_RE.search(text):
+        return _directive_block(directives) if directives else ("allow", "")
     # A question turn withholds only "never probed" (operator-approved
     # 2026-10-22): the block shape and AC2 still run, so a question can end
     # the turn without a probe but never bypass the gate.
     question = asks_a_question(text)
-    declared = declared_blocks(text)
+    declared = blocks(text)
     if len(declared) != 1 or len(_DECLARED_RE.findall(text)) != 1:
-        return "block", ("A response with YOUR NEXT ACTIONS carries exactly one "
-                         "`operator-commands` block, opened with four backticks, one command "
-                         "per line (`# none` when there is no command) (harmonic-forge#1151).")
+        shape = ("A response with YOUR NEXT ACTIONS carries exactly one "
+                 "`operator-commands` block, opened with four backticks, one command "
+                 "per line (`# none` when there is no command) (harmonic-forge#1151).")
+        if directives:
+            return "block", _directive_block(directives)[1] + "\n\n" + shape
+        return "block", shape
     complete = not question
     if probes is None and complete:
         calls, truncated = scan_turn(transcript, drop_background=True, require_result=True)[:2]
@@ -238,40 +337,31 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
         probes = [call[0] for call in calls]
     probe_set = {p.strip() for p in probes or []}
     problems = []
-    parse = directive_parser()
-    indent, body = declared[0]
-    for raw, line in raw_lines_of(body, indent):
+    for line in lines_of(declared[0]):
         why = shape_problem(line)
-        directive = parse_line(parse, raw)
-        if why and isinstance(directive, str):
-            problems.append(f"  - `{line}`: the prompt hook would refuse it: {directive}; "
-                            "reword the reason (no quotes or shell metacharacters)")
-        elif why and directive is not None:
-            problems.append(f"  - `{line}`: a directive line cannot hold quotes or shell "
-                            "metacharacters; reword the reason (no quotes or shell "
-                            "metacharacters)")
-        elif why:
-            problems.append(f"  - `{line}`: {why}")
-        elif directive is not None and len(segments(line)[0]) > 1:
-            problems.append(f"  - `{line}`: a directive line is one line; `&&` is not allowed")
-        elif isinstance(directive, str):
-            problems.append(f"  - `{line}`: the prompt hook would refuse it: {directive}; "
-                            "reword the reason (no quotes or shell metacharacters)")
-        elif directive is not None:
-            continue  # a well-formed directive: no shell form, nothing to probe
+        if why:
+            problems.append(f"  - `{line}`: {why}{_hint(line)}")
         elif not_runnable(line):
             problems.append(f"  - `{line}`: not executable as written; prefix it with "
                             "`bash` or `python3`")
         elif complete and not probed(line, probe_set):
             problems.append(f"  - `{line}`: no Bash call this turn ran exactly this line, "
-                            "or this line plus --help or --dry-run")
+                            f"or this line plus --help or --dry-run{_hint(line)}")
+    if directives:
+        verdict, reason = _directive_block(directives)
+        if problems:
+            reason += "\n\n" + _commands_reason(problems)
+        return verdict, reason
     if not problems:
         return "allow", ""
-    return "block", (
-        "The operator-commands block holds commands this turn never probed "
-        "(harmonic-forge#1151):\n" + "\n".join(problems) + "\n\nRun each line exactly as "
-        "written (or with --help / --dry-run appended) in the foreground before handing it "
-        "over. A probe that errored does not count.")
+    return "block", _commands_reason(problems)
+
+
+def _commands_reason(problems: list[str]) -> str:
+    return ("The operator-commands block holds commands this turn never probed "
+            "(harmonic-forge#1151):\n" + "\n".join(problems) + "\n\nRun each line exactly as "
+            "written (or with --help / --dry-run appended) in the foreground before handing it "
+            "over. A probe that errored does not count.")
 
 
 def main() -> int:

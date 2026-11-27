@@ -218,8 +218,9 @@ fails); 4 a bar fails; 2 refused; 3 any other error. Never 1.
     They are owned by `tools/hooks/require_probed_operator_commands.py`
     (harmonic-forge#1151); its gap (waiver lines, and `--help`
     accepted as a probe for state-bound modes) is a follow-up. FORCE, PARK,
-    SCAN, UI and `close` lines are parsed by the prompt hook's own
-    `parse_directive`, not probed (harmonic-forge#1639).
+    SCAN, UI and `close` lines are never in that block: each goes alone in
+    an `operator-directive` block, which the same hook checks by running the
+    prompt hook's own authorizers as dry runs (harmonic-forge#1639).
   - Lint's unscoped coverage includes one `operator-commands-block` slip it
     cannot refuse.
 - A claim is `*|<class>` (any tool) or `<tool>|<class>` (one tool's mode). Every
