@@ -278,7 +278,11 @@ class Recognizer(unittest.TestCase):
     CLAUDE_ROOT = "/var/ctmp-fixture"
 
     def claude_root(self):
-        return mock.patch.object(nrs, "SCRATCH_ROOTS", ("/tmp", self.CLAUDE_ROOT))
+        """Patch only the second root: the real default is swapped for the
+        fixture path, so a tuple missing that root stays missing it."""
+        default = os.path.expanduser("~/.cache/claude-tmp")
+        roots = tuple(self.CLAUDE_ROOT if root == default else root for root in nrs.SCRATCH_ROOTS)
+        return mock.patch.object(nrs, "SCRATCH_ROOTS", roots)
 
     def test_claude_tmp_root_writes_are_scratch(self):
         """TC1 (AC1): a write under the second root is a scratch write."""
