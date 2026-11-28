@@ -100,6 +100,18 @@ class ParkTrigger(unittest.TestCase):
                 self.assertIn("LANE is not set", self.park("PARK H2621", lane=lane))
         self.assertNothingWritten()
 
+    def test_park_without_lane_refuses_in_a_dry_run(self) -> None:
+        """Epoch pass 1, survivor 8: the dry run the probe hook runs refuses on
+        LANE exactly as the real prompt path does."""
+        for lane in (None, ""):
+            with self.subTest(lane=lane):
+                answer = m.authorize_park("PARK H2621", SESSION, lane, NOW, dry_run=True)
+                self.assertIsInstance(answer, m.DryRun)
+                self.assertFalse(answer.ok)
+                self.assertIn("LANE is not set", answer.receipt)
+        self.assertTrue(m.authorize_park("PARK H2621", SESSION, "1", NOW, dry_run=True).ok)
+        self.assertNothingWritten()
+
     def test_park_with_unknown_prefix_writes_nothing(self) -> None:
         self.assertIn("PARK REFUSED for Z12: no repo prefix", self.park("PARK Z12"))
         self.assertNothingWritten()

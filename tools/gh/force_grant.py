@@ -150,8 +150,11 @@ def read_grant(key: str) -> dict | None:
 def write_pending(key: str, repo: str, issue: int, sha: str | None, reason: str,
                   session_id: str | None, line: str, now: datetime | None = None,
                   mode: str = "plain", sha_prefix: str | None = None,
-                  gate: dict | None = None) -> dict:
+                  gate: dict | None = None, dry_run: bool = False) -> dict:
     """The hook's write. A new FORCE line replaces any earlier grant for the key.
+    `dry_run` (harmonic-forge#1639) builds the grant, running every check this
+    function makes (the reason's UTF-8 hash), and returns it before the lock:
+    nothing is created, written or locked.
     `mode` is plain, reforge, route, cluster or gate (harmonic-forge#1174, #1244,
     #1291): plain and cluster bind the full `sha`; reforge and route bind the
     operator-typed `sha_prefix`; gate binds the refusal record the operator
@@ -168,6 +171,8 @@ def write_pending(key: str, repo: str, issue: int, sha: str | None, reason: str,
     if mode == "gate":
         gate = gate or {}
         grant.update({field: gate.get(field) for field in GATE_FIELDS + ("gate_refusal_id",)})
+    if dry_run:
+        return grant
     with grant_lock(key):
         imc_waiver.write_json_atomic(grant_path(key), grant)
     return grant

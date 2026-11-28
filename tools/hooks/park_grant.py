@@ -86,15 +86,16 @@ def _lock(session: str, key: str):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def write(key: str, session: str, line: str, now: datetime | None = None) -> dict:
+def write(key: str, session: str, line: str, now: datetime | None = None,
+          dry_run: bool = False) -> dict:
     """The hook's write. A new PARK line replaces any earlier grant for the
     (session, key). Raises OSError when it cannot write, or ValueError on an
-    unusable session or key; the caller refuses."""
+    unusable session or key; the caller refuses. `dry_run`
+    (harmonic-forge#1639) returns the grant after the session and key checks,
+    before the test-store guard, the lock and the prune: nothing is touched."""
     key = (key or "").upper()
     if not _valid(session, key):
         raise ValueError(f"session {session!r} or key {key!r} cannot name a grant")
-    if _refuses_real_store():
-        raise OSError("a test process never writes the real PARK store")
     moment = now or imc_waiver._now()
     grant = {
         "key": key, "session": session, "line": line,
@@ -102,6 +103,10 @@ def write(key: str, session: str, line: str, now: datetime | None = None) -> dic
         "expires_at": imc_waiver._iso(moment + timedelta(hours=TTL_HOURS)),
         "consumed_at": None, "hook_version": HOOK_VERSION,
     }
+    if dry_run:
+        return grant
+    if _refuses_real_store():
+        raise OSError("a test process never writes the real PARK store")
     with _lock(session, key):
         imc_waiver.write_json_atomic(grant_path(session, key), grant)
     prune()  # by wall clock: file mtimes are wall clock, whatever `now` says

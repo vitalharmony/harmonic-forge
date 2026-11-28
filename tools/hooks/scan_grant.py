@@ -112,22 +112,27 @@ def _lock(path: Path):
 
 
 def write(letter: str, scope: str, session: str, line: str, reason: str,
-          now: datetime | None = None) -> dict:
+          now: datetime | None = None, dry_run: bool = False) -> dict:
     """The hook's write. A new SCAN line replaces any earlier grant for the same
-    (session, letter, scope). Raises ValueError or OSError; the caller refuses."""
+    (session, letter, scope). Raises ValueError or OSError; the caller refuses.
+    `dry_run` (harmonic-forge#1639) returns the grant after the session, letter
+    and scope checks and the path's digest, before the test-store guard, the
+    lock and the prune: nothing is touched."""
     letter = (letter or "").upper()
     if not (session and _SESSION_RE.match(session)) or letter not in REPOS \
             or not _SCOPE_RE.match(scope or ""):
         raise ValueError(f"session {session!r}, letter {letter!r} or scope {scope!r} "
                          "cannot name a grant")
-    if _refuses_real_store():
-        raise OSError("a test process never writes the real SCAN store")
     moment = now or imc_waiver._now()
     grant = {"letter": letter, "repo": REPOS[letter], "scope": scope, "session": session,
              "line": line, "reason": reason, "created_at": imc_waiver._iso(moment),
              "expires_at": imc_waiver._iso(moment + timedelta(hours=TTL_HOURS)),
              "hook_version": HOOK_VERSION}
     path = grant_path(session, letter, scope)
+    if dry_run:
+        return grant
+    if _refuses_real_store():
+        raise OSError("a test process never writes the real SCAN store")
     with _lock(path):
         imc_waiver.write_json_atomic(path, grant)
     prune()

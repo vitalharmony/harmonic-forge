@@ -404,6 +404,28 @@ class AuthorizeScan(unittest.TestCase):
 
 
 
+class RealStoreGuard(unittest.TestCase):
+    """Epoch pass 1, survivor 4 (harmonic-forge#1639): with the store left at
+    its default, a test process never writes it, through the guard that moved
+    below the dry-run stop in `scan_grant.write`. HOME and REAL_SCAN_DIR point
+    at a temp dir so that even a broken guard writes there."""
+
+    def test_scan_never_writes_real_store(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        real = home / ".claude" / "state" / "scan"
+        with mock.patch.dict(os.environ, {"HOME": str(home)}), \
+                mock.patch.object(scan_grant, "SCAN_STATE_DIR", None), \
+                mock.patch.object(scan_grant, "STATE_RELPATH", Path(".claude/state/scan")), \
+                mock.patch.object(scan_grant, "REAL_SCAN_DIR", real):
+            self.assertEqual(scan_grant.state_dir(), real)
+            with self.assertRaises(OSError):
+                scan_grant.write("H", "open-issues", SESSION, "SCAN H open-issues: x", "x")
+            self.assertEqual(scan_grant.write("H", "open-issues", SESSION, "l", "x",
+                                              dry_run=True)["scope"], "open-issues")
+        self.assertEqual(list(home.rglob("*")), [])
+
+
 class ReceiptNamesTheCause(Base):
     """harmonic-forge#1378 AC2: a refused page's receipt says why."""
 

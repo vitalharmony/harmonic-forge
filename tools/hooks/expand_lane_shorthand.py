@@ -62,6 +62,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from hook_identity import slot_env as _slot_env  # noqa: E402
 
@@ -892,6 +893,26 @@ _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECAS
 _FORCE_MALFORMED_RE = re.compile(r"^FORCE[ \t]+\S")
 
 
+class DryRun(NamedTuple):
+    """An authorizer's dry-run answer (harmonic-forge#1639): `ok` is True only
+    when every check passed and the write function, run with `dry_run=True`,
+    returned the grant it would have written. `receipt` is the refusal as the
+    prompt hook would print it, or a "would grant" line. Callers read `ok`,
+    never the text."""
+    ok: bool
+    receipt: str
+
+
+def _dry(result) -> "DryRun | None":
+    """An authorizer's result as a dry run: None where it would stay silent
+    (no line of its kind), its DryRun when it would grant, else a refusal."""
+    if isinstance(result, DryRun):
+        return result
+    if not result:
+        return None
+    return DryRun(False, result)
+
+
 def _gate_module():
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "precheck"))
     import gate  # noqa: PLC0415
@@ -906,18 +927,20 @@ def _force_module():
     return force_grant
 
 
-def authorize_force(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
+def authorize_force(prompt: str, session_id: str | None, lane: str | None, now=None,
+                    dry_run: bool = False):
     """Write a PENDING FORCE grant (harmonic-forge#1169 AC1). Nothing can use it
     until `force_grant.py record` posts and refetches it (AC2). Returns a
     receipt for `additionalContext`, or "" when no line looks like FORCE.
     Every refusal says why and writes nothing. Never raises."""
     try:
-        return _authorize_force(prompt, session_id, lane, now)
+        result = _authorize_force(prompt, session_id, lane, now, dry_run)
     except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
-        return f"FORCE REFUSED: the FORCE check failed ({type(exc).__name__}: {exc}). No grant written."
+        result = f"FORCE REFUSED: the FORCE check failed ({type(exc).__name__}: {exc}). No grant written."
+    return _dry(result) if dry_run else result
 
 
-def _authorize_force(prompt, session_id, lane, now) -> str:
+def _authorize_force(prompt, session_id, lane, now, dry_run=False):
     lines = prompt.splitlines()
     head = next((text for text in lines if text.strip()), "")
     if not any(_FORCE_ANY_RE.match(line) for line in lines) and not _FORCE_MALFORMED_RE.match(head):
@@ -994,7 +1017,10 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
                     "no head to bind the force to. No grant written.")
     previous = grants.read_grant(key)
     grant = grants.write_pending(key, repo, number, head, reason, session_id, lines[first], now,
-                                 mode=mode, sha_prefix=sha_prefix, gate=gate_binding)
+                                 mode=mode, sha_prefix=sha_prefix, gate=gate_binding,
+                                 dry_run=dry_run)
+    if dry_run:
+        return DryRun(True, f"FORCE: would grant a {mode} grant for {key}.")
     bound = (head or sha_prefix or (gate_binding or {}).get("arg_fp") or "")[:12]
     replaced = ""
     if previous:
@@ -1019,17 +1045,19 @@ _PARK_RE = re.compile(r"^PARK[ \t]+([A-Za-z]\d{1,6})[ \t]*(?::[ \t]*(.*))?$")
 _PARK_ANY_RE = re.compile(r"^[ \t>]*park[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
 
 
-def authorize_park(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
+def authorize_park(prompt: str, session_id: str | None, lane: str | None, now=None,
+                   dry_run: bool = False):
     """Write a PARK grant (harmonic-forge#1281 AC1). Returns a receipt for
     `additionalContext`, or "" when no line looks like PARK. Every refusal
     says why and writes nothing. Never raises."""
     try:
-        return _authorize_park(prompt, session_id, lane, now)
+        result = _authorize_park(prompt, session_id, lane, now, dry_run)
     except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
-        return f"PARK REFUSED: the PARK check failed ({type(exc).__name__}: {exc}). No grant written."
+        result = f"PARK REFUSED: the PARK check failed ({type(exc).__name__}: {exc}). No grant written."
+    return _dry(result) if dry_run else result
 
 
-def _authorize_park(prompt, session_id, lane, now) -> str:
+def _authorize_park(prompt, session_id, lane, now, dry_run=False):
     lines = prompt.splitlines()
     if not any(_PARK_ANY_RE.match(line) for line in lines):
         return ""
@@ -1062,23 +1090,26 @@ def _authorize_park(prompt, session_id, lane, now) -> str:
         return (f"PARK REFUSED for {key}: the prompt carries no session id to bind the grant "
                 "to. No grant written.")
     import park_grant  # noqa: PLC0415
-    grant = park_grant.write(key, session_id, lines[first], now)
+    grant = park_grant.write(key, session_id, lines[first], now, dry_run=dry_run)
+    if dry_run:
+        return DryRun(True, f"PARK: would grant {key}.")
     return (f"PARK: {key}'s open task-list entry may now be completed or deleted once in this "
             f"session (until {grant['expires_at']}).")
 
 
-def authorize_scan(prompt: str, session_id: str | None, now=None) -> str:
+def authorize_scan(prompt: str, session_id: str | None, now=None, dry_run: bool = False):
     """Write a SCAN grant (harmonic-forge#1363 AC1). Returns a receipt for
     `additionalContext`, or "" when no line looks like SCAN. Every refusal says
     why and writes nothing. Never raises. PARK's checks in PARK's order, but no
     LANE requirement: a wayfinder run is a no-lane session."""
     try:
-        return _authorize_scan(prompt, session_id, now)
+        result = _authorize_scan(prompt, session_id, now, dry_run)
     except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
-        return f"SCAN REFUSED: the SCAN check failed ({type(exc).__name__}: {exc}). No grant written."
+        result = f"SCAN REFUSED: the SCAN check failed ({type(exc).__name__}: {exc}). No grant written."
+    return _dry(result) if dry_run else result
 
 
-def _authorize_scan(prompt, session_id, now) -> str:
+def _authorize_scan(prompt, session_id, now, dry_run=False):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import scan_grant  # noqa: PLC0415
     lines = prompt.splitlines()
@@ -1098,7 +1129,10 @@ def _authorize_scan(prompt, session_id, now) -> str:
     if not session_id:
         return (f"SCAN REFUSED for {letter} {scope}: the prompt carries no session id to bind "
                 "the grant to. No grant written.")
-    grant = scan_grant.write(letter, scope, session_id, lines[first], reason, now)
+    grant = scan_grant.write(letter, scope, session_id, lines[first], reason, now,
+                             dry_run=dry_run)
+    if dry_run:
+        return DryRun(True, f"SCAN: would grant {letter} {scope}.")
     return (f"SCAN: {grant['repo']} {scope} may be scanned with tools/gh/bounded_scan.py in "
             f"this session until {grant['expires_at']}.")
 
@@ -1117,18 +1151,20 @@ def _ui_module():
     return ui_grant
 
 
-def authorize_ui(prompt: str, session_id: str | None, lane: str | None, now=None) -> str:
+def authorize_ui(prompt: str, session_id: str | None, lane: str | None, now=None,
+                 dry_run: bool = False):
     """Write a PENDING UI grant (harmonic-forge#1274 AC3). It approves nothing
     until `ui_grant.py record` posts its public record. Returns a receipt for
     `additionalContext`, or "" when no line looks like UI. Every refusal says
     why and writes nothing. Never raises."""
     try:
-        return _authorize_ui(prompt, session_id, lane, now)
+        result = _authorize_ui(prompt, session_id, lane, now, dry_run)
     except Exception as exc:  # noqa: BLE001 - fail closed: nothing written
-        return f"UI REFUSED: the UI check failed ({type(exc).__name__}: {exc}). No grant written."
+        result = f"UI REFUSED: the UI check failed ({type(exc).__name__}: {exc}). No grant written."
+    return _dry(result) if dry_run else result
 
 
-def _authorize_ui(prompt, session_id, lane, now) -> str:
+def _authorize_ui(prompt, session_id, lane, now, dry_run=False):
     lines = prompt.splitlines()
     if not any(_UI_ANY_RE.match(line) for line in lines):
         return ""
@@ -1167,7 +1203,9 @@ def _authorize_ui(prompt, session_id, lane, now) -> str:
         return (f"UI REFUSED for {key}: {repo} is a cross-account repo, and UI fails closed "
                 "there. No grant written.")
     entry, replaced = grants.write_pending(key, repo, number, mode, digest, reason, session_id,
-                                           lines[first], now)
+                                           lines[first], now, dry_run=dry_run)
+    if dry_run:
+        return DryRun(True, f"UI: would grant a {mode} grant for {key}.")
     bound = f" at digest {digest[:12]}" if digest else ""
     note = ""
     if replaced:

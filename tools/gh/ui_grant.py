@@ -219,9 +219,12 @@ def _expired(entry: dict, now: datetime) -> bool:
 
 def write_pending(key: str, repo: str, issue: int, mode: str, digest: str | None, reason: str,
                   session_id: str | None, line: str,
-                  now: datetime | None = None) -> tuple[dict, dict | None]:
+                  now: datetime | None = None,
+                  dry_run: bool = False) -> tuple[dict, dict | None]:
     """The hook's write: a pending entry of `mode`, replacing only that mode's
-    earlier pending entry. Returns `(entry, replaced entry or None)`."""
+    earlier pending entry. Returns `(entry, replaced entry or None)`. `dry_run`
+    (harmonic-forge#1639) returns `(entry, None)` after the mode check, before
+    the lock: nothing is created, read or written."""
     if mode not in MODES:
         raise ValueError(f"unknown UI grant mode {mode!r}")
     moment = now or imc_waiver._now()
@@ -232,6 +235,8 @@ def write_pending(key: str, repo: str, issue: int, mode: str, digest: str | None
         "session_id": session_id or "", "line": line, "status": "pending",
         "hook_version": HOOK_VERSION,
     }
+    if dry_run:
+        return entry, None
     with grant_lock(key):
         current = read_grant(key) or {}
         if current.get("repo", repo).lower() != repo.lower() or int(current.get("issue") or issue) != issue:
