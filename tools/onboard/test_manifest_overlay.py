@@ -141,14 +141,35 @@ def registered_env(case: unittest.TestCase, overlay: str) -> tuple[Path, Path]:
     return repo, slots
 
 
-def probe_from(cwd: Path, base: Path, code: str) -> str:
+#: The only variables `probe_from`'s child inherits (harmonic-forge#1635 P5).
+#: An allowlist, not a denylist: a denylist is a hand-kept list of spellings
+#: that grew from `LANE` to `CLAUDE_CODE_ENTRYPOINT` and `GH_REPO` and still
+#: let `HOME`, `GIT_*` and `GH_ACCT_HOME` through. `TMPDIR` is kept so the
+#: child's scratch files land where the sandbox allows; it names no identity.
+PROBE_ENV_ALLOW = ("PATH", "TMPDIR")
+
+
+def probe_from(cwd: Path, base: Path, code: str, *, home: Path | None = None,
+               env: dict[str, str] | None = None) -> str:
     """stdout of `code` run in a fresh interpreter with its cwd at `cwd` and
     `FORGE_PROJECTS_MANIFEST` at `base`; `tools/hooks` and `tools/onboard` are on
-    its path (TC17: a hook process computes its prefix maps at import)."""
-    env = {k: v for k, v in os.environ.items() if k != "LANE"}
-    env["FORGE_PROJECTS_MANIFEST"] = str(base)
+    its path (TC17: a hook process computes its prefix maps at import).
+
+    The child's environment is built from `PROBE_ENV_ALLOW` only, then `HOME`
+    (`home`, default a scratch dir beside `base`), an absolute scratch
+    `GH_ACCT_HOME` under it, `FORGE_PROJECTS_MANIFEST` and
+    `HARMONIC_FORGE_TESTING=1`. Nothing else is inherited: no `GIT_*`, no
+    `CLAUDE_*` (an `sdk` entrypoint refuses every authorizer at provenance,
+    harmonic-forge#1635 gap 4), no `LANE` or `GH_REPO`, no real `HOME`. A
+    caller that needs more passes it in `env`, which is applied last."""
+    home = home if home is not None else base.parent / "probe-home"
+    home.mkdir(parents=True, exist_ok=True)
+    child = {k: os.environ[k] for k in PROBE_ENV_ALLOW if k in os.environ}
+    child.update(HOME=str(home), GH_ACCT_HOME=str(home.resolve() / "gh-slots"),
+                 FORGE_PROJECTS_MANIFEST=str(base), HARMONIC_FORGE_TESTING="1")
+    child.update(env or {})
     prelude = (f"import sys\nsys.path[:0] = [{str(HERE.parent / 'hooks')!r}, {str(HERE)!r}]\n")
-    result = subprocess.run([sys.executable, "-c", prelude + code], cwd=cwd, env=env,
+    result = subprocess.run([sys.executable, "-c", prelude + code], cwd=cwd, env=child,
                             capture_output=True, text=True, timeout=60, check=False)
     if result.returncode:
         raise AssertionError(f"probe failed in {cwd}: {result.stderr}")

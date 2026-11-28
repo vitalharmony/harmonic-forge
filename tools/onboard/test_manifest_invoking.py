@@ -513,7 +513,8 @@ class HooksArePinnedOut(unittest.TestCase):
 
     def test_no_hook_calls_apply_project_identity(self) -> None:
         # Production hooks only: a test under tools/hooks may exercise identity
-        # (test_manifest_scoping's grant-scope funnel, harmonic-forge#1579 D23).
+        # (test_manifest_scoping's OverlayContentNeverChangesGrantScope
+        # differential, harmonic-forge#1579 D23, #1635).
         self.assertEqual([f for f in self.grep("-n", "apply_project_identity(", "--", "tools/hooks",
                                                ":!**/test_*") if f], [])
 
