@@ -529,9 +529,11 @@ class CodeModeTurnTests(unittest.TestCase):
         self.set_model(49, HAIKU)
         self.assertIsNone(self.run_backstop(self.write()))
 
-    def test_tc3_links_not_file_position_bind_the_call(self):
-        """An Opus REPL (records 42-43) landing between the script's records
-        in file order does not take the call: the links still name record 24."""
+    def test_tc3_links_take_precedence_when_they_differ_from_file_order(self):
+        """An Opus REPL (records 42-43) moved between the script's records in
+        file order does not take the call: the links still name record 24.
+        This pins the link read only; the harness writes `parentUuid` as the
+        chain leaf, so it does not close background scripts (#1644)."""
         self.script_post()
         self.set_model(42, OPUS)
         moved = self.records[42:44]
@@ -693,6 +695,20 @@ class CodeModeTurnTests(unittest.TestCase):
         calls, _ = b.scan_turn(self.write(self.records[:33] + self.records[34:]))
         self.assertEqual([call[:2] for call in calls],
                          [("ls", HAIKU), ("git status", "<synthetic>")])
+
+    def test_ordinary_duplicate_result_keeps_oldest_text(self):
+        """Two-pass PATCH P1: a non-virtual Haiku post with two non-error
+        results for one `toolu_` id, the receipt only in the earlier. As on
+        main, the oldest result text is read, so the receipt is found."""
+        path = self.write([
+            tool_use("toolu_dup", _post_command(1609), model=HAIKU),
+            tool_result("toolu_dup", content=_l1_receipt(1609)),
+            tool_result("toolu_dup", content="ok"),
+        ])
+        self.assertEqual(self.receipts(path), [(FORGE, 1609, HAIKU)])
+        out = self.run_backstop(path)
+        self.assertIsNotNone(out)
+        self.assertIn(f"Posted on {FORGE}#1609 (Tier deep) from {HAIKU};", out["systemMessage"])
 
     def test_kw_synthetic_source_model_is_not_borrowed(self):
         """An anchor source whose model is `<synthetic>` resolves to None. At

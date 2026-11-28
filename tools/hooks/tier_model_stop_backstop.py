@@ -389,7 +389,14 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
     `parentUuid`/`sourceToolAssistantUUID` links name (`_repl_model`), resolved
     after the walk from the records this same bounded pass saw; when the links
     do not resolve, the call keeps `"<synthetic>"`, which is never high-tier,
-    so the report fires. Every other record is read as before."""
+    so the report fires. Every other record is read as before.
+
+    The limit: in the capture (CLI 2.1.332) every `parentUuid` is the chain
+    leaf, so link order equals write order. Attribution is sound for a script
+    whose records are flushed when its REPL call completes. A script written
+    after a later REPL's result takes that later REPL's model, so after a
+    switch to a high model its post goes unreported; that residual is
+    harmonic-forge#1644's to measure, and the transcript cannot close it."""
     errored: set[str] = set()
     answered: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
@@ -458,6 +465,11 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
             command, _model, tool_use_id = calls[index]
             calls[index] = (command, repl_model, tool_use_id)
     for tool_use_id, (entry, block) in script_results.items():
+        # Script pairs only: every other id keeps the oldest result text the
+        # walk assigned, as on main (two-pass PATCH P1).
+        if not _is_script_pair(call_records.get(tool_use_id), result_records.get(tool_use_id),
+                               tool_use_id):
+            continue
         results[tool_use_id] = _record_result_text(entry, block, call_records.get(tool_use_id))
     calls.reverse()
     kept = [call for call in calls if call[2] not in errored
