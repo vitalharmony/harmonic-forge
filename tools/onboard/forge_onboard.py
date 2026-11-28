@@ -1153,6 +1153,28 @@ def report(projects: list[Project], mode: str, dry_run: bool,
     return "\n".join(lines), (1 if failed else 0)
 
 
+def _emit(text: str, stream) -> None:
+    """Write one line to `stream` so no encoding fault can escape (harmonic-forge#1683).
+
+    Encodes with `backslashreplace` in the stream's encoding, falling back to
+    ASCII `backslashreplace` when that codec is unknown or rejects the handler
+    (for example `idna`). Writes the bytes to `stream.buffer` when it has one;
+    a stream without one (`io.StringIO` capture) gets a plain `write`.
+    """
+    enc = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        data = (text + "\n").encode(enc, "backslashreplace")
+    except (LookupError, UnicodeError):
+        data = (text + "\n").encode("ascii", "backslashreplace")
+    buf = getattr(stream, "buffer", None)
+    if buf is None:
+        stream.write(text + "\n")
+        return
+    stream.flush()
+    buf.write(data)
+    buf.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Onboard a repo to the 3-lane protocol.")
     p.add_argument("--project", help="Manifest `name` to act on (default: all).")
@@ -1178,11 +1200,10 @@ def main(argv: list[str] | None = None) -> int:
             # Repo and bin-dir resolution and the source probe are preflight, inside install().
             checks, code = foi.install(args.repo, force=args.force, dry_run=args.dry_run)
         except foi.InstallError as exc:
-            print(f"forge-onboard: {exc}", file=sys.stderr)
+            _emit(f"forge-onboard: {exc}", sys.stderr)
             return 2
-        # A Check can echo a non-UTF-8 path (a surrogate escape): print it escaped.
-        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
-        print("\n".join(c.line() for c in checks).encode(enc, "backslashreplace").decode(enc))
+        # A Check can echo a non-UTF-8 path (a surrogate escape): _emit writes it escaped.
+        _emit("\n".join(c.line() for c in checks), sys.stdout)
         return code
     if args.force or args.repo is not None:
         p.error("--force and --repo are valid only with --install")

@@ -996,6 +996,61 @@ class EpochOnePassOne(InstallBase):
         self.assertIn("[ warn ] PATH — could not probe PATH: RuntimeError: Symlink loop", out)
 
 
+class MainPrintsSafeEncoding(InstallBase):
+    """harmonic-forge#1683: `main()`'s two `--install` prints go through `_emit`,
+    so a strict or handler-rejecting stream codec cannot escape the exit-code mapping."""
+
+    NAMED = "is not inside a git repository"
+
+    def nogit(self) -> Path:
+        path = self.tmp / "nogit-é"
+        path.mkdir()
+        return path
+
+    def nogit_cli(self, encoding: str) -> subprocess.CompletedProcess:
+        return self.cli("--install", "--dry-run", "--repo", str(self.nogit()),
+                        env={"PYTHONIOENCODING": encoding})
+
+    def test_ac2_ascii_strict_env_exits_2_named_regression_guard(self):
+        # Not a kill check: CPython forces stderr's handler to backslashreplace.
+        result = self.nogit_cli("ascii:strict")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("forge-onboard: ", result.stderr)
+        self.assertIn("nogit-\\xe9 " + self.NAMED, result.stderr)
+
+    def test_ac3_in_process_strict_ascii_stderr_returns_2_named(self):
+        repo = self.nogit()
+        raw = io.BytesIO()
+        strict = io.TextIOWrapper(raw, encoding="ascii", errors="strict")
+        # The fixed hermetic env, as run_main uses: install_source() reads the live env.
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(sys, "stderr", strict):
+            code = foi.fo.main(["--install", "--dry-run", "--repo", str(repo)])
+        strict.flush()
+        err = raw.getvalue().decode("ascii")
+        self.assertEqual(code, 2, err)
+        self.assertIn("forge-onboard: ", err)
+        self.assertIn("nogit-\\xe9 " + self.NAMED, err)
+
+    def test_ac4_idna_env_exits_2_named_without_traceback(self):
+        result = self.nogit_cli("idna")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("forge-onboard: ", result.stderr)
+        self.assertIn(self.NAMED, result.stderr)
+
+    def test_ac5_idna_env_check_line_on_stdout_escaped(self):
+        sub = Path(os.fsdecode(os.fsencode(self.app) + b"/sub\xff"))
+        sub.mkdir()
+        self.lane2.mkdir()  # a plain directory: its FAIL Check names the repo path
+        result = subprocess.run([sys.executable, str(FO), "--install", "--repo", str(sub)], cwd=self.app,
+                                env={**self.env, "PYTHONIOENCODING": "idna"}, capture_output=True,
+                                text=True, errors="surrogateescape", stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("sub\\udcff", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+
 #: One maker per type the four rounds' survivors were (harmonic-forge#1532 epoch-1 sticky PATCH);
 #: each carries a unique sentinel so a row passes only on its own exception.
 BACKSTOP_TYPES = (
