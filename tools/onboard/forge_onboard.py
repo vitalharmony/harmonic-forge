@@ -1156,12 +1156,15 @@ def report(projects: list[Project], mode: str, dry_run: bool,
 def _emit(text: str, stream) -> None:
     """Write one line to `stream` so no encoding fault can escape (harmonic-forge#1683).
 
-    Encodes with `backslashreplace` in the stream's encoding, falling back to
-    ASCII `backslashreplace` when that codec is unknown or rejects the handler
-    (for example `idna`). Writes the bytes to `stream.buffer` when it has one;
-    a stream without one (`io.StringIO` capture) gets a plain `write`. A `None`
-    stream (its fd closed at startup: `2>&-` or `>&-`) is skipped, as `print`
-    skips it, so the caller's exit code stands.
+    Escapes once: encodes with `backslashreplace` in the stream's encoding,
+    falling back to ASCII `backslashreplace` when that codec is unknown or
+    rejects the handler (for example `idna`), and records the codec that
+    succeeded. The branch then chooses only the transport. A stream with a
+    `buffer` gets those bytes. A stream without one (`io.StringIO` capture)
+    gets the escaped bytes decoded in the codec that encoded them, so the text
+    is one that codec accepts. A `None` stream (its fd closed at startup:
+    `2>&-` or `>&-`) is skipped, as `print` skips it, so the caller's exit
+    code stands.
     """
     if stream is None:
         return
@@ -1169,10 +1172,11 @@ def _emit(text: str, stream) -> None:
     try:
         data = (text + "\n").encode(enc, "backslashreplace")
     except (LookupError, UnicodeError):
-        data = (text + "\n").encode("ascii", "backslashreplace")
+        enc = "ascii"
+        data = (text + "\n").encode(enc, "backslashreplace")
     buf = getattr(stream, "buffer", None)
     if buf is None:
-        stream.write(text + "\n")
+        stream.write(data.decode(enc))
         return
     stream.flush()
     buf.write(data)

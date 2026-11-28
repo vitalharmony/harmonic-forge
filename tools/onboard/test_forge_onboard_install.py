@@ -1070,6 +1070,30 @@ class MainPrintsSafeEncoding(InstallBase):
         self.assertEqual(result.returncode, expected, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_emit_branches_write_the_same_escaped_payload(self):
+        # Sticky-wicket PATCH: the escape is computed once and every branch writes it.
+        text = "x sub\udcff é"
+        plain = io.StringIO()
+        foi.fo._emit(text, plain)
+        raw = io.BytesIO()
+        wrapped = io.TextIOWrapper(raw, encoding="utf-8", errors="strict")
+        foi.fo._emit(text, wrapped)
+        wrapped.flush()
+        self.assertEqual(plain.getvalue(), raw.getvalue().decode("utf-8"))
+        self.assertEqual(plain.getvalue(), "x sub\\udcff é\n")
+        plain.getvalue().encode("utf-8")  # no lone surrogate reached the text sink
+        # Regression guard, not a kill check: the None return precedes both branches.
+        self.assertIsNone(foi.fo._emit(text, None))
+
+    def test_run_main_stringio_capture_holds_the_escaped_path(self):
+        sub = Path(os.fsdecode(os.fsencode(self.app) + b"/sub\xff"))
+        sub.mkdir()
+        self.lane2.mkdir()  # a plain directory: its FAIL Check names the repo path
+        code, out, err = self.run_main(repo=sub)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("sub\\udcff", out)
+        self.assertNotIn("\udcff", out)
+
 
 #: One maker per type the four rounds' survivors were (harmonic-forge#1532 epoch-1 sticky PATCH);
 #: each carries a unique sentinel so a row passes only on its own exception.
