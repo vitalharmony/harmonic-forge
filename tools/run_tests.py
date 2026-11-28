@@ -108,6 +108,27 @@ def real_tmpdir() -> str:
     return os.environ.get(REAL_TMPDIR_ENV) or tempfile.gettempdir()
 
 
+# harmonic-forge#1529: a test run reads no instance.toml at all, on every
+# machine -- exactly what CI sees. The runner points XDG_CONFIG_HOME at this
+# absolute path, which is outside any checkout and is never created, so
+# instance.py's reader finds no file. The runner never *supplies* config: a
+# runner-written fixture is unreadable wherever TMPDIR has a `.git` ancestor
+# (instance.py refuses those), so every variant of that design was a crash, a
+# leaked developer root or a missing root. A test that needs a projects root
+# declares its own (a monkeypatched module constant, or a per-test XDG fixture
+# for a subprocess).
+CONFIG_FREE_XDG = "/nonexistent/test-run-xdg-config"
+
+
+def _config_free_xdg() -> str:
+    """The config-free XDG dir, refused loudly if something now exists there."""
+    if os.path.lexists(CONFIG_FREE_XDG):
+        raise RuntimeError(
+            f"run_tests: {CONFIG_FREE_XDG} exists; a test run must read no "
+            "instance.toml, so remove it rather than let the suite read it")
+    return CONFIG_FREE_XDG
+
+
 @contextlib.contextmanager
 def contained_tempdir(prefix: str = "hf-test-run-"):
     """harmonic-forge#1114: contain every temp file a test run creates.
@@ -118,8 +139,11 @@ def contained_tempdir(prefix: str = "hf-test-run-"):
     cache `tempfile.gettempdir()` at import time.
     """
     real = real_tmpdir()
+    config_free = _config_free_xdg()
     root = tempfile.mkdtemp(prefix=prefix)
-    old_env = {name: os.environ.get(name) for name in (*TMP_ENV_VARS, REAL_TMPDIR_ENV)}
+    old_env = {name: os.environ.get(name) for name in (*TMP_ENV_VARS, REAL_TMPDIR_ENV,
+                                                       "XDG_CONFIG_HOME")}
+    os.environ["XDG_CONFIG_HOME"] = config_free
     old_cache = tempfile.tempdir
     os.environ[REAL_TMPDIR_ENV] = real
     os.environ["HEAVY_SLOT_DISABLE"] = "1"  # harmonic-forge#1271: tests never sit in the machine's real queue

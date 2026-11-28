@@ -142,19 +142,22 @@ BRANCH_ISSUE_RE = re.compile(r"^[\w.-]+/[a-zA-Z]?(\d+)-")
 HINTED_BRANCH_ISSUE_RE = re.compile(
     r"^[\w.-]+/(?P<hint>hrse|harmonic-forge|forge|h|f)-?(?P<number>\d+)-"
 )
-# harmonic-forge#756: per-issue worktrees moved from `/tmp` to
-# `~/Harmonic_Projects/.worktrees/` (a Codex lane can no longer write `/tmp`).
-# Both roots are accepted during the migration; `/tmp` is the legacy one. The
-# home root is matched both as written and resolved, because the cwd below is
-# `realpath`-ed and $HOME may itself be a symlink.
-_WORKTREE_ROOTS = tuple(dict.fromkeys((
-    "/tmp",
-    str(Path.home() / "Harmonic_Projects" / ".worktrees"),
-    os.path.realpath(Path.home() / "Harmonic_Projects" / ".worktrees"),
-)))
-WORKTREE_ISSUE_RE = re.compile(
-    r"^(?:" + "|".join(re.escape(root) for root in _WORKTREE_ROOTS)
-    + r")/hrse2-(?P<number>\d+)-impl$")
+#: The gate's detached-HEAD fallback (a conflicted rebase leaves a Lane 2
+#: worktree with no branch). A miss here SKIPS the gate, so this pattern has no
+#: root: it matches every absolute `.../hrse2-N-impl` directory, whatever
+#: `projects_root` says or whether it is set (harmonic-forge#1529 reforge).
+#: Every path main matched (`/tmp/...` or the operator's home worktree root,
+#: either one realpath-ed) gives the identical answer, so this is a pointwise
+#: superset of main in every config state, with no config branch to regress --
+#: anchoring to configured roots could only ever match fewer paths than main in
+#: some state. The extra matches add nothing a hostile author lacks on main,
+#: which already accepts any `/tmp/hrse2-N-impl`. Residual: a non-worktree
+#: directory named `hrse2-N-impl` reached through this fallback is gated as
+#: hrse N, which fails closed.
+#: DOTALL: `.` must span a newline in an ancestor name, or that path would miss.
+#: `[a-z]?`: a letter-suffixed reforge worktree (`hrse2-7b-impl`) is hrse 7, as
+#: worktree_issue's `_IMPL_DIR_RE` already reads it.
+WORKTREE_ISSUE_RE = re.compile(r"^/(?:.*/)?hrse2-(?P<number>\d+)[a-z]?-impl$", re.DOTALL)
 HINTED_TARGETS = {
     "hrse": ("vitalharmony/hrse", "1"), "h": ("vitalharmony/hrse", "1"),
     "harmonic-forge": ("vitalharmony/harmonic-forge", "3"),

@@ -352,17 +352,27 @@ class IssueTargetTests(unittest.TestCase):
         with patch.object(m, "_run", return_value=_completed("")):
             self.assertEqual(m.resolve_issue_target("/tmp/hrse2-1099-impl"), (1099, "hrse"))
 
-    def test_detached_worktree_under_the_new_root_is_a_known_target(self):
-        """harmonic-forge#756: worktrees moved to ~/Harmonic_Projects/.worktrees;
-        the legacy /tmp root (above) is still accepted during the migration."""
-        new_root = Path.home() / "Harmonic_Projects" / ".worktrees" / "hrse2-1099-impl"
+    def test_detached_worktree_anywhere_is_a_known_target(self):
+        """harmonic-forge#756 moved worktrees to <projects root>/.worktrees; the
+        legacy /tmp root (above) is still accepted. harmonic-forge#1529 reforge:
+        this detached-HEAD fallback has no root at all. A miss SKIPS the gate, so
+        any absolute `.../hrse2-N-impl` is gated as hrse N -- including the
+        `/var/tmp`, home and nested paths main left unmatched. Matching more
+        fails closed; anchoring to a configured root would fail open in some
+        config state (P1 #3, P2 #2, Codex P2 #3)."""
         with patch.object(m, "_run", return_value=_completed("")):
-            self.assertEqual(m.resolve_issue_target(str(new_root)), (1099, "hrse"))
-            for other in ("/var/tmp/hrse2-1099-impl",
-                          str(Path.home() / "hrse2-1099-impl"),
-                          str(new_root.parent / "nested" / "hrse2-1099-impl")):
+            for path in ("/srv/dev-root/.worktrees/hrse2-1099-impl",
+                         str(Path.home() / "Harmonic_Projects" / ".worktrees" / "hrse2-1099-impl"),
+                         "/var/tmp/hrse2-1099-impl",
+                         str(Path.home() / "hrse2-1099-impl"),
+                         "/srv/dev-root/.worktrees/nested/hrse2-1099-impl",
+                         "/hrse2-1099-impl"):
+                with self.subTest(path=path):
+                    self.assertEqual(m.resolve_issue_target(path), (1099, "hrse"))
+            for other in ("relative/hrse2-1099-impl", "/tmp/hrse2-1099-impl-x",
+                          "/tmp/xhrse2-1099-impl"):
                 with self.subTest(path=other):
-                    self.assertIsNone(m.resolve_issue_target(other))
+                    self.assertIsNone(m.WORKTREE_ISSUE_RE.match(other))
 
     def test_false_positive_shapes_stay_unmatched(self):
         for branch in (

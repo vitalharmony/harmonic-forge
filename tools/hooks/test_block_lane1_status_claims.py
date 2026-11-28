@@ -465,7 +465,13 @@ class TestLane3ThroughTheBashSurface(_BashWriteSurface):
         self.assertTrue(self.denied("echo x > /tmp/lane3-scratch.txt"))
 
     def test_write_inside_testplan_is_allowed(self):
-        self.assertFalse(self.denied(f"echo x > {m.TESTPLAN_ROOT}/gate.md"))
+        # harmonic-forge#1529: the test declares its own testplan root (the
+        # :1515 pattern) and never depends on the runner or the host's config.
+        plan = self.main.parent / "testplan"
+        plan.mkdir()
+        with unittest.mock.patch.object(m, "TESTPLAN_ROOT", plan):
+            self.assertFalse(self.denied(f"echo x > {plan}/gate.md"))
+        self.assertTrue(self.denied(f"echo x > {plan}/gate.md"))
 
     def test_reads_and_dev_null_are_unaffected(self):
         self.assertFalse(self.denied("cat /etc/hostname"))

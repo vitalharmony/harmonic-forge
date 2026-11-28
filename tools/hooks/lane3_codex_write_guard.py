@@ -3,7 +3,7 @@
 
 Forge-owned PreToolUse hook for `^apply_patch$` and `^Bash$`, wired by
 absolute path into every repo's `.codex/hooks.json` that runs a Codex
-Lane 3. Denies any write outside `~/Harmonic_Projects/testplan/` using the
+Lane 3. Denies any write outside `<projects root>/testplan/` using the
 same predicate Claude Lane 3 already uses (`lane3_write_outside_testplan`).
 
 Repo-agnostic: reads no repo-specific config, so one copy in
@@ -43,14 +43,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from block_lane1_status_claims import (  # noqa: E402
+    _projects_hint,
     bash_write_targets,
     command_segments,
     interpreter_write_pairs,
     lane3_write_outside_testplan,
 )
 
+#: harmonic-forge#1529: names the configured testplan root the guard allows
+#: (or says the root is unset), never the operator's home path.
 DENIAL_MESSAGE = (
-    "Codex Lane 3 may write only inside ~/Harmonic_Projects/testplan/ "
+    f"Codex Lane 3 may write only inside {_projects_hint('testplan')}/ "
     "(harmonic-forge#644)."
 )
 

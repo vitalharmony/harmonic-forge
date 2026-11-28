@@ -25,17 +25,24 @@ from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(HOOKS_DIR.parent / "settings"))
 import model_tier_gate  # noqa: E402
+import roots  # noqa: E402  (harmonic-forge#1529: total, never raises)
 
 GIT_TIMEOUT_SECONDS = 1.5
 # `<stem>-<N>-impl`, or `<stem>-<N><letter>-impl` for a second worktree on the
 # same issue (e.g. a reforge); the branch still decides repo and issue.
 _IMPL_DIR_RE = re.compile(r"-(?P<number>\d+)[a-z]?-impl$")
 _REMOTE_REPO_RE = re.compile(r"github\.com[:/](?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?$")
-_IMPL_ROOTS = (
-    str(Path.home() / "Harmonic_Projects" / ".worktrees"),
+#: harmonic-forge#1529: the configured `<projects root>/.worktrees` plus the
+#: legacy `/tmp`; with `projects_root` unset, `/tmp` only (this detection is
+#: advisory; the tier gate's own fallback has no root and matches more,
+#: model_tier_gate.py).
+_PROJECT_WORKTREES = roots.under_projects(".worktrees")
+_IMPL_ROOTS = tuple(r for r in (
+    None if _PROJECT_WORKTREES is None else str(_PROJECT_WORKTREES),
     "/tmp",
-)
+) if r is not None)
 
 
 def in_git_tree(directory: str) -> bool:
@@ -92,8 +99,18 @@ def is_impl_worktree(path: str) -> bool:
     """AC2's filter only: a `<stem>-<N>-impl` directory directly under one of
     the implementation-worktree roots. It never decides repo or issue."""
     parent, name = str(Path(path).parent), Path(path).name
-    roots = set(_IMPL_ROOTS) | {str(Path(root).resolve()) for root in _IMPL_ROOTS}
+    roots = set(_IMPL_ROOTS) | {r for r in map(_resolved_or_none, _IMPL_ROOTS) if r}
     return parent in roots and bool(_IMPL_DIR_RE.search(name))
+
+
+def _resolved_or_none(root: str) -> str | None:
+    """`root` resolved, or None when it cannot be (harmonic-forge#1529: a
+    configured root holding a NUL makes resolve() raise ValueError, which would
+    otherwise drop every other root's candidates with it)."""
+    try:
+        return str(Path(root).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def issue_for_worktree(path: str) -> tuple[str, int] | None:

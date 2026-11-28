@@ -289,9 +289,19 @@ def build_fixture_tree(
     return main, stub_bin
 
 
-def write_overlay_declaration(home: Path, value: str = "operator") -> Path:
+#: harmonic-forge#1529 (option A): a Codex Lane 2/3 launch refuses without a
+#: projects_root, and `~/Harmonic_Projects` keeps the frozen launch tuples'
+#: `<HOME>/Harmonic_Projects/...` add-dirs byte-identical.
+_FIXTURE_PROJECTS_ROOT = "~/Harmonic_Projects"
+
+
+def write_overlay_declaration(home: Path, value: str = "operator",
+                              projects_root: str | None = _FIXTURE_PROJECTS_ROOT) -> Path:
     """Write `<home>/.config/harmonic-forge/instance.toml` declaring
     `lane_hook_overlay` (harmonic-forge#1525) and return its path.
+
+    `projects_root` is declared as given; None omits it (harmonic-forge#1529:
+    a launcher cell with no projects root, which must refuse).
 
     Every Claude launch now refuses without the declaration, so a fixture HOME
     holds one, and `capture_cell` pins XDG_CONFIG_HOME to `<home>/.config` so
@@ -306,9 +316,12 @@ def write_overlay_declaration(home: Path, value: str = "operator") -> Path:
     # harmonic-forge#1531: the two launch inputs that moved from the registry to
     # instance.toml, declared as on the operator's machine so the frozen launch
     # tuples are reproduced byte-identical.
-    path.write_text(f'lane_hook_overlay = "{value}"\n'
-                    f'lane3_policy = "{LANE3_POLICY}"\n'
-                    f'codex_hook_paths = ["{CODEX_HOOK_PATH}"]\n', encoding="utf-8")
+    text = (f'lane_hook_overlay = "{value}"\n'
+            f'lane3_policy = "{LANE3_POLICY}"\n'
+            f'codex_hook_paths = ["{CODEX_HOOK_PATH}"]\n')
+    if projects_root is not None:
+        text += f'projects_root = "{projects_root}"\n'
+    path.write_text(text, encoding="utf-8")
     return path
 
 

@@ -639,14 +639,21 @@ unset _lane_sandbox
 #     AGENT_SESSION_FLAGS removes `/tmp` and `$TMPDIR` as writable roots; a
 #     TMPDIR left at `/tmp` would make every `mktemp` in the session fail.
 #     Claude keeps the caller's TMPDIR untouched.
-_lane_add_dir="$(registry_lookup AGENT_LANE_ADD_DIR "$_lane_agent:$LANE")"
+#     harmonic-forge#1529: `registry_add_dirs` expands `@projects/` entries
+#     under instance.toml `projects_root`; unset refuses the launch.
+_lane_add_dir=""
 _lane_add_dirs=()
-read -ra _lane_add_dirs <<<"$_lane_add_dir"
+mapfile -d '' -t _lane_add_dirs < <(rc=0; registry_add_dirs "$_lane_agent:$LANE" || rc=$?; printf '%s\0' "$rc")
+_lane_add_status="${_lane_add_dirs[-1]}"
+unset '_lane_add_dirs[-1]'
+[ "$_lane_add_status" = 0 ] \
+  || _lane_launch_die "the lane add-dirs could not be resolved (see the reason above) -- refusing to launch (harmonic-forge#1529)"
 for _d in "${_lane_add_dirs[@]}"; do
-  mkdir -p "$HOME/$_d" \
-    || _lane_launch_die "could not create the lane add-dir $HOME/$_d -- refusing to launch (harmonic-forge#756)"
-  cli_args+=("--add-dir" "$HOME/$_d")
+  mkdir -p "$_d" \
+    || _lane_launch_die "could not create the lane add-dir $_d -- refusing to launch (harmonic-forge#756)"
+  cli_args+=("--add-dir" "$_d")
 done
+unset _lane_add_status
 if [ "$_lane_agent" = codex ]; then
   export TMPDIR="$HOME/.cache/codex-lane-tmp/lane$LANE"
   # TMPDIR is itself a writable root now, so Codex mounts its empty `.git`

@@ -62,7 +62,8 @@ launcher scripts do (`git rev-parse --show-toplevel`, strip a trailing
 project, not just HRSE2.
 
 Also denies `Edit`/`Write` calls anywhere outside
-`~/Harmonic_Projects/testplan/` when this process's own `LANE`
+`<projects root>/testplan/` (instance.toml `projects_root`, harmonic-forge#1529;
+unset allows no target) when this process's own `LANE`
 environment variable is `"3"` (harmonic-forge#150) — the first
 mechanical enforcement of Lane 3's "never fixes anything, ever" rule
 for Claude Code sessions, mirroring the hard tool-level enforcement
@@ -106,10 +107,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "settings"))
 from shell_parse import (  # noqa: E402  (harmonic-forge#167)
     command_segments,
     strip_invocation_prefix,
 )
+import roots  # noqa: E402  (harmonic-forge#1529: total, never raises)
 
 HRSE_REPO = "vitalharmony/hrse"
 REPO_SETTING = re.compile(r'(?m)^\s*GH_REPO\s*=\s*"([^"]+)"\s*$')
@@ -122,12 +125,22 @@ LANE3_ONLY_TASKS = {"gate-checkout", "gate-restart", "gate-e2e"}
 LANE3_MARKER_MAX_AGE_SECONDS = 12 * 60 * 60
 EDIT_WRITE_TOOLS = {"Edit", "Write"}
 LANE_WORKTREE_SUFFIX = re.compile(r"^(.+)-lane\d+$")
-TESTPLAN_ROOT = (Path.home() / "Harmonic_Projects" / "testplan").resolve()
+#: harmonic-forge#1529: under instance.toml `projects_root`; None when unset,
+#: and None allows no Lane 3 write target (checked explicitly where used: a
+#: None reaching `_inside` would crash the hook, and a crashed hook allows).
+TESTPLAN_ROOT = roots.under_projects("testplan", resolved=True)
 #: harmonic-forge#797: Lane 3's second legitimate write target, narrower than
 #: TESTPLAN_ROOT — a durable lesson (`feedback_*.md`) so an in-session
 #: correction survives past the session's own context, never the shared
 #: MEMORY.md index or any other file in this directory.
-MEMORY_ROOT = (Path.home() / "Harmonic_Projects" / "operator-memory").resolve()
+MEMORY_ROOT = roots.under_projects("operator-memory", resolved=True)
+
+
+def _projects_hint(sub: str) -> str:
+    """A path under the projects root for a deny message; never raises, so a
+    message being built can never turn a deny into a crash (an allow)."""
+    path = roots.under_projects(sub)
+    return str(path) if path is not None else f"<projects root>/{sub} ({roots.UNSET_TEXT} is unset)"
 
 #: Shell builtins that change the working directory. `cd` was the only one
 #: recognized until harmonic-forge#529; `pushd` changes directory identically
@@ -615,11 +628,27 @@ def lane3_write_outside_testplan(file_path: str) -> bool:
     except (OSError, ValueError, RuntimeError):
         return False
     candidates = (lexical, resolved)
-    if _inside(candidates, TESTPLAN_ROOT):
+    if (TESTPLAN_ROOT is not None and _inside(candidates, TESTPLAN_ROOT)
+            and not _memory_aliased_into_testplan(candidates)):
         return False
     if _is_feedback_lesson_path(candidates):
         return False
     return True
+
+
+def _memory_aliased_into_testplan(candidates: tuple) -> bool:
+    """harmonic-forge#1529 (D63): True when the resolved memory root is the
+    resolved testplan root or inside it AND any form of the target is inside
+    the memory root. The testplan allowance then admits nothing there, so
+    `MEMORY.md` is never writable through it; the lesson rule alone decides.
+    A testplan strictly inside the memory root needs no guard (its subtree
+    cannot hold `MEMORY.md`) and keeps working, which refusing every target
+    in the memory root, or both allowances on any overlap, would not."""
+    if MEMORY_ROOT is None or TESTPLAN_ROOT is None:
+        return False
+    if not _inside((MEMORY_ROOT,), TESTPLAN_ROOT):
+        return False
+    return any(_inside((candidate,), MEMORY_ROOT) for candidate in candidates)
 
 
 def _is_feedback_lesson_path(candidates: tuple) -> bool:
@@ -629,6 +658,8 @@ def _is_feedback_lesson_path(candidates: tuple) -> bool:
     and resolved form must independently be a `feedback_*.md` file whose
     immediate parent is exactly MEMORY_ROOT — not merely somewhere under
     it, which would admit any subdirectory a Lane 3 session creates."""
+    if MEMORY_ROOT is None:
+        return False
     for candidate in candidates:
         if candidate.parent != MEMORY_ROOT:
             return False
@@ -1024,7 +1055,7 @@ def branch_advice(target: str, cwd: Path) -> str:
     into the checkout the session is actually sitting in -- then branching that
     checkout is precisely the fix. When the target lives in a DIFFERENT worktree
     that happens to have `main` checked out (the shape that bit: a Lane 2
-    session correctly scoped to its own `~/Harmonic_Projects/.worktrees/<repo>-<issue>-impl` worktree,
+    session correctly scoped to its own `<projects root>/.worktrees/<repo>-<issue>-impl` worktree,
     reaching out to a path in the shared main checkout), branching does nothing
     -- the session is already on the branch it should be on, and the fix is to
     write inside its own worktree instead. Telling it to branch sent it looking
@@ -1102,7 +1133,7 @@ def protected_write_denial(
                 "violation as an `Edit` here (harmonic-forge#142): Lane 2 work "
                 "belongs in its own dedicated worktree. Re-run it against the "
                 "project's -lane2 worktree or a fresh "
-                "~/Harmonic_Projects/.worktrees/<project>-<issue>-impl worktree."
+                f"{_projects_hint('.worktrees')}/<project>-<issue>-impl worktree."
             )
         if lane3_write_outside_testplan(target):
             return denial(
@@ -1664,8 +1695,8 @@ def main() -> None:
                 "and is writing directly into the main checkout "
                 "(harmonic-forge#142). Lane 2 work belongs in its own "
                 "dedicated worktree — restart in the project's -lane2 "
-                "worktree or a fresh ~/Harmonic_Projects/.worktrees/<project>-<issue>-impl worktree, "
-                "not the main checkout."
+                f"worktree or a fresh {_projects_hint('.worktrees')}/<project>-<issue>-impl "
+                "worktree, not the main checkout."
             )))
             return
         if lane3_write_outside_testplan(file_path):
@@ -1673,10 +1704,10 @@ def main() -> None:
                 "Blocked: this session was launched as Lane 3 (LANE=3) "
                 "and Lane 3 never fixes anything, ever, under any "
                 "circumstance (harmonic-forge#150). The only writable "
-                "paths are ~/Harmonic_Projects/testplan/ (gate artifacts "
+                f"paths are {_projects_hint('testplan')}/ (gate artifacts "
                 "too large for an issue comment) and a "
                 "feedback_*.md lesson file directly inside "
-                "~/Harmonic_Projects/operator-memory/ (harmonic-forge#797). "
+                f"{_projects_hint('operator-memory')}/ (harmonic-forge#797). "
                 "Record the failure and report it for Lane 1 instead."
             )))
             return
