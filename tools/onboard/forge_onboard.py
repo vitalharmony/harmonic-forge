@@ -1175,8 +1175,8 @@ def main(argv: list[str] | None = None) -> int:
             p.error("--install cannot be combined with --apply, --project or --manifest")
         import forge_onboard_install as foi
         try:
-            checks, code = foi.install(args.repo or Path.cwd(), Path.home() / ".local" / "bin",
-                                       foi.install_source(), force=args.force, dry_run=args.dry_run)
+            # Repo and bin-dir resolution and the source probe are preflight, inside install().
+            checks, code = foi.install(args.repo, force=args.force, dry_run=args.dry_run)
         except foi.InstallError as exc:
             print(f"forge-onboard: {exc}", file=sys.stderr)
             return 2

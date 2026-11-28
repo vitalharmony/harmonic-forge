@@ -993,7 +993,136 @@ class EpochOnePassOne(InstallBase):
         with mock.patch.object(Path, "resolve", resolve):
             code, out, err = self.run_main(env={"PATH": f"{loop}{os.pathsep}{self.env['PATH']}"})
         self.assertNotIn("Traceback", err)
-        self.assertIn("[ warn ] PATH — could not probe PATH: Symlink loop", out)
+        self.assertIn("[ warn ] PATH — could not probe PATH: RuntimeError: Symlink loop", out)
+
+
+#: One maker per type the four rounds' survivors were (harmonic-forge#1532 epoch-1 sticky PATCH);
+#: each carries a unique sentinel so a row passes only on its own exception.
+BACKSTOP_TYPES = (
+    lambda s: OSError(s),
+    lambda s: RuntimeError(s),
+    lambda s: UnicodeEncodeError("utf-8", "\udcff", 0, 1, s),
+    lambda s: ValueError(s),
+)
+
+
+class PhaseBackstop(InstallBase):
+    """harmonic-forge#1532 epoch-1 sticky-wicket PATCH: the phase decides the
+    channel for ANY Exception, not a per-site list of types."""
+
+    def fresh(self) -> None:
+        """A new hermetic fixture per case: a write-phase run leaves links behind."""
+        self.setUp()
+
+    def untouched(self) -> None:
+        self.assertFalse(self.bin.exists())
+        self.assertFalse(os.path.lexists(self.lane2))
+        self.assertFalse(os.path.lexists(self.lane3))
+
+    def preflight_row(self, target, attr: str, exc: Exception, sentinel: str) -> None:
+        calls = []
+
+        def boom(*_a, **_k):
+            calls.append(True)
+            raise exc
+
+        with mock.patch.object(target, attr, boom):
+            code, out, err = self.run_main()
+        self.assertTrue(calls, f"{attr} was never reached")
+        self.assertEqual(code, 2, out + err)
+        self.assertTrue(err.startswith("forge-onboard:"), err)
+        self.assertRegex(err, rf"{type(exc).__name__}: .*{sentinel}")
+        self.assertNotIn("Traceback", err)
+        self.untouched()
+
+    def test_any_exception_in_preflight_is_install_error_exit_2(self):
+        for fn in foi.PREFLIGHT:
+            for i, make in enumerate(BACKSTOP_TYPES):
+                sentinel = f"sentinel-{fn.__name__}-{i}"
+                exc = make(sentinel)
+                with self.subTest(fn=fn.__name__, exc=type(exc).__name__):
+                    self.preflight_row(foi, fn.__name__, exc, sentinel)
+        with self.subTest(fn="Path.home"):  # the bin-dir default is preflight too
+            self.preflight_row(Path, "home", RuntimeError("sentinel-home"), "sentinel-home")
+
+    def write_row(self, target, attr: str, exc: Exception, sentinel: str, *, first_passes: bool,
+                  status: str = "FAIL", code: int = 1, linked: bool = True, created: bool = True,
+                  when=lambda *a, **k: True) -> str:
+        self.fresh()
+        real, calls = getattr(target, attr), []
+
+        def boom(*a, **k):
+            if not when(*a, **k):
+                return real(*a, **k)
+            calls.append(True)
+            if first_passes and len(calls) == 1:  # the first item still completes
+                return real(*a, **k)
+            raise exc
+
+        with mock.patch.object(target, attr, boom):
+            got, out, err = self.run_main()
+        self.assertTrue(calls, f"{attr} was never reached")
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(got, code, out + err)
+        self.assertRegex(out, rf"\[ {status} \] .* — .*{type(exc).__name__}: .*{sentinel}")
+        if linked:
+            self.assertRegex(out, r"\[  ok  \] launcher \S+ — linked ")
+        if created:
+            self.assertIn("worktree app-lane2 — created", out)
+        self.assertRegex(out, r"\[(?: FAIL |  ok  )\] install — ")  # later Checks still print
+        return out
+
+    def test_any_exception_in_the_write_phase_is_a_check(self):
+        for fn in foi.WRITE_PHASE:
+            for i, make in enumerate(BACKSTOP_TYPES):
+                sentinel = f"sentinel-{fn.__name__}-{i}"
+                exc = make(sentinel)
+                with self.subTest(fn=fn.__name__, exc=type(exc).__name__):
+                    if fn is foi.path_lines:  # an unprobeable PATH is advisory, whatever the type
+                        self.write_row(foi, fn.__name__, exc, sentinel, first_passes=False,
+                                       status="warn", code=0)
+                    else:
+                        self.write_row(foi, fn.__name__, exc, sentinel,
+                                       first_passes=fn in (foi._inspect_link, foi._write_link),
+                                       linked=fn is not foi.link_launchers,
+                                       created=fn is not foi.create_worktrees)
+
+    def test_any_exception_in_a_worktree_add_or_the_bin_mkdir_is_a_fail_check(self):
+        for i, make in enumerate(BACKSTOP_TYPES):
+            exc = make(f"sentinel-add-{i}")
+            with self.subTest(site="worktree add", exc=type(exc).__name__):
+                self.write_row(foi, "_git", exc, f"sentinel-add-{i}", first_passes=True,
+                               when=lambda args, cwd: args[:2] == ["worktree", "add"])
+            exc = make(f"sentinel-mkdir-{i}")
+            with self.subTest(site="bin mkdir", exc=type(exc).__name__):
+                out = self.write_row(Path, "mkdir", exc, f"sentinel-mkdir-{i}", first_passes=False,
+                                     linked=False, when=lambda path, *a, **k: path == self.bin)
+                for name in checker.LANES:  # each launcher names the mkdir failure, item by item
+                    self.assertRegex(out, rf"\[ FAIL \] launcher {name} — cannot create .*sentinel-mkdir-{i}")
+
+    def test_deleted_cwd(self):
+        self.addCleanup(os.chdir, Path.cwd())
+        gone = self.tmp / "gone"
+        gone.mkdir()
+        os.chdir(gone)
+        gone.rmdir()
+        with self.subTest(repo="given"):
+            # Nothing reads the cwd once `git version` drops `-C <cwd>`: the run completes.
+            code, out, err = self.run_main()
+            self.assertNotIn("Traceback", err)
+            self.assertEqual(code, 0, out + err)
+            self.assertIn("worktree app-lane2 — created", out)
+        with self.subTest(repo="omitted"):
+            self.fresh()
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, self.env, clear=True), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = foi.fo.main(["--install"])
+            self.assertEqual(code, 2, out.getvalue() + err.getvalue())
+            self.assertNotIn("Traceback", err.getvalue())
+            self.assertIn("the current directory no longer exists; pass --repo", err.getvalue())
+            self.untouched()
+
 
 if __name__ == "__main__":
     unittest.main()

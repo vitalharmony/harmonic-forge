@@ -98,12 +98,12 @@ def _checker():
     return module
 
 
-def _git_raw(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def _git_raw(args: list[str], cwd: Path | None) -> subprocess.CompletedProcess:
     """Never raises; stdout and stderr are BYTES, exactly as git wrote them
     (harmonic-forge#1532 reforge, S2). `start_new_session` detaches git (and
     any ssh it runs) from the controlling terminal, which `stdin=DEVNULL`
-    alone does not."""
-    cmd = ["git", "-C", str(cwd), *args]
+    alone does not. `cwd=None` passes no `-C` (`git version`)."""
+    cmd = ["git", *(["-C", str(cwd)] if cwd is not None else []), *args]
     try:
         return subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL,
                               env={**os.environ, **NON_INTERACTIVE_ENV}, start_new_session=True)
@@ -111,7 +111,7 @@ def _git_raw(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, GIT_LAUNCH_FAILED, b"", f"cannot run git: {exc}".encode())
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def _git(args: list[str], cwd: Path | None) -> subprocess.CompletedProcess:
     """`_git_raw`, decoded with no newline translation (S3): `text=True`
     would turn a CR in a path into an LF."""
     proc = _git_raw(args, cwd)
@@ -138,7 +138,7 @@ def _lstat(path: Path) -> os.stat_result | None:
 
 def require_git_version() -> None:
     """git 2.36+, for `worktree list --porcelain -z`; fails closed."""
-    proc = _git(["version"], Path.cwd())
+    proc = _git(["version"], None)  # no -C: a deleted cwd must not matter
     match = re.match(r"git version (\d+)\.(\d+)", proc.stdout) if proc.returncode == 0 else None
     if match is None:
         raise InstallError(f"cannot tell git's version ({_why(proc)})")
@@ -319,35 +319,40 @@ def _write_link(bin_dir: Path, name: str, target: Path, src: Path, was: str) -> 
     return f"replaced {target} (was -> {was}) with -> {src}"
 
 
+def _named(exc: BaseException) -> str:
+    """An exception as the write-phase backstop reports it: its type, then its text."""
+    return f"{type(exc).__name__}: {exc}"
+
+
 def link_launchers(bin_dir: Path, source: Path, *, force: bool, dry_run: bool) -> list[Check]:
     """Every launcher is inspected before the bin dir is made; then each owed
-    write runs. Each item is wrapped whole: an OSError is a FAIL on it."""
+    write runs. Each item is wrapped whole: any Exception is a FAIL on it."""
     plan: list[tuple[str, str, Path, Path, Check | None, str]] = []
     for name in _checker().LANES:
         target, src = bin_dir / name, source / "tools" / "lane" / name
         label = f"launcher {name}"
         try:
             done, was = _inspect_link(target, src, label, force=force, dry_run=dry_run)
-        except OSError as exc:
-            done, was = Check(label, FAIL, f"cannot inspect {target}: {exc}"), ""
+        except Exception as exc:  # the write-phase backstop: never BaseException
+            done, was = Check(label, FAIL, f"cannot inspect {target}: {_named(exc)}"), ""
         plan.append((name, label, target, src, done, was))
-    mkdir_error: OSError | None = None
+    mkdir_error: Exception | None = None
     if any(item[4] is None for item in plan):
         try:
             bin_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
+        except Exception as exc:
             mkdir_error = exc
     checks: list[Check] = []
     for name, label, target, src, done, was in plan:
         if done is not None:
             checks.append(done)
         elif mkdir_error is not None:
-            checks.append(Check(label, FAIL, f"cannot create {bin_dir}: {mkdir_error} -- {target} not linked"))
+            checks.append(Check(label, FAIL, f"cannot create {bin_dir}: {_named(mkdir_error)} -- {target} not linked"))
         else:
             try:
                 checks.append(Check(label, OK, _write_link(bin_dir, name, target, src, was)))
-            except OSError as exc:
-                checks.append(Check(label, FAIL, f"linking {target} -> {src} failed: {exc}"))
+            except Exception as exc:
+                checks.append(Check(label, FAIL, f"linking {target} -> {src} failed: {_named(exc)}"))
     return checks
 
 
@@ -361,16 +366,16 @@ def create_worktrees(repo: Path, plan: list[tuple[Path, Check | None]], sha: str
     checks: list[Check] = []
     for path, done in plan:
         label = f"worktree {path.name}"
-        if done is not None:
-            checks.append(done)
-            continue
-        if sha is None:
-            checks.append(Check(label, FAIL, f"no origin/main SHA was proved -- {path} not created"))
-            continue
-        if dry_run:
-            checks.append(Check(label, OK, f"would create {path} at {sha[:12]} (origin/main)"))
-            continue
         try:
+            if done is not None:
+                checks.append(done)
+                continue
+            if sha is None:
+                checks.append(Check(label, FAIL, f"no origin/main SHA was proved -- {path} not created"))
+                continue
+            if dry_run:
+                checks.append(Check(label, OK, f"would create {path} at {sha[:12]} (origin/main)"))
+                continue
             proc = _git(["worktree", "add", "--detach", str(path), sha], repo)
             if proc.returncode == 0:
                 checks.append(Check(label, OK, f"created {path} detached at {sha[:12]} (origin/main)"))
@@ -384,8 +389,8 @@ def create_worktrees(repo: Path, plan: list[tuple[Path, Check | None]], sha: str
             if after is not None and worktree_table.listed(path, after):
                 detail += f"; a registration was left behind -- not pruned automatically; inspect, then run: {prune}"
             checks.append(Check(label, FAIL, detail))
-        except (OSError, RuntimeError) as exc:
-            checks.append(Check(label, FAIL, f"creating {path} failed: {exc}"))
+        except Exception as exc:  # the write-phase backstop: never BaseException
+            checks.append(Check(label, FAIL, f"creating {path} failed: {_named(exc)}"))
     return checks
 
 
@@ -421,24 +426,51 @@ def _source_check(bin_dir: Path, source: Path, dry_run: bool) -> Check:
                  ("(dry run: nothing was linked) " if dry_run else "") + detail)
 
 
-def install(repo: Path, bin_dir: Path, source: Path, *, force: bool = False,
+def install(repo: Path | None, bin_dir: Path | None = None, *, force: bool = False,
             dry_run: bool = False) -> tuple[list[Check], int]:
     """Preflight (InstallError, exit 2, nothing written), then link, create
-    and check, where every failure is a printed FAIL Check (exit 1)."""
-    require_git_version()
-    worktrees = plan_worktrees(repo)
-    sha = _reach_origin_main(repo, dry_run=dry_run) if any(done is None for _, done in worktrees) else None
-    # Write phase: nothing below raises InstallError.
-    checks = link_launchers(bin_dir, source, force=force, dry_run=dry_run)
-    checks += create_worktrees(repo, worktrees, sha, dry_run=dry_run)
+    and check, where every failure is a printed FAIL Check (exit 1).
+
+    The phase decides the channel (harmonic-forge#1532 epoch-1 sticky-wicket
+    PATCH): any Exception in preflight becomes InstallError naming its type;
+    any Exception in the write phase becomes a FAIL Check on its item or step,
+    and the Checks already collected are kept. `repo=None` means the cwd;
+    `bin_dir=None` means ~/.local/bin (`Path.home()` can raise: preflight)."""
+    try:
+        if bin_dir is None:
+            bin_dir = Path.home() / ".local" / "bin"
+        if repo is None:
+            try:
+                repo = Path.cwd()
+            except FileNotFoundError:
+                raise InstallError("the current directory no longer exists; pass --repo "
+                                   "-- nothing was written") from None
+        source = install_source()
+        require_git_version()
+        worktrees = plan_worktrees(repo)
+        sha = _reach_origin_main(repo, dry_run=dry_run) if any(done is None for _, done in worktrees) else None
+    except InstallError:
+        raise
+    except Exception as exc:  # the preflight backstop: never BaseException
+        raise InstallError(f"{_named(exc)} -- nothing was written") from exc
+    # Write phase: nothing below raises.
+    checks: list[Check] = []
+    try:
+        checks += link_launchers(bin_dir, source, force=force, dry_run=dry_run)
+    except Exception as exc:
+        checks.append(Check("launchers", FAIL, f"could not run: {_named(exc)}"))
+    try:
+        checks += create_worktrees(repo, worktrees, sha, dry_run=dry_run)
+    except Exception as exc:
+        checks.append(Check("worktrees", FAIL, f"could not run: {_named(exc)}"))
     try:
         checks += path_lines(bin_dir)
-    except (OSError, RuntimeError) as exc:  # RuntimeError: a symlink loop, Python < 3.13
-        checks.append(Check("PATH", WARN, f"could not probe PATH: {exc}"))
+    except Exception as exc:  # advisory whatever the type (a pre-3.13 symlink loop is RuntimeError)
+        checks.append(Check("PATH", WARN, f"could not probe PATH: {_named(exc)}"))
     try:
         checks.append(_source_check(bin_dir, source, dry_run))
-    except OSError as exc:
-        checks.append(Check("launcher source check", FAIL, f"could not run: {exc}"))
+    except Exception as exc:
+        checks.append(Check("launcher source check", FAIL, f"could not run: {_named(exc)}"))
     changed = sum(1 for c in checks if c.status == OK and c.detail.startswith(_CHANGED))
     failed = sum(1 for c in checks if c.status == FAIL)
     summary = (f"{changed} link(s)/worktree(s) written" if changed
