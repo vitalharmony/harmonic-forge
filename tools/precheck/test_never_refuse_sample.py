@@ -321,6 +321,20 @@ class Recognizer(unittest.TestCase):
         self.assertEqual(fresh.SCRATCH_ROOTS, ("/tmp", os.path.expanduser("~/.cache/claude-tmp")))
         self.assertFalse(fresh.is_scratch("/srv/ctmp/claude-1000/x"))
 
+    def test_relative_home_adds_no_relative_root(self):
+        """Preclose pass 1 survivor: a relative HOME at import never yields a
+        relative scratch root, so a relative target is not scratch."""
+        name = "_nrs_reload_1658_relhome"
+        spec = importlib.util.spec_from_file_location(name, HERE / "never_refuse_sample.py")
+        fresh = importlib.util.module_from_spec(spec)
+        self.addCleanup(sys.modules.pop, name, None)
+        sys.modules[name] = fresh
+        with mock.patch.dict(os.environ, {"HOME": "relative-home"}):
+            spec.loader.exec_module(fresh)
+        self.assertEqual(fresh.SCRATCH_ROOTS, ("/tmp",))
+        self.assertFalse(fresh.is_scratch("relative-home/.cache/claude-tmp/f"))
+        self.assertTrue(fresh.is_scratch("/tmp/claude-1000/x"))
+
     def test_s06_assigned_value_never_binds(self):
         self.assertNotOrdinary('X="/tmp/a /home/u"; rm -rf $X', reason="grammar")
 

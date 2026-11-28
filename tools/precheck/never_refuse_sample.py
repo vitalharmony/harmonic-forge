@@ -240,8 +240,10 @@ _SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9._@+-]+"
 #: The two scratch roots: `/tmp` and the fixed Claude Code tmpdir default,
 #: `~/.cache/claude-tmp` (harmonic-forge#1655), each without a trailing slash.
 #: Resolved once at import; no environment variable is read (operator D85,
-#: harmonic-forge#1658).
-SCRATCH_ROOTS = ("/tmp", os.path.expanduser("~/.cache/claude-tmp"))
+#: harmonic-forge#1658). The second root is kept only when it expands to an
+#: absolute path: a relative or unset HOME leaves `/tmp` alone (preclose pass 1).
+_CLAUDE_TMP_ROOT = os.path.expanduser("~/.cache/claude-tmp")
+SCRATCH_ROOTS = ("/tmp",) + ((_CLAUDE_TMP_ROOT,) if os.path.isabs(_CLAUDE_TMP_ROOT) else ())
 #: The one write-target shape below a root: literal segments. No `..`, no
 #: braces, globs, quotes, `$`, `~` or whitespace, and nothing relative: a
 #: relative target would need the cwd, which is never computed.
