@@ -66,13 +66,14 @@ variable path is a try-fail.
 A precheck-gated call's real run is its own Bash call, from the same directory
 and session, spelled with its precheck's literal arguments in the same order
 and differing only by the precheck form's own token, and run as soon as the
-clean precheck is read, before any state the receipt binds has moved. What it
-binds is its mode's `binds` in `tools/registry/effects.toml`, which the
-tool-side `consume()` refusal in `tools/precheck/gate_receipt.py` prints (the
-PreToolUse refusal does not); every receipt expires after 30 minutes
-(harmonic-forge#1291). No
-variable or command substitution in any argument, no chaining behind another
-step, no two issues' calls in one command.
+clean precheck is read, before any state the receipt binds has moved. A
+refused real run means rerunning the precheck, never diagnosing which state
+moved; every receipt
+expires after 30 minutes (harmonic-forge#1291). No variable or command
+substitution in any argument, no chaining behind another step, no two issues'
+calls in one command. An ID R-0386 requires fetched is read in its own call
+immediately before the precheck, and its printed value is typed literally into
+both calls.
 <!-- /R-0441 -->
 
 <!-- R-0425 -->
@@ -578,13 +579,13 @@ A substantive tooling or process change is filed before it is implemented, inclu
 <!-- /R-0417 -->
 
 <!-- R-0440 -->
-When the operator asks how something would be designed, or reports a UX or
-design problem, the answer is a design conversation in chat: show the current
-model and behavior, ask the design questions, and stop. Until the operator
-settles that design and asks to have it filed, no issue, trigger, handoff or
-post carries it; a problem R-0039's first or second test requires is still
-filed with its artifact, carrying no proposed design, and a deferred design
-record (R-0039 exception 2) is filed only when the operator asks for one.
+When the operator asks in chat how something would be designed, or reports a
+UX or design problem, the reply is a design conversation: show the current
+model and behavior, ask the design questions, and stop. Any filing about it
+waits for the operator's answer, and R-0039 then applies unchanged, carrying
+any design the operator settled. A message in the fixed trigger vocabulary
+(`rules/lane-shorthand.md` section "Operator → lane triggers") or a
+`queued-for-<lane>` belt event (R-0408) is a trigger, not a design question.
 <!-- /R-0440 -->
 
 <!-- R-0372 -->

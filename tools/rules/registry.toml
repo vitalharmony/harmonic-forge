@@ -2597,6 +2597,7 @@ anchor = "citing-github-ids-harmonic-forge979"
 statement = "A comment, run or PR ID cited in a post is fetched in the same command that builds the post, never recalled."
 text_sha = "130c7a2785555953"
 hooks = []
+excepted_by = "R-0441"
 
 [[rule]]
 id = "R-0387"
@@ -3004,14 +3005,15 @@ hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPr
 id = "R-0440"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "An operator's design question or UX complaint is answered with a design conversation in chat that shows the current model and asks the design questions, then stops; until the operator settles that design and asks to have it filed, no issue, trigger, handoff or post carries it, and a problem R-0039's first or second test requires is still filed with its artifact, without a proposed design (harmonic-forge#1664)."
-text_sha = "2ba8ecf576eb9193"
+statement = "An operator's chat design question or UX complaint is answered with a design conversation that shows the current model and behavior, asks the design questions and stops; any filing about it waits for the operator's answer and then follows R-0039 unchanged with any settled design, and a fixed-vocabulary trigger or queued-for-<lane> belt event is a trigger, not a design question (harmonic-forge#1664)."
+text_sha = "91c30140dad43b7f"
 hooks = []
 
 [[rule]]
 id = "R-0441"
 file = "rules/universal-agent.md"
 anchor = "verification-gate"
-statement = "A precheck-gated call's real run is its own Bash call repeating the precheck's literal arguments in the same order, with no variable or command substitution and no chaining, run as soon as the clean precheck is read, before the state its mode binds has moved, and inside the 30-minute receipt ceiling (harmonic-forge#1664)."
-text_sha = "5755345b1ced8f92"
+statement = "A precheck-gated call's real run is its own Bash call repeating the precheck's literal arguments in the same order, with no variable or command substitution and no chaining, run as soon as the clean precheck is read, before any bound state has moved, and inside the 30-minute receipt ceiling; a refused real run means rerunning the precheck, and an ID R-0386 requires fetched is read in its own call just before the precheck and typed literally into both calls (harmonic-forge#1664)."
+text_sha = "59eea1024401bdfc"
 hooks = []
+exception_to = ["R-0386"]
