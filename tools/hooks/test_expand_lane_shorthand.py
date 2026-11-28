@@ -36,10 +36,30 @@ def _run(prompt: str) -> dict | None:
     store = Path(tempfile.mkdtemp()) / "batch-authorized.json"
     with unittest.mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
          unittest.mock.patch.object(ba, "STATE_PATH", store), \
+         unittest.mock.patch.object(m.manifest_overlay, "_REFUSED", None), \
          contextlib.redirect_stdout(out):
         m.main()
     text = out.getvalue().strip()
     return json.loads(text) if text else None
+
+
+class OverlayArmingDoesNotLeak(unittest.TestCase):
+    """harmonic-forge#1663 AC6: `main()` arms `manifest_overlay.refuse_reads`
+    for its process; run in-process here, it must leave the flag unset, or every
+    later test in the single-process suite reads the overlay armed."""
+
+    def test_main_runs_armed_and_the_helper_restores_the_flag(self) -> None:
+        seen: list = []
+        real = m.manifest_overlay.refuse_reads
+
+        def spy(reason: str) -> None:
+            real(reason)
+            seen.append(m.manifest_overlay._REFUSED)
+
+        with unittest.mock.patch.object(m.manifest_overlay, "refuse_reads", spy):
+            _run("L2D H1304 please review")
+        self.assertEqual(seen, ["expand_lane_shorthand.main"])
+        self.assertIsNone(m.manifest_overlay._REFUSED)
 
 
 class RealDocTests(unittest.TestCase):
@@ -823,7 +843,8 @@ class BatchWiringTests(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"prompt": prompt}))), \
                 mock.patch.object(sys, "stdout", out), \
-                mock.patch.object(ba, "STATE_PATH", state_path):
+                mock.patch.object(ba, "STATE_PATH", state_path), \
+                mock.patch.object(m.manifest_overlay, "_REFUSED", None):
             m.main()
         return out.getvalue(), state_path.exists()
 
@@ -856,7 +877,8 @@ class BatchWiringTests(unittest.TestCase):
                                io.StringIO(json.dumps({"prompt": "BATCH F495"}))), \
                 mock.patch.object(sys, "stdout", out), \
                 mock.patch.object(ba, "STATE_PATH", tmp), \
-                mock.patch.object(m, "DOC_PATH", Path("/nonexistent/doc.md")):
+                mock.patch.object(m, "DOC_PATH", Path("/nonexistent/doc.md")), \
+                mock.patch.object(m.manifest_overlay, "_REFUSED", None):
             m.main()
         self.assertTrue(tmp.exists(), "a missing doc silently skipped authorization")
         self.assertIn("BATCH", out.getvalue())
@@ -911,7 +933,8 @@ class BatchSessionScopeTests(unittest.TestCase):
 
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
                 mock.patch.object(sys, "stdout", io.StringIO()), \
-                mock.patch.object(ba, "STATE_PATH", state_path):
+                mock.patch.object(ba, "STATE_PATH", state_path), \
+                mock.patch.object(m.manifest_overlay, "_REFUSED", None):
             m.main()
 
     def test_batch_prompt_records_session_id(self) -> None:

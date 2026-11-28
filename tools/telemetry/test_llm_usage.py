@@ -459,7 +459,8 @@ class Writers(Base):
                 mock.patch.object(hook, "authorize_batch", return_value=""), \
                 mock.patch.object(hook, "authorize_imc", return_value=""), \
                 mock.patch.object(hook, "authorize_force", return_value=""), \
-                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": entrypoint}):
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": entrypoint}), \
+                mock.patch.object(hook.manifest_overlay, "_REFUSED", None):
             hook.main()
         return out.getvalue()
 

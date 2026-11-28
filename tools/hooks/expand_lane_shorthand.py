@@ -65,6 +65,10 @@ from pathlib import Path
 
 from hook_identity import slot_env as _slot_env  # noqa: E402
 
+# harmonic-forge#1663: importing does not arm; `main` arms on its first line.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
+import manifest_overlay  # noqa: E402
+
 DOC_PATH = Path(__file__).resolve().parent.parent.parent / "rules" / "lane-shorthand.md"
 
 TABLE_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*(.+?)\s*\|")
@@ -806,36 +810,73 @@ _FORCE_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _FORCE_REFUSAL_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
+#: harmonic-forge#1663 (operator D94): the argument each typed FORCE mode takes,
+#: as `(pattern, form, wrong-count refusal, bad-value refusal)`; a None pattern
+#: takes no argument. The mode SET is `force_grant._AUTHORIZES` (less `plain`,
+#: the untyped mode), never this table: a mode added there with no shape here
+#: is refused by name, and a shape here for a mode not there is unknown.
+_FORCE_ARGS: dict[str, tuple[re.Pattern | None, str, str, str]] = {
+    "reforge": (_FORCE_SHA_RE, "<sha>",
+                "a reforge FORCE names the head it approves: `FORCE <KEY> reforge <sha>: <reason>`",
+                "{value!r} is not a 12-40 character hex commit SHA"),
+    # harmonic-forge#1244, #1565: route and ci-outage bind the full head SHA.
+    "route": (_FORCE_FULL_SHA_RE, "<sha>",
+              "a route FORCE names the head it releases: `FORCE <KEY> route <sha>: <reason>`",
+              "{value!r} is not a full 40-character hex commit SHA, which a route FORCE needs"),
+    "ci-outage": (_FORCE_FULL_SHA_RE, "<sha>",
+                  ("a ci-outage FORCE names the head it releases: "
+                   "`FORCE <KEY> ci-outage <sha>: <reason>`"),
+                  "{value!r} is not a full 40-character hex commit SHA, which a ci-outage FORCE needs"),
+    "cluster": (None, "", "a cluster FORCE takes no SHA: `FORCE <KEY> cluster: <reason>`", ""),
+    # harmonic-forge#1291: the id the gate's refusal printed, never "the newest refusal".
+    "gate": (_FORCE_REFUSAL_ID_RE, "<refusal-id>",
+             "a gate FORCE names the refusal it releases: `FORCE <KEY> gate <refusal-id>: <reason>`",
+             "{value!r} is not a 12-character hex refusal id"),
+}
+
+
+def _force_modes() -> list[str]:
+    """Every typed FORCE mode, from `force_grant._AUTHORIZES` (D94); `plain` is untyped."""
+    return [mode for mode in _force_module()._AUTHORIZES if mode != "plain"]
+
+
+def _force_typed(mode: str) -> str:
+    """`mode` as typed: with its argument placeholder when it takes one."""
+    spec = _FORCE_ARGS.get(mode)
+    return f"{mode} {spec[1]}" if spec and spec[0] is not None else mode
+
+
+def _force_forms() -> str:
+    forms = [f"`{_force_typed(mode)}`" for mode in _force_modes()]
+    return ", ".join(forms[:-1]) + f" and {forms[-1]}" if len(forms) > 1 else "".join(forms)
+
+
+def _force_alternatives() -> str:
+    return " | ".join(_force_typed(mode) for mode in _force_modes())
+
+
 def _force_mode(tokens: list[str]) -> tuple[str, str | None] | str:
-    """`(mode, sha_prefix)` for a FORCE line's mode tokens, or a refusal reason."""
+    """`(mode, bound argument)` for a FORCE line's mode tokens, or a refusal reason.
+    The modes are `force_grant._AUTHORIZES`'s keys (harmonic-forge#1663, D94)."""
     if not tokens:
         return "plain", None
     word, rest = tokens[0], tokens[1:]
-    if word == "reforge":
-        if len(rest) != 1:
-            return "a reforge FORCE names the head it approves: `FORCE <KEY> reforge <sha>: <reason>`"
-        if not _FORCE_SHA_RE.match(rest[0].lower()):
-            return f"{rest[0]!r} is not a 12-40 character hex commit SHA"
-        return "reforge", rest[0].lower()
-    if word in ("route", "ci-outage"):  # harmonic-forge#1244, #1565: the full head SHA
-        if len(rest) != 1:
-            return f"a {word} FORCE names the head it releases: `FORCE <KEY> {word} <sha>: <reason>`"
-        if not _FORCE_FULL_SHA_RE.match(rest[0].lower()):
-            return f"{rest[0]!r} is not a full 40-character hex commit SHA, which a {word} FORCE needs"
-        return word, rest[0].lower()
-    if word == "cluster":
-        if rest:
-            return "a cluster FORCE takes no SHA: `FORCE <KEY> cluster: <reason>`"
-        return "cluster", None
-    if word == "gate":
-        # harmonic-forge#1291: the id the gate's refusal printed, never "the newest refusal".
-        if len(rest) != 1:
-            return "a gate FORCE names the refusal it releases: `FORCE <KEY> gate <refusal-id>: <reason>`"
-        if not _FORCE_REFUSAL_ID_RE.match(rest[0]):
-            return f"{rest[0]!r} is not a 12-character hex refusal id"
-        return "gate", rest[0]
-    return (f"unknown FORCE mode {word!r}: the modes are `reforge <sha>`, `route <sha>`, `ci-outage <sha>`, "
-            "`cluster` and `gate <refusal-id>` (lowercase)")
+    if word not in _force_modes():
+        return f"unknown FORCE mode {word!r}: the modes are {_force_forms()} (lowercase)"
+    if word not in _FORCE_ARGS:
+        return (f"FORCE mode {word!r} is a force_grant mode this hook has no argument shape "
+                "for, so it cannot be parsed (harmonic-forge#1663); add it to `_FORCE_ARGS`")
+    pattern, _form, wrong_count, bad_value = _FORCE_ARGS[word]
+    if pattern is None:
+        return wrong_count if rest else (word, None)
+    if len(rest) != 1:
+        return wrong_count
+    value = rest[0] if word == "gate" else rest[0].lower()
+    if not pattern.match(value):
+        return bad_value.format(value=rest[0])
+    return word, value
+
+
 _FORCE_ANY_RE = re.compile(r"^[ \t>]*force[ \t]+[A-Za-z]\d{1,6}\b", re.IGNORECASE)
 #: An unindented, uppercase FORCE first line that is not the grammar: well placed, malformed.
 _FORCE_MALFORMED_RE = re.compile(r"^FORCE[ \t]+\S")
@@ -877,7 +918,7 @@ def _authorize_force(prompt, session_id, lane, now) -> str:
     match = _FORCE_RE.match(lines[first]) if first is not None else None
     if match is None and first is not None and _FORCE_MALFORMED_RE.match(lines[first]):
         return ("FORCE REFUSED: the line needs a key like F1244 and a colon before the reason. "
-                "The form is `FORCE <KEY> [reforge <sha> | route <sha> | ci-outage <sha> | cluster | gate <refusal-id>]: <reason>`. "
+                f"The form is `FORCE <KEY> [{_force_alternatives()}]: <reason>`. "
                 "No grant written.")
     if match is None:
         return ("FORCE REFUSED: FORCE is honored only as the prompt's first line, typed "
@@ -1252,6 +1293,10 @@ def record_attention(prompt: str, payload: dict) -> bool:
 
 
 def main() -> None:
+    # harmonic-forge#1663 (operator D90): first, so every grant step below runs
+    # armed. A refused overlay read is a BaseException, so no `except Exception`
+    # here turns it into an empty receipt: the hook exits non-zero instead.
+    manifest_overlay.refuse_reads("expand_lane_shorthand.main")
     try:
         payload = json.load(sys.stdin)
         prompt = payload.get("prompt", "")

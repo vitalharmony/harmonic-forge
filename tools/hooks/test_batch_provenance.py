@@ -283,6 +283,7 @@ class EndToEndThroughMain(unittest.TestCase):
         payload = json.dumps({"prompt": prompt})
         with unittest.mock.patch.object(sys, "stdin", io.StringIO(payload)), \
              unittest.mock.patch.object(ba, "STATE_PATH", store), \
+             unittest.mock.patch.object(m.manifest_overlay, "_REFUSED", None), \
              contextlib.redirect_stdout(out):
             m.main()
         text = out.getvalue().strip()

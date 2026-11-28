@@ -15,6 +15,7 @@ and the gate-equivalence tests in `tools/hooks/test_overlay_never_reaches_a_gate
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -592,7 +593,11 @@ class OverlayHasTwoConsumers(OverlayCase):
              "manifest_overlay|path_project|project_for_checkout", "--",
              "tools/**/*.py", "skills/**/*.py", ":!**/test_*"],
             capture_output=True, text=True, check=False).stdout.split()
-        self.assertEqual(sorted(found), ["tools/lane/ci_plan.py", "tools/onboard/manifest_identity.py",
+        # harmonic-forge#1663: the two grant-writing hooks name the module only to
+        # arm its refusal (pinned in tools/hooks/test_overlay_read_refusal.py).
+        self.assertEqual(sorted(found), ["tools/hooks/batch_gate.py",
+                                         "tools/hooks/expand_lane_shorthand.py",
+                                         "tools/lane/ci_plan.py", "tools/onboard/manifest_identity.py",
                                          "tools/onboard/manifest_invoking.py",
                                          "tools/onboard/manifest_overlay.py"])
         import ast  # noqa: PLC0415
@@ -702,6 +707,44 @@ class RemainingGuardsArePinned(OverlayCase):
         with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git"),
                                           "GIT_WORK_TREE": str(other)}):
             self.assertEqual(mg.origin_of(repo), "acme/app")
+
+
+class AC1ArmedReadsAreRefused(OverlayCase):
+    """harmonic-forge#1663 AC1: `refuse_reads` arms a process, and an armed read
+    raises `OverlayReadRefused` past every `except Exception`. Run in a child,
+    because arming is per process and has no disarm."""
+
+    CODE = (
+        "import json, os\nfrom pathlib import Path\nimport manifest_overlay as mo\n"
+        "out = {'unarmed': mo.project_for_checkout(Path.cwd()).repo}\n"
+        "mo.refuse_reads('AC1 probe')\n"
+        "for name, call in (('checkout', lambda: mo.project_for_checkout(Path.cwd())),\n"
+        "                   ('path', lambda: mo.path_project(Path.cwd(), None)),\n"
+        "                   ('absent', lambda: mo.read(Path('/nonexistent/.claude/forge.toml')))):\n"
+        "    try:\n"
+        "        try:\n"
+        "            call()\n"
+        "            out[name] = 'returned'\n"
+        "        except Exception as exc:\n"
+        "            out[name] = 'swallowed ' + type(exc).__name__\n"
+        "    except mo.OverlayReadRefused as exc:\n"
+        "        out[name] = 'refused: ' + str(exc)\n"
+        "print(json.dumps(out))\n")
+
+    def test_ac1_armed_raises_past_except_exception_and_unarmed_resolves(self) -> None:
+        repo, base = overlay_only_fixture(self.tmp)
+        out = json.loads(probe_from(repo, base, self.CODE))
+        self.assertEqual(out["unarmed"], "acme/app")
+        for name in ("checkout", "path", "absent"):
+            with self.subTest(name=name):
+                self.assertTrue(out[name].startswith("refused: AC1 probe: "), out[name])
+                self.assertIn("harmonic-forge#1663", out[name])
+        self.assertIn("forge.toml", out["checkout"])
+
+    def test_the_refusal_is_a_base_exception_and_this_process_is_unarmed(self) -> None:
+        self.assertTrue(issubclass(mo.OverlayReadRefused, BaseException))
+        self.assertFalse(issubclass(mo.OverlayReadRefused, Exception))
+        self.assertIsNone(mo._REFUSED)
 
 
 if __name__ == "__main__":

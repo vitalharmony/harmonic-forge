@@ -66,6 +66,7 @@ class ImcFixture(unittest.TestCase):
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
                 mock.patch.object(m, "read_issue_labels", reader or LabelReader()), \
                 mock.patch.object(m, "fetch_issue_context", return_value="ctx"), \
+                mock.patch.object(m.manifest_overlay, "_REFUSED", None), \
                 contextlib.redirect_stdout(out):
             m.main()
         text = out.getvalue().strip()
@@ -185,6 +186,7 @@ class Ac3LabelReadTests(ImcFixture):
                 mock.patch.object(m, "read_issue_labels", reader), \
                 mock.patch.object(m, "fetch_issue_context",
                                   side_effect=lambda r, n: fetches.append((r, n)) or "ctx"), \
+                mock.patch.object(m.manifest_overlay, "_REFUSED", None), \
                 contextlib.redirect_stdout(out):
             m.main()
         self.assertEqual(len(reader.calls), 5)
