@@ -1050,6 +1050,26 @@ class MainPrintsSafeEncoding(InstallBase):
         self.assertIn("sub\\udcff", result.stdout)
         self.assertEqual(result.stderr, "")
 
+    def closed_fd_cli(self, redirect: str, *args: str) -> subprocess.CompletedProcess:
+        """The real CLI started with one fd closed by the shell (`2>&-` or `>&-`),
+        so Python sees `sys.stderr` or `sys.stdout` as `None`."""
+        return subprocess.run(["bash", "-c", f'exec "$@" {redirect}', "_", sys.executable, str(FO), *args],
+                              cwd=self.app, env=self.env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_closed_stderr_preflight_error_still_exits_2(self):
+        result = self.closed_fd_cli("2>&-", "--install", "--dry-run", "--repo", str(self.nogit()))
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertNotIn("Traceback", result.stdout)
+
+    def test_closed_stdout_checks_keep_the_open_stdout_exit_code(self):
+        args = ("--install", "--dry-run", "--repo", str(self.app))
+        expected = self.cli(*args).returncode
+        self.assertEqual(expected, 0)
+        result = self.closed_fd_cli(">&-", *args)
+        self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
 
 #: One maker per type the four rounds' survivors were (harmonic-forge#1532 epoch-1 sticky PATCH);
 #: each carries a unique sentinel so a row passes only on its own exception.

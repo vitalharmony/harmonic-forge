@@ -1159,8 +1159,12 @@ def _emit(text: str, stream) -> None:
     Encodes with `backslashreplace` in the stream's encoding, falling back to
     ASCII `backslashreplace` when that codec is unknown or rejects the handler
     (for example `idna`). Writes the bytes to `stream.buffer` when it has one;
-    a stream without one (`io.StringIO` capture) gets a plain `write`.
+    a stream without one (`io.StringIO` capture) gets a plain `write`. A `None`
+    stream (its fd closed at startup: `2>&-` or `>&-`) is skipped, as `print`
+    skips it, so the caller's exit code stands.
     """
+    if stream is None:
+        return
     enc = getattr(stream, "encoding", None) or "utf-8"
     try:
         data = (text + "\n").encode(enc, "backslashreplace")
