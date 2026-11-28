@@ -571,7 +571,8 @@ class SecretScan(Base):
 
     def test_a_cwd_is_never_its_own_mask(self):
         self.assertEqual(set(nrs.masks_for({"cwd": "/srv/x", "slug": "p"}, HOME, 1000)),
-                         {HOME, "/tmp/claude-1000/p"})
+                         {HOME, "/tmp/claude-1000/p",
+                          HOME + "/.cache/claude-tmp/claude-1000/p"})  # harmonic-forge#1655
 
     def test_a_root_mask_is_never_used(self):
         # Epoch-4 #6: a "/" mask would split every base64 run below the token length.
@@ -633,6 +634,16 @@ class SecretScan(Base):
     def test_scratchpad_path_command_survives_masking(self):
         slug = "-home-user-Harmonic-Projects-HRSE2"
         command = f"ls /tmp/claude-{os.getuid()}/{slug}/scratchpad"
+        self.assertTrue(secret_scan.findings(command), "fixture must be secret-shaped unmasked")
+        self.transcript(filler(1) + ran("x", command), project=slug)
+        pool, stats = self.pool()
+        self.assertIn(command, pool)
+        self.assertEqual(stats["secret_dropped"], {})
+
+    def test_new_scratch_root_command_survives_masking(self):
+        # harmonic-forge#1655: lanes put the scratch root under CLAUDE_CODE_TMPDIR.
+        slug = "-home-user-Harmonic-Projects-HRSE2"
+        command = f"ls {HOME}/.cache/claude-tmp/claude-{os.getuid()}/{slug}/scratchpad"
         self.assertTrue(secret_scan.findings(command), "fixture must be secret-shaped unmasked")
         self.transcript(filler(1) + ran("x", command), project=slug)
         pool, stats = self.pool()

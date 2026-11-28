@@ -81,6 +81,12 @@ if [ "$_lane_agent" = "claude" ]; then
   export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
   # harmonic-forge#1610: no lane starts in Code Mode until harmonic-forge#1609's acceptance passes; that issue removes this line.
   export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0
+  # harmonic-forge#1655: Claude Code's session temp and scratchpad go to btrfs
+  # /home, not the inode-capped /tmp tmpfs. A caller-set value is kept; TMPDIR
+  # is untouched.
+  export CLAUDE_CODE_TMPDIR="${CLAUDE_CODE_TMPDIR:-$HOME/.cache/claude-tmp}"
+  mkdir -p -- "$CLAUDE_CODE_TMPDIR" \
+    || _lane_launch_die "could not create CLAUDE_CODE_TMPDIR $CLAUDE_CODE_TMPDIR -- refusing to launch (harmonic-forge#1655)"
 fi
 lane_agent_display="$(registry_lookup AGENT_DISPLAY "$_lane_agent")"
 
@@ -638,7 +644,8 @@ unset _lane_sandbox
 #     private temp root -- one of those add-dirs -- because
 #     AGENT_SESSION_FLAGS removes `/tmp` and `$TMPDIR` as writable roots; a
 #     TMPDIR left at `/tmp` would make every `mktemp` in the session fail.
-#     Claude keeps the caller's TMPDIR untouched.
+#     Claude keeps the caller's TMPDIR untouched; its own temp root is
+#     CLAUDE_CODE_TMPDIR, set with LANE_AGENT above (harmonic-forge#1655).
 _lane_add_dir="$(registry_lookup AGENT_LANE_ADD_DIR "$_lane_agent:$LANE")"
 _lane_add_dirs=()
 read -ra _lane_add_dirs <<<"$_lane_add_dir"

@@ -342,6 +342,8 @@ def capture_cell(
                     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
                     # harmonic-forge#1610: a lane session exports it as 0.
                     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
+                    # harmonic-forge#1655: a lane session exports its temp root.
+                    "CLAUDE_CODE_TMPDIR",
                     # harmonic-forge#1307: each refuses every Claude launch.
                     "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE",
                     "CLAUDE_CODE_RESTRICTED", "CLAUDE_CODE_USE_COWORK_PLUGINS",

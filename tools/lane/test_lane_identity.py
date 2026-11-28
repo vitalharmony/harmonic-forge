@@ -8,6 +8,7 @@ launcher cases reuse test_lane_launchers' stubbed fixture tree.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import tomllib
@@ -219,6 +220,75 @@ class LauncherTests(unittest.TestCase):
                                  LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_EXPERIMENTAL_CODE_MODE")
         self.assertTrue(cell["launched"], cell.get("stderr"))
         self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"])
+
+    @needs_trusted_lane3_policy
+    def test_claude_lane_sets_claude_code_tmpdir(self):
+        """harmonic-forge#1655 AC1: Claude temp goes to ~/.cache/claude-tmp, created."""
+        want = self.tree.home / ".cache" / "claude-tmp"
+        for lane in ("1", "2", "3"):
+            with self.subTest(lane=lane):
+                cell = self.tree.run(lane, [], LANE_CLI="claude",
+                                     LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_TMPDIR")
+                self.assertTrue(cell["launched"], cell.get("stderr"))
+                self.assertEqual(cell["extra_env"]["CLAUDE_CODE_TMPDIR"], str(want))
+                self.assertTrue(want.is_dir())
+
+    def test_caller_claude_code_tmpdir_kept(self):
+        """harmonic-forge#1655 AC2: a caller-set value is kept, and created."""
+        mine = self.tree.root / "my-claude-tmp"
+        cell = self.tree.run("2", [], LANE_CLI="claude",
+                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_TMPDIR",
+                             CLAUDE_CODE_TMPDIR=str(mine))
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertEqual(cell["extra_env"]["CLAUDE_CODE_TMPDIR"], str(mine))
+        self.assertTrue(mine.is_dir())
+
+    def test_option_shaped_claude_code_tmpdir_is_a_path(self):
+        """harmonic-forge#1655 pass 1: an option-shaped caller value is a path,
+        not a mkdir option. Without `--`, `mkdir -p -m` fails for lack of an
+        operand and the launch refuses; with it, the directory is created."""
+        # Lane 2 launches from its worktree (lane2's `cd "$target"`), inside
+        # the fixture tree, so the relative directory lands there.
+        made = self.tree.lane2 / "-m"
+        self.assertFalse(made.exists())
+        cell = self.tree.run("2", [], LANE_CLI="claude",
+                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_TMPDIR",
+                             CLAUDE_CODE_TMPDIR="-m")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertEqual(cell["extra_env"]["CLAUDE_CODE_TMPDIR"], "-m")
+        self.assertTrue(made.is_dir())
+
+    def test_codex_lane_leaves_claude_code_tmpdir_unset(self):
+        """harmonic-forge#1655: the export is Claude-only."""
+        cell = self.tree.run("2", [], LANE_CLI="codex",
+                             LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_TMPDIR")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertIsNone(cell["extra_env"]["CLAUDE_CODE_TMPDIR"])
+        self.assertFalse((self.tree.home / ".cache" / "claude-tmp").exists())
+
+    def test_unwritable_claude_tmp_refuses(self):
+        """harmonic-forge#1655 AC3: no temp root, no launch, in the launcher's words."""
+        cache = self.tree.home / ".cache"
+        if cache.is_dir():
+            shutil.rmtree(cache)
+        cache.write_text("a file where the cache dir should be\n")
+        cell = self.tree.run("2", [], LANE_CLI="claude")
+        self.assertFalse(cell["launched"], cell)
+        self.assertNotEqual(cell["returncode"], 0)
+        self.assertIn(
+            f"lane2: could not create CLAUDE_CODE_TMPDIR {cache / 'claude-tmp'}"
+            " -- refusing to launch (harmonic-forge#1655)",
+            cell["stderr"])
+
+    def test_capture_scrubs_the_session_claude_code_tmpdir(self):
+        # harmonic-forge#1655, the #1284 pattern: a lane session exports its own
+        # temp root, so the capture must not read it back through the `:-` default.
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_TMPDIR": "/session/claude-tmp"}):
+            cell = self.tree.run("2", [], LANE_CLI="claude",
+                                 LANE_CAPTURE_EXTRA_ENV="CLAUDE_CODE_TMPDIR")
+        self.assertTrue(cell["launched"], cell.get("stderr"))
+        self.assertEqual(cell["extra_env"]["CLAUDE_CODE_TMPDIR"],
+                         str(self.tree.home / ".cache" / "claude-tmp"))
 
     def test_codex_gets_no_name(self):
         for agent in ("codex",):
