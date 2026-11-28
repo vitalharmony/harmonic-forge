@@ -2999,3 +2999,19 @@ anchor = "tool-use-safeguards"
 statement = "The model-tier note tier_model_trigger_check.py adds to the session's context is advisory only on an Opus or Fable model: the session reads its own model id and proceeds; on any other model it does not start the named issues and asks the operator for /model (harmonic-forge#1599)."
 text_sha = "22446989f8c62043"
 hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPromptSubmit"], wired_in = ".claude/settings.json, tools/lane/lane_hooks.json" }]
+
+[[rule]]
+id = "R-0440"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "An operator's design question or UX complaint is answered with a design conversation in chat that shows the current model and asks the design questions, and no issue, trigger, handoff or post carries a design the operator has not settled and asked to have filed; an R-0039 defect is still filed without a proposed design (harmonic-forge#1664)."
+text_sha = "fdbb8234f4ece23d"
+hooks = []
+
+[[rule]]
+id = "R-0441"
+file = "rules/universal-agent.md"
+anchor = "verification-gate"
+statement = "A precheck-gated call's real run is its own Bash call repeating the precheck's literal arguments in the same order, with no variable or command substitution and no chaining, run as soon as the clean precheck is read and inside the 30-minute receipt ceiling (harmonic-forge#1664)."
+text_sha = "fd2647bb422ab654"
+hooks = []

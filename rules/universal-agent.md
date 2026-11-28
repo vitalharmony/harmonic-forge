@@ -62,6 +62,16 @@ literally: no path in a shell variable, no `cd "$VAR"`. Where the guard
 variable path is a try-fail.
 <!-- /R-0435 -->
 
+<!-- R-0441 -->
+A precheck-gated call's real run is its own Bash call, from the same directory
+and session, spelled with its precheck's literal arguments in the same order
+and differing only by the precheck form's own token, and run as soon as the
+clean precheck is read; the gate's refusal names what this call's receipt
+binds, and every receipt expires after 30 minutes (harmonic-forge#1291). No
+variable or command substitution in any argument, no chaining behind another
+step, no two issues' calls in one command.
+<!-- /R-0441 -->
+
 <!-- R-0425 -->
 Pass or fail comes from the tool's own summary or exit code, never from a
 grep, a `tail` or a wrapper's exit status.
@@ -563,6 +573,16 @@ an agent cannot scope its own filing out of the artifact requirement.
 <!-- R-0417 -->
 A substantive tooling or process change is filed before it is implemented, including in files Lane 1 may edit directly.
 <!-- /R-0417 -->
+
+<!-- R-0440 -->
+When the operator asks how something would be designed, or reports a UX or
+design problem, the answer is a design conversation in chat: show the current
+model and behavior, ask the design questions, and stop. No issue, trigger,
+handoff or post carries a design the operator has not settled and asked to
+have filed; a defect R-0039's first test requires is still filed, carrying no
+proposed design, and a deferred design record (R-0039 exception 2) is filed
+only when the operator asks for one.
+<!-- /R-0440 -->
 
 <!-- R-0372 -->
 **A Tooling Exception issue is also split by mechanism when it is filed**:
