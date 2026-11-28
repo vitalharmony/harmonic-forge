@@ -283,5 +283,41 @@ class TestLane2PushAndPrCreateDenial(unittest.TestCase):
         self.assertFalse(_is_denied(result))
 
 
+class Issue1608UnknownUserHome(unittest.TestCase):
+    """harmonic-forge#1608 (two-pass K2): bash leaves an unknown `~user`
+    literal, so `cd ~nosuchuser-1608` enters `<cwd>/~nosuchuser-1608` when it
+    exists. A forge cwd holding that name as a symlink to an hrse checkout
+    must deny `mise run post-comment`, the same as `cd <absolute hrse path>`."""
+
+    def setUp(self):
+        self._prior_lane = os.environ.get("LANE")
+        os.environ["LANE"] = "2"
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.forge, self.hrse = root / "forge", root / "hrse"
+        for path, repo in ((self.forge, "vitalharmony/harmonic-forge"), (self.hrse, "vitalharmony/hrse")):
+            path.mkdir()
+            (path / "mise.toml").write_text(f'[env]\nGH_REPO = "{repo}"\n')
+        (self.forge / "~nosuchuser-1608").symlink_to(self.hrse)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._prior_lane is None:
+            os.environ.pop("LANE", None)
+        else:
+            os.environ["LANE"] = self._prior_lane
+
+    def test_cd_to_a_literal_unknown_user_symlink_into_hrse_denies(self):
+        post = "mise run post-comment 5 --body x"
+        self.assertFalse(_is_denied(m.decision(post, self.forge)))
+        self.assertTrue(_is_denied(m.decision(f"cd {self.hrse} && {post}", self.forge)))
+        self.assertTrue(_is_denied(m.decision(f"cd ~nosuchuser-1608 && {post}", self.forge)))
+
+    def test_a_missing_literal_dir_leaves_the_cwd_deciding(self):
+        # bash's `cd` fails, so the post runs in the hrse cwd: still denied.
+        self.assertTrue(_is_denied(m.decision(
+            "cd ~nosuchuser-1608-missing; mise run post-comment 5 --body x", self.hrse)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -123,7 +123,16 @@ def decision(command: object, payload_cwd: str | None) -> dict:
     effective_cwd = Path(payload_cwd) if payload_cwd else Path.cwd()
     for segment in segments:
         if len(segment) == 2 and segment[0] == "cd":
-            target = Path(segment[1]).expanduser()
+            try:
+                target = Path(segment[1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
+                continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
         if not _is_mypy_invocation(segment) or _has_config_file_override(segment):

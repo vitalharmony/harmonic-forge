@@ -294,5 +294,27 @@ class CdTarget(Fixture):
                 self.assertTrue(denied(result))
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    def test_target_dir_of_an_unknown_user_home_is_the_cwd(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            payload = {"tool_name": "Write", "cwd": cwd,
+                       "tool_input": {"file_path": UNKNOWN_HOME, "content": "x"}}
+            self.assertEqual(guard.target_dir(payload), Path(cwd))
+
+    def test_target_dir_of_an_existing_literal_unknown_user_dir_is_that_dir(self):
+        # harmonic-forge#1608 (two-pass K1): the tool writes the literal path
+        # under the cwd, so the gate is judged where the file actually lands.
+        with tempfile.TemporaryDirectory() as cwd:
+            (Path(cwd) / "~nosuchuser-1608").mkdir()
+            payload = {"tool_name": "Write", "cwd": cwd,
+                       "tool_input": {"file_path": UNKNOWN_HOME, "content": "x"}}
+            self.assertEqual(guard.target_dir(payload), Path(cwd) / "~nosuchuser-1608")
+
+
 if __name__ == "__main__":
     unittest.main()

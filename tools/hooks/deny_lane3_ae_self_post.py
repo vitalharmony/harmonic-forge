@@ -180,7 +180,12 @@ def find_body_text(args: list[str], cwd: Path) -> str | None:
 def _read_file(file_arg: str, cwd: Path) -> str | None:
     """Read a --file/--body-file path, resolved against cwd if relative.
     Returns None (fail-open — no match) if the path can't be read."""
-    path = Path(file_arg).expanduser()
+    try:
+        path = Path(file_arg).expanduser()
+    except RuntimeError:
+        # harmonic-forge#1608: bash leaves an unknown `~user` literal, so gh
+        # reads it relative to the cwd; so does this check.
+        path = Path(file_arg)
     if not path.is_absolute():
         path = cwd / path
     try:

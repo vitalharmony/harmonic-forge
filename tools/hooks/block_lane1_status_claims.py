@@ -380,7 +380,12 @@ def pr_body_autoclose_text(args: list[str], cwd: Path) -> str | None:
         elif item.startswith("--body="):
             value = item.partition("=")[2]
         elif item == "--body-file" and index + 1 < len(args):
-            path = Path(args[index + 1]).expanduser()
+            try:
+                path = Path(args[index + 1]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal,
+                # so gh reads it relative to the cwd; so does this check.
+                path = Path(args[index + 1])
             if not path.is_absolute():
                 path = cwd / path
             try:
@@ -388,7 +393,12 @@ def pr_body_autoclose_text(args: list[str], cwd: Path) -> str | None:
             except OSError:
                 continue
         elif item.startswith("--body-file="):
-            path = Path(item.partition("=")[2]).expanduser()
+            try:
+                path = Path(item.partition("=")[2]).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal,
+                # so gh reads it relative to the cwd; so does this check.
+                path = Path(item.partition("=")[2])
             if not path.is_absolute():
                 path = cwd / path
             try:
@@ -434,10 +444,15 @@ def lane3_task_without_marker(args: list[str], cwd: Path) -> str | None:
         return None
     if lane is not None:
         return task
-    git_dir = subprocess.run(
-        ["git", "rev-parse", "--absolute-git-dir"],
-        cwd=cwd, text=True, capture_output=True, check=False,
-    )
+    try:
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=cwd, text=True, capture_output=True, check=False,
+        )
+    except OSError:
+        # harmonic-forge#1608 P3: a deleted cwd (or no git) is the same
+        # answer as a git failure: no marker can be read, so not cleared.
+        return task
     if git_dir.returncode:
         return task
     marker = Path(git_dir.stdout.strip()) / "LANE3_ACTIVE"
@@ -1530,7 +1545,13 @@ def decision(command: object, cwd: Path) -> dict:
                 cwd_unresolved = True
                 unresolved_name = unresolved_name or unresolved_variable(segment)
                 continue
-            expanded = Path(target).expanduser()
+            try:
+                expanded = Path(target).expanduser()
+            except RuntimeError:
+                # harmonic-forge#1608 P3: `cd ~nosuchuser` names no directory
+                # this hook can resolve, so it takes the unresolved-cwd path.
+                cwd_unresolved = True
+                continue
             effective_cwd = (expanded if expanded.is_absolute()
                              else effective_cwd / expanded)
             continue

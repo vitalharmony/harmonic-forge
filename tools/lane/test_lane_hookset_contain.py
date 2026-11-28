@@ -31,7 +31,8 @@ SCRIPT = "block_blind_repeat.py"
 
 def _set(command: str) -> dict:
     return {"schema": 1, "disableAllHooks": False, "hooks": {"PreToolUse": [
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}}
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": command,
+                                       "onFailure": "block"}]}]}}  # harmonic-forge#1608 P5
 
 
 class _Tmp(unittest.TestCase):

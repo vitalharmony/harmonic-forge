@@ -22,81 +22,98 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane2_status_claims.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane2_status_claims.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_irreversible_ops.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_irreversible_ops.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/batch_gate.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_lane3_ae_self_post.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_raw_board_scan.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_raw_board_scan.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/guard_gh_rest_budget.py\"",
-            "timeout": 15
+            "timeout": 15,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/enforce_gate_ci_on_raw_post.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/enforce_gate_ci_on_raw_post.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_data_migration_close.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_missing_preclose_inspection.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_route_tightened_merge.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_gate_and_write_same_command.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_undetermined_phase_close.py\"",
-            "timeout": 25
+            "timeout": 25,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_unchecked_push.py\"",
-            "timeout": 30
+            "timeout": 30,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_gate.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/block_blind_repeat.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 5
+            "timeout": 5,
+            "onFailure": "block"
           }
         ]
       },
@@ -105,12 +122,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/block_lane1_status_claims.py\"",
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/model_tier_gate.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -120,11 +139,13 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/enforce_belt_arming.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\"; [ -f \"$f\" ] && python3 \"$f\" || true"
+            "command": "f=\"${HOME}/harmonic-forge/tools/hooks/deny_retired_belt_sweep.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
+            "onFailure": "block"
           }
         ]
       },
@@ -134,12 +155,14 @@
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/precheck_store_guard.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/worktree_busy_guard.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -149,7 +172,8 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/auto_ae_toggle.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -159,7 +183,8 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/afk_defer.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -168,7 +193,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\""
+            "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/deny_cross_session_contact.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -178,7 +204,8 @@
           {
             "type": "command",
             "command": "python3 \"${HOME}/harmonic-forge/tools/hooks/compaction_reload_probe.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -188,7 +215,8 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/require_ci_plan.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -198,7 +226,8 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/gate_feedback_memory_write.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -208,7 +237,8 @@
           {
             "type": "command",
             "command": "f=\"${HOME}/harmonic-forge/tools/hooks/tasklist_hold.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

@@ -104,5 +104,51 @@ class TestMypyCwdTrap(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+
+def _git_repo(path: Path, trap: bool) -> Path:
+    import subprocess
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    if trap:
+        (path / "backend").mkdir()
+        (path / "backend" / "mypy.ini").write_text("[mypy]\n")
+    return path
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    """harmonic-forge#1608 (two-pass K2): bash leaves an unknown `~user`
+    literal, so `cd ~nosuchuser-1608` enters `<cwd>/~nosuchuser-1608` when it
+    exists and otherwise fails, leaving the cwd. Real repos, no patched trap,
+    so the test asserts which directory decided."""
+
+    def setUp(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_cd_to_an_unknown_user_home_leaves_the_cwd_and_still_denies(self):
+        # A missing literal directory: the `cd` fails, mypy runs from the
+        # hrse-shaped repo root, and the trap applies.
+        hrse = _git_repo(self.root / "hrse", trap=True)
+        result = m.decision(f"cd {UNKNOWN_HOME}; .venv/bin/mypy app", str(hrse))
+        self.assertTrue(_is_denied(result))
+
+    def test_cd_to_an_existing_literal_unknown_user_dir_follows_it_and_denies(self):
+        # A forge-shaped cwd (no trap) holding a `~nosuchuser-1608` symlink to
+        # an hrse-shaped repo: bash runs mypy in hrse, so the hook denies, the
+        # same as `cd <absolute hrse path>`.
+        forge = _git_repo(self.root / "forge", trap=False)
+        hrse = _git_repo(self.root / "hrse", trap=True)
+        (forge / "~nosuchuser-1608").symlink_to(hrse)
+        self.assertFalse(_is_denied(m.decision(".venv/bin/mypy app", str(forge))))
+        self.assertTrue(_is_denied(m.decision(f"cd {hrse} && .venv/bin/mypy app", str(forge))))
+        self.assertTrue(_is_denied(m.decision("cd ~nosuchuser-1608 && .venv/bin/mypy app", str(forge))))
+
+
 if __name__ == "__main__":
     unittest.main()

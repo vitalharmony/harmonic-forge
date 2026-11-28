@@ -51,7 +51,7 @@ def main() -> None:
         return
     try:
         content = Path(file_arg).expanduser().read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, RuntimeError):  # harmonic-forge#1608 P3: `~nosuchuser/x`
         print("{}")
         return
     if not SPEC_REVIEW_MARKER.search(content):

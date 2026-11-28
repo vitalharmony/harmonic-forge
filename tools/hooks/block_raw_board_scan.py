@@ -64,7 +64,15 @@ def is_raw_board_scan(command: str) -> bool:
     """True for a shell command that runs `gh project item-list` directly."""
     if not command or command_segments is None:
         return False
-    for segment in command_segments(command):
+    try:
+        segments = command_segments(command)
+    except ValueError:
+        # harmonic-forge#1608: shlex refuses some valid bash (`$'..\'..'`).
+        # A raw-text match runs before bash's quote removal (`gh pro""ject`
+        # escapes it), so an untokenizable command always asks: softer than
+        # the refusal the key would give a crash, never an allow.
+        return True
+    for segment in segments:
         tokens = strip_invocation_prefix(segment)
         if len(tokens) >= 3 and tokens[0] == "gh":
             # `gh project item-list ...` — the subcommand pair, in order,

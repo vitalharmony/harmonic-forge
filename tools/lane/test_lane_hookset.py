@@ -166,6 +166,10 @@ class Build(_Tmp):
         def unknown_event(d): d["hooks"]["Stopp"] = d["hooks"].pop("Stop")
         def unknown_top_level_key(d): d["permissions"] = {"allow": ["Bash(*)"]}
         def unknown_handler_key(d): d["hooks"]["Stop"][0]["hooks"][0]["async"] = True
+        def on_failure(value):
+            def mutate(d): d["hooks"]["PreToolUse"][0]["hooks"][0]["onFailure"] = value
+            mutate.__name__ = f"bad_on_failure_{value!r}"
+            return mutate
         def unknown_block_key(d): d["hooks"]["Stop"][0]["extra"] = 1
         def schema_two(d): d["schema"] = 2
         def lane_only_stale(d): d["lane_only"].append("no_such_hook.py")
@@ -183,6 +187,11 @@ class Build(_Tmp):
                                (unknown_event, "unknown hook event"),
                                (unknown_top_level_key, "unknown top-level"),
                                (unknown_handler_key, "a handler must be"),
+                               # harmonic-forge#1608: only "block"; "continue" relaxes a guard.
+                               (on_failure("continue"), "onFailure"),
+                               (on_failure(""), "onFailure"),
+                               (on_failure(True), "onFailure"),
+                               (on_failure(None), "onFailure"),
                                (unknown_block_key, "a block must be"),
                                (schema_two, "schema"),
                                (lane_only_stale, "lane_only")):
@@ -191,6 +200,19 @@ class Build(_Tmp):
                 mutate(data)
                 with self.assertRaisesRegex(hs.SetError, reason):
                     self.build(data)
+
+    def test_a_pre_tool_use_handler_without_on_failure_refuses(self):
+        # harmonic-forge#1608 P5: the key must be present, not only valid when present.
+        data = _set()
+        handler = data["hooks"]["PreToolUse"][0]["hooks"][0]
+        self.assertEqual(handler.pop("onFailure"), "block")
+        with self.assertRaisesRegex(hs.SetError, "onFailure"):
+            self.build(data)
+
+    def test_a_non_pre_tool_use_handler_needs_no_on_failure(self):
+        data = _set()
+        self.assertNotIn("onFailure", data["hooks"]["Stop"][0]["hooks"][0])
+        self.build(data)
 
     def test_disable_all_hooks_must_be_declared_false(self):
         for value in ("absent", True, 0, None):
@@ -248,6 +270,50 @@ class Build(_Tmp):
 
     def test_the_effective_operator_set_holds_57_entries(self):
         self.assertEqual(sum(1 for _ in hs.handlers(_effective()["hooks"])), 57)
+
+
+PRE_TOOL_USE_FILES = {ROOT / ".claude" / "settings.json": 30, SET_FILE: 29, OVERLAY_FILE: 3}
+
+
+class OnFailure(_Tmp):
+    """harmonic-forge#1608: every PreToolUse handler forge registers fails
+    closed (`"onFailure": "block"`), and the set validator takes no other value."""
+
+    # Test Case 1 (AC1)
+    def test_every_tracked_pre_tool_use_handler_blocks_on_failure(self):
+        for path, count in PRE_TOOL_USE_FILES.items():
+            with self.subTest(path=path.name):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                handlers = [h for block in data["hooks"]["PreToolUse"] for h in block["hooks"]]
+                self.assertEqual(len(handlers), count)
+                for handler in handlers:
+                    self.assertEqual(handler.get("onFailure"), "block", handler)
+
+    def test_no_other_event_carries_on_failure(self):
+        for path in PRE_TOOL_USE_FILES:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for event, blocks in data["hooks"].items():
+                if event == "PreToolUse":
+                    continue
+                for block in blocks:
+                    for handler in block["hooks"]:
+                        with self.subTest(path=path.name, event=event):
+                            self.assertNotIn("onFailure", handler)
+
+    # Test Case 2 (AC2), accept half; the refusals are in the schema table.
+    def test_block_is_accepted_on_any_handler(self):
+        data = _set()
+        data["hooks"]["Stop"][0]["hooks"][0]["onFailure"] = "block"
+        self.build(data)
+
+    # Test Case 3 (AC3)
+    def test_the_built_operator_value_blocks_on_failure_on_every_pre_tool_use_handler(self):
+        with mock.patch.dict(os.environ, {"HOME": str(self.fixture_home())}):
+            value = hs.build(SET_FILE, ROOT, "test", overlay="operator")
+        handlers = [h for block in value["hooks"]["PreToolUse"] for h in block["hooks"]]
+        self.assertEqual(len(handlers), 29 + 3)
+        for handler in handlers:
+            self.assertEqual(handler.get("onFailure"), "block", handler)
 
 
 class Policy(_Tmp):

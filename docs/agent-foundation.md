@@ -122,6 +122,11 @@ new adopter declares it before the first launch. The launcher accepts
 `XDG_CONFIG_HOME` only as `$HOME/.config` (or unset, empty or relative), so the
 declaration cannot be relocated through the environment.
 
+Every PreToolUse handler in the lane hook set and in `.claude/settings.json`
+refuses the call when the hook itself fails (`"onFailure": "block"`,
+harmonic-forge#1608). If a broken hook refuses every call, recover from a
+terminal as [`hook-lockout-recovery.md`](hook-lockout-recovery.md) describes.
+
 The file is refused inside any git checkout, so it is never committed.
 Residual (harmonic-forge#1525): an instance.toml under any git work tree
 refuses every launch, including a HOME that is itself a git checkout, while a

@@ -644,5 +644,90 @@ class CanonicalWorktreeGuardTests(unittest.TestCase):
                 self.assertEqual(out, "")
 
 
+#: harmonic-forge#1608 P3: `Path.expanduser()` raises RuntimeError on an unknown
+#: `~user`, so a reverted guard raises here instead of deciding.
+UNKNOWN_HOME = "~nosuchuser-1608/x"
+
+#: harmonic-forge#1608 (two-pass K2): bash leaves an unknown `~user` literal,
+#: so `cd ~nosuchuser-1608` enters `<cwd>/~nosuchuser-1608` when it exists.
+LITERAL_DIR = "~nosuchuser-1608"
+
+
+def _repo_with_mise(path: Path, gh_repo: str) -> None:
+    _init_repo(path)
+    (path / "mise.toml").write_text(f'[env]\nGH_REPO = "{gh_repo}"\n')
+
+
+class Issue1608UnknownUserHome(unittest.TestCase):
+    """Each `cd ~user` site follows bash: the literal directory when it
+    exists, the unchanged cwd when it does not. The cwd-sensitive sites are
+    tested with a `~nosuchuser-1608` symlink whose target decides
+    differently from the cwd, so the test asserts which directory decided."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cwd = Path(self._tmp.name)
+        self.cd = f"cd {UNKNOWN_HOME} && "
+
+    def test_gate_task_denial(self) -> None:
+        # The cwd's worktree carries a fresh LANE3_ACTIVE marker (allowed);
+        # the literal `~nosuchuser-1608` is a symlink to a repo with none.
+        cleared, other = self.cwd / "cleared", self.cwd / "other"
+        _init_repo(cleared)
+        _init_repo(other)
+        (cleared / ".git" / "LANE3_ACTIVE").write_text("x")
+        (cleared / LITERAL_DIR).symlink_to(other)
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(MODULE.gate_task_denial("mise run gate-checkout foo", cleared))
+            self.assertIn("Lane-3-only", MODULE.gate_task_denial(
+                f"cd {LITERAL_DIR} && mise run gate-checkout foo", cleared) or "")
+
+    def test_gate_worktree_location_denial(self) -> None:
+        # The cwd is the canonical Lane 3 worktree (allowed); the literal
+        # `~nosuchuser-1608` is a symlink to a directory outside it.
+        main = self.cwd / "project"
+        _init_repo(main)
+        canonical = self.cwd / "project-lane3"
+        _add_worktree(main, canonical)
+        elsewhere = self.cwd / "elsewhere"
+        elsewhere.mkdir()
+        (canonical / LITERAL_DIR).symlink_to(elsewhere)
+        self.assertIsNone(MODULE.gate_worktree_location_denial(
+            "mise run gate-checkout foo", canonical, True))
+        self.assertIn("canonical Lane 3 worktree", MODULE.gate_worktree_location_denial(
+            f"cd {LITERAL_DIR} && mise run gate-checkout foo", canonical, True) or "")
+        # A missing literal directory fails the `cd`, so the cwd still decides.
+        self.assertIsNone(MODULE.gate_worktree_location_denial(
+            f"cd {LITERAL_DIR}-missing; mise run gate-checkout foo", canonical, True))
+
+    def test_git_mutation_denial(self) -> None:
+        # The decision does not depend on the cwd: this site only must not crash.
+        self.assertIn("git worktree add", MODULE.git_mutation_denial(
+            self.cd + "git worktree add y", self.cwd, True) or "")
+
+    def test_direct_post_denial(self) -> None:
+        # `mise run post-comment` is a direct transport only for hrse: the
+        # cwd is a forge checkout (allowed); the literal `~nosuchuser-1608`
+        # is a symlink to an hrse checkout, which must deny as by absolute path.
+        forge, hrse = self.cwd / "forge", self.cwd / "hrse"
+        _repo_with_mise(forge, "vitalharmony/harmonic-forge")
+        _repo_with_mise(hrse, "vitalharmony/hrse")
+        (forge / LITERAL_DIR).symlink_to(hrse)
+        post = "mise run post-comment 5 --body x"
+        with patch.dict(os.environ, {"LANE": "1"}):
+            self.assertIsNone(MODULE.direct_post_denial(post, forge))
+            self.assertIn("raw GitHub issue posting", MODULE.direct_post_denial(
+                f"cd {hrse} && {post}", forge) or "")
+            self.assertIn("raw GitHub issue posting", MODULE.direct_post_denial(
+                f"cd {LITERAL_DIR} && {post}", forge) or "")
+
+    def test_bulk_comment_read_denial(self) -> None:
+        # The decision does not depend on the cwd: this site only must not crash.
+        self.assertIn("gh issue view --comments", MODULE.bulk_comment_read_denial(
+            self.cd + "gh issue view 5 --comments", self.cwd, True) or "")
+
+
 if __name__ == "__main__":
     unittest.main()

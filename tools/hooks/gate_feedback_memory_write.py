@@ -173,7 +173,12 @@ def decide(tool: str, tool_input: dict, store: Path, ids: set[str]) -> str | Non
     raw = tool_input.get("file_path")
     if not raw:
         return None
-    path = Path(str(raw)).expanduser()
+    try:
+        path = Path(str(raw)).expanduser()
+    except RuntimeError:
+        # harmonic-forge#1608 P3: an unknown `~user` is a literal relative
+        # path to the tool, never under the absolute store.
+        path = Path(str(raw))
     if not _in_store(path, store):
         return None
     text = new_text(tool, tool_input, path)

@@ -411,5 +411,21 @@ class FindIssueTests(unittest.TestCase):
         self.assertEqual(m.find_issue(args), 42)
 
 
+class Issue1608UnknownUserLiteral(unittest.TestCase):
+    """harmonic-forge#1608 (two-pass K1): bash leaves an unknown `~user`
+    literal, so `--body-file ~nosuchuser-1608/x` reads `<cwd>/~nosuchuser-1608/x`
+    and the hook must judge that file, not treat it as absent."""
+
+    def test_an_unready_pass_in_a_literal_unknown_user_path_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / "~nosuchuser-1608").mkdir()
+            (cwd / "~nosuchuser-1608" / "x").write_text(PASS_BODY, encoding="utf-8")
+            result = m.decision(
+                "gh issue comment 999 --repo vitalharmony/hrse --body-file ~nosuchuser-1608/x",
+                cwd, check=refuse_check, round_check=ok_round)
+        self.assertTrue(_is_denied(result))
+
+
 if __name__ == "__main__":
     unittest.main()

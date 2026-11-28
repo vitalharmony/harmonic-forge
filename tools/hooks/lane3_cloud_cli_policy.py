@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -187,8 +188,14 @@ def main() -> int:
     # subprocess with no guarantee its own cwd matches the session's, and the
     # LANE-unset branch of the probe resolves LANE3_ACTIVE via `git rev-parse`
     # from exactly this path. Same pattern as gate_codex_tool.py:222.
-    cwd = Path(payload.get("cwd") or Path.cwd())
-    if not is_lane3_session(cwd):
+    try:
+        cwd = Path(payload.get("cwd") or Path.cwd())
+        lane3 = is_lane3_session(cwd)
+    except OSError:
+        # harmonic-forge#1608 P3: a deleted cwd leaves only the env var as
+        # evidence; LANE=3 still gets the policy, anything else is not Lane 3.
+        lane3 = os.environ.get("LANE") == "3"
+    if not lane3:
         return 0
     reason = denial_reason(command)
     if reason:
