@@ -1,6 +1,11 @@
 {
   "schema": 1,
   "disableAllHooks": false,
+  "permissions": {
+    "ask": [
+      "REPL"
+    ]
+  },
   "lane_only": [
     "block_lane2_status_claims.py",
     "deny_lane3_ae_self_post.py",

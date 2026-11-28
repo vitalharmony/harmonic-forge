@@ -63,7 +63,7 @@ from hookset_root import (PLACEHOLDER, TEMPLATES, SetError,  # noqa: E402,F401
                           render, render_checked, spelling, stored_form, stored_paths)
 import instance  # noqa: E402
 
-SET_KEYS = frozenset({"schema", "disableAllHooks", "lane_only", "hooks"})
+SET_KEYS = frozenset({"schema", "disableAllHooks", "lane_only", "hooks", "permissions"})
 BLOCK_KEYS = frozenset({"matcher", "hooks"})
 HANDLER_KEYS = frozenset({"type", "command", "timeout"})
 # The Claude Code hook events (2.1.322). An unknown name is refused rather than
@@ -117,6 +117,8 @@ def validate(data: dict, *, forge_root: Path) -> None:
     extra = sorted(set(data) - SET_KEYS)
     if extra:
         raise SetError(f"unknown top-level key(s): {', '.join(extra)}")
+    if "permissions" in data:
+        _validate_permissions(data["permissions"])
     if data.get("schema") != 1:
         raise SetError("`schema` must be 1")
     if "disableAllHooks" not in data or data["disableAllHooks"] is not False:
@@ -177,6 +179,17 @@ def validate(data: dict, *, forge_root: Path) -> None:
                       if not (Path(forge_root) / rel).is_file()})
     if missing:
         raise SetError(f"named script(s) do not exist under forge root {forge_root}: {', '.join(missing)}")
+
+
+def _validate_permissions(perms) -> None:
+    """A set's `permissions` holds only an `ask` list: a set never carries
+    `allow` or `deny`, so it can never widen a lane (harmonic-forge#1643)."""
+    ask = perms.get("ask") if isinstance(perms, dict) else None
+    if (not isinstance(perms, dict) or set(perms) != {"ask"} or not isinstance(ask, list)
+            or not ask or not all(isinstance(e, str) and e for e in ask)
+            or len(set(ask)) != len(ask)):
+        raise SetError("permissions may hold only an `ask` list of tool rules; "
+                       "a set never carries allow or deny")
 
 
 def load_set(path: Path, *, forge_root: Path, stored: bool = False) -> dict:
@@ -300,8 +313,10 @@ def build(set_path: Path, forge_root: Path, source: str, policy: Path | None = N
     `tools/hooks/` refuses. Every SetError is named by `_named` (harmonic-forge#1526). `overlay` is the declared overlay
     (`load_effective`). The policy is read ONCE: its digest is checked against
     the manifest's `policy_sha256` and those same bytes are merged, so nothing
-    can swap it between the launcher's ownership check and here. Neither
-    source may carry the other's keys, so neither can override the other.
+    can swap it between the launcher's ownership check and here. Only the
+    set may carry `hooks`/`disableAllHooks`; the policy's `permissions` lists
+    are unioned with the set's, so neither drops the other's entries
+    (harmonic-forge#1643).
     """
     named = _named(forge_root, source, written)  # C1
     if not (Path(forge_root) / "tools" / "hooks").is_dir():
@@ -317,6 +332,8 @@ def _build(set_path: Path, forge_root: Path, policy: Path | None, manifest: Path
     """`build`'s body, unnamed: the set, then the policy."""
     data = load_effective(set_path, overlay, forge_root=forge_root)
     value = {"disableAllHooks": False, "hooks": data["hooks"]}
+    if "permissions" in data:
+        value["permissions"] = {"ask": list(data["permissions"]["ask"])}
     if policy is None:
         return value
     if manifest is None:
@@ -337,7 +354,16 @@ def _build(set_path: Path, forge_root: Path, policy: Path | None, manifest: Path
     clash = sorted(set(merged) & {"hooks", "disableAllHooks"})
     if clash:
         raise SetError(f"policy carries {', '.join(clash)}, which only the set may declare")
+    # After the clash check, so a policy carrying both refuses on the clash.
+    perms = merged.pop("permissions", {})
+    if (not isinstance(perms, dict) or not all(
+            isinstance(v, list) and all(isinstance(e, str) for e in v) for v in perms.values())):
+        raise SetError("policy permissions is not an object of lists")
     value.update(merged)
+    for name, entries in perms.items():
+        target = value.setdefault("permissions", {})
+        existing = target.get(name, [])
+        target[name] = existing + [e for e in entries if e not in existing]
     return value
 
 
