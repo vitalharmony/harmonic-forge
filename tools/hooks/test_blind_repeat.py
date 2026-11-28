@@ -283,17 +283,21 @@ class Issue1608Budget(Base):
         (self.repo / "big.bin").write_bytes(b"x")
 
         class Slow(io.RawIOBase):  # 40 chunks at 0.1 s each: 4 s if read whole
-            chunks = 40
+            # harmonic-forge#1608 (two-pass K4): the fixture honors the size it
+            # is asked for, 0.1 s per chunk delivered, so a whole-file read()
+            # costs the full 4 s and the chunking itself is under test.
+            remaining = 40 * R.HASH_CHUNK_BYTES
 
             def readable(self):
                 return True
 
             def read(self, size=-1):
-                if Slow.chunks == 0:
+                n = Slow.remaining if size is None or size < 0 else min(size, Slow.remaining)
+                if n == 0:
                     return b""
-                Slow.chunks -= 1
-                time.sleep(0.1)
-                return b"x" * 16
+                Slow.remaining -= n
+                time.sleep(0.1 * -(-n // R.HASH_CHUNK_BYTES))
+                return b"x" * n
 
         start = time.monotonic()
         with mock.patch.object(R, "_open_for_hash", side_effect=lambda path: Slow()):

@@ -382,8 +382,10 @@ def pr_body_autoclose_text(args: list[str], cwd: Path) -> str | None:
         elif item == "--body-file" and index + 1 < len(args):
             try:
                 path = Path(args[index + 1]).expanduser()
-            except RuntimeError:  # harmonic-forge#1608 P3: `~nosuchuser/x`
-                continue
+            except RuntimeError:
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal,
+                # so gh reads it relative to the cwd; so does this check.
+                path = Path(args[index + 1])
             if not path.is_absolute():
                 path = cwd / path
             try:
@@ -393,8 +395,10 @@ def pr_body_autoclose_text(args: list[str], cwd: Path) -> str | None:
         elif item.startswith("--body-file="):
             try:
                 path = Path(item.partition("=")[2]).expanduser()
-            except RuntimeError:  # harmonic-forge#1608 P3: `~nosuchuser/x`
-                continue
+            except RuntimeError:
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal,
+                # so gh reads it relative to the cwd; so does this check.
+                path = Path(item.partition("=")[2])
             if not path.is_absolute():
                 path = cwd / path
             try:

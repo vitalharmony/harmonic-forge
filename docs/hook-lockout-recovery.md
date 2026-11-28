@@ -27,7 +27,7 @@ them will not help.
 | Cause | What it looks like |
 |---|---|
 | `python3` is missing from the hook shell's `PATH` | every keyed handler fails to start, on every tool |
-| A shared module on forge main is broken (`shell_parse.py` or `block_lane1_status_claims.py`, which other hooks import) | every hook that imports it exits non-zero |
+| A shared module on forge main is broken (`shell_parse.py` or `block_lane1_status_claims.py`, which other hooks import) | nearly every hook that imports it exits non-zero; `block_raw_board_scan.py` instead catches the ImportError and allows every call (see § Exceptions) |
 | One hook crashes on a particular input | only calls of that shape are refused; `tools/hooks/test_hook_crash_contract.py` exists to catch this before merge |
 | A hook times out | the call is refused after the handler's `timeout`. A network-bound hook can time out on a GitHub stall: `block_missing_preclose_inspection.py` makes 7 s `gh` reads plus a 12 s fetch under a 25 s timeout, so a stall refuses a close or merge (the safe direction; retry once GitHub answers) |
 
@@ -74,7 +74,7 @@ edit removes it. Recover from an ordinary terminal:
 ## Exceptions: hooks whose crash does not reach the CLI
 
 Some keyed hooks catch their own failures and exit 0, so a crash in them
-allows the call instead of refusing it, key or no key. Three groups:
+allows the call instead of refusing it, key or no key. Four groups:
 
 - The handlers registered as `f=...; [ -f "$f" ] && python3 "$f" || true`.
   The `|| true` turns a crash into exit 0; a timeout or invalid JSON still
@@ -89,7 +89,11 @@ allows the call instead of refusing it, key or no key. Three groups:
   `gate_feedback_memory_write.py:223`, `afk_defer.py:82`,
   `enforce_belt_arming.py:739` and `worktree_busy_guard.py:77`.
 
-harmonic-forge#1613 owns all three groups: each one either lets its failure
+- One hook that swallows a broken import: `block_raw_board_scan.py:46-50`
+  catches an ImportError of `shell_parse` and sets `command_segments` to
+  None, and `:65` then allows every call.
+
+harmonic-forge#1613 owns all four groups: each one either lets its failure
 reach the CLI or documents why it fails open.
 
 Separate from crashes: two hooks allow a command they cannot tokenize, by

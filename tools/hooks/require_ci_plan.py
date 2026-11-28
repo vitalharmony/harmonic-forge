@@ -70,8 +70,10 @@ def target_dir(payload: dict) -> Path:
     if payload.get("tool_name") in EDIT_TOOLS and path:
         try:
             directory = Path(path).expanduser().parent
-        except RuntimeError:  # harmonic-forge#1608 P3: an unknown `~user`
-            directory = Path(payload.get("cwd") or os.getcwd())
+        except RuntimeError:
+            # harmonic-forge#1608: an unknown `~user` is a literal path to the
+            # tool, relative to the cwd.
+            directory = (Path(payload.get("cwd") or os.getcwd()) / path).parent
         while not directory.exists() and directory != directory.parent:
             directory = directory.parent
         return directory

@@ -130,8 +130,10 @@ def _read_file(file_arg: str, cwd: Path) -> str | None:
         return STDIN
     try:
         path = Path(file_arg).expanduser()
-    except RuntimeError:  # harmonic-forge#1608 P3: `~nosuchuser/x` is unreadable
-        return None
+    except RuntimeError:
+        # harmonic-forge#1608: bash leaves an unknown `~user` literal, so gh
+        # reads it relative to the cwd; so does this check.
+        path = Path(file_arg)
     if not path.is_absolute():
         path = cwd / path
     try:

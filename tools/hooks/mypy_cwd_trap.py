@@ -126,8 +126,12 @@ def decision(command: object, payload_cwd: str | None) -> dict:
             try:
                 target = Path(segment[1]).expanduser()
             except RuntimeError:
-                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
-                # so the cwd the next segment sees is unchanged.
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
                 continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue

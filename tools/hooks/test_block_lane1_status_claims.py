@@ -1677,11 +1677,39 @@ class TestF1608UnknownUserTilde(unittest.TestCase):
     def test_cd_to_an_unknown_user_home_exits_zero(self):  # :1533 site
         self._assert_clean("cd '~nosuchuser-1608' 2>/dev/null || pwd")
 
-    def test_body_file_under_an_unknown_user_exits_zero(self):  # --body-file X site
-        self._assert_clean("gh pr create --body-file ~nosuchuser/x")
+    def _decision_in(self, command: str, lane: str | None, cwd: Path) -> str | None:
+        import json
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "LANE"}
+        if lane is not None:
+            env["LANE"] = lane
+        payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+        done = subprocess.run([sys.executable, str(self.HOOK)], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        out = json.loads(done.stdout or "{}")
+        return out.get("hookSpecificOutput", {}).get("permissionDecision")
 
-    def test_body_file_equals_under_an_unknown_user_exits_zero(self):  # --body-file=X site
-        self._assert_clean("gh pr create --body-file=~nosuchuser/x")
+    def _assert_literal_body_file_denied(self, command: str) -> None:
+        # harmonic-forge#1608 (two-pass K1): bash leaves an unknown `~user`
+        # literal, so gh reads `<cwd>/~nosuchuser-1608/x`; the hook must judge
+        # that file and deny its closing keyword, exactly as by absolute path.
+        import shlex
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / "~nosuchuser-1608").mkdir()
+            (cwd / "~nosuchuser-1608" / "x").write_text("Closes #12\n", encoding="utf-8")
+            self.assertEqual(m.pr_body_autoclose_text(shlex.split(command), cwd), "Closes #12")
+            for lane in (None, "1", "2", "3"):
+                with self.subTest(lane=lane):
+                    self.assertEqual(self._decision_in(command, lane, cwd), "deny", command)
+
+    def test_body_file_under_an_unknown_user_is_read_literally_and_denied(self):  # --body-file X
+        self._assert_literal_body_file_denied("gh pr create --title t --body-file ~nosuchuser-1608/x")
+
+    def test_body_file_equals_under_an_unknown_user_is_read_literally_and_denied(self):  # =X
+        self._assert_literal_body_file_denied("gh pr create --title t --body-file=~nosuchuser-1608/x")
 
     def test_a_deleted_cwd_reads_as_no_lane3_marker(self):
         # harmonic-forge#1608 P3: git cannot start in a deleted cwd; that is

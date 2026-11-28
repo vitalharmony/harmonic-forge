@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,11 +59,6 @@ REASON = (
     "Approve this only if the question really needs every row live."
 )
 
-#: harmonic-forge#1608 P2: the fallback when the command does not tokenize.
-#: A plain match on the raw string, so an unparseable command that names the
-#: subcommand pair still asks; it can over-ask, never under-ask.
-RAW_FALLBACK = re.compile(r"\bgh\b.*?\bproject\b.*?\bitem-list\b", re.DOTALL)
-
 
 def is_raw_board_scan(command: str) -> bool:
     """True for a shell command that runs `gh project item-list` directly."""
@@ -73,10 +67,11 @@ def is_raw_board_scan(command: str) -> bool:
     try:
         segments = command_segments(command)
     except ValueError:
-        # harmonic-forge#1608 P2: shlex refuses some valid bash (`$'..\'..'`).
-        # The handler blocks on a crash, so an untokenizable command falls back
-        # to the raw match instead of raising.
-        return bool(RAW_FALLBACK.search(command))
+        # harmonic-forge#1608: shlex refuses some valid bash (`$'..\'..'`).
+        # A raw-text match runs before bash's quote removal (`gh pro""ject`
+        # escapes it), so an untokenizable command always asks: softer than
+        # the refusal the key would give a crash, never an allow.
+        return True
     for segment in segments:
         tokens = strip_invocation_prefix(segment)
         if len(tokens) >= 3 and tokens[0] == "gh":

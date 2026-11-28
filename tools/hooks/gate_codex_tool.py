@@ -132,8 +132,12 @@ def gate_task_denial(command: str, cwd: Path) -> str | None:
             try:
                 target = Path(segment[1]).expanduser()
             except RuntimeError:
-                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
-                # so the cwd the next segment sees is unchanged.
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
                 continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
@@ -252,8 +256,12 @@ def gate_worktree_location_denial(command: str, cwd: Path, is_lane3: bool) -> st
             try:
                 target = Path(segment[1]).expanduser()
             except RuntimeError:
-                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
-                # so the cwd the next segment sees is unchanged.
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
                 continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
@@ -340,8 +348,12 @@ def git_mutation_denial(command: str, cwd: Path, is_lane3: bool) -> str | None:
             try:
                 target = Path(segment[1]).expanduser()
             except RuntimeError:
-                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
-                # so the cwd the next segment sees is unchanged.
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
                 continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
@@ -385,8 +397,12 @@ def direct_post_denial(command: str, cwd: Path) -> str | None:
             try:
                 target = Path(segment[1]).expanduser()
             except RuntimeError:
-                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
-                # so the cwd the next segment sees is unchanged.
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
                 continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue
@@ -434,8 +450,12 @@ def bulk_comment_read_denial(command: str, cwd: Path, is_lane3: bool) -> str | N
             try:
                 target = Path(segment[1]).expanduser()
             except RuntimeError:
-                # harmonic-forge#1608 P3: `cd ~nosuchuser` fails in bash too,
-                # so the cwd the next segment sees is unchanged.
+                # harmonic-forge#1608: bash leaves an unknown `~user` literal.
+                # `cd` moves there when that directory exists; otherwise the
+                # `cd` fails and the next segment runs in the unchanged cwd.
+                literal = effective_cwd / segment[1]
+                if literal.is_dir():
+                    effective_cwd = literal
                 continue
             effective_cwd = target if target.is_absolute() else effective_cwd / target
             continue

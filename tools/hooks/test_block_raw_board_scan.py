@@ -107,15 +107,24 @@ class Issue1608ShlexCrash(unittest.TestCase):
                               input=json.dumps({"tool_input": {"command": command}}),
                               capture_output=True, text=True)
 
-    def test_an_ansi_c_quote_exits_zero_with_no_decision(self):
-        done = self._proc("git commit -m $'Don\\'t fail open'")
+    def _decision(self, command: str) -> str | None:
+        done = self._proc(command)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertNotIn("hookSpecificOutput", json.loads(done.stdout or "{}"))
+        return json.loads(done.stdout or "{}").get("hookSpecificOutput", {}).get("permissionDecision")
+
+    def test_an_ansi_c_quote_exits_zero_and_asks(self):
+        # harmonic-forge#1608 (two-pass K3): an untokenizable command always
+        # asks, never allows: softer than the key's crash refusal.
+        self.assertEqual(self._decision("git commit -m $'Don\\'t fail open'"), "ask")
 
     def test_an_untokenizable_board_scan_still_asks(self):
-        done = self._proc("gh project item-list 1 --owner x && echo $'it\\'s'")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
+        self.assertEqual(self._decision("gh project item-list 1 --owner x && echo $'it\\'s'"), "ask")
+
+    def test_a_quote_split_subcommand_behind_an_ansi_c_quote_asks(self):
+        # Survivor 3: bash removes the quotes and runs `gh project item-list`;
+        # a raw-text match on `pro""ject` missed it and allowed.
+        self.assertEqual(self._decision(
+            "echo $'a\\'b'; gh pro\"\"ject item-list 3 --owner vitalharmony"), "ask")
 
 
 class Wiring(unittest.TestCase):
