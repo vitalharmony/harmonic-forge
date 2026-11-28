@@ -168,16 +168,18 @@ def ancestors(pid: int) -> list[int]:
 
 
 def _try_flock(path: Path) -> bool:
-    """True when nobody holds `path`: its holder is gone."""
+    """True only when the lock was taken: its holder is gone.
+
+    Any other error (EMFILE, EACCES, ...) cannot tell a dead holder from a live
+    one, so it reads as held and nothing is reaped (harmonic-forge#1657 pass 1).
+    """
     try:
         with open(path, "a+") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(handle, fcntl.LOCK_UN)
         return True
-    except BlockingIOError:
-        return False
     except OSError:
-        return True
+        return False
 
 
 def live_holders(state: Path) -> list[dict]:
