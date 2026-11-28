@@ -955,5 +955,45 @@ class PathBytes(InstallBase):
                               r"worktrees \(stubbed re-list failure\)")
 
 
+
+class EpochOnePassOne(InstallBase):
+    """harmonic-forge#1532 reforge epoch 1, pass-1 survivors."""
+
+    def test_newline_in_the_checkout_name_strips_the_suffix_as_bash_does(self):
+        name = "a\nb-lane2"
+        bash = subprocess.run(["bash", "-c", 'b="$1"; [[ "$b" =~ ^(.+)-lane[0-9]+$ ]] && b="${BASH_REMATCH[1]}"; '
+                               'printf %s "$b"', "_", name], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(bash, "a\nb")
+        clone = self.tmp / "nl" / name
+        clone.parent.mkdir()
+        self.git("clone", "-q", str(self.tmp / "origin.git"), str(clone), cwd=self.tmp)
+        self.assertEqual(foi.lane_worktree_paths(clone),
+                         [clone.parent / f"{bash}-lane2", clone.parent / f"{bash}-lane3"])
+
+    def test_non_utf8_repo_path_in_a_check_message_prints_escaped(self):
+        sub = Path(os.fsdecode(os.fsencode(self.app) + b"/sub\xff"))
+        sub.mkdir()
+        self.lane2.mkdir()  # a plain directory: its FAIL Check names the repo path
+        result = subprocess.run([sys.executable, str(FO), "--install", "--repo", str(sub)], cwd=self.app,
+                                env={**self.env, "PYTHONIOENCODING": "utf-8:strict"}, capture_output=True,
+                                text=True, errors="surrogateescape", stdin=subprocess.DEVNULL, timeout=120)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("sub\\udcff", result.stdout)
+
+    def test_symlink_loop_runtime_error_on_path_is_a_warn_check(self):
+        loop = self.tmp / "la"
+        real = Path.resolve
+
+        def resolve(path, *a, **k):  # Python < 3.13: resolve() raises RuntimeError on a loop
+            if path == loop:
+                raise RuntimeError(f"Symlink loop from {path!r}")
+            return real(path, *a, **k)
+
+        with mock.patch.object(Path, "resolve", resolve):
+            code, out, err = self.run_main(env={"PATH": f"{loop}{os.pathsep}{self.env['PATH']}"})
+        self.assertNotIn("Traceback", err)
+        self.assertIn("[ warn ] PATH — could not probe PATH: Symlink loop", out)
+
 if __name__ == "__main__":
     unittest.main()

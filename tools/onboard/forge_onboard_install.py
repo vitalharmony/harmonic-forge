@@ -65,8 +65,9 @@ from forge_onboard import FAIL, OK, WARN, Check  # noqa: E402
 import worktree_table  # noqa: E402
 
 #: The launchers' own rule: a `-laneN` suffix is stripped from the toplevel's
-#: basename (`[[ "$base" =~ ^(.+)-lane[0-9]+$ ]]`).
-_LANE_SUFFIX = re.compile(r"^(.+)-lane[0-9]+$")
+#: basename (`[[ "$base" =~ ^(.+)-lane[0-9]+$ ]]`). Bash's ERE `.` matches a
+#: newline and its `$` is end of string only, hence DOTALL and fullmatch.
+_LANE_SUFFIX = re.compile(r"(.+)-lane[0-9]+", re.DOTALL)
 WORKTREE_LANES = ("lane2", "lane3")
 _CHANGED = ("linked", "replaced", "created")
 #: `_git`'s returncode when git could not be launched at all.
@@ -196,7 +197,7 @@ def lane_worktree_paths(repo: Path) -> list[Path]:
     except UnicodeDecodeError:
         raise InstallError(f"{repo}'s toplevel {raw!r} is not UTF-8; --install "
                            f"cannot represent its lane paths -- rename it; nothing was written") from None
-    match = _LANE_SUFFIX.match(toplevel.name)
+    match = _LANE_SUFFIX.fullmatch(toplevel.name)
     base = match.group(1) if match else toplevel.name
     return [toplevel.parent / f"{base}-{lane}" for lane in WORKTREE_LANES]
 
@@ -432,7 +433,7 @@ def install(repo: Path, bin_dir: Path, source: Path, *, force: bool = False,
     checks += create_worktrees(repo, worktrees, sha, dry_run=dry_run)
     try:
         checks += path_lines(bin_dir)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:  # RuntimeError: a symlink loop, Python < 3.13
         checks.append(Check("PATH", WARN, f"could not probe PATH: {exc}"))
     try:
         checks.append(_source_check(bin_dir, source, dry_run))

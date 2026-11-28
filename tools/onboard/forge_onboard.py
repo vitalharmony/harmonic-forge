@@ -1180,7 +1180,9 @@ def main(argv: list[str] | None = None) -> int:
         except foi.InstallError as exc:
             print(f"forge-onboard: {exc}", file=sys.stderr)
             return 2
-        print("\n".join(c.line() for c in checks))
+        # A Check can echo a non-UTF-8 path (a surrogate escape): print it escaped.
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print("\n".join(c.line() for c in checks).encode(enc, "backslashreplace").decode(enc))
         return code
     if args.force or args.repo is not None:
         p.error("--force and --repo are valid only with --install")
