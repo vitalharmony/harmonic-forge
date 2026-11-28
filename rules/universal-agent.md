@@ -71,9 +71,11 @@ refused real run means rerunning the precheck, never diagnosing which state
 moved; every receipt
 expires after 30 minutes (harmonic-forge#1291). No variable or command
 substitution in any argument, no chaining behind another step, no two issues'
-calls in one command. An ID R-0386 requires fetched is read in its own call
-immediately before the precheck, and its printed value is typed literally into
-both calls.
+calls in one command. An ID R-0386 requires fetched that is an argument of the
+precheck-gated call is read in its own call immediately before the precheck,
+and its printed value is typed literally into both calls. An ID cited only in a
+post body is not an argument, and R-0386's same-command fetch still applies to
+the command that writes the body.
 <!-- /R-0441 -->
 
 <!-- R-0425 -->
@@ -582,10 +584,15 @@ A substantive tooling or process change is filed before it is implemented, inclu
 When the operator asks in chat how something would be designed, or reports a
 UX or design problem, the reply is a design conversation: show the current
 model and behavior, ask the design questions, and stop. A filing about it
-happens only when the operator asks for one, after the answer; R-0039 then
-applies unchanged, carrying any design the operator settled. A message in the fixed trigger vocabulary
-(`rules/lane-shorthand.md` section "Operator → lane triggers") or a
-`queued-for-<lane>` belt event (R-0408) is a trigger, not a design question.
+happens only when the operator asks for one, after the answer, carrying any
+design the operator settled. For a problem raised this way, this takes
+precedence over R-0039's first and second tests (operator D15): a problem
+either test would file is still filed only when the operator asks. R-0039's
+artifact requirement and its exceptions govern that filing. A message whose
+first line is in the fixed trigger vocabulary (`rules/lane-shorthand.md`
+section "Operator → lane triggers") is a trigger for that line, and a
+`queued-for-<lane>` belt event (R-0408) is a trigger; a design question or UX
+complaint elsewhere in the same message is still answered under this rule.
 <!-- /R-0440 -->
 
 <!-- R-0372 -->
