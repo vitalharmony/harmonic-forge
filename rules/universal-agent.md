@@ -581,9 +581,9 @@ A substantive tooling or process change is filed before it is implemented, inclu
 <!-- R-0440 -->
 When the operator asks in chat how something would be designed, or reports a
 UX or design problem, the reply is a design conversation: show the current
-model and behavior, ask the design questions, and stop. Any filing about it
-waits for the operator's answer, and R-0039 then applies unchanged, carrying
-any design the operator settled. A message in the fixed trigger vocabulary
+model and behavior, ask the design questions, and stop. A filing about it
+happens only when the operator asks for one, after the answer; R-0039 then
+applies unchanged, carrying any design the operator settled. A message in the fixed trigger vocabulary
 (`rules/lane-shorthand.md` section "Operator → lane triggers") or a
 `queued-for-<lane>` belt event (R-0408) is a trigger, not a design question.
 <!-- /R-0440 -->

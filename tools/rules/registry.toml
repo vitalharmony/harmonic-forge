@@ -3005,8 +3005,8 @@ hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPr
 id = "R-0440"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "An operator's chat design question or UX complaint is answered with a design conversation that shows the current model and behavior, asks the design questions and stops; any filing about it waits for the operator's answer and then follows R-0039 unchanged with any settled design, and a fixed-vocabulary trigger or queued-for-<lane> belt event is a trigger, not a design question (harmonic-forge#1664)."
-text_sha = "91c30140dad43b7f"
+statement = "An operator's chat design question or UX complaint is answered with a design conversation that shows the current model and behavior, asks the design questions and stops; a filing about it happens only when the operator asks for one, after the answer, and then follows R-0039 unchanged with any settled design, and a fixed-vocabulary trigger or queued-for-<lane> belt event is a trigger, not a design question (harmonic-forge#1664)."
+text_sha = "1f76d45bbc793505"
 hooks = []
 
 [[rule]]
