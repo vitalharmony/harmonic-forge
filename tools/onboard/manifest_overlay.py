@@ -11,7 +11,9 @@ prefix map resolves exactly as origin/main did:
 `project_for_path`, `repo_for_path_or_none`, `workspace_for`, `slot_env`,
 `manifest.load()` and every global lookup read `projects.toml` alone. A later
 change that lets the overlay reach one of them breaches this rule; it is not
-fixed by a new guard here (R6).
+fixed by a new guard here (R6). harmonic-forge#1663 (operator D90): the two
+grant-writing hook entrypoints arm `refuse_reads`; that is this R1 allowlist
+enforced in code, not an R6 guard.
 
 **Discovery: an explicit root, never a process cwd.** `project_for_checkout(root)`
 is the only reader, and `root` is required. `path_project` passes it the
@@ -94,10 +96,36 @@ IDENTITY_KEYS = ("account", "name", "prefix", "workspace")
 CLAIM_KEYS = ("name", "prefix", "workspace")
 
 
+class OverlayReadRefused(BaseException):
+    """An overlay read in a process armed by `refuse_reads` (harmonic-forge#1663).
+
+    A BaseException, not a `ManifestError`: every grant writer in an armed hook
+    sits inside an `except Exception` that turns a failure into a refusal
+    receipt, which would hide the read. Only an explicit catch (batch_gate's,
+    which emits `ask`) or the process exit stops it."""
+
+
+#: The arming process's name once `refuse_reads` has run; None (the default)
+#: leaves `read` as it was. Per process, never inherited by a child.
+_REFUSED: str | None = None
+
+
+def refuse_reads(reason: str) -> None:
+    """Arm this process: every later `read` raises `OverlayReadRefused`
+    (harmonic-forge#1663, R1 enforced). `reason` names the arming entrypoint.
+    There is no disarm; a test restores `_REFUSED` itself."""
+    global _REFUSED  # noqa: PLW0603 -- one per-process flag, by design
+    _REFUSED = reason
+
+
 def read(path: Path) -> dict | None:
     """The parsed overlay, or None when nothing is at `path`. Only a regular file
     is read: a symlink is never followed, the open never blocks, and anything
-    else is refused (R3; post-verdict finding 1)."""
+    else is refused (R3; post-verdict finding 1). In a process armed by
+    `refuse_reads`, it raises `OverlayReadRefused` before touching `path`."""
+    if _REFUSED is not None:
+        raise OverlayReadRefused(f"{_REFUSED}: this process writes grants and may not read "
+                                 f"{path} (harmonic-forge#1663, R1)")
     if not os.path.lexists(path):
         return None
     try:

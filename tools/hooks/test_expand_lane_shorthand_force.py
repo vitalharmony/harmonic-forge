@@ -323,5 +323,42 @@ class GateMode(ForceTrigger):
         self.assertEqual(self.grant()["arg_fp"], "3" * 64)
 
 
+class ModeSetIsForceGrants(unittest.TestCase):
+    """harmonic-forge#1663 (operator D94): the FORCE line parser's mode set is
+    `force_grant._AUTHORIZES`, not a list of its own, so a new FORCE mode
+    cannot be silently unparsed."""
+
+    def test_every_force_grant_mode_has_an_argument_shape_and_no_other(self) -> None:
+        self.assertEqual(set(m._FORCE_ARGS), set(force_grant._AUTHORIZES) - {"plain"})
+
+    def test_a_mode_force_grant_adds_is_refused_by_name_not_unknown(self) -> None:
+        modes = {**force_grant._AUTHORIZES, "rollback": "one rollback"}
+        with mock.patch.object(force_grant, "_AUTHORIZES", modes):
+            reason = m._force_mode(["rollback", HEAD])
+            listed = m._force_mode(["rebase"])
+        self.assertIsInstance(reason, str)
+        self.assertIn("'rollback' is a force_grant mode this hook has no argument shape", reason)
+        self.assertNotIn("unknown FORCE mode", reason)
+        self.assertIn("`rollback`", listed)
+
+    def test_a_mode_force_grant_drops_is_unknown_here(self) -> None:
+        modes = {k: v for k, v in force_grant._AUTHORIZES.items() if k != "cluster"}
+        with mock.patch.object(force_grant, "_AUTHORIZES", modes):
+            reason = m._force_mode(["cluster"])
+        self.assertIsInstance(reason, str)
+        self.assertIn("unknown FORCE mode 'cluster'", reason)
+        self.assertEqual(m._force_mode(["cluster"]), ("cluster", None))
+
+    def test_every_listed_mode_parses_with_its_argument(self) -> None:
+        args = {"reforge": ["abcdef123456"], "route": [HEAD], "ci-outage": [HEAD], "cluster": [],
+                "gate": ["0123456789ab"]}
+        self.assertEqual(set(args), set(force_grant._AUTHORIZES) - {"plain"})
+        for mode, rest in args.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(m._force_mode([mode, *rest]), (mode, rest[0] if rest else None))
+        self.assertEqual(m._force_mode([]), ("plain", None))
+        self.assertIn("unknown FORCE mode 'plain'", m._force_mode(["plain"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -124,6 +124,7 @@ class ParkTrigger(unittest.TestCase):
                 mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
                 mock.patch.object(m, "record_attention", lambda *a, **k: False), \
                 mock.patch.object(m, "record_attribution", lambda *a, **k: 0), \
+                mock.patch.object(m.manifest_overlay, "_REFUSED", None), \
                 mock.patch("sys.stdout", out):
             m.main()
         context = json.loads(out.getvalue())["hookSpecificOutput"]["additionalContext"]

@@ -110,10 +110,18 @@ class OverlayStaysOutOfGrantScope(unittest.TestCase):
     def test_only_four_production_files_name_the_overlay_resolver(self) -> None:
         found = self.grep("-l", "-E", "manifest_overlay|path_project|project_for_checkout", "--",
                           "tools/**/*.py", "skills/**/*.py", ":!**/test_*")
-        self.assertEqual(found, ["tools/lane/ci_plan.py",
+        # harmonic-forge#1663: the two grant-writing hooks name the module only to
+        # arm its refusal; test_overlay_read_refusal pins what they may use.
+        self.assertEqual(found, ["tools/hooks/batch_gate.py",
+                                 "tools/hooks/expand_lane_shorthand.py",
+                                 "tools/lane/ci_plan.py",
                                  "tools/onboard/manifest_identity.py",
                                  "tools/onboard/manifest_invoking.py",
                                  "tools/onboard/manifest_overlay.py"])
+        for hook in ("tools/hooks/batch_gate.py", "tools/hooks/expand_lane_shorthand.py"):
+            text = (HERE.parents[1] / hook).read_text(encoding="utf-8")
+            self.assertNotIn("path_project", text, hook)
+            self.assertNotIn("project_for_checkout", text, hook)
 
     #: What a grant writer may call on a module that also holds an overlay path:
     #: receipt readers and the required-check read, none of which reads the overlay.
