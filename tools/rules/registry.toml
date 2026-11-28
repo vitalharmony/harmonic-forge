@@ -3006,8 +3006,8 @@ hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPr
 id = "R-0440"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "An operator's chat design question or UX complaint is answered with a design conversation that shows the current model and behavior, asks the design questions and stops; a filing about it happens only when the operator asks for one, after the answer, carrying any settled design, which takes precedence over R-0039's first and second tests for a problem raised this way while R-0039's artifact requirement and exceptions govern the filing; a message whose first line is a fixed-vocabulary trigger is a trigger for that line, a queued-for-<lane> belt event is a trigger, and a design question or UX complaint elsewhere in the message is still answered under this rule (harmonic-forge#1664)."
-text_sha = "7d47341da0e9ee8e"
+statement = "An operator's chat design question or UX complaint gets a design conversation (current model and behavior, design questions) and no other action on it; a filing about it happens only when the operator asks, after the answer, an instruction to build a settled design being that ask (R-0417 then files before implementing), taking precedence over every unasked filing rule including R-0039 tests 1 and 2 while R-0039's artifact requirement and exceptions govern the filing; the rule never suspends a directive (lane trigger, queued-for-<lane> event, or any lane-shorthand directive), which runs under its own rule carrying none of that design, and design content anywhere in the message, reason text included, is answered under this rule (harmonic-forge#1664)."
+text_sha = "7a385466512ee820"
 hooks = []
 exception_to = ["R-0039"]
 
