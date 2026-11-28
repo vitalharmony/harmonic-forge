@@ -10,6 +10,7 @@ file and `HOME` at a scratch dir: no case can reach a live grant store.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import inspect
 import io
 import json
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import typing
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -175,6 +177,18 @@ MALLORY_OVERLAY = ('[project]\nname = "mapp"\nprefix = "M"\nrepo = "mallory/app"
                    'account = "mallory"\nworkspace = "mallory"\nboard_owner = "mallory"\n'
                    'board_number = "77"\nmilestones = true\nactive_milestones = ["mallory-next"]\n'
                    'onboarded = true\nmin_version = "v2031.01.7"\n' + PROTOCOL)
+#: harmonic-forge#1635 R1 (operator D89): every optional `Protocol` field, set in
+#: the mallory V1's `[project.protocol]` to a value `load_protocol` accepts. The
+#: task names are "mallory", an offered login, so an author login read from one
+#: (survivor 2's `ci_parity_task`) flips a `find_record` answer. Dict-valued
+#: fields are opaque axes: their sub-keys are not recursed.
+MALLORY_PROTOCOL = ('needs_gate_adapter = false\nci_parity_task = "mallory"\n'
+                    'lane3_env_task = "mallory"\nlane3_preflight_task = "mallory"\n'
+                    'rebase_regenerate = { "mallory" = "mallory" }\n'
+                    'rebase_provision_task = "mallory"\n'
+                    'rebase_visual_baselines = { glob = "mallory/*.png", workflow = "mallory.yml", '
+                    'fetch_task = "mallory {run_id}" }\n')
+MALLORY_OVERLAY += MALLORY_PROTOCOL
 #: V2 for the mallory checkout: the raw widening overlay with account mallory.
 MALLORY_WIDENING = WIDENING_OVERLAY.replace('account = "acme"', 'account = "mallory"')
 
@@ -204,8 +218,14 @@ class SnapshotComparesRawBytes(unittest.TestCase):
 
 class OverlayContentNeverChangesGrantScope(unittest.TestCase):
     """harmonic-forge#1635 reforge (sticky-wicket REFORGE, operator D52/D53;
-    epoch-2 PATCH P1-P7, operator D58): overlay content cannot change a driven
-    grant decision. The property is noninterference, checked by behavior: one
+    epoch-2 PATCH P1-P7, operator D58; re-scope R1 and P7(c), operator D89).
+
+    The claim, exactly: over the axes derived from production `Project` and
+    `Protocol`, overlay content does not change a decision this program
+    drives. It is a good-faith regression tripwire (operator D88), not a proof
+    that no branch, mode, LANE value or date anywhere reads the overlay:
+    hook-process completeness is harmonic-forge#1663's production refusal.
+    The property is noninterference, checked by behavior: one
     decision program runs from inside each of two overlay-only checkouts, with
     the overlay absent (V0), validator-accepted (V1) and raw (V2). Within a
     checkout, every driven decision, every receipt, the IMC label reader's
@@ -252,30 +272,46 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
 
     `reached` (in EXPECTED) names every authorizer whose F5 receipt says it
     wrote, and P7(c) requires a distinct terminal grant file in EXPECTED_FILES
-    for each `grants` entry, so `reached` means "wrote", not "got past home".
+    for each driven declaration, so `reached` means "wrote", not "got past home".
 
-    Completeness (P7), derived, not a hand table: (a) the axis set is every
-    field the overlay validator accepts: production `Project`'s fields minus
-    `MACHINE_LOCAL_KEYS`, `INSTANCE_KEYS` and `OPERATOR_KEYS`, plus `protocol`
-    (`manifest_overlay._validated`). Each is set by some accepted variant to a
+    Completeness (P7). What is derived and what is a hand mapping, stated:
+    (a) Derived. The axis set is every field the overlay validator accepts:
+    production `Project`'s fields minus `MACHINE_LOCAL_KEYS`, `INSTANCE_KEYS`
+    and `OPERATOR_KEYS` (`manifest_overlay._validated`). A dataclass-typed field
+    is recursed (R1): `protocol` is one axis per `Protocol` field, and the
+    mallory V1 sets every optional one (MALLORY_PROTOCOL). Dict-valued fields
+    are opaque axes. Each axis is set by some accepted variant to a
     non-default value that matches nothing in the base and nothing the other
-    checkout's accepted variants hold, or is exempted by name in AXIS_EXEMPT
-    with its reason. A new `Project` field fails this suite until a variant
-    covers it (kill KP7a). (b) Every axis maps to an offered input kind in
-    OFFERED (its injected values must be among LOGINS, KEYS or REPOS) or sits
-    in NO_DRIVEN_DECISION with a reason; an axis in neither fails (kill
-    KP7d). (c) above.
+    checkout's accepted variants hold, or is exempted by name in AXIS_EXEMPT.
+    A new `Project` or `Protocol` field fails this suite until a variant covers
+    it (kills KP7a, KR1b). (b) Hand mapping, checked against (a): every axis
+    maps to an offered input kind in OFFERED (its injected values must be among
+    LOGINS, KEYS or REPOS) or sits, itself or its parent field, in
+    NO_DRIVEN_DECISION with a reason (kill KP7d). (c) The declarations are
+    derived: every `authorize_*` function of expand_lane_shorthand, crossed with
+    `force_grant._AUTHORIZES` for FORCE and `ui_grant.MODES` for UI. Their
+    split into DRIVEN (each with its `grants` entry and one terminal file) and
+    NOT_DRIVEN (each with its reason) is a hand mapping that the check holds
+    equal to that set; a new mode or authorizer fails, named (kill KP7e).
+    `_force_mode`, the hook's hand-coded mode grammar, must parse each
+    `_AUTHORIZES` key back to itself.
 
     Stated residuals (the epoch-2 verdict's, accepted, not hidden):
-    1. Inputs not driven stay uncovered. batch_auth's merge-side `decide`,
-       `consume` and `_derived_merge_match` are outside the differential, as
-       is a read gated on a trigger this program never sends.
+    1. Inputs not driven stay uncovered, each named: LANE-gated branches
+       (`manifest_slots.lane_slot`, survivor 1); the NOT_DRIVEN FORCE and UI
+       modes (survivor 3); a date past the pinned `now`; batch_auth's
+       merge-side `decide`, `consume` and `_derived_merge_match`; a read of a
+       varied axis used as an input kind its injected value is not offered as
+       (a repo taken from `ci_parity_task`); a FORCE mode `_force_mode`
+       accepts that `_AUTHORIZES` does not list; and any read gated on a
+       trigger this program never sends. In the grant-writing hook process,
+       harmonic-forge#1663's refusal will close them; it is filed, not built.
     2. The real `gh` label reader is not exercised; only the repo it is asked
        about is observed (P4).
     3. Closed (pitch named change 1): `board_owner`, `board_number` and every
        other accepted non-identity field are now axes the mallory V1 varies.
     4. A hostile author of production code is review's to stop; this suite is
-       a tripwire for plausible regressions.
+       a tripwire for plausible regressions (threat model good-faith, D88).
     5. A read that cannot change a decision is allowed by design: the property
        is noninterference, not "never opened".
 
@@ -310,9 +346,26 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
                              "milestone",
         "onboarded": "it gates belt workspaces and slot listing, not a driven decision's input",
         "min_version": "only the doctor reads it",
-        "protocol": "its `*_task` keys run as mise tasks (ci_plan, its intended consumer); "
-                    "no authorizer takes a task name",
+        # R1: covers every `protocol.<field>` axis. Survivor 2 falsified the old
+        # reason ("no authorizer takes a task name"): a mutant can. What holds is
+        # narrower, and stated as such.
+        "protocol": "no driven decision takes a protocol value as input today; every "
+                    "sub-field is still varied (R1), so a read of one that changes a "
+                    "driven decision changes the compared output",
     }
+    #: P7(c): each production grant-writing declaration (an `authorize_*` function
+    #: of expand_lane_shorthand, crossed with its mode set where production
+    #: declares one) that the probe drives, and the `grants` entry that drives it.
+    DRIVEN = {("batch", None): "batch", ("force", "plain"): "force",
+              ("force", "reforge"): "force_reforge", ("imc", None): "imc",
+              ("park", None): "park", ("scan", None): "scan", ("ui", "plan"): "ui"}
+    #: P7(c): the declarations the probe does not drive, each with its reason.
+    NOT_DRIVEN = {
+        ("force", mode): "residual 1: not driven (operator D89 built no R2 mode matrix); "
+                         "harmonic-forge#1663's refusal will cover the hook process"
+        for mode in ("route", "cluster", "gate", "ci-outage")
+    } | {("ui", "merge"): "residual 1: not driven (operator D89); harmonic-forge#1663's "
+                          "refusal will cover the hook process"}
     #: P7(a): accepted fields no variant varies, each with its reason. Empty:
     #: the mallory V1 varies every one.
     AXIS_EXEMPT: dict[str, str] = {}
@@ -490,70 +543,174 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
 
     @staticmethod
     def overlay_axes() -> list[str]:
-        """Every `[project]` field the overlay validator accepts (pitch named change
-        1): production `Project`'s fields minus the refused MACHINE_LOCAL_KEYS,
-        INSTANCE_KEYS and OPERATOR_KEYS, plus `protocol`
-        (`manifest_overlay._validated`). Imported, never copied."""
-        fields = set(manifest_overlay.Project.__dataclass_fields__)
+        """Every field the overlay validator accepts (pitch named change 1):
+        production `Project`'s fields minus the refused MACHINE_LOCAL_KEYS,
+        INSTANCE_KEYS and OPERATOR_KEYS (`manifest_overlay._validated`). R1
+        (operator D89): a field whose type is a dataclass, or Optional of one,
+        is not one opaque axis but one dotted axis per entry of that dataclass's
+        `__dataclass_fields__` (`protocol.<field>`, the fields `load_protocol`
+        reads). Types are resolved at the `Project` level only. Imported, never
+        copied."""
         refused = {*manifest_overlay.MACHINE_LOCAL_KEYS, *manifest_overlay.INSTANCE_KEYS,
                    *manifest_overlay.OPERATOR_KEYS}
-        return sorted((fields - refused) | {"protocol"})
+        hints = typing.get_type_hints(manifest_overlay.Project)
+        axes = []
+        for name in set(manifest_overlay.Project.__dataclass_fields__) - refused:
+            nested = OverlayContentNeverChangesGrantScope.nested_dataclass(hints.get(name))
+            if nested is None:
+                axes.append(name)
+            else:
+                axes += [f"{name}.{sub}" for sub in nested.__dataclass_fields__]
+        return sorted(axes)
 
-    def assert_complete(self, outputs: dict[str, dict[str, dict]]) -> None:
-        """P7: the variants vary every field an overlay may set, every varied field
-        reaches an offered input or is named as reaching none, and every driven
-        authorizer has its own terminal file; derived from production `Project`
-        and the validator's refused-key tuples, not a hand table."""
-        accepted = self.accepted(outputs)
+    @staticmethod
+    def nested_dataclass(hint: object) -> type | None:
+        """The dataclass `hint` names, alone or in an Optional/union; else None."""
+        for candidate in (hint, *typing.get_args(hint)):
+            if isinstance(candidate, type) and dataclasses.is_dataclass(candidate):
+                return candidate
+        return None
+
+    @staticmethod
+    def dig(table: object, axis: str) -> object:
+        """The value at a dotted `axis` in a parsed `[project]` table, or None."""
+        for part in axis.split("."):
+            if not isinstance(table, dict):
+                return None
+            table = table.get(part)
+        return table
+
+    @classmethod
+    def axis_defaults(cls) -> dict[str, object]:
+        """Each axis's production default, recursed as the axes are (pitch named
+        change 5): a nested field's default is its own dataclass field's."""
+        hints = typing.get_type_hints(manifest_overlay.Project)
+        found: dict[str, object] = {}
+        for name, field in manifest_overlay.Project.__dataclass_fields__.items():
+            found[name] = field.default
+            nested = cls.nested_dataclass(hints.get(name))
+            for sub, inner in (nested.__dataclass_fields__.items() if nested else ()):
+                found[f"{name}.{sub}"] = inner.default
+        return found
+
+    def uncovered_axes(self, accepted: dict[str, list[dict]]) -> list[str]:
+        """P7(a): the axes no validator-accepted variant sets to a non-default
+        value that neither the base nor the other checkout's accepted variants
+        hold, less AXIS_EXEMPT."""
         base = tomllib.loads(FILLER)["project"]
-        defaults = {f.name: f.default for f in manifest_overlay.Project.__dataclass_fields__.values()}
-        axes = self.overlay_axes()
+        defaults = self.axis_defaults()
 
         def norm(value: object) -> str:
             return json.dumps(value, sort_keys=True, default=str).casefold()
 
         uncovered = []
-        for key in axes:
+        for key in self.overlay_axes():
             if key in self.AXIS_EXEMPT:
                 continue
-            held = {norm(e[key]) for e in base if e.get(key) is not None}
+            held = {norm(self.dig(e, key)) for e in base if self.dig(e, key) is not None}
             held.add(norm(defaults.get(key)))
             if key == "active_milestones":
                 held.add(norm([]))  # the default () as TOML would spell it
 
             def fresh(checkout: str, value: object, key: str = key, held: set = held) -> bool:
-                others = {norm(o[key]) for other, projects in accepted.items()
-                          if other != checkout for o in projects if o.get(key) is not None}
+                others = {norm(self.dig(o, key)) for other, projects in accepted.items()
+                          if other != checkout for o in projects
+                          if self.dig(o, key) is not None}
                 return value is not None and norm(value) not in held | others
 
-            if not any(fresh(c, p.get(key)) for c, projects in accepted.items() for p in projects):
+            if not any(fresh(c, self.dig(p, key)) for c, projects in accepted.items()
+                       for p in projects):
                 uncovered.append(key)
+        return uncovered
+
+    def no_driven_reason(self, axis: str) -> str | None:
+        """P7(b): the NO_DRIVEN_DECISION reason for `axis`, or for its parent field."""
+        return self.NO_DRIVEN_DECISION.get(axis) or self.NO_DRIVEN_DECISION.get(
+            axis.split(".", 1)[0] if "." in axis else "")
+
+    @staticmethod
+    def grant_declarations() -> list[tuple[str, str | None]]:
+        """P7(c), from production, never from the probe's `grants` keys: every
+        `authorize_*` function of expand_lane_shorthand, crossed with the mode set
+        production declares for it (FORCE: `force_grant._AUTHORIZES`; UI:
+        `ui_grant.MODES`), or `None` where it declares none."""
+        modes = {"force": tuple(force_grant._AUTHORIZES), "ui": tuple(ui_grant.MODES)}
+        names = sorted(name.removeprefix("authorize_") for name, fn in vars(els).items()
+                       if name.startswith("authorize_") and inspect.isfunction(fn)
+                       and fn.__module__ == els.__name__)
+        return [(name, mode) for name in names for mode in modes.get(name, (None,))]
+
+    def declaration_gaps(self, grants: object) -> list[str]:
+        """P7(c): every production declaration is DRIVEN or NOT_DRIVEN (never both),
+        every driver is an entry of the probe's `grants`, and every `grants` entry
+        drives some declaration. Empty when complete."""
+        declared = set(self.grant_declarations())
+        gaps = [f"{d}: neither driven nor named in NOT_DRIVEN"
+                for d in sorted(declared - set(self.DRIVEN) - set(self.NOT_DRIVEN), key=str)]
+        gaps += [f"{d}: in both DRIVEN and NOT_DRIVEN"
+                 for d in sorted(set(self.DRIVEN) & set(self.NOT_DRIVEN), key=str)]
+        gaps += [f"{d}: not a production declaration"
+                 for d in sorted((set(self.DRIVEN) | set(self.NOT_DRIVEN)) - declared, key=str)]
+        gaps += [f"grants entry {g!r} drives no declaration"
+                 for g in sorted(set(grants) - set(self.DRIVEN.values()))]
+        gaps += [f"{d}: its driver {g!r} is not in the probe's grants"
+                 for d, g in sorted(self.DRIVEN.items(), key=str) if g not in grants]
+        return gaps
+
+    @staticmethod
+    def force_parse_gaps() -> list[str]:
+        """P7(c), pitch named change 3: `_force_mode` (a hand-coded chain, the
+        hook's real mode grammar) parses each `_AUTHORIZES` key back to itself.
+        One direction only: a mode the parser accepts that `_AUTHORIZES` does not
+        list is a stated residual."""
+        args = ([], ["c" * 40], ["c" * 12])
+        gaps = []
+        for mode in force_grant._AUTHORIZES:
+            tokens = [] if mode == "plain" else [mode]
+            parsed = [els._force_mode(tokens + arg) for arg in args]
+            if not any(isinstance(p, tuple) and p[0] == mode for p in parsed):
+                gaps.append(mode)
+        return gaps
+
+    def assert_complete(self, outputs: dict[str, dict[str, dict]]) -> None:
+        """P7: the variants vary every field an overlay may set (nested ones
+        included, R1), every varied field reaches an offered input or is named as
+        reaching none, and every production grant declaration is driven, with its
+        own terminal file, or named as undriven."""
+        accepted = self.accepted(outputs)
+        axes = self.overlay_axes()
+        uncovered = self.uncovered_axes(accepted)
         self.assertEqual(uncovered, [], (
             "P7(a): no validator-accepted variant sets these overlay fields to a non-default "
             "value that neither the base nor the other checkout holds, and none is exempted "
             f"by name in AXIS_EXEMPT, so no driven decision can see them vary: {uncovered}"))
         self.assertEqual(sorted(set(self.AXIS_EXEMPT) - set(axes)), [],
                          "P7(a): AXIS_EXEMPT names a field the validator does not accept")
-        unmapped = [k for k in axes if k not in self.OFFERED and k not in self.NO_DRIVEN_DECISION]
+        unmapped = [k for k in axes if k not in self.OFFERED and not self.no_driven_reason(k)]
         self.assertEqual(unmapped, [], (
             "P7(b): these varied fields map to no offered input kind (OFFERED) and are not "
             f"named in NO_DRIVEN_DECISION with a reason: {unmapped}"))
+        parents = set(axes) | {k.split(".", 1)[0] for k in axes}
         both = sorted(set(self.OFFERED) & set(self.NO_DRIVEN_DECISION))
-        stale = sorted((set(self.OFFERED) | set(self.NO_DRIVEN_DECISION)) - set(axes))
+        stale = sorted((set(self.OFFERED) | set(self.NO_DRIVEN_DECISION)) - parents)
         self.assertEqual((both, stale), ([], []),
                          "P7(b): a field both offered and unreached, or not an overlay field")
         missing = [(checkout, key, project[key]) for checkout, projects in accepted.items()
                    for project in projects for key, values in self.OFFERED.items()
                    if key in project and project[key] not in values]
         self.assertEqual(missing, [], "P7(b): an injected value is offered to no driven decision")
+        grants = outputs["acme"]["V0"]["out"]["grants"]
+        self.assertEqual(self.declaration_gaps(grants), [], "P7(c): production grant declarations")
+        self.assertEqual(self.force_parse_gaps(), [],
+                         "P7(c): `_force_mode` does not parse these `_AUTHORIZES` modes")
         claimed: dict[str, str] = {}
-        for authorizer in outputs["acme"]["V0"]["out"]["grants"]:
+        for declaration, authorizer in sorted(self.DRIVEN.items(), key=str):
             terminal = [f for f in self.EXPECTED_FILES if f.startswith(authorizer + "/")
                         and not f.endswith(".lock")
                         and f.rsplit("/", 1)[-1].startswith(("F5.", "F-"))]
             self.assertEqual(len(terminal), 1,
-                             f"P7(c): {authorizer} needs exactly one F5 grant file of its own "
-                             f"in EXPECTED_FILES, found {terminal}")
+                             f"P7(c): {declaration} (driven as {authorizer}) needs exactly one F5 "
+                             f"grant file of its own in EXPECTED_FILES, found {terminal}")
             self.assertNotIn(terminal[0], claimed, f"P7(c): {authorizer} shares {terminal[0]}")
             claimed[terminal[0]] = authorizer
 
@@ -593,6 +750,34 @@ class OverlayContentNeverChangesGrantScope(unittest.TestCase):
         exercise no scope decision; `probe_from`'s allowlist never passes it."""
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk"}):
             self.assert_noninterference(self.run_variants())
+
+    def v1_tables(self) -> dict[str, list[dict]]:
+        """Each checkout's V1 `[project]` table, as P3 asserts the probe accepts it."""
+        return {c: [tomllib.loads(v["V1"])["project"]] for c, v in self.VARIANTS.items()}
+
+    def test_r1_p7a_names_a_new_optional_protocol_field_no_variant_sets(self) -> None:
+        """harmonic-forge#1635 R1 (operator D89): `Protocol` is recursed, not one
+        opaque axis, so a new optional `Protocol` field no variant sets is named."""
+        self.assertIn("protocol.ci_parity_task", self.overlay_axes())
+        self.assertNotIn("protocol", self.overlay_axes())
+        self.assertEqual(self.uncovered_axes(self.v1_tables()), [])
+        new = dataclasses.field(default=None)
+        new.name, new.type, new._field_type = "review_owner", "str | None", dataclasses._FIELD
+        protocol =self.nested_dataclass(typing.get_type_hints(manifest_overlay.Project)["protocol"])
+        with mock.patch.dict(protocol.__dataclass_fields__, {"review_owner": new}):
+            self.assertEqual(self.uncovered_axes(self.v1_tables()), ["protocol.review_owner"])
+
+    def test_p7c_names_a_production_mode_no_driver_covers(self) -> None:
+        """harmonic-forge#1635 P7(c) (operator D89): the declarations come from
+        production, so a FORCE mode added there with no driver and no reason is
+        named, and `_force_mode` must parse every listed mode back to itself."""
+        grants = sorted(set(self.DRIVEN.values()))
+        self.assertEqual(self.declaration_gaps(grants), [])
+        self.assertEqual(self.force_parse_gaps(), [])
+        with mock.patch.dict(force_grant._AUTHORIZES, {"review": "probe"}):
+            self.assertEqual(self.declaration_gaps(grants),
+                             ["('force', 'review'): neither driven nor named in NOT_DRIVEN"])
+            self.assertEqual(self.force_parse_gaps(), ["review"])
 
 
 class LiveForeignKeysStillRefuse(unittest.TestCase):
