@@ -194,6 +194,117 @@ def _result_text(block: dict) -> str:
     return ""
 
 
+_SYNTHETIC_MODEL = "<synthetic>"
+_SCRIPT_ID_PREFIX = "repl_"
+
+
+def _is_script_pair(call_entry: dict | None, result_entry: dict | None, tool_use_id: str) -> bool:
+    """A Code Mode script-call pair (harmonic-forge#1642): the one test both the
+    receipt fallback and model borrowing use, so the two cannot disagree on
+    which records are a script call's. Each condition is its own check."""
+    if not isinstance(call_entry, dict) or not isinstance(result_entry, dict):
+        return False
+    if call_entry.get("isVirtual") is not True:  # (a)
+        return False
+    if (call_entry.get("message") or {}).get("model") != _SYNTHETIC_MODEL:  # (b)
+        return False
+    if not str(tool_use_id or "").startswith(_SCRIPT_ID_PREFIX):  # (c)
+        return False
+    if result_entry.get("isVirtual") is not True:  # (d)
+        return False
+    content = (result_entry.get("message") or {}).get("content")
+    return isinstance(content, list) and any(  # (e)
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        and block.get("tool_use_id") == tool_use_id for block in content)
+
+
+def _record_result_text(entry: dict, block: dict, call: dict | None) -> str:
+    """`_result_text(block)`, except for a Code Mode script call's result
+    (harmonic-forge#1642): its block `content` is empty and its output sits in
+    the record's `toolUseResult`, read only when `call` and this record are a
+    script pair (`_is_script_pair`)."""
+    text = _result_text(block)
+    tool_use_result = entry.get("toolUseResult")
+    if text != "":
+        return text
+    if not isinstance(tool_use_result, dict):
+        return text
+    if not _is_script_pair(call, entry, str(block.get("tool_use_id") or "")):
+        return text
+    return "\n".join(value for value in (tool_use_result.get("stdout"),
+                                          tool_use_result.get("stderr"))
+                     if isinstance(value, str))
+
+
+def _anchor_model(anchor: dict, by_uuid: dict[str, dict]) -> str | None:
+    """The REPL model an anchor names (harmonic-forge#1642): `anchor` must be a
+    non-sidechain user record carrying `sourceToolAssistantUUID` and a
+    tool_result, and that source a non-sidechain assistant record with a
+    non-empty, non-synthetic model and a `REPL` tool_use whose id the
+    tool_result answers. Anything else is None."""
+    if anchor.get("type") != "user":
+        return None
+    if anchor.get("isSidechain"):
+        return None
+    source_uuid = anchor.get("sourceToolAssistantUUID")
+    if not isinstance(source_uuid, str):
+        return None
+    content = (anchor.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    # The id match below needs a tool_result: an anchor with none names nothing.
+    result_ids = {block.get("tool_use_id") for block in content
+                  if isinstance(block, dict) and block.get("type") == "tool_result"}
+    source = by_uuid.get(source_uuid)
+    if not isinstance(source, dict):
+        return None
+    if source.get("type") != "assistant":
+        return None
+    if source.get("isSidechain"):
+        return None
+    message = source.get("message") or {}
+    model = message.get("model")
+    if not isinstance(model, str) or not model:
+        return None
+    if model == _SYNTHETIC_MODEL:
+        return None
+    source_content = message.get("content")
+    if not isinstance(source_content, list):
+        return None
+    for block in source_content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "REPL":
+            continue
+        if block.get("id") not in result_ids:
+            continue
+        return model
+    return None
+
+
+def _repl_model(start_uuid: str, by_uuid: dict[str, dict]) -> str | None:
+    """The model of the REPL call that ran the script call recorded at
+    `start_uuid` (harmonic-forge#1642). The walk follows `parentUuid` through
+    virtual records only; the first non-virtual parent is the anchor, which
+    must be the REPL's tool_result (`_anchor_model`). Nothing walks past the
+    anchor: a broken chain, a repeated uuid, or a failed anchor is None."""
+    seen = {start_uuid}
+    current = by_uuid.get(start_uuid)
+    for _ in range(len(by_uuid)):
+        if not isinstance(current, dict):
+            return None
+        parent = current.get("parentUuid")
+        if not isinstance(parent, str) or parent in seen:
+            return None
+        seen.add(parent)
+        current = by_uuid.get(parent)
+        if not isinstance(current, dict):
+            return None
+        if current.get("isVirtual") is not True:
+            return _anchor_model(current, by_uuid)
+    return None
+
+
 _GH_COMMENT_SEGMENT_RE = re.compile(
     r"gh\s+issue\s+comment\s+(?:\S*/issues/)?(\d+)\b")
 _GH_API_POST_SEGMENT_RE = re.compile(
@@ -268,11 +379,33 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
     `drop_background=True` (harmonic-forge#1151) also drops a Bash call run
     with `run_in_background`: its tool_result acknowledges the launch, so a
     non-error result says nothing about the command's exit. `require_result=True`
-    also drops a call with no tool_result yet: no result is no evidence."""
+    also drops a call with no tool_result yet: no result is no evidence.
+
+    Code Mode (harmonic-forge#1642): a script call is a virtual assistant
+    record with model `"<synthetic>"` and a `repl_` tool_use id, answered by a
+    virtual user record whose tool_result `content` is empty and whose output
+    is the record's `toolUseResult`. That output is read only for such a pair
+    (`_record_result_text`). The call takes the model of the REPL call its
+    `parentUuid`/`sourceToolAssistantUUID` links name (`_repl_model`), resolved
+    after the walk from the records this same bounded pass saw; when the links
+    do not resolve, the call keeps `"<synthetic>"`, which is never high-tier,
+    so the report fires. Every other record is read as before.
+
+    The limit: in the capture (CLI 2.1.332) every `parentUuid` is the chain
+    leaf, so link order equals write order. Attribution is sound for a script
+    whose records are flushed when its REPL call completes. A script written
+    after a later REPL's result takes that later REPL's model, so after a
+    switch to a high model its post goes unreported; that residual is
+    harmonic-forge#1644's to measure, and the transcript cannot close it."""
     errored: set[str] = set()
     answered: set[str] = set()
     calls: list[tuple[str, str | None, str]] = []
     results: dict[str, str] = {}
+    script_results: dict[str, tuple[dict, dict]] = {}
+    result_records: dict[str, dict] = {}
+    call_records: dict[str, dict] = {}
+    by_uuid: dict[str, dict] = {}
+    pending: list[tuple[int, dict]] = []
     reached_turn_start = False
     try:
         size = os.path.getsize(transcript_path)
@@ -287,6 +420,8 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
             if _is_turn_start(entry):
                 reached_turn_start = True
                 break
+            if isinstance(entry.get("uuid"), str):
+                by_uuid.setdefault(entry["uuid"], entry)
             content = (entry.get("message") or {}).get("content")
             if not isinstance(content, list) or entry.get("isSidechain"):
                 continue
@@ -294,10 +429,17 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
                         answered.add(block.get("tool_use_id"))
+                        tool_use_id = block.get("tool_use_id") or ""
+                        # harmonic-forge#1642: the newest record per id, the
+                        # same rule as call_records, on every pass.
+                        result_records.setdefault(tool_use_id, entry)
                         if block.get("is_error"):
                             errored.add(block.get("tool_use_id"))
                         elif with_receipts:
-                            results[block.get("tool_use_id") or ""] = _result_text(block)
+                            results[tool_use_id] = _result_text(block)
+                            # met before its call in this backward walk;
+                            # admitted after the walk.
+                            script_results.setdefault(tool_use_id, (entry, block))
             elif entry.get("type") == "assistant":
                 model = (entry.get("message") or {}).get("model")
                 for block in content:
@@ -307,10 +449,28 @@ def scan_turn(transcript_path: str, with_receipts: bool = False, drop_background
                         if drop_background and (block.get("input") or {}).get("run_in_background"):
                             continue
                         if isinstance(command, str):
-                            calls.append((command, model, block.get("id") or ""))
+                            tool_use_id = block.get("id") or ""
+                            call_records.setdefault(tool_use_id, entry)
+                            pending.append((len(calls), entry))
+                            calls.append((command, model, tool_use_id))
     except OSError:
         return ([], False, []) if with_receipts else ([], False)
     truncated = not reached_turn_start and size > _bytes_scanned(size)
+    for index, call_entry in pending:
+        tool_use_id = calls[index][2]
+        if not _is_script_pair(call_entry, result_records.get(tool_use_id), tool_use_id):
+            continue
+        repl_model = _repl_model(call_entry.get("uuid"), by_uuid)
+        if repl_model is not None:
+            command, _model, tool_use_id = calls[index]
+            calls[index] = (command, repl_model, tool_use_id)
+    for tool_use_id, (entry, block) in script_results.items():
+        # Script pairs only: every other id keeps the oldest result text the
+        # walk assigned, as on main (two-pass PATCH P1).
+        if not _is_script_pair(call_records.get(tool_use_id), result_records.get(tool_use_id),
+                               tool_use_id):
+            continue
+        results[tool_use_id] = _record_result_text(entry, block, call_records.get(tool_use_id))
     calls.reverse()
     kept = [call for call in calls if call[2] not in errored
             and (not require_result or call[2] in answered)]
