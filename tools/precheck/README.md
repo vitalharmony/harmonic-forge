@@ -100,7 +100,8 @@ python3 tools/precheck/never_refuse_sample.py derive [--root ~/.claude/projects]
    `argv[0]` is matched as written: an assignment, a path or a wrapper
    (`env`, `sudo`, `nice`, `timeout`, `command`, `xargs`, ...) is refused, and
    no shell `-c` string is unwrapped. A scratch target is a literal
-   `/tmp/<segment>/...` (no `..`, `.`, braces, globs, `$`, `~` or blanks;
+   `/tmp/<segment>/...` or `$HOME/.cache/claude-tmp/<segment>/...`, the
+   fixed default root, never read from `CLAUDE_CODE_TMPDIR` (no `..`, `.`, braces, globs, `$`, `~` or blanks;
    never relative, so `cd` is never consulted). Before any of this the raw text
    must pass one character-class check: outside single quotes it holds none of
    backslash, backtick, `$`, `#`, `{` or `}`. Every loop (`while`, `until`, `for`)

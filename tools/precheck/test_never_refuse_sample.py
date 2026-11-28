@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import importlib.util
 import inspect
 import io
 import json
@@ -271,6 +272,50 @@ class Recognizer(unittest.TestCase):
                        "/tmp/a b", "~/x", "/tmp"):
             with self.subTest(target=target):
                 self.assertFalse(nrs.is_scratch(target))
+
+    # -- harmonic-forge#1658: the Claude Code tmpdir root ------------------
+
+    CLAUDE_ROOT = "/var/ctmp-fixture"
+
+    def claude_root(self):
+        return mock.patch.object(nrs, "SCRATCH_ROOTS", ("/tmp", self.CLAUDE_ROOT))
+
+    def test_claude_tmp_root_writes_are_scratch(self):
+        """TC1 (AC1): a write under the second root is a scratch write."""
+        root = self.CLAUDE_ROOT
+        with self.claude_root():
+            for command in (f"rm -rf {root}/claude-1000/x/y", f"mktemp {root}/a.XXXX", f"ls > {root}/f"):
+                with self.subTest(command=command):
+                    self.assertEqual(classify(command), "scratch-write")
+
+    def test_claude_tmp_root_refuses_what_s05_refuses(self):
+        """TC2 (AC2): every test_s05 target, rewritten under the second root."""
+        root = self.CLAUDE_ROOT
+        with self.claude_root():
+            for target in (f"{root}/*", f"{root}/a?", f"{root}/../home/x", f"{root}/a/../../home",
+                           f"{root}/./x", f"{root}/a b", root, "~/.cache/claude-tmp/x"):
+                with self.subTest(target=target):
+                    self.assertFalse(nrs.is_scratch(target))
+
+    def test_claude_tmp_root_prefix_and_sibling_are_not_scratch(self):
+        """TC3 (AC3): the root matches at a `/` boundary only."""
+        root = self.CLAUDE_ROOT
+        with self.claude_root():
+            for target in (f"{root}x/a", "/var/sibling/a"):
+                with self.subTest(target=target):
+                    self.assertFalse(nrs.is_scratch(target))
+
+    def test_claude_code_tmpdir_is_never_read(self):
+        """TC4 (AC1, D85): the roots are fixed at import; the env value is ignored."""
+        name = "_nrs_reload_1658"
+        spec = importlib.util.spec_from_file_location(name, HERE / "never_refuse_sample.py")
+        fresh = importlib.util.module_from_spec(spec)
+        self.addCleanup(sys.modules.pop, name, None)
+        sys.modules[name] = fresh
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_TMPDIR": "/srv/ctmp"}):
+            spec.loader.exec_module(fresh)
+        self.assertEqual(fresh.SCRATCH_ROOTS, ("/tmp", os.path.expanduser("~/.cache/claude-tmp")))
+        self.assertFalse(fresh.is_scratch("/srv/ctmp/claude-1000/x"))
 
     def test_s06_assigned_value_never_binds(self):
         self.assertNotOrdinary('X="/tmp/a /home/u"; rm -rf $X', reason="grammar")
