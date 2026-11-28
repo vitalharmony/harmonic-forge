@@ -3004,14 +3004,14 @@ hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPr
 id = "R-0440"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "An operator's design question or UX complaint is answered with a design conversation in chat that shows the current model and asks the design questions, and no issue, trigger, handoff or post carries a design the operator has not settled and asked to have filed; an R-0039 defect is still filed without a proposed design (harmonic-forge#1664)."
-text_sha = "fdbb8234f4ece23d"
+statement = "An operator's design question or UX complaint is answered with a design conversation in chat that shows the current model and asks the design questions, then stops; until the operator settles that design and asks to have it filed, no issue, trigger, handoff or post carries it, and a problem R-0039's first or second test requires is still filed with its artifact, without a proposed design (harmonic-forge#1664)."
+text_sha = "2ba8ecf576eb9193"
 hooks = []
 
 [[rule]]
 id = "R-0441"
 file = "rules/universal-agent.md"
 anchor = "verification-gate"
-statement = "A precheck-gated call's real run is its own Bash call repeating the precheck's literal arguments in the same order, with no variable or command substitution and no chaining, run as soon as the clean precheck is read and inside the 30-minute receipt ceiling (harmonic-forge#1664)."
-text_sha = "fd2647bb422ab654"
+statement = "A precheck-gated call's real run is its own Bash call repeating the precheck's literal arguments in the same order, with no variable or command substitution and no chaining, run as soon as the clean precheck is read, before the state its mode binds has moved, and inside the 30-minute receipt ceiling (harmonic-forge#1664)."
+text_sha = "5755345b1ced8f92"
 hooks = []
