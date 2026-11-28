@@ -62,6 +62,22 @@ literally: no path in a shell variable, no `cd "$VAR"`. Where the guard
 variable path is a try-fail.
 <!-- /R-0435 -->
 
+<!-- R-0441 -->
+A precheck-gated call's real run is its own Bash call, from the same directory
+and session, spelled with its precheck's literal arguments in the same order
+and differing only by the precheck form's own token, and run as soon as the
+clean precheck is read, before any state the receipt binds has moved. A
+refused real run means rerunning the precheck, never diagnosing which state
+moved; every receipt
+expires after 30 minutes (harmonic-forge#1291). No variable or command
+substitution in any argument, no chaining behind another step, no two issues'
+calls in one command. An ID R-0386 requires fetched that is an argument of the
+precheck-gated call is read in its own call immediately before the precheck,
+and its printed value is typed literally into both calls. An ID cited only in a
+post body is not an argument, and R-0386's same-command fetch still applies to
+the command that writes the body.
+<!-- /R-0441 -->
+
 <!-- R-0425 -->
 Pass or fail comes from the tool's own summary or exit code, never from a
 grep, a `tail` or a wrapper's exit status.
@@ -563,6 +579,27 @@ an agent cannot scope its own filing out of the artifact requirement.
 <!-- R-0417 -->
 A substantive tooling or process change is filed before it is implemented, including in files Lane 1 may edit directly.
 <!-- /R-0417 -->
+
+<!-- R-0440 -->
+When the operator asks in chat how something would be designed, or reports a UX
+or design problem, the reply to it is a design conversation: show the current
+model and behavior, ask the design questions, and take no other action on it
+beyond R-0432's capture of a protocol failure. A filing
+about it happens only when the operator asks for one, after the answer, carrying
+any design the operator settled; an instruction to build a settled design is
+that ask, and it is filed before it is implemented (R-0417 for a tooling or
+process change). For a problem raised this way the ask takes precedence over
+every rule that would file it unasked, R-0039's first and second tests included
+(operator D15); R-0039's artifact requirement and exceptions govern the filing
+once asked. This rule never suspends an operator directive in the same message
+or line: a lane trigger, a `queued-for-<lane>` belt event (R-0408), or any other
+`rules/lane-shorthand.md` directive (FORCE, UI, PARK, SCAN, BATCH, IMC, `close`,
+and `NOW` and `EOQ`, which set only when the rest of the message is handled) is
+acted on as its own rule says and carries none of that design beyond the
+operator's own text that its rule records, and a design question or complaint
+anywhere in the message, a directive's reason text included, is answered under
+this rule.
+<!-- /R-0440 -->
 
 <!-- R-0372 -->
 **A Tooling Exception issue is also split by mechanism when it is filed**:

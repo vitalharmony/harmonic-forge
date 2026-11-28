@@ -365,6 +365,7 @@ anchor = "the-filing-bar"
 statement = "Applies to every lane AND to sessions with no LANE set. Before creating any issue, run the three-test filing bar in order and stop at the first that answers; at branches 1 and 2 'File it' means 'file it with its artifact,' in one action. An un-handoffable issue is a failed filing-bar test. Three exceptions, each stating its reason on the issue: a parent epic, an explicitly deferred design record, and an issue blocked on an unlanded prerequisite (a deferral, not a waiver -- declared per R-0352). Only 'no one could write it' fails the bar; lacking the authority does not. The operator-scoped exception needs a literal instruction naming the issue; self-declared Tooling-Exception eligibility does not reach it."
 text_sha = "f9fef4be75ca8426"
 hooks = []
+excepted_by = "R-0440"
 
 [[rule]]
 id = "R-0040"
@@ -2597,6 +2598,7 @@ anchor = "citing-github-ids-harmonic-forge979"
 statement = "A comment, run or PR ID cited in a post is fetched in the same command that builds the post, never recalled."
 text_sha = "130c7a2785555953"
 hooks = []
+excepted_by = "R-0441"
 
 [[rule]]
 id = "R-0387"
@@ -2999,3 +3001,21 @@ anchor = "tool-use-safeguards"
 statement = "The model-tier note tier_model_trigger_check.py adds to the session's context is advisory only on an Opus or Fable model: the session reads its own model id and proceeds; on any other model it does not start the named issues and asks the operator for /model (harmonic-forge#1599)."
 text_sha = "22446989f8c62043"
 hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPromptSubmit"], wired_in = ".claude/settings.json, tools/lane/lane_hooks.json" }]
+
+[[rule]]
+id = "R-0440"
+file = "rules/universal-agent.md"
+anchor = "the-filing-bar"
+statement = "An operator's chat design question or UX complaint gets a design conversation (current model and behavior, design questions) and no other action on it beyond R-0432's capture of a protocol failure; a filing about it happens only when the operator asks, after the answer, an instruction to build a settled design being that ask (filed before implementing, by R-0417 for a tooling or process change), taking precedence over every unasked filing rule including R-0039 tests 1 and 2 while R-0039's artifact requirement and exceptions govern the filing; the rule never suspends a directive (lane trigger, queued-for-<lane> event, or any lane-shorthand directive including NOW and EOQ), which runs under its own rule carrying none of that design beyond the operator's own text its rule records, and design content anywhere in the message, reason text included, is answered under this rule (harmonic-forge#1664)."
+text_sha = "da4faa5f182f38ff"
+hooks = []
+exception_to = ["R-0039"]
+
+[[rule]]
+id = "R-0441"
+file = "rules/universal-agent.md"
+anchor = "verification-gate"
+statement = "A precheck-gated call's real run is its own Bash call repeating the precheck's literal arguments in the same order, with no variable or command substitution and no chaining, run as soon as the clean precheck is read, before any bound state has moved, and inside the 30-minute receipt ceiling; a refused real run means rerunning the precheck, and an ID R-0386 requires fetched that is an argument of the gated call is read in its own call just before the precheck and typed literally into both calls, while an ID cited only in a post body keeps R-0386's same-command fetch (harmonic-forge#1664)."
+text_sha = "8bd1cb49d98039a0"
+hooks = []
+exception_to = ["R-0386"]
