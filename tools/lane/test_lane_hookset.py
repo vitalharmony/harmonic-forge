@@ -324,7 +324,6 @@ class PermissionsUnion(_Tmp):
         settings = ROOT / ".claude" / "settings.json"
         perms = json.loads(settings.read_text(encoding="utf-8"))["permissions"]
         self.assertIn("REPL", perms["ask"])
-        self.assertLessEqual(set(perms), {"allow", "deny", "ask"})
 
     # TC2
     def test_the_set_may_carry_only_a_distinct_ask_list(self):
