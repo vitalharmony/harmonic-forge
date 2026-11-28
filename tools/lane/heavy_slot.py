@@ -303,8 +303,11 @@ def _admit(kind: str, label: str, state: Path, config: dict,
                 last_note = now
             sleep(config["limits"]["poll_seconds"])
     finally:
-        ticket_handle.close()
-        ticket.unlink(missing_ok=True)
+        # Unlink while the flock is held, so a reaper never frees the name while this cleanup is pending.
+        try:
+            ticket.unlink(missing_ok=True)
+        finally:
+            ticket_handle.close()
 
 
 def _ancestor_holder(state: Path) -> dict | None:
