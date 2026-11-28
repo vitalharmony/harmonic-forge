@@ -733,6 +733,21 @@ class TicketCleanup(unittest.TestCase):
         self.assertTrue(seen["replacement"].exists())
         self.assertFalse(hs._try_flock(seen["replacement"]))
 
+    def test_tc1c_an_unprobeable_dead_ticket_ahead_never_wedges_admission(self):
+        """two-pass PATCH: a probe error is not a held lock, or the queue hangs forever."""
+        dead = self.state / "tickets" / f"{1:020d}-1-normal.ticket"
+        dead.touch()
+        real_open = open
+
+        def probe_denied(file, *args, **kwargs):
+            if isinstance(file, (str, os.PathLike)) and Path(file) == dead:
+                raise PermissionError(13, "injected", str(file))
+            return real_open(file, *args, **kwargs)
+
+        with mock.patch("builtins.open", probe_denied):
+            self.admit()  # its sleep fails the test: admission within zero polls
+        self.assertFalse(dead.exists())
+
     def test_tc1b_a_failed_unlink_still_closes_the_ticket_handle(self):
         real_new_ticket, real_unlink, seen = hs._new_ticket, Path.unlink, {}
 
