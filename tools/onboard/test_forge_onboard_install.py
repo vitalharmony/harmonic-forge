@@ -996,6 +996,105 @@ class EpochOnePassOne(InstallBase):
         self.assertIn("[ warn ] PATH — could not probe PATH: RuntimeError: Symlink loop", out)
 
 
+class MainPrintsSafeEncoding(InstallBase):
+    """harmonic-forge#1683: `main()`'s two `--install` prints go through `_emit`,
+    so a strict or handler-rejecting stream codec cannot escape the exit-code mapping."""
+
+    NAMED = "is not inside a git repository"
+
+    def nogit(self) -> Path:
+        path = self.tmp / "nogit-é"
+        path.mkdir()
+        return path
+
+    def nogit_cli(self, encoding: str) -> subprocess.CompletedProcess:
+        return self.cli("--install", "--dry-run", "--repo", str(self.nogit()),
+                        env={"PYTHONIOENCODING": encoding})
+
+    def test_ac2_ascii_strict_env_exits_2_named_regression_guard(self):
+        # Not a kill check: CPython forces stderr's handler to backslashreplace.
+        result = self.nogit_cli("ascii:strict")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("forge-onboard: ", result.stderr)
+        self.assertIn("nogit-\\xe9 " + self.NAMED, result.stderr)
+
+    def test_ac3_in_process_strict_ascii_stderr_returns_2_named(self):
+        repo = self.nogit()
+        raw = io.BytesIO()
+        strict = io.TextIOWrapper(raw, encoding="ascii", errors="strict")
+        # The fixed hermetic env, as run_main uses: install_source() reads the live env.
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(sys, "stderr", strict):
+            code = foi.fo.main(["--install", "--dry-run", "--repo", str(repo)])
+        strict.flush()
+        err = raw.getvalue().decode("ascii")
+        self.assertEqual(code, 2, err)
+        self.assertIn("forge-onboard: ", err)
+        self.assertIn("nogit-\\xe9 " + self.NAMED, err)
+
+    def test_ac4_idna_env_exits_2_named_without_traceback(self):
+        result = self.nogit_cli("idna")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("forge-onboard: ", result.stderr)
+        self.assertIn(self.NAMED, result.stderr)
+
+    def test_ac5_idna_env_check_line_on_stdout_escaped(self):
+        sub = Path(os.fsdecode(os.fsencode(self.app) + b"/sub\xff"))
+        sub.mkdir()
+        self.lane2.mkdir()  # a plain directory: its FAIL Check names the repo path
+        result = subprocess.run([sys.executable, str(FO), "--install", "--repo", str(sub)], cwd=self.app,
+                                env={**self.env, "PYTHONIOENCODING": "idna"}, capture_output=True,
+                                text=True, errors="surrogateescape", stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("sub\\udcff", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def closed_fd_cli(self, redirect: str, *args: str) -> subprocess.CompletedProcess:
+        """The real CLI started with one fd closed by the shell (`2>&-` or `>&-`),
+        so Python sees `sys.stderr` or `sys.stdout` as `None`."""
+        return subprocess.run(["bash", "-c", f'exec "$@" {redirect}', "_", sys.executable, str(FO), *args],
+                              cwd=self.app, env=self.env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_closed_stderr_preflight_error_still_exits_2(self):
+        result = self.closed_fd_cli("2>&-", "--install", "--dry-run", "--repo", str(self.nogit()))
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertNotIn("Traceback", result.stdout)
+
+    def test_closed_stdout_checks_keep_the_open_stdout_exit_code(self):
+        args = ("--install", "--dry-run", "--repo", str(self.app))
+        expected = self.cli(*args).returncode
+        self.assertEqual(expected, 0)
+        result = self.closed_fd_cli(">&-", *args)
+        self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_emit_branches_write_the_same_escaped_payload(self):
+        # Sticky-wicket PATCH: the escape is computed once and every branch writes it.
+        text = "x sub\udcff é"
+        plain = io.StringIO()
+        foi.fo._emit(text, plain)
+        raw = io.BytesIO()
+        wrapped = io.TextIOWrapper(raw, encoding="utf-8", errors="strict")
+        foi.fo._emit(text, wrapped)
+        wrapped.flush()
+        self.assertEqual(plain.getvalue(), raw.getvalue().decode("utf-8"))
+        self.assertEqual(plain.getvalue(), "x sub\\udcff é\n")
+        plain.getvalue().encode("utf-8")  # no lone surrogate reached the text sink
+        # Regression guard, not a kill check: the None return precedes both branches.
+        self.assertIsNone(foi.fo._emit(text, None))
+
+    def test_run_main_stringio_capture_holds_the_escaped_path(self):
+        sub = Path(os.fsdecode(os.fsencode(self.app) + b"/sub\xff"))
+        sub.mkdir()
+        self.lane2.mkdir()  # a plain directory: its FAIL Check names the repo path
+        code, out, err = self.run_main(repo=sub)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("sub\\udcff", out)
+        self.assertNotIn("\udcff", out)
+
+
 #: One maker per type the four rounds' survivors were (harmonic-forge#1532 epoch-1 sticky PATCH);
 #: each carries a unique sentinel so a row passes only on its own exception.
 BACKSTOP_TYPES = (
