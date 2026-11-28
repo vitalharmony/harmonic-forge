@@ -1274,6 +1274,8 @@ class OwnModelCallSiteTests(unittest.TestCase):
              patch.object(preclose, "receipt_lock", return_value=contextlib.nullcontext()), \
              patch.object(preclose, "registered_repo", return_value=args.repo), \
              patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
+             patch.object(preclose, "_require_branch_head"), \
+             patch.object(preclose, "find_receipt", return_value=None), \
              patch.object(preclose, "local_change_identity", return_value={"head_sha": "a" * 40}), \
              patch.object(preclose, "check_pass_cap"), \
              patch.object(preclose, "load_findings", return_value=[]), \
@@ -1295,6 +1297,7 @@ class OwnModelCallSiteTests(unittest.TestCase):
              patch.object(preclose, "registered_repo", return_value=args.repo), \
              patch.object(preclose, "_require_repo_and_head", return_value="a" * 40), \
              patch.object(preclose, "run", return_value=MagicMock(stdout="b" * 40)), \
+             patch.object(preclose, "_require_branch_head"), \
              patch.object(preclose, "find_receipt", return_value={}), \
              patch.object(passes, "current", return_value=[{}] * passes.MAX_PASSES), \
              patch.object(passes, "cap_message", return_value=passes.STICKY_WICKET), \
@@ -1307,6 +1310,161 @@ class OwnModelCallSiteTests(unittest.TestCase):
             preclose.post_verdict(args)
         self.assertEqual(fake.call_args.args[2], "claude-opus-5-5")
 
+
+class BranchHeadGuard(ScratchRepo):
+    """harmonic-forge#1646: --complete and --post-verdict refuse a head with no
+    diff against the base (F1532's pass 1 was recorded from the main
+    checkout), and --complete refuses a head the plan did not target."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # `base` two commits deep, so it has an ancestor that is not itself.
+        self.commit("docs/second.md")
+        git("branch", "-f", "base", "HEAD", cwd=self.repo)
+
+    def sha(self, ref: str) -> str:
+        return subprocess.run(("git", "rev-parse", ref), cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def receipt_bytes(self) -> bytes | None:
+        path = preclose.receipt_path("vitalharmony/hrse", 1208)
+        return path.read_bytes() if path.exists() else None
+
+    def grant_bytes(self) -> bytes:
+        return (Path(os.environ["HOME"]) / ".claude" / "state" / "force" / "H1208.json").read_bytes()
+
+    def test_complete_at_the_base_or_an_ancestor_is_refused_and_records_nothing(self) -> None:
+        # TC1 (AC1): a planned branch receipt exists; --complete then runs at
+        # the base and at an ancestor of it, as from the main checkout.
+        self.commit("scripts/tool.py")
+        self.plan()
+        before = self.receipt_bytes()
+        self.assertIsNotNone(before)
+        for ref in ("base", "base~1"):
+            for force in (False, True):
+                with self.subTest(ref=ref, force=force):
+                    head = self.sha(ref)
+                    git("checkout", "-q", "--detach", head, cwd=self.repo)
+                    grant = None
+                    if force:
+                        self.grant_force()
+                        grant = self.grant_bytes()
+                    with mock.patch.object(preclose, "reserve_force_grant",
+                                           wraps=preclose.reserve_force_grant) as reserve, \
+                            self.assertRaises(SystemExit) as refused:
+                        self.complete(force=force)
+                    text = str(refused.exception)
+                    self.assertIn(f"--complete: the head {head[:12]} has no diff against base", text)
+                    self.assertIn("wrong checkout", text)
+                    self.assertIn("Nothing recorded", text)
+                    self.assertEqual(self.receipt_bytes(), before)
+                    reserve.assert_not_called()
+                    if force:
+                        self.assertEqual(self.grant_bytes(), grant)
+
+    def test_complete_with_no_prior_receipt_at_the_base_is_refused(self) -> None:
+        # Design Alternative 2: the ancestor check needs no prior state.
+        with self.assertRaises(SystemExit) as refused:
+            self.complete()
+        self.assertIn("has no diff against base", str(refused.exception))
+        self.assertIsNone(self.receipt_bytes())
+
+    def test_a_branch_head_passes_the_guard(self) -> None:
+        self.commit("scripts/tool.py")
+        self.assertIsNone(preclose._require_branch_head(self.sha("HEAD"), "base", "--complete"))
+
+    def test_an_unanswerable_comparison_fails_closed(self) -> None:
+        # TC5 (AC1, fail-closed): an unresolvable base, and git not running.
+        self.commit("scripts/tool.py")
+        head = self.sha("HEAD")
+        with self.assertRaises(SystemExit) as refused:
+            preclose._require_branch_head(head, "no-such-ref", "--complete")
+        self.assertIn("cannot tell whether", str(refused.exception))
+        with mock.patch.object(preclose.subprocess, "run", side_effect=OSError("no git")), \
+                self.assertRaises(SystemExit) as refused:
+            preclose._require_branch_head(head, "base", "--complete")
+        self.assertIn("cannot tell whether", str(refused.exception))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as refused:
+            preclose.complete(_Args(repo="vitalharmony/hrse", issue=1208, base="no-such-ref",
+                                    head="HEAD", findings=self.findings_file([]), envelope=None,
+                                    not_triggered=True, cross_family=False, force=False))
+        self.assertIn("cannot tell whether", str(refused.exception))
+        self.assertIsNone(self.receipt_bytes())
+
+    def test_complete_at_a_head_the_plan_did_not_target_is_refused(self) -> None:
+        # TC3 (AC3): plan at B, complete at C (a later branch commit).
+        self.commit("scripts/tool.py")
+        planned = self.sha("HEAD")
+        self.plan()
+        self.commit("scripts/other.py")
+        resolved = self.sha("HEAD")
+        before = self.receipt_bytes()
+        with self.assertRaises(SystemExit) as refused:
+            self.complete()
+        text = str(refused.exception)
+        self.assertIn(f"the plan targeted {planned[:12]} but --complete resolved {resolved[:12]}", text)
+        self.assertIn("run kill checks at this head first", text)
+        self.assertEqual(self.receipt_bytes(), before)
+        # The plan's own target still records.
+        git("checkout", "-q", "--detach", planned, cwd=self.repo)
+        self.assertIn("recorded pass 1", self.complete())
+        self.assertEqual(preclose.preclose_passes.reviewed_head(
+            preclose.find_receipt("vitalharmony/hrse", 1208)), planned)
+
+    def test_a_clean_rebase_of_the_planned_head_is_still_refused(self) -> None:
+        # TC3 hard case (a): same change identity, different commit. Design
+        # Alternative 3 (accept by identity) is rejected.
+        self.commit("scripts/tool.py")
+        planned = self.sha("HEAD")
+        self.plan()
+        git("commit", "-q", "--amend", "-m", "replayed", cwd=self.repo)
+        replay = self.sha("HEAD")
+        self.assertNotEqual(replay, planned)
+        old = preclose.local_change_identity("base", planned)
+        new = preclose.local_change_identity("base", replay)
+        self.assertEqual((old["merge_base_sha"], old["tree"]), (new["merge_base_sha"], new["tree"]))
+        with self.assertRaises(SystemExit) as refused:
+            self.complete()
+        self.assertIn(f"the plan targeted {planned[:12]}", str(refused.exception))
+
+    def test_a_completed_receipt_at_another_head_does_not_fire_the_plan_check(self) -> None:
+        # TC3 hard case (b): pass 2 without a re-plan reads a complete receipt.
+        self.commit("scripts/tool.py")
+        self.plan()
+        self.complete()
+        self.commit("scripts/other.py")
+        try:
+            self.complete()
+        except SystemExit as exc:
+            self.assertNotIn("the plan targeted", str(exc))
+
+    def post_verdict_args(self) -> argparse.Namespace:
+        return argparse.Namespace(repo="vitalharmony/hrse", issue=1208, base="HEAD", head="HEAD",
+                                  main="base", envelope="e.jsonl", own_model="claude-opus-5-5",
+                                  findings=None, allow_repo_mismatch=False)
+
+    def test_post_verdict_at_the_base_is_refused_before_any_read_of_the_patch(self) -> None:
+        # TC2 (AC2): --head equal to --main.
+        git("checkout", "-q", "--detach", "base", cwd=self.repo)
+        with mock.patch.object(preclose, "local_patch_id") as patch_id, \
+                mock.patch.object(preclose, "require_recorded_envelope") as envelope, \
+                mock.patch.object(preclose, "find_receipt") as found, \
+                self.assertRaises(SystemExit) as refused:
+            preclose.post_verdict(self.post_verdict_args())
+        self.assertIn(f"--post-verdict: the head {self.sha('base')[:12]} has no diff against base",
+                      str(refused.exception))
+        patch_id.assert_not_called()
+        envelope.assert_not_called()
+        found.assert_not_called()
+        self.assertIsNone(self.receipt_bytes())
+
+    def test_post_verdict_at_a_branch_head_passes_the_guard(self) -> None:
+        # Control for TC2: a branch head reaches the sticky-wicket check.
+        self.commit("scripts/tool.py")
+        with self.assertRaises(SystemExit) as refused:
+            preclose.post_verdict(self.post_verdict_args())
+        self.assertIn("sticky-wicket", str(refused.exception))
 
 
 class OwnModelTests(unittest.TestCase):

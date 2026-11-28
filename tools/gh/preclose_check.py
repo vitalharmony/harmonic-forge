@@ -938,6 +938,34 @@ def _require_repo_and_head(repo: str, args: argparse.Namespace) -> str:
     return head_sha
 
 
+def _require_branch_head(head_sha: str, base_ref: str, mode: str) -> None:
+    """harmonic-forge#1646: refuse a head with no diff against the base.
+
+    F1532's pass 1 was recorded from the main checkout: `--head` defaults to
+    `HEAD` in the cwd, so `--complete` stored main's own head as the reviewed
+    head. `--plan` refuses an empty diff; `--complete` and `--post-verdict`
+    had no such check. A head that is the base or an ancestor of it is that
+    wrong-checkout state. Cannot-decide fails closed and records nothing.
+    """
+    try:
+        done = subprocess.run(["git", "merge-base", "--is-ancestor", head_sha, base_ref],
+                              capture_output=True, text=True, timeout=30, check=False)
+        code = done.returncode
+    except (OSError, subprocess.SubprocessError):
+        code = None
+    if code == 1:
+        return
+    if code == 0:
+        raise SystemExit(
+            f"preclose-check: {mode}: the head {head_sha[:12]} has no diff against {base_ref} "
+            "(it is that commit or an ancestor of it). This usually means the command ran from "
+            "the wrong checkout; run it from the issue's implementation worktree, or pass "
+            "--head <branch head>. Nothing recorded.")
+    raise SystemExit(
+        f"preclose-check: {mode}: cannot tell whether {head_sha[:12]} has a diff against "
+        f"{base_ref} (git merge-base --is-ancestor did not answer). Nothing recorded.")
+
+
 @serialized_receipt
 def plan(args: argparse.Namespace) -> int:
     # F783 preclose finding: plan is the first step and its output is the
@@ -1132,6 +1160,18 @@ def complete(args: argparse.Namespace) -> int:
     require_writable(receipt_dir())
     repo = registered_repo(args.repo)
     head_sha = _require_repo_and_head(repo, args)
+    _require_branch_head(head_sha, args.base, "--complete")
+    # harmonic-forge#1646: a planned receipt names the head the panel was
+    # sized for and reviewed. A different head is not what the panel read.
+    prior = find_receipt(repo, args.issue)
+    if isinstance(prior, dict) and prior.get("status") == "planned":
+        target = preclose_passes.reviewed_head(prior)
+        if isinstance(target, str) and target and target != head_sha:
+            raise SystemExit(
+                f"preclose-check: --complete: the plan targeted {target[:12]} but --complete "
+                f"resolved {head_sha[:12]}; the panel reviewed the plan's target. Run from that "
+                "checkout, or re-run --plan at this head (run kill checks at this head first if "
+                "no kill receipt covers it). Nothing recorded.")
     if not args.findings:
         raise SystemExit(
             "preclose-check: --complete needs --findings (the panel's findings, JSON) and one of "
@@ -1213,8 +1253,7 @@ def complete(args: argparse.Namespace) -> int:
     if ran:
         cost["cross_family_tokens"] = "unavailable"
         cost["cross_family_fallback"] = not provenance.startswith(PROVENANCE_TRIGGERED[0])
-    prior = find_receipt(repo, args.issue)
-    size = prior.get("refuters", 0) if prior else 0
+    size =prior.get("refuters", 0) if prior else 0
     # The tier rides on the pass entry, the single carrier every reader uses
     # (#889 sticky-wicket PATCH): --tier, else the planned receipt's, else the
     # last pass's.
@@ -1732,6 +1771,7 @@ def post_verdict(args: argparse.Namespace) -> int:
     base_sha = run("git", "rev-parse", "--verify", f"{args.base}^{{commit}}").stdout.strip()
     if not base_sha:
         raise SystemExit(f"preclose-check: --base {args.base!r} does not resolve to a commit")
+    _require_branch_head(head_sha, args.main, "--post-verdict")
     prior = find_receipt(repo, args.issue) or {}
     passes = preclose_passes.current(preclose_passes.history(prior))
     if (len(passes) < preclose_passes.MAX_PASSES
