@@ -57,11 +57,10 @@ turn with no text of its own has no final text and is allowed; the previous
 turn's text is never re-read.
 
 Accepted residual (two-pass sticky-wicket PATCH): a directive block in an
-earlier text record of the turn is not read. If the operator types it, the
-prompt hook judges it as it judges any typed line, so a malformed one may
-still be accepted there (for example a block this hook ignores for a short
-closing fence). A final text beyond the byte bound is not found, and the turn
-is allowed.
+earlier text record of the turn is not read, whatever its shape, well-formed
+or not: only the final text is checked. If the operator types such a line, the
+prompt hook judges it as it judges any typed line. A final text beyond the
+byte bound is not found, and the turn is allowed.
 
 Accepted residuals: the dry run binds the handing session's `session_id`,
 `LANE` and `CLAUDE_CODE_ENTRYPOINT`, and state as it is when the turn ends.
