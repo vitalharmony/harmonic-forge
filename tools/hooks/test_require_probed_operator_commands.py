@@ -432,6 +432,7 @@ class DirectiveBlocks(DirectiveStores):
             "trailing U+2029": directive("PARK H2621\u2029"),
             "empty body": FENCE + "operator-directive\n" + FENCE + "\n",
             "unclosed": FENCE + "operator-directive\nPARK H2621\n",
+            "short closing fence": FENCE + "operator-directive\nPARK H2621\n```\n",
         }
         for name, block_text in table.items():
             with self.subTest(name=name):
@@ -480,22 +481,32 @@ class DirectiveBlocks(DirectiveStores):
         self.assertEqual(verdict, "block")
         self.assertIn("could not load", reason)
 
-    def test_every_text_record_of_the_turn_is_read(self):
-        """Epoch pass 1, survivor 1: a bad block in an earlier text record of
-        the turn blocks, as it would in the final one; a previous turn's does not."""
-        for bad in (directive("FORCE F9999: x"), FENCE + "operator-directive\nPARK H2621\n"):
-            with self.subTest(bad=bad):
-                t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
-                t.say("Here is the line.\n" + bad)
-                path = t.bash("true").say("All done.")
-                verdict, reason = hook.decide({"transcript_path": path, "session_id": SESSION})
-                self.assertEqual(verdict, "block")
-                self.assertIn("operator-directive", reason)
+    def test_only_the_final_text_record_is_read(self):
+        """Two-pass sticky-wicket PATCH (P1): the accepted residual. A bad block
+        in an earlier text record of the turn is not read; only the final text
+        is, as for the commands block. The prompt hook refuses it when typed."""
         t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
-        t.say("Here.\n" + directive("FORCE F9999: x"))
-        t.entries.append({"type": "user", "message": {"content": "next"}})
-        self.assertEqual(hook.decide({"transcript_path": t.say("All done."),
-                                      "session_id": SESSION}), ("allow", ""))
+        t.say("Here is the line.\n" + directive("FORCE F9999: x"))
+        path = t.bash("true").say("All done.")
+        self.assertEqual(hook.decide({"transcript_path": path, "session_id": SESSION}),
+                         ("allow", ""))
+        self.assertEqual(self.decide("Here.\n" + directive("FORCE F9999: x"))[0], "block")
+
+    def test_a_bad_directive_does_not_mask_unprobed_commands(self):
+        """Two-pass PATCH S3: both refusals are named together."""
+        verdict, reason = self.decide(with_actions(directive("FORCE F9999: x"),
+                                                   commands="gh pr merge 1"))
+        self.assertEqual(verdict, "block")
+        self.assertIn("no preclose receipt", reason)
+        self.assertIn("no Bash call this turn", reason)
+
+    def test_lane_unset_refuses_at_the_hook(self):
+        """Two-pass PATCH S5: an unset LANE reaches the authorizer as unset."""
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LANE", None)
+            verdict, reason = self.decide(with_actions(directive("PARK H2621")))
+        self.assertEqual(verdict, "block")
+        self.assertIn("LANE is not set", reason)
 
     def test_a_bad_commands_block_does_not_mask_a_bad_directive(self):
         """Epoch pass 1, survivor 3: the `if directives:` branch of the shape refusal."""
@@ -540,8 +551,12 @@ class DirectiveBlocks(DirectiveStores):
             self.decide(text)
 
     def test_a_turn_with_no_directive_block_never_loads_the_authorizers(self):
-        with mock.patch.object(hook, "_authorizers", side_effect=AssertionError):
-            self.assertEqual(self.decide("Nothing to do.")[0], "allow")
+        """Two-pass PATCH S7: a side_effect raising inside `_authorizers` would be
+        swallowed by the fail-closed handler, so the call itself is asserted."""
+        with mock.patch.object(hook, "_authorizers") as loader:
+            self.assertEqual(self.decide("Nothing to do."), ("allow", ""))
+            self.assertEqual(self.decide(with_actions())[0], "allow")
+        loader.assert_not_called()
 
 
 class DirectiveParity(DirectiveStores):

@@ -45,10 +45,20 @@ directly, never the prompt hook's `main()`, so nothing is fetched, posted or
 recorded. A body no authorizer answers must be `close <KEY>`: lowercase
 `close`, one space, a key `tasklist_owed.KEY_RE` matches whose number the
 prompt hook's close trigger reads, written nonzero with no leading zero,
-nothing after it (`close_problem`). These blocks are validated in every
-assistant text record of the turn (not only the last), with or without YOUR
-NEXT ACTIONS, and in a question turn too. An error while checking them,
-`SystemExit` included, refuses the block; only `KeyboardInterrupt` propagates.
+nothing after it (`close_problem`). These blocks are validated in the turn's
+final text, as the commands block is, with or without YOUR NEXT ACTIONS, and
+in a question turn too. An error while checking them, `SystemExit` included,
+refuses the block; only `KeyboardInterrupt` propagates.
+
+Accepted residuals (two-pass sticky-wicket PATCH): a directive block in an
+earlier text record of the turn is not read; the prompt hook refuses it when
+typed and writes nothing. On a turn with no text, `last_assistant_text` walks
+back to the previous turn's text: its directive blocks are checked again, and
+its probed `operator-commands` block is checked against this turn's probes (one
+false "never probed" block). This fails closed, at most once per turn
+(`stop_hook_active`), and is shared with the #1151 check;
+Claude Code 2.1.332 omits `last_assistant_message` on such a turn, so the
+Stop payload cannot tell it apart, and no turn detection is added here.
 
 Accepted residuals: the dry run binds the handing session's `session_id`,
 `LANE` and `CLAUDE_CODE_ENTRYPOINT`, and state as it is when the turn ends.
@@ -79,7 +89,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import tier_model_stop_backstop as backstop  # noqa: E402
 from tier_model_stop_backstop import scan_turn  # noqa: E402
 from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
@@ -295,8 +304,7 @@ def directive_problem(body: str, session_id: str | None, lane: str | None,
 
 def directive_problems(texts: list[str], session_id: str | None,
                        lane: str | None) -> list[str]:
-    """Every directive block in every one of `texts` (the turn's assistant text
-    records), checked once each."""
+    """Every directive block in `texts` (the turn's final text), checked once each."""
     bodies, problems = [], []
     for text in texts:
         found, wrong = directive_blocks(text)
@@ -335,50 +343,14 @@ def _hint(line: str) -> str:
     return _DIRECTIVE_HINT if line.split(None, 1)[0].lower() in _DIRECTIVE_WORDS else ""
 
 
-def turn_texts(transcript: str) -> list[str]:
-    """Every assistant text record of this turn, oldest first (epoch pass 1,
-    survivor 1): a directive block in an earlier record is checked as one in
-    the final record is. Bounded like `scan_turn`; a tail that never reaches
-    the turn's start yields the records it read."""
-    texts = []
-    try:
-        for raw in backstop.session_model._tail_lines(
-                transcript, chunk_size=backstop._SCAN_CHUNK_BYTES,
-                max_bytes=backstop._SCAN_MAX_BYTES):
-            try:
-                entry = json.loads(raw)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if backstop._is_turn_start(entry):
-                break
-            if entry.get("type") != "assistant" or entry.get("isSidechain"):
-                continue
-            content = (entry.get("message") or {}).get("content")
-            if isinstance(content, str):
-                texts.append(content)
-            elif isinstance(content, list):
-                parts = [b.get("text", "") for b in content
-                         if isinstance(b, dict) and b.get("type") == "text"]
-                if any(parts):
-                    texts.append("\n".join(parts))
-    except OSError:
-        return []
-    return texts[::-1]
-
-
 def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     transcript = payload.get("transcript_path") or ""
     if not transcript:
         return "allow", ""
     text = last_assistant_text(Path(transcript))
-    texts = turn_texts(transcript)
-    if text and text not in texts:
-        texts.append(text)
-    directives = directive_problems(texts, payload.get("session_id"), os.environ.get("LANE"))
     if not text:
-        return _directive_block(directives) if directives else ("allow", "")
+        return "allow", ""
+    directives = directive_problems([text], payload.get("session_id"), os.environ.get("LANE"))
     if not _ACTIONS_RE.search(text):
         return _directive_block(directives) if directives else ("allow", "")
     # A question turn withholds only "never probed" (operator-approved
