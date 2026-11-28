@@ -42,6 +42,9 @@ class Transcript:
     def say(self, text: str) -> str:
         self.entries.append({"type": "assistant", "message": {"content": [
             {"type": "text", "text": text}]}})
+        return self.write()
+
+    def write(self) -> str:
         self.path.write_text("\n".join(json.dumps(e) for e in self.entries) + "\n")
         return str(self.path)
 
@@ -484,7 +487,7 @@ class DirectiveBlocks(DirectiveStores):
     def test_only_the_final_text_record_is_read(self):
         """Two-pass sticky-wicket PATCH (P1): the accepted residual. A bad block
         in an earlier text record of the turn is not read; only the final text
-        is, as for the commands block. The prompt hook refuses it when typed."""
+        is, as for the commands block."""
         t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
         t.say("Here is the line.\n" + directive("FORCE F9999: x"))
         path = t.bash("true").say("All done.")
@@ -507,6 +510,50 @@ class DirectiveBlocks(DirectiveStores):
             verdict, reason = self.decide(with_actions(directive("PARK H2621")))
         self.assertEqual(verdict, "block")
         self.assertIn("LANE is not set", reason)
+
+    def test_lane_unset_reaches_the_authorizer_as_none(self):
+        """D8 re-patch, post-verdict finding 5: unset is None, never ''."""
+        seen = []
+
+        def spy(body, sid, lane):
+            seen.append(lane)
+            return None
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(hook, "_authorizers", return_value=[spy]):
+            os.environ.pop("LANE", None)
+            self.decide(with_actions(directive("PARK H2621")))
+        self.assertEqual(seen, [None])
+
+    def test_a_subagent_text_after_the_final_text_is_skipped(self):
+        """D8 re-patch, post-verdict finding 1: an isSidechain record is not
+        the turn's final text."""
+        t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
+        t.say("Here.\n" + directive("FORCE F9999: x"))
+        t.entries.append({"type": "assistant", "isSidechain": True, "message": {
+            "content": [{"type": "text", "text": "subagent done"}]}})
+        path = t.write()
+        self.assertEqual(hook.decide({"transcript_path": path, "session_id": SESSION})[0],
+                         "block")
+
+    def test_forty_tool_records_after_the_final_text_do_not_hide_it(self):
+        """D8 re-patch, post-verdict finding 2: no record-count window."""
+        t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
+        t.say("Here.\n" + directive("FORCE F9999: x"))
+        for _ in range(20):
+            t.bash("true")
+        path = t.write()
+        self.assertEqual(hook.decide({"transcript_path": path, "session_id": SESSION})[0],
+                         "block")
+
+    def test_a_textless_turn_does_not_reread_the_previous_turn(self):
+        """D8 re-patch, post-verdict finding 3: the read stops at the turn's start."""
+        t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
+        t.say("Here.\n" + directive("FORCE F9999: x"))
+        t.entries.append({"type": "user", "message": {"content": "next"}})
+        t.bash("true")
+        path = t.write()
+        self.assertEqual(hook.decide({"transcript_path": path, "session_id": SESSION}),
+                         ("allow", ""))
 
     def test_a_bad_commands_block_does_not_mask_a_bad_directive(self):
         """Epoch pass 1, survivor 3: the `if directives:` branch of the shape refusal."""

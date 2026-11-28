@@ -50,15 +50,18 @@ final text, as the commands block is, with or without YOUR NEXT ACTIONS, and
 in a question turn too. An error while checking them, `SystemExit` included,
 refuses the block; only `KeyboardInterrupt` propagates.
 
-Accepted residuals (two-pass sticky-wicket PATCH): a directive block in an
-earlier text record of the turn is not read; the prompt hook refuses it when
-typed and writes nothing. On a turn with no text, `last_assistant_text` walks
-back to the previous turn's text: its directive blocks are checked again, and
-its probed `operator-commands` block is checked against this turn's probes (one
-false "never probed" block). This fails closed, at most once per turn
-(`stop_hook_active`), and is shared with the #1151 check;
-Claude Code 2.1.332 omits `last_assistant_message` on such a turn, so the
-Stop payload cannot tell it apart, and no turn detection is added here.
+The final text is `final_text`: this turn's newest main-thread assistant text
+record, read back from the transcript's end within `scan_turn`'s byte bound,
+skipping subagent (`isSidechain`) records and stopping at the turn's start. A
+turn with no text of its own has no final text and is allowed; the previous
+turn's text is never re-read.
+
+Accepted residual (two-pass sticky-wicket PATCH): a directive block in an
+earlier text record of the turn is not read. If the operator types it, the
+prompt hook judges it as it judges any typed line, so a malformed one may
+still be accepted there (for example a block this hook ignores for a short
+closing fence). A final text beyond the byte bound is not found, and the turn
+is allowed.
 
 Accepted residuals: the dry run binds the handing session's `session_id`,
 `LANE` and `CLAUDE_CODE_ENTRYPOINT`, and state as it is when the turn ends.
@@ -89,8 +92,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import tier_model_stop_backstop as backstop  # noqa: E402
 from tier_model_stop_backstop import scan_turn  # noqa: E402
-from turn_question import asks_a_question, last_assistant_text  # noqa: E402
+from turn_question import asks_a_question  # noqa: E402
 
 PROBE_SUFFIXES = (" --help", " --dry-run")
 _ACTIONS_RE = re.compile(r"YOUR NEXT ACTIONS", re.I)
@@ -343,11 +347,44 @@ def _hint(line: str) -> str:
     return _DIRECTIVE_HINT if line.split(None, 1)[0].lower() in _DIRECTIVE_WORDS else ""
 
 
+def final_text(transcript: str) -> str:
+    """This turn's newest main-thread assistant text, or "" (D8 re-patch,
+    post-verdict findings 1 and 2). Walks back from the end, bounded like
+    `scan_turn` (not a record count), skips subagent (`isSidechain`) records,
+    and stops at the turn's start, so a textless turn yields "" rather than
+    the previous turn's text."""
+    try:
+        for raw in backstop.session_model._tail_lines(
+                transcript, chunk_size=backstop._SCAN_CHUNK_BYTES,
+                max_bytes=backstop._SCAN_MAX_BYTES):
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if backstop._is_turn_start(entry):
+                return ""
+            if entry.get("type") != "assistant" or entry.get("isSidechain"):
+                continue
+            content = (entry.get("message") or {}).get("content")
+            if isinstance(content, str) and content:
+                return content
+            if isinstance(content, list):
+                parts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"]
+                if any(parts):
+                    return "\n".join(parts)
+    except OSError:
+        return ""
+    return ""
+
+
 def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     transcript = payload.get("transcript_path") or ""
     if not transcript:
         return "allow", ""
-    text = last_assistant_text(Path(transcript))
+    text = final_text(transcript)
     if not text:
         return "allow", ""
     directives = directive_problems([text], payload.get("session_id"), os.environ.get("LANE"))
