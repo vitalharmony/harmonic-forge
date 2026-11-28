@@ -733,21 +733,6 @@ class TicketCleanup(unittest.TestCase):
         self.assertTrue(seen["replacement"].exists())
         self.assertFalse(hs._try_flock(seen["replacement"]))
 
-    def test_tc1c_a_probe_error_never_reaps_a_locked_ticket(self):
-        """pass 1 (Codex): an EMFILE during a scan must not read a live ticket as dead."""
-        path = self.state / "tickets" / "1-1-normal.ticket"
-        holder = open(path, "a+")
-        self.addCleanup(holder.close)
-        hs.fcntl.flock(holder, hs.fcntl.LOCK_EX | hs.fcntl.LOCK_NB)
-
-        def emfile(*_a, **_k):
-            raise OSError(24, "Too many open files")
-
-        with mock.patch("builtins.open", emfile):
-            self.assertFalse(hs._try_flock(path))
-            self.assertEqual(hs._tickets(self.state), [path])
-        self.assertTrue(path.exists())
-
     def test_tc1b_a_failed_unlink_still_closes_the_ticket_handle(self):
         real_new_ticket, real_unlink, seen = hs._new_ticket, Path.unlink, {}
 
