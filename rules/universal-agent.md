@@ -581,21 +581,24 @@ A substantive tooling or process change is filed before it is implemented, inclu
 <!-- /R-0417 -->
 
 <!-- R-0440 -->
-When the operator asks in chat how something would be designed, or reports a
-UX or design problem, the reply to it is a design conversation: show the current
-model and behavior, ask the design questions, and take no other action on it. A
-filing about it happens only when the operator asks for one, after the answer,
-carrying any design the operator settled; an instruction to build a settled
-design is that ask, and R-0417 then files it before it is implemented. For a
-problem raised this way the ask takes precedence over every rule that would
-file it unasked, R-0039's first and second tests included (operator D15);
-R-0039's artifact requirement and exceptions govern the filing once asked.
-This rule never suspends an operator directive in the same message or line: a
-lane trigger, a `queued-for-<lane>` belt event (R-0408), or any other
-`rules/lane-shorthand.md` directive (FORCE, UI, PARK, SCAN, BATCH, IMC,
-`close`) is acted on as its own rule says and carries none of that design,
-and a design question or complaint anywhere in the message, a directive's
-reason text included, is answered under this rule.
+When the operator asks in chat how something would be designed, or reports a UX
+or design problem, the reply to it is a design conversation: show the current
+model and behavior, ask the design questions, and take no other action on it
+beyond R-0432's capture when the operator names a protocol failure. A filing
+about it happens only when the operator asks for one, after the answer, carrying
+any design the operator settled; an instruction to build a settled design is
+that ask, and it is filed before it is implemented (R-0417 for a tooling or
+process change). For a problem raised this way the ask takes precedence over
+every rule that would file it unasked, R-0039's first and second tests included
+(operator D15); R-0039's artifact requirement and exceptions govern the filing
+once asked. This rule never suspends an operator directive in the same message
+or line: a lane trigger, a `queued-for-<lane>` belt event (R-0408), or any other
+`rules/lane-shorthand.md` directive (FORCE, UI, PARK, SCAN, BATCH, IMC, `close`,
+and `NOW` and `EOQ`, which set only when the rest of the message is handled) is
+acted on as its own rule says and carries none of that design beyond the
+operator's own text that its rule records, and a design question or complaint
+anywhere in the message, a directive's reason text included, is answered under
+this rule.
 <!-- /R-0440 -->
 
 <!-- R-0372 -->
