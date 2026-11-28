@@ -428,6 +428,8 @@ class DirectiveBlocks(DirectiveStores):
             "space-indented line": directive(" PARK H2621"),
             "two-line body": FENCE + "operator-directive\nPARK H2621\nPARK H2622\n" + FENCE + "\n",
             "U+2028 body": directive("PARK H2621 PARK H2622"),
+            "trailing U+2028": directive("PARK H2621\u2028"),
+            "trailing U+2029": directive("PARK H2621\u2029"),
             "empty body": FENCE + "operator-directive\n" + FENCE + "\n",
             "unclosed": FENCE + "operator-directive\nPARK H2621\n",
         }
@@ -441,7 +443,8 @@ class DirectiveBlocks(DirectiveStores):
     def test_close_is_the_whole_line_only(self):
         """K6: `close`'s check lives in `close_problem`."""
         for line in ("close F1639 now", "close f1639", "Close F1639", "close  F1639",
-                     "close F1639 && rm -rf x", "close Z1"):
+                     "close F1639 && rm -rf x", "close Z1", "close F0", "close F01639",
+                     "close F1234567"):
             with self.subTest(line=line):
                 verdict, reason = self.decide(with_actions(directive(line)))
                 self.assertEqual(verdict, "block")
@@ -476,6 +479,65 @@ class DirectiveBlocks(DirectiveStores):
             verdict, reason = self.decide(with_actions(directive("PARK H2621")))
         self.assertEqual(verdict, "block")
         self.assertIn("could not load", reason)
+
+    def test_every_text_record_of_the_turn_is_read(self):
+        """Epoch pass 1, survivor 1: a bad block in an earlier text record of
+        the turn blocks, as it would in the final one; a previous turn's does not."""
+        for bad in (directive("FORCE F9999: x"), FENCE + "operator-directive\nPARK H2621\n"):
+            with self.subTest(bad=bad):
+                t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
+                t.say("Here is the line.\n" + bad)
+                path = t.bash("true").say("All done.")
+                verdict, reason = hook.decide({"transcript_path": path, "session_id": SESSION})
+                self.assertEqual(verdict, "block")
+                self.assertIn("operator-directive", reason)
+        t = Transcript(Path(tempfile.mkdtemp(dir=self.tmp)))
+        t.say("Here.\n" + directive("FORCE F9999: x"))
+        t.entries.append({"type": "user", "message": {"content": "next"}})
+        self.assertEqual(hook.decide({"transcript_path": t.say("All done."),
+                                      "session_id": SESSION}), ("allow", ""))
+
+    def test_a_bad_commands_block_does_not_mask_a_bad_directive(self):
+        """Epoch pass 1, survivor 3: the `if directives:` branch of the shape refusal."""
+        bad = directive("FORCE F9999: x")
+        commands = FENCE + "operator-commands\n# none\n" + FENCE + "\n"
+        for text in ("## YOUR NEXT ACTIONS\n" + bad,
+                     "## YOUR NEXT ACTIONS\n" + bad + commands + commands):
+            with self.subTest(text=text):
+                verdict, reason = self.decide(text)
+                self.assertEqual(verdict, "block")
+                self.assertIn("FORCE F9999: x", reason)
+                self.assertIn("no preclose receipt", reason)
+                self.assertIn("exactly one `operator-commands` block", reason)
+
+    def test_an_authorizer_raising_system_exit_refuses(self):
+        """Epoch pass 1, survivor 7: SystemExit is caught and refuses, at load
+        and at the check; KeyboardInterrupt propagates (the operator's interrupt)."""
+        def exits(*_):
+            raise SystemExit(0)
+        text = with_actions(directive("PARK H2621"))
+        with mock.patch.object(hook, "_authorizers", return_value=[exits]):
+            verdict, reason = self.decide(text)
+        self.assertEqual(verdict, "block")
+        self.assertIn("the directive check failed (SystemExit)", reason)
+        with mock.patch.object(hook, "_authorizers", side_effect=SystemExit(0)):
+            verdict, reason = self.decide(text)
+        self.assertEqual(verdict, "block")
+        self.assertIn("could not load (SystemExit)", reason)
+        path = Transcript(Path(tempfile.mkdtemp(dir=self.tmp))).say(text)
+        out = io.StringIO()
+        with mock.patch.object(hook, "_authorizers", return_value=[exits]), \
+                mock.patch.object(sys, "stdin", io.StringIO(json.dumps(
+                    {"transcript_path": path, "session_id": SESSION}))), \
+                mock.patch.object(sys, "stdout", out):
+            hook.main()
+        self.assertEqual(json.loads(out.getvalue())["decision"], "block")
+
+        def interrupted(*_):
+            raise KeyboardInterrupt
+        with mock.patch.object(hook, "_authorizers", return_value=[interrupted]), \
+                self.assertRaises(KeyboardInterrupt):
+            self.decide(text)
 
     def test_a_turn_with_no_directive_block_never_loads_the_authorizers(self):
         with mock.patch.object(hook, "_authorizers", side_effect=AssertionError):
@@ -528,7 +590,7 @@ class NoDirectiveExemptionInCommands(Decide):
                 self.assertEqual(self.decide(self.fresh().say(block(line)))[0], "block")
 
     def test_the_refusal_points_at_the_operator_directive_block(self):
-        for line in self.LINES + ("FORCE F1: it's done",):
+        for line in self.LINES + ("FORCE F1: it's done", "PARK\tH1", "close\tF1"):
             with self.subTest(line=line):
                 reason = self.decide(self.fresh().say(block(line)))[1]
                 self.assertIn("own `operator-directive` block", reason)

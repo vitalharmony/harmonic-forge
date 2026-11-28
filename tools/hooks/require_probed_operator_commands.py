@@ -43,9 +43,12 @@ payload's `session_id` and this process's `LANE`: exactly one of them must
 answer, and its answer must be a would-grant. The authorizers are called
 directly, never the prompt hook's `main()`, so nothing is fetched, posted or
 recorded. A body no authorizer answers must be `close <KEY>`: lowercase
-`close`, one space, a key `tasklist_owed.KEY_RE` matches, nothing after it
-(`close_problem`). These blocks are validated in every turn, with or without
-YOUR NEXT ACTIONS, and in a question turn too.
+`close`, one space, a key `tasklist_owed.KEY_RE` matches whose number the
+prompt hook's close trigger reads, written nonzero with no leading zero,
+nothing after it (`close_problem`). These blocks are validated in every
+assistant text record of the turn (not only the last), with or without YOUR
+NEXT ACTIONS, and in a question turn too. An error while checking them,
+`SystemExit` included, refuses the block; only `KeyboardInterrupt` propagates.
 
 Accepted residuals: the dry run binds the handing session's `session_id`,
 `LANE` and `CLAUDE_CODE_ENTRYPOINT`, and state as it is when the turn ends.
@@ -76,6 +79,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import tier_model_stop_backstop as backstop  # noqa: E402
 from tier_model_stop_backstop import scan_turn  # noqa: E402
 from turn_question import asks_a_question, last_assistant_text  # noqa: E402
 
@@ -212,7 +216,17 @@ def close_problem(line: str) -> str | None:
     import tasklist_owed  # noqa: PLC0415
 
     word, sep, key = line.partition(" ")
-    if word != "close" or sep != " " or not tasklist_owed.KEY_RE.fullmatch(key):
+    match = tasklist_owed.KEY_RE.fullmatch(key)
+    if word != "close" or sep != " " or not match:
+        return CLOSE_REFUSAL
+    # Epoch pass 1, survivor 2: the number is the one the prompt hook's own
+    # close grammar (`_ATTRIB_TRIGGER_RE`) reads off the line, written as the
+    # task-list entry writes it: nonzero, no leading zero (PARK's rule).
+    from expand_lane_shorthand import _ATTRIB_TRIGGER_RE  # noqa: PLC0415
+    trigger = _ATTRIB_TRIGGER_RE.match(line)
+    number = match.group(2)
+    if trigger is None or trigger.group(1) != "close" or trigger.group(3) != number \
+            or number != str(int(number)) or int(number) == 0:
         return CLOSE_REFUSAL
     return None
 
@@ -239,7 +253,9 @@ def directive_blocks(text: str) -> tuple[list[str], list[str]]:
         if body is None or not closed:
             problems.append("  - an `operator-directive` block holds exactly one line and "
                             "closes at column 0 with its own fence on the next line")
-        elif not body.strip() or len(body.splitlines()) != 1:
+        elif not body.strip() or body.splitlines() != [body]:
+            # Epoch pass 1, survivor 5: `splitlines()` drops a trailing U+2028 or
+            # U+2029, so a count of 1 would pass one; any terminator is refused.
             problems.append(f"  - `{body.strip()}`: an `operator-directive` block holds "
                             "exactly one non-blank line")
         elif body[0] in " \t":
@@ -277,19 +293,30 @@ def directive_problem(body: str, session_id: str | None, lane: str | None,
     return f"an `operator-directive` block holds only a {DIRECTIVE_KINDS} line"
 
 
-def directive_problems(text: str, session_id: str | None, lane: str | None) -> list[str]:
-    bodies, problems = directive_blocks(text)
+def directive_problems(texts: list[str], session_id: str | None,
+                       lane: str | None) -> list[str]:
+    """Every directive block in every one of `texts` (the turn's assistant text
+    records), checked once each."""
+    bodies, problems = [], []
+    for text in texts:
+        found, wrong = directive_blocks(text)
+        bodies += found
+        problems += wrong
     if not bodies:
         return problems
     try:
         authorizers = _authorizers()
-    except Exception as exc:  # noqa: BLE001 - fail closed: no directive is vouched for
+    except KeyboardInterrupt:
+        raise  # the operator's interrupt, never a verdict
+    except BaseException as exc:  # noqa: BLE001 - fail closed, SystemExit included
         return problems + [f"  - `{b}`: the prompt hook's authorizers could not load "
                            f"({type(exc).__name__})" for b in bodies]
     for body in bodies:
         try:
             why = directive_problem(body, session_id, lane, authorizers)
-        except Exception as exc:  # noqa: BLE001
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - SystemExit must not end the hook as an allow
             why = f"the directive check failed ({type(exc).__name__})"
         if why:
             problems.append(f"  - `{body}`: the prompt hook would refuse it: {why}")
@@ -305,7 +332,40 @@ def _directive_block(problems: list[str]) -> tuple[str, str]:
 
 
 def _hint(line: str) -> str:
-    return _DIRECTIVE_HINT if line.split(" ", 1)[0].lower() in _DIRECTIVE_WORDS else ""
+    return _DIRECTIVE_HINT if line.split(None, 1)[0].lower() in _DIRECTIVE_WORDS else ""
+
+
+def turn_texts(transcript: str) -> list[str]:
+    """Every assistant text record of this turn, oldest first (epoch pass 1,
+    survivor 1): a directive block in an earlier record is checked as one in
+    the final record is. Bounded like `scan_turn`; a tail that never reaches
+    the turn's start yields the records it read."""
+    texts = []
+    try:
+        for raw in backstop.session_model._tail_lines(
+                transcript, chunk_size=backstop._SCAN_CHUNK_BYTES,
+                max_bytes=backstop._SCAN_MAX_BYTES):
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if backstop._is_turn_start(entry):
+                break
+            if entry.get("type") != "assistant" or entry.get("isSidechain"):
+                continue
+            content = (entry.get("message") or {}).get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                parts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"]
+                if any(parts):
+                    texts.append("\n".join(parts))
+    except OSError:
+        return []
+    return texts[::-1]
 
 
 def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
@@ -313,9 +373,12 @@ def decide(payload: dict, probes: list[str] | None = None) -> tuple[str, str]:
     if not transcript:
         return "allow", ""
     text = last_assistant_text(Path(transcript))
+    texts = turn_texts(transcript)
+    if text and text not in texts:
+        texts.append(text)
+    directives = directive_problems(texts, payload.get("session_id"), os.environ.get("LANE"))
     if not text:
-        return "allow", ""
-    directives = directive_problems(text, payload.get("session_id"), os.environ.get("LANE"))
+        return _directive_block(directives) if directives else ("allow", "")
     if not _ACTIONS_RE.search(text):
         return _directive_block(directives) if directives else ("allow", "")
     # A question turn withholds only "never probed" (operator-approved
