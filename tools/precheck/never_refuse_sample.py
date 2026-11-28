@@ -237,10 +237,17 @@ RANK = {"read": 1, "probe": 2, "scratch-write": 3}
 _ASSIGNMENT_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 #: One path segment: these characters only, and never `.` or `..`.
 _SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9._@+-]+"
-#: The one write-target shape: a literal absolute path under `/tmp/`. No
-#: `..`, no braces, globs, quotes, `$`, `~` or whitespace, and nothing
-#: relative: a relative target would need the cwd, which is never computed.
-SCRATCH_LITERAL = re.compile(rf"^/tmp/{_SEGMENT}(?:/{_SEGMENT})*/?$")
+#: The two scratch roots: `/tmp` and the fixed Claude Code tmpdir default,
+#: `~/.cache/claude-tmp` (harmonic-forge#1655), each without a trailing slash.
+#: Resolved once at import; no environment variable is read (operator D85,
+#: harmonic-forge#1658). The second root is kept only when it expands to an
+#: absolute path: a relative or unset HOME leaves `/tmp` alone (preclose pass 1).
+_CLAUDE_TMP_ROOT = os.path.expanduser("~/.cache/claude-tmp")
+SCRATCH_ROOTS = ("/tmp",) + ((_CLAUDE_TMP_ROOT,) if os.path.isabs(_CLAUDE_TMP_ROOT) else ())
+#: The one write-target shape below a root: literal segments. No `..`, no
+#: braces, globs, quotes, `$`, `~` or whitespace, and nothing relative: a
+#: relative target would need the cwd, which is never computed.
+_SCRATCH_REST = re.compile(rf"^{_SEGMENT}(?:/{_SEGMENT})*/?$")
 #: A loop keyword at the head of a command. Every loop is refused (operator
 #: ruling on the epoch-5 sticky-wicket, harmonic-forge#1289): 0 of 33,442 pool
 #: rows hold one, and finding a loop's extent is the interpreter this file refuses to be.
@@ -320,8 +327,10 @@ def heredoc_hazards(command: str) -> None:
 
 
 def is_scratch(word: str) -> bool:
-    """True only for a literal `/tmp/` path."""
-    return bool(SCRATCH_LITERAL.match(word))
+    """True only for a literal path under one of `SCRATCH_ROOTS`, `/tmp/` or
+    `~/.cache/claude-tmp/` expanded. The bare root is not scratch."""
+    return any(word.startswith(root + "/") and bool(_SCRATCH_REST.match(word[len(root) + 1:]))
+               for root in SCRATCH_ROOTS)
 
 
 def parse_opts(words: list[str], spec: Opts, reason: str) -> tuple[list[str], list[tuple[str, str]]]:
