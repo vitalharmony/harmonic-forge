@@ -3006,8 +3006,8 @@ hooks = [{ script = "tools/hooks/tier_model_trigger_check.py", events = ["UserPr
 id = "R-0440"
 file = "rules/universal-agent.md"
 anchor = "the-filing-bar"
-statement = "An operator's chat design question or UX complaint gets a design conversation (current model and behavior, design questions) and no other action on it beyond R-0432's capture when the operator names a protocol failure; a filing about it happens only when the operator asks, after the answer, an instruction to build a settled design being that ask (filed before implementing, by R-0417 for a tooling or process change), taking precedence over every unasked filing rule including R-0039 tests 1 and 2 while R-0039's artifact requirement and exceptions govern the filing; the rule never suspends a directive (lane trigger, queued-for-<lane> event, or any lane-shorthand directive including NOW and EOQ), which runs under its own rule carrying none of that design beyond the operator's own text its rule records, and design content anywhere in the message, reason text included, is answered under this rule (harmonic-forge#1664)."
-text_sha = "07e898e50dbc761e"
+statement = "An operator's chat design question or UX complaint gets a design conversation (current model and behavior, design questions) and no other action on it beyond R-0432's capture of a protocol failure; a filing about it happens only when the operator asks, after the answer, an instruction to build a settled design being that ask (filed before implementing, by R-0417 for a tooling or process change), taking precedence over every unasked filing rule including R-0039 tests 1 and 2 while R-0039's artifact requirement and exceptions govern the filing; the rule never suspends a directive (lane trigger, queued-for-<lane> event, or any lane-shorthand directive including NOW and EOQ), which runs under its own rule carrying none of that design beyond the operator's own text its rule records, and design content anywhere in the message, reason text included, is answered under this rule (harmonic-forge#1664)."
+text_sha = "da4faa5f182f38ff"
 hooks = []
 exception_to = ["R-0039"]
 

@@ -584,7 +584,7 @@ A substantive tooling or process change is filed before it is implemented, inclu
 When the operator asks in chat how something would be designed, or reports a UX
 or design problem, the reply to it is a design conversation: show the current
 model and behavior, ask the design questions, and take no other action on it
-beyond R-0432's capture when the operator names a protocol failure. A filing
+beyond R-0432's capture of a protocol failure. A filing
 about it happens only when the operator asks for one, after the answer, carrying
 any design the operator settled; an instruction to build a settled design is
 that ask, and it is filed before it is implemented (R-0417 for a tooling or
