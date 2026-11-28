@@ -67,7 +67,17 @@ from hook_identity import slot_env as _slot_env  # noqa: E402
 
 # harmonic-forge#1663: importing does not arm; `main` arms on its first line.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "onboard"))
-import manifest_overlay  # noqa: E402
+try:
+    import manifest_overlay  # noqa: E402
+except Exception:  # noqa: BLE001 -- guarded as batch_gate guards it
+    # If manifest_overlay cannot import, no code path in this process can read
+    # the overlay through it, so there is nothing to refuse: arming is a no-op
+    # and the hook expands exactly as it did before arming existed, instead of
+    # exiting 1 on every prompt (harmonic-forge#1663 pass-1 survivor 1).
+    class manifest_overlay:  # noqa: N801 -- stands in for the module
+        @staticmethod
+        def refuse_reads(reason: str) -> None:
+            pass
 
 DOC_PATH = Path(__file__).resolve().parent.parent.parent / "rules" / "lane-shorthand.md"
 

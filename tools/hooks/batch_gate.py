@@ -19,8 +19,8 @@ harmonic-forge#1663 (operator D90, D93): `main` arms
 app repo's overlay. A refused read is a BaseException, which `batch_auth.decide`'s
 fail-toward-ask `except Exception` does not catch; `main` catches it and emits
 `ask`, never a silent non-zero exit (that would leave the call to the session's
-permission mode). An overlay module that cannot be imported, so cannot be armed,
-also asks on a covered command.
+permission mode). An overlay module that cannot be imported, or whose arming
+call fails, also asks on a covered command.
 """
 
 from __future__ import annotations
@@ -72,14 +72,18 @@ def _emit(decision: str, reason: str) -> None:
 
 
 def main() -> None:
-    manifest_overlay.refuse_reads("batch_gate.main")
     try:
-        _gate()
+        manifest_overlay.refuse_reads("batch_gate.main")
+        unarmable = manifest_overlay if isinstance(manifest_overlay, _Unarmable) else None
+    except Exception as exc:  # noqa: BLE001 -- D93: an arming failure asks, never exits 1
+        unarmable = _Unarmable(exc)
+    try:
+        _gate(unarmable)
     except manifest_overlay.OverlayReadRefused as exc:
         _emit("ask", ASK_REFUSED.format(detail=exc))
 
 
-def _gate() -> None:
+def _gate(unarmable: _Unarmable | None) -> None:
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -94,10 +98,9 @@ def _gate() -> None:
     result = batch_auth.decide(command)
     if result is None:
         return  # not gh issue close / gh pr merge -- not this hook's decision
-    if isinstance(manifest_overlay, _Unarmable):
+    if unarmable is not None:
         _emit("ask", ASK_REFUSED.format(
-            detail=f"the overlay module could not be imported to arm the refusal "
-                   f"({manifest_overlay.error})"))
+            detail=f"the overlay refusal could not be imported or armed ({unarmable.error})"))
         return
     decision, reason = result
     _emit(decision, reason)

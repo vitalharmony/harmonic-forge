@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent
@@ -162,8 +163,31 @@ class AC2bBatchGateAsks(Scratch):
         result, decision = self.run_gate(block_import=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(decision["permissionDecision"], "ask")
-        self.assertIn("could not be imported to arm", decision["permissionDecisionReason"])
+        self.assertIn("could not be imported or armed", decision["permissionDecisionReason"])
         self.assertIn("harmonic-forge#1663", decision["permissionDecisionReason"])
+
+    def test_an_arming_call_that_raises_asks_on_a_covered_command(self) -> None:
+        """Pass-1 survivor 2: the module imports but `refuse_reads` raises (or
+        is missing, as at origin/main). D93: ask, never a silent exit 1."""
+        code = ("import manifest_overlay\n"
+                "def boom(reason):\n"
+                "    raise AttributeError('no refuse_reads')\n"
+                "manifest_overlay.refuse_reads = boom\n")
+        command = f"gh pr merge 5 --match-head-commit {HEAD} --repo acme/forge"
+        for cmd, covered in ((command, True), ("ls", False)):
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+            result = self.child(code + "import runpy\nfrom pathlib import Path\n"
+                                "runpy.run_path(str(Path(HOOKS) / 'batch_gate.py'), "
+                                "run_name='__main__')\n", payload)
+            with self.subTest(command=cmd):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if not covered:
+                    self.assertEqual(result.stdout, "")
+                    continue
+                decision = json.loads(result.stdout)["hookSpecificOutput"]
+                self.assertEqual(decision["permissionDecision"], "ask")
+                self.assertIn("could not be imported or armed (AttributeError: no refuse_reads)",
+                              decision["permissionDecisionReason"])
 
     def test_an_unarmable_gate_stays_silent_on_an_uncovered_command(self) -> None:
         code = ("sys.modules['manifest_overlay'] = None\nimport runpy\nfrom pathlib import Path\n"
@@ -171,6 +195,35 @@ class AC2bBatchGateAsks(Scratch):
         payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}})
         result = self.child(code, payload)
         self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+
+class ExpandWithoutTheOverlayModule(Scratch):
+    """Pass-1 survivor 1: an overlay module that cannot import leaves nothing to
+    read the overlay through, so the hook expands as origin/main does (exit 0)
+    instead of exiting 1 on every prompt; with it, `main` runs armed."""
+
+    CODE = ("BLOCK_IMPORT and sys.modules.__setitem__('manifest_overlay', None)\n"
+            "import expand_lane_shorthand as m\n"
+            "m.main()\n"
+            "if not BLOCK_IMPORT:\n"
+            "    import manifest_overlay\n"
+            "    print('ARMED=' + str(manifest_overlay._REFUSED))\n")
+
+    def run_hook(self, block_import: bool) -> subprocess.CompletedProcess:
+        payload = json.dumps({"prompt": "L2D F5 please review", "session_id": "s-1663"})
+        return self.child(f"BLOCK_IMPORT = {block_import}\n" + self.CODE, payload)
+
+    def test_an_unimportable_overlay_module_still_expands_and_exits_zero(self) -> None:
+        result = self.run_hook(block_import=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("L2D [Lane 2 done", result.stdout)
+        self.assertNotIn("ARMED=", result.stdout)
+
+    def test_the_normal_path_expands_armed(self) -> None:
+        result = self.run_hook(block_import=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("L2D [Lane 2 done", result.stdout)
+        self.assertIn("ARMED=expand_lane_shorthand.main", result.stdout)
 
 
 class AC3ArmingIsTheFirstStatement(unittest.TestCase):
@@ -185,6 +238,8 @@ class AC3ArmingIsTheFirstStatement(unittest.TestCase):
                 main = next(n for n in tree.body
                             if isinstance(n, ast.FunctionDef) and n.name == "main")
                 first = main.body[0]
+                if isinstance(first, ast.Try):  # batch_gate arms inside its ask handler (D93)
+                    first = first.body[0]
                 armed = (isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
                          and isinstance(first.value.func, ast.Attribute)
                          and first.value.func.attr == "refuse_reads"
@@ -253,6 +308,58 @@ class AC6ArmingNeverLeaksIntoTheSuite(unittest.TestCase):
                 self.assertTrue(restores, f"{path.relative_to(TOOLS)}:{fn.lineno} {fn.name} calls "
                                           "main() in-process without restoring _REFUSED")
         self.assertGreaterEqual(checked, 9, "the scan found fewer in-process callers than exist")
+
+    def test_each_in_process_caller_leaves_the_flag_unset(self) -> None:
+        """Pass-1 survivor 3: the check above is bound to the spelling
+        `"_REFUSED"`, which `contextlib.nullcontext("_REFUSED")` satisfies.
+        This runs, for every in-process caller, one test that reaches it, and
+        checks that `main` armed and that the flag is unset afterwards."""
+        import importlib  # noqa: PLC0415
+        import manifest_overlay  # noqa: PLC0415
+
+        real = manifest_overlay.refuse_reads
+        ran = 0
+        for path in sorted(TOOLS.rglob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            aliases = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
+                       for a in n.names if a.name in self.MODULES}
+            if not aliases or path.resolve() == Path(__file__).resolve():
+                continue
+            tests = [(c.name, f) for c in ast.walk(tree) if isinstance(c, ast.ClassDef)
+                     for f in c.body if isinstance(f, ast.FunctionDef)
+                     and f.name.startswith("test")]
+            for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+                if not any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                           and n.func.attr == "main" and isinstance(n.func.value, ast.Name)
+                           and n.func.value.id in aliases for n in ast.walk(fn)):
+                    continue
+                name = next((f"{cls}.{t.name}" for cls, t in tests if t is fn or any(
+                    isinstance(n, ast.Call) and fn.name == getattr(n.func, "attr", None)
+                    or isinstance(n, ast.Call) and fn.name == getattr(n.func, "id", None)
+                    for n in ast.walk(t))), None)
+                where = f"{path.relative_to(TOOLS)}:{fn.lineno} {fn.name}"
+                self.assertIsNotNone(name, f"{where}: no test reaches this caller")
+                sys.path.insert(0, str(path.parent))
+                module = importlib.import_module(path.stem)
+                arms: list[str] = []
+
+                def spy(reason: str) -> None:
+                    real(reason)
+                    arms.append(reason)
+
+                result = unittest.TestResult()
+                try:
+                    with mock.patch.object(manifest_overlay, "refuse_reads", spy):
+                        unittest.defaultTestLoader.loadTestsFromName(name, module).run(result)
+                    left = manifest_overlay._REFUSED
+                finally:
+                    manifest_overlay._REFUSED = None
+                ran += 1
+                with self.subTest(caller=where, test=name):
+                    self.assertTrue(arms, f"{name} never reached main(): "
+                                          f"{result.errors + result.failures}")
+                    self.assertIsNone(left, f"{name} left the overlay refusal armed")
+        self.assertGreaterEqual(ran, 9, "fewer in-process callers ran than exist")
 
     def test_the_flag_is_unset_in_this_process(self) -> None:
         import manifest_overlay  # noqa: PLC0415
